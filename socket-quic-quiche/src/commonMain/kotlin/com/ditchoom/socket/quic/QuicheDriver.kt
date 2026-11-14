@@ -4712,7 +4712,19 @@ class QuicheDriver(
             sentStreamData =
                 if (api.connStreamDataUnacknowledged(conn)) SentStreamData.AwaitingAcknowledgement else SentStreamData.Acknowledged,
             stats = api.connStats(conn),
-            activePath = api.connPathStats(conn, 0L),
+            activePath =
+                when (val read = api.readActivePath(conn)) {
+                    is ActivePath.Read -> read.stats
+                    ActivePath.Unreadable -> null
+                },
+            quichePaths = (0L until (api.connStats(conn)?.pathsCount ?: 0L)).mapNotNull { api.connPathStats(conn, it) },
+            ids =
+                ConnectionIdRoom(
+                    spareDestinationIds = api.connAvailableDcids(conn),
+                    activeSourceIds = api.connActiveScids(conn),
+                    sourceIdsLeft = api.connScidsLeft(conn),
+                ),
+            peerPathRoom = peerPathRoom,
             streams =
                 streams.values.map { slot ->
                     StreamWake(
@@ -4725,7 +4737,7 @@ class QuicheDriver(
                     )
                 },
             paths =
-                paths.values.map { entry ->
+                (paths.values + reservedPorts.values).map { entry ->
                     PathView(
                         key = entry.key,
                         egress =
@@ -4740,7 +4752,12 @@ class QuicheDriver(
                                 else -> if (job.isActive) PathReader.Running else PathReader.Ended
                             },
                         slot = entry.slot,
-                        use = if (entry === active) PathUse.Active else PathUse.Standby,
+                        use =
+                            when {
+                                entry === active -> PathUse.Active
+                                entry.key in reservedPorts -> PathUse.Left
+                                else -> PathUse.Standby
+                            },
                     )
                 },
         )
