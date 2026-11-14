@@ -5,9 +5,11 @@ import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.freeIfNeeded
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
@@ -71,18 +73,32 @@ private fun runServer(test: String): Int {
     val options = interopBaseOptions().copy(enableEarlyData = test == "zerortt" || test == "resumption")
     val tls = QuicTlsConfig(certChainPath = certs.resolve("cert.pem").path, privKeyPath = certs.resolve("priv.key").path)
     runBlocking(Dispatchers.IO) {
-        withQuicServer(port = port, tlsConfig = tls, quicOptions = options) {
-            println("READY port=${this.port} test=$test")
-            System.out.flush()
-            connections {
-                coroutineScope {
-                    streams().collect { stream -> launch { serveRequest(stream, www) } }
+        val serving =
+            launch {
+                withQuicServer(port = port, tlsConfig = tls, quicOptions = options) {
+                    println("READY port=${this.port} test=$test")
+                    System.out.flush()
+                    connections {
+                        coroutineScope {
+                            streams().collect { stream -> launch { serveRequest(stream, www) } }
+                        }
+                    }
                 }
             }
-        }
+        // The runner stops the server with SIGTERM. Ending the server, not just the process, lets every
+        // connection free its quiche state, which is when quiche writes out the rest of its qlog.
+        Runtime.getRuntime().addShutdownHook(
+            Thread {
+                runBlocking { withTimeoutOrNull(SHUTDOWN_BUDGET) { serving.cancelAndJoin() } }
+            },
+        )
+        serving.join()
     }
     return 0
 }
+
+/** Inside the runner's ten-second stop timeout. */
+private val SHUTDOWN_BUDGET = 5.seconds
 
 /** Read `GET /path\r\n` to the request's FIN, then send the file and FIN. */
 private suspend fun QuicScope.serveRequest(
