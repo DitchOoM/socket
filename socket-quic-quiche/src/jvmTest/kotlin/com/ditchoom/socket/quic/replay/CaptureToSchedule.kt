@@ -183,7 +183,13 @@ internal object CaptureToSchedule {
                 notes +=
                     "No qlog: the schedule holds no stream write and no connection ID issue, " +
                     "and both ends run on default transport parameters."
-            is Qlog.Recorded -> notes += qlog.unreproducible
+            is Qlog.Recorded -> {
+                notes += qlog.unreproducible
+                if (qlog.datagramsCovered < outs.size) {
+                    notes += "The qlog stops at our datagram ${qlog.datagramsCovered} of ${outs.size}: from there the schedule holds " +
+                        "no action of ours and the steps stand in the trace's order."
+                }
+            }
         }
         val read =
             when (inputs.link) {
@@ -505,8 +511,10 @@ internal object CaptureToSchedule {
                     }
                 }
         }
-        outs.indices.forEach { placeOut(it) }
-        ins.indices.forEach { placeIn(it) }
+        // What the qlog does not reach stands where the trace's clock puts it.
+        (outs.indices.map { outs[it].at to { placeOut(it) } } + ins.indices.map { ins[it].at to { placeIn(it) } })
+            .sortedBy { it.first }
+            .forEach { it.second() }
         // A datagram that never arrived has no place in our endpoint's order; it reads best where it was sent.
         for (lost in peers.filter { it.received == Received.Never }) {
             val after = placed.indexOfLast { it.step.at <= lost.step.at }
@@ -901,8 +909,13 @@ internal sealed interface Qlog {
         fun unacknowledged(datagram: Int): List<Int> =
             packetsOf(datagram).indices.filter { asksForAcknowledgement(packetsOf(datagram)[it]) && !acknowledged(packetsOf(datagram)[it]) }
 
-        override fun carries(datagram: Int): Carries =
-            if (packetsOf(datagram).none { asksForAcknowledgement(it) }) Carries.AcksOnly else Carries.Data
+        /** How many of our datagrams, from the first, the qlog holds the packets of. */
+        val datagramsCovered: Int = datagramOfSent.toSet().size
+
+        override fun carries(datagram: Int): Carries {
+            val packets = packetsOf(datagram)
+            return if (packets.isNotEmpty() && packets.none { asksForAcknowledgement(it) }) Carries.AcksOnly else Carries.Data
+        }
 
         /** Whether the peer acknowledged a packet of our datagram [datagram], or the datagram asked for no acknowledgement. */
         fun peerSaw(datagram: Int): Boolean =
@@ -1002,9 +1015,11 @@ internal sealed interface Qlog {
             }
             val sentKinds = events.filter { it.name == PACKET_SENT }.map { kindOf(it.data["header"]["packet_type"].text()) }
             val datagramOfSent = mutableListOf<Int>()
-            sentShapes.forEachIndexed { datagram, shape ->
+            // A qlog written out only as its connection closes stops short of a trace taken while it is open.
+            for ((datagram, shape) in sentShapes.withIndex()) {
                 val from = datagramOfSent.size
-                if (from + shape.size > sentKinds.size || sentKinds.subList(from, from + shape.size) != shape) {
+                if (from + shape.size > sentKinds.size) break
+                if (sentKinds.subList(from, from + shape.size) != shape) {
                     return QlogRead.Refused(ExtractionRefusal.QlogDoesNotMatchTrace(datagram))
                 }
                 repeat(shape.size) { datagramOfSent += datagram }
