@@ -170,10 +170,35 @@ jobs:
           [ -f "$exp" ] || echo '{}' > "$exp"
           gate="$GITHUB_WORKSPACE/.github/scripts/quic-interop-gate.py"
           tests=$(jq -r .tests "$GITHUB_WORKSPACE/test-harness/quic-interop/peers.json")
+          # The runner's whole output is kept beside its results. A run that wrote no results is the runner
+          # failing, not a test: what it was doing and what the machine looked like are recorded for it.
+          runner_crash() { # <logs> <json> <exit status> <runner log>
+            local logs=$1 json=$2 rc=$3 log=$4 report="${2%.json}.runner-crash.txt"
+            {
+              echo "runner exit status: $rc (no results in $json)"
+              echo "python: $(python3 --version 2>&1)"
+              echo "pyshark: $(pip show pyshark 2>/dev/null | grep -m1 '^Version' || echo unknown)"
+              echo "tshark: $(tshark --version 2>&1 | head -1)"
+              echo "== memory"; free -m
+              echo "== disk"; df -h /tmp
+              echo "== kernel: out-of-memory and killed processes"
+              sudo dmesg -T 2>/dev/null | grep -i -E 'oom|killed process|out of memory|segfault' | tail -40 || true
+              echo "== captures (bytes, newest test last)"
+              find "$logs" -name '*.pcap*' -printf '%TT %s %p\n' 2>/dev/null | sort | tail -20
+              echo "== tshark processes still running"
+              pgrep -a tshark || echo none
+              echo "== the runner's last 120 lines"
+              tail -120 "$log"
+            } > "$report" 2>&1
+            echo "::error::the interop runner wrote no results for $(basename "$json") (exit $rc); see $(basename "$report") in the results artifact"
+            sed -n '1,40p' "$report"
+          }
           run_pair() { # <tests> <logs> <json> [runner role flags...]
-            local t=$1 logs=$2 json=$3
+            local t=$1 logs=$2 json=$3 log="${3%.json}.runner.log" rc
             shift 3
-            python3 run.py "$@" -t "$t" -l "$logs" -j "$json" -d || true
+            python3 run.py "$@" -t "$t" -l "$logs" -j "$json" -d 2>&1 | tee "$log"
+            rc=${PIPESTATUS[0]}
+            [ -s "$json" ] || runner_crash "$logs" "$json" "$rc" "$log"
           }
           case "$DIRECTION" in
             our-client) roles=(-c ditchoom -s "$PEER") ;;
