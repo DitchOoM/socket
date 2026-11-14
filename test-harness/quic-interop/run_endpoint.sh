@@ -22,9 +22,9 @@ fi
 JAVA=(java --enable-native-access=ALL-UNNAMED --add-opens java.base/java.nio=ALL-UNNAMED -jar /quic-interop.jar)
 
 if [ "$ROLE" = "client" ]; then
-  # Wait for the simulator to start up.
-  /wait-for-it.sh sim:57832 -s -t 30
-  "${JAVA[@]}"
+  # The client waits for the simulator itself, after loading quiche: wait-for-it polls once a second, and
+  # the runner's rebinding tests move the client's port one second in.
+  WAIT_FOR=sim:57832 "${JAVA[@]}"
   rc=$?
   collect_keys
   exit $rc

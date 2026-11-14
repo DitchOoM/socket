@@ -10,8 +10,13 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import java.io.File
 import java.io.FileOutputStream
+import java.io.IOException
+import java.net.InetSocketAddress
+import java.net.Socket
 import kotlin.system.exitProcess
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeSource
 
 /**
  * The `TESTCASE` names the server implements. Everything else answers [UNSUPPORTED]:
@@ -171,4 +176,33 @@ private object JvmInteropHost : InteropHost {
     override fun flushOutput() = System.out.flush()
 }
 
-private fun runClient(): Int = runBlocking(Dispatchers.IO) { runInteropClient(JvmInteropHost) }
+private fun runClient(): Int {
+    // Load quiche before the network is up, so the first Initial leaves as soon as it is: the runner's
+    // rebinding tests move the client's port one second in, and a handshake that straddles the move cannot
+    // be validated on the new path.
+    loadQuicheApi()
+    awaitNetwork(System.getenv("WAIT_FOR").orEmpty())
+    return runBlocking(Dispatchers.IO) { runInteropClient(JvmInteropHost) }
+}
+
+/** Polls `host:port` until it accepts a TCP connection: the simulator is up. Returns at once without one. */
+private fun awaitNetwork(hostPort: String) {
+    if (hostPort.isEmpty()) return
+    val host = hostPort.substringBeforeLast(':')
+    val port = hostPort.substringAfterLast(':').toInt()
+    val deadline = TimeSource.Monotonic.markNow() + NETWORK_WAIT
+    while (deadline.hasNotPassedNow()) {
+        val reached =
+            try {
+                Socket().use { it.connect(InetSocketAddress(host, port), NETWORK_POLL.inWholeMilliseconds.toInt()) }
+                true
+            } catch (_: IOException) {
+                false
+            }
+        if (reached) return
+        Thread.sleep(NETWORK_POLL.inWholeMilliseconds)
+    }
+}
+
+private val NETWORK_WAIT = 30.seconds
+private val NETWORK_POLL = 10.milliseconds

@@ -343,6 +343,9 @@ private suspend fun QuicScope.downloadAllMigrating(
                 host.flushOutput()
                 break
             }
+            // The first move that does not succeed says why: the spare ids, the learned peer path room and
+            // every path, as the driver and quiche see them.
+            if (!move.succeeded && moves.count { !it.succeeded } == 1) printDriverState("MIGRATION-UNMOVED")
             host.flushOutput()
         }
         transfer.await()
@@ -355,10 +358,10 @@ private suspend fun QuicScope.downloadAllMigrating(
         }
     val paths =
         when (val snapshot = driver.stallSnapshot()) {
-            is Inspected.Read ->
-                snapshot.value.paths
-                    .map { it.key.port }
-                    .toString()
+            is Inspected.Read -> {
+                val (left, held) = snapshot.value.paths.partition { it.use == PathUse.Left }
+                "${held.map { it.key.port }} leftPortsRead=${left.map { it.key.port }}"
+            }
             Inspected.ConnectionGone -> "connection gone"
         }
     val succeeded = moves.count { it.succeeded }
@@ -377,7 +380,7 @@ private suspend fun QuicScope.downloadAllMigrating(
     host.flushOutput()
 }
 
-/** The driver's snapshot and flight recording, each line prefixed with [tag], for a move that hung. */
+/** The driver's snapshot and flight recording, each line prefixed with [tag], for a move that hung or was refused. */
 private suspend fun QuicScope.printDriverState(tag: String) {
     val driver = (this as QuicheBackedConnection).quicheDriver
     println("$tag snapshot ${driver.stallSnapshot()}")
