@@ -4597,6 +4597,22 @@ dependencies { add("jazzer", libs.jazzer) }
 val quicFuzzCorpusDir = projectDir.resolve("fuzz/corpus/header-info")
 val quicFuzzWorkDir = layout.buildDirectory.dir("fuzz/header-info")
 
+// Capture -> replay test: turns one captured connection (replay trace, qlog, the two captures of a lossy
+// link) into a schedule fixture under sharedQuicheTestSuites/.../replay/fixtures and prints the test
+// that replays it against a fresh quiche pair. The options are CaptureToReplayCli's:
+//   ./gradlew :socket-quic-quiche:captureToReplay -Pcapture="--name interop-peer-test --cell <logs/peer_ditchoom/test>"
+tasks.register<JavaExec>("captureToReplay") {
+    group = "trace"
+    description = "Write the replay schedule of a captured QUIC connection and print its replay test."
+    dependsOn("jvmTestClasses")
+    val jvmTestCompilation = kotlin.jvm().compilations["test"]
+    classpath = files(jvmTestCompilation.output.allOutputs, jvmTestCompilation.runtimeDependencyFiles)
+    mainClass.set("com.ditchoom.socket.quic.replay.CaptureToReplayCliKt")
+    workingDir = projectDir
+    val capture = providers.gradleProperty("capture").orElse("")
+    argumentProviders.add { capture.get().split(Regex("\\s+")).filter { it.isNotEmpty() } }
+}
+
 tasks.register<JavaExec>("quicHeaderFuzz") {
     group = "verification"
     description = "Coverage-guided Jazzer fuzzing of quiche_header_info (HeaderInfoFuzzer). " +

@@ -89,11 +89,27 @@ The repo already contains most of the engine's parts; audit of the existing test
 
 **Tier B — semantic simulation (real quiche).** Real quiche client ↔ real quiche server over an in-memory pipe with seeded impairment (loss / reorder / duplication / delay).
 
-*Virtual-time reality check (W4 implementation finding):* the original premise that quiche is caller-clocked is **wrong for the C FFI we bind** — `quiche_conn_timeout_as_nanos`/`quiche_conn_on_timeout` take no `now`; quiche stamps packets and computes deadlines against Rust's internal `Instant::now()`. Consequently:
-- **Under virtual time:** pure event cascades work — a full real-quiche handshake completes under `runTest` with zero wall-clock (proven by `lossless_handshake_completes_under_virtual_time`).
-- **Not under virtual time:** anything depending on quiche's internal timers (PTO loss recovery, idle timeout). Those scenarios run on real dispatchers with scaled-down timers, bounded by the wall-clock test runner. The unlock would be a `now`-taking quiche FFI surface (upstream patch); until then, timer-dependent timelines are Tier A territory.
+*Virtual time:* quiche reads the caller's clock wherever a harness installs it (`QuicheApi.setThreadVirtualTimeNanos`), so its loss, PTO and idle timers fire on the sim's clock. `withMigrationSim` and `QuichePairByHand` install it; `SemanticSim` runs on the real clock with scaled-down timers.
 
 *Determinism per seed (measured):* the impairment decision sequence and scenario outcome are strictly stable (asserted as trace-prefix equality); exact per-side datagram counts drift ±1 (BoringSSL's own RNG shapes TLS key shares → packet coalescing shifts; quiche's real-time delayed-ACK/PTO races arrivals). Tests assert the strong invariant strictly and bound the drift explicitly.
+
+### 4.1 Tier B from a capture — schedule replay
+
+Tier A cannot replay a capture whose failure is quiche's own behaviour (when a PTO fires, what a probe carries): the stub has no quiche in it. Such a capture replays through real quiche as a **schedule** instead of as bytes (`sharedQuicheTestSuites/.../replay/`):
+
+- **`CaptureSchedule`** — for every datagram of the captured connection, in the order our endpoint took them: when it was sent, the packet types it coalesced, and its fate (delivered at T, lost, or arrived unread); plus what our driver and application did (connection IDs issued, stream writes), both ends' transport parameters, and how the connection ended.
+- **`replayCapture`** — a fresh `QuichePairByHand` on a virtual clock. Our endpoint runs freely; each datagram it sends must be the capture's next one for our direction by packet types and by time, and takes that datagram's fate. The first mismatch is a typed `Divergence` naming the datagram, and no captured fate is applied after it. A test states how far the replay must follow the capture for its result to count (`followedCaptureUntil`), then asserts the outcome (`peerReadToTheEndBy`, `established`, `end`, the times in `sent`).
+- **The modelled peer** — a quiche endpoint that receives what the captured peer received, when it did, and transmits only when the capture shows the peer transmitting; its packets stand in for the peer's in order within each packet number space, and its loss timer is brought forward when the capture shows a retransmission. A peer that went silent (quic-go's 5 s handshake timeout) is silent in the replay because the capture is. `Beyond.HealthyPath` continues past the capture's end or the divergence on a lossless path with a live peer, optionally one that gives up a handshake (`PeerPatience.HandshakeWithin`).
+
+**Capture → replay test, one command.** From a quic-interop-runner cell (`<logs>/<peer>_ditchoom/<test>`), or from any trace with `--trace/--qlog/--pcap-ours/--pcap-peer`:
+
+```
+./gradlew :socket-quic-quiche:captureToReplay -Pcapture="--name interop-peer-what-failed --cell <cell dir>"
+```
+
+writes `replay/fixtures/<Name>.kt` and prints the test to paste into `CaptureReplayTestSuite`. The test is red while the failure reproduces.
+
+**What it cannot replay.** The modelled peer is quiche: it reproduces when the peer transmitted and in which packet number space, not which frames the peer chose. A peer that withholds an ACK quiche would bundle, splits its handshake flight across datagrams, or retires connection IDs makes the replay leave the capture at the first datagram of ours that depends on it, and the report says which. Failures above quiche (the driver, the reader loop, platform sockets) are Tier A's. Without captures from both sides of the link, a peer datagram that never arrived is unknown and our datagrams' fates are inferred from acknowledgements.
 
 ## 5. Capture — `TraceRecorder`
 
@@ -172,7 +188,7 @@ Implementation generalizes the proven `Toxiproxy.kt` pattern (commonTest HTTP co
 
 ## 10. Non-goals
 
-- Byte-replaying encrypted field traffic through real quiche (impossible by design — Tier A exists for this).
+- Byte-replaying encrypted field traffic through real quiche (impossible by design — Tier A replays the bytes against the stub, §4.1 replays the schedule against real quiche).
 - Replacing the existing byte-level fuzzers (Jazzer, seeded H3/QPACK fuzz) — the timeline fuzzer targets event ordering, a different axis.
 - Simulating NW-specific QUIC behavior — Apple QUIC is quiche; the driver seams cover Apple like every other platform.
 - Per-test dynamic container provisioning (real isolation for parallel consumers) — deferred until static-ports + toxiproxy proves insufficient.
