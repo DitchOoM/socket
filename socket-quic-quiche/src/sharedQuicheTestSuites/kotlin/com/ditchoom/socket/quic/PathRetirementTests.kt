@@ -931,13 +931,12 @@ class PathRetirementTests {
         }
 
     /**
-     * **A peer with room for two paths that frees none gets no probe it would drop.** Its
-     * `active_connection_id_limit` of 2 caps the paths it holds at two; once the client has moved off the
-     * original path, and the peer has retired nothing it was not asked to, a move to a new 4-tuple is
-     * answered NoSpareConnectionId at once, with no socket opened and no probe sent.
+     * **A move at the peer's path limit is probed once; unanswered, later moves are refused unprobed.** A peer
+     * whose `active_connection_id_limit` of 2 caps the paths it holds, and that frees none, drops that probe;
+     * after it the client answers NoSpareConnectionId at once, opening no socket, kept path or not.
      */
     @Test
-    fun aSecondMoveAgainstAPeerWithRoomForTwoPathsIsRefusedWithoutAProbe() =
+    fun aMoveAtAPeersPathLimitIsProbedOnceAndRefusedUnprobedOnceThatProbeGoesUnanswered() =
         runTest {
             val f = Fixture()
             f.stub.peerActiveConnIdLimit = 2L
@@ -952,8 +951,47 @@ class PathRetirementTests {
 
                 val second = f.migrate()
                 runCurrent()
-                assertEquals(MigrationResult.Unmoved.Failed.NoSpareConnectionId, second.await())
-                assertEquals(1, f.factory.opened, "a socket was opened for a move the peer cannot admit")
+                assertEquals(2, f.factory.opened, "a move at the peer's limit must still be probed once")
+                f.failValidation(2)
+                runCurrent()
+                assertEquals(MigrationResult.Unmoved.Failed.PathNotValidated, second.await())
+
+                val third = f.migrate()
+                runCurrent()
+                assertEquals(MigrationResult.Unmoved.Failed.NoSpareConnectionId, third.await())
+                assertEquals(2, f.factory.opened, "a socket was opened for a move the peer has shown it cannot admit")
+            } finally {
+                f.driver.destroy()
+            }
+        }
+
+    /**
+     * **A peer that answers a probe at its path limit frees the paths a client leaves.** It could not have
+     * held that path beside every left one, so later moves are probed too, however many.
+     */
+    @Test
+    fun aPeerThatAnswersAProbeAtItsPathLimitIsProbedOnLaterMoves() =
+        runTest {
+            val f = Fixture()
+            f.stub.peerActiveConnIdLimit = 2L
+            f.driver.start(this)
+            try {
+                runCurrent()
+                val first = f.migrate()
+                runCurrent()
+                f.validate(1)
+                runCurrent()
+                first.assertSucceeded()
+
+                val second = f.migrate()
+                runCurrent()
+                f.validate(2)
+                runCurrent()
+                second.assertSucceeded()
+
+                f.migrate()
+                runCurrent()
+                assertEquals(3, f.factory.opened, "a peer that held a path beyond its limit was refused a later move")
             } finally {
                 f.driver.destroy()
             }
