@@ -39,7 +39,10 @@ import kotlin.time.TimeSource
 internal class NativeDeadlineTimer private constructor(
     override val queue: DeadlineQueue,
 ) : NodeTimer {
-    constructor() : this(DeadlineQueue())
+    // The thread reads this timer's fields from its first pass, so it starts here, after every one is initialized.
+    constructor() : this(DeadlineQueue()) {
+        worker.executeAfter(0L) { run(worker) }
+    }
 
     private val clock = TimeSource.Monotonic.markNow()
 
@@ -63,8 +66,7 @@ internal class NativeDeadlineTimer private constructor(
     private val thread = AtomicReference<TimerThread>(TimerThread.Awake)
 
     // Started with the timer: the first deadline of the process is armed by a connect, which is not a hot path.
-    private val worker =
-        Worker.start(name = "quic-deadline-timer").also { w -> w.executeAfter(0L) { run(w) } }
+    private val worker = Worker.start(name = "quic-deadline-timer")
 
     /** Nanoseconds on [clock] now. */
     private fun now(): Long = clock.elapsedNow().inWholeNanoseconds

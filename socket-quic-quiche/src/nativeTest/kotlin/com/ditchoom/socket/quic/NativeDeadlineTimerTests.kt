@@ -256,6 +256,18 @@ class NativeDeadlineTimerTests {
             }
         }
 
+    /** The timer thread reads the timer's fields from its first pass, so it must not start before every one is set. */
+    @Test
+    fun aNewTimersThreadNeverSeesItHalfBuilt() =
+        runTest {
+            real {
+                repeat(CONSTRUCTIONS) {
+                    val timer = NativeDeadlineTimer()
+                    timer.close()
+                }
+            }
+        }
+
     @Test
     fun anIdleTimerMakesNoPassesAndOneFarDeadlineDoesNotWakeIt() =
         runTest {
@@ -277,4 +289,8 @@ class NativeDeadlineTimerTests {
                 }
             }
         }
+
+    private companion object {
+        const val CONSTRUCTIONS = 20_000
+    }
 }
