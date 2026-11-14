@@ -54,8 +54,12 @@ for _ in $(seq 1 10); do ls "$d"/hang-crasher-*.txt >/dev/null 2>&1 && break; sl
 ls "$d"/hang-crasher-*.txt >/dev/null 2>&1 && grep -q 'parked_forever' "$d"/hang-crasher-*.txt; check "a run past its budget gets every thread's stack while it is alive" $?
 pkill -f "$tmp/crasher hang" 2>/dev/null; wait "$runner" 2>/dev/null
 
-bash "$script" run "$d" 20 "$tmp/crasher" >"$tmp/log" 2>&1
-[ $? -eq 0 ] && ! grep -q '::error' "$tmp/log"; check "a passing run exits 0 and reports nothing" $?
+start=$(date +%s)
+bash "$script" run "$d" 20 "$tmp/crasher" 2>&1 | cat >"$tmp/log"
+status=${PIPESTATUS[0]}
+took=$(($(date +%s) - start))
+[ "$status" -eq 0 ] && ! grep -q '::error' "$tmp/log"; check "a passing run exits 0 and reports nothing" $?
+[ "$took" -lt 10 ]; check "a finished run does not hold its output pipe until the hang budget (${took}s)" $?
 
 bash "$script" run "$d" 20 sh -c 'kill -SEGV $$' >"$tmp/log" 2>&1
 [ $? -eq 139 ] && grep -q 'left no core' "$tmp/log"; check "a signal without a core says the core was refused" $?

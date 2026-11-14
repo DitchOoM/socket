@@ -57,7 +57,11 @@ do_run() { # <dir> <hang-seconds> <cmd...>
   "$@" &
   local pid=$!
   (
-    sleep "$hang"
+    # The sleep must not hold the step's output pipe: a finished run would wait for it to expire.
+    sleep "$hang" </dev/null >/dev/null 2>&1 &
+    local nap=$!
+    trap 'kill "$nap" 2>/dev/null; exit 0' TERM
+    wait "$nap"
     if kill -0 "$pid" 2>/dev/null; then
       local out="$dir/hang-$(basename "$binary")-$pid.txt"
       echo "::error title=Hang::$(basename "$binary") (pid $pid) still running after ${hang}s; all thread stacks -> $(basename "$out")" >&2
