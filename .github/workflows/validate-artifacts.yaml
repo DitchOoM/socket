@@ -40,6 +40,15 @@ jobs:
           path: /tmp/quiche-linux-natives
         continue-on-error: true  # may not exist if quiche build failed
 
+      # The one Windows DLL (both backends; build-linux's MinGW cross-build). Required: verify-quiche-jvm-natives.sh
+      # fails a jar without it, so a missing artifact is reported there by name.
+      - name: Download Windows quiche native lib
+        uses: actions/download-artifact@v8
+        with:
+          name: quiche-windows-natives
+          path: /tmp/quiche-windows-natives/windows-x64
+        continue-on-error: true
+
       # Validate the version that was ACTUALLY built into maven-local, not the
       # workflow input. build-linux's getNextVersion reads Maven Central, and if a
       # release publishes mid-CI the input version can diverge from the version
@@ -213,6 +222,7 @@ jobs:
 
           [ -d /tmp/quiche-macos-natives ] && inject_natives /tmp/quiche-macos-natives 'macos-*' dylib
           [ -d /tmp/quiche-linux-natives ] && inject_natives /tmp/quiche-linux-natives 'linux-*'   so
+          [ -d /tmp/quiche-windows-natives ] && inject_natives /tmp/quiche-windows-natives 'windows-*' dll
 
           if [ -d "$INJECT_DIR/META-INF/native" ] && [ -n "$(find "$INJECT_DIR/META-INF/native" -type f)" ]; then
             (cd "$INJECT_DIR" && zip -ur "$QUIC_JAR" META-INF/native/)
@@ -436,3 +446,39 @@ jobs:
           fi
           echo ""
           echo "=== ALL VALIDATIONS PASSED ==="
+
+  # The published JVM jar as a Windows user resolves it, from the merged repo `validate` just checked: the
+  # HTTP/3 loopback smoke on JDK 21 with the multi-release classes on (FFM, what every JDK 21+ consumer
+  # gets) and with them off (JNI, what a JDK < 21 consumer gets). On the release path this gates publish.
+  windows-consumer:
+    name: "Windows consumer (JVM ${{ matrix.backend }})"
+    needs: validate
+    runs-on: windows-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [ffm, jni]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: maven-local-merged
+          path: maven-local-merged
+      - name: Resolve built version
+        run: |
+          version=$(find maven-local-merged/com/ditchoom/socket -mindepth 1 -maxdepth 1 -type d -name '[0-9]*.[0-9]*.[0-9]*' -exec basename {} \; | sort -V | tail -1)
+          [ -n "$version" ] || { echo "::error::No socket version in the merged maven-local"; exit 1; }
+          echo "RESOLVED_VERSION=$version" >> "$GITHUB_ENV"
+          echo "MERGED_REPO=$(cygpath -m "$PWD/maven-local-merged")" >> "$GITHUB_ENV"
+      - uses: actions/setup-java@v6
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+      - name: HTTP/3 loopback against the published jar
+        run: |
+          ./gradlew -p .ci/consumer-smoke jvmTest --tests LoopbackSmokeTest \
+            -PsocketVersion="$RESOLVED_VERSION" -PmavenRepoPath="$MERGED_REPO" -PsmokeBackend=${{ matrix.backend }} --no-daemon

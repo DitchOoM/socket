@@ -9,8 +9,8 @@
 # The architecture is checked too, because a shim built on an arm64 host without `-arch x86_64` is an
 # arm64 binary under a macos-x64 name.
 #
-# The expected set mirrors nativeLibsByPlatform in socket-quic-quiche/build.gradle.kts minus
-# windows-x64, which is staged for the Windows test lane only and never published.
+# The expected set mirrors nativeLibsByPlatform in socket-quic-quiche/build.gradle.kts. Windows ships one
+# self-contained quiche_jni.dll that serves both backends.
 #
 # Usage: verify-quiche-jvm-natives.sh <socket-quic-quiche-jvm-VERSION.jar>
 set -euo pipefail
@@ -28,6 +28,7 @@ macos-x64    libquiche.dylib      x86_64
 macos-x64    libquiche_jni.dylib  x86_64
 macos-arm64  libquiche.dylib      arm64
 macos-arm64  libquiche_jni.dylib  arm64
+windows-x64  quiche_jni.dll       x86-64
 "
 
 work="$(mktemp -d)"

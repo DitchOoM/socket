@@ -41,6 +41,9 @@ kotlin {
             executionTask.configure {
                 testLogging { showStandardStreams = true }
                 jvmArgs("--add-opens", "java.base/java.nio=ALL-UNNAMED")
+                // -PsmokeBackend=jni switches the jar's multi-release classes off, so the JNI backend a JDK < 21
+                // consumer gets loads on this JDK 21 launcher; otherwise JDK 21 selects FFM.
+                if (findProperty("smokeBackend") == "jni") jvmArgs("-Djdk.util.jar.enableMultiRelease=false")
             }
         }
     }

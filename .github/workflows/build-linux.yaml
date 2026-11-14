@@ -500,8 +500,13 @@ jobs:
             # is `stable` (see "Install Rust toolchain"), so a new std dependency arrives unannounced:
             # the day 1.100 reached the runners this link failed on every PR with
             # "undefined reference to `WakeByAddressSingle'".
+            # --export-all-symbols: the one DLL serves both backends. The JNI loader (JDK < 21) needs the
+            # Java_* entry points, and the FFM loader (JDK 21+) binds quiche_* by name from this same file,
+            # which ld exports only when told to: without it the Rust archive's symbols stay internal and
+            # FFM failed with UnsatisfiedLinkError on quiche_config_new.
             x86_64-w64-mingw32-gcc -shared -Wall \
               -static-libgcc -static-libstdc++ \
+              -Wl,--export-all-symbols \
               -o "$WIN_DLL" "$JNI_SRC" \
               -I"${JAVA_HOME}/include" -I"${JAVA_HOME}/include/linux" \
               -I"$QUICHE_H" \
@@ -509,6 +514,14 @@ jobs:
               -lws2_32 -lcrypt32 -lntdll -luserenv -lbcrypt -lsynchronization -lm \
               -Wl,-Bstatic -lstdc++ -lpthread -Wl,-Bdynamic || return $?
             x86_64-w64-mingw32-strip --strip-all "$WIN_DLL" || return $?
+            # Both backends' entry points must be in the export table: a DLL that loads but exports only one
+            # set passes every JNI test and fails every JDK 21+ consumer.
+            local exports
+            exports=$(x86_64-w64-mingw32-objdump -p "$WIN_DLL") || return $?
+            local want
+            for want in quiche_config_new quiche_conn_send quiche_conn_recv Java_com_ditchoom_socket_quic_JniQuicheApi_nConfigNew; do
+              grep -qw "$want" <<<"$exports" || { echo "quiche_jni.dll does not export $want"; return 1; }
+            done
           }
           if build_windows_jni > "$WIN_LOG" 2>&1; then
             echo "Built Windows x64: $WIN_DLL ($(du -h "$WIN_DLL" | cut -f1))"
