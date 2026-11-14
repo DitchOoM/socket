@@ -423,28 +423,55 @@
     },
     "go-x-net": {
       "active-migration": {
-        "known-failure": "peer: advertises disable_active_migration; our client answers PeerForbids without a probe, which is correct"
+        "known-failure": {
+          "why": "peer: advertises disable_active_migration; our client answers PeerForbids without a probe, which is correct",
+          "signature": {
+            "kind": "migration-refused-peer-forbids"
+          }
+        }
       },
       "transfer": "pass"
     },
     "haproxy": {
       "active-migration": {
-        "known-failure": "peer: advertises disable_active_migration; our client answers PeerForbids without a probe, which is correct"
+        "known-failure": {
+          "why": "peer: advertises disable_active_migration; our client answers PeerForbids without a probe, which is correct",
+          "signature": {
+            "kind": "migration-refused-peer-forbids"
+          }
+        }
       },
       "transfer": "pass"
     },
     "kwik": {
       "active-migration": {
-        "known-failure": "peer: advertises disable_active_migration; our client answers PeerForbids without a probe, which is correct"
+        "known-failure": {
+          "why": "peer: advertises disable_active_migration; our client answers PeerForbids without a probe, which is correct",
+          "signature": {
+            "kind": "migration-refused-peer-forbids"
+          }
+        }
       },
       "transfer": "pass"
     },
     "lsquic": {
       "active-migration": {
-        "flaky": "peer: as transfer"
+        "flaky": {
+          "why": "peer: the lsquic server crashed (SIGSEGV, exit 139) right after our first move in one run; passed in the other",
+          "signature": {
+            "kind": "peer-process-died",
+            "signal": "SIGSEGV"
+          }
+        }
       },
       "transfer": {
-        "flaky": "peer: the lsquic server crashed (SIGSEGV, exit 139) right after our first move in one run; passed in the other"
+        "flaky": {
+          "why": "peer: the lsquic server crashed (SIGSEGV, exit 139) right after our first move in one run; passed in the other",
+          "signature": {
+            "kind": "peer-process-died",
+            "signal": "SIGSEGV"
+          }
+        }
       }
     },
     "msquic": {
@@ -825,7 +852,14 @@
       "handshakeloss": "pass",
       "ipv6": "pass",
       "longrtt": "pass",
-      "multiplexing": "pass",
+      "multiplexing": {
+        "known-failure": {
+          "why": "peer: xquic's client opens every request stream before it has our transport parameters, under its own limit of 128, and sends streams past our 100 (run 43600366120: stream 400 received, no MAX_STREAMS sent); our-server-raised-streams proves multiplexing with it",
+          "signature": {
+            "kind": "peer-exceeded-stream-limit"
+          }
+        }
+      },
       "rebind-addr": "pass",
       "rebind-port": "pass",
       "resumption": "pass",
@@ -834,6 +868,56 @@
       "transfercorruption": "pass",
       "transferloss": "pass",
       "zerortt": "pass"
+    }
+  },
+  "our-server-raised-streams": {
+    "aioquic": {
+      "multiplexing": "pass"
+    },
+    "chrome": {
+      "multiplexing": "unsupported"
+    },
+    "go-x-net": {
+      "multiplexing": "pass"
+    },
+    "kwik": {
+      "multiplexing": "pass"
+    },
+    "lsquic": {
+      "multiplexing": "pass"
+    },
+    "msquic": {
+      "multiplexing": "pass"
+    },
+    "mvfst": {
+      "multiplexing": "pass"
+    },
+    "neqo": {
+      "multiplexing": "pass"
+    },
+    "ngtcp2": {
+      "multiplexing": "pass"
+    },
+    "picoquic": {
+      "multiplexing": "pass"
+    },
+    "quic-go": {
+      "multiplexing": "pass"
+    },
+    "quiche": {
+      "multiplexing": "pass"
+    },
+    "quinn": {
+      "multiplexing": "pass"
+    },
+    "rama": {
+      "multiplexing": "pass"
+    },
+    "s2n-quic": {
+      "multiplexing": "pass"
+    },
+    "xquic": {
+      "multiplexing": "pass"
     }
   },
   "windows-x64-our-client": {

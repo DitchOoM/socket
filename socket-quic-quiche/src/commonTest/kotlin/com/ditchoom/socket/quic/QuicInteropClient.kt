@@ -96,7 +96,7 @@ internal class InteropUrl(
     }
 }
 
-internal fun interopBaseOptions() =
+internal fun interopBaseOptions(streams: InteropStreamLimit = InteropStreamLimit.Standard) =
     QuicOptions(
         alpnProtocols = listOf(HQ),
         verifyPeer = false,
@@ -105,19 +105,34 @@ internal fun interopBaseOptions() =
         // stream limit is raised as streams finish (`multiplexing` requires the initial one to be at most
         // 1000). A client that writes each request in one stream_send and ignores a partial write (quiche's
         // http09 client) truncates every request that does not fit in its congestion window, so the limit
-        // is kept to a burst of requests that does. It is not below 128: xquic's client opens streams before
-        // it has the server's transport parameters, under a limit of 128, and sends them all.
+        // is kept to a burst of requests that does.
         flowControl =
             FlowControl(
                 initialMaxData = 64L * 1024 * 1024,
                 initialMaxStreamDataBidiLocal = 16L * 1024 * 1024,
                 initialMaxStreamDataBidiRemote = 16L * 1024 * 1024,
-                initialMaxStreamsBidi = INITIAL_MAX_STREAMS_BIDI,
+                initialMaxStreamsBidi = streams.initialMaxStreamsBidi,
             ),
     )
 
-/** About 100 requests of under 50 bytes each: a burst that fits a client's initial congestion window. */
-private const val INITIAL_MAX_STREAMS_BIDI = 128L
+/** The bidirectional stream limit this endpoint advertises; the server's comes from `SERVER_PARAMS`. */
+internal enum class InteropStreamLimit(
+    val initialMaxStreamsBidi: Long,
+) {
+    /** About 100 requests of under 50 bytes each: a burst that fits a client's initial congestion window. */
+    Standard(100),
+
+    /**
+     * `streams=raised`: the limit xquic's client assumes before it has the server's transport parameters, so
+     * `multiplexing` against it is proven at a limit it does not exceed while [Standard] proves enforcement.
+     */
+    Raised(128),
+    ;
+
+    companion object {
+        fun of(params: String): InteropStreamLimit = if (params.split(' ').contains("streams=raised")) Raised else Standard
+    }
+}
 
 /** What the client does beyond what `TESTCASE` asks, from `CLIENT_PARAMS`. */
 private sealed interface ClientMode {

@@ -4,13 +4,18 @@ name: QUIC interop gate
 # (test-harness/quic-interop/peers.json), one job per peer and direction, judged against
 # test-harness/quic-interop/expectations.json by .github/scripts/quic-interop-gate.py.
 #
-# Directions: our-client (our client, their server), our-server (their client, our server) and
+# Directions: our-client (our client, their server), our-server (their client, our server),
 # our-client-migrating (our client's transfer with six active migrations, QuicInteropEndpoint.kt
-# ClientMode.ActiveMigration; the runner has no test in which the client moves its own path).
+# ClientMode.ActiveMigration; the runner has no test in which the client moves its own path) and
+# our-server-raised-streams (multiplexing against our server advertising 128 bidirectional streams instead of
+# 100, InteropStreamLimit.Raised).
+#
+# Every cell job also writes <direction>__<peer>.evidence.json (quic-interop-evidence.py: facts from our
+# endpoint's qlog and the runner's output), which the gate checks each known failure's signature against.
 #
 # A cell expected to pass that fails twice (one retry) fails the gate, so does a peer that produced no
-# result and a cell with no expectation. A known failure that starts passing is STALE: a warning on a
-# pull request, a failure nightly, so the file never goes out of date unnoticed. Called by quic-interop.yaml
+# result and a cell with no expectation. A known failure that starts passing is STALE and fails the gate, so
+# the file never goes out of date unnoticed. Called by quic-interop.yaml
 # (nightly on main, and on demand, also to record a new expectations file). It is not yet run on pull
 # requests: that waits until every failing cell is classified and the macOS and Windows lanes exist.
 
@@ -29,7 +34,7 @@ on:
       stale:
         description: "warn or fail: what a stale expectation does to the gate."
         required: false
-        default: "warn"
+        default: "fail"
         type: string
       record:
         description: "record writes today's results as a new expectations file (an artifact) and never fails; gate judges."
@@ -183,11 +188,28 @@ jobs:
               run_pair "$again" /tmp/interop/logs-retry "$results/${DIRECTION}__${PEER}.retry" "${roles[@]}"
             fi
           fi
+          evidence="$GITHUB_WORKSPACE/.github/scripts/quic-interop-evidence.py"
+          python3 -I "$evidence" /tmp/interop/logs "$DIRECTION" "$PEER" "$results/${DIRECTION}__${PEER}.evidence.json"
+          if [ "$DIRECTION" = our-server ]; then
+            # The runner's compose file hands the server container SERVER_PARAMS from this environment.
+            export SERVER_PARAMS=streams=raised
+            raised="our-server-raised-streams"
+            run_pair multiplexing /tmp/interop/logs-raised-streams "$results/${raised}__${PEER}.json" "${roles[@]}"
+            if [ -s "$results/${raised}__${PEER}.json" ]; then
+              again=$(python3 "$gate" retry "$exp" "$raised" "$PEER" "$results/${raised}__${PEER}.json")
+              if [ -n "$again" ]; then
+                run_pair "$again" /tmp/interop/logs-raised-streams-retry "$results/${raised}__${PEER}.retry" "${roles[@]}"
+              fi
+            fi
+            unset SERVER_PARAMS
+            python3 -I "$evidence" /tmp/interop/logs-raised-streams "$raised" "$PEER" "$results/${raised}__${PEER}.evidence.json"
+          fi
           if [ "$DIRECTION" = our-client ]; then
             # The runner's compose file hands the client container CLIENT_PARAMS from this environment.
             export CLIENT_PARAMS=migrate=active
             run_pair transfer /tmp/interop/logs-migrating "$results/our-client-migrating__${PEER}.json" "${roles[@]}"
             unset CLIENT_PARAMS
+            python3 -I "$evidence" /tmp/interop/logs-migrating our-client-migrating "$PEER" "$results/our-client-migrating__${PEER}.evidence.json"
             find /tmp/interop/logs-migrating -name output.txt -exec grep -h -o 'MIGRATION-SUMMARY.*' {} + 2>/dev/null \
               | head -1 > "$results/our-client-migrating__${PEER}.summary" || true
             {

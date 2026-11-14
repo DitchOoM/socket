@@ -8,11 +8,19 @@ for the native lanes that run without the runner (test-harness/quic-interop/nati
   our-client-migrating  our client's `transfer` with six active migrations (QuicInteropEndpoint.kt), plus the
                         pseudo-test `active-migration`: every move the client made succeeded
 
+  our-server-raised-streams  `multiplexing` against our server advertising 128 bidirectional streams
+                        (SERVER_PARAMS=streams=raised), beside the standard 100 in our-server
+
 Expectations (test-harness/quic-interop/expectations.json) map direction -> peer -> test -> one of
   "pass"                         must succeed
   "unsupported"                  one side does not implement it
-  {"known-failure": "<why>"}     fails today, for the stated reason
-  {"flaky": "<why>"}             either outcome is accepted and reported
+  {"known-failure": <reason>}    fails today, for the stated reason
+  {"flaky": <reason>}            passes, or fails for the stated reason
+where <reason> is {"why": "<why>", "signature": {"kind": ..., ...}} (proven: a failure must match the
+signature in the cell's evidence, written by quic-interop-evidence.py; a failure that does not is a REGRESSION;
+SIGNATURES lists the kinds and what each checks) or "<why>" (unproven: any failure is accepted). Unproven is a
+transition: every run lists each unproven entry by name, and a pull request that adds one says in the pull
+request what evidence is missing.
 
 Verdicts: a cell expected to pass that fails (and fails its one retry), turns unsupported, or was skipped is a
 REGRESSION. A cell whose expectation no longer matches (a known failure that passes, an unsupported test that
@@ -23,13 +31,118 @@ Subcommands:
   retry <expectations> <direction> <peer> <runner.json>   tests to run once more: expected to pass, did not
   judge <expectations> <results-dir> [--stale=warn|fail] [--record=<file>]
 """
+import enum
 import json
+from dataclasses import dataclass
 import os
 import re
 import sys
 
 MIGRATION_TEST = "active-migration"
-CELL_FILE = re.compile(r"((?:[a-z0-9]+-)*our-(?:client-migrating|client|server))__(.+)\.json")
+CELL_FILE = re.compile(r"((?:[a-z0-9]+-)*our-(?:client-migrating|client|server-raised-streams|server))__([^.]+)\.json")
+STREAM_LIMIT_ERROR = 0x4
+SIGNAL_EXIT_BASE = 128
+
+
+class ExpectationError(Exception):
+    """expectations.json holds an entry this gate cannot judge."""
+
+
+@dataclass(frozen=True)
+class Matched:
+    """The evidence shows the signature's failure; [shown] says what it saw."""
+
+    shown: str
+
+
+@dataclass(frozen=True)
+class NotMatched:
+    """The evidence does not show the signature's failure."""
+
+
+class Signal(enum.Enum):
+    SIGABRT = 6
+    SIGBUS = 7
+    SIGKILL = 9
+    SIGSEGV = 11
+
+
+class PeerExceededStreamLimit:
+    """Our endpoint closed with STREAM_LIMIT_ERROR after the peer opened more bidirectional streams than we
+    ever allowed: our initial_max_streams_bidi and every MAX_STREAMS we sent were below the count it opened."""
+
+    kind = "peer-exceeded-stream-limit"
+
+    def __init__(self, fields):
+        if fields:
+            raise ExpectationError(f"{self.kind} takes no fields, got {sorted(fields)}")
+
+    def match(self, test_evidence, peer_role):
+        for c in test_evidence.get("connections", []):
+            allowed = max(c["local_initial_max_streams_bidi"], c["max_streams_bidi_sent"])
+            closed = {"space": "transport", "code": STREAM_LIMIT_ERROR} in c["local_closes"]
+            if closed and c["peer_bidi_streams_opened"] > allowed:
+                return Matched(f"peer opened {c['peer_bidi_streams_opened']} bidi streams, allowed {allowed}; we closed 0x4")
+        return NotMatched()
+
+
+class PeerProcessDied:
+    """The peer's container exited on the named signal (exit code 128 + signal)."""
+
+    kind = "peer-process-died"
+
+    def __init__(self, fields):
+        if set(fields) != {"signal"}:
+            raise ExpectationError(f"{self.kind} takes exactly a signal, got {sorted(fields)}")
+        try:
+            self.signal = Signal[fields["signal"]]
+        except KeyError:
+            raise ExpectationError(f"{self.kind}: unknown signal {fields['signal']!r}") from None
+
+    def match(self, test_evidence, peer_role):
+        exits = test_evidence.get("exits", {})
+        if peer_role in exits and exits[peer_role] == SIGNAL_EXIT_BASE + self.signal.value:
+            return Matched(f"peer {peer_role} exited with {exits[peer_role]} ({self.signal.name})")
+        return NotMatched()
+
+
+class MigrationRefusedPeerForbids:
+    """Our client made no move because the peer's transport parameters forbid active migration: every
+    connection's remote disable_active_migration is set, and the client's typed result for its first move is
+    PeerForbids with none succeeding."""
+
+    kind = "migration-refused-peer-forbids"
+
+    def __init__(self, fields):
+        if fields:
+            raise ExpectationError(f"{self.kind} takes no fields, got {sorted(fields)}")
+
+    def match(self, test_evidence, peer_role):
+        connections = test_evidence.get("connections", [])
+        forbidden = bool(connections) and all(c["remote_disable_active_migration"] for c in connections)
+        refused = [m for m in test_evidence.get("migrations", []) if m["succeeded"] == 0 and m.get("first_unmoved") == "PeerForbids"]
+        if forbidden and refused:
+            return Matched("peer sets disable_active_migration; our first move: PeerForbids")
+        return NotMatched()
+
+
+SIGNATURES = {s.kind: s for s in (PeerExceededStreamLimit, PeerProcessDied, MigrationRefusedPeerForbids)}
+
+
+class Reason:
+    """Why a cell is a known failure or flaky; proven when it carries a signature."""
+
+    def __init__(self, raw):
+        if isinstance(raw, str):
+            self.why, self.signature = raw, None
+            return
+        if not isinstance(raw, dict) or set(raw) != {"why", "signature"}:
+            raise ExpectationError(f"a reason is a string or {{why, signature}}, got {raw!r}")
+        fields = dict(raw["signature"])
+        kind = fields.pop("kind", "")
+        if kind not in SIGNATURES:
+            raise ExpectationError(f"unknown signature kind {kind!r}; known: {sorted(SIGNATURES)}")
+        self.why, self.signature = raw["why"], SIGNATURES[kind](fields)
 
 
 def runner_results(path):
@@ -64,13 +177,29 @@ def migration_outcome(summary_path):
 
 
 def expectation(exp, direction, peer, test):
+    """(kind, Reason) for one cell; the Reason of a pass, unsupported or absent cell has no signature."""
     value = exp.get(direction, {}).get(peer, {}).get(test)
     if value is None:
-        return "absent", ""
+        return "absent", Reason("")
     if isinstance(value, str):
-        return value, ""
-    (kind, why), = value.items()
-    return kind, why
+        return value, Reason("")
+    (kind, raw), = value.items()
+    return kind, Reason(raw)
+
+
+def peer_role(direction):
+    return "client" if "our-server" in direction else "server"
+
+
+def load_evidence(results_dir):
+    """{(direction, peer): {test: evidence}} from every <direction>__<peer>.evidence.json."""
+    out = {}
+    for name in os.listdir(results_dir):
+        if name.endswith(".evidence.json"):
+            with open(os.path.join(results_dir, name)) as f:
+                e = json.load(f)
+            out[(e["direction"], e["peer"])] = e["tests"]
+    return out
 
 
 def cmd_retry(args):
@@ -106,6 +235,18 @@ def load_cells(results_dir):
     return cells
 
 
+def judge_failure(kind, reason, test_evidence, role):
+    """(verdict, accepted, note) for a failed cell expected to fail (known-failure) or allowed to (flaky)."""
+    if reason.signature is None:
+        return f"{kind} (unproven)", True, reason.why
+    if test_evidence is None:
+        return "REGRESSION", False, f"no evidence to check the {reason.signature.kind} signature against"
+    result = reason.signature.match(test_evidence, role)
+    if isinstance(result, Matched):
+        return f"{kind} (signature)", True, result.shown
+    return "REGRESSION", False, f"failed, but not as {reason.signature.kind}: {reason.why}"
+
+
 def judge_cell(kind, result):
     """(verdict, accepted) for one cell's expectation kind and actual result."""
     if kind == "absent":
@@ -125,13 +266,13 @@ def judge_cell(kind, result):
     return f"bad expectation {kind!r}", False
 
 
-def recorded(result, previous_kind, previous_why):
+def recorded(result, previous_kind, previous_raw):
     if result in ("succeeded", "retried"):
         return "pass"
     if result == "unsupported":
         return "unsupported"
-    if previous_kind in ("known-failure", "flaky") and previous_why:
-        return {previous_kind: previous_why}
+    if previous_kind in ("known-failure", "flaky") and previous_raw:
+        return {previous_kind: previous_raw}
     return {"known-failure": "TODO: root cause"}
 
 
@@ -149,19 +290,30 @@ def cmd_judge(args):
     exp_path, results_dir = positional
     with open(exp_path) as f:
         exp = json.load(f)
+    for direction, peers in exp.items():
+        for peer, tests in peers.items():
+            for test in tests:
+                expectation(exp, direction, peer, test)  # raises ExpectationError on an entry it cannot judge
     cells = load_cells(results_dir)
+    evidence = load_evidence(results_dir)
     ran_rows = {(d, p) for d, p, _ in cells}
 
     rows = []
     failing = 0
     for (direction, peer, test), (result, detail) in sorted(cells.items()):
-        kind, why = expectation(exp, direction, peer, test)
-        verdict, accepted = judge_cell(kind, result)
+        kind, reason = expectation(exp, direction, peer, test)
+        note = reason.why or detail
+        if kind in ("known-failure", "flaky") and result == "failed":
+            # The active-migration pseudo-test is judged on the transfer it ran in.
+            ran = "transfer" if test == MIGRATION_TEST else test
+            verdict, accepted, note = judge_failure(kind, reason, evidence.get((direction, peer), {}).get(ran), peer_role(direction))
+        else:
+            verdict, accepted = judge_cell(kind, result)
         if verdict == "STALE" and stale == "warn":
             accepted = True
         if not accepted:
             failing += 1
-        rows.append((verdict, direction, peer, test, result, kind, why or detail))
+        rows.append((verdict, direction, peer, test, result, kind, note))
     lanes = {d.split("our-")[0] for d, _ in ran_rows}
     for direction in sorted(exp):
         if direction.split("our-")[0] not in lanes:
@@ -172,9 +324,19 @@ def cmd_judge(args):
                 failing += 1
 
     noteworthy = [r for r in rows if r[0] not in ("ok",)]
+    unproven = [
+        (direction, peer, test, kind, reason.why)
+        for direction, peers in sorted(exp.items())
+        if direction.split("our-")[0] in lanes
+        for peer, tests in sorted(peers.items())
+        for test in sorted(tests)
+        for kind, reason in [expectation(exp, direction, peer, test)]
+        if kind in ("known-failure", "flaky") and reason.signature is None
+    ]
     print("## QUIC interop gate")
     print()
-    print(f"{len(cells)} cells; {failing} failing the gate; stale expectations {'fail' if stale == 'fail' else 'warn'}.")
+    print(f"{len(cells)} cells; {failing} failing the gate; stale expectations {'fail' if stale == 'fail' else 'warn'}; "
+          f"{len(unproven)} unproven expectations (any failure accepted).")
     print()
     if noteworthy:
         print("| Verdict | Direction | Peer | Test | Result | Expected | Note |")
@@ -184,11 +346,22 @@ def cmd_judge(args):
             print(f"| {r[0]} | {r[1]} | {r[2]} | {r[3]} | {r[4]} | {r[5]} | {note} |")
         print()
 
+    if unproven:
+        print(f"### Unproven expectations ({len(unproven)}): each needs a signature")
+        print()
+        print("| Direction | Peer | Test | Expected | Why |")
+        print("| --- | --- | --- | --- | --- |")
+        for direction, peer, test, kind, why in unproven:
+            print(f"| {direction} | {peer} | {test} | {kind} | {why.replace('|', chr(92) + '|')} |")
+        print()
+
     if record:
         out = {}
         for (direction, peer, test), (result, _) in sorted(cells.items()):
-            kind, why = expectation(exp, direction, peer, test)
-            out.setdefault(direction, {}).setdefault(peer, {})[test] = recorded(result, kind, why)
+            kind = expectation(exp, direction, peer, test)[0]
+            raw = exp.get(direction, {}).get(peer, {}).get(test)
+            previous = next(iter(raw.values())) if isinstance(raw, dict) else ""
+            out.setdefault(direction, {}).setdefault(peer, {})[test] = recorded(result, kind, previous)
         with open(record, "w") as f:
             json.dump(out, f, indent=2, sort_keys=True)
             f.write("\n")

@@ -11,8 +11,8 @@ name: QUIC interop (quic-interop-runner)
 # the gate adds one (our-client-migrating). Tests the endpoint does not implement exit 127 and are
 # "unsupported" (QuicInteropEndpoint.kt lists them and why).
 #
-# Nightly, a stale expectation fails the run so test-harness/quic-interop/expectations.json is updated when a
-# peer improves. `record` (on demand) writes today's results as a new expectations file, an artifact.
+# A stale expectation fails the run, so test-harness/quic-interop/expectations.json is updated when a peer
+# improves. `record` (on demand) writes today's results as a new expectations file, an artifact.
 
 on:
   schedule:
@@ -91,7 +91,7 @@ jobs:
     with:
       version: "0.0.0-interop"
       natives-run-id: ${{ needs.natives.outputs.run-id }}
-      stale: ${{ github.event_name == 'schedule' && 'fail' || 'warn' }}
+      stale: fail
       record: ${{ inputs.mode || 'gate' }}
       peers: ${{ inputs.peers || '' }}
 
@@ -103,5 +103,5 @@ jobs:
       version: "0.0.0-interop"
       apple-natives-run-id: ${{ needs.natives.outputs.apple-run-id }}
       windows-natives-run-id: ${{ needs.natives.outputs.windows-run-id }}
-      stale: ${{ github.event_name == 'schedule' && 'fail' || 'warn' }}
+      stale: fail
       record: ${{ inputs.mode || 'gate' }}

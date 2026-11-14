@@ -29,7 +29,8 @@ import kotlin.time.TimeSource
  *  - `keyupdate`, `chacha20`, `ecn`, `v2`: quiche exposes no per-connection control for them.
  *  - `http3`: socket-http3 can serve it; wiring it in here is a follow-up.
  *
- * The client's tests and its `CLIENT_PARAMS` (`migrate=active`) are described at [runInteropClient].
+ * The client's tests and its `CLIENT_PARAMS` (`migrate=active`) are described at [runInteropClient]; the
+ * server's `SERVER_PARAMS` (`streams=raised`) at [InteropStreamLimit].
  */
 private val serverTests = setOf("handshake", "transfer", "multiconnect", "resumption", "zerortt")
 
@@ -70,13 +71,14 @@ private fun runServer(test: String): Int {
     val www = File(System.getenv("WWW") ?: "/www")
     val certs = File(System.getenv("CERTS") ?: "/certs")
     val port = System.getenv("PORT")?.toInt() ?: 443
-    val options = interopBaseOptions().copy(enableEarlyData = test == "zerortt" || test == "resumption")
+    val streams = InteropStreamLimit.of(System.getenv("SERVER_PARAMS").orEmpty())
+    val options = interopBaseOptions(streams).copy(enableEarlyData = test == "zerortt" || test == "resumption")
     val tls = QuicTlsConfig(certChainPath = certs.resolve("cert.pem").path, privKeyPath = certs.resolve("priv.key").path)
     runBlocking(Dispatchers.IO) {
         val serving =
             launch {
                 withQuicServer(port = port, tlsConfig = tls, quicOptions = options) {
-                    println("READY port=${this.port} test=$test")
+                    println("READY port=${this.port} test=$test streams=$streams")
                     System.out.flush()
                     connections {
                         coroutineScope {
