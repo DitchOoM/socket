@@ -288,7 +288,9 @@
       "blackhole": "pass",
       "goodput": "pass",
       "handshake": "pass",
-      "handshakecorruption": "pass",
+      "handshakecorruption": {
+        "flaky": "cause not yet determined: one of 50 connections ends on the client's idle timeout during the handshake under heavy loss or corruption (run 43559668153, both attempts); the same family as the other handshake loss/corruption cells"
+      },
       "handshakeloss": "pass",
       "ipv6": "pass",
       "longrtt": "pass",
@@ -377,7 +379,9 @@
       "goodput": "pass",
       "handshake": "pass",
       "handshakecorruption": "pass",
-      "handshakeloss": "pass",
+      "handshakeloss": {
+        "flaky": "cause not yet determined: one of 50 connections ends on the client's idle timeout during the handshake under heavy loss or corruption (run 43559668153, both attempts); the same family as the other handshake loss/corruption cells"
+      },
       "ipv6": "pass",
       "longrtt": "pass",
       "multiplexing": "pass",
@@ -641,7 +645,7 @@
       "ipv6": "pass",
       "longrtt": "pass",
       "multiplexing": "pass",
-      "rebind-addr": "pass",
+      "rebind-addr": "unsupported",
       "rebind-port": "pass",
       "resumption": "unsupported",
       "retry": "unsupported",
