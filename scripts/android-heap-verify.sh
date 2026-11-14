@@ -11,9 +11,9 @@
 #   GWP-ASan         libc.debug.gwp_asan.* for the test process: guarded native allocations (quiche,
 #                    BoringSSL, the JNI shim), so a native overflow or use-after-free stops at the access
 #
-# The target is the SIGSEGV seen three times since 2026-11-12 on the benchmark lane (quic-deadline-t,
-# DefaultDispatch; JIT frames reading a corrupted class pointer), which a debuggable instrumented run has
-# never shown. On a failed round: the crash buffer, the full DropBox tombstones and the logcat.
+# A release APK runs none of these checks, and only release APKs have shown the benchmark lane's
+# corrupted-class-pointer SIGSEGV. On a failed round: the crash buffer, the full DropBox tombstones
+# and the logcat.
 #
 # Called from nightly-deep-checks.yaml's emulator step as ONE line.
 # Usage: android-heap-verify.sh <api-level> <minutes>
