@@ -49,8 +49,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # This workflow builds no natives of its own: it takes the newest quiche-linux-natives-full artifact, from
-  # main when it runs nightly.
+  # This workflow builds no natives of its own. A run on demand takes the natives built for the commit it
+  # runs (a pull request's CI makes them): natives from another commit carry another quiche patch set. A
+  # nightly run takes the newest from main.
   natives:
     name: "find natives"
     runs-on: ubuntu-24.04
@@ -63,17 +64,20 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           BRANCH: ${{ github.event_name == 'schedule' && 'main' || '' }}
+          SHA: ${{ github.event_name == 'schedule' && '' || github.sha }}
         run: |
           set -euo pipefail
-          newest() { # <artifact name>: the run that uploaded the newest unexpired copy, from main when nightly
-            gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=$1&per_page=100" \
-              --jq "[.artifacts[] | select(.expired == false) | select(\"$BRANCH\" == \"\" or .workflow_run.head_branch == \"$BRANCH\")]
-                    | sort_by(.created_at) | reverse | .[0].workflow_run.id // empty"
+          newest() { # <artifact name>: the run that uploaded the newest unexpired copy for this commit, from main when nightly
+            gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=$1&per_page=100" \
+              --jq ".artifacts[] | select(.expired == false)
+                    | select(\"$BRANCH\" == \"\" or .workflow_run.head_branch == \"$BRANCH\")
+                    | select(\"$SHA\" == \"\" or .workflow_run.head_sha == \"$SHA\")
+                    | [.created_at, .workflow_run.id] | @tsv" | sort -r | head -1 | cut -f2
           }
           for pair in run-id:quiche-linux-natives-full apple-run-id:quiche-apple-natives windows-run-id:quiche-windows-natives; do
             rid=$(newest "${pair#*:}")
             if [ -z "$rid" ]; then
-              echo "::error::No unexpired ${pair#*:} artifact exists. Run the build that makes it once, then retry."
+              echo "::error::No unexpired ${pair#*:} artifact exists for ${SHA:-$BRANCH}. Run the build that makes it once, then retry."
               exit 1
             fi
             echo "${pair%%:*}=$rid" >> "$GITHUB_OUTPUT"
