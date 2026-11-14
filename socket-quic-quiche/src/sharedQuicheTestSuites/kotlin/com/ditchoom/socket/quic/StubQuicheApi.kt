@@ -197,12 +197,18 @@ internal class StubQuicheApi : QuicheApi {
      */
     @Volatile var onConnRecv: ((Int) -> Unit)? = null
 
+    /** The recv_info each [connRecv] was given, in order: where the driver said each packet arrived. */
+    @Volatile var recvArrivals: List<QuicheRecvInfo> = emptyList()
+
+    @Volatile private var recvInfosMade = 0L
+
     override fun connRecv(
         conn: QuicheConn,
         buf: Long,
         bufLen: Int,
         recvInfo: QuicheRecvInfo,
     ): Int {
+        recvArrivals = recvArrivals + recvInfo
         onConnRecv?.invoke(bufLen)
         return 0
     }
@@ -599,7 +605,11 @@ internal class StubQuicheApi : QuicheApi {
         fromAddrLen: Int,
         toAddr: Long,
         toAddrLen: Int,
-    ) = QuicheRecvInfo(1L)
+    ): QuicheRecvInfo {
+        // A range of its own, apart from the recv_infos tests make by hand, so each path's can be told apart.
+        recvInfosMade++
+        return QuicheRecvInfo(STUB_RECV_INFO_BASE + recvInfosMade)
+    }
 
     override fun recvInfoFree(info: QuicheRecvInfo) {}
 
@@ -1028,6 +1038,9 @@ internal class StubQuicheApi : QuicheApi {
         const val WRITABLE_ITER = 1L
     }
 }
+
+/** First handle of the recv_infos [StubQuicheApi.recvInfoNew] makes. */
+private const val STUB_RECV_INFO_BASE = 1_000L
 
 /** The v4 address (127.0.0.1) a registered synthetic sockaddr claims unless it is registered with another. */
 internal const val STUB_SOCKADDR_V4 = 0x7F000001L
