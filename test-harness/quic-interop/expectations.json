@@ -1,0 +1,861 @@
+{
+  "ios-simulator-arm64-kn-our-client": {
+    "quic-go": {
+      "handshake": "pass",
+      "resumption": "pass",
+      "transfer": "pass",
+      "zerortt": "pass"
+    }
+  },
+  "ios-simulator-arm64-kn-our-client-migrating": {
+    "quic-go": {
+      "active-migration": "pass",
+      "transfer": "pass"
+    }
+  },
+  "macos-arm64-kn-our-client": {
+    "quic-go": {
+      "handshake": "pass",
+      "resumption": "pass",
+      "transfer": "pass",
+      "zerortt": "pass"
+    }
+  },
+  "macos-arm64-kn-our-client-migrating": {
+    "quic-go": {
+      "active-migration": "pass",
+      "transfer": "pass"
+    }
+  },
+  "macos-arm64-our-client": {
+    "quic-go": {
+      "handshake": "pass",
+      "resumption": "pass",
+      "transfer": "pass",
+      "zerortt": "pass"
+    }
+  },
+  "macos-arm64-our-client-migrating": {
+    "quic-go": {
+      "active-migration": {
+        "flaky": "unclassified: move 5 failed path validation in the one recorded run (quic-go limit 4); six of six on Linux and Windows"
+      },
+      "transfer": "pass"
+    }
+  },
+  "macos-arm64-our-server": {
+    "quic-go": {
+      "handshake": "pass",
+      "resumption": "pass",
+      "transfer": "pass",
+      "zerortt": "pass"
+    }
+  },
+  "our-client": {
+    "aioquic": {
+      "amplificationlimit": "pass",
+      "blackhole": "pass",
+      "goodput": "pass",
+      "handshake": "pass",
+      "handshakecorruption": "pass",
+      "handshakeloss": "pass",
+      "ipv6": "pass",
+      "longrtt": "pass",
+      "multiplexing": "pass",
+      "rebind-addr": "pass",
+      "rebind-port": "pass",
+      "resumption": "pass",
+      "retry": "pass",
+      "transfer": "pass",
+      "transfercorruption": "pass",
+      "transferloss": "pass",
+      "zerortt": "pass"
+    },
+    "go-x-net": {
+      "amplificationlimit": "pass",
+      "blackhole": "pass",
+      "goodput": "pass",
+      "handshake": "pass",
+      "handshakecorruption": "unsupported",
+      "handshakeloss": "unsupported",
+      "ipv6": "pass",
+      "longrtt": "pass",
+      "multiplexing": "pass",
+      "rebind-addr": {
+        "known-failure": "peer: advertises disable_active_migration, so it does not follow the rebinding; our client idles out"
+      },
+      "rebind-port": {
+        "known-failure": "peer: advertises disable_active_migration, so it does not follow the rebinding; our client idles out"
+      },
+      "resumption": "unsupported",
+      "retry": "unsupported",
+      "transfer": "pass",
+      "transfercorruption": "pass",
+      "transferloss": "pass",
+      "zerortt": "unsupported"
+    },
+    "haproxy": {
+      "amplificationlimit": "pass",
+      "blackhole": "pass",
+      "goodput": "pass",
+      "handshake": "pass",
+      "handshakecorruption": "pass",
+      "handshakeloss": "pass",
+      "ipv6": "pass",
+      "longrtt": "pass",
+      "multiplexing": "pass",
+      "rebind-addr": {
+        "known-failure": "peer: advertises disable_active_migration, so it does not follow the rebinding"
+      },
+      "rebind-port": {
+        "known-failure": "peer: advertises disable_active_migration, so it does not follow the rebinding"
+      },
+      "resumption": "pass",
+      "retry": "pass",
+      "transfer": "pass",
+      "transfercorruption": "pass",
+      "transferloss": "pass",
+      "zerortt": "pass"
+    },
+    "kwik": {
+      "amplificationlimit": "pass",
+      "blackhole": "pass",
+      "goodput": "pass",
+      "handshake": "pass",
+      "handshakecorruption": "pass",
+      "handshakeloss": "pass",
+      "ipv6": "pass",
+      "longrtt": "pass",
+      "multiplexing": "pass",
+      "rebind-addr": "pass",
+      "rebind-port": "pass",
+      "resumption": "pass",
+      "retry": "pass",
+      "transfer": "pass",
+      "transfercorruption": "pass",
+      "transferloss": "pass",
+      "zerortt": "pass"
+    },
+    "lsquic": {
+      "amplificationlimit": "pass",
+      "blackhole": "pass",
+      "goodput": "pass",
+      "handshake": "pass",
+      "handshakecorruption": "pass",
+      "handshakeloss": {
+        "flaky": "passed in one of two runs; cause not yet determined"
+      },
+      "ipv6": "pass",
+      "longrtt": "pass",
+      "multiplexing": "pass",
+      "rebind-addr": "pass",
+      "rebind-port": "pass",
+      "resumption": "pass",
+      "retry": "pass",
+      "transfer": "pass",
+      "transfercorruption": "pass",
+      "transferloss": "pass",
+      "zerortt": "pass"
+    },
+    "msquic": {
+      "amplificationlimit": "pass",
+      "blackhole": "pass",
+      "goodput": "pass",
+      "handshake": "pass",
+      "handshakecorruption": "pass",
+      "handshakeloss": "pass",
+      "ipv6": "pass",
+      "longrtt": "pass",
+      "multiplexing": "pass",
+      "rebind-addr": {
+        "flaky": "peer and simulator: at the address rebind msquic sends its one PATH_CHALLENGE to the new address 0.1 ms after the simulator creates the binding, and it is not delivered; msquic only retries challenges to the old address, which the simulator drops as an unknown binding, so the new address is never validated and msquic's anti-amplification limit stops the transfer (run 43553738743, both attempts; captures on both sides)"
+      },
+      "rebind-port": {
+        "flaky": "peer and simulator: as rebind-addr; msquic's one PATH_CHALLENGE to the rebound port is not delivered and its retries go to the old port, which the simulator drops as an unknown binding (run 43556869462, both attempts; no challenge frame reaches the client)"
+      },
+      "resumption": "pass",
+      "retry": "pass",
+      "transfer": "pass",
+      "transfercorruption": "pass",
+      "transferloss": "pass",
+      "zerortt": "pass"
+    },
+    "mvfst": {
+      "amplificationlimit": {
+        "known-failure": "unclassified: fails in both runs; needs log analysis"
+      },
+      "blackhole": "pass",
+      "goodput": "pass",
+      "handshake": "pass",
+      "handshakecorruption": "pass",
+      "handshakeloss": "pass",
+      "ipv6": "pass",
+      "longrtt": "pass",
+      "multiplexing": "pass",
+      "rebind-addr": {
+        "known-failure": "unclassified: fails in both runs; needs log analysis"
+      },
+      "rebind-port": "pass",
+      "resumption": "pass",
+      "retry": "unsupported",
+      "transfer": "pass",
+      "transfercorruption": "pass",
+      "transferloss": "pass",
+      "zerortt": "pass"
+    },
+    "neqo": {
+      "amplificationlimit": "pass",
+      "blackhole": "pass",
+      "goodput": "pass",
+      "handshake": "pass",
+      "handshakecorruption": "pass",
+      "handshakeloss": "pass",
+      "ipv6": "pass",
+      "longrtt": "pass",
+      "multiplexing": "pass",
+      "rebind-addr": "pass",
+      "rebind-port": "pass",
+      "resumption": "pass",
+      "retry": "pass",
+      "transfer": "pass",
+      "transfercorruption": "pass",
+      "transferloss": "pass",
+      "zerortt": "pass"
+    },
+    "nginx": {
+      "amplificationlimit": "pass",
+      "blackhole": "pass",
+      "goodput": "pass",
+      "handshake": "pass",
+      "handshakecorruption": "pass",
+      "handshakeloss": "pass",
+      "ipv6": "pass",
+      "longrtt": "pass",
+      "multiplexing": "pass",
+      "rebind-addr": {
+        "known-failure": "unclassified: nginx accepts migration (no disable_active_migration) but our active moves fail validation too; needs its server log"
+      },
+      "rebind-port": {
+        "known-failure": "unclassified: nginx accepts migration (no disable_active_migration) but our active moves fail validation too; needs its server log"
+      },
+      "resumption": "pass",
+      "retry": "pass",
+      "transfer": "pass",
+      "transfercorruption": "pass",
+      "transferloss": "pass",
+      "zerortt": "pass"
+    },
+    "ngtcp2": {
+      "amplificationlimit": "pass",
+      "blackhole": "pass",
+      "goodput": "pass",
+      "handshake": "pass",
+      "handshakecorruption": "pass",
+      "handshakeloss": "pass",
+      "ipv6": "pass",
+      "longrtt": "pass",
+      "multiplexing": "pass",
+      "rebind-addr": "pass",
+      "rebind-port": "pass",
+      "resumption": "pass",
+      "retry": "pass",
+      "transfer": "pass",
+      "transfercorruption": "pass",
+      "transferloss": "pass",
+      "zerortt": "pass"
+    },
+    "picoquic": {
+      "amplificationlimit": "pass",
+      "blackhole": "pass",
+      "goodput": "pass",
+      "handshake": "pass",
+      "handshakecorruption": "pass",
+      "handshakeloss": "pass",
+      "ipv6": "pass",
+      "longrtt": "pass",
+      "multiplexing": "pass",
+      "rebind-addr": "pass",
+      "rebind-port": "pass",
+      "resumption": "pass",
+      "retry": "pass",
+      "transfer": "pass",
+      "transfercorruption": "pass",
+      "transferloss": "pass",
+      "zerortt": "pass"
+    },
+    "quic-go": {
+      "amplificationlimit": "pass",
+      "blackhole": "pass",
+      "goodput": "pass",
+      "handshake": "pass",
+      "handshakecorruption": {
+        "flaky": "cause not yet determined: one of 50 connections ends on the client's idle timeout during the handshake under heavy loss or corruption (run 43559668153, both attempts); the same family as the other handshake loss/corruption cells"
+      },
+      "handshakeloss": "pass",
+      "ipv6": "pass",
+      "longrtt": "pass",
+      "multiplexing": "pass",
+      "rebind-addr": "pass",
+      "rebind-port": "pass",
+      "resumption": "pass",
+      "retry": "pass",
+      "transfer": "pass",
+      "transfercorruption": "pass",
+      "transferloss": "pass",
+      "zerortt": "pass"
+    },
+    "quiche": {
+      "amplificationlimit": "pass",
+      "blackhole": "pass",
+      "goodput": "pass",
+      "handshake": "pass",
+      "handshakecorruption": {
+        "flaky": "passed in one of two runs; cause not yet determined"
+      },
+      "handshakeloss": "pass",
+      "ipv6": "pass",
+      "longrtt": "pass",
+      "multiplexing": "pass",
+      "rebind-addr": {
+        "known-failure": "unclassified: our client idles out after the rebinding against the stock quiche server; needs log analysis (the stock server does not disable migration)"
+      },
+      "rebind-port": {
+        "known-failure": "unclassified: our client idles out after the rebinding against the stock quiche server; needs log analysis (the stock server does not disable migration)"
+      },
+      "resumption": "pass",
+      "retry": "pass",
+      "transfer": "pass",
+      "transfercorruption": "pass",
+      "transferloss": "pass",
+      "zerortt": "pass"
+    },
+    "quinn": {
+      "amplificationlimit": "pass",
+      "blackhole": "pass",
+      "goodput": "pass",
+      "handshake": "pass",
+      "handshakecorruption": {
+        "flaky": "passed in one of two runs; cause not yet determined"
+      },
+      "handshakeloss": {
+        "flaky": "passed in one of two runs; cause not yet determined"
+      },
+      "ipv6": "pass",
+      "longrtt": "pass",
+      "multiplexing": "pass",
+      "rebind-addr": "pass",
+      "rebind-port": "pass",
+      "resumption": "pass",
+      "retry": "pass",
+      "transfer": "pass",
+      "transfercorruption": "pass",
+      "transferloss": "pass",
+      "zerortt": "pass"
+    },
+    "rama": {
+      "amplificationlimit": "pass",
+      "blackhole": "pass",
+      "goodput": "pass",
+      "handshake": "pass",
+      "handshakecorruption": "pass",
+      "handshakeloss": {
+        "flaky": "passed in one of two runs; cause not yet determined"
+      },
+      "ipv6": "pass",
+      "longrtt": "pass",
+      "multiplexing": "pass",
+      "rebind-addr": "pass",
+      "rebind-port": "pass",
+      "resumption": "pass",
+      "retry": "pass",
+      "transfer": "pass",
+      "transfercorruption": "pass",
+      "transferloss": "pass",
+      "zerortt": "pass"
+    },
+    "s2n-quic": {
+      "amplificationlimit": "pass",
+      "blackhole": "pass",
+      "goodput": "pass",
+      "handshake": "pass",
+      "handshakecorruption": "pass",
+      "handshakeloss": {
+        "flaky": "cause not yet determined: one of 50 connections ends on the client's idle timeout during the handshake under heavy loss or corruption (run 43559668153, both attempts); the same family as the other handshake loss/corruption cells"
+      },
+      "ipv6": "pass",
+      "longrtt": "pass",
+      "multiplexing": "pass",
+      "rebind-addr": "pass",
+      "rebind-port": "pass",
+      "resumption": "pass",
+      "retry": "pass",
+      "transfer": "pass",
+      "transfercorruption": "pass",
+      "transferloss": "pass",
+      "zerortt": "unsupported"
+    },
+    "xquic": {
+      "amplificationlimit": "pass",
+      "blackhole": "pass",
+      "goodput": "pass",
+      "handshake": "pass",
+      "handshakecorruption": "pass",
+      "handshakeloss": {
+        "flaky": "passed in one of two runs; cause not yet determined"
+      },
+      "ipv6": "pass",
+      "longrtt": "pass",
+      "multiplexing": "pass",
+      "rebind-addr": "pass",
+      "rebind-port": "pass",
+      "resumption": "pass",
+      "retry": "pass",
+      "transfer": "pass",
+      "transfercorruption": "pass",
+      "transferloss": "pass",
+      "zerortt": "pass"
+    }
+  },
+  "our-client-migrating": {
+    "aioquic": {
+      "active-migration": "pass",
+      "transfer": "pass"
+    },
+    "go-x-net": {
+      "active-migration": {
+        "known-failure": "peer: advertises disable_active_migration; our client answers PeerForbids without a probe, which is correct"
+      },
+      "transfer": "pass"
+    },
+    "haproxy": {
+      "active-migration": {
+        "known-failure": "peer: advertises disable_active_migration; our client answers PeerForbids without a probe, which is correct"
+      },
+      "transfer": "pass"
+    },
+    "kwik": {
+      "active-migration": {
+        "known-failure": "peer: advertises disable_active_migration; our client answers PeerForbids without a probe, which is correct"
+      },
+      "transfer": "pass"
+    },
+    "lsquic": {
+      "active-migration": {
+        "flaky": "peer: as transfer"
+      },
+      "transfer": {
+        "flaky": "peer: the lsquic server crashed (SIGSEGV, exit 139) right after our first move in one run; passed in the other"
+      }
+    },
+    "msquic": {
+      "active-migration": {
+        "known-failure": "unclassified: msquic stops answering after two moves (its PATH_RESPONSE never arrives for move 3, from the capture); evidence points at msquic, not confirmed"
+      },
+      "transfer": {
+        "flaky": "unclassified: passed in one run, failed in the other"
+      }
+    },
+    "mvfst": {
+      "active-migration": {
+        "known-failure": "unclassified: four moves, then NoSpareConnectionId at mvfst limit 5 from the #904 prediction (mvfst retires nothing unasked); whether mvfst could hold a fifth path is untested"
+      },
+      "transfer": "pass"
+    },
+    "neqo": {
+      "active-migration": "pass",
+      "transfer": "pass"
+    },
+    "nginx": {
+      "active-migration": {
+        "known-failure": "unclassified: move 1 fails path validation in both runs (nginx limit 2)"
+      },
+      "transfer": "pass"
+    },
+    "ngtcp2": {
+      "active-migration": "pass",
+      "transfer": "pass"
+    },
+    "picoquic": {
+      "active-migration": "pass",
+      "transfer": "pass"
+    },
+    "quic-go": {
+      "active-migration": "pass",
+      "transfer": "pass"
+    },
+    "quiche": {
+      "active-migration": "pass",
+      "transfer": "pass"
+    },
+    "quinn": {
+      "active-migration": "pass",
+      "transfer": "pass"
+    },
+    "rama": {
+      "active-migration": {
+        "flaky": "unclassified: six moves in one run, PathNotValidated at move 3 in the other"
+      },
+      "transfer": "pass"
+    },
+    "s2n-quic": {
+      "active-migration": {
+        "known-failure": "ours (likely): run 1 moved four times then PathNotValidated; run 2 was refused at move 3 by the #904 prediction although s2n-quic had freed paths in run 1, so the prediction refuses moves this peer can hold"
+      },
+      "transfer": "pass"
+    },
+    "xquic": {
+      "active-migration": "pass",
+      "transfer": "pass"
+    }
+  },
+  "our-server": {
+    "aioquic": {
+      "amplificationlimit": "pass",
+      "blackhole": "pass",
+      "goodput": "pass",
+      "handshake": "pass",
+      "handshakecorruption": "pass",
+      "handshakeloss": "pass",
+      "ipv6": "pass",
+      "longrtt": "pass",
+      "multiplexing": "pass",
+      "rebind-addr": "pass",
+      "rebind-port": "pass",
+      "resumption": "pass",
+      "retry": "unsupported",
+      "transfer": "pass",
+      "transfercorruption": "pass",
+      "transferloss": "pass",
+      "zerortt": "pass"
+    },
+    "chrome": {
+      "amplificationlimit": "unsupported",
+      "blackhole": "unsupported",
+      "goodput": "unsupported",
+      "handshake": "unsupported",
+      "handshakecorruption": "unsupported",
+      "handshakeloss": "unsupported",
+      "ipv6": "unsupported",
+      "longrtt": "unsupported",
+      "multiplexing": "unsupported",
+      "rebind-addr": "unsupported",
+      "rebind-port": "unsupported",
+      "resumption": "unsupported",
+      "retry": "unsupported",
+      "transfer": "unsupported",
+      "transfercorruption": "unsupported",
+      "transferloss": "unsupported",
+      "zerortt": "unsupported"
+    },
+    "go-x-net": {
+      "amplificationlimit": "pass",
+      "blackhole": "pass",
+      "goodput": "pass",
+      "handshake": "pass",
+      "handshakecorruption": "unsupported",
+      "handshakeloss": "unsupported",
+      "ipv6": "pass",
+      "longrtt": "pass",
+      "multiplexing": "pass",
+      "rebind-addr": "pass",
+      "rebind-port": "pass",
+      "resumption": "unsupported",
+      "retry": "unsupported",
+      "transfer": "pass",
+      "transfercorruption": "pass",
+      "transferloss": "pass",
+      "zerortt": "unsupported"
+    },
+    "kwik": {
+      "amplificationlimit": "pass",
+      "blackhole": "pass",
+      "goodput": "pass",
+      "handshake": "pass",
+      "handshakecorruption": "pass",
+      "handshakeloss": "pass",
+      "ipv6": "pass",
+      "longrtt": "pass",
+      "multiplexing": "pass",
+      "rebind-addr": {
+        "flaky": "passed in one of two runs; cause not yet determined"
+      },
+      "rebind-port": {
+        "flaky": "passed in one of two runs; cause not yet determined"
+      },
+      "resumption": "pass",
+      "retry": "unsupported",
+      "transfer": "pass",
+      "transfercorruption": "pass",
+      "transferloss": "pass",
+      "zerortt": "pass"
+    },
+    "lsquic": {
+      "amplificationlimit": "pass",
+      "blackhole": "pass",
+      "goodput": "pass",
+      "handshake": "pass",
+      "handshakecorruption": {
+        "flaky": "passed in one of two runs; cause not yet determined"
+      },
+      "handshakeloss": {
+        "flaky": "cause not yet determined: in run 43556869462 one of the 50 downloads came back empty in both attempts (0 of 1024 bytes) and the lsquic client exited 0; the request was not found in the decrypted capture (most 1-RTT keys were missing from the merged key logs)"
+      },
+      "ipv6": "pass",
+      "longrtt": "pass",
+      "multiplexing": "pass",
+      "rebind-addr": "pass",
+      "rebind-port": "pass",
+      "resumption": "pass",
+      "retry": "unsupported",
+      "transfer": "pass",
+      "transfercorruption": "pass",
+      "transferloss": "pass",
+      "zerortt": "pass"
+    },
+    "msquic": {
+      "amplificationlimit": "pass",
+      "blackhole": "pass",
+      "goodput": "pass",
+      "handshake": "pass",
+      "handshakecorruption": "pass",
+      "handshakeloss": "pass",
+      "ipv6": "pass",
+      "longrtt": "pass",
+      "multiplexing": "pass",
+      "rebind-addr": "pass",
+      "rebind-port": "pass",
+      "resumption": "pass",
+      "retry": "unsupported",
+      "transfer": "pass",
+      "transfercorruption": "pass",
+      "transferloss": "pass",
+      "zerortt": "pass"
+    },
+    "mvfst": {
+      "amplificationlimit": "pass",
+      "blackhole": "pass",
+      "goodput": "pass",
+      "handshake": "pass",
+      "handshakecorruption": {
+        "known-failure": "unclassified: the runner counted 1 handshake of 50; as handshakeloss"
+      },
+      "handshakeloss": {
+        "known-failure": "unclassified: the runner counted 1 handshake of 50; the mvfst client stops after the first connection (likely the peer client; not yet confirmed)"
+      },
+      "ipv6": "pass",
+      "longrtt": "pass",
+      "multiplexing": "pass",
+      "rebind-addr": {
+        "flaky": "peer: the mvfst client declared rebind-addr unsupported in run 43559668153 and ran it, passing, in run 43562639832"
+      },
+      "rebind-port": "pass",
+      "resumption": "unsupported",
+      "retry": "unsupported",
+      "transfer": "pass",
+      "transfercorruption": "pass",
+      "transferloss": "pass",
+      "zerortt": {
+        "known-failure": "unclassified: the runner counted 0 handshakes of 2"
+      }
+    },
+    "neqo": {
+      "amplificationlimit": "pass",
+      "blackhole": "pass",
+      "goodput": "pass",
+      "handshake": "pass",
+      "handshakecorruption": "pass",
+      "handshakeloss": "pass",
+      "ipv6": "pass",
+      "longrtt": "pass",
+      "multiplexing": "pass",
+      "rebind-addr": "pass",
+      "rebind-port": "pass",
+      "resumption": "pass",
+      "retry": "unsupported",
+      "transfer": "pass",
+      "transfercorruption": "pass",
+      "transferloss": "pass",
+      "zerortt": "pass"
+    },
+    "ngtcp2": {
+      "amplificationlimit": "pass",
+      "blackhole": "pass",
+      "goodput": "pass",
+      "handshake": "pass",
+      "handshakecorruption": "pass",
+      "handshakeloss": "pass",
+      "ipv6": "pass",
+      "longrtt": "pass",
+      "multiplexing": "pass",
+      "rebind-addr": "pass",
+      "rebind-port": "pass",
+      "resumption": "pass",
+      "retry": "unsupported",
+      "transfer": "pass",
+      "transfercorruption": "pass",
+      "transferloss": "pass",
+      "zerortt": "pass"
+    },
+    "picoquic": {
+      "amplificationlimit": "pass",
+      "blackhole": "pass",
+      "goodput": "pass",
+      "handshake": "pass",
+      "handshakecorruption": "pass",
+      "handshakeloss": "pass",
+      "ipv6": "pass",
+      "longrtt": "pass",
+      "multiplexing": "pass",
+      "rebind-addr": "pass",
+      "rebind-port": "pass",
+      "resumption": "pass",
+      "retry": "unsupported",
+      "transfer": "pass",
+      "transfercorruption": "pass",
+      "transferloss": "pass",
+      "zerortt": "pass"
+    },
+    "quic-go": {
+      "amplificationlimit": "pass",
+      "blackhole": "pass",
+      "goodput": "pass",
+      "handshake": "pass",
+      "handshakecorruption": "pass",
+      "handshakeloss": "pass",
+      "ipv6": "pass",
+      "longrtt": "pass",
+      "multiplexing": "pass",
+      "rebind-addr": "pass",
+      "rebind-port": "pass",
+      "resumption": "pass",
+      "retry": "unsupported",
+      "transfer": "pass",
+      "transfercorruption": "pass",
+      "transferloss": "pass",
+      "zerortt": "pass"
+    },
+    "quiche": {
+      "amplificationlimit": "pass",
+      "blackhole": "pass",
+      "goodput": "pass",
+      "handshake": "pass",
+      "handshakecorruption": {
+        "flaky": "passed in one of two runs; cause not yet determined"
+      },
+      "handshakeloss": "pass",
+      "ipv6": "pass",
+      "longrtt": "pass",
+      "multiplexing": "pass",
+      "rebind-addr": "pass",
+      "rebind-port": "pass",
+      "resumption": "pass",
+      "retry": "unsupported",
+      "transfer": "pass",
+      "transfercorruption": "pass",
+      "transferloss": "pass",
+      "zerortt": "pass"
+    },
+    "quinn": {
+      "amplificationlimit": "pass",
+      "blackhole": "pass",
+      "goodput": "pass",
+      "handshake": "pass",
+      "handshakecorruption": {
+        "flaky": "passed in one of two runs; cause not yet determined"
+      },
+      "handshakeloss": {
+        "flaky": "passed in one of two runs; cause not yet determined"
+      },
+      "ipv6": "pass",
+      "longrtt": "pass",
+      "multiplexing": "pass",
+      "rebind-addr": "pass",
+      "rebind-port": "pass",
+      "resumption": "pass",
+      "retry": "unsupported",
+      "transfer": "pass",
+      "transfercorruption": "pass",
+      "transferloss": "pass",
+      "zerortt": "pass"
+    },
+    "rama": {
+      "amplificationlimit": "pass",
+      "blackhole": "pass",
+      "goodput": "pass",
+      "handshake": "pass",
+      "handshakecorruption": "pass",
+      "handshakeloss": "pass",
+      "ipv6": "pass",
+      "longrtt": "pass",
+      "multiplexing": "pass",
+      "rebind-addr": "pass",
+      "rebind-port": "pass",
+      "resumption": "pass",
+      "retry": "unsupported",
+      "transfer": "pass",
+      "transfercorruption": "pass",
+      "transferloss": "pass",
+      "zerortt": "pass"
+    },
+    "s2n-quic": {
+      "amplificationlimit": "pass",
+      "blackhole": "pass",
+      "goodput": "pass",
+      "handshake": "pass",
+      "handshakecorruption": "pass",
+      "handshakeloss": "pass",
+      "ipv6": "pass",
+      "longrtt": "pass",
+      "multiplexing": "pass",
+      "rebind-addr": "pass",
+      "rebind-port": "pass",
+      "resumption": "pass",
+      "retry": "unsupported",
+      "transfer": "pass",
+      "transfercorruption": "pass",
+      "transferloss": "pass",
+      "zerortt": "unsupported"
+    },
+    "xquic": {
+      "amplificationlimit": "pass",
+      "blackhole": "pass",
+      "goodput": "pass",
+      "handshake": "pass",
+      "handshakecorruption": "pass",
+      "handshakeloss": "pass",
+      "ipv6": "pass",
+      "longrtt": "pass",
+      "multiplexing": "pass",
+      "rebind-addr": "pass",
+      "rebind-port": "pass",
+      "resumption": "pass",
+      "retry": "unsupported",
+      "transfer": "pass",
+      "transfercorruption": "pass",
+      "transferloss": "pass",
+      "zerortt": "pass"
+    }
+  },
+  "windows-x64-our-client": {
+    "quic-go": {
+      "handshake": "pass",
+      "resumption": "pass",
+      "transfer": "pass",
+      "zerortt": "pass"
+    }
+  },
+  "windows-x64-our-client-migrating": {
+    "quic-go": {
+      "active-migration": "pass",
+      "transfer": "pass"
+    }
+  },
+  "windows-x64-our-server": {
+    "quic-go": {
+      "handshake": "pass",
+      "resumption": "pass",
+      "transfer": "pass",
+      "zerortt": "pass"
+    }
+  }
+}

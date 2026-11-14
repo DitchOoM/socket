@@ -1,0 +1,253 @@
+name: QUIC interop gate
+
+# This library's QUIC client and server against every implementation the quic-interop-runner offers
+# (test-harness/quic-interop/peers.json), one job per peer and direction, judged against
+# test-harness/quic-interop/expectations.json by .github/scripts/quic-interop-gate.py.
+#
+# Directions: our-client (our client, their server), our-server (their client, our server) and
+# our-client-migrating (our client's transfer with six active migrations, QuicInteropEndpoint.kt
+# ClientMode.ActiveMigration; the runner has no test in which the client moves its own path).
+#
+# A cell expected to pass that fails twice (one retry) fails the gate, so does a peer that produced no
+# result and a cell with no expectation. A known failure that starts passing is STALE: a warning on a
+# pull request, a failure nightly, so the file never goes out of date unnoticed. Called by quic-interop.yaml
+# (nightly on main, and on demand, also to record a new expectations file). It is not yet run on pull
+# requests: that waits until every failing cell is classified and the macOS and Windows lanes exist.
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: "The version to build the endpoint jar with."
+        required: true
+        type: string
+      natives-run-id:
+        description: "Run to take the quiche-linux-natives-full artifact from; empty means this run."
+        required: false
+        default: ""
+        type: string
+      stale:
+        description: "warn or fail: what a stale expectation does to the gate."
+        required: false
+        default: "warn"
+        type: string
+      record:
+        description: "record writes today's results as a new expectations file (an artifact) and never fails; gate judges."
+        required: false
+        default: "gate"
+        type: string
+      peers:
+        description: "Comma-separated peers to run (names from peers.json); empty runs every peer. A partial run is never judged."
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  ORG_GRADLE_PROJECT_version: ${{ inputs.version }}
+  IMAGE: ditchoom-socket-interop:ci
+
+jobs:
+  plan:
+    name: "plan"
+    runs-on: ubuntu-24.04
+    outputs:
+      cells: ${{ steps.cells.outputs.cells }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: cells
+        env:
+          ONLY: ${{ inputs.peers }}
+        run: |
+          set -euo pipefail
+          cells=$(jq -c --arg only "$ONLY" '[.peers | to_entries[]
+                           | select(.key as $k | $only == "" or ($only | split(",") | index([$k])) != null)
+                           | (if (.value | index("server")) then {peer: .key, direction: "our-client"} else empty end),
+                             (if (.value | index("client")) then {peer: .key, direction: "our-server"} else empty end)]' \
+                    test-harness/quic-interop/peers.json)
+          echo "cells=$cells" >> "$GITHUB_OUTPUT"
+          echo "$cells" | jq -r '.[] | "\(.direction) \(.peer)"'
+
+  image:
+    name: "endpoint image"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/linux-quiche-env
+        with:
+          natives-run-id: ${{ inputs.natives-run-id }}
+          github-token: ${{ github.token }}
+      - name: Build the endpoint jar and image
+        run: |
+          set -euo pipefail
+          ./gradlew :socket-quic-quiche:quicInteropJar -PlinuxTargets=false --no-configuration-cache
+          docker build -t "$IMAGE" test-harness/quic-interop
+          docker save "$IMAGE" | zstd -T0 -3 -o /tmp/quic-interop-image.tar.zst
+      - uses: actions/upload-artifact@v7
+        with:
+          name: quic-interop-image
+          path: /tmp/quic-interop-image.tar.zst
+          retention-days: 3
+
+  cell:
+    name: "${{ matrix.direction }} · ${{ matrix.peer }}"
+    needs: [plan, image]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.cells) }}
+    env:
+      PEER: ${{ matrix.peer }}
+      DIRECTION: ${{ matrix.direction }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # The runner's docker-compose.yml names each sim interface, which Docker Engine rejects before v28.1.
+      - uses: docker/setup-docker-action@v5
+        with:
+          version: version=v28.3.0
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: quic-interop-image
+          path: /tmp
+
+      - name: Load the endpoint image and prepare the simulator
+        run: |
+          set -euo pipefail
+          zstd -dc /tmp/quic-interop-image.tar.zst | docker load
+          sudo modprobe ip6table_filter
+
+      # tshark decodes the captures the runner judges rebinding and handshakes from. See quic-interop.yaml's
+      # history for why the issued connection id length must stay below 20.
+      # Every cell job starts this at once, and Launchpad's API answers some of them 500
+      # (GPGKeyTemporarilyNotFoundError) under that burst, so the PPA and apt steps are retried with backoff.
+      - name: Install the runner and tshark
+        run: |
+          set -euo pipefail
+          retry() {
+            local attempt
+            for attempt in 1 2 3 4 5 6; do
+              "$@" && return 0
+              echo "attempt $attempt of '$*' failed; retrying in $((attempt * 15)) s"
+              sleep $((attempt * 15))
+            done
+            "$@"
+          }
+          sleep $((RANDOM % 30))
+          retry sudo add-apt-repository -y ppa:wireshark-dev/stable
+          retry sudo apt-get update
+          echo "wireshark-common wireshark-common/install-setuid boolean false" | sudo debconf-set-selections
+          retry sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tshark
+          git clone --depth 1 https://github.com/quic-interop/quic-interop-runner.git /tmp/runner
+          pip install -r /tmp/runner/requirements.txt
+          cd /tmp/runner
+          FILE=implementations_quic.json
+          [ -f "$FILE" ] || FILE=implementations.json
+          jq --arg img "$IMAGE" '. + {"ditchoom": {"image": $img, "url": "https://github.com/DitchOoM/socket", "role": "both"}}' \
+            "$FILE" > /tmp/impl.json && mv /tmp/impl.json "$FILE"
+
+      # run.py exits non-zero when a test fails; that is a result, judged by the gate job. A cell expected to
+      # pass that failed runs once more, and the gate accepts it if the retry passes (reported as such).
+      - name: Run
+        working-directory: /tmp/runner
+        run: |
+          set -uo pipefail
+          results="$GITHUB_WORKSPACE/interop-results"
+          mkdir -p "$results" /tmp/interop
+          exp="$GITHUB_WORKSPACE/test-harness/quic-interop/expectations.json"
+          [ -f "$exp" ] || echo '{}' > "$exp"
+          gate="$GITHUB_WORKSPACE/.github/scripts/quic-interop-gate.py"
+          tests=$(jq -r .tests "$GITHUB_WORKSPACE/test-harness/quic-interop/peers.json")
+          run_pair() { # <tests> <logs> <json> [runner role flags...]
+            local t=$1 logs=$2 json=$3
+            shift 3
+            python3 run.py "$@" -t "$t" -l "$logs" -j "$json" -d || true
+          }
+          case "$DIRECTION" in
+            our-client) roles=(-c ditchoom -s "$PEER") ;;
+            our-server) roles=(-s ditchoom -c "$PEER") ;;
+            *) echo "::error::unknown direction $DIRECTION"; exit 1 ;;
+          esac
+          run_pair "$tests" /tmp/interop/logs "$results/${DIRECTION}__${PEER}.json" "${roles[@]}"
+          if [ -s "$results/${DIRECTION}__${PEER}.json" ]; then
+            again=$(python3 "$gate" retry "$exp" "$DIRECTION" "$PEER" "$results/${DIRECTION}__${PEER}.json")
+            if [ -n "$again" ]; then
+              echo "retrying: $again"
+              run_pair "$again" /tmp/interop/logs-retry "$results/${DIRECTION}__${PEER}.retry" "${roles[@]}"
+            fi
+          fi
+          if [ "$DIRECTION" = our-client ]; then
+            # The runner's compose file hands the client container CLIENT_PARAMS from this environment.
+            export CLIENT_PARAMS=migrate=active
+            run_pair transfer /tmp/interop/logs-migrating "$results/our-client-migrating__${PEER}.json" "${roles[@]}"
+            unset CLIENT_PARAMS
+            find /tmp/interop/logs-migrating -name output.txt -exec grep -h -o 'MIGRATION-SUMMARY.*' {} + 2>/dev/null \
+              | head -1 > "$results/our-client-migrating__${PEER}.summary" || true
+            {
+              echo "### Active migration against $PEER"
+              echo '```'
+              find /tmp/interop/logs-migrating -name output.txt -exec grep -h -o 'MIGRATION.*' {} + 2>/dev/null || echo "(no moves printed)"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          # The runner's own verdict lines for every test that did not succeed, small enough to keep with the
+          # results (the full logs, captures included, are a separate artifact of a few hundred MB).
+          find /tmp/interop -name output.txt | sort | while read -r out; do
+            if grep -q -E 'Test failed|Expected|Didn.t|not compliant|exited with code [1-9]|failed:|Exception' "$out"; then
+              echo "== ${out#/tmp/interop/}"
+              grep -E 'Test failed|Expected|Didn.t|not compliant|exited with code [1-9]|failed:|Exception|took longer|Got:|Wrong|Missing|check' "$out" | sed 's/\x1b\[[0-9;]*m//g' | tail -15
+            fi
+          done > "$results/${DIRECTION}__${PEER}.reasons.txt" || true
+          ls -la "$results"
+
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: interop-results-${{ matrix.direction }}-${{ matrix.peer }}
+          path: interop-results
+          retention-days: 14
+
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: interop-logs-${{ matrix.direction }}-${{ matrix.peer }}
+          path: /tmp/interop
+          if-no-files-found: warn
+          retention-days: 7
+
+  gate:
+    name: "gate"
+    needs: cell
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: interop-results-*
+          path: interop-results
+          merge-multiple: true
+      - name: Judge every cell against the expectations
+        if: ${{ inputs.peers == '' }}
+        run: |
+          set -uo pipefail
+          exp=test-harness/quic-interop/expectations.json
+          [ -f "$exp" ] || echo '{}' > "$exp"
+          if [ "${{ inputs.record }}" = record ]; then
+            python3 .github/scripts/quic-interop-gate.py judge "$exp" interop-results --record=/tmp/expectations.json | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          python3 .github/scripts/quic-interop-gate.py judge "$exp" interop-results --stale=${{ inputs.stale }} | tee -a "$GITHUB_STEP_SUMMARY"
+          exit "${PIPESTATUS[0]}"
+      - uses: actions/upload-artifact@v7
+        if: ${{ inputs.record == 'record' }}
+        with:
+          name: quic-interop-expectations
+          path: /tmp/expectations.json
