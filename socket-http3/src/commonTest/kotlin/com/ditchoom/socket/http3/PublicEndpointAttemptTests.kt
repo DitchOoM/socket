@@ -4,12 +4,17 @@ import com.ditchoom.socket.quic.PeerCertificateChain
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.ServerCertVerifier
 import com.ditchoom.socket.testkit.trace.TraceEvent
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
+import kotlin.coroutines.CoroutineContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -60,6 +65,33 @@ class PublicEndpointAttemptTests {
                 assertTrue("stalled in phase 'response body'" in outcome.report, outcome.report)
             }
         }
+
+    @Test
+    fun anAttemptWhosePoolIsBusyStillNamesThePhaseItStalledIn() =
+        runTest {
+            withContext(Dispatchers.Default) {
+                val outcome =
+                    PublicEndpointAttempt.run("e", 100.milliseconds, cancelGrace = 5.seconds, dispatcher = LateDispatcher) {
+                        enter("response body")
+                        awaitCancellation()
+                    }
+                assertIs<PublicEndpointAttempt.Outcome.Unreachable>(outcome)
+                assertTrue("stalled in phase 'response body'" in outcome.report, outcome.report)
+            }
+        }
+
+    /** A pool that runs every task 300 ms after it is dispatched, as a loaded runner's pool does. */
+    private object LateDispatcher : CoroutineDispatcher() {
+        override fun dispatch(
+            context: CoroutineContext,
+            block: Runnable,
+        ) {
+            CoroutineScope(Dispatchers.Default).launch {
+                delay(300.milliseconds)
+                block.run()
+            }
+        }
+    }
 
     @Test
     fun aStallThatIgnoresCancellationIsCalledOut() =
