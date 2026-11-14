@@ -160,7 +160,7 @@ jobs:
     name: "macOS arm64"
     needs: natives
     runs-on: macos-26
-    timeout-minutes: 120
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/apple-quiche-env
