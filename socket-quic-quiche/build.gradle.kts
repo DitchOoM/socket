@@ -4055,12 +4055,9 @@ val nativeLibsByPlatform =
         "linux-arm64" to listOf("libquiche.so", "libquiche_jni.so"),
         "macos-x64" to listOf("libquiche.dylib", "libquiche_jni.dylib"),
         "macos-arm64" to listOf("libquiche.dylib", "libquiche_jni.dylib"),
-        // Windows ships only the JNI shim: quiche is statically linked into
-        // quiche_jni.dll (boringssl-boring-crate + --whole-archive libquiche.a in
-        // build-linux.yaml's MinGW cross-compile), so there is no separate
-        // quiche.dll to extract — matching NativeLibLoader, which loads only
-        // quiche_jni.dll on Windows. Staged into the jvmTest classpath only;
-        // not in nativeClassifiers, so no windows publish artifact yet.
+        // Windows ships one self-contained DLL: quiche and BoringSSL are linked into quiche_jni.dll
+        // (--whole-archive libquiche.a in build-linux.yaml's MinGW cross-compile), which exports both the
+        // JNI entry points (JDK < 21, NativeLibLoader) and quiche's C API (JDK 21+, the FFM loader).
         "windows-x64" to listOf("quiche_jni.dll"),
     )
 
@@ -6046,6 +6043,7 @@ val nativeClassifiers =
         NativeClassifier("macos-x64", "macos-x86_64"),
         NativeClassifier("linux-x64", "linux-x86_64"),
         NativeClassifier("linux-arm64", "linux-aarch64"),
+        NativeClassifier("windows-x64", "windows-x86_64"),
     )
 
 val nativeClassifierJars =

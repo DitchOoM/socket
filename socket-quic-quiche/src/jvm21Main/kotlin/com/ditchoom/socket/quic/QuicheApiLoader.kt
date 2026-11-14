@@ -44,7 +44,8 @@ private fun loadFfmBackend(): FfmQuicheApi {
     // every non-Windows classifier ships this self-contained base lib, and the shim is now THIN
     // (DT_NEEDED=libquiche), so it could never load standalone via FFM anyway — it exists only for the
     // JDK < 21 JNI path. Windows is the sole exception: it ships a single self-contained quiche_jni.dll
-    // (no separate base lib), which is its FFM candidate — see quicheFfmResourceCandidates.
+    // (no separate base lib) that exports quiche's C API beside the JNI entry points, so it is the FFM
+    // candidate too — see quicheFfmResourceCandidates.
     val failures = mutableListOf<String>()
     for (resourcePath in quicheFfmResourceCandidates()) {
         val stream = classLoader.getResourceAsStream(resourcePath)
@@ -82,8 +83,9 @@ private fun extractToTemp(resourcePath: String): String {
 
 /**
  * The FFM native lib for this platform. Non-Windows: the self-contained libquiche.{so,dylib}. Windows:
- * the single self-contained quiche_jni.dll (it has no separate base lib). The JNI shim is not an FFM
- * candidate on non-Windows — it's thin (DT_NEEDEDs the base lib) and serves only the JDK < 21 JNI path.
+ * the single self-contained quiche_jni.dll, which exports quiche's C API as well as the JNI entry points.
+ * The JNI shim is not an FFM candidate on non-Windows: it's thin (DT_NEEDEDs the base lib) and serves only
+ * the JDK < 21 JNI path.
  */
 private fun quicheFfmResourceCandidates(): List<String> {
     val osName = System.getProperty("os.name").lowercase()
