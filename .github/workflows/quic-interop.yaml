@@ -139,5 +139,6 @@ jobs:
       version: "0.0.0-interop"
       apple-natives-run-id: ${{ needs.natives.outputs.source == 'earlier' && needs.natives.outputs.apple-run-id || github.run_id }}
       windows-natives-run-id: ${{ needs.natives.outputs.source == 'earlier' && needs.natives.outputs.windows-run-id || github.run_id }}
+      linux-natives-run-id: ${{ needs.natives.outputs.source == 'earlier' && needs.natives.outputs.run-id || github.run_id }}
       stale: fail
       record: ${{ inputs.mode || 'gate' }}
