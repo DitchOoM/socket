@@ -8,8 +8,8 @@ import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.IpFamily
 import com.ditchoom.socket.ResolvedAddress
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -232,7 +232,12 @@ private const val SPARE_ID_ATTEMPTS = 5
 private val SPARE_ID_WAIT = 100.milliseconds
 
 private fun clientMode(): ClientMode =
-    if (System.getenv("CLIENT_PARAMS").orEmpty().split(' ').contains("migrate=active")) {
+    if (System
+            .getenv("CLIENT_PARAMS")
+            .orEmpty()
+            .split(' ')
+            .contains("migrate=active")
+    ) {
         ClientMode.ActiveMigration
     } else {
         ClientMode.Plain
@@ -446,7 +451,10 @@ private suspend fun QuicScope.downloadAllMigrating(
         }
     val paths =
         when (val snapshot = driver.stallSnapshot()) {
-            is Inspected.Read -> snapshot.value.paths.map { it.key.port }.toString()
+            is Inspected.Read ->
+                snapshot.value.paths
+                    .map { it.key.port }
+                    .toString()
             Inspected.ConnectionGone -> "connection gone"
         }
     val succeeded = moves.count { it.succeeded }
