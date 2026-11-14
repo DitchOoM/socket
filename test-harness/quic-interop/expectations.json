@@ -170,7 +170,9 @@
       "rebind-addr": {
         "flaky": "peer and simulator: at the address rebind msquic sends its one PATH_CHALLENGE to the new address 0.1 ms after the simulator creates the binding, and it is not delivered; msquic only retries challenges to the old address, which the simulator drops as an unknown binding, so the new address is never validated and msquic's anti-amplification limit stops the transfer (run 43553738743, both attempts; captures on both sides)"
       },
-      "rebind-port": "pass",
+      "rebind-port": {
+        "flaky": "peer and simulator: as rebind-addr; msquic's one PATH_CHALLENGE to the rebound port is not delivered and its retries go to the old port, which the simulator drops as an unknown binding (run 43556869462, both attempts; no challenge frame reaches the client)"
+      },
       "resumption": "pass",
       "retry": "pass",
       "transfer": "pass",
@@ -591,7 +593,9 @@
       "handshakecorruption": {
         "flaky": "passed in one of two runs; cause not yet determined"
       },
-      "handshakeloss": "pass",
+      "handshakeloss": {
+        "flaky": "cause not yet determined: in run 43556869462 one of the 50 downloads came back empty in both attempts (0 of 1024 bytes) and the lsquic client exited 0; the request was not found in the decrypted capture (most 1-RTT keys were missing from the merged key logs)"
+      },
       "ipv6": "pass",
       "longrtt": "pass",
       "multiplexing": "pass",
