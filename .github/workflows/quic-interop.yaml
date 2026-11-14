@@ -37,6 +37,16 @@ on:
         required: false
         default: ""
         type: string
+      tests:
+        description: "Comma-separated runner tests for the Linux matrix (empty = peers.json's list; with peers set, never judged)"
+        required: false
+        default: ""
+        type: string
+      repeat:
+        description: "Runs of the tests per cell, each kept as its own logs (to capture a rare failure)"
+        required: false
+        default: "1"
+        type: string
 
 permissions:
   contents: read
@@ -89,6 +99,8 @@ jobs:
       stale: ${{ github.event_name == 'schedule' && 'fail' || 'warn' }}
       record: ${{ inputs.mode || 'gate' }}
       peers: ${{ inputs.peers || '' }}
+      tests: ${{ inputs.tests || '' }}
+      repeat: ${{ inputs.repeat || '1' }}
 
   native:
     needs: natives
