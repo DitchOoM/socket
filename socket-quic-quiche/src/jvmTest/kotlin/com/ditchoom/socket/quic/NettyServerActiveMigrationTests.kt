@@ -239,10 +239,12 @@ class NettyServerActiveMigrationTests {
         }
     }
 
-    /** The local ports of the paths the client's driver holds. */
+    /** The local ports of the paths the client's driver sends or probes on; a left path it still reads is not one. */
     private suspend fun QuicScope.localPorts(): List<Int> {
         val snapshot = assertIs<Inspected.Read<DriverStallSnapshot>>((this as QuicheBackedConnection).quicheDriver.stallSnapshot())
-        return snapshot.value.paths.map { it.key.port }
+        return snapshot.value.paths
+            .filter { it.use != PathUse.Left }
+            .map { it.key.port }
     }
 
     /** A migration needs a connection id the server has issued and the client has not used; the server issues one per id retired. */
