@@ -2265,10 +2265,12 @@ class QuicheDriver(
                 // Awaiting here also stops a self-closed connection's reader from lingering
                 // until the connection scope dies. Bounded: cancellation unblocks receive() on
                 // every UdpChannel (worst case one io_uring submitAndWait tick on Linux).
-                for (entry in paths.values.toList()) {
+                // A left path in reservedPorts is still read, so its reader is one of them.
+                val readers = paths.values.toList() + reservedPorts.values.toList()
+                for (entry in readers) {
                     entry.readerJob?.cancel()
                 }
-                for (entry in paths.values.toList()) {
+                for (entry in readers) {
                     entry.readerJob?.let { reader ->
                         reportingStall(
                             "reader ${entry.key} to exit in $coroutineName",
@@ -2464,15 +2466,13 @@ class QuicheDriver(
                     when (source) {
                         is PacketSource.FromServerSocket -> source.recvInfo
                         is PacketSource.FromPath -> {
-                            val entry = paths[source.key]
+                            // The path a switch left is still read while it is reserved ([leavePath]).
+                            val entry = paths[source.key] ?: reservedPorts[source.key]
                             if (entry == null) {
                                 flight.record(FlightEvent.DroppedFromLeftPath, source.key.port.toLong())
-                                // The packet arrived on a path that has since been retired — a
-                                // reader's final datagrams can be queued behind their own teardown.
-                                // Feeding it under another path's recv_info would tell quiche it
-                                // arrived somewhere it did not (the stale attribution retirement
-                                // exists to end); it is bounded collateral of a path the connection
-                                // already left. Drop it.
+                                // quiche no longer holds the path this arrived on, and feeding it under
+                                // another path's recv_info would tell quiche it arrived somewhere it did
+                                // not. A reader's final datagrams can be queued behind its own release.
                                 cmd.release(QuicheCmd.ReleaseDoor.RetiredPath)
                                 return
                             }
@@ -4134,7 +4134,7 @@ class QuicheDriver(
                 // clears the old path's `active_dcid_seq` inside quiche, making its slot
                 // evictable; without it the table fills at active_conn_id_limit and the
                 // next probe is refused.
-                teardownPath(previous)
+                leavePath(previous)
                 completeMigration(
                     pending,
                     MigrationResult.Succeeded(pending.localEndpoint),
@@ -4188,16 +4188,26 @@ class QuicheDriver(
      * in [reservedPorts] until quiche evicts the path, and [releaseReservedPort] frees the rest.
      */
     private fun teardownPath(entry: PathEntry) {
+        leavePath(entry)
+        entry.readerJob?.cancel()
+    }
+
+    /**
+     * [teardownPath] for the path a switch moved off, which keeps reading while it is in [reservedPorts]:
+     * the peer goes on sending there until it sees the move, and those packets are quiche's to acknowledge.
+     * A probe path is never left this way, because what reaches it late is the peer's own path validation,
+     * which quiche would answer with a spare connection id.
+     */
+    private fun leavePath(entry: PathEntry) {
         loopGuard.assertOnLoop(LoopSite.TeardownPath)
         // quiche routes the active path through this socket; closing it would strand the connection.
-        check(entry !== active) { "teardownPath on the active path ${entry.key}" }
+        check(entry !== active) { "leavePath on the active path ${entry.key}" }
         // First, and unconditionally: the path stops holding its destination CID, which retires it
-        // (RFC 9000 §9.5). Every caller reaches here — the successful migration's supersede, a kept
-        // path replaced, a refused switch, a quiche path eviction — so this is the one place a CID
-        // can be released, and there is no way to remove a path from `paths` that bypasses it.
+        // (RFC 9000 §9.5). Every removal from `paths` comes here — the successful migration's
+        // supersede, a kept path replaced, a refused switch, a quiche path eviction — so this is the
+        // one place a CID can be released.
         entry.transitionTo(PathSlot.Abandoned)
         paths.remove(entry.key)
-        entry.readerJob?.cancel()
         reservedPorts.put(entry.key, entry)?.let(::releaseReservedPort)
     }
 
@@ -4207,6 +4217,7 @@ class QuicheDriver(
      * [recvInfo] freed in [cleanup], and its sockaddr belongs to the connection setup's [onCleanup].
      */
     private fun releaseReservedPort(entry: PathEntry) {
+        entry.readerJob?.cancel()
         try {
             entry.channel.close()
         } catch (_: Exception) {

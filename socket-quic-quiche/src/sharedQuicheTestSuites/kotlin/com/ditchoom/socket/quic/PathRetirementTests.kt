@@ -191,7 +191,7 @@ class PathRetirementTests {
                 rawApi = api,
                 conn = QuicheConn(1L),
                 bufferFactory = bufferFactory,
-                recvInfo = QuicheRecvInfo(1L),
+                recvInfo = PRIMARY_RECV_INFO,
                 sendInfo = QuicheSendInfo(1L),
                 udpChannel = primaryChannel,
                 // No primary reader loop: nothing ever delivers a datagram here. Probed paths still
@@ -482,18 +482,15 @@ class PathRetirementTests {
         }
 
     /**
-     * **A packet tagged with a retired path's key is dropped, not misattributed.** After retirement a
-     * reader's final in-flight datagrams can still be queued behind the teardown. Falling back to
-     * another path's `recv_info` would tell quiche the packet arrived on an address it did not —
-     * the exact stale-attribution defect retirement exists to end. The packet is bounded collateral
-     * of a path the connection already left; RFC 9002 loss recovery owns it.
+     * **A packet from the path a switch left is fed under that path's own recv_info until quiche evicts
+     * the path, and dropped after — never attributed to another path.** The peer sends on the left path
+     * until it sees the move, so those packets are quiche's to acknowledge; once quiche no longer holds
+     * the path, feeding one under another path's recv_info would tell quiche it arrived where it did not.
      */
     @Test
-    fun aPacketTaggedWithARetiredPathsKeyIsDroppedNotMisattributed() =
+    fun aPacketFromTheLeftPathIsReadUnderItsOwnAddressUntilQuicheEvictsThePath() =
         runTest {
             val f = Fixture()
-            var recvs = 0
-            f.stub.onConnRecv = { recvs++ }
             f.driver.start(this)
             try {
                 runCurrent()
@@ -502,21 +499,23 @@ class PathRetirementTests {
                 f.validate(1)
                 runCurrent()
                 result.assertSucceeded()
-                val retiredKey = PathKey(family = 4, port = primaryPort, hi = 0L, lo = STUB_LOOPBACK_V4)
-
-                // Anti-vacuity: a packet tagged with the LIVE path's key must reach quiche.
+                val leftKey = PathKey(family = 4, port = primaryPort, hi = 0L, lo = STUB_LOOPBACK_V4)
                 val liveKey = PathKey(family = 4, port = probePortBase + 1, hi = 0L, lo = STUB_LOOPBACK_V4)
                 sendPacket(f, liveKey)
+                sendPacket(f, leftKey)
                 runCurrent()
-                assertEquals(1, recvs, "a live-path packet must reach connRecv — the test harness is broken")
+                val (live, left) = f.stub.recvArrivals
+                assertEquals(PRIMARY_RECV_INFO, left, "the left path's packet must reach quiche under its own recv_info")
+                assertTrue(live != left, "the live path's packet must reach quiche under its own recv_info")
 
-                sendPacket(f, retiredKey)
+                f.evict(primaryPort)
+                runCurrent()
+                sendPacket(f, leftKey)
                 runCurrent()
                 assertEquals(
-                    1,
-                    recvs,
-                    "a packet tagged with the RETIRED path's key was fed to quiche under another path's " +
-                        "recv_info — stale attribution, the defect retirement exists to end",
+                    listOf(live, left),
+                    f.stub.recvArrivals,
+                    "a packet from a path quiche evicted must be dropped, not fed under another path's recv_info",
                 )
             } finally {
                 f.driver.destroy()
@@ -1095,6 +1094,9 @@ class PathRetirementTests {
     private companion object {
         /** [StubQuicheApi]'s default `sockAddrV4` answer for a registered sockaddr (127.0.0.1). */
         const val STUB_LOOPBACK_V4 = 0x7F000001L
+
+        /** The recv_info the fixture's driver is built with, which is the primary path's. */
+        val PRIMARY_RECV_INFO = QuicheRecvInfo(1L)
 
         /** A second local address (10.0.0.2) — another link, as the driver sees it. */
         const val OTHER_LINK_V4 = 0x0A000002L
