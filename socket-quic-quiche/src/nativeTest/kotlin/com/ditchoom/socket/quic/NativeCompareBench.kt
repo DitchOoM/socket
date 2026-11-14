@@ -17,17 +17,21 @@ import kotlinx.cinterop.convert
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.toKString
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import platform.posix.CLOCK_PROCESS_CPUTIME_ID
 import platform.posix.clock_gettime
 import platform.posix.getenv
 import platform.posix.timespec
 import kotlin.test.Test
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TimeSource
@@ -35,7 +39,9 @@ import kotlin.time.TimeSource
 /**
  * Comparison workload, not a regression test: inert unless NATIVE_BENCH is set to one of
  * `qrr` (QUIC long-lived stream, 64 B echo), `qspr` (QUIC stream per request), `qbulk` (QUIC, 16 MiB per
- * stream in 64 KiB writes) or `tcp` (this library's TCP socket, 64 B echo). Client and server share this
+ * stream in 64 KiB writes), `qconns` (NATIVE_BENCH_CONNS connections, default 64, each echoing 64 B on its own
+ * long-lived stream at once, the shape of benchmarks/jvm `QuicMultiConnectionLoad`'s RT phase) or `tcp` (this
+ * library's TCP socket, 64 B echo). Client and server share this
  * process over 127.0.0.1, exactly like benchmarks/jvm. NATIVE_BENCH_WARMUP / NATIVE_BENCH_SECONDS (default 2 / 10)
  * bound the discarded warm-up and the measured window.
  *
@@ -70,6 +76,9 @@ abstract class NativeCompareBench {
         val window = (getenv("NATIVE_BENCH_SECONDS")?.toKString()?.toIntOrNull() ?: 10).seconds
         if (workload == "tcp") {
             runQuicTest(timeout = 10.minutes) { tcp(warmup.inWholeSeconds, window.inWholeSeconds) }
+        } else if (workload == "qconns") {
+            val conns = getenv("NATIVE_BENCH_CONNS")?.toKString()?.toIntOrNull() ?: 64
+            runQuicTest(timeout = 30.minutes) { manyConnections(conns, warmup, window) }
         } else {
             runQuicTest(timeout = 10.minutes) {
                 withQuicServer(port = 0, host = "127.0.0.1", tlsConfig = testTlsConfig(), quicOptions = options) {
@@ -157,6 +166,97 @@ abstract class NativeCompareBench {
             }
         run.go(warmup, window, bytesPerOp = BULK_MIB.toLong() * 1024 * 1024)
         chunk.freeIfNeeded()
+    }
+
+    /**
+     * [conns] connections to one in-process server, each echoing 64 B on its own long-lived stream from its own
+     * coroutine on [Dispatchers.Default]. As in the JVM tool, the warm-up starts once every connection has its
+     * stream (`connect_s` is how long that took), and the result is the aggregate operations per second and the
+     * median over connections of each connection's p50 and p99.
+     */
+    private suspend fun manyConnections(
+        conns: Int,
+        warmup: Duration,
+        window: Duration,
+    ): Unit =
+        coroutineScope {
+            withQuicServer(port = 0, host = "127.0.0.1", tlsConfig = testTlsConfig(), quicOptions = options) {
+                val serverJob = launch { connections { coroutineScope { streams().collect { launch { serve(it) } } } } }
+                val samples = Array(conns) { LongArray(1 shl 12) }
+                val counts = IntArray(conns)
+                val ready = List(conns) { CompletableDeferred<Unit>() }
+                val go = CompletableDeferred<TimeSource.Monotonic.ValueTimeMark>()
+                val connectStart = TimeSource.Monotonic.markNow()
+                try {
+                    coroutineScope {
+                        repeat(conns) { i ->
+                            launch(Dispatchers.Default) {
+                                withQuicConnection("127.0.0.1", port, options, timeout = 30.minutes) {
+                                    val stream = openStream()
+                                    val request = request(bufferFactory.allocate(SIZE))
+                                    ready[i].complete(Unit)
+                                    val measureFrom = go.await() + warmup
+                                    val end = measureFrom + window
+                                    while (!end.hasPassedNow()) {
+                                        val t = TimeSource.Monotonic.markNow()
+                                        request.position(0)
+                                        stream.writeFully(request, 30.seconds)
+                                        stream.readExactly(SIZE)
+                                        if (t > measureFrom && !end.hasPassedNow()) {
+                                            if (counts[i] == samples[i].size) samples[i] = samples[i].copyOf(counts[i] * 2)
+                                            samples[i][counts[i]++] = t.elapsedNow().inWholeNanoseconds
+                                        }
+                                    }
+                                    stream.shutdownSend()
+                                    stream.close()
+                                    request.freeIfNeeded()
+                                }
+                            }
+                        }
+                        ready.awaitAll()
+                        val connectSeconds = connectStart.elapsedNow().inWholeNanoseconds / 1e9
+                        println("CONNECTED conns=$conns connect_s=$connectSeconds")
+                        val started = TimeSource.Monotonic.markNow()
+                        go.complete(started)
+                        delay(warmup)
+                        println("MEASURING")
+                        val cpu0 = cpuMicros()
+                        delay(window)
+                        val cpuUs = cpuMicros() - cpu0
+                        report(conns, samples, counts, window, cpuUs, connectSeconds)
+                    }
+                } finally {
+                    serverJob.cancel()
+                }
+            }
+        }
+
+    private fun report(
+        conns: Int,
+        samples: Array<LongArray>,
+        counts: IntArray,
+        window: Duration,
+        cpuUs: Long,
+        connectSeconds: Double,
+    ) {
+        val p50s = DoubleArray(conns)
+        val p99s = DoubleArray(conns)
+        for (i in 0 until conns) {
+            val a = samples[i]
+            val n = counts[i]
+            a.sort(0, n)
+            p50s[i] = if (n == 0) Double.NaN else a[n / 2] / 1000.0
+            p99s[i] = if (n == 0) Double.NaN else a[minOf(n - 1, (n * 0.99).toInt())] / 1000.0
+        }
+        p50s.sort()
+        p99s.sort()
+        val total = counts.sum()
+        val secs = window.inWholeNanoseconds / 1e9
+        println(
+            "RESULT stack=kotlin-native-ours workload=qconns$conns ops=$total seconds=$secs p50_us=${p50s[conns / 2]} " +
+                "p99_us=${p99s[conns / 2]} p999_us=${p99s[conns - 1]} ops_per_s=${total / secs} mib_per_s=0.0 " +
+                "cpu_us=$cpuUs maxrss_raw=${maxRssRaw()} idle_conns=${counts.count { it == 0 }} connect_s=$connectSeconds",
+        )
     }
 
     private suspend fun tcp(
@@ -306,19 +406,19 @@ abstract class NativeCompareBench {
             )
         }
 
-        /** User + system CPU time of the whole process, all threads. */
-        private fun cpuMicros(): Long =
-            memScoped {
-                val ts = alloc<timespec>()
-                clock_gettime(CLOCK_PROCESS_CPUTIME_ID.convert(), ts.ptr)
-                ts.tv_sec * 1_000_000L + ts.tv_nsec / 1000
-            }
-
         private fun maxRss(): Long = maxRssRaw()
     }
 
+    /** User + system CPU time of the whole process, all threads. */
+    private fun cpuMicros(): Long =
+        memScoped {
+            val ts = alloc<timespec>()
+            clock_gettime(CLOCK_PROCESS_CPUTIME_ID.convert(), ts.ptr)
+            ts.tv_sec * 1_000_000L + ts.tv_nsec / 1000
+        }
+
     private companion object {
-        val WORKLOADS = setOf("qrr", "qspr", "qbulk", "tcp")
+        val WORKLOADS = setOf("qrr", "qspr", "qbulk", "qconns", "tcp")
         const val SIZE = 64
         const val CHUNK = 64 * 1024
         const val BULK_MIB = 16

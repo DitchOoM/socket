@@ -1,0 +1,185 @@
+name: Native vs JVM benchmark
+
+# This library's Kotlin/Native build (optimized -opt test binary) against its own JVM build (FFM, JMH and
+# QuicMultiConnectionLoad from benchmarks/jvm) on each OS we ship natively, interleaved by round with
+# benchmarks/native-compare/run.py, then one profiled pass per stack and workload: perf on Linux, xctrace Time
+# Profiler on macOS, JFR for the JVM. benchmarks/native-compare/trace_buckets.py turns each trace into on-CPU
+# shares per cost bucket in the job summary; the raw traces are artifacts.
+#
+# Hosted runners are shared virtual machines: read a cell with its [min-max] range and compare stacks within one
+# job, never across jobs.
+
+on:
+  pull_request:
+    paths:
+      - 'benchmarks/native-compare/**'
+      - 'socket-quic-quiche/src/nativeTest/kotlin/com/ditchoom/socket/quic/NativeCompareBench.kt'
+      - '.github/workflows/native-compare.yaml'
+  workflow_dispatch:
+    inputs:
+      rounds:
+        required: false
+        default: "3"
+      workloads:
+        required: false
+        default: "qrr,qspr,qbulk,qconns64,qconns1024"
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: native-compare-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ORG_GRADLE_PROJECT_version: "0.0.0-bench"
+  ROUNDS: ${{ inputs.rounds || '3' }}
+  WORKLOADS: ${{ inputs.workloads || 'qrr,qspr,qbulk,qconns64,qconns1024' }}
+
+jobs:
+  natives:
+    name: "find natives"
+    runs-on: ubuntu-24.04
+    outputs:
+      linux: ${{ steps.find.outputs.linux }}
+      apple: ${{ steps.find.outputs.apple }}
+    steps:
+      - id: find
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          newest() {
+            gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=$1&per_page=100" \
+              --jq '[.artifacts[] | select(.expired == false) | select(.workflow_run.head_branch == "main")]
+                    | sort_by(.created_at) | reverse | .[0].workflow_run.id // empty'
+          }
+          for pair in linux:quiche-linux-natives-full apple:quiche-apple-natives; do
+            rid=$(newest "${pair#*:}")
+            [ -n "$rid" ] || { echo "::error::no unexpired ${pair#*:} artifact from main"; exit 1; }
+            echo "${pair%%:*}=$rid" >> "$GITHUB_OUTPUT"
+          done
+
+  linux-x64:
+    name: "Linux x64"
+    needs: natives
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/linux-quiche-env
+        with:
+          natives-run-id: ${{ needs.natives.outputs.linux }}
+          github-token: ${{ github.token }}
+          test-launcher-jdk: "25"
+      - name: Build the optimized test binaries and the JMH jar
+        run: >-
+          .github/scripts/gradle-retry.sh
+          :socket-quic-quiche:linkReleaseTestLinuxX64 :socket-quic-quiche:linkReleaseTestLinuxArm64
+          :benchmark-jvm:mainBenchmarkJar --no-configuration-cache
+      - uses: actions/upload-artifact@v7
+        with:
+          name: native-compare-linux-arm64-kexe
+          path: socket-quic-quiche/build/bin/linuxArm64/releaseTest/test.kexe
+          retention-days: 1
+          if-no-files-found: error
+      - name: Install perf
+        run: |
+          sudo apt-get install -y -q "linux-tools-$(uname -r)" linux-tools-common >/dev/null
+          sudo sysctl -w kernel.perf_event_paranoid=-1 kernel.kptr_restrict=0
+      - name: Run
+        run: |
+          set -euo pipefail
+          mkdir -p results
+          jar=$(find benchmarks/jvm/build/benchmarks/main/jars -name "*.jar" | head -1)
+          python3 -I benchmarks/native-compare/run.py --kexe "$PWD/socket-quic-quiche/build/bin/linuxX64/releaseTest/test.kexe" \
+            --certs /nonexistent --only kotlin-native-ours --workloads "$WORKLOADS" --rounds "$ROUNDS" \
+            --jmh-jar "$jar" --java "$TEST_LAUNCHER_JDK_HOME/bin/java" --certs-repo socket-quic-quiche/testcerts \
+            --json results/linux-x64.json --trace-dir results/traces | tee results-linux-x64.md
+      - name: Summarise
+        if: ${{ !cancelled() }}
+        run: .github/scripts/native-compare-summary.sh "Linux x64" results-linux-x64.md results/traces
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: native-compare-linux-x64
+          path: |
+            results
+            results-linux-x64.md
+          retention-days: 14
+
+  # Kotlin/Native only: the JMH jar carries the build host's natives, and the JVM's arm64 natives are not built on
+  # an arm64 host here.
+  linux-arm64:
+    name: "Linux arm64 (Kotlin/Native)"
+    needs: linux-x64
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: native-compare-linux-arm64-kexe
+          path: socket-quic-quiche/build/bin/linuxArm64/releaseTest
+      - name: Install perf
+        run: |
+          sudo apt-get install -y -q "linux-tools-$(uname -r)" linux-tools-common >/dev/null
+          sudo sysctl -w kernel.perf_event_paranoid=-1 kernel.kptr_restrict=0
+      - name: Run
+        run: |
+          set -euo pipefail
+          mkdir -p results
+          kexe="$PWD/socket-quic-quiche/build/bin/linuxArm64/releaseTest/test.kexe"
+          chmod +x "$kexe"
+          python3 -I benchmarks/native-compare/run.py --kexe "$kexe" --certs /nonexistent --only kotlin-native-ours \
+            --workloads "$WORKLOADS" --rounds "$ROUNDS" --json results/linux-arm64.json --trace-dir results/traces \
+            | tee results-linux-arm64.md
+      - name: Summarise
+        if: ${{ !cancelled() }}
+        run: .github/scripts/native-compare-summary.sh "Linux arm64" results-linux-arm64.md results/traces
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: native-compare-linux-arm64
+          path: |
+            results
+            results-linux-arm64.md
+          retention-days: 14
+
+  macos-arm64:
+    name: "macOS arm64"
+    needs: natives
+    runs-on: macos-26
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/apple-quiche-env
+        with:
+          natives-run-id: ${{ needs.natives.outputs.apple }}
+          github-token: ${{ github.token }}
+          test-launcher-jdk: "25"
+      - name: Build the optimized test binary and the JMH jar
+        run: >-
+          ./gradlew :socket-quic-quiche:linkReleaseTestMacosArm64 :benchmark-jvm:mainBenchmarkJar
+          -PlinuxTargets=false --no-configuration-cache
+      - name: Run
+        run: |
+          set -euo pipefail
+          mkdir -p results
+          jar=$(find benchmarks/jvm/build/benchmarks/main/jars -name "*.jar" | head -1)
+          python3 -I benchmarks/native-compare/run.py --kexe "$PWD/socket-quic-quiche/build/bin/macosArm64/releaseTest/test.kexe" \
+            --certs /nonexistent --only kotlin-native-ours --workloads "$WORKLOADS" --rounds "$ROUNDS" \
+            --jmh-jar "$jar" --java "$TEST_LAUNCHER_JDK_HOME/bin/java" --certs-repo socket-quic-quiche/testcerts \
+            --json results/macos-arm64.json --trace-dir results/traces | tee results-macos-arm64.md
+      - name: Summarise
+        if: ${{ !cancelled() }}
+        run: .github/scripts/native-compare-summary.sh "macOS arm64" results-macos-arm64.md results/traces
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: native-compare-macos-arm64
+          path: |
+            results
+            results-macos-arm64.md
+          retention-days: 14
