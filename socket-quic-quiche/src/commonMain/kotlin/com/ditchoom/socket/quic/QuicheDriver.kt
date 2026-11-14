@@ -1449,7 +1449,7 @@ class QuicheDriver(
      * one requested — that distinction is the whole of the `Succeeded(null, 0)` bug), and the caller's
      * deferred, completed by [drainPathEvents] once the peer validates or fails the path.
      *
-     * …or, if quiche reports **neither** outcome, by [abandonPathValidationIfDue] once [budget]
+     * …or, if quiche reports **neither** outcome, by [tendPathValidation] once [budget]
      * elapses. Path validation is the one driver operation with no other bound on it: quiche can go
      * silent on a probed path (measured on a real Wi-Fi↔cellular handoff — a probe stuck at
      * `Probing` for the rest of a 2194-line trace), and because [handleMigrate] admits one migration
@@ -1468,11 +1468,29 @@ class QuicheDriver(
     ) {
         private val armedAt: TimeMark = clock.markNow()
 
-        /** Time left before validation must be abandoned; [Duration.ZERO] once due. Feeds the loop's `wait`. */
-        fun validationRemaining(): Duration = (budget - armedAt.elapsedNow()).coerceAtLeast(Duration.ZERO)
+        /**
+         * One PTO: how long a PATH_CHALLENGE goes unanswered before another is sent. quiche sends one again
+         * only when the packet carrying it is declared lost, never when the peer's PATH_RESPONSE is.
+         */
+        private val challengeInterval: Duration = budget / PATH_VALIDATION_PTO_MULTIPLIER
 
-        /** Re-*measured*, never inferred from which `select` clause won — see [abandonPathValidationIfDue]. */
+        /** PATH_CHALLENGEs asked of quiche for this validation, the probe's own included. */
+        private var challengesAsked = 1
+
+        /** Time left before the next PATH_CHALLENGE is owed or validation is abandoned; feeds the loop's `wait`. */
+        fun nextDeadline(): Duration =
+            minOf(budget, challengeInterval * challengesAsked)
+                .minus(armedAt.elapsedNow())
+                .coerceAtLeast(Duration.ZERO)
+
+        /** Re-*measured*, never inferred from which `select` clause won — see [tendPathValidation]. */
         fun isDue(): Boolean = armedAt.elapsedNow() >= budget
+
+        fun challengeIsDue(): Boolean = armedAt.elapsedNow() >= challengeInterval * challengesAsked
+
+        fun challengeAsked() {
+            challengesAsked++
+        }
     }
 
     /**
@@ -2140,7 +2158,7 @@ class QuicheDriver(
                 // RFC 9000 §8.2.4's abandon timer for an in-flight PATH_CHALLENGE. Null whenever no
                 // migration is armed, so a connection that never migrates arms exactly the timers it
                 // always did.
-                val probeRemaining = validating()?.validationRemaining()
+                val probeRemaining = validating()?.nextDeadline()
                 // Every deadline reduced once, so the wait and the arm cannot disagree — see [Wake].
                 val armed =
                     nextWake(
@@ -2207,7 +2225,7 @@ class QuicheDriver(
                             NextWake.NoTimer -> Unit
                             is NextWake.Armed ->
                                 when (armed.wake) {
-                                    is Wake.ProbeAbandon -> abandonPathValidationIfDue()
+                                    is Wake.ProbeAbandon -> tendPathValidation()
                                     // Keepalive is the sooner deadline → PING; quiche's idle timer is
                                     // always later (keepAliveInterval < idleTimeout), so this fires first
                                     // and prevents the idle close.
@@ -3769,8 +3787,8 @@ class QuicheDriver(
         // A kept path needs no spare to be probed again — whether it will be is decided once the fresh
         // socket says which local address the platform routes from.
         val keptResumable = cmd.target is MigrationTarget.FreshLocalEndpoint && keptPath() is KeptPath.Found
-        if (!keptResumable && peerHasNoRoomForANewPath()) {
-            // The peer would drop the probe: answering now saves the validation budget it would cost.
+        if (peerPathRoom is PeerPathRoom.Full) {
+            // The peer dropped a probe at its path limit and would drop this one, a kept path's included.
             cmd.result.complete(MigrationResult.Unmoved.Failed.NoSpareConnectionId)
             return
         }
@@ -3998,9 +4016,9 @@ class QuicheDriver(
     }
 
     /**
-     * The RFC 9000 §8.2.4 abandon timer firing: give up on a path the peer has neither validated nor
-     * failed, so `migrate()` returns and the automatic reactor is released to follow the *next*
-     * network change.
+     * The path validation timer firing: each PTO another PATH_CHALLENGE ([challengeAgain]), and at the
+     * RFC 9000 §8.2.4 abandon deadline, give up on a path the peer has neither validated nor failed, so
+     * `migrate()` returns and the automatic reactor is released to follow the *next* network change.
      *
      * **Order is the correctness argument.** [drainPathEvents] runs FIRST, before anything is
      * declared expired. The deadline and a `Validated` event can come due in the same wake — quiche
@@ -4019,12 +4037,32 @@ class QuicheDriver(
      * ([PathSlot.Kept]): the next migration either probes it again or replaces it, so at most one
      * unanswered probe's socket and id are ever held.
      */
-    private fun abandonPathValidationIfDue() {
+    private fun tendPathValidation() {
         if (migrationEnabled) drainPathEvents()
         val pending = validating() ?: return
-        if (!pending.isDue()) return
+        if (!pending.isDue()) {
+            if (pending.challengeIsDue()) challengeAgain(pending)
+            return
+        }
         paths[pending.key]?.keep(pending.localEndpoint)
+        learnFromUnansweredProbe()
         completeMigration(pending, MigrationResult.Unmoved.Failed.PathNotValidated)
+    }
+
+    /**
+     * Ask quiche for another PATH_CHALLENGE on the path [pending] validates. Probing a path quiche already
+     * holds only requests validation again: it keeps the path's connection id and spends no spare. A
+     * response to any challenge sent on the path validates it (RFC 9000 §8.2.1 allows several).
+     */
+    private fun challengeAgain(pending: PendingMigration) {
+        pending.challengeAsked()
+        val wiring = migrationWiring ?: return
+        val entry = paths[pending.key] ?: return
+        when (api.connProbePath(conn, entry.localAddr, entry.localLen, wiring.peer.address, wiring.peer.length)) {
+            is ProbeOutcome.Probed -> quicheOwesAFlush = true
+            // The path is left to the abandon deadline, which reports it as unanswered.
+            is ProbeOutcome.Rejected -> Unit
+        }
     }
 
     /** Poll and react to quiche path events (validation, failure, path close). Migration-clients only. */
@@ -4065,6 +4103,7 @@ class QuicheDriver(
                     val pending = validating()
                     if (pending != null && pending.key == key) {
                         paths[key]?.keep(pending.localEndpoint)
+                        learnFromUnansweredProbe()
                         completeMigration(pending, MigrationResult.Unmoved.Failed.PathNotValidated)
                     }
                 }
@@ -4121,7 +4160,9 @@ class QuicheDriver(
                 peerPathRoom =
                     when (val room = peerPathRoom) {
                         PeerPathRoom.Freed -> PeerPathRoom.Freed
-                        is PeerPathRoom.Kept -> PeerPathRoom.Kept(room.movedTo + entry.key)
+                        // It validated a path it could not have held beside every left one: it frees them.
+                        is PeerPathRoom.Holding ->
+                            if (peerAtItsPathLimit(room)) PeerPathRoom.Freed else PeerPathRoom.Kept(room.movedTo + entry.key)
                     }
                 // The path the liveness sampler was judging is no longer the one we live
                 // on, and the new one's counters start somewhere else — so the run of
@@ -4278,27 +4319,27 @@ class QuicheDriver(
     private fun peerHoldsAnUnusedIdOfOurs(): Boolean =
         when (val room = peerPathRoom) {
             PeerPathRoom.Freed -> true
-            is PeerPathRoom.Kept -> api.connActiveScids(conn) > room.movedTo.size + 1
+            is PeerPathRoom.Holding -> api.connActiveScids(conn) > room.movedTo.size + 1
         }
 
     /**
-     * Whether a move to a new 4-tuple would exceed what the peer can hold. A peer keeps a path for each of
-     * our ids it holds and holds at most its `active_connection_id_limit` of them; one that never frees a
-     * path a client left (quiche: `path.rs` `make_room_for_new_path` evicts only a path with no id, and
-     * `lib.rs` relinks the id that Retire Prior To brings to the left path) admits a new 4-tuple only while
-     * it holds fewer paths than that limit. Unknown before the handshake, and never once the peer has
-     * shown it frees left paths.
+     * Whether a peer still holding the original path and every path in [room] is at its
+     * `active_connection_id_limit`, which caps the paths it holds. One that never frees a left path (quiche:
+     * `path.rs` `make_room_for_new_path` evicts only a path with no id, and `lib.rs` relinks the id Retire
+     * Prior To brings to the left path) then drops a probe from a new 4-tuple; one that frees them answers
+     * it. Only the probe's answer tells which, so this decides what an answer teaches, not whether to probe.
      */
-    private fun peerHasNoRoomForANewPath(): Boolean =
-        when (val room = peerPathRoom) {
-            PeerPathRoom.Freed -> false
-            is PeerPathRoom.Kept ->
-                when (val params = api.connPeerTransportParams(conn)) {
-                    PeerTransportParams.NotYetNegotiated -> false
-                    // The original path is held too, beside every one moved to.
-                    is PeerTransportParams.Negotiated -> room.movedTo.size + 1L >= params.activeConnIdLimit
-                }
+    private fun peerAtItsPathLimit(room: PeerPathRoom.Holding): Boolean =
+        when (val params = api.connPeerTransportParams(conn)) {
+            PeerTransportParams.NotYetNegotiated -> false
+            is PeerTransportParams.Negotiated -> room.movedTo.size + 1L >= params.activeConnIdLimit
         }
+
+    /** A probe went unanswered: with the peer at its path limit that is the limit, so later moves are refused unprobed. */
+    private fun learnFromUnansweredProbe() {
+        val room = peerPathRoom
+        if (room is PeerPathRoom.Kept && peerAtItsPathLimit(room)) peerPathRoom = PeerPathRoom.Full(room.movedTo)
+    }
 
     /**
      * Issue one new source connection id (`quiche_conn_new_scid` with retire_if_needed): its sequence
