@@ -18,12 +18,7 @@ case "$(uname -s)" in
 esac
 results="$root/interop-results"
 mkdir -p "$results"
-# Windows ships only the JNI shim (quiche_jni.dll, quiche linked in), not a libquiche the FFM loader can open,
-# so the multi-release FFM classes are switched off there and the jar falls back to JNI, as the Windows JVM
-# test lane does.
-jvm_flags="--enable-native-access=ALL-UNNAMED --add-opens java.base/java.nio=ALL-UNNAMED"
-[ -n "$exe" ] && jvm_flags="$jvm_flags -Djdk.util.jar.enableMultiRelease=false"
-ours="java $jvm_flags -jar $root/test-harness/quic-interop/quic-interop.jar"
+ours="java --enable-native-access=ALL-UNNAMED --add-opens java.base/java.nio=ALL-UNNAMED -jar $root/test-harness/quic-interop/quic-interop.jar"
 pair="$root/test-harness/quic-interop/native-pair.py"
 
 "$py" "$pair" --direction "$LANE-our-client" --peer quic-go --tests "$TESTS" \

@@ -1,7 +1,8 @@
 name: QUIC interop, native lanes
 
 # Our endpoint and foreign QUIC endpoints run natively on macOS (Apple silicon) and Windows, over loopback,
-# so the socket layer under test is the platform's own: the JVM's NIO on macOS and Windows. The
+# so the socket layer under test is the platform's own: the JVM's NIO on macOS and Windows. The endpoint
+# runs on JDK 21 with the multi-release classes on, so quiche is the FFM backend on both, as for a consumer. The
 # quic-interop-runner needs Docker and a simulated Linux network, which neither runner offers here, so
 # test-harness/quic-interop/native-pair.py runs each pair and checks every download byte for byte, writing
 # the runner's result shape for .github/scripts/quic-interop-gate.py to judge against the same
