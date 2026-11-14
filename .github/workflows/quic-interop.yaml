@@ -50,8 +50,9 @@ concurrency:
 
 jobs:
   # This workflow builds no natives of its own. A run on demand takes the natives built for the commit it
-  # runs (a pull request's CI makes them): natives from another commit carry another quiche patch set. A
-  # nightly run takes the newest from main.
+  # runs: natives from another commit carry another quiche patch set. A pull request's CI builds them from
+  # the branch merged into main, so they match only while the branch is up to date with main. A nightly run
+  # takes the newest from main.
   natives:
     name: "find natives"
     runs-on: ubuntu-24.04
