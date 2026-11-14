@@ -46,6 +46,9 @@ import kotlin.time.Duration.Companion.seconds
 private const val HQ = "hq-interop"
 private const val UNSUPPORTED = 127
 
+/** About 100 requests of under 50 bytes each: a burst that fits a client's initial congestion window. */
+private const val INITIAL_MAX_STREAMS_BIDI = 100L
+
 /**
  * withQuicConnection's timeout bounds the handshake AND the block. The runner's own limit is what should
  * stop a slow test (a 10 MB transfer at 10 Mbit/s under loss outlives the 15 s default), so this is generous.
@@ -89,13 +92,17 @@ private fun baseOptions() =
         alpnProtocols = listOf(HQ),
         verifyPeer = false,
         idleTimeout = 30.seconds,
-        // The interop transfers are up to 10 MB per file and thousands of streams per connection.
+        // The interop transfers are up to 10 MB per file and thousands of streams per connection; the
+        // stream limit is raised as streams finish (`multiplexing` requires the initial one to be at most
+        // 1000). A client that writes each request in one stream_send and ignores a partial write (quiche's
+        // http09 client) truncates every request that does not fit in its congestion window, so the limit
+        // is kept to a burst of requests that does.
         flowControl =
             FlowControl(
                 initialMaxData = 64L * 1024 * 1024,
                 initialMaxStreamDataBidiLocal = 16L * 1024 * 1024,
                 initialMaxStreamDataBidiRemote = 16L * 1024 * 1024,
-                initialMaxStreamsBidi = 1000,
+                initialMaxStreamsBidi = INITIAL_MAX_STREAMS_BIDI,
             ),
     )
 
