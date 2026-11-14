@@ -176,7 +176,7 @@ private suspend fun QuicScope.serveRequest(
         stream.markReplaySafe()
         val request = StringBuilder()
         while (true) {
-            when (val r = stream.read(30.seconds)) {
+            when (val r = stream.read()) {
                 is ReadResult.Data ->
                     try {
                         request.append(r.buffer.readString(r.buffer.remaining(), Charset.UTF8))

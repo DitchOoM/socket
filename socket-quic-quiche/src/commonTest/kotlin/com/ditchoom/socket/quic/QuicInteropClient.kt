@@ -126,6 +126,9 @@ internal fun interopBaseOptions(streams: InteropStreamLimit = InteropStreamLimit
         alpnProtocols = listOf(HQ),
         verifyPeer = false,
         idleTimeout = 30.seconds,
+        // A stream read waits as long as the connection lives: the connection's idle timeout, not a
+        // per-read bound, decides when a peer has gone quiet, so a slow but live transfer is not failed.
+        persistentStreams = true,
         // The interop transfers are up to 10 MB per file and thousands of streams per connection; the
         // stream limit is raised as streams finish (`multiplexing` requires the initial one to be at most
         // 1000). A client that writes each request in one stream_send and ignores a partial write (quiche's
@@ -523,7 +526,7 @@ private suspend fun receive(
         val out = downloads.create(url)
         try {
             while (true) {
-                when (val r = stream.read(60.seconds)) {
+                when (val r = stream.read()) {
                     is ReadResult.Data ->
                         try {
                             val count = r.buffer.remaining()
