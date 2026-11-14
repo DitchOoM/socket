@@ -645,7 +645,9 @@
       "ipv6": "pass",
       "longrtt": "pass",
       "multiplexing": "pass",
-      "rebind-addr": "unsupported",
+      "rebind-addr": {
+        "flaky": "peer: the mvfst client declared rebind-addr unsupported in run 43559668153 and ran it, passing, in run 43562639832"
+      },
       "rebind-port": "pass",
       "resumption": "unsupported",
       "retry": "unsupported",
