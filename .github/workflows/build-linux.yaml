@@ -49,6 +49,11 @@ name: "Build & Test (Linux)"
 on:
   workflow_call:
     inputs:
+      natives-only:
+        description: "Build only the natives job's artifacts (the QUIC interop gate's runs on main and on demand); skip every test, link and publish job."
+        required: false
+        default: false
+        type: boolean
       gradle-args:
         description: "Extra Gradle arguments (e.g., -PincrementMinor=true)"
         required: false
@@ -756,6 +761,7 @@ jobs:
   checks-tests:
     name: "Linux / JVM / JS / Android"
     needs: natives
+    if: ${{ !inputs.natives-only }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     # Every jvmTest worker in this job mirrors its JVM fatal-error log (hs_err) to
@@ -1248,6 +1254,7 @@ jobs:
   abi-linux:
     name: "ABI (binary compatibility, Linux)"
     needs: natives
+    if: ${{ !inputs.natives-only }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -1311,6 +1318,7 @@ jobs:
   quiche-jvm:
     name: "QUIC quiche JVM (${{ matrix.leg.name }})"
     needs: natives
+    if: ${{ !inputs.natives-only }}
     runs-on: ubuntu-24.04
     # 40, not 25: the step lid below is now 24 (see its note on QUIC_TEST_TIME_SCALE=3), and a job
     # timeout at or below the step timeout would fire first, which is the failure mode the step lid
@@ -1719,6 +1727,7 @@ jobs:
   jvm-jdk25:
     name: "JVM tests (JDK 25)"
     needs: natives
+    if: ${{ !inputs.natives-only }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
@@ -1836,6 +1845,7 @@ jobs:
   browser-interop:
     name: "WebTransport interop (headless Chrome)"
     needs: natives
+    if: ${{ !inputs.natives-only }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -1885,6 +1895,7 @@ jobs:
   link:
     name: "Link native test binaries + quic-echo (Linux)"
     needs: natives
+    if: ${{ !inputs.natives-only }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -1994,6 +2005,7 @@ jobs:
   publish:
     name: "Publish Linux targets to Maven Local"
     needs: natives
+    if: ${{ !inputs.natives-only }}
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
@@ -2509,6 +2521,7 @@ jobs:
   malloc-check:
     name: "QUIC malloc-check (Linux x64)"
     needs: natives
+    if: ${{ !inputs.natives-only }}
     runs-on: ubuntu-24.04
     # 40, not 20: the step lid below is now 24 (QUIC_TEST_TIME_SCALE=3 — see its note). A job
     # timeout at or below the step lid fires first and takes the core-dump post-mortem steps with
@@ -2628,6 +2641,7 @@ jobs:
   fuzz-jvm:
     name: "Fuzz JVM (${{ matrix.lane }})"
     needs: natives
+    if: ${{ !inputs.natives-only }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     strategy:
@@ -2781,6 +2795,7 @@ jobs:
   fuzz-native:
     name: "Fuzz native ASAN (${{ matrix.lane }})"
     needs: natives
+    if: ${{ !inputs.natives-only }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     strategy:
@@ -2849,6 +2864,7 @@ jobs:
   fuzz-boringssl-asan:
     name: "Fuzz BoringSSL-C ASAN proof (Linux x64)"
     needs: natives
+    if: ${{ !inputs.natives-only }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
