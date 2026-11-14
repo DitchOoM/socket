@@ -38,9 +38,12 @@ env:
   WORKLOADS: ${{ inputs.workloads || 'qrr,qspr,qbulk,qconns64,qconns1024' }}
 
 jobs:
+  # The natives Build and Test uploads for this same commit (it runs on the same push), waited for: natives of
+  # another commit can carry other quiche patches, whose markers then send Gradle back to cargo.
   natives:
     name: "find natives"
     runs-on: ubuntu-24.04
+    timeout-minutes: 90
     outputs:
       linux: ${{ steps.find.outputs.linux }}
       apple: ${{ steps.find.outputs.apple }}
@@ -48,16 +51,22 @@ jobs:
       - id: find
         env:
           GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
-          newest() {
+          for_sha() {
             gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=$1&per_page=100" \
-              --jq '[.artifacts[] | select(.expired == false) | select(.workflow_run.head_branch == "main")]
-                    | sort_by(.created_at) | reverse | .[0].workflow_run.id // empty'
+              --jq "[.artifacts[] | select(.expired == false) | select(.workflow_run.head_sha == \"$SHA\")]
+                    | sort_by(.created_at) | reverse | .[0].workflow_run.id // empty"
           }
           for pair in linux:quiche-linux-natives-full apple:quiche-apple-natives; do
-            rid=$(newest "${pair#*:}")
-            [ -n "$rid" ] || { echo "::error::no unexpired ${pair#*:} artifact from main"; exit 1; }
+            rid=""
+            for _ in $(seq 1 80); do
+              rid=$(for_sha "${pair#*:}")
+              [ -n "$rid" ] && break
+              sleep 60
+            done
+            [ -n "$rid" ] || { echo "::error::Build and Test uploaded no ${pair#*:} for $SHA within 80 minutes"; exit 1; }
             echo "${pair%%:*}=$rid" >> "$GITHUB_OUTPUT"
           done
 
