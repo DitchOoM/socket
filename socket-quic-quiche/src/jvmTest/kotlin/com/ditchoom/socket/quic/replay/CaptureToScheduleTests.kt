@@ -177,6 +177,22 @@ class CaptureToScheduleTests {
     }
 
     @Test
+    fun aQlogThatStopsBeforeTheTraceDoesIsUsedAsFarAsItGoes() {
+        val qlog =
+            file(
+                "open.sqlog",
+                listOf(
+                    sentPacket(10.0, "initial", number = 0, length = 60, frame = "crypto"),
+                    packet(41.5, "received", "initial", number = 0, length = packetSpans(serverHello)[0].until, frame = "crypto"),
+                ).joinToString("\n").toByteArray(),
+            )
+        val extracted =
+            assertIs<Extraction.Extracted>(CaptureToSchedule.extract(inputs(wholeTrace(), captures(), QlogEvidence.Recorded(qlog))))
+        assertEquals(3, extracted.schedule.steps.count { it is Step.OursSent }, "every datagram of the trace is in the schedule")
+        assertTrue(extracted.notes.any { "The qlog stops at our datagram 1 of 3" in it }, extracted.notes.toString())
+    }
+
+    @Test
     fun aCaptureThatCannotBeReadIsRefusedByName() {
         val noDatagram = trace("v1 100000 STATE com.ditchoom.socket.quic.QuicConnectionState.Handshaking")
         assertEquals(

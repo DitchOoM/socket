@@ -135,7 +135,7 @@ class ServerConnectionRegistryTests {
         runQuicTest {
             val api = CountingFreeApi(StubQuicheApi())
             val registry = ServerConnectionRegistry<Int>(api)
-            val cached = registry.putRecvInfo(7, QuicheRecvInfo(1L)) { }
+            val cached = registry.putRecvInfo(7, QuicheRecvInfo(1L), PathKey(4, 7, 0L, 0L)) { }
             // Simulate a lagging driver still holding a reference to the cached recv_info.
             cached.inFlight.incrementAndGet()
 
@@ -159,8 +159,8 @@ class ServerConnectionRegistryTests {
             val api = CountingFreeApi(StubQuicheApi())
             val registry = ServerConnectionRegistry<Int>(api)
             var released = 0
-            registry.putRecvInfo(1, QuicheRecvInfo(1L)) { released++ }
-            registry.putRecvInfo(2, QuicheRecvInfo(2L)) { released++ }
+            registry.putRecvInfo(1, QuicheRecvInfo(1L), PathKey(4, 1, 0L, 0L)) { released++ }
+            registry.putRecvInfo(2, QuicheRecvInfo(2L), PathKey(4, 2, 0L, 0L)) { released++ }
 
             registry.reapAllDriversAndFreeRecvInfoCache()
 
@@ -176,7 +176,7 @@ class ServerConnectionRegistryTests {
         runQuicTest {
             val registry = ServerConnectionRegistry<Int>(StubQuicheApi())
             assertNull(registry.lookupRecvInfo(42), "miss before any put")
-            val cached = registry.putRecvInfo(42, QuicheRecvInfo(1L)) { }
+            val cached = registry.putRecvInfo(42, QuicheRecvInfo(1L), PathKey(4, 42, 0L, 0L)) { }
             assertSame(cached, registry.lookupRecvInfo(42), "hit returns the same cached entry")
             assertNull(registry.lookupRecvInfo(99), "unrelated key still misses")
         }

@@ -316,9 +316,10 @@ internal class ServerConnectionRegistry<K>(
     fun putRecvInfo(
         key: K,
         info: QuicheRecvInfo,
+        from: PathKey,
         releaseSource: () -> Unit,
     ): CachedRecvInfo {
-        val cached = CachedRecvInfo(info, releaseSource)
+        val cached = CachedRecvInfo(info, from, releaseSource)
         peerRecvInfos[key] = cached
         evictIdlePeerRecvInfo()
         return cached
@@ -468,6 +469,8 @@ internal class RouteProjection(
  */
 internal class CachedRecvInfo(
     val info: QuicheRecvInfo,
+    /** The source [info] names. */
+    val from: PathKey,
     private val releaseSourceAddr: () -> Unit,
 ) {
     /** Packets handed to a driver but not yet consumed; guards against evict/free-while-in-use. */
