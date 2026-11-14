@@ -482,13 +482,13 @@ class PathRetirementTests {
         }
 
     /**
-     * **A packet from the path a switch left is fed under that path's own recv_info until quiche evicts
-     * the path, and dropped after — never attributed to another path.** The peer sends on the left path
-     * until it sees the move, so those packets are quiche's to acknowledge; once quiche no longer holds
-     * the path, feeding one under another path's recv_info would tell quiche it arrived where it did not.
+     * **A packet from the path a switch left is fed as arriving on the active path until quiche evicts
+     * the left one, and dropped after.** The peer sends on the left path until it sees the move, so those
+     * packets are quiche's to acknowledge; under the left path's own recv_info quiche would answer a
+     * PATH_CHALLENGE among them there, linking a spare connection id to a path the client has left.
      */
     @Test
-    fun aPacketFromTheLeftPathIsReadUnderItsOwnAddressUntilQuicheEvictsThePath() =
+    fun aPacketFromTheLeftPathIsReadAsArrivingOnTheActivePathUntilQuicheEvictsIt() =
         runTest {
             val f = Fixture()
             f.driver.start(this)
@@ -505,8 +505,8 @@ class PathRetirementTests {
                 sendPacket(f, leftKey)
                 runCurrent()
                 val (live, left) = f.stub.recvArrivals
-                assertEquals(PRIMARY_RECV_INFO, left, "the left path's packet must reach quiche under its own recv_info")
-                assertTrue(live != left, "the live path's packet must reach quiche under its own recv_info")
+                assertTrue(live != PRIMARY_RECV_INFO, "the active path's packet must reach quiche under its own recv_info")
+                assertEquals(live, left, "the left path's packet must reach quiche as arriving on the active path")
 
                 f.evict(primaryPort)
                 runCurrent()
@@ -515,7 +515,7 @@ class PathRetirementTests {
                 assertEquals(
                     listOf(live, left),
                     f.stub.recvArrivals,
-                    "a packet from a path quiche evicted must be dropped, not fed under another path's recv_info",
+                    "a packet from a path quiche evicted must be dropped",
                 )
             } finally {
                 f.driver.destroy()

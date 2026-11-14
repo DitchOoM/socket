@@ -2484,22 +2484,30 @@ class QuicheDriver(
                     when (source) {
                         is PacketSource.FromServerSocket -> source.recvInfo
                         is PacketSource.FromPath -> {
-                            // The path a switch left is still read while it is reserved ([leavePath]).
-                            val entry = paths[source.key] ?: reservedPorts[source.key]
-                            if (entry == null) {
-                                flight.record(FlightEvent.DroppedFromLeftPath, source.key.port.toLong())
-                                // quiche no longer holds the path this arrived on, and feeding it under
-                                // another path's recv_info would tell quiche it arrived somewhere it did
-                                // not. A reader's final datagrams can be queued behind its own release.
-                                cmd.release(QuicheCmd.ReleaseDoor.RetiredPath)
-                                return
+                            val entry = paths[source.key]
+                            when {
+                                entry != null -> {
+                                    // The path we live on is carrying traffic: the silence trigger resets
+                                    // here, where the arrival is observed rather than inferred. Ungated on
+                                    // purpose, unlike the sampler — with no collector no run is ever built,
+                                    // so this returns on its first field read. See [activePathAnswered].
+                                    if (migrationEnabled && entry === active) activePathAnswered()
+                                    entry.recvInfo
+                                }
+                                // A path a switch left ([leavePath]): what the peer sent there before it saw
+                                // the move is quiche's to acknowledge, so it is fed as arriving where the
+                                // connection now lives. Anything it asks of the left path, a PATH_CHALLENGE,
+                                // is then answered on the active one: answering on the left path would link
+                                // a spare connection id to it, and pull a peer that follows NAT rebindings
+                                // back onto an address the client has left.
+                                source.key in reservedPorts -> active.recvInfo
+                                else -> {
+                                    flight.record(FlightEvent.DroppedFromLeftPath, source.key.port.toLong())
+                                    // A reader's final datagrams can be queued behind its own release.
+                                    cmd.release(QuicheCmd.ReleaseDoor.RetiredPath)
+                                    return
+                                }
                             }
-                            // The path we live on is carrying traffic: the silence trigger resets here,
-                            // where the arrival is observed rather than inferred. Ungated on purpose,
-                            // unlike the sampler — with no collector no run is ever built, so this
-                            // returns on its first field read. See [activePathAnswered].
-                            if (migrationEnabled && entry === active) activePathAnswered()
-                            entry.recvInfo
                         }
                     }
                 // No QuicheMemory here, deliberately: this command already carries the buffer itself,
@@ -4235,9 +4243,9 @@ class QuicheDriver(
 
     /**
      * [teardownPath] for the path a switch moved off, which keeps reading while it is in [reservedPorts]:
-     * the peer goes on sending there until it sees the move, and those packets are quiche's to acknowledge.
-     * A probe path is never left this way, because what reaches it late is the peer's own path validation,
-     * which quiche would answer with a spare connection id.
+     * the peer goes on sending there until it sees the move, and those packets are quiche's to acknowledge
+     * (fed as arriving on the active path, see [execute]). A probe path is never left this way: what
+     * reaches it late is the peer's answer to a validation the client gave up on.
      */
     private fun leavePath(entry: PathEntry) {
         loopGuard.assertOnLoop(LoopSite.TeardownPath)
