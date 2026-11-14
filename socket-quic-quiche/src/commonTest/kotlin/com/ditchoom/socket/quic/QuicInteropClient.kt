@@ -8,6 +8,7 @@ import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.HostResolver
 import com.ditchoom.socket.Resolution
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
@@ -65,6 +66,30 @@ internal interface InteropHost {
     fun reportError(line: String)
 
     fun flushOutput()
+
+    /** A fresh replay trace for the next connection. */
+    fun connectionCapture(): InteropConnectionCapture = InteropConnectionCapture.None
+}
+
+/**
+ * One connection's deterministic-replay trace (`QuicOptions.trace`), which also turns on the driver's
+ * flight recorder: [keep] when the connection failed, [discard] when it did what it was asked.
+ */
+internal interface InteropConnectionCapture {
+    fun options(base: QuicOptions): QuicOptions
+
+    fun keep()
+
+    fun discard()
+
+    /** No trace: the platform has nowhere to keep one. */
+    object None : InteropConnectionCapture {
+        override fun options(base: QuicOptions): QuicOptions = base
+
+        override fun keep() = Unit
+
+        override fun discard() = Unit
+    }
 }
 
 /** A response body being written to disk. */
@@ -176,7 +201,7 @@ internal suspend fun runInteropClient(host: InteropHost): Int {
             // Two connections: the first fetches one file and keeps the ticket, the second resumes.
             "resumption", "zerortt" -> {
                 val ticket =
-                    withQuicConnection(peer, options, timeout = BLOCK_TIMEOUT) {
+                    host.connection(peer, options) {
                         download(urls.first(), downloads, ReceivedBytes())
                         withTimeout(10.seconds) {
                             sessionTicket.filterIsInstance<QuicSessionTicketState.Issued>().first().ticket
@@ -184,20 +209,20 @@ internal suspend fun runInteropClient(host: InteropHost): Int {
                     }
                 val rest = urls.drop(1)
                 if (test == "resumption") {
-                    withQuicConnection(peer, options.copy(resumption = QuicResumption.Resume(ticket)), timeout = BLOCK_TIMEOUT) {
+                    host.connection(peer, options.copy(resumption = QuicResumption.Resume(ticket))) {
                         downloadAll(rest, downloads, ReceivedBytes())
                     }
                 } else {
-                    zeroRtt(peer, options, ticket, rest, downloads)
+                    host.zeroRtt(peer, options, ticket, rest, downloads)
                 }
             }
             // A new connection per file: the handshake is what the loss/corruption is aimed at.
             "multiconnect" ->
                 urls.forEach { url ->
-                    withQuicConnection(peer, options, timeout = BLOCK_TIMEOUT) { download(url, downloads, ReceivedBytes()) }
+                    host.connection(peer, options) { download(url, downloads, ReceivedBytes()) }
                 }
             else ->
-                withQuicConnection(peer, options, timeout = BLOCK_TIMEOUT) {
+                host.connection(peer, options) {
                     when (mode) {
                         ClientMode.Plain -> downloadAll(urls, downloads, ReceivedBytes())
                         ClientMode.ActiveMigration -> downloadAllMigrating(urls, downloads, host)
@@ -234,8 +259,39 @@ private suspend fun singleCandidate(url: InteropUrl): QuicPeer {
     return QuicPeer.Candidates(listOf(QuicEndpoint(address, url.port)), serverName = url.host)
 }
 
+/**
+ * One connection running [block]. A failure inside the block prints the driver's snapshot and flight
+ * recording; any failure, the handshake's included, keeps the connection's replay trace.
+ */
+private suspend fun <T> InteropHost.connection(
+    peer: QuicPeer,
+    options: QuicOptions,
+    block: suspend QuicScope.() -> T,
+): T {
+    val capture = connectionCapture()
+    val result =
+        try {
+            withQuicConnection(peer, capture.options(options), timeout = BLOCK_TIMEOUT) {
+                try {
+                    block()
+                } catch (failure: Exception) {
+                    if (failure !is CancellationException) {
+                        printDriverState("FAILURE")
+                        flushOutput()
+                    }
+                    throw failure
+                }
+            }
+        } catch (failure: Exception) {
+            capture.keep()
+            throw failure
+        }
+    capture.discard()
+    return result
+}
+
 /** Every request is written in the first flight as 0-RTT; the responses are read once connected. */
-private suspend fun zeroRtt(
+private suspend fun InteropHost.zeroRtt(
     peer: QuicPeer,
     options: QuicOptions,
     ticket: QuicSessionTicket,
@@ -253,7 +309,7 @@ private suspend fun zeroRtt(
                 }
             early.complete(opened)
         }
-    withQuicConnection(peer, options.copy(resumption = offer), timeout = BLOCK_TIMEOUT) {
+    connection(peer, options.copy(resumption = offer)) {
         val opened = withTimeout(30.seconds) { early.await() }
         println("resumption=$resumption")
         coroutineScope {
@@ -387,8 +443,8 @@ private suspend fun QuicScope.downloadAllMigrating(
     host.flushOutput()
 }
 
-/** The driver's snapshot and flight recording, each line prefixed with [tag], for a move that hung or was refused. */
-private suspend fun QuicScope.printDriverState(tag: String) {
+/** The driver's snapshot and flight recording, each line prefixed with [tag]. */
+internal suspend fun QuicScope.printDriverState(tag: String) {
     val driver = (this as QuicheBackedConnection).quicheDriver
     println("$tag snapshot ${driver.stallSnapshot()}")
     val recording =

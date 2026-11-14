@@ -4,19 +4,28 @@ import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.socket.quic.trace.QuicConnectionCapture
+import com.ditchoom.socket.quic.trace.QuicTraceCapture
+import com.ditchoom.socket.testkit.trace.TraceSink
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
+import java.io.BufferedWriter
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.system.exitProcess
 import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TimeSource
 
@@ -47,30 +56,82 @@ private val serverTests = setOf("handshake", "transfer", "multiconnect", "resump
  *    `REQUESTS` (space separated) into `/downloads/<path>`.
  *  - Key logs: `QUIC_KEYLOG_DIR` is set by run_endpoint.sh, which concatenates the per-connection files
  *    into the runner's `SSLKEYLOGFILE` so it can decrypt the capture.
+ *  - Java Flight Recorder: with `JFR_FILE` set, a ring of the last [JFR_RING_AGE] runs from the start,
+ *    begun off the main thread so the first Initial is not delayed. The client writes it out only when it
+ *    fails; the server when the runner stops it.
+ *  - Replay traces: with `TRACE_DIR` set, every connection records its v1 trace (which also turns on the
+ *    driver's flight recorder). The client keeps a connection's trace only when that connection failed;
+ *    the server keeps every connection's, each up to [SERVER_TRACE_BUDGET] characters.
  */
 fun main() {
     val role = System.getenv("ROLE")
     val test = System.getenv("TESTCASE").orEmpty()
+    val recorder = FlightRecorderRing.fromEnvironment()
     val code =
         when (role) {
-            "server" -> if (test in serverTests) runServer(test) else UNSUPPORTED
+            "server" -> if (test in serverTests) runServer(test, recorder) else UNSUPPORTED
             "client" -> runClient()
             else -> {
                 System.err.println("ROLE must be client or server, was '$role'")
                 1
             }
         }
+    if (code != 0 && code != UNSUPPORTED) recorder.dump()
     System.out.flush()
     exitProcess(code)
 }
 
+/** The JVM's own flight recording of the endpoint, for a failure the QUIC traces do not explain. */
+private sealed interface FlightRecorderRing {
+    fun dump()
+
+    data object Off : FlightRecorderRing {
+        override fun dump() = Unit
+    }
+
+    class On(
+        private val file: File,
+    ) : FlightRecorderRing {
+        private val recording =
+            CompletableFuture.supplyAsync(
+                {
+                    jdk.jfr.Recording(jdk.jfr.Configuration.getConfiguration("default")).apply {
+                        setMaxAge(java.time.Duration.ofMillis(JFR_RING_AGE.inWholeMilliseconds))
+                        setToDisk(true)
+                        start()
+                    }
+                },
+                { task -> Thread(task, "jfr-ring-start").apply { isDaemon = true }.start() },
+            )
+
+        override fun dump() {
+            recording.get().dump(file.toPath())
+            System.err.println("flight recording written to $file")
+        }
+    }
+
+    companion object {
+        fun fromEnvironment(): FlightRecorderRing =
+            when (val path = System.getenv("JFR_FILE").orEmpty()) {
+                "" -> Off
+                else -> On(File(path))
+            }
+    }
+}
+
+private val JFR_RING_AGE = 2.minutes
+
 // ---- server -------------------------------------------------------------------------------------
 
-private fun runServer(test: String): Int {
+private fun runServer(
+    test: String,
+    recorder: FlightRecorderRing,
+): Int {
     val www = File(System.getenv("WWW") ?: "/www")
     val certs = File(System.getenv("CERTS") ?: "/certs")
     val port = System.getenv("PORT")?.toInt() ?: 443
-    val options = interopBaseOptions().copy(enableEarlyData = test == "zerortt" || test == "resumption")
+    val traces = TraceDirectory.fromEnvironment()
+    val options = traces.serverOptions(interopBaseOptions().copy(enableEarlyData = test == "zerortt" || test == "resumption"))
     val tls = QuicTlsConfig(certChainPath = certs.resolve("cert.pem").path, privKeyPath = certs.resolve("priv.key").path)
     runBlocking(Dispatchers.IO) {
         val serving =
@@ -90,6 +151,8 @@ private fun runServer(test: String): Int {
         Runtime.getRuntime().addShutdownHook(
             Thread {
                 runBlocking { withTimeoutOrNull(SHUTDOWN_BUDGET) { serving.cancelAndJoin() } }
+                traces.flushServerTraces()
+                recorder.dump()
             },
         )
         serving.join()
@@ -138,6 +201,7 @@ private suspend fun QuicScope.serveRequest(
         sendFile(stream, file)
     } catch (e: Exception) {
         System.err.println("request failed: $e")
+        if (e !is CancellationException) printDriverState("FAILURE")
     } finally {
         stream.close()
     }
@@ -190,7 +254,103 @@ private object JvmInteropHost : InteropHost {
     override fun reportError(line: String) = System.err.println(line)
 
     override fun flushOutput() = System.out.flush()
+
+    private val traces = TraceDirectory.fromEnvironment()
+
+    override fun connectionCapture(): InteropConnectionCapture = traces.clientCapture()
 }
+
+/** Where replay traces go: `TRACE_DIR`, or nowhere. */
+private sealed interface TraceDirectory {
+    fun clientCapture(): InteropConnectionCapture
+
+    fun serverOptions(base: QuicOptions): QuicOptions
+
+    fun flushServerTraces()
+
+    data object Unset : TraceDirectory {
+        override fun clientCapture(): InteropConnectionCapture = InteropConnectionCapture.None
+
+        override fun serverOptions(base: QuicOptions): QuicOptions = base
+
+        override fun flushServerTraces() = Unit
+    }
+
+    class At(
+        private val directory: File,
+    ) : TraceDirectory {
+        private val sequence = AtomicInteger()
+        private val serverWriters = ConcurrentLinkedQueue<BudgetedTraceWriter>()
+
+        override fun clientCapture(): InteropConnectionCapture = FileConnectionCapture(file("client"))
+
+        override fun serverOptions(base: QuicOptions): QuicOptions =
+            base.copy(
+                trace =
+                    QuicTraceCapture({
+                        val writer = BudgetedTraceWriter(file("server").bufferedWriter(), SERVER_TRACE_BUDGET)
+                        serverWriters.add(writer)
+                        QuicConnectionCapture(writer.sink)
+                    }),
+            )
+
+        override fun flushServerTraces() = serverWriters.forEach(BudgetedTraceWriter::flush)
+
+        private fun file(role: String): File = directory.resolve("$role-${sequence.incrementAndGet().toString().padStart(4, '0')}.trace")
+    }
+
+    companion object {
+        fun fromEnvironment(): TraceDirectory =
+            when (val dir = System.getenv("TRACE_DIR").orEmpty()) {
+                "" -> Unset
+                else -> At(File(dir).apply { mkdirs() })
+            }
+    }
+}
+
+/** A client connection's trace file, deleted when the connection succeeded. */
+private class FileConnectionCapture(
+    private val file: File,
+) : InteropConnectionCapture {
+    private val writer = BudgetedTraceWriter(file.bufferedWriter(), Long.MAX_VALUE)
+
+    override fun options(base: QuicOptions): QuicOptions = base.copy(trace = QuicTraceCapture({ QuicConnectionCapture(writer.sink) }))
+
+    override fun keep() = writer.close()
+
+    override fun discard() {
+        writer.close()
+        file.delete()
+    }
+}
+
+/**
+ * Trace lines to [out] until [budget] characters, then one `TRUNCATED` line. The sink is called one event
+ * at a time (see [QuicTraceCapture.captureFor]), so the count needs no atomics.
+ */
+private class BudgetedTraceWriter(
+    private val out: BufferedWriter,
+    private val budget: Long,
+) {
+    private var written = 0L
+
+    val sink =
+        TraceSink { event ->
+            if (written <= budget) {
+                val line = event.toString()
+                written += line.length
+                out.write(if (written <= budget) line else "TRUNCATED after $budget characters")
+                out.newLine()
+            }
+        }
+
+    fun flush() = out.flush()
+
+    fun close() = out.close()
+}
+
+/** Large enough for every handshake test's whole connection, small enough that a 10 MB transfer stops early. */
+private const val SERVER_TRACE_BUDGET = 16L * 1024 * 1024
 
 private fun runClient(): Int {
     // Load quiche before the network is up, so the first Initial leaves as soon as it is: the runner's

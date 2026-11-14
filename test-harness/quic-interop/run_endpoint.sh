@@ -19,6 +19,12 @@ if [ -n "${QLOGDIR:-}" ]; then
   export QUIC_QLOG_DIR="$QLOGDIR"
 fi
 
+# Failure evidence goes beside the runner's qlog directory, which the runner keeps with the logs: replay
+# traces and a Java Flight Recorder ring (see QuicInteropEndpoint.kt).
+LOGDIR=$(dirname "${QLOGDIR:-/logs/qlog}")
+export TRACE_DIR="$LOGDIR/trace"
+export JFR_FILE="$LOGDIR/endpoint.jfr"
+
 JAVA=(java --enable-native-access=ALL-UNNAMED --add-opens java.base/java.nio=ALL-UNNAMED -jar /quic-interop.jar)
 
 if [ "$ROLE" = "client" ]; then
@@ -27,6 +33,7 @@ if [ "$ROLE" = "client" ]; then
   WAIT_FOR=sim:57832 "${JAVA[@]}"
   rc=$?
   collect_keys
+  rmdir "$TRACE_DIR" 2>/dev/null
   exit $rc
 elif [ "$ROLE" = "server" ]; then
   # The runner stops the server with SIGTERM; flush the key logs on the way out, and periodically in
