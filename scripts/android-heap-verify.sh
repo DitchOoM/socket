@@ -4,9 +4,10 @@
 # whose runtime checks memory, until a round fails or the time budget is spent:
 #
 #   CheckJNI         dalvik.vm.checkjni, for every app (a release APK otherwise runs without it)
-#   heap verify      dalvik.vm.extra-opts -Xgc:preverify,postverify: ART walks the heap before and
-#                    after every GC, so a corrupted object is named at the next collection instead of
-#                    surfacing later as a fault in unrelated JIT code
+#   heap verify      dalvik.vm.extra-opts -Xgc:preverify,postverify. On API 34's concurrent-copying
+#                    collector a corrupted object header faults inside the collector at the next GC
+#                    (art::gc::collector::ConcurrentCopying frames in the tombstone), not later in
+#                    unrelated JIT code
 #   GWP-ASan         libc.debug.gwp_asan.* for the test process: guarded native allocations (quiche,
 #                    BoringSSL, the JNI shim), so a native overflow or use-after-free stops at the access
 #
