@@ -3795,8 +3795,8 @@ class QuicheDriver(
         // A kept path needs no spare to be probed again — whether it will be is decided once the fresh
         // socket says which local address the platform routes from.
         val keptResumable = cmd.target is MigrationTarget.FreshLocalEndpoint && keptPath() is KeptPath.Found
-        if (peerPathRoom is PeerPathRoom.Full) {
-            // The peer dropped a probe at its path limit and would drop this one, a kept path's included.
+        if (!keptResumable && peerHasNoRoomForANewPath()) {
+            // The peer would drop the probe: answering now saves the validation budget it would cost.
             cmd.result.complete(MigrationResult.Unmoved.Failed.NoSpareConnectionId)
             return
         }
@@ -4053,7 +4053,6 @@ class QuicheDriver(
             return
         }
         paths[pending.key]?.keep(pending.localEndpoint)
-        learnFromUnansweredProbe()
         completeMigration(pending, MigrationResult.Unmoved.Failed.PathNotValidated)
     }
 
@@ -4111,7 +4110,6 @@ class QuicheDriver(
                     val pending = validating()
                     if (pending != null && pending.key == key) {
                         paths[key]?.keep(pending.localEndpoint)
-                        learnFromUnansweredProbe()
                         completeMigration(pending, MigrationResult.Unmoved.Failed.PathNotValidated)
                     }
                 }
@@ -4168,13 +4166,7 @@ class QuicheDriver(
                 peerPathRoom =
                     when (val room = peerPathRoom) {
                         is PeerPathRoom.Freed -> PeerPathRoom.Freed(room.movedTo + entry.key)
-                        // It validated a path it could not have held beside every left one: it frees them.
-                        is PeerPathRoom.Kept, is PeerPathRoom.Full ->
-                            if (peerAtItsPathLimit(room)) {
-                                PeerPathRoom.Freed(room.movedTo + entry.key)
-                            } else {
-                                PeerPathRoom.Kept(room.movedTo + entry.key)
-                            }
+                        is PeerPathRoom.Kept -> PeerPathRoom.Kept(room.movedTo + entry.key)
                     }
                 // The path the liveness sampler was judging is no longer the one we live
                 // on, and the new one's counters start somewhere else — so the run of
@@ -4331,23 +4323,24 @@ class QuicheDriver(
     private fun peerHoldsAnUnusedIdOfOurs(): Boolean = api.connActiveScids(conn) > peerPathRoom.movedTo.size + 1
 
     /**
-     * Whether a peer still holding the original path and every path in [room] is at its
-     * `active_connection_id_limit`, which caps the paths it holds. One that never frees a left path (quiche:
-     * `path.rs` `make_room_for_new_path` evicts only a path with no id, and `lib.rs` relinks the id Retire
-     * Prior To brings to the left path) then drops a probe from a new 4-tuple; one that frees them answers
-     * it. Only the probe's answer tells which, so this decides what an answer teaches, not whether to probe.
+     * Whether a move to a new 4-tuple would exceed what the peer can hold. A peer keeps a path for each of
+     * our ids it holds and holds at most its `active_connection_id_limit` of them; one that never frees a
+     * path a client left (quiche: `path.rs` `make_room_for_new_path` evicts only a path with no id, and
+     * `lib.rs` relinks the id that Retire Prior To brings to the left path) admits a new 4-tuple only while
+     * it holds fewer paths than that limit. Unknown before the handshake, and never once the peer has
+     * shown it frees left paths. A peer past its limit may drop the probe (Netty) or end the connection
+     * (mvfst answers the move after its limit with INTERNAL_ERROR), so the move is refused unprobed.
      */
-    private fun peerAtItsPathLimit(room: PeerPathRoom): Boolean =
-        when (val params = api.connPeerTransportParams(conn)) {
-            PeerTransportParams.NotYetNegotiated -> false
-            is PeerTransportParams.Negotiated -> room.movedTo.size + 1L >= params.activeConnIdLimit
+    private fun peerHasNoRoomForANewPath(): Boolean =
+        when (val room = peerPathRoom) {
+            is PeerPathRoom.Freed -> false
+            is PeerPathRoom.Kept ->
+                when (val params = api.connPeerTransportParams(conn)) {
+                    PeerTransportParams.NotYetNegotiated -> false
+                    // The original path is held too, beside every one moved to.
+                    is PeerTransportParams.Negotiated -> room.movedTo.size + 1L >= params.activeConnIdLimit
+                }
         }
-
-    /** A probe went unanswered: with the peer at its path limit that is the limit, so later moves are refused unprobed. */
-    private fun learnFromUnansweredProbe() {
-        val room = peerPathRoom
-        if (room is PeerPathRoom.Kept && peerAtItsPathLimit(room)) peerPathRoom = PeerPathRoom.Full(room.movedTo)
-    }
 
     /**
      * Issue one new source connection id (`quiche_conn_new_scid` with retire_if_needed): its sequence
