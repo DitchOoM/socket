@@ -214,5 +214,93 @@ expect_rc "the extractor runs" $? 0
 ev="$(python3 -c 'import json,sys; t=json.load(open(sys.argv[1]))["tests"]["multiplexing"]; c=t["connections"][0]; print(c["local_initial_max_streams_bidi"], c["max_streams_bidi_sent"], c["peer_bidi_streams_opened"], c["local_closes"], c["remote_disable_active_migration"], t["exits"])' "$tmp/ev.json")"
 expect "the extractor reads limits, streams, one close per code and exits" "$ev" "100 90 101 [{'code': 4, 'space': 'transport'}] True {'client': 0}"
 
+# The handshake-family kinds: each matches the evidence that shows its failure and nothing else.
+hconn() { # <qlog> <extra facts json, without braces>
+  printf '{"qlog":"%s","local_initial_max_streams_bidi":100,"max_streams_bidi_sent":0,"peer_bidi_streams_opened":0,"local_closes":[],"remote_disable_active_migration":false,"rx_packets":5,"rx_initial_crypto":1,"rx_initial_acks":1,"rx_handshake_crypto":1,"rx_handshake_acks":1,"bytes_in_flight_at_end":0,"longest_wait_in_flight_ms":2000,"tx_crypto":1,"fin_sent_streams":1,"peer_resets":[]%s}' "$1" "${2:+,$2}"
+}
+kind_case() { # <name> <kind json> <direction> <test evidence json>
+  python3 - "$script" "$2" "$3" "$4" "$1" <<'PY'
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("gate", sys.argv[1])
+gate = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(gate)
+raw = json.loads(sys.argv[2])
+kind = raw.pop("kind")
+result = gate.SIGNATURES[kind](raw).match(json.loads(sys.argv[4]), gate.peer_role(sys.argv[3]))
+print(f"{sys.argv[5]}: {type(result).__name__}")
+PY
+}
+check_kind() { # <name> <kind json> <direction> <evidence> <expected>
+  expect "$1" "$(kind_case "$1" "$2" "$3" "$4")" "$1: $5"
+}
+silent='{"kind":"peer-silent-until-our-timeout","silence_s":25,"our_wait_s":8}'
+check_kind "a peer silent with nothing of ours in flight" "$silent" our-client "{\"connections\":[$(hconn a '"last_rx_ms":3400,"end_ms":33400')]}" Matched
+check_kind "silence while our data was in flight is not the peer's" "$silent" our-client "{\"connections\":[$(hconn a '"last_rx_ms":3400,"end_ms":33400' | sed 's/"bytes_in_flight_at_end":0/"bytes_in_flight_at_end":84/')]}" NotMatched
+check_kind "silence after our own long probe wait is not the peer's" "$silent" our-client "{\"connections\":[$(hconn a '"last_rx_ms":3400,"end_ms":33400' | sed 's/"longest_wait_in_flight_ms":2000/"longest_wait_in_flight_ms":25000/')]}" NotMatched
+check_kind "a short silence is not the signature" "$silent" our-client "{\"connections\":[$(hconn a '"last_rx_ms":30000,"end_ms":33400')]}" NotMatched
+hello='{"kind":"peer-never-resent-server-hello"}'
+check_kind "Initial acks without a ServerHello" "$hello" our-client "{\"connections\":[$(hconn a '"close_reason":"Failed to establish connection"' | sed 's/"rx_initial_crypto":1/"rx_initial_crypto":0/')]}" Matched
+check_kind "a ServerHello that arrived is not the signature" "$hello" our-client "{\"connections\":[$(hconn a '"close_reason":"Failed to establish connection"')]}" NotMatched
+finished='{"kind":"peer-finished-never-arrived"}'
+check_kind "Handshake acks without a Finished" "$finished" our-server "{\"connections\":[$(hconn a | sed 's/"rx_handshake_crypto":1/"rx_handshake_crypto":0/;s/"fin_sent_streams":1/"fin_sent_streams":0/')]}" Matched
+check_kind "a connection we answered is not the signature" "$finished" our-server "{\"connections\":[$(hconn a | sed 's/"rx_handshake_crypto":1/"rx_handshake_crypto":0/')]}" NotMatched
+reset='{"kind":"peer-reset-duplicated-request"}'
+check_kind "a reset after a duplicated request" "$reset" our-client "{\"connections\":[$(hconn a | sed 's/"peer_resets":\[\]/"peer_resets":[{"stream_id":0,"final_size":0,"our_copies":3}]/')]}" Matched
+check_kind "a reset of a request sent once is not the signature" "$reset" our-client "{\"connections\":[$(hconn a | sed 's/"peer_resets":\[\]/"peer_resets":[{"stream_id":0,"final_size":0,"our_copies":1}]/')]}" NotMatched
+extra='{"kind":"peer-counted-extra-handshake"}'
+check_kind "one handshake more than our connections" "$extra" our-client "{\"connections\":[$(hconn a),$(hconn b)],\"runner\":{\"handshakes\":{\"expected\":2,\"got\":3}}}" Matched
+check_kind "an extra connection of ours is not the signature" "$extra" our-client "{\"connections\":[$(hconn a),$(hconn b),$(hconn c)],\"runner\":{\"handshakes\":{\"expected\":2,\"got\":3}}}" NotMatched
+fewer='{"kind":"peer-used-fewer-connections"}'
+check_kind "every request answered over fewer connections" "$fewer" our-server "{\"connections\":[$(hconn a | sed 's/"fin_sent_streams":1/"fin_sent_streams":50/')],\"runner\":{\"handshakes\":{\"expected\":50,\"got\":1}}}" Matched
+check_kind "unanswered requests are not the signature" "$fewer" our-server "{\"connections\":[$(hconn a | sed 's/"fin_sent_streams":1/"fin_sent_streams":49/')],\"runner\":{\"handshakes\":{\"expected\":50,\"got\":1}}}" NotMatched
+limit='{"kind":"runner-time-limit-while-we-answered","answer_ms":5000}'
+check_kind "the time limit while we answered fast" "$limit" our-server "{\"connections\":[$(hconn a '"max_answer_ms":2600')],\"runner\":{\"time_limit_s\":300}}" Matched
+check_kind "a slow answer of ours is not the signature" "$limit" our-server "{\"connections\":[$(hconn a '"max_answer_ms":9000')],\"runner\":{\"time_limit_s\":300}}" NotMatched
+late='{"kind":"peer-request-arrived-late","after_s":20}'
+check_kind "a request long after our HANDSHAKE_DONE" "$late" our-server "{\"connections\":[$(hconn a '"handshake_done_sent_ms":11136,"first_request_ms":41802')]}" Matched
+check_kind "a prompt request is not the signature" "$late" our-server "{\"connections\":[$(hconn a '"handshake_done_sent_ms":11136,"first_request_ms":11200')]}" NotMatched
+lost='{"kind":"sim-lost-every-datagram-to-us","min_datagrams":5}'
+check_kind "a deaf connection the simulator starved" "$lost" our-client "{\"connections\":[$(hconn a | sed 's/"rx_packets":5/"rx_packets":0/')],\"sim_to_us\":[{\"port\":57689,\"datagrams\":9,\"delivered\":0}]}" Matched
+check_kind "a port that got one datagram is not the signature" "$lost" our-client "{\"connections\":[$(hconn a | sed 's/"rx_packets":5/"rx_packets":0/')],\"sim_to_us\":[{\"port\":57689,\"datagrams\":9,\"delivered\":1}]}" NotMatched
+lostpeer='{"kind":"sim-lost-every-datagram-to-the-peer","min_datagrams":5}'
+check_kind "a ClientHello we could not answer while every ack was lost" "$lostpeer" our-server "{\"connections\":[$(hconn a '"tx_crypto":0')],\"sim_to_peer\":[{\"port\":40390,\"datagrams\":5,\"delivered\":0}]}" Matched
+check_kind "a connection that answered is not the signature" "$lostpeer" our-server "{\"connections\":[$(hconn a '"tx_crypto":2')],\"sim_to_peer\":[{\"port\":40390,\"datagrams\":5,\"delivered\":0}]}" NotMatched
+empty='{"kind":"peer-left-a-download-empty"}'
+check_kind "an empty download while we answered every connection" "$empty" our-server "{\"connections\":[$(hconn a),$(hconn b)],\"exits\":{\"client\":0},\"runner\":{\"empty_downloads\":1}}" Matched
+check_kind "an unanswered connection is not the signature" "$empty" our-server "{\"connections\":[$(hconn a),$(hconn b | sed 's/"fin_sent_streams":1/"fin_sent_streams":0/')],\"exits\":{\"client\":0},\"runner\":{\"empty_downloads\":1}}" NotMatched
+never='{"kind":"peer-request-never-arrived","min_packets":5}'
+check_kind "a confirmed connection that never got a request" "$never" our-server "{\"connections\":[$(hconn a '"handshake_done_sent_ms":35' | sed 's/"fin_sent_streams":1/"fin_sent_streams":0/;s/"rx_packets":5/"rx_packets":10/')]}" Matched
+check_kind "a connection with a request is not the signature" "$never" our-server "{\"connections\":[$(hconn a '"handshake_done_sent_ms":35,"first_request_ms":40' | sed 's/"fin_sent_streams":1/"fin_sent_streams":0/;s/"rx_packets":5/"rx_packets":10/')]}" NotMatched
+anyof='{"kind":"any-of","signatures":[{"kind":"peer-request-arrived-late","after_s":20},{"kind":"sim-lost-every-datagram-to-the-peer","min_datagrams":5}]}'
+check_kind "any-of matches its second signature" "$anyof" our-server "{\"connections\":[$(hconn a '"tx_crypto":0')],\"sim_to_peer\":[{\"port\":40390,\"datagrams\":5,\"delivered\":0}]}" Matched
+check_kind "any-of matches neither" "$anyof" our-server "{\"connections\":[$(hconn a)]}" NotMatched
+python3 "$script" judge <(echo '{"our-client":{"p":{"handshakeloss":{"flaky":{"why":"x","signature":{"kind":"peer-silent-until-our-timeout","silence_s":25}}}}}}') "$tmp/ok" >/dev/null 2>"$tmp/bad.err"
+expect_rc "a missing field stops the gate" $? 1
+
+# The extractor reads the handshake spaces, the last packet, what was in flight, answers, resets and the runner.
+d="$tmp/logs2/p_ditchoom/handshakeloss"
+mkdir -p "$d/client/qlog"
+{
+  printf '{"time":0,"name":"quic:packet_sent","data":{"frames":[{"frame_type":"crypto"}]}}\n'
+  printf '{"time":1,"name":"quic:recovery_metrics_updated","data":{"bytes_in_flight":300}}\n'
+  printf '{"time":1000,"name":"quic:packet_sent","data":{"frames":[{"frame_type":"crypto"}]}}\n'
+  printf '{"time":1030,"name":"quic:packet_received","data":{"header":{"packet_type":"initial"},"frames":[{"frame_type":"ack"}]}}\n'
+  printf '{"time":1040,"name":"quic:packet_received","data":{"header":{"packet_type":"handshake"},"frames":[{"frame_type":"crypto"}]}}\n'
+  printf '{"time":1050,"name":"quic:packet_sent","data":{"frames":[{"frame_type":"stream","stream_id":0,"offset":0,"fin":true}]}}\n'
+  printf '{"time":1060,"name":"quic:packet_sent","data":{"frames":[{"frame_type":"stream","stream_id":0,"offset":0,"fin":true}]}}\n'
+  printf '{"time":1090,"name":"quic:packet_received","data":{"header":{"packet_type":"1RTT"},"frames":[{"frame_type":"reset_stream","stream_id":0,"final_size":0}]}}\n'
+  printf '{"time":1091,"name":"quic:recovery_metrics_updated","data":{"bytes_in_flight":0}}\n'
+  printf '{"time":31091,"name":"quic:connection_closed","data":{"reason":"Failed to establish connection"}}\n'
+} >"$d/client/qlog/quiche-client-1.sqlog"
+{
+  printf "sim  | Corrupting 1200 bytes 193.167.100.100:443 -> 193.167.0.100:40000 offset 3 0x1 -> 0x2\n"
+  printf "sim  | Forwarding 1200 bytes 193.167.100.100:443 -> 193.167.0.100:40001, corrupted 1/2\n"
+  printf "2026-11-14 15:23:49,438 Expected 50 handshakes. Got: 51\n"
+} >"$d/output.txt"
+python3 -I "$extract" "$tmp/logs2" our-client p "$tmp/ev2.json"
+expect_rc "the extractor reads a handshake-loss test" $? 0
+ev="$(python3 -c 'import json,sys; t=json.load(open(sys.argv[1]))["tests"]["handshakeloss"]; c=t["connections"][0]; print(c["rx_initial_acks"], c["rx_initial_crypto"], c["rx_handshake_crypto"], c["last_rx_ms"], c["end_ms"], c["bytes_in_flight_at_end"], c["longest_wait_in_flight_ms"], c["peer_resets"], c["close_reason"], t["runner"], t["sim_to_us"])' "$tmp/ev2.json")"
+expect "the extractor reads the handshake facts" "$ev" "1 0 1 1090.0 31091.0 0 1000.0 [{'final_size': 0, 'our_copies': 2, 'stream_id': 0}] Failed to establish connection {'handshakes': {'expected': 50, 'got': 51}} [{'datagrams': 1, 'delivered': 0, 'port': 40000}, {'datagrams': 1, 'delivered': 1, 'port': 40001}]"
+
 echo "quic-interop-gate: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

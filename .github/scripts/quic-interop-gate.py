@@ -126,7 +126,280 @@ class MigrationRefusedPeerForbids:
         return NotMatched()
 
 
-SIGNATURES = {s.kind: s for s in (PeerExceededStreamLimit, PeerProcessDied, MigrationRefusedPeerForbids)}
+NOT_ESTABLISHED = "Failed to establish connection"
+
+
+def no_fields(kind, fields):
+    if fields:
+        raise ExpectationError(f"{kind} takes no fields, got {sorted(fields)}")
+
+
+def positive_int(kind, fields, name):
+    if set(fields) != {name} or not isinstance(fields[name], int) or fields[name] <= 0:
+        raise ExpectationError(f"{kind} takes exactly a positive integer {name}, got {fields!r}")
+    return fields[name]
+
+
+class PeerSilentUntilOurTimeout:
+    """Nothing of ours was in flight and the peer sent nothing for at least silence_s seconds before the connection
+    ended, and we never waited more than our_wait_s to send again while data of ours was in flight: the next move
+    was the peer's (its handshake data or a response), and it made none in time."""
+
+    kind = "peer-silent-until-our-timeout"
+
+    def __init__(self, fields):
+        if set(fields) != {"silence_s", "our_wait_s"}:
+            raise ExpectationError(f"{self.kind} takes exactly silence_s and our_wait_s, got {sorted(fields)}")
+        self.silence_ms = positive_int(self.kind, {"silence_s": fields["silence_s"]}, "silence_s") * 1000
+        self.our_wait_ms = positive_int(self.kind, {"our_wait_s": fields["our_wait_s"]}, "our_wait_s") * 1000
+
+    def match(self, test_evidence, peer_role):
+        for c in test_evidence.get("connections", []):
+            if "last_rx_ms" not in c or "end_ms" not in c or c["bytes_in_flight_at_end"] != 0:
+                continue
+            if c["longest_wait_in_flight_ms"] > self.our_wait_ms:
+                continue
+            silent = c["end_ms"] - c["last_rx_ms"]
+            if silent >= self.silence_ms:
+                return Matched(f"nothing of ours in flight; the peer was silent {silent / 1000:.1f} s until {c['qlog']} ended")
+        return NotMatched()
+
+
+class PeerNeverResentServerHello:
+    """Our client's handshake never completed: the server acknowledged our Initial packets but no Initial packet of
+    its carrying CRYPTO data (its ServerHello) ever arrived, so it never sent it again after losing it."""
+
+    kind = "peer-never-resent-server-hello"
+
+    def __init__(self, fields):
+        no_fields(self.kind, fields)
+
+    def match(self, test_evidence, peer_role):
+        for c in test_evidence.get("connections", []):
+            if c.get("close_reason") == NOT_ESTABLISHED and c["rx_initial_crypto"] == 0 and c["rx_initial_acks"] > 0:
+                return Matched(f"{c['qlog']}: {c['rx_initial_acks']} Initial acknowledgements, no ServerHello")
+        return NotMatched()
+
+
+class PeerFinishedNeverArrived:
+    """A connection our server never answered on: the client acknowledged our Handshake packets but none of its own
+    carrying CRYPTO data (its Finished) ever arrived, so it never sent it again after losing it."""
+
+    kind = "peer-finished-never-arrived"
+
+    def __init__(self, fields):
+        no_fields(self.kind, fields)
+
+    def match(self, test_evidence, peer_role):
+        for c in test_evidence.get("connections", []):
+            if c["fin_sent_streams"] == 0 and c["rx_handshake_crypto"] == 0 and c["rx_handshake_acks"] > 0:
+                return Matched(f"{c['qlog']}: {c['rx_handshake_acks']} Handshake acknowledgements, no Finished")
+        return NotMatched()
+
+
+class PeerResetDuplicatedRequest:
+    """The peer reset a request stream with final size 0 after we had sent the request's first bytes more than once:
+    it reacted to a duplicate STREAM frame, which RFC 9000 §2.2 has a receiver discard."""
+
+    kind = "peer-reset-duplicated-request"
+
+    def __init__(self, fields):
+        no_fields(self.kind, fields)
+
+    def match(self, test_evidence, peer_role):
+        for c in test_evidence.get("connections", []):
+            for r in c["peer_resets"]:
+                if r["final_size"] == 0 and r["our_copies"] > 1:
+                    return Matched(f"{c['qlog']}: reset of stream {r['stream_id']} after {r['our_copies']} copies of its request")
+        return NotMatched()
+
+
+class PeerCountedExtraHandshake:
+    """The runner counted more handshakes than requests, while our client opened exactly one connection per request:
+    the peer answered one of our connections twice, with a second connection of its own."""
+
+    kind = "peer-counted-extra-handshake"
+
+    def __init__(self, fields):
+        no_fields(self.kind, fields)
+
+    def match(self, test_evidence, peer_role):
+        counted = test_evidence.get("runner", {}).get("handshakes")
+        ours = len(test_evidence.get("connections", []))
+        if counted and counted["got"] > counted["expected"] == ours:
+            return Matched(f"runner counted {counted['got']} handshakes for our {ours} connections")
+        return NotMatched()
+
+
+class PeerUsedFewerConnections:
+    """The runner counted fewer handshakes than requests while our server answered every request: the peer's client
+    fetched them over fewer connections than the test asks for."""
+
+    kind = "peer-used-fewer-connections"
+
+    def __init__(self, fields):
+        no_fields(self.kind, fields)
+
+    def match(self, test_evidence, peer_role):
+        counted = test_evidence.get("runner", {}).get("handshakes")
+        answered = sum(c["fin_sent_streams"] for c in test_evidence.get("connections", []))
+        if counted and counted["got"] < counted["expected"] <= answered:
+            return Matched(f"runner counted {counted['got']} of {counted['expected']} handshakes; we answered {answered} requests")
+        return NotMatched()
+
+
+class RunnerTimeLimitWhileWeAnswered:
+    """The runner stopped the test at its time limit while our server had answered every request it received within
+    answer_ms: the time went to the peer's client."""
+
+    kind = "runner-time-limit-while-we-answered"
+
+    def __init__(self, fields):
+        self.answer_ms = positive_int(self.kind, fields, "answer_ms")
+
+    def match(self, test_evidence, peer_role):
+        limit = test_evidence.get("runner", {}).get("time_limit_s")
+        answers = [c["max_answer_ms"] for c in test_evidence.get("connections", []) if "max_answer_ms" in c]
+        if limit and answers and max(answers) <= self.answer_ms:
+            return Matched(f"runner stopped at {limit} s; our slowest answer took {max(answers):.0f} ms")
+        return NotMatched()
+
+
+class PeerRequestArrivedLate:
+    """The peer's client sent its first request at least after_s seconds after our server confirmed the handshake
+    (sent HANDSHAKE_DONE): the client spent the connection's life on its own retransmission timers."""
+
+    kind = "peer-request-arrived-late"
+
+    def __init__(self, fields):
+        self.after_ms = positive_int(self.kind, fields, "after_s") * 1000
+
+    def match(self, test_evidence, peer_role):
+        for c in test_evidence.get("connections", []):
+            if "handshake_done_sent_ms" in c and "first_request_ms" in c:
+                late = c["first_request_ms"] - c["handshake_done_sent_ms"]
+                if late >= self.after_ms:
+                    return Matched(f"{c['qlog']}: the first request arrived {late / 1000:.1f} s after our HANDSHAKE_DONE")
+        return NotMatched()
+
+
+class SimLostEveryDatagramToUs:
+    """A connection of ours received nothing, and the simulator corrupted or dropped every one of at least
+    min_datagrams datagrams it carried to one of our ports."""
+
+    kind = "sim-lost-every-datagram-to-us"
+
+    def __init__(self, fields):
+        self.min_datagrams = positive_int(self.kind, fields, "min_datagrams")
+
+    def match(self, test_evidence, peer_role):
+        deaf = [c for c in test_evidence.get("connections", []) if c["rx_packets"] == 0]
+        lost = [p for p in test_evidence.get("sim_to_us", []) if p["delivered"] == 0 and p["datagrams"] >= self.min_datagrams]
+        if deaf and lost:
+            return Matched(f"{deaf[0]['qlog']} received nothing; the simulator delivered 0 of {lost[0]['datagrams']} datagrams to port {lost[0]['port']}")
+        return NotMatched()
+
+
+class SimLostEveryDatagramToThePeer:
+    """A connection of ours received the peer's handshake CRYPTO data but could not answer it (it sent no CRYPTO of
+    its own: the ClientHello never arrived whole), and the simulator corrupted or dropped every one of at least
+    min_datagrams datagrams we sent to one of the peer's ports, so our acknowledgements never told it what to
+    re-send."""
+
+    kind = "sim-lost-every-datagram-to-the-peer"
+
+    def __init__(self, fields):
+        self.min_datagrams = positive_int(self.kind, fields, "min_datagrams")
+
+    def match(self, test_evidence, peer_role):
+        stuck = [c for c in test_evidence.get("connections", []) if c["rx_initial_crypto"] > 0 and c["tx_crypto"] == 0]
+        lost = [p for p in test_evidence.get("sim_to_peer", []) if p["delivered"] == 0 and p["datagrams"] >= self.min_datagrams]
+        if stuck and lost:
+            return Matched(f"{stuck[0]['qlog']} could not answer; the simulator delivered 0 of {lost[0]['datagrams']} of our datagrams to port {lost[0]['port']}")
+        return NotMatched()
+
+
+class PeerLeftADownloadEmpty:
+    """The peer's client exited 0 although the runner found a download it wrote empty, while our server answered
+    a request on every connection: the client reported success for a file it never received."""
+
+    kind = "peer-left-a-download-empty"
+
+    def __init__(self, fields):
+        no_fields(self.kind, fields)
+
+    def match(self, test_evidence, peer_role):
+        empty = test_evidence.get("runner", {}).get("empty_downloads", 0)
+        connections = test_evidence.get("connections", [])
+        answered = bool(connections) and all(c["fin_sent_streams"] > 0 for c in connections)
+        if empty and answered and test_evidence.get("exits", {}).get(peer_role) == 0:
+            return Matched(f"peer {peer_role} exited 0 with {empty} empty download(s); we answered on all {len(connections)} connections")
+        return NotMatched()
+
+
+class PeerRequestNeverArrived:
+    """A connection whose handshake our server confirmed (HANDSHAKE_DONE sent), on which the peer kept sending
+    packets, but no request ever arrived: the client never sent it, or never sent it again after losing it."""
+
+    kind = "peer-request-never-arrived"
+
+    def __init__(self, fields):
+        self.min_packets = positive_int(self.kind, fields, "min_packets")
+
+    def match(self, test_evidence, peer_role):
+        for c in test_evidence.get("connections", []):
+            confirmed = "handshake_done_sent_ms" in c
+            if confirmed and "first_request_ms" not in c and c["fin_sent_streams"] == 0 and c["rx_packets"] >= self.min_packets:
+                return Matched(f"{c['qlog']}: {c['rx_packets']} packets from the peer after our HANDSHAKE_DONE, no request")
+        return NotMatched()
+
+
+class AnyOf:
+    """The cell has more than one proven failure; a failure must match one of the listed signatures (each a
+    {"kind": ..., ...fields} of another kind)."""
+
+    kind = "any-of"
+
+    def __init__(self, fields):
+        if set(fields) != {"signatures"} or not isinstance(fields["signatures"], list) or len(fields["signatures"]) < 2:
+            raise ExpectationError(f"{self.kind} takes exactly signatures, a list of two or more, got {fields!r}")
+        self.signatures = []
+        for raw in fields["signatures"]:
+            inner = dict(raw)
+            kind = inner.pop("kind", "")
+            if kind not in SIGNATURES or kind == self.kind:
+                raise ExpectationError(f"{self.kind}: unknown or nested signature kind {kind!r}")
+            self.signatures.append(SIGNATURES[kind](inner))
+
+    def match(self, test_evidence, peer_role):
+        for signature in self.signatures:
+            result = signature.match(test_evidence, peer_role)
+            if isinstance(result, Matched):
+                return Matched(f"{signature.kind}: {result.shown}")
+        return NotMatched()
+
+
+SIGNATURES = {
+    s.kind: s
+    for s in (
+        PeerExceededStreamLimit,
+        PeerProcessDied,
+        MigrationRefusedPeerForbids,
+        PeerSilentUntilOurTimeout,
+        PeerNeverResentServerHello,
+        PeerFinishedNeverArrived,
+        PeerResetDuplicatedRequest,
+        PeerCountedExtraHandshake,
+        PeerUsedFewerConnections,
+        RunnerTimeLimitWhileWeAnswered,
+        PeerRequestArrivedLate,
+        SimLostEveryDatagramToUs,
+        SimLostEveryDatagramToThePeer,
+        PeerLeftADownloadEmpty,
+        PeerRequestNeverArrived,
+        AnyOf,
+    )
+}
 
 
 class Reason:
