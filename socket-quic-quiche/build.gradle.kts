@@ -265,6 +265,10 @@ fun downloadQuicheSource(
     // with PROTOCOL_VIOLATION (the interop runner's handshakeloss / handshakecorruption against quinn, after
     // the previous patch). Idempotent, fails loudly on drift.
     patchQuicheRepeatedRetirementIsIgnored(sourceDir)
+    // Receive a packet bearing a source id the peer has just retired when it arrives on a path quiche still
+    // holds, so a peer's last packets on a slower path the client left are not dropped behind the faster
+    // RETIRE_CONNECTION_ID. Idempotent, fails loudly on drift. See the KDoc.
+    patchQuicheRetiredScidStillReceivedOnAHeldPath(sourceDir)
     // Send a CONNECTION_CLOSE made before the handshake is confirmed in a 1-RTT packet as well as the
     // Handshake one, so a peer that has already confirmed and discarded its Handshake keys can read it.
     // Idempotent, fails loudly on drift OR on an upstream fix. See the KDoc.
@@ -2107,6 +2111,92 @@ fun patchQuicheCloseBeforeConfirmationAlsoInOneRtt(sourceDir: File) {
         """.trimMargin(),
     )
     libRs.writeText(text)
+}
+
+/**
+ * Receive a packet that bears a source connection id the peer has retired when it arrives on a 4-tuple
+ * quiche still holds, instead of dropping it.
+ *
+ * After a client moves, the peer retires the id its packets on the left path carried, and that
+ * RETIRE_CONNECTION_ID travels the new path. When the new path is the faster one it arrives first, quiche
+ * removes the id, and the peer's last packets on the left path then miss the id lookup in
+ * `get_or_create_recv_path_id` and are dropped (`socket-retired-cid-recv-is-drop`). A peer that cannot
+ * declare a left path's packets lost (stock quiche) never resends what they carried.
+ *
+ * The edits: `ConnectionIdentifiers` keeps the ids the peer retired, the newest `2 * source_conn_id_limit`
+ * of them, and a packet whose id is among them is received on the path its 4-tuple names. Nothing else
+ * follows from it: no path is created for such a packet and no id is linked. A retired id on a new
+ * 4-tuple is still dropped, and every packet still has to decrypt.
+ *
+ * Reproduced by `MigrationSimTestSuite.packetsOnASlowerLeftPathAreReceivedAfterThePeerRetiresTheirConnectionId`.
+ * Applied after [patchQuicheRetiredCidRecvIsDrop] and [patchQuicheRetiredScidIsNotAdvertised], whose edits
+ * its anchors include. Marker-guarded and loud: a re-run returns, a moved anchor throws.
+ */
+fun patchQuicheRetiredScidStillReceivedOnAHeldPath(sourceDir: File) {
+    val marker = "socket-retired-scid-still-received"
+    val cidRs = sourceDir.resolve("quiche/src/cid.rs")
+    val libRs = sourceDir.resolve("quiche/src/lib.rs")
+    if (!cidRs.exists() || !libRs.exists()) return
+    if (cidRs.readText().contains(marker)) return
+
+    fun replaceOnce(
+        file: File,
+        anchor: String,
+        replacement: String,
+    ) {
+        val text = file.readText()
+        if (text.split(anchor).size != 2) {
+            throw GradleException(
+                "$marker: `${anchor.trim().lines().first()}` not found exactly once in ${file.name}: a quiche bump " +
+                    "moved it. Re-fit patchQuicheRetiredScidStillReceivedOnAHeldPath, or delete it if quiche now " +
+                    "receives a packet bearing a just-retired id on a path it holds. Either way keep " +
+                    "MigrationSimTestSuite.packetsOnASlowerLeftPathAreReceivedAfterThePeerRetiresTheirConnectionId.",
+            )
+        }
+        file.writeText(text.replace(anchor, replacement))
+    }
+
+    replaceOnce(
+        cidRs,
+        "    retired_scids: VecDeque<ConnectionId<'static>>,\n",
+        "    retired_scids: VecDeque<ConnectionId<'static>>,\n\n" +
+            "    /// $marker: source ids the peer retired, newest last, so a packet already in flight on a path\n" +
+            "    /// quiche still holds is received rather than dropped.\n" +
+            "    socket_retired_scids_seen: VecDeque<ConnectionId<'static>>,\n",
+    )
+    replaceOnce(
+        cidRs,
+        "            self.retired_scids.push_back(e.cid);\n",
+        "            // $marker\n" +
+            "            self.socket_retired_scids_seen.push_back(e.cid.clone());\n" +
+            "            while self.socket_retired_scids_seen.len() > 2 * self.source_conn_id_limit {\n" +
+            "                self.socket_retired_scids_seen.pop_front();\n" +
+            "            }\n" +
+            "            self.retired_scids.push_back(e.cid);\n",
+    )
+    replaceOnce(
+        cidRs,
+        "    pub fn find_scid_seq(\n",
+        "    /// $marker: whether [scid] is one of ours the peer retired.\n" +
+            "    pub fn socket_was_retired(&self, scid: &ConnectionId) -> bool {\n" +
+            "        self.socket_retired_scids_seen.iter().any(|c| c == scid)\n" +
+            "    }\n\n" +
+            "    pub fn find_scid_seq(\n",
+    )
+    replaceOnce(
+        libRs,
+        "        let (in_scid_seq, mut in_scid_pid) =\n            ids.find_scid_seq(dcid).ok_or(Error::Done)?;\n",
+        "        // $marker: a packet bearing an id the peer just retired, on a path\n" +
+            "        // quiche holds, is the peer's packet on that path; anywhere else it is dropped.\n" +
+            "        let (in_scid_seq, mut in_scid_pid) = match ids.find_scid_seq(dcid) {\n" +
+            "            Some(found) => found,\n" +
+            "            None => match recv_pid {\n" +
+            "                Some(recv_pid) if ids.socket_was_retired(dcid) => return Ok(recv_pid),\n" +
+            "                _ => return Err(Error::Done),\n" +
+            "            },\n" +
+            "        };\n",
+    )
+    logger.lifecycle("Patched quiche source: a just-retired id is still received on a path quiche holds")
 }
 
 /**

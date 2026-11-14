@@ -11,13 +11,21 @@ import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.nativeMemoryAccess
+import com.ditchoom.socket.quic.trace.QuicTraceRecorder
+import com.ditchoom.socket.quic.trace.TraceCapture
+import com.ditchoom.socket.testkit.trace.TraceSink
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.job
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.yield
 import kotlin.test.Test
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
+import kotlin.test.fail
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -48,6 +56,7 @@ class QuicReadPoolingTests {
     private fun driverWith(
         api: StubQuicheApi,
         factory: BufferFactory,
+        capture: TraceCapture = TraceCapture.Off,
     ): QuicheDriver =
         QuicheDriver(
             // Test double: never exercises a path move.
@@ -60,6 +69,7 @@ class QuicReadPoolingTests {
             udpChannel = StubUdpChannel(),
             role = QuicRole.Client,
             ingress = DatagramIngress.ExternalPump,
+            capture = capture,
         )
 
     private suspend fun openStream(driver: QuicheDriver): StreamSlot {
@@ -126,28 +136,41 @@ class QuicReadPoolingTests {
             for ((name, leaf) in leafFactories) {
                 val counting = leaf.counting()
                 val api = StubQuicheApi().apply { streamRecvResult = StreamRecvResult.Data(1024, false) }
-                val driver = driverWith(api, counting)
-                driver.start(this)
+                // The flight recorder names the loop's and the reader's last steps if a read is never served.
+                val driver = driverWith(api, counting, TraceCapture.On(QuicTraceRecorder(TraceSink { })))
+                // The recorder's state collectors end with the scope the driver starts in, not with destroy().
+                val driverScope = CoroutineScope(coroutineContext + Job(coroutineContext.job))
+                driver.start(driverScope)
                 try {
                     val slot = openStream(driver)
                     val stream = QuicheStreamByteStream(slot.id, DriverStreamAdapter(driver, slot), driver.streamReadPool)
-                    repeat(300) {
-                        val read = async { stream.read(2.seconds) }
-                        // Turns of the loop until the parked read has been served; the stream is readable.
-                        api.readableWhileRunning.store(listOf(slot.id.id))
-                        while (!read.isCompleted) {
-                            val turn = CompletableDeferred<QuicStatsSnapshot>()
-                            driver.commands.send(QuicheCmd.Stats(turn))
-                            withTimeout(2.seconds) { turn.await() }
-                            yield()
+                    repeat(300) { iteration ->
+                        try {
+                            val read = async { stream.read(2.seconds) }
+                            // Turns of the loop until the parked read has been served; the stream is readable.
+                            api.readableWhileRunning.store(listOf(slot.id.id))
+                            var turns = 0
+                            while (!read.isCompleted) {
+                                if (++turns > MAX_TURNS_PER_READ) fail("not served in $MAX_TURNS_PER_READ turns")
+                                val turn = CompletableDeferred<QuicStatsSnapshot>()
+                                driver.commands.send(QuicheCmd.Stats(turn))
+                                withTimeout(2.seconds) { turn.await() }
+                                yield()
+                            }
+                            api.readableWhileRunning.store(emptyList())
+                            val result = read.await()
+                            assertIs<ReadResult.Data>(result, "unexpected non-data read: $result")
+                            result.buffer.freeIfNeeded()
+                        } catch (failure: Throwable) {
+                            throw AssertionError("[$name] read $iteration: $failure. ${driver.flightRecording().rendered()}", failure)
                         }
-                        api.readableWhileRunning.store(emptyList())
-                        val result = read.await()
-                        assertIs<ReadResult.Data>(result, "unexpected non-data read: $result")
-                        result.buffer.freeIfNeeded()
                     }
                 } finally {
+                    // The stub answers every stream_recv with bytes; while it reports the stream readable, the
+                    // teardown drain would take them until memory runs out and hide whatever failed here.
+                    api.readableWhileRunning.store(emptyList())
                     driver.destroy()
+                    driverScope.cancel()
                 }
                 val allocations = counting.allocationCount
                 assertTrue(
@@ -182,4 +205,15 @@ class QuicReadPoolingTests {
                 )
             }
         }
+
+    private fun FlightRecording.rendered(): String =
+        when (this) {
+            FlightRecording.Off -> "flight recorder off"
+            is FlightRecording.Recorded -> render()
+        }
+
+    private companion object {
+        /** A parked read is served by the first turn that sees it parked; a few turns cover the race with the park. */
+        const val MAX_TURNS_PER_READ = 1_000
+    }
 }

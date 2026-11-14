@@ -2437,88 +2437,102 @@ abstract class MigrationSimTestSuite {
      */
     @Test
     fun packetsThePeerSentOnTheLeftPathBeforeItSawTheMoveAreStillReceived() =
-        runTest {
-            wrapTestBody {
-                withMigrationSim(
-                    simEnv(),
-                    seed = 904_029L,
-                    primaryImpairment = PathImpairment(latency = 20.milliseconds),
-                    probeImpairment = { PathImpairment(latency = 20.milliseconds) },
-                ) {
-                    val serverJob =
+        assertTheLeftPathsPacketsAreReceived(leftLatency = 20.milliseconds, newLatency = 20.milliseconds)
+
+    /**
+     * As above, with the left path slower than the new one: the peer's RETIRE_CONNECTION_ID for the id
+     * its left-path packets carry overtakes them on the faster new path, so they arrive bearing an id the
+     * client has dropped. They are still the peer's packets on a path quiche holds, and are received.
+     */
+    @Test
+    fun packetsOnASlowerLeftPathAreReceivedAfterThePeerRetiresTheirConnectionId() =
+        assertTheLeftPathsPacketsAreReceived(leftLatency = 40.milliseconds, newLatency = 5.milliseconds)
+
+    private fun assertTheLeftPathsPacketsAreReceived(
+        leftLatency: Duration,
+        newLatency: Duration,
+    ) = runTest {
+        wrapTestBody {
+            withMigrationSim(
+                simEnv(),
+                seed = 904_029L,
+                primaryImpairment = PathImpairment(latency = leftLatency),
+                probeImpairment = { PathImpairment(latency = newLatency) },
+            ) {
+                val serverJob =
+                    client.launch {
+                        val st = server.acceptStream()
+                        while (true) {
+                            val d = st.read(60.seconds)
+                            if (d !is ReadResult.Data) break
+                            st.writeFully(d.buffer, 30.seconds)
+                            d.buffer.freeIfNeeded()
+                        }
+                    }
+                try {
+                    awaitSpareDcids()
+
+                    fun deliveredToClient() = pipe.paths().sumOf { it.stats.deliveredToClient.toLong() }
+
+                    suspend fun receivedByClient() =
+                        assertNotNull(clientDriver.stats().connStats, "an established connection has stats").recv
+                    val deliveredBefore = deliveredToClient()
+                    val receivedBefore = receivedByClient()
+                    val stream = client.openStream()
+                    var echoed = 0L
+                    val readerJob =
                         client.launch {
-                            val st = server.acceptStream()
                             while (true) {
-                                val d = st.read(60.seconds)
+                                val d = stream.read(60.seconds)
                                 if (d !is ReadResult.Data) break
-                                st.writeFully(d.buffer, 30.seconds)
+                                echoed += d.buffer.remaining()
                                 d.buffer.freeIfNeeded()
                             }
                         }
-                    try {
-                        awaitSpareDcids()
-
-                        fun deliveredToClient() = pipe.paths().sumOf { it.stats.deliveredToClient.toLong() }
-
-                        suspend fun receivedByClient() =
-                            assertNotNull(clientDriver.stats().connStats, "an established connection has stats").recv
-                        val deliveredBefore = deliveredToClient()
-                        val receivedBefore = receivedByClient()
-                        val stream = client.openStream()
-                        var echoed = 0L
-                        val readerJob =
-                            client.launch {
-                                while (true) {
-                                    val d = stream.read(60.seconds)
-                                    if (d !is ReadResult.Data) break
-                                    echoed += d.buffer.remaining()
-                                    d.buffer.freeIfNeeded()
-                                }
+                    val chunks = 60
+                    val writerJob =
+                        client.launch {
+                            repeat(chunks) {
+                                val out = BufferFactory.network().allocate(ECHO_CHUNK_BYTES)
+                                repeat(ECHO_CHUNK_BYTES) { i -> out.writeByte((i and 0x7f).toByte()) }
+                                out.resetForRead()
+                                stream.write(out, 30.seconds)
+                                out.freeNativeMemory()
+                                delay(5.milliseconds)
                             }
-                        val chunks = 60
-                        val writerJob =
-                            client.launch {
-                                repeat(chunks) {
-                                    val out = BufferFactory.network().allocate(ECHO_CHUNK_BYTES)
-                                    repeat(ECHO_CHUNK_BYTES) { i -> out.writeByte((i and 0x7f).toByte()) }
-                                    out.resetForRead()
-                                    stream.write(out, 30.seconds)
-                                    out.freeNativeMemory()
-                                    delay(5.milliseconds)
-                                }
-                            }
-                        delay(50.milliseconds)
-
-                        val result = withTimeout(30.seconds) { migrate().await() }
-                        assertIs<MigrationResult.Succeeded>(result, "the migration itself failed")
-                        val left = pipe.paths().first()
-                        val reachedLeftPathAtSwitch = left.stats.deliveredToClient
-
-                        withTimeout(30.seconds) { writerJob.join() }
-                        withTimeout(30.seconds) {
-                            while (echoed < chunks.toLong() * ECHO_CHUNK_BYTES) delay(10.milliseconds)
                         }
+                    delay(50.milliseconds)
 
-                        assertTrue(
-                            left.stats.deliveredToClient > reachedLeftPathAtSwitch,
-                            "no datagram reached the left path after the switch, so this run never opened the " +
-                                "window it exists for: ${pipeTraffic()}",
-                        )
-                        delay(2.seconds)
-                        assertEquals(
-                            deliveredToClient() - deliveredBefore,
-                            receivedByClient() - receivedBefore,
-                            "datagrams delivered to the client (left) against packets its quiche received (right): the " +
-                                "difference is what the client discarded. ${pipeTraffic()}",
-                        )
-                        readerJob.cancel()
-                        stream.close()
-                    } finally {
-                        serverJob.cancel()
+                    val result = withTimeout(30.seconds) { migrate().await() }
+                    assertIs<MigrationResult.Succeeded>(result, "the migration itself failed")
+                    val left = pipe.paths().first()
+                    val reachedLeftPathAtSwitch = left.stats.deliveredToClient
+
+                    withTimeout(30.seconds) { writerJob.join() }
+                    withTimeout(30.seconds) {
+                        while (echoed < chunks.toLong() * ECHO_CHUNK_BYTES) delay(10.milliseconds)
                     }
+
+                    assertTrue(
+                        left.stats.deliveredToClient > reachedLeftPathAtSwitch,
+                        "no datagram reached the left path after the switch, so this run never opened the " +
+                            "window it exists for: ${pipeTraffic()}",
+                    )
+                    delay(2.seconds)
+                    assertEquals(
+                        deliveredToClient() - deliveredBefore,
+                        receivedByClient() - receivedBefore,
+                        "datagrams delivered to the client (left) against packets its quiche received (right): the " +
+                            "difference is what the client discarded. ${pipeTraffic()}",
+                    )
+                    readerJob.cancel()
+                    stream.close()
+                } finally {
+                    serverJob.cancel()
                 }
             }
         }
+    }
 
     /**
      * A PATH_RESPONSE lost after the PATH_CHALLENGE it answers was acknowledged costs nothing: the peer's
