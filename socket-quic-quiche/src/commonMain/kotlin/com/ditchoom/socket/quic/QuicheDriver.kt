@@ -1449,7 +1449,7 @@ class QuicheDriver(
      * one requested — that distinction is the whole of the `Succeeded(null, 0)` bug), and the caller's
      * deferred, completed by [drainPathEvents] once the peer validates or fails the path.
      *
-     * …or, if quiche reports **neither** outcome, by [abandonPathValidationIfDue] once [budget]
+     * …or, if quiche reports **neither** outcome, by [tendPathValidation] once [budget]
      * elapses. Path validation is the one driver operation with no other bound on it: quiche can go
      * silent on a probed path (measured on a real Wi-Fi↔cellular handoff — a probe stuck at
      * `Probing` for the rest of a 2194-line trace), and because [handleMigrate] admits one migration
@@ -1468,11 +1468,29 @@ class QuicheDriver(
     ) {
         private val armedAt: TimeMark = clock.markNow()
 
-        /** Time left before validation must be abandoned; [Duration.ZERO] once due. Feeds the loop's `wait`. */
-        fun validationRemaining(): Duration = (budget - armedAt.elapsedNow()).coerceAtLeast(Duration.ZERO)
+        /**
+         * One PTO: how long a PATH_CHALLENGE goes unanswered before another is sent. quiche sends one again
+         * only when the packet carrying it is declared lost, never when the peer's PATH_RESPONSE is.
+         */
+        private val challengeInterval: Duration = budget / PATH_VALIDATION_PTO_MULTIPLIER
 
-        /** Re-*measured*, never inferred from which `select` clause won — see [abandonPathValidationIfDue]. */
+        /** PATH_CHALLENGEs asked of quiche for this validation, the probe's own included. */
+        private var challengesAsked = 1
+
+        /** Time left before the next PATH_CHALLENGE is owed or validation is abandoned; feeds the loop's `wait`. */
+        fun nextDeadline(): Duration =
+            minOf(budget, challengeInterval * challengesAsked)
+                .minus(armedAt.elapsedNow())
+                .coerceAtLeast(Duration.ZERO)
+
+        /** Re-*measured*, never inferred from which `select` clause won — see [tendPathValidation]. */
         fun isDue(): Boolean = armedAt.elapsedNow() >= budget
+
+        fun challengeIsDue(): Boolean = armedAt.elapsedNow() >= challengeInterval * challengesAsked
+
+        fun challengeAsked() {
+            challengesAsked++
+        }
     }
 
     /**
@@ -2140,7 +2158,7 @@ class QuicheDriver(
                 // RFC 9000 §8.2.4's abandon timer for an in-flight PATH_CHALLENGE. Null whenever no
                 // migration is armed, so a connection that never migrates arms exactly the timers it
                 // always did.
-                val probeRemaining = validating()?.validationRemaining()
+                val probeRemaining = validating()?.nextDeadline()
                 // Every deadline reduced once, so the wait and the arm cannot disagree — see [Wake].
                 val armed =
                     nextWake(
@@ -2207,7 +2225,7 @@ class QuicheDriver(
                             NextWake.NoTimer -> Unit
                             is NextWake.Armed ->
                                 when (armed.wake) {
-                                    is Wake.ProbeAbandon -> abandonPathValidationIfDue()
+                                    is Wake.ProbeAbandon -> tendPathValidation()
                                     // Keepalive is the sooner deadline → PING; quiche's idle timer is
                                     // always later (keepAliveInterval < idleTimeout), so this fires first
                                     // and prevents the idle close.
@@ -3998,9 +4016,9 @@ class QuicheDriver(
     }
 
     /**
-     * The RFC 9000 §8.2.4 abandon timer firing: give up on a path the peer has neither validated nor
-     * failed, so `migrate()` returns and the automatic reactor is released to follow the *next*
-     * network change.
+     * The path validation timer firing: each PTO another PATH_CHALLENGE ([challengeAgain]), and at the
+     * RFC 9000 §8.2.4 abandon deadline, give up on a path the peer has neither validated nor failed, so
+     * `migrate()` returns and the automatic reactor is released to follow the *next* network change.
      *
      * **Order is the correctness argument.** [drainPathEvents] runs FIRST, before anything is
      * declared expired. The deadline and a `Validated` event can come due in the same wake — quiche
@@ -4019,13 +4037,32 @@ class QuicheDriver(
      * ([PathSlot.Kept]): the next migration either probes it again or replaces it, so at most one
      * unanswered probe's socket and id are ever held.
      */
-    private fun abandonPathValidationIfDue() {
+    private fun tendPathValidation() {
         if (migrationEnabled) drainPathEvents()
         val pending = validating() ?: return
-        if (!pending.isDue()) return
+        if (!pending.isDue()) {
+            if (pending.challengeIsDue()) challengeAgain(pending)
+            return
+        }
         paths[pending.key]?.keep(pending.localEndpoint)
         learnFromUnansweredProbe()
         completeMigration(pending, MigrationResult.Unmoved.Failed.PathNotValidated)
+    }
+
+    /**
+     * Ask quiche for another PATH_CHALLENGE on the path [pending] validates. Probing a path quiche already
+     * holds only requests validation again: it keeps the path's connection id and spends no spare. A
+     * response to any challenge sent on the path validates it (RFC 9000 §8.2.1 allows several).
+     */
+    private fun challengeAgain(pending: PendingMigration) {
+        pending.challengeAsked()
+        val wiring = migrationWiring ?: return
+        val entry = paths[pending.key] ?: return
+        when (api.connProbePath(conn, entry.localAddr, entry.localLen, wiring.peer.address, wiring.peer.length)) {
+            is ProbeOutcome.Probed -> quicheOwesAFlush = true
+            // The path is left to the abandon deadline, which reports it as unanswered.
+            is ProbeOutcome.Rejected -> Unit
+        }
     }
 
     /** Poll and react to quiche path events (validation, failure, path close). Migration-clients only. */

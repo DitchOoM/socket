@@ -2521,6 +2521,57 @@ abstract class MigrationSimTestSuite {
         }
 
     /**
+     * A PATH_RESPONSE lost after the PATH_CHALLENGE it answers was acknowledged costs nothing: the peer's
+     * packets on the active path acknowledge the challenge, so quiche never declares it lost and never sends
+     * another by itself, and the client sends one each PTO until the budget runs out. Here the new path's
+     * downlink drops everything for its first 150 ms, which takes the first answer and nothing after it.
+     */
+    @Test
+    fun aMoveSurvivesItsFirstPathResponseBeingLost() =
+        runTest {
+            val virtual = this
+            var downlinkDarkUntil = Duration.ZERO
+            wrapTestBody {
+                withMigrationSim(
+                    simEnv(),
+                    seed = 904_031L,
+                    primaryImpairment = PathImpairment(latency = 20.milliseconds),
+                    probeImpairment = {
+                        PathImpairment(
+                            latency = 20.milliseconds,
+                            reach = LinkReach(uplink = PathReach.Open, downlink = PathReach.DarkUntil(downlinkDarkUntil)),
+                        )
+                    },
+                ) {
+                    val serverJob = launchEchoServer()
+                    try {
+                        val stream = client.openStream()
+                        assertEquals("before", stream.echo("before"))
+                        awaitSpareDcids()
+                        val echoing =
+                            client.launch {
+                                while (true) stream.echo("during")
+                            }
+                        downlinkDarkUntil = virtual.currentTime.milliseconds + 150.milliseconds
+                        val result = withTimeout(30.seconds) { migrate().await() }
+                        echoing.cancel()
+                        assertIs<MigrationResult.Succeeded>(
+                            result,
+                            "the first PATH_RESPONSE was lost and no other challenge was sent: ${pipeTraffic()}",
+                        )
+                        assertTrue(
+                            pipe.pathAt(clientPaths().last()).stats.blackholed > 0,
+                            "the new path's downlink dropped nothing, so no answer was lost: ${pipeTraffic()}",
+                        )
+                        stream.close()
+                    } finally {
+                        serverJob.cancel()
+                    }
+                }
+            }
+        }
+
+    /**
      * **#453, end to end: one lost probe must not cost the connection — with no second network event.**
      *
      * The whole defect lived in the gap between two harnesses. `AutoMigrationReactorTests` drives the
