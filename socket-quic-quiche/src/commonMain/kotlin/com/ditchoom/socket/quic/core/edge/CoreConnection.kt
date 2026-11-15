@@ -212,10 +212,12 @@ internal class CoreConnection(
                 ConnEnd.TimedOut -> QuicCloseReason.ByLocal(QuicError.IdleTimeout)
                 is ConnEnd.ByPeer -> QuicCloseReason.ByPeer(end.error)
                 is ConnEnd.Locally -> QuicCloseReason.ByLocal(end.error)
+                is ConnEnd.Failed -> QuicCloseReason.ByLocal(QuicError.InternalError("processing the connection failed"))
                 ConnEnd.Quietly, is ConnEnd.LoopFailed -> QuicCloseReason.Unspecified
             }
         val failure =
             when (end) {
+                is ConnEnd.Failed -> QuicCloseException(reason, "processing the connection failed", end.cause)
                 is ConnEnd.LoopFailed -> QuicCloseException(reason, "the connection's loop thread failed", end.cause)
                 else -> QuicCloseException(reason, "connection closed")
             }

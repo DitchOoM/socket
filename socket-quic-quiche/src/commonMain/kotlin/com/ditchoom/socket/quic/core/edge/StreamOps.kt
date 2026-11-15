@@ -75,7 +75,9 @@ internal abstract class StreamOp<T>(
     /** Frees what a value holds when the caller is gone before it receives it. */
     protected open fun discard(value: T) = Unit
 
-    override fun run(inside: Conn.Inside) {
+    override fun run(inside: Conn.Inside) = contained { start(inside) }
+
+    private fun start(inside: Conn.Inside) {
         val entry = streams.entry(stream)
         if (!cont.isActive) return
         when (val first = attempt(inside, entry)) {
@@ -91,6 +93,18 @@ internal abstract class StreamOp<T>(
     }
 
     override fun retry(
+        inside: Conn.Inside,
+        stream: StreamEntry,
+    ): Retry {
+        try {
+            return again(inside, stream)
+        } catch (failure: Exception) {
+            fail(failure)
+            return Retry.Settled
+        }
+    }
+
+    private fun again(
         inside: Conn.Inside,
         stream: StreamEntry,
     ): Retry {
@@ -118,21 +132,42 @@ internal abstract class StreamOp<T>(
     }
 
     /** Inside the connection: the deadline passed while parked. */
-    internal fun expire(inside: Conn.Inside) {
-        val entry = streams.entry(stream)
-        val now = parked(entry)
-        if (now is Waiter.Waiting && now.op === this) {
-            park(entry, Waiter.Nobody)
-            if (cont.isActive) cont.resume(Outcome.TimedOut)
+    internal fun expire(inside: Conn.Inside) =
+        contained {
+            val entry = streams.entry(stream)
+            val now = parked(entry)
+            if (now is Waiter.Waiting && now.op === this) {
+                park(entry, Waiter.Nobody)
+                if (cont.isActive) cont.resume(Outcome.TimedOut)
+            }
+        }
+
+    /** Inside the connection: the caller was cancelled while parked. */
+    internal fun withdraw() =
+        contained {
+            unpark()
+            disarm()
+        }
+
+    /** What this operation throws fails this operation's caller and no other: it is unparked and resumed with it. */
+    private inline fun contained(body: () -> Unit) {
+        try {
+            body()
+        } catch (failure: Exception) {
+            fail(failure)
         }
     }
 
-    /** Inside the connection: the caller was cancelled while parked. */
-    internal fun withdraw() {
+    private fun fail(failure: Exception) {
+        disarm()
+        unpark()
+        if (cont.isActive) cont.resumeWithException(failure)
+    }
+
+    private fun unpark() {
         val entry = streams.entry(stream)
         val now = parked(entry)
         if (now is Waiter.Waiting && now.op === this) park(entry, Waiter.Nobody)
-        disarm()
     }
 
     private fun finish(done: Attempt.Finished<T>) {
@@ -204,7 +239,14 @@ internal class ReadOp(
     ): Attempt<ReadResult> {
         if (entry.received === Received.Finished) return done(ReadResult.End)
         val buffer = factory.allocate(chunk)
-        return when (val got = inside.streamRecv(stream, addressOf(buffer), chunk)) {
+        val got =
+            try {
+                inside.streamRecv(stream, addressOf(buffer), chunk)
+            } catch (failure: Exception) {
+                buffer.freeNativeMemory()
+                throw failure
+            }
+        return when (got) {
             is StreamRecvResult.Data -> {
                 if (got.fin) entry.received = Received.Finished
                 if (got.bytesRead == 0) {

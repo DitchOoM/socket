@@ -62,6 +62,11 @@ internal sealed interface ConnEnd {
     /** Closed with no error recorded on either side. */
     object Quietly : ConnEnd
 
+    /** Processing this connection threw [cause]; it was closed on the wire with INTERNAL_ERROR where quiche allowed. */
+    class Failed(
+        val cause: Exception,
+    ) : ConnEnd
+
     /** The loop thread failed; quiche's connection was not closed on the wire. */
     class LoopFailed(
         val cause: Throwable,
@@ -207,7 +212,7 @@ internal class Conn(
         length: Int,
     ) {
         when (touch()) {
-            LoopHold.In -> api.connRecv(handle, datagram.address, length, path.recvInfo)
+            LoopHold.In -> contained { if (!isFailed()) api.connRecv(handle, datagram.address, length, path.recvInfo) }
             LoopHold.Out -> Unit
         }
     }
@@ -218,10 +223,14 @@ internal class Conn(
      */
     fun collect(out: SendBatch): Collected {
         if (hold === LoopHold.Out) return Collected.Everything
-        inbox.drain(runWork)
-        serveEvents()
-        if (writeOutput(out) === Collected.MoreWaiting) return Collected.MoreWaiting
-        rearm()
+        val written =
+            try {
+                if (isFailed()) lastOutput(out, NoCause) else serveAndWrite(out)
+            } catch (failure: Exception) {
+                fail(failure)
+                lastOutput(out, Cause(failure))
+            }
+        if (written === Collected.MoreWaiting) return Collected.MoreWaiting
         return when (owner.tryLeave(loopEntrant)) {
             Leave.Left -> {
                 hold = LoopHold.Out
@@ -229,6 +238,67 @@ internal class Conn(
             }
             // Work arrived while the loop was inside: collect again in this pass.
             Leave.WorkArrived -> Collected.MoreWaiting
+        }
+    }
+
+    private fun serveAndWrite(out: SendBatch): Collected {
+        inbox.drain(runWork)
+        serveEvents()
+        if (writeOutput(out) === Collected.MoreWaiting) return Collected.MoreWaiting
+        rearm()
+        return Collected.Everything
+    }
+
+    /** What quiche still has to say on the wire, such as the CONNECTION_CLOSE of a failed connection. */
+    private fun lastOutput(
+        out: SendBatch,
+        failed: FailureCause,
+    ): Collected =
+        try {
+            writeOutput(out)
+        } catch (late: Exception) {
+            when (failed) {
+                is Cause -> failed.cause.addSuppressed(late)
+                NoCause -> Unit
+            }
+            Collected.Everything
+        }
+
+    /** Runs [body] inside the connection; what it throws ends this connection and no other. */
+    private inline fun contained(body: () -> Unit) {
+        try {
+            body()
+        } catch (failure: Exception) {
+            fail(failure)
+        }
+    }
+
+    private fun isFailed(): Boolean =
+        when (val now = lifecycle) {
+            is ConnLifecycle.Closed -> now.end is ConnEnd.Failed
+            ConnLifecycle.Handshaking, ConnLifecycle.Established -> false
+        }
+
+    /**
+     * Ends the connection with [cause]: closes it on the wire if quiche still lets us, drops queued work and tells
+     * [events]. Output is collected once more by the caller.
+     */
+    private fun fail(cause: Exception) {
+        if (lifecycle is ConnLifecycle.Closed) return
+        val end = ConnEnd.Failed(cause)
+        lifecycle = ConnLifecycle.Closed(end)
+        try {
+            api.connClose(handle, QuicError.InternalError(FAILED_DETAIL))
+        } catch (late: Exception) {
+            // quiche failed too: the connection still ends locally.
+            cause.addSuppressed(late)
+        }
+        disarm()
+        inbox.close(ConnWork::gone)
+        try {
+            events.closed(end)
+        } catch (late: Exception) {
+            cause.addSuppressed(late)
         }
     }
 
@@ -353,7 +423,7 @@ internal class Conn(
     private fun timerFired() {
         timer = TimerState.Unarmed
         when (touch()) {
-            LoopHold.In -> api.connOnTimeout(handle)
+            LoopHold.In -> contained { if (!isFailed()) api.connOnTimeout(handle) }
             // Whoever is inside leaves; the loop's next touch rearms from quiche's current timeout.
             LoopHold.Out -> scheduleServe()
         }
@@ -384,5 +454,15 @@ private class ServeConn(
     override fun gone() = Unit
 }
 
+/** The failure a last output belongs to, so a further failure is kept with it. */
+private sealed interface FailureCause
+
+private object NoCause : FailureCause
+
+private class Cause(
+    val cause: Exception,
+) : FailureCause
+
+private const val FAILED_DETAIL = "processing the connection failed"
 private const val IDLE = 0
 private const val QUEUED = 1
