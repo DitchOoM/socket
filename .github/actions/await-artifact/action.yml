@@ -1,0 +1,58 @@
+name: "Wait for an artifact of this run"
+description: >-
+  Waits until this workflow run holds the named artifact, so a job can start beside the job that uploads it
+  and take it as soon as it exists, instead of waiting (through `needs:`) for a whole reusable workflow
+  around that job. Fails at once when the producing job ends without it, and after timeout-minutes.
+inputs:
+  name:
+    description: "The artifact's name."
+    required: true
+  producer:
+    description: "The producing job's name, or a unique part of it (a reusable workflow prefixes its caller's job name)."
+    required: true
+  timeout-minutes:
+    description: "How long to wait."
+    required: false
+    default: "45"
+  github-token:
+    description: "A token that can read this run's artifacts and jobs (actions: read)."
+    required: true
+runs:
+  using: "composite"
+  steps:
+    - name: Wait for ${{ inputs.name }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        NAME: ${{ inputs.name }}
+        PRODUCER: ${{ inputs.producer }}
+        TIMEOUT_MIN: ${{ inputs.timeout-minutes }}
+      run: |
+        set -euo pipefail
+        run="repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+        deadline=$((SECONDS + TIMEOUT_MIN * 60))
+        polls=0
+        while :; do
+          count=$(gh api "$run/artifacts?name=$NAME" --jq '.total_count' 2>/dev/null || echo 0)
+          if [ "$count" -gt 0 ]; then
+            echo "$NAME is in this run after ${SECONDS}s"
+            exit 0
+          fi
+          # Every fourth poll: has the producer finished without it?
+          if [ $((polls % 4)) -eq 0 ]; then
+            ended=$(gh api --paginate "$run/jobs?per_page=100" \
+              --jq ".jobs[] | select(.name | contains(\"$PRODUCER\")) | select(.status == \"completed\") | .conclusion" 2>/dev/null || true)
+            if [ -n "$ended" ]; then
+              count=$(gh api "$run/artifacts?name=$NAME" --jq '.total_count' 2>/dev/null || echo 0)
+              [ "$count" -gt 0 ] && { echo "$NAME is in this run after ${SECONDS}s"; exit 0; }
+              echo "::error::$PRODUCER ended ($ended) without uploading $NAME"
+              exit 1
+            fi
+          fi
+          if [ "$SECONDS" -ge "$deadline" ]; then
+            echo "::error::$NAME did not appear in this run within $TIMEOUT_MIN minutes"
+            exit 1
+          fi
+          polls=$((polls + 1))
+          sleep 30
+        done

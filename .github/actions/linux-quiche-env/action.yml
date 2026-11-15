@@ -176,29 +176,6 @@ runs:
     # liburing is the one that is unambiguously load-bearing: the root project's and :socket-udp's
     # io_uring cinterop read libs/liburing/linux-<arch>, so :linuxX64Test and linkDebugTestLinuxArm64
     # need it warm or they rebuild it.
-    - name: Restore BoringSSL x64
-      uses: actions/cache/restore@v6
-      with:
-        path: libs/boringssl/linux-x64
-        key: boringssl-linux-x64-v4-${{ hashFiles('gradle/libs.versions.toml') }}
-
-    - name: Restore BoringSSL ARM64
-      uses: actions/cache/restore@v6
-      with:
-        path: libs/boringssl/linux-arm64
-        key: boringssl-linux-arm64-v4-${{ hashFiles('gradle/libs.versions.toml') }}
-
-    - name: Restore OpenSSL x64 (legacy fallback)
-      uses: actions/cache/restore@v6
-      with:
-        path: libs/openssl/linux-x64
-        key: openssl-linux-x64-v5-${{ hashFiles('gradle/libs.versions.toml') }}
-
-    - name: Restore OpenSSL ARM64 (legacy fallback)
-      uses: actions/cache/restore@v6
-      with:
-        path: libs/openssl/linux-arm64
-        key: openssl-linux-arm64-v5-${{ hashFiles('gradle/libs.versions.toml') }}
 
     - name: Restore liburing x64
       uses: actions/cache/restore@v6
