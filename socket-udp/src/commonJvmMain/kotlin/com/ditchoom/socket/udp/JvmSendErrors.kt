@@ -140,6 +140,8 @@ private fun byStrerrorPhrase(
         message.contains("Permission denied") -> DatagramSendError.NotPermitted(ERRNO_NOT_SURFACED)
         // EPERM: a packet filter dropped the datagram on its way out — an owner-matching firewall rule,
         // or Android's local-network protection for an app without ACCESS_LOCAL_NETWORK.
+        // Matched by text because NIO carries no errno: on Android the channel's IOException has no
+        // ErrnoException cause (only the java.net.DatagramSocket path does).
         message.contains("Operation not permitted") -> DatagramSendError.NotPermitted(ERRNO_NOT_SURFACED)
         else -> DatagramSendError.Transport(e)
     }

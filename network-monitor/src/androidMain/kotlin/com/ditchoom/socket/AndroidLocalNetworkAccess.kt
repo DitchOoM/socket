@@ -1,5 +1,6 @@
 package com.ditchoom.socket
 
+import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 
@@ -30,14 +31,19 @@ sealed interface AndroidLocalNetworkAccess {
 }
 
 /** This app's local-network access right now; the user can grant or revoke it at any time. */
-fun NetworkMonitor.Companion.androidLocalNetworkAccess(): AndroidLocalNetworkAccess {
-    val context = androidApplicationContext() ?: return AndroidLocalNetworkAccess.Unknown
+fun NetworkMonitor.Companion.androidLocalNetworkAccess(): AndroidLocalNetworkAccess =
+    when (val context = androidApplicationContext()) {
+        null -> AndroidLocalNetworkAccess.Unknown
+        else -> context.localNetworkAccess()
+    }
+
+private fun Context.localNetworkAccess(): AndroidLocalNetworkAccess {
     val enforced =
         Build.VERSION.SDK_INT >= AndroidLocalNetworkAccess.ENFORCED_FROM_API &&
-            context.applicationInfo.targetSdkVersion >= AndroidLocalNetworkAccess.ENFORCED_FROM_API
+            applicationInfo.targetSdkVersion >= AndroidLocalNetworkAccess.ENFORCED_FROM_API
     return when {
         !enforced -> AndroidLocalNetworkAccess.Allowed
-        context.checkSelfPermission(AndroidLocalNetworkAccess.PERMISSION) == PackageManager.PERMISSION_GRANTED ->
+        checkSelfPermission(AndroidLocalNetworkAccess.PERMISSION) == PackageManager.PERMISSION_GRANTED ->
             AndroidLocalNetworkAccess.Allowed
         else -> AndroidLocalNetworkAccess.Denied
     }
