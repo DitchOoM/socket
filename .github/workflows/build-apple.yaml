@@ -29,6 +29,11 @@ name: "Build & Test (Apple)"
 on:
   workflow_call:
     inputs:
+      natives-only:
+        description: "Build only the natives job's artifacts (the QUIC interop gate's runs on main and on demand); skip every test, link and publish job."
+        required: false
+        default: false
+        type: boolean
       gradle-args:
         description: "Extra Gradle arguments (e.g., -PincrementMinor=true)"
         required: false
@@ -336,6 +341,7 @@ jobs:
   kn-tests:
     name: "K/N ${{ matrix.shard.name }}"
     needs: natives
+    if: ${{ !inputs.natives-only }}
     runs-on: macos-26
     # 60, not 45. The budget only exists to bound a hang; it must not sit inside the range a healthy
     # run reaches on a slow runner. The iOS simulator shard normally finishes in 19-21 min, but on
@@ -559,6 +565,7 @@ jobs:
   jvm-tests:
     name: "JVM quiche (${{ matrix.backend.name }})"
     needs: natives
+    if: ${{ !inputs.natives-only }}
     runs-on: macos-26
     timeout-minutes: 30
     strategy:
@@ -710,6 +717,7 @@ jobs:
   link:
     name: "Link macosArm64 test binaries"
     needs: natives
+    if: ${{ !inputs.natives-only }}
     runs-on: macos-26
     timeout-minutes: 30
     steps:
@@ -808,6 +816,7 @@ jobs:
   publish:
     name: "Publish Apple targets to Maven Local"
     needs: natives
+    if: ${{ !inputs.natives-only }}
     runs-on: macos-26
     timeout-minutes: 40
     steps:

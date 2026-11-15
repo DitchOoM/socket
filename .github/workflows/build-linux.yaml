@@ -49,6 +49,11 @@ name: "Build & Test (Linux)"
 on:
   workflow_call:
     inputs:
+      natives-only:
+        description: "Build only the natives job's artifacts (the QUIC interop gate's runs on main and on demand); skip every test, link and publish job."
+        required: false
+        default: false
+        type: boolean
       gradle-args:
         description: "Extra Gradle arguments (e.g., -PincrementMinor=true)"
         required: false
@@ -91,15 +96,16 @@ jobs:
   # .a + JNI shims), the Windows x64 JNI shim via MinGW, and the Android arm64 pair via cargo-ndk.
   # Everything downstream consumes the results as artifacts.
   #
-  # This job is the SINGLE WRITER for the gradle-linux / gradle-wrapper-linux / boringssl /
-  # openssl / liburing / quiche / cargo cache keys. Every fanned-out consumer restores them
-  # read-only via .github/actions/linux-quiche-env, so a cache miss cannot turn into five
-  # parallel jobs racing to upload the same key.
-  # ⚠️ For the two Gradle keys that is now further narrowed to main's ref scope only — see the
-  # `Restore Gradle …` steps below and their `Save … (main only)` twins at the end of this job.
-  # The native keys (boringssl/openssl/liburing/quiche/cargo) are still written from every
-  # ref: they are keyed on content that rotates rarely, and a miss there costs a 10-20 minute
-  # rebuild on the job every other job in this workflow waits for.
+  # This job is the SINGLE WRITER in this workflow for the gradle-linux / gradle-wrapper-linux /
+  # liburing / quiche / cargo cache keys. Every fanned-out consumer restores them read-only via
+  # .github/actions/linux-quiche-env, so a cache miss cannot turn into five parallel jobs racing to
+  # upload the same key.
+  # ⚠️ The two Gradle keys and quiche's cargo target/ are written on main only — see the
+  # `Restore …` steps below and the `Save … (main only)` twins at the end of this job;
+  # native-deps-freshness.yaml's cache-warm writes them daily. The liburing, quiche and cargo
+  # registry keys are still written from every ref: they are keyed on content that rotates rarely,
+  # are small, and a miss costs a rebuild on the job every other job in this workflow waits for.
+  # Nothing here caches BoringSSL: socket builds none (it uses the canonical bundle).
   # Not konan-linux: this job never compiles Kotlin/Native, so ~/.konan never exists here and its
   # save always skipped ("Path Validation Error … no cache is being saved"). The writer is
   # native-deps-freshness.yaml's `cache-warm`, which runs a K/N Linux compile on main.
@@ -211,30 +217,6 @@ jobs:
           path: ~/.gradle/wrapper
           key: gradle-wrapper-linux-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
 
-      - name: Cache BoringSSL x64
-        uses: actions/cache@v6
-        with:
-          path: libs/boringssl/linux-x64
-          key: boringssl-linux-x64-v4-${{ hashFiles('gradle/libs.versions.toml') }}
-
-      - name: Cache BoringSSL ARM64
-        uses: actions/cache@v6
-        with:
-          path: libs/boringssl/linux-arm64
-          key: boringssl-linux-arm64-v4-${{ hashFiles('gradle/libs.versions.toml') }}
-
-      - name: Cache OpenSSL x64 (legacy fallback)
-        uses: actions/cache@v6
-        with:
-          path: libs/openssl/linux-x64
-          key: openssl-linux-x64-v5-${{ hashFiles('gradle/libs.versions.toml') }}
-
-      - name: Cache OpenSSL ARM64 (legacy fallback)
-        uses: actions/cache@v6
-        with:
-          path: libs/openssl/linux-arm64
-          key: openssl-linux-arm64-v5-${{ hashFiles('gradle/libs.versions.toml') }}
-
       - name: Cache liburing x64
         uses: actions/cache@v6
         with:
@@ -317,8 +299,10 @@ jobs:
       # source hash so the cache invalidates on either change.
       # restore-keys gives a partial-hit on version bumps so cargo incremental
       # recompile picks up from the previous build instead of from zero.
-      - name: Cache quiche cargo target/ (all triples)
-        uses: actions/cache@v6
+      # Restore only: native-deps-freshness.yaml's cache-warm writes it on main. A pull request's own
+      # copy (about 1 GB per ref) pushed the small natives entries out of the 10 GB cache.
+      - name: Restore quiche cargo target/ (all triples)
+        uses: actions/cache/restore@v6
         with:
           path: socket-quic-quiche/build/quiche
           key: quiche-cargo-target-v3-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/build.gradle.kts', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
@@ -714,6 +698,10 @@ jobs:
       # silently swallowed by continue-on-error. `cache-hit` is true only on an exact primary-key
       # match (a restore-keys prefix hit leaves it false), which is precisely the case where a
       # re-save is impossible anyway: cache entries are immutable per key.
+      - name: Keep only downloads in the Gradle cache (main only)
+        if: ${{ !cancelled() && github.ref == 'refs/heads/main' && steps.restore_gradle_caches.outputs.cache-hit != 'true' }}
+        uses: ./.github/actions/gradle-cache-prune
+
       - name: Save Gradle build outputs (main only)
         id: save_gradle_caches
         if: ${{ !cancelled() && github.ref == 'refs/heads/main' && steps.restore_gradle_caches.outputs.cache-hit != 'true' }}
@@ -756,6 +744,7 @@ jobs:
   checks-tests:
     name: "Linux / JVM / JS / Android"
     needs: natives
+    if: ${{ !inputs.natives-only }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     # Every jvmTest worker in this job mirrors its JVM fatal-error log (hs_err) to
@@ -1248,6 +1237,7 @@ jobs:
   abi-linux:
     name: "ABI (binary compatibility, Linux)"
     needs: natives
+    if: ${{ !inputs.natives-only }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -1311,6 +1301,7 @@ jobs:
   quiche-jvm:
     name: "QUIC quiche JVM (${{ matrix.leg.name }})"
     needs: natives
+    if: ${{ !inputs.natives-only }}
     runs-on: ubuntu-24.04
     # 40, not 25: the step lid below is now 24 (see its note on QUIC_TEST_TIME_SCALE=3), and a job
     # timeout at or below the step timeout would fire first, which is the failure mode the step lid
@@ -1719,6 +1710,7 @@ jobs:
   jvm-jdk25:
     name: "JVM tests (JDK 25)"
     needs: natives
+    if: ${{ !inputs.natives-only }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
@@ -1836,6 +1828,7 @@ jobs:
   browser-interop:
     name: "WebTransport interop (headless Chrome)"
     needs: natives
+    if: ${{ !inputs.natives-only }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -1885,6 +1878,7 @@ jobs:
   link:
     name: "Link native test binaries + quic-echo (Linux)"
     needs: natives
+    if: ${{ !inputs.natives-only }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -1994,6 +1988,7 @@ jobs:
   publish:
     name: "Publish Linux targets to Maven Local"
     needs: natives
+    if: ${{ !inputs.natives-only }}
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
@@ -2537,6 +2532,7 @@ jobs:
   malloc-check:
     name: "QUIC malloc-check (Linux x64)"
     needs: natives
+    if: ${{ !inputs.natives-only }}
     runs-on: ubuntu-24.04
     # 40, not 20: the step lid below is now 24 (QUIC_TEST_TIME_SCALE=3 — see its note). A job
     # timeout at or below the step lid fires first and takes the core-dump post-mortem steps with
@@ -2656,6 +2652,7 @@ jobs:
   fuzz-jvm:
     name: "Fuzz JVM (${{ matrix.lane }})"
     needs: natives
+    if: ${{ !inputs.natives-only }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     strategy:
@@ -2809,6 +2806,7 @@ jobs:
   fuzz-native:
     name: "Fuzz native ASAN (${{ matrix.lane }})"
     needs: natives
+    if: ${{ !inputs.natives-only }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     strategy:
@@ -2877,6 +2875,7 @@ jobs:
   fuzz-boringssl-asan:
     name: "Fuzz BoringSSL-C ASAN proof (Linux x64)"
     needs: natives
+    if: ${{ !inputs.natives-only }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:

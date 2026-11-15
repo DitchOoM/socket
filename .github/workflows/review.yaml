@@ -537,6 +537,27 @@ jobs:
             exit 1
           fi
 
+  # This pull request's QUIC client and server against every quic-interop-runner peer, both directions,
+  # plus our client's active migration and the native macOS, Kotlin/Native and Windows lanes, judged
+  # against test-harness/quic-interop/expectations.json. Built from this run's own quiche natives, so a
+  # quiche patch is tested by the pull request that changes it. They start with the run and wait only for
+  # the natives artifacts (await-natives), not for the rest of build-linux and build-apple.
+  quic-interop:
+    uses: ./.github/workflows/quic-interop-gate.yaml
+    with:
+      version: "0.0.0-interop"
+      await-natives: true
+      stale: fail
+
+  quic-interop-native:
+    uses: ./.github/workflows/quic-interop-native.yaml
+    with:
+      version: "0.0.0-interop"
+      await-natives: true
+      apple-natives-run-id: ${{ github.run_id }}
+      windows-natives-run-id: ${{ github.run_id }}
+      stale: fail
+
   build-windows:
     # Three legs of the same suite. `jfr: true` records a Flight Recorder ring on the test worker:
     # Windows has ONE JVM lane, so tracing it outright would leave no untraced Windows run, and the
