@@ -7,6 +7,7 @@ import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.deterministic
+import com.ditchoom.buffer.flow.AddressFamily
 import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.Datagram
 import com.ditchoom.buffer.flow.DatagramCapabilities
@@ -367,6 +368,50 @@ class PerLocalAddressServerChannelTests {
 
     private companion object {
         const val DATAGRAM_LEN = 64
+        const val DATAGRAMS = 100
+    }
+
+    /**
+     * Routing a peer's replies derives nothing from its address per datagram: the address is the key.
+     *
+     * Counted on the address itself, whose text is what a key built per datagram would be made of.
+     */
+    @Test
+    fun routingAPeersRepliesReadsNothingFromItsAddressPerDatagram() =
+        runBlocking {
+            val loopback = FakeSocket("127.0.0.1", 4433)
+            val alias = FakeSocket("127.0.0.2", 4433)
+            val channel = PerLocalAddressServerChannel.of(listOf(loopback, alias))
+            val peer = CountingAddress("198.51.100.7", 4000)
+
+            repeat(DATAGRAMS) {
+                alias.deliver(peer)
+                withTimeout(5.seconds) { channel.receive() }
+                channel.send(payload(), peer)
+            }
+
+            assertEquals(DATAGRAMS, alias.sent.size, "every reply left by the socket the peer dialled")
+            assertEquals(0, peer.hostReads, "the peer's address text was read ${peer.hostReads} times for $DATAGRAMS datagrams")
+        }
+
+    /** An address that compares by value, as every platform's does, and counts reads of its text. */
+    private class CountingAddress(
+        private val text: String,
+        override val port: Int,
+    ) : SocketAddress {
+        var hostReads = 0
+            private set
+
+        override val host: String
+            get() {
+                hostReads++
+                return text
+            }
+        override val family: AddressFamily = AddressFamily.IPv4
+
+        override fun equals(other: Any?): Boolean = other is CountingAddress && text == other.text && port == other.port
+
+        override fun hashCode(): Int = 31 * text.hashCode() + port
     }
 
     private fun payload(): ReadBuffer = BufferFactory.Default.allocate(4).also { it.resetForRead() }
