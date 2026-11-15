@@ -11,6 +11,17 @@ in the program itself), summed over all threads, divided by the operations compl
 import argparse, json, os, platform, re, statistics, subprocess, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+DIAG = {"dir": "", "runs": 0}  # --diag-dir: where each run's diagnostic lines are kept, one file per run
+DIAG_LINES = ("UDP ", "CONNECTED ", "PROGRESS ", "STUCK", "WORKING ")
+
+def keep_diagnostics(stack, workload, lines):
+    """Writes a run's diagnostic lines (the many-connection workload's UDP/PROGRESS/STUCK/WORKING) to --diag-dir."""
+    if not DIAG["dir"] or not lines:
+        return
+    DIAG["runs"] += 1
+    os.makedirs(DIAG["dir"], exist_ok=True)
+    with open(os.path.join(DIAG["dir"], f"{DIAG['runs']:03d}-{stack}-{workload}.txt"), "w") as f:
+        f.writelines(lines)
 CONN_COUNTS = (64, 1024)  # the qconns<N> workloads: N connections echoing 64 B at once
 LINUX = platform.system() == "Linux"
 
@@ -56,8 +67,10 @@ def run_once(cmd, env, seconds, warmup, certs, trace=""):
     e = dict(os.environ, NATIVE_BENCH_SECONDS=str(seconds), NATIVE_BENCH_WARMUP=str(warmup), BENCH_CERT_DIR=certs, **env)
     load = subprocess.run(["uptime"], capture_output=True, text=True).stdout.split("load average")[-1].strip(" s:\n")
     p = subprocess.Popen(cmd, env=e, stdout=subprocess.PIPE, text=True)
-    nthreads, result = 0, None
+    nthreads, result, diag = 0, None, []
     for line in p.stdout:
+        if line.startswith(DIAG_LINES):
+            diag.append(line)
         if line.startswith("MEASURING"):
             prof = start_profiler(p.pid, max(1, seconds - 1), trace) if trace else None
             time.sleep(seconds / 2)
@@ -68,6 +81,7 @@ def run_once(cmd, env, seconds, warmup, certs, trace=""):
         if m:
             result = dict(kv.split("=", 1) for kv in m.group(1).split())
     p.wait(timeout=600)
+    keep_diagnostics("kotlin-native-ours", env.get("NATIVE_BENCH", "") + env.get("NATIVE_BENCH_CONNS", ""), diag)
     if result is None:
         return None
     r = {k: (v if k in ("stack", "workload") else float(v)) for k, v in result.items()}
@@ -133,15 +147,18 @@ def run_jvm(workload, jar, java, certs_repo, seconds, warmup, trace=""):
     os.remove(out)
     return r
 
-def run_jvm_conns(n, jar, java, certs_repo, seconds, warmup, trace=""):
-    """Our JVM build's QuicManyConnectionEcho (benchmarks/jvm): the JVM twin of qconns, a coroutine per connection."""
+def run_jvm_conns(n, echo_jar, java, certs_repo, seconds, warmup, trace=""):
+    """Our JVM build running the same many-connection workload as qconns (ManyConnectionEchoMain, quic-echo jar)."""
     cmd = [java, "--enable-native-access=ALL-UNNAMED", "--add-opens", "java.base/java.nio=ALL-UNNAMED",
-           "-Dquiche.expectedJvmBackend=ffm", f"-Dbench.certDir={certs_repo}"] + jfr_flag(trace) + ["-cp", jar,
-           "com.ditchoom.socket.benchmark.QuicManyConnectionEchoKt", str(n), str(warmup), str(seconds)]
+           "-Dquiche.expectedJvmBackend=ffm"] + jfr_flag(trace) + ["-cp", echo_jar,
+           "com.ditchoom.socket.quic.ManyConnectionEchoMainKt", f"{certs_repo}/cert.crt", f"{certs_repo}/cert.key",
+           str(n), str(warmup), str(seconds)]
     load = subprocess.run(["uptime"], capture_output=True, text=True).stdout.split("load average")[-1].strip(" s:\n")
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True)
-    nthreads, result = 0, None
+    nthreads, result, diag = 0, None, []
     for line in p.stdout:
+        if line.startswith(DIAG_LINES):
+            diag.append(line)
         if line.startswith("MEASURING"):
             time.sleep(seconds / 2)
             nthreads = threads(p.pid)
@@ -149,6 +166,7 @@ def run_jvm_conns(n, jar, java, certs_repo, seconds, warmup, trace=""):
         if m:
             result = dict(kv.split("=", 1) for kv in m.group(1).split())
     _, _, ru = os.wait4(p.pid, 0)
+    keep_diagnostics("jvm-ours", f"qconns{n}", diag)
     if result is None:
         return None
     r = {k: (v if k in ("stack", "workload") else float(v)) for k, v in result.items()}
@@ -169,9 +187,12 @@ def main():
     a.add_argument("--jmh-jar", default="", help="benchmarks/jvm's mainBenchmarkJar: adds the jvm-ours stack")
     a.add_argument("--java", default="java", help="JVM for jvm-ours (JDK 25)")
     a.add_argument("--certs-repo", default="", help="socket-quic-quiche/testcerts, for jvm-ours")
+    a.add_argument("--echo-jar", default="", help="test-harness/quic-echo/quic-echo.jar: jvm-ours for the qconns workloads")
+    a.add_argument("--diag-dir", default="", help="keep each run's diagnostic lines (UDP counters, stuck connections) here")
     a.add_argument("--trace-dir", default="", help="after the rounds, one profiled pass per stack and workload, traces here")
     a.add_argument("--lock", default="", help="lock directory to mkdir while running (released on exit)")
     args = a.parse_args()
+    DIAG["dir"] = args.diag_dir
     if args.lock:
         os.mkdir(args.lock)  # fails if another run holds it
     try:
@@ -182,7 +203,7 @@ def main():
         def one(rnd, s, w, trace=""):
             if s == "jvm-ours":
                 if w.startswith("qconns"):
-                    r = run_jvm_conns(int(w[6:]), args.jmh_jar, args.java, args.certs_repo, args.seconds, args.warmup, trace)
+                    r = run_jvm_conns(int(w[6:]), args.echo_jar, args.java, args.certs_repo, args.seconds, args.warmup, trace)
                 else:
                     r = run_jvm(w, args.jmh_jar, args.java, args.certs_repo, args.seconds, args.warmup, trace)
             elif w in table[s]:
