@@ -528,13 +528,19 @@ jobs:
   # emulator (where the process has crashed in JIT code as a traced pass ends) and on API 36 as the
   # control. Shares heap_verify_minutes. What a hit proves: scripts/android-trace-crash-hunt.sh.
   android-trace-crash-hunt:
-    name: "Android method-tracing crash hunt (API ${{ matrix.api-level }})"
+    name: "Android method-tracing crash hunt (API ${{ matrix.api-level }}, ${{ matrix.shard }})"
     runs-on: ubuntu-latest
     timeout-minutes: 160
     strategy:
       fail-fast: false
+      # Four emulators on API 34: the crash is about 1 run in 130 and an hour fits about 64 runs.
       matrix:
-        api-level: [34, 36]
+        include:
+          - { api-level: 34, shard: a }
+          - { api-level: 34, shard: b }
+          - { api-level: 34, shard: c }
+          - { api-level: 34, shard: d }
+          - { api-level: 36, shard: control }
     env:
       ORG_GRADLE_PROJECT_linuxTargets: "false"
       HUNT_MINUTES: ${{ inputs.heap_verify_minutes || '60' }}
@@ -619,7 +625,7 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
-          name: trace-crash-hunt-api${{ matrix.api-level }}
+          name: trace-crash-hunt-api${{ matrix.api-level }}-${{ matrix.shard }}
           path: trace-crash-hunt/
           if-no-files-found: ignore
           retention-days: 14

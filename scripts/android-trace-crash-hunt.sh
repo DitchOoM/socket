@@ -40,7 +40,7 @@ capture() { # <label>
     echo "$trace" >"$OUT/last-method-trace-$label.name"
   fi
   gzip -f "$OUT/logcat-$label.txt" "$OUT"/last-method-trace-"$label".trace 2>/dev/null || true
-  echo "::error title=Crash under method tracing (API $API_LEVEL, $label)::tombstone, last method trace and logcat are in the trace-crash-hunt-api$API_LEVEL artifact"
+  echo "::error title=Crash under method tracing (API $API_LEVEL, $label)::tombstone, last method trace and logcat are in this job's trace-crash-hunt artifact"
   grep -h -m6 -E 'Fatal signal|^signal [0-9]+|#0[0-3] pc' "$OUT/logcat-crash-$label.txt" "$OUT/tombstone-$label.txt" | cut -c1-220 || true
 }
 
