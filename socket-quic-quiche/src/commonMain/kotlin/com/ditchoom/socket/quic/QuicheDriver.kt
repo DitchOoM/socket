@@ -2423,7 +2423,7 @@ class QuicheDriver(
     private fun QuicheCmd.sharesAFlush(): Boolean =
         when (this) {
             is QuicheCmd.RecvPacket, is QuicheCmd.OpenStream, is QuicheCmd.StreamRecv, is QuicheCmd.StreamSend,
-            is QuicheCmd.WithdrawStreamSend, is QuicheCmd.DgramRecv, is QuicheCmd.DgramSend,
+            is WithdrawStreamSend, is QuicheCmd.DgramRecv, is QuicheCmd.DgramSend,
             -> true
             is QuicheCmd.AbandonOpen, is QuicheCmd.StreamShutdown, is QuicheCmd.PeerCert, is QuicheCmd.Stats,
             is QuicheCmd.PeerTransportParamsRead, is QuicheCmd.SourceIdsRead, is InspectConnection<*>,
@@ -2603,7 +2603,7 @@ class QuicheDriver(
                     unfinishedSends.any { it.streamId == cmd.streamId } || !offer(cmd) -> unfinishedSends.addLast(cmd)
                 }
 
-            is QuicheCmd.WithdrawStreamSend ->
+            is WithdrawStreamSend ->
                 if (unfinishedSends.remove(cmd.send)) {
                     val taken = cmd.send.accepted
                     settle(cmd.send, StreamSendResult(if (taken > 0) taken else QUICHE_ERR_DONE))
@@ -4667,7 +4667,7 @@ class QuicheDriver(
             is QuicheCmd.StreamRecv -> cmd.result.complete(StreamRecvResult.ConnectionGone)
             is QuicheCmd.StreamSend -> cmd.result.complete(StreamSendResult(-1))
             // The send it names is failed where it is held or queued.
-            is QuicheCmd.WithdrawStreamSend -> Unit
+            is WithdrawStreamSend -> Unit
             // The stream/connection is gone; the shutdown frame won't go out, which is fine — the
             // peer already sees the connection closing. Complete with a benign 0 (no-op).
             is QuicheCmd.StreamShutdown -> cmd.result.complete(0)
@@ -4730,7 +4730,7 @@ class QuicheDriver(
             is QuicheCmd.AbandonOpen -> Unit
             is QuicheCmd.StreamRecv -> cmd.result.completeExceptionally(cause)
             is QuicheCmd.StreamSend -> cmd.result.completeExceptionally(cause)
-            is QuicheCmd.WithdrawStreamSend -> Unit
+            is WithdrawStreamSend -> Unit
             is QuicheCmd.StreamShutdown -> cmd.result.completeExceptionally(cause)
             is QuicheCmd.DgramRecv -> cmd.result.completeExceptionally(cause)
             is QuicheCmd.DgramSend -> cmd.result.completeExceptionally(cause)
@@ -4862,7 +4862,7 @@ class QuicheDriver(
      */
     internal suspend fun withdraw(send: QuicheCmd.StreamSend) {
         // Refused only by a closed channel, and then cleanup settles every send, this one included.
-        commands.trySend(QuicheCmd.WithdrawStreamSend(send))
+        commands.trySend(WithdrawStreamSend(send))
         send.result.join()
     }
 

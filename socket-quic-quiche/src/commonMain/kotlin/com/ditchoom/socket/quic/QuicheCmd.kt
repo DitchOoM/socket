@@ -176,15 +176,6 @@ sealed interface QuicheCmd {
     }
 
     /**
-     * Stop offering [send] to quiche. Its [StreamSend.result] completes with the bytes quiche took, or
-     * `QUICHE_ERR_DONE` when it took none; a send that has already completed is left as it is. What a
-     * writer whose deadline passed, or who was cancelled, sends before it lets go of the buffer.
-     */
-    class WithdrawStreamSend(
-        val send: StreamSend,
-    ) : QuicheCmd
-
-    /**
      * Shut down one direction of a stream with an application error code: [direction] 0 = read
      * (sends STOP_SENDING), 1 = write (sends RESET_STREAM). [result] is the quiche return (0 on success).
      */
@@ -312,6 +303,15 @@ internal class PathOpened(
 internal class PathSendSettled(
     val key: PathKey,
     val retry: Job,
+) : QuicheCmd
+
+/**
+ * Stop offering [send] to quiche. Its [QuicheCmd.StreamSend.result] completes with the bytes quiche took,
+ * or `QUICHE_ERR_DONE` when it took none; a send that has already completed is left as it is. What a
+ * writer whose deadline passed, or who was cancelled, sends before it lets go of the buffer.
+ */
+internal class WithdrawStreamSend(
+    val send: QuicheCmd.StreamSend,
 ) : QuicheCmd
 
 /** How a migration path open ended. Sealed, so the loop's continuation cannot forget a way it can end. */
