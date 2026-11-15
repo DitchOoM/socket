@@ -425,6 +425,19 @@ jobs:
             -o -name 'symbol-processing-common-deps-*.jar' -o -name 'kotlinx-coroutines-core-jvm-*.jar' \) \
             -printf '%f\n' 2>/dev/null | sort | tee -a "$GITHUB_STEP_SUMMARY"
 
+      # The docs jobs of pull requests restore this (review.yaml on macOS, docs-markdown.yaml on Linux).
+      - name: Cache the npm download cache (docs)
+        id: npm_cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.npm
+          key: npm-docs-${{ runner.os }}-${{ hashFiles('docs/package-lock.json') }}
+      - name: Warm the npm download cache (docs)
+        if: steps.npm_cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        working-directory: docs
+        run: npm ci --ignore-scripts
+
       # Last step: the gradle-linux entry is saved at post-job, after this.
       - name: Keep only downloads in the Gradle cache
         if: ${{ !cancelled() }}
@@ -579,6 +592,19 @@ jobs:
           path: ~/.gradle/caches
           key: gradle-macos-kn-${{ hashFiles('gradle/libs.versions.toml', '**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
 
+      # The docs jobs of pull requests restore this (review.yaml on macOS, docs-markdown.yaml on Linux).
+      - name: Cache the npm download cache (docs)
+        id: npm_cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.npm
+          key: npm-docs-${{ runner.os }}-${{ hashFiles('docs/package-lock.json') }}
+      - name: Warm the npm download cache (docs)
+        if: steps.npm_cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        working-directory: docs
+        run: npm ci --ignore-scripts
+
       - name: Report a K/N warm that could not run
         if: steps.kn_compile.outcome == 'failure'
         run: echo "::warning::The Kotlin/Native compile failed, so neither konan-macos-* nor gradle-macos-kn-* was saved; Apple K/N jobs fall back to older entries until it succeeds."
@@ -622,7 +648,7 @@ jobs:
           set -euo pipefail
           families="gradle-linux gradle-macos-kn gradle-macos gradle-wrapper-linux gradle-wrapper-macos
             quiche-cargo-target-v3 konan-linux konan-macos cargo-Linux cargo-macOS
-            quiche-linux-x64-v8 quiche-linux-arm64-v8 quiche-apple-v3"
+            quiche-linux-x64-v8 quiche-linux-arm64-v8 quiche-apple-v3 npm-docs-Linux npm-docs-macOS"
           entries=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/caches?per_page=100&ref=refs/heads/main" \
             --jq '.actions_caches[] | [.id, .key, .created_at, .size_in_bytes] | @tsv')
           freed=0
@@ -638,3 +664,25 @@ jobs:
             done <<<"$stale"
           done
           echo "freed $((freed / 1048576)) MB of superseded entries on main" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # The repository's cache is 10 GB with LRU eviction; pull requests need room for their own natives
+      # entries beside main's. Growth on main is caught here the day it happens, with the entries listed.
+      - name: Main's cache is within its budget
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUDGET_MB: "7500"
+        run: |
+          set -euo pipefail
+          entries=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/caches?per_page=100&ref=refs/heads/main" \
+            --jq '.actions_caches[] | [.size_in_bytes, .key, .created_at] | @tsv')
+          total=$(awk -F'\t' '{s += $1} END {printf "%d", s / 1048576}' <<<"$entries")
+          {
+            echo "### Cache entries on main: ${total} MB of a ${BUDGET_MB} MB budget"
+            echo '```'
+            sort -t$'\t' -k1,1nr <<<"$entries" | awk -F'\t' '{printf "%7d MB  %s  (%s)\n", $1 / 1048576, $2, $3}'
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ "$total" -gt "$BUDGET_MB" ]; then
+            echo "::error::main's cache entries total ${total} MB, over the ${BUDGET_MB} MB budget; the list is in this job's summary"
+            exit 1
+          fi
