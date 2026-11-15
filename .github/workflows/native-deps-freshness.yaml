@@ -527,7 +527,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin,aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
+          targets: aarch64-apple-darwin,x86_64-apple-darwin,aarch64-apple-ios,aarch64-apple-ios-sim
 
       - name: Cache Cargo registry
         uses: actions/cache@v6
@@ -568,15 +568,15 @@ jobs:
         continue-on-error: true
         run: ./gradlew resolveAllDependencies --no-configuration-cache
 
-      # Every module's macOS x64 main + test compilation, which is what build-apple's K/N shards and
+      # Every module's macOS arm64 main + test compilation, which is what build-apple's K/N shards and
       # the docs/review jobs restore klibs for, and the first K/N compiler run, which fills ~/.konan
       # with the distribution and its LLVM/libffi/lldb dependencies. After the quiche warm above,
       # whose static libs the quiche cinterop links against.
-      - name: Compile Kotlin/Native (macOS x64, every module)
+      - name: Compile Kotlin/Native (macOS arm64, every module)
         id: kn_compile
         if: steps.restore_konan.outputs.cache-hit != 'true' || steps.restore_gradle_kn.outputs.cache-hit != 'true'
         continue-on-error: true
-        run: ./gradlew compileTestKotlinMacosX64 --no-configuration-cache
+        run: ./gradlew compileTestKotlinMacosArm64 --no-configuration-cache
 
       - name: Save Konan (K/N toolchain)
         if: steps.kn_compile.outcome == 'success' && steps.restore_konan.outputs.cache-hit != 'true'

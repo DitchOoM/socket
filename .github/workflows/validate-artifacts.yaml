@@ -313,13 +313,13 @@ jobs:
 
           VARIANTS=$(jq -r '.variants[].name' "$MODULE")
 
-          # ApiElements-published: jvm, js, linuxX64, linuxArm64 + 11 Apple
+          # ApiElements-published: jvm, js, linuxX64, linuxArm64 + 8 Apple
           for v in jvm js \
             linuxX64 linuxArm64 \
-            macosArm64 macosX64 \
-            iosArm64 iosSimulatorArm64 iosX64 \
-            tvosArm64 tvosSimulatorArm64 tvosX64 \
-            watchosArm64 watchosSimulatorArm64 watchosX64; do
+            macosArm64 \
+            iosArm64 iosSimulatorArm64 \
+            tvosArm64 tvosSimulatorArm64 \
+            watchosArm64 watchosSimulatorArm64; do
             if echo "$VARIANTS" | grep -q "^${v}ApiElements-published$"; then
               echo "ApiElements OK: $v"
             else
@@ -330,10 +330,10 @@ jobs:
 
           # MetadataElements-published: Apple targets (enables IDE resolution for
           # intermediate source sets like iosMain, tvosMain, watchosMain, appleMain)
-          for v in macosArm64 macosX64 \
-            iosArm64 iosSimulatorArm64 iosX64 \
-            tvosArm64 tvosSimulatorArm64 tvosX64 \
-            watchosArm64 watchosSimulatorArm64 watchosX64; do
+          for v in macosArm64 \
+            iosArm64 iosSimulatorArm64 \
+            tvosArm64 tvosSimulatorArm64 \
+            watchosArm64 watchosSimulatorArm64; do
             if echo "$VARIANTS" | grep -q "^${v}MetadataElements-published$"; then
               echo "MetadataElements OK: $v"
             else
@@ -371,10 +371,10 @@ jobs:
           done
 
           # ── 2. Apple klib presence ──
-          for target in macosarm64 macosx64 \
-            iosarm64 iossimulatorarm64 iosx64 \
-            tvosarm64 tvossimulatorarm64 tvosx64 \
-            watchosarm64 watchossimulatorarm64 watchosx64; do
+          for target in macosarm64 \
+            iosarm64 iossimulatorarm64 \
+            tvosarm64 tvossimulatorarm64 \
+            watchosarm64 watchossimulatorarm64; do
             KLIB="$MERGED/socket-${target}/${version}/socket-${target}-${version}.klib"
             if [ -f "$KLIB" ]; then
               echo "klib OK: $target"

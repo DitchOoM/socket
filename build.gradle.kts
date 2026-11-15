@@ -509,22 +509,18 @@ kotlin {
     if (appleTargets) {
         // macOS
         macosArm64 { configureNWHelpersCinterop() }
-        macosX64 { configureNWHelpersCinterop() }
 
         // iOS
         iosArm64 { configureNWHelpersCinterop() }
         iosSimulatorArm64 { configureNWHelpersCinterop() }
-        iosX64 { configureNWHelpersCinterop() }
 
         // tvOS
         tvosArm64 { configureNWHelpersCinterop() }
         tvosSimulatorArm64 { configureNWHelpersCinterop() }
-        tvosX64 { configureNWHelpersCinterop() }
 
         // watchOS (watchosArm32 not supported by buffer library)
         watchosArm64 { configureNWHelpersCinterop() }
         watchosSimulatorArm64 { configureNWHelpersCinterop() }
-        watchosX64 { configureNWHelpersCinterop() }
     }
 
     // Linux targets with io_uring async I/O and statically-linked OpenSSL
@@ -626,16 +622,12 @@ kotlin {
             val appleNativeImplDir = file("src/appleNativeImpl/kotlin")
             listOf(
                 "macosArm64Main",
-                "macosX64Main",
                 "iosArm64Main",
                 "iosSimulatorArm64Main",
-                "iosX64Main",
                 "tvosArm64Main",
                 "tvosSimulatorArm64Main",
-                "tvosX64Main",
                 "watchosArm64Main",
                 "watchosSimulatorArm64Main",
-                "watchosX64Main",
             ).forEach { sourceSetName ->
                 findByName(sourceSetName)?.kotlin?.srcDir(appleNativeImplDir)
                 findByName(sourceSetName)?.kotlin?.srcDir(posixNativeImplDir)
@@ -895,16 +887,12 @@ dokka {
     // Suppress duplicate Apple source sets - keep only macosArm64 as representative
     val suppressedAppleTargets =
         listOf(
-            "macosX64",
             "iosArm64",
             "iosSimulatorArm64",
-            "iosX64",
             "tvosArm64",
             "tvosSimulatorArm64",
-            "tvosX64",
             "watchosArm64",
             "watchosSimulatorArm64",
-            "watchosX64",
         )
     dokkaSourceSets {
         suppressedAppleTargets.forEach { target ->
@@ -1441,7 +1429,7 @@ listOf("jvmTest", "linuxX64Test", "jsNodeTest").forEach { name ->
 // JVM, and it is wired into the Linux checks-tests list (#501) — but harnessDown finalizes
 // only the jvmTest-family tasks above, so without its own edge the Android unit run
 // could find the stack already torn down and silently skip every live scenario.
-listOf("macosArm64Test", "macosX64Test", "testDebugUnitTest").forEach { name ->
+listOf("macosArm64Test", "testDebugUnitTest").forEach { name ->
     project(":socket-testsuite").tasks.matching { it.name == name }.configureEach {
         dependsOn(harnessUp)
         finalizedBy(harnessDown)

@@ -26,7 +26,7 @@ Tests (`*Test/`) may use `ByteArray` freely — the discipline only applies to p
 # Run platform-specific tests
 ./gradlew jvmTest
 ./gradlew jsNodeTest
-./gradlew macosArm64Test        # or macosX64Test
+./gradlew macosArm64Test
 ./gradlew iosSimulatorArm64Test
 
 # Lint

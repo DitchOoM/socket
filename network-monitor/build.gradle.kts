@@ -165,16 +165,12 @@ kotlin {
     // compilations resolve this dep.
     if (appleTargets) {
         macosArm64 { configureNetworkHelpersCinterop() }
-        macosX64 { configureNetworkHelpersCinterop() }
         iosArm64 { configureNetworkHelpersCinterop() }
         iosSimulatorArm64 { configureNetworkHelpersCinterop() }
-        iosX64 { configureNetworkHelpersCinterop() }
         tvosArm64 { configureNetworkHelpersCinterop() }
         tvosSimulatorArm64 { configureNetworkHelpersCinterop() }
-        tvosX64 { configureNetworkHelpersCinterop() }
         watchosArm64 { configureNetworkHelpersCinterop() }
         watchosSimulatorArm64 { configureNetworkHelpersCinterop() }
-        watchosX64 { configureNetworkHelpersCinterop() }
     }
 
     // Linux targets — LinuxNetworkMonitor over netlink, via this module's own Netlink cinterop.
@@ -248,16 +244,12 @@ kotlin {
             val appleNativeImplDir = file("src/appleNativeImpl/kotlin")
             listOf(
                 "macosArm64Main",
-                "macosX64Main",
                 "iosArm64Main",
                 "iosSimulatorArm64Main",
-                "iosX64Main",
                 "tvosArm64Main",
                 "tvosSimulatorArm64Main",
-                "tvosX64Main",
                 "watchosArm64Main",
                 "watchosSimulatorArm64Main",
-                "watchosX64Main",
             ).forEach { sourceSetName ->
                 findByName(sourceSetName)?.kotlin?.srcDir(appleNativeImplDir)
             }
@@ -271,19 +263,16 @@ kotlin {
             // LinkQualityResolution.None and never fabricates a reading.
             val appleRssiMacosDir = file("src/appleRssiMacosImpl/kotlin")
             val appleRssiDefaultDir = file("src/appleRssiDefaultImpl/kotlin")
-            listOf("macosArm64Main", "macosX64Main").forEach { sourceSetName ->
+            listOf("macosArm64Main").forEach { sourceSetName ->
                 findByName(sourceSetName)?.kotlin?.srcDir(appleRssiMacosDir)
             }
             listOf(
                 "iosArm64Main",
                 "iosSimulatorArm64Main",
-                "iosX64Main",
                 "tvosArm64Main",
                 "tvosSimulatorArm64Main",
-                "tvosX64Main",
                 "watchosArm64Main",
                 "watchosSimulatorArm64Main",
-                "watchosX64Main",
             ).forEach { sourceSetName ->
                 findByName(sourceSetName)?.kotlin?.srcDir(appleRssiDefaultDir)
             }

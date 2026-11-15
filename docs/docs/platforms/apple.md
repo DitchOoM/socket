@@ -25,10 +25,10 @@ identically on Apple and everywhere else. `NWProtocolQUIC` exposes none of those
 
 ## Supported Targets
 
-- macOS (arm64, x64)
-- iOS (arm64, simulator arm64, simulator x64)
-- tvOS (arm64, simulator arm64, simulator x64)
-- watchOS (arm64, simulator arm64, simulator x64)
+- macOS (arm64)
+- iOS (arm64, simulator arm64)
+- tvOS (arm64, simulator arm64)
+- watchOS (arm64, simulator arm64)
 
 ## TCP and TLS
 
@@ -97,7 +97,7 @@ Apple targets require macOS with Xcode installed. There is no separate Swift bui
 shim is compiled by the Kotlin cinterop tooling as part of the normal Gradle build:
 
 ```bash
-./gradlew macosArm64Test          # or macosX64Test
+./gradlew macosArm64Test
 ./gradlew iosSimulatorArm64Test
 ```
 

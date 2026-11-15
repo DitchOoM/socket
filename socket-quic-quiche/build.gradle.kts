@@ -4120,11 +4120,10 @@ val buildQuicheSharedMacosX64 = if (isMacOS) createBuildQuicheSharedTask("macos"
 val buildQuicheSharedMacosArm64 = if (isMacOS) createBuildQuicheSharedTask("macos", "arm64") else null
 
 // iOS static libs for the Apple quiche engine (macOS .a comes from the shared tasks above). Device
-// (aarch64-apple-ios), simulator-arm64 (…-ios-sim), and simulator-x64 (x86_64-apple-ios).
+// (aarch64-apple-ios) and simulator-arm64 (…-ios-sim).
 val buildQuicheStaticIosArm64 = if (isMacOS) createBuildQuicheAppleStaticTask("ios-arm64", "aarch64-apple-ios") else null
 val buildQuicheStaticIosSimulatorArm64 =
     if (isMacOS) createBuildQuicheAppleStaticTask("ios-simulator-arm64", "aarch64-apple-ios-sim") else null
-val buildQuicheStaticIosX64 = if (isMacOS) createBuildQuicheAppleStaticTask("ios-x64", "x86_64-apple-ios") else null
 
 // Convenience task: build all quiche libraries for the current host
 tasks.register("buildQuicheAll") {
@@ -4136,19 +4135,19 @@ tasks.register("buildQuicheAll") {
     }
     if (isMacOS) {
         dependsOn(buildQuicheSharedMacosX64!!, buildQuicheSharedMacosArm64!!)
-        dependsOn(buildQuicheStaticIosArm64!!, buildQuicheStaticIosSimulatorArm64!!, buildQuicheStaticIosX64!!)
+        dependsOn(buildQuicheStaticIosArm64!!, buildQuicheStaticIosSimulatorArm64!!)
     }
 }
 
-// Convenience task: build every Apple K/Native static lib (macOS .a from the shared tasks + the three
-// iOS static libs). Referenced by build-apple.yaml so a CI runner prepares all five before the K/N
+// Convenience task: build every Apple K/Native static lib (macOS .a from the shared tasks + the two
+// iOS static libs). Referenced by build-apple.yaml so a CI runner prepares all three before the K/N
 // link/test tasks (which gate their -force_load on the .a existing at configuration time).
 if (isMacOS) {
     tasks.register("buildQuicheAppleStaticLibs") {
         group = "build"
         description = "Build all Apple K/Native quiche static libs (macOS + iOS)"
-        dependsOn(buildQuicheSharedMacosArm64!!, buildQuicheSharedMacosX64!!)
-        dependsOn(buildQuicheStaticIosArm64!!, buildQuicheStaticIosSimulatorArm64!!, buildQuicheStaticIosX64!!)
+        dependsOn(buildQuicheSharedMacosArm64!!)
+        dependsOn(buildQuicheStaticIosArm64!!, buildQuicheStaticIosSimulatorArm64!!)
     }
 }
 
@@ -6020,10 +6019,8 @@ kotlin {
             val buildTask: TaskProvider<Task>? =
                 when (libSubdir) {
                     "macos-arm64" -> buildQuicheSharedMacosArm64
-                    "macos-x64" -> buildQuicheSharedMacosX64
                     "ios-arm64" -> buildQuicheStaticIosArm64
                     "ios-simulator-arm64" -> buildQuicheStaticIosSimulatorArm64
-                    "ios-x64" -> buildQuicheStaticIosX64
                     else -> null
                 }
             val genDefTask =
@@ -6060,12 +6057,12 @@ kotlin {
             // to actually building this target, so this is where "…and its libquiche.a must be current"
             // belongs. Measured task graphs, `./gradlew :socket-quic-quiche:<task> --dry-run`:
             //
-            //   jvmTest / quicEchoJar  → cinteropQuiche{IosArm64,IosSimulatorArm64,IosX64,MacosX64} ARE
+            //   jvmTest / quicEchoJar  → cinteropQuiche{IosArm64,IosSimulatorArm64} ARE
             //                            present (commonizeCInterop pulls every Apple cinterop), but NO
             //                            compileKotlin<AppleTarget> is.
             //   macosArm64Test         → compileKotlinMacosArm64 / compileTestKotlinMacosArm64 only.
             //
-            // So a dependsOn on the CINTEROP would drag three iOS cargo cross-builds plus a macOS-x64 one
+            // So a dependsOn on the CINTEROP would drag two iOS cargo cross-builds
             // into an ordinary host-only `:jvmTest` — precisely the leak the Linux genLinuxQuicheDef
             // comment records and the reason that one is `mustRunAfter`. Hanging it off the compilations
             // instead keeps the cross-build attached to the target that needs it and to nothing else.
@@ -6110,10 +6107,8 @@ kotlin {
             // representative. scripts/native-perf/ records it. (-g cannot combine with -opt; the dSYM still symbolicates.)
             binaries { test(listOf(org.jetbrains.kotlin.gradle.plugin.mpp.NativeBuildType.RELEASE)) }
         }
-        macosX64 { configureQuicheApple("macos-x64") }
         iosArm64 { configureQuicheApple("ios-arm64") }
         iosSimulatorArm64 { configureQuicheApple("ios-simulator-arm64") }
-        iosX64 { configureQuicheApple("ios-x64") }
     }
 
     applyDefaultHierarchyTemplate()
