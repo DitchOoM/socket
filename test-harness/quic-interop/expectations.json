@@ -115,7 +115,14 @@
           }
         }
       },
-      "handshakeloss": "pass",
+      "handshakeloss": {
+        "flaky": {
+          "why": "peer: haproxy resets a request stream (final size 0) when a duplicate of the request arrives with the original before its handshake completes; RFC 9000 §2.2 has a receiver discard duplicates (run 43609318908: 1 reset in 76 duplicates)",
+          "signature": {
+            "kind": "peer-reset-duplicated-request"
+          }
+        }
+      },
       "ipv6": "pass",
       "longrtt": "pass",
       "multiplexing": "pass",
@@ -190,10 +197,24 @@
       "longrtt": "pass",
       "multiplexing": "pass",
       "rebind-addr": {
-        "flaky": "peer and simulator: at the address rebind msquic sends its one PATH_CHALLENGE to the new address 0.1 ms after the simulator creates the binding, and it is not delivered; msquic only retries challenges to the old address, which the simulator drops as an unknown binding, so the new address is never validated and msquic's anti-amplification limit stops the transfer (run 43553738743, both attempts; captures on both sides)"
+        "flaky": {
+          "why": "peer and simulator: at the address rebind msquic sends its one PATH_CHALLENGE to the new address 0.1 ms after the simulator creates the binding, and it is not delivered; msquic only retries challenges to the old address, which the simulator drops as an unknown binding, so the new address is never validated and msquic's anti-amplification limit stops the transfer (run 43553738743, both attempts; captures on both sides)",
+          "signature": {
+            "kind": "peer-silent-until-our-timeout",
+            "silence_s": 25,
+            "our_wait_s": 8
+          }
+        }
       },
       "rebind-port": {
-        "flaky": "peer and simulator: as rebind-addr; msquic's one PATH_CHALLENGE to the rebound port is not delivered and its retries go to the old port, which the simulator drops as an unknown binding (run 43556869462, both attempts; no challenge frame reaches the client)"
+        "flaky": {
+          "why": "peer and simulator: as rebind-addr; msquic's one PATH_CHALLENGE to the rebound port is not delivered and its retries go to the old port, which the simulator drops as an unknown binding (run 43556869462, both attempts; no challenge frame reaches the client)",
+          "signature": {
+            "kind": "peer-silent-until-our-timeout",
+            "silence_s": 25,
+            "our_wait_s": 8
+          }
+        }
       },
       "resumption": "pass",
       "retry": "pass",
@@ -254,7 +275,16 @@
       "blackhole": "pass",
       "goodput": "pass",
       "handshake": "pass",
-      "handshakecorruption": "pass",
+      "handshakecorruption": {
+        "flaky": {
+          "why": "peer: nginx acknowledges our Handshake packet, sends no Handshake flight and stays silent with nothing of ours in flight until our timeout (run 43687081807; 1 of 12 runs)",
+          "signature": {
+            "kind": "peer-silent-until-our-timeout",
+            "silence_s": 25,
+            "our_wait_s": 8
+          }
+        }
+      },
       "handshakeloss": "pass",
       "ipv6": "pass",
       "longrtt": "pass",
@@ -283,7 +313,14 @@
       "longrtt": "pass",
       "multiplexing": "pass",
       "rebind-addr": "pass",
-      "rebind-port": "pass",
+      "rebind-port": {
+        "flaky": {
+          "why": "peer: the runner fails the test when ngtcp2's first packet to our client's new port carries no PATH_CHALLENGE, a check of the server's own packets; our client downloads every file and exits 0 (run 43687067600; 1 of 12 runs)",
+          "signature": {
+            "kind": "peer-server-did-not-challenge-new-path-first"
+          }
+        }
+      },
       "resumption": "pass",
       "retry": "pass",
       "transfer": "pass",
@@ -317,7 +354,7 @@
       "handshake": "pass",
       "handshakecorruption": {
         "flaky": {
-          "why": "peer: quic-go abandons a handshake that has not completed in 5 s (shorter than three of its own probe timeouts, RFC 9000 §10.1) and does not re-send its handshake flight first: our client, nothing in flight, hears nothing until its idle timeout (runs 43559668153, 43604040594, 43609318908); or quic-go answers our next Initial with a second connection and the runner counts 51 handshakes for 50 (run 43609318908)",
+          "why": "peer: quic-go abandons a handshake that has not completed in 5 s (shorter than three of its own probe timeouts, RFC 9000 §10.1) and does not re-send its handshake flight first: our client, nothing in flight, hears nothing until its idle timeout (runs 43559668153, 43604040594, 43609318908); or quic-go answers our next Initial with a second connection and the runner counts 51 handshakes for 50 (run 43609318908); or our Finished and its first copies are lost, quic-go closes at 5 s (its qlog: idle_timeout), and our later probes go unanswered (run 43687073037); or its whole Handshake flight is lost with it (run 43688189707)",
           "signature": {
             "kind": "any-of",
             "signatures": [
@@ -328,6 +365,15 @@
               },
               {
                 "kind": "peer-counted-extra-handshake"
+              },
+              {
+                "kind": "peer-gone-while-we-probed",
+                "min_probes": 6,
+                "silence_s": 25
+              },
+              {
+                "kind": "peer-handshake-packets-never-arrived",
+                "min_lost": 5
               }
             ]
           }
@@ -335,7 +381,7 @@
       },
       "handshakeloss": {
         "flaky": {
-          "why": "peer: quic-go abandons a handshake that has not completed in 5 s (shorter than three of its own probe timeouts, RFC 9000 §10.1) and does not re-send its handshake flight first: our client, nothing in flight, hears nothing until its idle timeout (runs 43559668153, 43604040594, 43609318908); or quic-go answers our next Initial with a second connection and the runner counts 51 handshakes for 50 (run 43609318908)",
+          "why": "peer: quic-go abandons a handshake that has not completed in 5 s (shorter than three of its own probe timeouts, RFC 9000 §10.1) and does not re-send its handshake flight first: our client, nothing in flight, hears nothing until its idle timeout (runs 43559668153, 43604040594, 43609318908); or quic-go answers our next Initial with a second connection and the runner counts 51 handshakes for 50 (run 43609318908); or our Finished and its first copies are lost, quic-go closes at 5 s (its qlog: idle_timeout), and our later probes go unanswered (run 43687073037); or its whole Handshake flight is lost with it (run 43688189707)",
           "signature": {
             "kind": "any-of",
             "signatures": [
@@ -346,6 +392,15 @@
               },
               {
                 "kind": "peer-counted-extra-handshake"
+              },
+              {
+                "kind": "peer-gone-while-we-probed",
+                "min_probes": 6,
+                "silence_s": 25
+              },
+              {
+                "kind": "peer-handshake-packets-never-arrived",
+                "min_lost": 5
               }
             ]
           }
@@ -395,9 +450,19 @@
       "handshake": "pass",
       "handshakecorruption": {
         "flaky": {
-          "why": "peer: quinn acknowledges our Initials but never re-sends a lost ServerHello; its probes are Handshake packets we cannot decrypt (run 43609318908)",
+          "why": "peer: quinn acknowledges our Initials but never re-sends a lost ServerHello; its probes are Handshake packets we cannot decrypt (run 43609318908); or it goes silent with nothing of ours in flight (run 43688189707)",
           "signature": {
-            "kind": "peer-never-resent-server-hello"
+            "kind": "any-of",
+            "signatures": [
+              {
+                "kind": "peer-never-resent-server-hello"
+              },
+              {
+                "kind": "peer-silent-until-our-timeout",
+                "silence_s": 25,
+                "our_wait_s": 8
+              }
+            ]
           }
         }
       },
@@ -883,7 +948,7 @@
       "handshake": "pass",
       "handshakecorruption": {
         "flaky": {
-          "why": "peer and simulator: the stock quiche client sends its request 30 s after our HANDSHAKE_DONE (its own unreset backoff) and idles out with our answer in flight (run 43609318908); or every datagram we send it is corrupted, so its ClientHello's second packet is never re-sent (run 43612995827); or every copy of its Finished is corrupted while half its probes go to 1-RTT packets our server cannot read before the Finished (run 43680120243)",
+          "why": "peer and simulator: the stock quiche client sends its request 30 s after our HANDSHAKE_DONE (its own unreset backoff) and idles out with our answer in flight (run 43609318908); or every datagram we send it is corrupted, so its ClientHello's second packet is never re-sent (run 43612995827); or every copy of its Finished is corrupted while half its probes go to 1-RTT packets our server cannot read before the Finished (run 43680120243); or only part of its two-packet ClientHello ever arrives (run 43687068929); or it acknowledges our flight and its Finished never arrives (run 43687046353)",
           "signature": {
             "kind": "any-of",
             "signatures": [
@@ -898,12 +963,36 @@
               {
                 "kind": "peer-handshake-packets-never-arrived",
                 "min_lost": 5
+              },
+              {
+                "kind": "peer-client-hello-never-completed",
+                "min_lost": 5
+              },
+              {
+                "kind": "peer-finished-never-arrived"
               }
             ]
           }
         }
       },
-      "handshakeloss": "pass",
+      "handshakeloss": {
+        "flaky": {
+          "why": "peer and simulator: every Handshake packet of the stock quiche client is lost while half its probes go to 1-RTT packets (run 43687046353); or only part of its two-packet ClientHello ever arrives (run 43687073037)",
+          "signature": {
+            "kind": "any-of",
+            "signatures": [
+              {
+                "kind": "peer-handshake-packets-never-arrived",
+                "min_lost": 5
+              },
+              {
+                "kind": "peer-client-hello-never-completed",
+                "min_lost": 5
+              }
+            ]
+          }
+        }
+      },
       "ipv6": "pass",
       "longrtt": "pass",
       "multiplexing": "pass",
@@ -923,15 +1012,28 @@
       "handshake": "pass",
       "handshakecorruption": {
         "flaky": {
-          "why": "peer: the client acknowledges our handshake flight but never re-sends its lost Finished (runs 43556869462, 43604040594, 43609318908)",
+          "why": "peer: the client acknowledges our handshake flight but never re-sends its lost Finished (runs 43556869462, 43604040594, 43609318908); or no Handshake packet of its arrives at all while the simulator loses its datagrams (run 43687073037)",
           "signature": {
-            "kind": "peer-finished-never-arrived"
+            "kind": "any-of",
+            "signatures": [
+              {
+                "kind": "peer-finished-never-arrived"
+              },
+              {
+                "kind": "peer-handshake-packets-never-arrived",
+                "min_lost": 5
+              },
+              {
+                "kind": "peer-request-never-arrived",
+                "min_packets": 5
+              }
+            ]
           }
         }
       },
       "handshakeloss": {
         "flaky": {
-          "why": "peer: the client acknowledges our handshake flight but never re-sends its lost Finished (runs 43556869462, 43604040594, 43609318908); or it acknowledges our HANDSHAKE_DONE and never sends its request",
+          "why": "peer: the client acknowledges our handshake flight but never re-sends its lost Finished (runs 43556869462, 43604040594, 43609318908); or it acknowledges our HANDSHAKE_DONE and never sends its request; or no Handshake packet of its arrives at all while the simulator loses its datagrams (run 43687073037)",
           "signature": {
             "kind": "any-of",
             "signatures": [
@@ -941,6 +1043,10 @@
               {
                 "kind": "peer-request-never-arrived",
                 "min_packets": 5
+              },
+              {
+                "kind": "peer-handshake-packets-never-arrived",
+                "min_lost": 5
               }
             ]
           }
@@ -1009,7 +1115,15 @@
       "blackhole": "pass",
       "goodput": "pass",
       "handshake": "pass",
-      "handshakecorruption": "pass",
+      "handshakecorruption": {
+        "flaky": {
+          "why": "peer: the xquic client waits about 10 s on each stream-close and draining timer, so 50 connections outlast the runner's 300 s while our server answers each request in milliseconds (run 43553738743)",
+          "signature": {
+            "kind": "runner-time-limit-while-we-answered",
+            "answer_ms": 5000
+          }
+        }
+      },
       "handshakeloss": {
         "flaky": {
           "why": "peer: the xquic client waits about 10 s on each stream-close and draining timer, so 50 connections outlast the runner's 300 s while our server answers each request in milliseconds (run 43553738743)",
@@ -1074,7 +1188,14 @@
       "multiplexing": "pass"
     },
     "quiche": {
-      "multiplexing": "pass"
+      "multiplexing": {
+        "flaky": {
+          "why": "peer: the stock quiche client exits 0 leaving a download empty while our server answered on every connection (run 43687061738; 1 of 11 runs)",
+          "signature": {
+            "kind": "peer-left-a-download-empty"
+          }
+        }
+      }
     },
     "quinn": {
       "multiplexing": "pass"
