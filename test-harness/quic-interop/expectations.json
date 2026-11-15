@@ -338,14 +338,7 @@
       "ipv6": "pass",
       "longrtt": "pass",
       "multiplexing": "pass",
-      "rebind-addr": {
-        "flaky": {
-          "why": "simulator: picoquic's first PATH_CHALLENGE after a rebind leaves the server and never appears on our client's side of the simulator; picoquic's second, 250 ms later, is answered in 2 ms, and the runner fails the test for the first (run 43695869415, both attempts; passed in the twelve runs before)",
-          "signature": {
-            "kind": "unanswered-path-challenge-never-reached-us"
-          }
-        }
-      },
+      "rebind-addr": "pass",
       "rebind-port": "pass",
       "resumption": "pass",
       "retry": "pass",
