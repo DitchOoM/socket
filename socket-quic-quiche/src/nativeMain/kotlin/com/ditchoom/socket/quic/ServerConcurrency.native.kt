@@ -89,6 +89,7 @@ internal actual class PathAddressTable actual constructor() {
     ) {
         while (true) {
             val cur = ref.value
+            if (cur[key] == peer) return
             if (ref.compareAndSet(cur, cur + (key to peer))) return
         }
     }

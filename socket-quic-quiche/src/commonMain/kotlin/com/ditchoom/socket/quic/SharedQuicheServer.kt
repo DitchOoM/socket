@@ -55,7 +55,7 @@ internal class AcceptedConnection(
  * [AddressedDatagramChannel]: a dedicated reader coroutine confines the channel's `receive()` (the buffer-flow
  * single-consumer contract) and feeds a central [receiveLoop] that parses each datagram's DCID to route
  * it to its [QuicheDriver] — or [acceptNewConnection]s a new one. All connection-lifecycle bookkeeping
- * (routing table, live-driver ledger, per-source recv_info cache, close sweep — the recv_info-UAF
+ * (routing table, live-driver ledger, per-connection recv_infos, close sweep — the recv_info-UAF
  * invariants) lives in the shared [ServerConnectionRegistry].
  *
  * Everything here is platform-independent; the genuine per-platform differences are hidden behind three
@@ -141,22 +141,13 @@ internal class SharedQuicheServer(
     private val registry = ServerConnectionRegistry<ServerPathPair>(api, tuning.clock)
 
     /**
-     * PathKey→peer resolution for the egress channels (sendInfo.to → real send target, no address
-     * reconstruction — RFC §4). Written only by the receive loop (cache miss / evict) plus the close
-     * sweep after the loop has joined; read by driver egress coroutines. Entries are removed when their
-     * recv_info cache entry is freed. The concurrency primitive is a per-platform seam ([PathAddressTable]).
-     */
-    private val peers = PathAddressTable()
-
-    /**
      * PathKey→local resolution for the egress channels (`sendInfo.from` → the address to send *from*),
-     * the source-pinning half of [peers]. Populated from each datagram's own
+     * the source-pinning half of each connection's [ConnectionPaths.replyAddresses]. Populated from each datagram's own
      * [com.ditchoom.buffer.flow.Datagram.localAddress], so it holds exactly the local addresses clients
      * have actually been seen to address — never a
      * wildcard, which is the address the kernel would otherwise be left to resolve on its own.
      *
-     * Naturally bounded by the host's address count (unlike [peers], which a spraying peer can grow),
-     * so entries are never evicted; both tables are cleared by the close sweep.
+     * Naturally bounded by the host's address count, so entries are never evicted.
      */
     private val locals = PathAddressTable()
 
@@ -172,7 +163,7 @@ internal class SharedQuicheServer(
      * wildcard back as `send_info.from`, so the reply leaves from whichever address the kernel picks.
      * A multi-homed or aliased host keeps one entry per address it is actually addressed on.
      *
-     * Receive-loop only, like the recv_info cache it feeds.
+     * Receive-loop only, like the recv_infos it feeds.
      */
     private val localSockAddrs = mutableMapOf<SocketAddress, EncodedSockAddr>()
 
@@ -273,7 +264,7 @@ internal class SharedQuicheServer(
         receiveJob.join()
         // receiveJob.join() guarantees no new drivers are added/routed and nothing else touches the
         // registry. Destroy+join EVERY live driver (a superset of the routing table) before freeing the
-        // per-source recv_info cache — the recv_info-UAF invariant.
+        // connections' recv_infos — the recv_info-UAF invariant.
         registry.reapAllDriversAndFreeRecvInfoCache()
         localSockAddrs.values.forEach { it.free() }
         localSockAddrs.clear()
@@ -436,26 +427,27 @@ internal class SharedQuicheServer(
                         // both would hand the second path the first one's `to` — a wrong reply source
                         // from inside the cache even when the platform reports arrival addresses correctly.
                         val recvKey = ServerPathPair(peer = peer, local = localAddr)
+                        val paths = registry.pathsOf(existingDriver)
                         val cached =
-                            registry.lookupRecvInfo(recvKey) ?: run {
-                                // Cache miss: build a recv_info with from = the datagram's source and
-                                // to = the address it arrived on (encoded once per local address).
+                            paths.recvInfoFor(recvKey) {
+                                // A path new to this connection: build a recv_info with from = the datagram's
+                                // source and to = the address it arrived on (encoded once per local address).
                                 val local =
                                     localSockAddrs.getOrPut(localAddr) { codec.encodeToNative(localAddr, bufferFactory) }
                                 val from = codec.encodeToNative(peer, bufferFactory)
                                 val info = api.recvInfoNew(from.address, from.length, local.address, local.length)
                                 // Record this source's PathKey→peer so a reply quiche routes here
-                                // (sendInfo.to) resolves to the real send target; removed on cache free.
+                                // (sendInfo.to) resolves to the real send target; removed with the path.
                                 val fromKey = api.decodePathKey(from.address)
-                                peers.put(fromKey, peer)
+                                paths.replyAddresses.put(fromKey, peer)
                                 // And the mirror: PathKey→local, so the same reply's sendInfo.from
                                 // resolves to the address it must leave from. Not removed with
-                                // the recv_info — a local address outlives any one peer's cache entry,
-                                // and re-adding it on every miss would be the only effect.
+                                // the recv_info — a local address outlives any one peer's path,
+                                // and re-adding it for every new path would be the only effect.
                                 locals.put(api.decodePathKey(local.address), localAddr)
-                                registry.putRecvInfo(recvKey, info) {
+                                CachedRecvInfo(info) {
                                     from.free()
-                                    peers.remove(fromKey)
+                                    paths.replyAddresses.remove(fromKey)
                                 }
                             }
                         cached.inFlight.incrementAndGet()
@@ -662,7 +654,7 @@ internal class SharedQuicheServer(
         // 4-tuple the accept-time record below carries.
         val peerKey = api.decodePathKey(peerSockAddr.address)
         // ...and the mirror for the local side, so this connection's very first reply already resolves
-        // its sendInfo.from. The receive loop populates `locals` on a recv_info cache miss, but an
+        // its sendInfo.from. The receive loop populates `locals` when a connection is seen on a new path, but an
         // accepted connection's Initial is consumed here instead, so without this the handshake's own
         // replies would be the one exchange that could not pin its source.
         locals.put(api.decodePathKey(localSockAddr.address), localAddr)
@@ -694,13 +686,14 @@ internal class SharedQuicheServer(
         recvBuf.freeNativeMemory()
 
         // Per-connection egress over the shared server socket. fixedPeerKey is this peer's PathKey (what
-        // quiche echoes as sendInfo.to for the un-migrated path); peers resolves a migrated source.
+        // quiche echoes as sendInfo.to for the un-migrated path); replyAddresses resolves a migrated source.
+        val replyAddresses = PathAddressTable()
         val udpChannel =
             ServerConnectionUdpChannel(
                 channel = channel,
                 fixedPeer = peer,
                 fixedPeerKey = peerKey,
-                peerFor = peers::get,
+                peerFor = replyAddresses::get,
                 localFor = locals::get,
                 pinning = replySourcePinning,
             )
@@ -757,7 +750,7 @@ internal class SharedQuicheServer(
 
         // Ledger the driver BEFORE starting its run loop so close() can never observe a started-but-
         // untracked driver (additions happen only on the receive-loop coroutine).
-        registry.trackLiveDriver(driver)
+        registry.trackLiveDriver(driver, replyAddresses)
         driver.start(scope)
 
         val scidKey = ConnectionIdKey.from(serverScid, offset = 0, length = QUIC_ISSUED_CONN_ID_LEN)
