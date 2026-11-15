@@ -29,7 +29,7 @@ HANDSHAKES = re.compile(r"Expected (\d+) handshakes\. Got: (\d+)")
 TIME_LIMIT = re.compile(r"took longer than (\d+)s")
 NO_PATH_CHALLENGE = re.compile(r"First server packet on new path .* did not contain a PATH_CHALLENGE frame")
 EMPTY_DOWNLOAD = re.compile(r"doesn't match\. Original: \d+ bytes, downloaded: 0 bytes")
-SIM_DATAGRAM = re.compile(r"\b(Forwarding|Corrupting|Dropping) \d+ bytes [\d.]+:\d+ -> ([\d.]+):(\d+)")
+SIM_DATAGRAM = re.compile(r"\b(Forwarding|Corrupting|Dropping) \d+ bytes [\d.]+:(\d+) -> ([\d.]+):(\d+)")
 OUR_ADDRESS = {"client": "193.167.0.100", "server": "193.167.100.100"}
 MIGRATION_SUMMARY = re.compile(r"MIGRATION-SUMMARY attempted=(\d+) succeeded=(\d+)(?:.*?firstUnmoved=move \d+: (\w+))?")
 TRANSPORT_SPACE = "transport"
@@ -160,7 +160,7 @@ def connection_facts(path, side):
 
 def runner_output(output_txt, side):
     """(container exits, our client's migration summaries, runner verdicts, simulator deliveries to us)."""
-    exits, migrations, runner, to_us, to_peer = {}, [], {}, {}, {}
+    exits, migrations, runner, to_us, to_peer, from_peer = {}, [], {}, {}, {}, {}
     if os.path.exists(output_txt):
         with open(output_txt, errors="replace") as f:
             for line in f:
@@ -176,11 +176,15 @@ def runner_output(output_txt, side):
                     )
                 if EMPTY_DOWNLOAD.search(line):
                     runner["empty_downloads"] = runner.get("empty_downloads", 0) + 1
-                for action, address, port in SIM_DATAGRAM.findall(line):
-                    toward = to_us if address == OUR_ADDRESS[side] else to_peer
-                    seen = toward.setdefault(int(port), {"port": int(port), "datagrams": 0, "delivered": 0})
-                    seen["datagrams"] += 1
-                    seen["delivered"] += action == "Forwarding"
+                for action, source, address, port in SIM_DATAGRAM.findall(line):
+                    ours = address == OUR_ADDRESS[side]
+                    counted = [(to_us if ours else to_peer, int(port))]
+                    if ours:
+                        counted.append((from_peer, int(source)))
+                    for toward, key in counted:
+                        seen = toward.setdefault(key, {"port": key, "datagrams": 0, "delivered": 0})
+                        seen["datagrams"] += 1
+                        seen["delivered"] += action == "Forwarding"
                 m = EXIT_LINE.search(line)
                 if m:
                     exits[m.group(1)] = int(m.group(2))
@@ -191,7 +195,7 @@ def runner_output(output_txt, side):
                         summary["first_unmoved"] = m.group(3)
                     migrations.append(summary)
     by_port = lambda seen: sorted(seen.values(), key=lambda d: d["port"])
-    return exits, migrations, runner, by_port(to_us), by_port(to_peer)
+    return exits, migrations, runner, by_port(to_us), by_port(to_peer), by_port(from_peer)
 
 
 def evidence(logs, direction, peer):
@@ -207,7 +211,7 @@ def evidence(logs, direction, peer):
             continue
         qlog_dir = os.path.join(test_dir, side, "qlog")
         qlogs = sorted(f for f in os.listdir(qlog_dir) if f.endswith(".sqlog")) if os.path.isdir(qlog_dir) else []
-        exits, migrations, runner, to_us, to_peer = runner_output(os.path.join(test_dir, "output.txt"), side)
+        exits, migrations, runner, to_us, to_peer, from_peer = runner_output(os.path.join(test_dir, "output.txt"), side)
         tests[test] = {
             "connections": [connection_facts(os.path.join(qlog_dir, q), side) for q in qlogs],
             "exits": exits,
@@ -215,6 +219,7 @@ def evidence(logs, direction, peer):
             "runner": runner,
             "sim_to_us": to_us,
             "sim_to_peer": to_peer,
+            "sim_from_peer": from_peer,
         }
     return tests
 

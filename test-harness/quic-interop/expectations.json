@@ -663,7 +663,7 @@
       "blackhole": "pass",
       "goodput": "pass",
       "handshake": {
-        "known-failure": {
+        "flaky": {
           "why": "peer: in this test kwik's client uses a zero-length source connection id and still sends NEW_CONNECTION_ID frames (five, with connection id length 0, in its first 1-RTT packet); RFC 9000 §19.15 makes that a FRAME_ENCODING_ERROR, which our server closes with. kwik's other tests use 8-byte ids and pass",
           "signature": {
             "kind": "frame-encoding-error-from-zero-length-cid-peer"
@@ -883,7 +883,7 @@
       "handshake": "pass",
       "handshakecorruption": {
         "flaky": {
-          "why": "peer and simulator: the stock quiche client sends its request 30 s after our HANDSHAKE_DONE (its own unreset backoff) and idles out with our answer in flight (run 43609318908); or every datagram we send it is corrupted, so its ClientHello's second packet is never re-sent (run 43612995827)",
+          "why": "peer and simulator: the stock quiche client sends its request 30 s after our HANDSHAKE_DONE (its own unreset backoff) and idles out with our answer in flight (run 43609318908); or every datagram we send it is corrupted, so its ClientHello's second packet is never re-sent (run 43612995827); or every copy of its Finished is corrupted while half its probes go to 1-RTT packets our server cannot read before the Finished (run 43680120243)",
           "signature": {
             "kind": "any-of",
             "signatures": [
@@ -894,6 +894,10 @@
               {
                 "kind": "sim-lost-every-datagram-to-the-peer",
                 "min_datagrams": 5
+              },
+              {
+                "kind": "peer-handshake-packets-never-arrived",
+                "min_lost": 5
               }
             ]
           }

@@ -272,8 +272,8 @@ extra='{"kind":"peer-counted-extra-handshake"}'
 check_kind "one handshake more than our connections" "$extra" our-client "{\"connections\":[$(hconn a),$(hconn b)],\"runner\":{\"handshakes\":{\"expected\":2,\"got\":3}}}" Matched
 check_kind "an extra connection of ours is not the signature" "$extra" our-client "{\"connections\":[$(hconn a),$(hconn b),$(hconn c)],\"runner\":{\"handshakes\":{\"expected\":2,\"got\":3}}}" NotMatched
 fewer='{"kind":"peer-used-fewer-connections"}'
-check_kind "every request answered over fewer connections" "$fewer" our-server "{\"connections\":[$(hconn a | sed 's/"fin_sent_streams":1/"fin_sent_streams":50/')],\"runner\":{\"handshakes\":{\"expected\":50,\"got\":1}}}" Matched
-check_kind "unanswered requests are not the signature" "$fewer" our-server "{\"connections\":[$(hconn a | sed 's/"fin_sent_streams":1/"fin_sent_streams":49/')],\"runner\":{\"handshakes\":{\"expected\":50,\"got\":1}}}" NotMatched
+check_kind "fewer connections than the test asks for" "$fewer" our-server "{\"connections\":[$(hconn a)],\"runner\":{\"handshakes\":{\"expected\":50,\"got\":1}}}" Matched
+check_kind "as many connections as asked is not the signature" "$fewer" our-server "{\"connections\":[$(hconn a),$(hconn b)],\"runner\":{\"handshakes\":{\"expected\":2,\"got\":1}}}" NotMatched
 limit='{"kind":"runner-time-limit-while-we-answered","answer_ms":5000}'
 check_kind "the time limit while we answered fast" "$limit" our-server "{\"connections\":[$(hconn a '"max_answer_ms":2600')],\"runner\":{\"time_limit_s\":300}}" Matched
 check_kind "a slow answer of ours is not the signature" "$limit" our-server "{\"connections\":[$(hconn a '"max_answer_ms":9000')],\"runner\":{\"time_limit_s\":300}}" NotMatched
@@ -292,6 +292,10 @@ check_kind "an unanswered connection is not the signature" "$empty" our-server "
 never='{"kind":"peer-request-never-arrived","min_packets":5}'
 check_kind "a confirmed connection that never got a request" "$never" our-server "{\"connections\":[$(hconn a '"handshake_done_sent_ms":35' | sed 's/"fin_sent_streams":1/"fin_sent_streams":0/;s/"rx_packets":5/"rx_packets":10/')]}" Matched
 check_kind "a connection with a request is not the signature" "$never" our-server "{\"connections\":[$(hconn a '"handshake_done_sent_ms":35,"first_request_ms":40' | sed 's/"fin_sent_streams":1/"fin_sent_streams":0/;s/"rx_packets":5/"rx_packets":10/')]}" NotMatched
+nohs='{"kind":"peer-handshake-packets-never-arrived","min_lost":5}'
+stuck="$(hconn a '"close_reason":"Failed to establish connection"' | sed 's/"rx_handshake_crypto":1/"rx_handshake_crypto":0/;s/"rx_handshake_acks":1/"rx_handshake_acks":0/;s/"tx_crypto":1/"tx_crypto":19/')"
+check_kind "no Handshake packet arrived while the simulator lost the client's" "$nohs" our-server "{\"connections\":[$stuck],\"sim_from_peer\":[{\"port\":34091,\"datagrams\":22,\"delivered\":12}]}" Matched
+check_kind "nothing lost on the way to us is not the signature" "$nohs" our-server "{\"connections\":[$stuck],\"sim_from_peer\":[{\"port\":34091,\"datagrams\":22,\"delivered\":20}]}" NotMatched
 nochallenge='{"kind":"peer-server-did-not-challenge-new-path-first"}'
 check_kind "the server's first packet on a new path had no challenge" "$nochallenge" our-client "{\"connections\":[$(hconn a)],\"exits\":{\"client\":0},\"runner\":{\"server_first_packets_without_path_challenge\":2}}" Matched
 check_kind "a client that failed is not the signature" "$nochallenge" our-client "{\"connections\":[$(hconn a)],\"exits\":{\"client\":1},\"runner\":{\"server_first_packets_without_path_challenge\":2}}" NotMatched

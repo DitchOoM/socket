@@ -233,8 +233,8 @@ class PeerCountedExtraHandshake:
 
 
 class PeerUsedFewerConnections:
-    """The runner counted fewer handshakes than requests while our server answered every request: the peer's client
-    fetched them over fewer connections than the test asks for."""
+    """The runner counted fewer handshakes than the test asks for, and our server saw fewer connections than that
+    too: the peer's client fetched its files over fewer connections than the test requires."""
 
     kind = "peer-used-fewer-connections"
 
@@ -243,9 +243,9 @@ class PeerUsedFewerConnections:
 
     def match(self, test_evidence, peer_role):
         counted = test_evidence.get("runner", {}).get("handshakes")
-        answered = sum(c["fin_sent_streams"] for c in test_evidence.get("connections", []))
-        if counted and counted["got"] < counted["expected"] <= answered:
-            return Matched(f"runner counted {counted['got']} of {counted['expected']} handshakes; we answered {answered} requests")
+        opened = len(test_evidence.get("connections", []))
+        if counted and counted["got"] < counted["expected"] and 0 < opened < counted["expected"]:
+            return Matched(f"runner counted {counted['got']} of {counted['expected']} handshakes; the peer opened {opened} connection(s)")
         return NotMatched()
 
 
@@ -355,6 +355,26 @@ class PeerRequestNeverArrived:
         return NotMatched()
 
 
+class PeerHandshakePacketsNeverArrived:
+    """Our server answered a ClientHello and re-sent its flight until its handshake timeout without one
+    Handshake-space packet from the client arriving, while the simulator corrupted or dropped at least
+    min_lost of the datagrams one client port sent us: every copy of the client's Finished was lost."""
+
+    kind = "peer-handshake-packets-never-arrived"
+
+    def __init__(self, fields):
+        self.min_lost = positive_int(self.kind, fields, "min_lost")
+
+    def match(self, test_evidence, peer_role):
+        lost = [p for p in test_evidence.get("sim_from_peer", []) if p["datagrams"] - p["delivered"] >= self.min_lost]
+        for c in test_evidence.get("connections", []):
+            unanswered = c["rx_handshake_crypto"] == 0 and c["rx_handshake_acks"] == 0
+            if c.get("close_reason") == NOT_ESTABLISHED and c["rx_initial_crypto"] > 0 and c["tx_crypto"] > 1 and unanswered and lost:
+                gone = lost[0]["datagrams"] - lost[0]["delivered"]
+                return Matched(f"{c['qlog']}: no Handshake packet arrived; the simulator lost {gone} of {lost[0]['datagrams']} datagrams from port {lost[0]['port']}")
+        return NotMatched()
+
+
 class PeerServerDidNotChallengeNewPathFirst:
     """The runner failed a rebinding test because the peer server's first packet to our client's new address
     carried no PATH_CHALLENGE, while our client exited 0: the verdict is on the server's own packets."""
@@ -435,6 +455,7 @@ SIGNATURES = {
         PeerLeftADownloadEmpty,
         PeerRequestNeverArrived,
         PeerServerDidNotChallengeNewPathFirst,
+        PeerHandshakePacketsNeverArrived,
         AnyOf,
     )
 }
