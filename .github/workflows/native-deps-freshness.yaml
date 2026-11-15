@@ -608,3 +608,44 @@ jobs:
           find ~/.gradle/caches/modules-2/files-2.1 -type f -name '*.klib' \
             \( -path '*tvossimulatorarm64*' -o -path '*watchossimulatorarm64*' \) 2>/dev/null \
             | sed 's#.*/##' | sort | tee -a "$GITHUB_STEP_SUMMARY"
+
+  # -------------------------------------------------------------------------
+  # 4. Superseded cache entries on main.
+  #
+  #    The warms above write a new key whenever their inputs change (a *.gradle.kts edit rotates
+  #    gradle-linux and gradle-macos-kn, a quiche patch rotates quiche-cargo-target), and main's old entry
+  #    stays until the 7-day retention removes it: on 2026-11-14 that was 2.84 GB of the repository's
+  #    10 GB cache, which then evicted the small per-PR natives entries. Once both warms have saved, every
+  #    family below keeps only its newest entry on main. Pull requests prefix-restore the newest anyway.
+  # -------------------------------------------------------------------------
+  prune-superseded-caches:
+    name: "Delete superseded cache entries on main"
+    needs: [cache-warm, cache-warm-apple]
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: write
+    steps:
+      - name: Keep the newest entry of each family on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          families="gradle-linux gradle-macos-kn gradle-macos gradle-wrapper-linux gradle-wrapper-macos
+            quiche-cargo-target-v3 konan-linux konan-macos cargo-Linux cargo-macOS
+            quiche-linux-x64-v8 quiche-linux-arm64-v8 quiche-apple-v3"
+          entries=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/caches?per_page=100&ref=refs/heads/main" \
+            --jq '.actions_caches[] | [.id, .key, .created_at, .size_in_bytes] | @tsv')
+          freed=0
+          for family in $families; do
+            # A family's key is "<family>-<hash>" with no further dash, so gradle-macos never claims gradle-macos-kn.
+            stale=$(awk -F'\t' -v f="$family" 'index($2, f "-") == 1 && substr($2, length(f) + 2) !~ /-/' <<<"$entries" \
+              | sort -t$'\t' -k3,3r | tail -n +2)
+            while IFS=$'\t' read -r id key created size; do
+              [ -n "$id" ] || continue
+              echo "deleting $key (created $created, $((size / 1048576)) MB)"
+              gh api -X DELETE "repos/${GITHUB_REPOSITORY}/actions/caches/$id" >/dev/null
+              freed=$((freed + size))
+            done <<<"$stale"
+          done
+          echo "freed $((freed / 1048576)) MB of superseded entries on main" | tee -a "$GITHUB_STEP_SUMMARY"
