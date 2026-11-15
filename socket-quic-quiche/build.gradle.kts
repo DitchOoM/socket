@@ -237,6 +237,9 @@ fun downloadQuicheSource(
     // Let a simulation drive quiche's own random draws (packet-number skipping, path-challenge data) from
     // a seed, as the caller clock drives its time. Idempotent, fails loudly on drift. See the KDoc.
     patchQuicheForCallerEntropy(sourceDir)
+    // Give Apple targets a real `quiche_send_info.at` (upstream writes zero there). Applied after the caller
+    // clock so it reads `crate::now()`. Idempotent, fails loudly on drift. See the KDoc.
+    patchQuichePacingTimeOnApple(sourceDir)
     // Give ffi.rs' `TransportParams` the `#[repr(C)]` it is missing upstream, so its ABI matches what
     // quiche.h declares. Idempotent, fails loudly on drift OR on an upstream fix. See the KDoc.
     patchQuicheTransportParamsRepr(sourceDir)
@@ -343,6 +346,69 @@ fun downloadQuicheSource(
 
 /** Untracked file in the prepared quiche tree naming the [quichePatchDigest] it was patched for. */
 val quicheSourceDigestStamp = ".socket-patch-digest"
+
+/**
+ * Make `quiche_send_info.at` carry a time on Apple targets. Upstream's `std_time_to_c` reads Rust's `Instant` as a
+ * `timespec` only off Apple and Windows; on macOS and iOS it writes zero, so a caller sees every datagram as due
+ * decades ago and nothing is paced.
+ *
+ * Here `at` is written as the host's `CLOCK_UPTIME_RAW` reading (nanoseconds; `mach_absolute_time` converted, the
+ * clock `System.nanoTime` reads on macOS) plus how far `at` is from quiche's own now, so a caller compares it with
+ * its own monotonic clock directly. No assumption is made about `Instant`'s layout. Windows keeps upstream's zero.
+ *
+ * Marker-guarded and loud in both directions: a re-run returns, a moved anchor throws, and an upstream that
+ * converts the Apple instant itself throws, telling you to delete this patch.
+ */
+fun patchQuichePacingTimeOnApple(sourceDir: File) {
+    val ffiRs = sourceDir.resolve("quiche/src/ffi.rs")
+    if (!ffiRs.exists()) return
+    val text = ffiRs.readText()
+    val marker = "socket-apple-pacing-time"
+    if (text.contains(marker)) return
+    val anchor =
+        """
+        |#[cfg(any(target_os = "macos", target_os = "ios", target_os = "windows"))]
+        |fn std_time_to_c(_time: &Instant, out: &mut timespec) {
+        |    // TODO: implement Instant conversion for systems that don't use timespec.
+        |    out.tv_sec = 0;
+        |    out.tv_nsec = 0;
+        |}
+        """.trimMargin()
+    if (text.split(anchor).size != 2) {
+        throw GradleException(
+            "$marker: upstream's Apple/Windows `std_time_to_c` stub not found exactly once in quiche/src/ffi.rs — " +
+                "a quiche bump changed it. If upstream now converts the Apple instant, DELETE " +
+                "patchQuichePacingTimeOnApple and its call site; otherwise re-fit it.",
+        )
+    }
+    val replacement =
+        """
+        |// $marker: the instant as CLOCK_UPTIME_RAW nanoseconds, the clock a host's monotonic reads on Apple.
+        |#[cfg(any(target_os = "macos", target_os = "ios"))]
+        |fn std_time_to_c(time: &Instant, out: &mut timespec) {
+        |    let mut base: timespec = unsafe { std::mem::zeroed() };
+        |    unsafe { libc::clock_gettime(libc::CLOCK_UPTIME_RAW, &mut base) };
+        |    let base_nanos = base.tv_sec as i128 * 1_000_000_000 + base.tv_nsec as i128;
+        |    let now = crate::now();
+        |    let ahead = match time.checked_duration_since(now) {
+        |        Some(d) => d.as_nanos() as i128,
+        |        None => -(now.saturating_duration_since(*time).as_nanos() as i128),
+        |    };
+        |    let at = base_nanos + ahead;
+        |    out.tv_sec = at.div_euclid(1_000_000_000) as libc::time_t;
+        |    out.tv_nsec = at.rem_euclid(1_000_000_000) as libc::c_long;
+        |}
+        |
+        |#[cfg(target_os = "windows")]
+        |fn std_time_to_c(_time: &Instant, out: &mut timespec) {
+        |    // TODO: implement Instant conversion for systems that don't use timespec.
+        |    out.tv_sec = 0;
+        |    out.tv_nsec = 0;
+        |}
+        """.trimMargin()
+    ffiRs.writeText(text.replace(anchor, replacement))
+    logger.lifecycle("Patched quiche source: send_info.at on Apple")
+}
 
 /**
  * Make quiche's own random draws **caller-seedable**, the entropy half of the caller clock

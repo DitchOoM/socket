@@ -919,8 +919,9 @@ interface QuicheApi {
      * When quiche's pacer wants the datagram [connSend] just wrote to leave, in nanoseconds on the monotonic clock
      * libquiche reads (the one the loop's clock reads), from the `at` field of the send info. A time at or before
      * now means send at once. Backends read the struct without allocating; the default answers 0, which is never
-     * in the future, so a backend without it does not pace. Only on Linux is libquiche's instant a timespec; on
-     * Apple platforms the field holds no time and reads as the distant past, so nothing is paced there.
+     * in the future, so a backend without it does not pace. The clock is CLOCK_MONOTONIC on Linux and
+     * CLOCK_UPTIME_RAW on Apple platforms (the patched libquiche converts its instant to it); on Windows the field
+     * holds no time and reads as the distant past, so nothing is paced there.
      */
     fun sendInfoAtNanos(info: QuicheSendInfo): Long = 0L
 

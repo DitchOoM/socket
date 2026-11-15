@@ -14,7 +14,6 @@ import com.ditchoom.socket.quic.skipOnMissingNativeLib
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
-import org.junit.Assume.assumeTrue
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.test.Test
 import kotlin.test.assertTrue
@@ -57,8 +56,6 @@ class CorePacingClockTests {
                     "[pacing clock] ${api.reads.get()} datagrams; earliest ${api.earliest.get() / 1_000} us, latest ${api.latest.get() / 1_000} us from now",
                 )
                 assertTrue(api.reads.get() > 1_000, "a transfer of ${TOTAL / 1_048_576} MiB writes more datagrams than that")
-                // Elsewhere libquiche's instant is not a timespec, the time reads as the distant past, and nothing is paced.
-                assumeTrue("quiche gives a pacing time only on Linux", System.getProperty("os.name").startsWith("Linux"))
                 assertTrue(api.earliest.get() > -5_000_000_000L, "a due time is not in the far past: ${api.earliest.get()} ns")
                 assertTrue(api.latest.get() < 1_000_000_000L, "a due time is within a second of now: ${api.latest.get()} ns")
             }
