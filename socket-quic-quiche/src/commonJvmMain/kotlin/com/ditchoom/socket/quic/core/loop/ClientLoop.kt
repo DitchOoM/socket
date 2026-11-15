@@ -326,10 +326,15 @@ internal class ClientEndpoint(
         if (phase === EndpointPhase.Live) died(SocketFailure(UdpError.SocketClosed, ClosedChannelException()))
     }
 
-    /** Loop thread: the socket failed. It is no longer used and not waited on; the connection ends with [failure]. */
+    /**
+     * Loop thread: the socket failed. It is no longer used and not waited on; the connection ends with [failure]. The
+     * loop may itself be inside the connection, which then leaves the failure for itself to run, so the endpoint is
+     * served again to run it.
+     */
     internal fun died(failure: Exception) {
         phase = EndpointPhase.Dead
         parts.socketFailed(failure)
+        loop.touch(this)
     }
 
     /** Loop thread: the loop ended with [cause]; the connection ends with it, and the socket is no longer used. */

@@ -5035,6 +5035,7 @@ val stageCoreAndroidTests =
                 "demux/CoreServerStatelessTests.kt",
                 "demux/CoreServerCloseTests.kt",
                 "demux/CoreServerAdmissionTests.kt",
+                "demux/CoreServerStartupHerdTests.kt",
                 "conn/CoreClientAgainstServerTests.kt",
                 "loop/SharedClientLoopTests.kt",
                 "loop/NioLoopEchoTests.kt",
