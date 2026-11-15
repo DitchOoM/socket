@@ -109,17 +109,17 @@
       "handshake": "pass",
       "handshakecorruption": {
         "flaky": {
-          "why": "peer: haproxy resets a request stream (final size 0) when a duplicate of the request arrives with the original before its handshake completes; RFC 9000 §2.2 has a receiver discard duplicates (run 43609318908: 1 reset in 76 duplicates)",
+          "why": "peer: haproxy resets a request stream (final size 0, no response) when the request arrives as its handshake completes; its log shows the request received once, whole, then 'reset stream'. A request right after the Finished is valid (runs 43609318908, 43699007792)",
           "signature": {
-            "kind": "peer-reset-duplicated-request"
+            "kind": "peer-reset-our-request"
           }
         }
       },
       "handshakeloss": {
         "flaky": {
-          "why": "peer: haproxy resets a request stream (final size 0) when a duplicate of the request arrives with the original before its handshake completes; RFC 9000 §2.2 has a receiver discard duplicates (run 43609318908: 1 reset in 76 duplicates)",
+          "why": "peer: haproxy resets a request stream (final size 0, no response) when the request arrives as its handshake completes; its log shows the request received once, whole, then 'reset stream'. A request right after the Finished is valid (runs 43609318908, 43699007792)",
           "signature": {
-            "kind": "peer-reset-duplicated-request"
+            "kind": "peer-reset-our-request"
           }
         }
       },
@@ -955,7 +955,7 @@
       "handshake": "pass",
       "handshakecorruption": {
         "flaky": {
-          "why": "peer and simulator: the stock quiche client sends its request 30 s after our HANDSHAKE_DONE (its own unreset backoff) and idles out with our answer in flight (run 43609318908); or every datagram we send it is corrupted, so its ClientHello's second packet is never re-sent (run 43612995827); or every copy of its Finished is corrupted while half its probes go to 1-RTT packets our server cannot read before the Finished (run 43680120243); or only part of its two-packet ClientHello ever arrives (run 43687068929); or it acknowledges our flight and its Finished never arrives (run 43687046353)",
+          "why": "peer and simulator: the stock quiche client sends its request 30 s after our HANDSHAKE_DONE (its own unreset backoff) and idles out with our answer in flight (run 43609318908); or every datagram we send it is corrupted, so its ClientHello's second packet is never re-sent (run 43612995827); or every copy of its Finished is corrupted while half its probes go to 1-RTT packets our server cannot read before the Finished (run 43680120243); or only part of its two-packet ClientHello ever arrives (run 43687068929); or it acknowledges our flight and its Finished never arrives (run 43687046353); or its Finished takes over 10 s to arrive, our one answer packet is lost and the client gives up before our next copy (run 43696040241: 17.5 s)",
           "signature": {
             "kind": "any-of",
             "signatures": [
@@ -977,6 +977,10 @@
               },
               {
                 "kind": "peer-finished-never-arrived"
+              },
+              {
+                "kind": "peer-finished-arrived-late",
+                "after_s": 10
               }
             ]
           }
@@ -984,7 +988,7 @@
       },
       "handshakeloss": {
         "flaky": {
-          "why": "peer and simulator: every Handshake packet of the stock quiche client is lost while half its probes go to 1-RTT packets (run 43687046353); or only part of its two-packet ClientHello ever arrives (run 43687073037)",
+          "why": "peer and simulator: every Handshake packet of the stock quiche client is lost while half its probes go to 1-RTT packets (run 43687046353); or only part of its two-packet ClientHello ever arrives (run 43687073037); or its Finished takes over 10 s to arrive, our one answer packet is lost and the client gives up before our next copy (run 43696040241: 17.5 s)",
           "signature": {
             "kind": "any-of",
             "signatures": [
@@ -995,6 +999,10 @@
               {
                 "kind": "peer-client-hello-never-completed",
                 "min_lost": 5
+              },
+              {
+                "kind": "peer-finished-arrived-late",
+                "after_s": 10
               }
             ]
           }

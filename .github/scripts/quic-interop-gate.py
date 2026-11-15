@@ -198,11 +198,11 @@ class PeerFinishedNeverArrived:
         return NotMatched()
 
 
-class PeerResetDuplicatedRequest:
-    """The peer reset a request stream with final size 0 after we had sent the request's first bytes more than once:
-    it reacted to a duplicate STREAM frame, which RFC 9000 §2.2 has a receiver discard."""
+class PeerResetOurRequest:
+    """The peer reset a request stream with final size 0, having sent none of the response, after we had sent the
+    request on it: a complete, valid request was refused at the transport."""
 
-    kind = "peer-reset-duplicated-request"
+    kind = "peer-reset-our-request"
 
     def __init__(self, fields):
         no_fields(self.kind, fields)
@@ -210,8 +210,8 @@ class PeerResetDuplicatedRequest:
     def match(self, test_evidence, peer_role):
         for c in test_evidence.get("connections", []):
             for r in c["peer_resets"]:
-                if r["final_size"] == 0 and r["our_copies"] > 1:
-                    return Matched(f"{c['qlog']}: reset of stream {r['stream_id']} after {r['our_copies']} copies of its request")
+                if r["final_size"] == 0 and r["our_copies"] >= 1:
+                    return Matched(f"{c['qlog']}: reset of stream {r['stream_id']} with final size 0 after {r['our_copies']} copy(ies) of its request")
         return NotMatched()
 
 
@@ -431,6 +431,23 @@ class PeerServerDidNotChallengeNewPathFirst:
         return NotMatched()
 
 
+class PeerFinishedArrivedLate:
+    """The client's Finished reached our server at least after_s seconds after the connection began (our server
+    sent HANDSHAKE_DONE only then), and our server answered the request within a second of receiving it: the
+    client spent its own patience on its handshake retransmissions."""
+
+    kind = "peer-finished-arrived-late"
+
+    def __init__(self, fields):
+        self.after_ms = positive_int(self.kind, fields, "after_s") * 1000
+
+    def match(self, test_evidence, peer_role):
+        for c in test_evidence.get("connections", []):
+            if c.get("handshake_done_sent_ms", 0) >= self.after_ms and c.get("max_answer_ms", self.after_ms) <= 1000:
+                return Matched(f"{c['qlog']}: the Finished arrived {c['handshake_done_sent_ms'] / 1000:.1f} s in; we answered in {c['max_answer_ms']:.0f} ms")
+        return NotMatched()
+
+
 class UnansweredPathChallengeNeverReachedUs:
     """The runner failed a rebinding test for a PATH_CHALLENGE of the peer's with no PATH_RESPONSE, while our
     endpoint sent a PATH_RESPONSE for every PATH_CHALLENGE it received (at least one) and exited 0: the
@@ -506,7 +523,7 @@ SIGNATURES = {
         PeerSilentUntilOurTimeout,
         PeerNeverResentServerHello,
         PeerFinishedNeverArrived,
-        PeerResetDuplicatedRequest,
+        PeerResetOurRequest,
         PeerCountedExtraHandshake,
         PeerUsedFewerConnections,
         RunnerTimeLimitWhileWeAnswered,
@@ -520,6 +537,7 @@ SIGNATURES = {
         PeerGoneWhileWeProbed,
         PeerClientHelloNeverCompleted,
         UnansweredPathChallengeNeverReachedUs,
+        PeerFinishedArrivedLate,
         AnyOf,
     )
 }

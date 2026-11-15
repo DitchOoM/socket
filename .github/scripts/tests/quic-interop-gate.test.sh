@@ -265,9 +265,10 @@ check_kind "a ServerHello that arrived is not the signature" "$hello" our-client
 finished='{"kind":"peer-finished-never-arrived"}'
 check_kind "Handshake acks without a Finished" "$finished" our-server "{\"connections\":[$(hconn a | sed 's/"rx_handshake_crypto":1/"rx_handshake_crypto":0/;s/"fin_sent_streams":1/"fin_sent_streams":0/')]}" Matched
 check_kind "a connection we answered is not the signature" "$finished" our-server "{\"connections\":[$(hconn a | sed 's/"rx_handshake_crypto":1/"rx_handshake_crypto":0/')]}" NotMatched
-reset='{"kind":"peer-reset-duplicated-request"}'
-check_kind "a reset after a duplicated request" "$reset" our-client "{\"connections\":[$(hconn a | sed 's/"peer_resets":\[\]/"peer_resets":[{"stream_id":0,"final_size":0,"our_copies":3}]/')]}" Matched
-check_kind "a reset of a request sent once is not the signature" "$reset" our-client "{\"connections\":[$(hconn a | sed 's/"peer_resets":\[\]/"peer_resets":[{"stream_id":0,"final_size":0,"our_copies":1}]/')]}" NotMatched
+reset='{"kind":"peer-reset-our-request"}'
+check_kind "a reset after two copies of the request" "$reset" our-client "{\"connections\":[$(hconn a | sed 's/"peer_resets":\[\]/"peer_resets":[{"stream_id":0,"final_size":0,"our_copies":3}]/')]}" Matched
+check_kind "a reset of a request sent once is the signature too" "$reset" our-client "{\"connections\":[$(hconn a | sed 's/"peer_resets":\[\]/"peer_resets":[{"stream_id":0,"final_size":0,"our_copies":1}]/')]}" Matched
+check_kind "a reset after response bytes is not the signature" "$reset" our-client "{\"connections\":[$(hconn a | sed 's/"peer_resets":\[\]/"peer_resets":[{"stream_id":0,"final_size":512,"our_copies":1}]/')]}" NotMatched
 extra='{"kind":"peer-counted-extra-handshake"}'
 check_kind "one handshake more than our connections" "$extra" our-client "{\"connections\":[$(hconn a),$(hconn b)],\"runner\":{\"handshakes\":{\"expected\":2,\"got\":3}}}" Matched
 check_kind "an extra connection of ours is not the signature" "$extra" our-client "{\"connections\":[$(hconn a),$(hconn b),$(hconn c)],\"runner\":{\"handshakes\":{\"expected\":2,\"got\":3}}}" NotMatched
@@ -302,6 +303,9 @@ check_kind "two unanswered packets are not the signature" "$gone" our-client "{\
 partial='{"kind":"peer-client-hello-never-completed","min_lost":5}'
 check_kind "a ClientHello that never completed" "$partial" our-server "{\"connections\":[$(hconn a | sed 's/"tx_crypto":1/"tx_crypto":0/;s/"fin_sent_streams":1/"fin_sent_streams":0/')],\"sim_from_peer\":[{\"port\":40869,\"datagrams\":9,\"delivered\":4}]}" Matched
 check_kind "a ClientHello we answered is not the signature" "$partial" our-server "{\"connections\":[$(hconn a | sed 's/"fin_sent_streams":1/"fin_sent_streams":0/')],\"sim_from_peer\":[{\"port\":40869,\"datagrams\":9,\"delivered\":4}]}" NotMatched
+latefin='{"kind":"peer-finished-arrived-late","after_s":10}'
+check_kind "a Finished that took 17 s, answered at once" "$latefin" our-server "{\"connections\":[$(hconn a '"handshake_done_sent_ms":17560,"first_request_ms":17560,"max_answer_ms":5')]}" Matched
+check_kind "a prompt handshake is not the signature" "$latefin" our-server "{\"connections\":[$(hconn a '"handshake_done_sent_ms":1034,"first_request_ms":1034,"max_answer_ms":5')]}" NotMatched
 undelivered='{"kind":"unanswered-path-challenge-never-reached-us"}'
 check_kind "a challenge the runner counts never reached us" "$undelivered" our-client "{\"connections\":[$(hconn a '"rx_path_challenges":2,"tx_path_responses":2')],\"exits\":{\"client\":0},\"runner\":{\"unanswered_path_challenges\":1}}" Matched
 check_kind "a challenge we received and did not answer is not the signature" "$undelivered" our-client "{\"connections\":[$(hconn a '"rx_path_challenges":3,"tx_path_responses":2')],\"exits\":{\"client\":0},\"runner\":{\"unanswered_path_challenges\":1}}" NotMatched
