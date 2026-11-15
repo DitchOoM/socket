@@ -14,7 +14,8 @@ on:
     paths:
       - 'benchmarks/native-compare/**'
       - 'socket-quic-quiche/src/nativeTest/kotlin/com/ditchoom/socket/quic/NativeCompareBench.kt'
-      - 'benchmarks/jvm/src/main/kotlin/com/ditchoom/socket/benchmark/QuicManyConnectionEcho.kt'
+      - 'socket-quic-quiche/src/commonTest/kotlin/com/ditchoom/socket/quic/ManyConnectionEcho.kt'
+      - 'socket-quic-quiche/src/jvmTest/kotlin/com/ditchoom/socket/quic/ManyConnectionEchoMain.kt'
       - '.github/workflows/native-compare.yaml'
   workflow_dispatch:
     inputs:
@@ -87,7 +88,7 @@ jobs:
         run: >-
           .github/scripts/gradle-retry.sh
           :socket-quic-quiche:linkReleaseTestLinuxX64 :socket-quic-quiche:linkReleaseTestLinuxArm64
-          :benchmark-jvm:mainBenchmarkJar --no-configuration-cache
+          :benchmark-jvm:mainBenchmarkJar :socket-quic-quiche:quicEchoJar --no-configuration-cache
       - uses: actions/upload-artifact@v7
         with:
           name: native-compare-linux-arm64-kexe
@@ -105,7 +106,8 @@ jobs:
           jar=$(find benchmarks/jvm/build/benchmarks/main/jars -name "*.jar" | head -1)
           python3 -I benchmarks/native-compare/run.py --kexe "$PWD/socket-quic-quiche/build/bin/linuxX64/releaseTest/test.kexe" \
             --certs /nonexistent --only kotlin-native-ours --workloads "$WORKLOADS" --rounds "$ROUNDS" \
-            --jmh-jar "$jar" --java "$JAVA_HOME_25_X64/bin/java" --certs-repo socket-quic-quiche/testcerts \
+            --jmh-jar "$jar" --java "$JAVA_HOME_25_X64/bin/java" --certs-repo socket-quic-quiche/testcerts --echo-jar test-harness/quic-echo/quic-echo.jar \
+            --diag-dir results/diagnostics \
             --json results/linux-x64.json --trace-dir results/traces | tee results-linux-x64.md
       - name: Summarise
         if: ${{ !cancelled() }}
@@ -144,6 +146,7 @@ jobs:
           chmod +x "$kexe"
           python3 -I benchmarks/native-compare/run.py --kexe "$kexe" --certs /nonexistent --only kotlin-native-ours \
             --workloads "$WORKLOADS" --rounds "$ROUNDS" --json results/linux-arm64.json --trace-dir results/traces \
+            --diag-dir results/diagnostics \
             | tee results-linux-arm64.md
       - name: Summarise
         if: ${{ !cancelled() }}
@@ -172,7 +175,7 @@ jobs:
       - name: Build the optimized test binary and the JMH jar
         run: >-
           ./gradlew :socket-quic-quiche:linkReleaseTestMacosArm64 :benchmark-jvm:mainBenchmarkJar
-          -PlinuxTargets=false --no-configuration-cache
+          :socket-quic-quiche:quicEchoJar -PlinuxTargets=false --no-configuration-cache
       - name: Run
         run: |
           set -euo pipefail
@@ -180,7 +183,8 @@ jobs:
           jar=$(find benchmarks/jvm/build/benchmarks/main/jars -name "*.jar" | head -1)
           python3 -I benchmarks/native-compare/run.py --kexe "$PWD/socket-quic-quiche/build/bin/macosArm64/releaseTest/test.kexe" \
             --certs /nonexistent --only kotlin-native-ours --workloads "$WORKLOADS" --rounds "$ROUNDS" \
-            --jmh-jar "$jar" --java "$TEST_LAUNCHER_JDK_HOME/bin/java" --certs-repo socket-quic-quiche/testcerts \
+            --jmh-jar "$jar" --java "$TEST_LAUNCHER_JDK_HOME/bin/java" --certs-repo socket-quic-quiche/testcerts --echo-jar test-harness/quic-echo/quic-echo.jar \
+            --diag-dir results/diagnostics \
             --json results/macos-arm64.json --trace-dir results/traces | tee results-macos-arm64.md
       - name: Summarise
         if: ${{ !cancelled() }}
