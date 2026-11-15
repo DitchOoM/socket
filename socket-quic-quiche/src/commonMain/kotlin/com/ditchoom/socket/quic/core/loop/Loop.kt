@@ -56,9 +56,46 @@ internal fun interface LoopClock {
     fun nowNanos(): Long
 }
 
+/** What work running on a loop may reach of it. */
+internal interface LoopHost {
+    val counts: LoopCounts
+
+    /** Any thread. */
+    fun submit(work: LoopWork)
+}
+
+/** What a connection needs from the loop that serves it, and from the socket it sends on. */
+internal interface ConnHost : LoopHost {
+    /** Drained and fired by the loop. */
+    val deadlines: DeadlineQueue
+
+    /** Any thread. Arms a deadline for [dueNanos]; the loop is woken only if it sleeps towards a later time. */
+    fun armDeadline(
+        dueNanos: Long,
+        action: Runnable,
+    ): DeadlineNode
+
+    /** Any thread. Arms [node], made on [deadlines], with the same wake rule. */
+    fun armDeadline(node: DeadlineNode)
+
+    /** A lane for a thread that is not the loop to send from, or [Taken.Empty]: then the loop does the sending. */
+    fun takeLane(): Taken
+
+    fun returnLane(lane: CallerSend)
+
+    /**
+     * Any thread holding [lane]: hands what it collected to the network. When the network is full the untaken
+     * datagrams stay in the lane, which now belongs to the loop.
+     */
+    fun sendInPlace(lane: CallerSend): LaneSent
+
+    /** Loop thread: the connection is held by the loop in this pass, so its output is to be collected in it. */
+    fun entered()
+}
+
 /** Work any thread hands the loop. Runs on the loop, once. */
 internal abstract class LoopWork : InboxItem() {
-    abstract fun run(loop: Loop)
+    abstract fun run(loop: LoopHost)
 
     /** The loop had stopped; called once, instead of [run], on the thread that handed the work over or the loop's. */
     abstract fun gone()
@@ -130,10 +167,11 @@ internal class Loop(
     private val receive: ReceiveBatch,
     private val send: SendBatch,
     private val lanes: CallerLanes = CallerLanes.None,
-) {
+) : ConnHost,
+    LaneHost {
     /** Drained and fired by the loop. Other threads arm through [armDeadline], which also wakes the loop when needed. */
-    val deadlines = DeadlineQueue()
-    val counts = LoopCounts()
+    override val deadlines = DeadlineQueue()
+    override val counts = LoopCounts()
     val callerCounts = CallerCounts()
 
     /** The time the loop sleeps until while [sleep] is [ASLEEP]; [NO_DEADLINE] when only a wake ends the sleep. */
@@ -147,9 +185,16 @@ internal class Loop(
     private var state: LoopState = LoopState.Running
     private val visitor = DatagramVisitor(parts::onDatagram)
     private val runWork: (LoopWork) -> Unit = { it.run(this) }
+    private val handOffs: Array<AdoptLane> =
+        when (lanes) {
+            CallerLanes.None -> emptyArray()
+            is CallerLanes.Of -> Array(lanes.pool.size) { AdoptLane(this, lanes.pool[it]) }
+        }
+
+    override fun entered() = Unit
 
     /** Any thread. */
-    fun submit(work: LoopWork) {
+    override fun submit(work: LoopWork) {
         if (inbox.push(work) === Pushed.Refused) return work.gone()
         wakeIfAsleep()
     }
@@ -158,7 +203,7 @@ internal class Loop(
      * Any thread. Arms a deadline for [dueNanos]. The loop is woken only if it sleeps towards a later time, so the
      * deadline is never late and a deadline later than the loop's next wake costs it nothing.
      */
-    fun armDeadline(
+    override fun armDeadline(
         dueNanos: Long,
         action: Runnable,
     ): DeadlineNode {
@@ -168,19 +213,19 @@ internal class Loop(
     }
 
     /** Any thread. Arms [node], made on [deadlines], with the same wake rule as [armDeadline]. */
-    fun armDeadline(node: DeadlineNode) {
+    override fun armDeadline(node: DeadlineNode) {
         deadlines.arm(node)
         if (node.dueNanos < sleepsUntil.load()) wakeIfAsleep()
     }
 
     /** A lane for a thread that is not the loop to send from, or [Taken.Empty]: then the loop does the sending. */
-    fun takeLane(): Taken =
+    override fun takeLane(): Taken =
         when (lanes) {
             CallerLanes.None -> Taken.Empty
             is CallerLanes.Of -> lanes.pool.tryTake()
         }
 
-    fun returnLane(lane: CallerSend) =
+    override fun returnLane(lane: CallerSend) =
         when (lanes) {
             CallerLanes.None -> Unit
             is CallerLanes.Of -> lanes.pool.give(lane)
@@ -191,7 +236,7 @@ internal class Loop(
      * datagrams stay in the lane, which now belongs to the loop; any other refusal drops that datagram, as the
      * loop's own flush does, and quiche's loss recovery owns what it carried.
      */
-    fun sendInPlace(lane: CallerSend): LaneSent {
+    override fun sendInPlace(lane: CallerSend): LaneSent {
         val batch = lane.batch
         while (batch.pending > 0) {
             val before = batch.pending
@@ -205,7 +250,7 @@ internal class Loop(
                     if (result.why === UdpError.WouldBlock) {
                         batch.took(result.taken)
                         callerCounts.deferred()
-                        submit(lane.handOff)
+                        submit(handOffs[lane.index])
                         return LaneSent.Deferred
                     }
                     batch.took(result.taken + 1)
@@ -215,8 +260,8 @@ internal class Loop(
         return LaneSent.Sent
     }
 
-    /** Loop thread, from [CallerSend.handOff]: [lane] holds datagrams to send when the socket can take them. */
-    internal fun adopt(lane: CallerSend) {
+    /** Loop thread, from [AdoptLane]: [lane] holds datagrams to send when the socket can take them. */
+    override fun adopt(lane: CallerSend) {
         lane.nextLane = LaneLink.End
         when (val last = waitingLast) {
             is CallerSend -> last.nextLane = lane
@@ -233,7 +278,7 @@ internal class Loop(
     }
 
     /** Any thread. [closed] is told once the loop has stopped and closed its socket. */
-    fun close(closed: LoopClosed) = submit(CloseLoop(closed))
+    fun close(closed: LoopClosed) = submit(CloseLoop(this, closed))
 
     /**
      * Loop thread only, until [close]. The body a platform's loop thread runs. A failure stops the loop and is
@@ -372,9 +417,10 @@ internal class Loop(
 }
 
 private class CloseLoop(
+    private val loop: Loop,
     private val closed: LoopClosed,
 ) : LoopWork() {
-    override fun run(loop: Loop) = loop.beginClosing(closed)
+    override fun run(loop: LoopHost) = this.loop.beginClosing(closed)
 
     override fun gone() = closed.closed(LoopCounts())
 }

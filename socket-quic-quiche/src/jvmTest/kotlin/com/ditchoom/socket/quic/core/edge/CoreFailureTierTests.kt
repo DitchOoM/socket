@@ -36,6 +36,7 @@ import com.ditchoom.socket.quic.core.loop.CallerSend
 import com.ditchoom.socket.quic.core.loop.Entrant
 import com.ditchoom.socket.quic.core.loop.Loop
 import com.ditchoom.socket.quic.core.loop.LoopClock
+import com.ditchoom.socket.quic.core.loop.LoopHost
 import com.ditchoom.socket.quic.core.loop.LoopWork
 import com.ditchoom.socket.quic.core.loop.SelectorWait
 import com.ditchoom.socket.quic.core.loop.startLoop
@@ -150,6 +151,18 @@ class CoreFailureTierTests {
 
             val end = assertIs<ConnEnd.LoopFailed>(rig.ended.get(10, TimeUnit.SECONDS))
             assertSame(planted, end.cause)
+        }
+
+    @Test
+    fun anOperationStartedAfterTheConnectionEndedFailsInsteadOfWaiting() =
+        withRig { rig ->
+            val stream = rig.connection.openStream()
+            rig.io.plant = Plant.Throws(IllegalStateException("planted in receive"))
+            rig.loop.submit(NothingWork)
+            assertIs<ConnEnd.LoopFailed>(rig.ended.get(10, TimeUnit.SECONDS))
+
+            assertFailsWith<QuicCloseException> { kotlinx.coroutines.withTimeout(5.seconds) { stream.read(10.seconds) { } } }
+            assertFailsWith<QuicCloseException> { kotlinx.coroutines.withTimeout(5.seconds) { rig.connection.openStream() } }
         }
 
     @Test
@@ -294,7 +307,7 @@ class CoreFailureTierTests {
 private class PlantedError : Error()
 
 private object NothingWork : LoopWork() {
-    override fun run(loop: Loop) = Unit
+    override fun run(loop: LoopHost) = Unit
 
     override fun gone() = Unit
 }
@@ -303,7 +316,7 @@ private object NothingWork : LoopWork() {
 private class PassesWork : LoopWork() {
     val passes = CompletableFuture<Long>()
 
-    override fun run(loop: Loop) {
+    override fun run(loop: LoopHost) {
         passes.complete(loop.counts.passes)
     }
 

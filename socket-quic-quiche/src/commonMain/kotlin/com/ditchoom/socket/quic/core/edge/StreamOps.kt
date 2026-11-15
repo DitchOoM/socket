@@ -23,6 +23,7 @@ import com.ditchoom.socket.quic.core.stream.Received
 import com.ditchoom.socket.quic.core.stream.Retry
 import com.ditchoom.socket.quic.core.stream.StreamEntry
 import com.ditchoom.socket.quic.core.stream.StreamMap
+import com.ditchoom.socket.quic.core.stream.StreamsEnding
 import kotlinx.coroutines.CancellableContinuation
 import kotlin.coroutines.Continuation
 import kotlin.coroutines.CoroutineContext
@@ -110,6 +111,10 @@ internal abstract class StreamOp<T>(
     override fun run(inside: Conn.Inside) = contained { start(inside) }
 
     private fun start(inside: Conn.Inside) {
+        when (val ending = streams.ending) {
+            StreamsEnding.Open -> Unit
+            is StreamsEnding.By -> return connectionEnded(ending.failure)
+        }
         val entry = streams.entry(stream)
         if (!cont.isActive) return release()
         when (val first = attempt(inside, entry)) {

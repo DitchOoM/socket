@@ -58,7 +58,7 @@ class LoopPassTests {
         var ran = 0
         rig.loop.submit(
             object : LoopWork() {
-                override fun run(loop: Loop) {
+                override fun run(loop: LoopHost) {
                     ran++
                 }
 
@@ -128,7 +128,7 @@ class LoopPassTests {
         var gone = 0
         val work =
             object : LoopWork() {
-                override fun run(loop: Loop) = Unit
+                override fun run(loop: LoopHost) = Unit
 
                 override fun gone() {
                     gone++

@@ -20,13 +20,14 @@ import com.ditchoom.socket.quic.StreamSendResult
 import com.ditchoom.socket.quic.core.edge.addressOf
 import com.ditchoom.socket.quic.core.loop.CallerSend
 import com.ditchoom.socket.quic.core.loop.Collected
+import com.ditchoom.socket.quic.core.loop.ConnHost
 import com.ditchoom.socket.quic.core.loop.Entrant
 import com.ditchoom.socket.quic.core.loop.Entry
 import com.ditchoom.socket.quic.core.loop.InboxItem
 import com.ditchoom.socket.quic.core.loop.LaneSent
 import com.ditchoom.socket.quic.core.loop.Leave
-import com.ditchoom.socket.quic.core.loop.Loop
 import com.ditchoom.socket.quic.core.loop.LoopClock
+import com.ditchoom.socket.quic.core.loop.LoopHost
 import com.ditchoom.socket.quic.core.loop.LoopWork
 import com.ditchoom.socket.quic.core.loop.OwnerWord
 import com.ditchoom.socket.quic.core.loop.Pushed
@@ -222,7 +223,7 @@ internal class Conn(
     private val api: QuicheApi,
     private val handle: QuicheConn,
     private val path: ConnPath,
-    private val loop: Loop,
+    private val loop: ConnHost,
     private val loopEntrant: Entrant,
     private val clock: LoopClock,
     private val events: ConnEvents,
@@ -504,6 +505,8 @@ internal class Conn(
 
     private fun serveAndWrite(out: SendBatch): Collected {
         inbox.drain(runWork)
+        // Work that ended the connection leaves only its last output.
+        if (isFailed()) return lastOutput(out, NoCause)
         serveEvents()
         if (writeOutput(out) === Collected.MoreWaiting) return Collected.MoreWaiting
         rearm()
@@ -587,6 +590,9 @@ internal class Conn(
         }
     }
 
+    /** Loop thread: this connection's socket failed with [cause]. It ends with it; no other connection is touched. */
+    fun socketFailed(cause: Exception) = submit(SocketFailedWork(cause))
+
     /** Loop thread, inside, with the loop stopped: runs what is queued and leaves. */
     private fun finishAsLoop() {
         do {
@@ -635,7 +641,7 @@ internal class Conn(
         if (hold === LoopHold.In) return hold
         hold =
             when (owner.tryEnter(loopEntrant)) {
-                Entry.Entered -> LoopHold.In
+                Entry.Entered -> LoopHold.In.also { loop.entered() }
                 Entry.Busy -> LoopHold.Out
             }
         return hold
@@ -800,6 +806,15 @@ internal class Conn(
         override fun gone() = buffer.freeNativeMemory()
     }
 
+    /** Inside, once: the connection's socket failed, so the connection ends. */
+    private inner class SocketFailedWork(
+        private val cause: Exception,
+    ) : ConnWork() {
+        override fun run(inside: Inside) = fail(cause)
+
+        override fun gone() = Unit
+    }
+
     /** Inside, once: the loop failed, so the connection ends. */
     private inner class LoopFailedWork(
         private val cause: Throwable,
@@ -844,7 +859,7 @@ private sealed interface TimerState {
 private class ServeConn(
     private val conn: Conn,
 ) : LoopWork() {
-    override fun run(loop: Loop) = conn.touchedByLoop()
+    override fun run(loop: LoopHost) = conn.touchedByLoop()
 
     override fun gone() = Unit
 }

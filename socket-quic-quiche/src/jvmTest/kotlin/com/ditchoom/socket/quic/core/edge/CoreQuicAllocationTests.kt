@@ -145,7 +145,7 @@ class CoreQuicAllocationTests {
         val threads = ManagementFactory.getThreadMXBean() as com.sun.management.ThreadMXBean
         val shared = client.connection.openStream()
         repeat(WARM_UP) { shape.echo(client.connection, shared, payload) }
-        val loopId = threadId(LOOP_THREAD)
+        val loopId = threadId(client.loop.name)
         val callerId = Thread.currentThread().id
         val recording = jdk.jfr.Recording()
         recording.enable("jdk.ObjectAllocationSample").with("throttle", "1000000/s").withStackTrace()
@@ -207,8 +207,15 @@ class CoreQuicAllocationTests {
         val sites = HashMap<String, Long>()
         jdk.jfr.consumer.RecordingFile
             .readAllEvents(dump)
-            .filter { it.startTime >= from && (it.thread?.javaName == LOOP_THREAD || it.thread?.javaName == CALLER_THREAD) }
-            .forEach { e ->
+            .filter {
+                it.startTime >= from &&
+                    (
+                        it.thread?.javaName?.startsWith(
+                            LOOP_THREAD,
+                        ) == true ||
+                            it.thread?.javaName == CALLER_THREAD
+                    )
+            }.forEach { e ->
                 val frames =
                     e.stackTrace?.frames.orEmpty().take(7).joinToString(" < ") {
                         "${it.method.type.name.substringAfterLast('.')}.${it.method.name}"

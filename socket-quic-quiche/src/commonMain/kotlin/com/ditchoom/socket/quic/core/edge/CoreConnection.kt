@@ -32,6 +32,7 @@ import com.ditchoom.socket.quic.core.conn.ConnWork
 import com.ditchoom.socket.quic.core.conn.WriteEnd
 import com.ditchoom.socket.quic.core.stream.Retry
 import com.ditchoom.socket.quic.core.stream.StreamMap
+import com.ditchoom.socket.quic.core.stream.StreamsEnding
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -231,7 +232,7 @@ internal class CoreConnection(
                 is ConnEnd.CallerFailed -> QuicCloseException(reason, QuicCloseCircumstance.CallerThreadFailed, end.cause)
                 else -> QuicCloseException(reason, QuicCloseCircumstance.Ended)
             }
-        streams.forEach { it.endWaiters(failure) }
+        streams.end(failure)
         opens.forEach { it.fail(failure) }
         opens.clear()
         incoming.close(failure)
@@ -309,7 +310,10 @@ internal class CoreConnection(
         private val cont: CancellableContinuation<QuicStreamId>,
     ) : ConnWork() {
         override fun run(inside: Conn.Inside) {
-            if (opens.isNotEmpty() || tryOpen(inside) === Retry.Again) opens.addLast(this)
+            when (val ending = streams.ending) {
+                StreamsEnding.Open -> if (opens.isNotEmpty() || tryOpen(inside) === Retry.Again) opens.addLast(this)
+                is StreamsEnding.By -> fail(ending.failure)
+            }
         }
 
         fun tryOpen(inside: Conn.Inside): Retry {

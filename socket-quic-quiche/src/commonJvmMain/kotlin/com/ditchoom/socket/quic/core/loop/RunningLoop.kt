@@ -16,3 +16,11 @@ internal fun startLoop(
     thread.start()
     return RunningLoop(loop, thread)
 }
+
+/** Starts a dedicated platform thread for a fully built [loop]. Never a virtual thread: the loop blocks in its selector. */
+internal fun startClientLoop(loop: ClientLoop): Thread {
+    val thread = Thread(loop::run, loop.name)
+    thread.isDaemon = true
+    thread.start()
+    return thread
+}

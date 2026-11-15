@@ -147,7 +147,7 @@ private class HoldWork : ConnWork() {
     val ran = AtomicInteger()
 
     override fun run(inside: Conn.Inside) {
-        if (Thread.currentThread().name == LOOP_THREAD) {
+        if (Thread.currentThread().name.startsWith(LOOP_THREAD)) {
             ran.incrementAndGet()
             return
         }

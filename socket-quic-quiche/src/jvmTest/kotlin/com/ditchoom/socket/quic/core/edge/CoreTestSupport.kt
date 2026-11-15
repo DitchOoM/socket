@@ -54,7 +54,7 @@ internal class RecordingIo(
     fun receivesByThread(): Map<String, Long> = receives.mapValues { it.value.get() }
 }
 
-/** The loop thread's name, as [coreConnect] starts it. */
+/** The prefix of the loop threads' names, as [coreConnect] starts them. */
 internal const val LOOP_THREAD = "quic-core-client"
 
 /** Echoes every stream the 4.x server accepts, on [scope]; the body gets the server's port. */

@@ -21,21 +21,18 @@ import com.ditchoom.socket.quic.core.conn.ConnFreed
 import com.ditchoom.socket.quic.core.conn.ConnPath
 import com.ditchoom.socket.quic.core.conn.DatagramSlot
 import com.ditchoom.socket.quic.core.conn.DatagramSlots
-import com.ditchoom.socket.quic.core.conn.OneConnParts
-import com.ditchoom.socket.quic.core.loop.CallerLanes
 import com.ditchoom.socket.quic.core.loop.CallerSend
+import com.ditchoom.socket.quic.core.loop.ClientEndpoint
+import com.ditchoom.socket.quic.core.loop.ClientLoop
+import com.ditchoom.socket.quic.core.loop.ClientLoopSet
+import com.ditchoom.socket.quic.core.loop.EndpointClosed
 import com.ditchoom.socket.quic.core.loop.Entrant
-import com.ditchoom.socket.quic.core.loop.Loop
 import com.ditchoom.socket.quic.core.loop.LoopClock
-import com.ditchoom.socket.quic.core.loop.LoopClosed
-import com.ditchoom.socket.quic.core.loop.SelectorWait
-import com.ditchoom.socket.quic.core.loop.startLoop
+import com.ditchoom.socket.quic.core.loop.Placement
 import com.ditchoom.socket.quic.core.pool.FixedPool
 import com.ditchoom.socket.quic.core.udp.BatchLimits
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 import com.ditchoom.socket.quic.core.udp.NioOneByOne
-import com.ditchoom.socket.quic.core.udp.ReceiveBatch
-import com.ditchoom.socket.quic.core.udp.ReceiveBuffer
 import com.ditchoom.socket.quic.core.udp.SendBatch
 import com.ditchoom.socket.quic.encodeAlpnList
 import com.ditchoom.socket.quic.generateScid
@@ -55,8 +52,9 @@ import kotlin.time.Duration
 /**
  * Connects to [host]:[port] (an address literal) on the run-to-completion core and returns once the handshake
  * completed; the setup that touches files, sockets and native libraries runs off the caller's thread, so a caller on a
- * main dispatcher is never blocked. The connection owns its socket and its loop thread; both end when the connection does. [wrapIo]
- * may wrap the socket's batch interface, which a test uses to see which thread sends and receives.
+ * main dispatcher is never blocked. The connection owns its socket and shares a loop thread, the one of [loops] with the
+ * fewest connections; the socket ends with the connection. [wrapIo] may wrap the socket's batch interface, which a test
+ * uses to see which thread sends and receives.
  */
 internal suspend fun coreConnect(
     host: String,
@@ -69,9 +67,10 @@ internal suspend fun coreConnect(
     readPolicy: ReadPolicy,
     writePolicy: WritePolicy,
     wrapIo: (DatagramBatchIo) -> DatagramBatchIo = { it },
+    loops: ClientLoopSet = ClientLoopSet.shared,
 ): CoreClient =
     withContext(Dispatchers.IO) {
-        connectOnThisThread(host, port, serverName, options, factory, api, timeout, readPolicy, writePolicy, wrapIo)
+        connectOnThisThread(host, port, serverName, options, factory, api, timeout, readPolicy, writePolicy, wrapIo, loops)
     }
 
 /** Everything [coreConnect] does that opens a file, a socket or a native library, off the caller's thread. */
@@ -86,8 +85,9 @@ private suspend fun connectOnThisThread(
     readPolicy: ReadPolicy,
     writePolicy: WritePolicy,
     wrapIo: (DatagramBatchIo) -> DatagramBatchIo,
+    loops: ClientLoopSet,
 ): CoreClient {
-    val channel = DatagramChannel.open().connect(InetSocketAddress(host, port))
+    val channel = openConnectedChannel(InetSocketAddress(host, port))
     channel.configureBlocking(false)
     val local = (channel.localAddress as InetSocketAddress).toNativeSockAddr(factory)
     val peer = (channel.remoteAddress as InetSocketAddress).toNativeSockAddr(factory)
@@ -136,20 +136,15 @@ private suspend fun connectOnThisThread(
             val buffer = factory.allocate(MAX_DATAGRAM).also(copyBuffers::add)
             DatagramSlot(index, buffer, addressOf(buffer))
         }
-    val receiveBuffers = ArrayList<PlatformBuffer>(limits.maxDatagrams)
-    val receive =
-        ReceiveBatch(
-            FixedPool(limits.maxDatagrams) { index ->
-                val buffer = factory.allocate(limits.maxDatagramSize).also(receiveBuffers::add)
-                ReceiveBuffer(index, buffer, addressOf(buffer))
-            },
-            limits,
-        )
     val clock = LoopClock { System.nanoTime() }
-    val parts = OneConnParts()
     val lanes = List(CALLER_LANES) { callerSends[it].batch }
     val io = wrapIo(NioOneByOne(channel, listOf(send) + lanes))
-    val loop = Loop(SelectorWait(channel, clock), clock, io, parts, receive, send, CallerLanes.Of(callerSends))
+    val loop =
+        when (val placed = loops.place(factory)) {
+            is ClientLoop -> placed
+            Placement.SetClosed -> throw ClientLoopsClosed()
+        }
+    val endpoint = ClientEndpoint(loop, channel, io, send, callerSends)
     val scope = CoroutineScope(SupervisorJob())
     val connection =
         CoreConnection(
@@ -162,12 +157,21 @@ private suspend fun connectOnThisThread(
             scope = scope,
         )
     val conn =
-        Conn(api, handle, path, loop, Entrant.loopTurn(loop = 1, generation = 1), clock, connection, factory, DatagramSlots.Of(copies))
+        Conn(
+            api,
+            handle,
+            path,
+            endpoint,
+            Entrant.loopTurn(loop = loop.id, generation = 1),
+            clock,
+            connection,
+            factory,
+            DatagramSlots.Of(copies),
+        )
     connection.bind(conn)
     connection.whenEnded {
-        loop.close(
-            LoopClosed {
-                receiveBuffers.forEach(PlatformBuffer::freeNativeMemory)
+        endpoint.close(
+            EndpointClosed {
                 sendStorage.freeNativeMemory()
                 // A caller may still be inside: what callers use is freed with the connection, by the last one out.
                 conn.release(
@@ -183,8 +187,8 @@ private suspend fun connectOnThisThread(
             },
         )
     }
-    parts.attach(conn)
-    startLoop(loop, "quic-core-client")
+    endpoint.parts.attach(conn)
+    loop.place(endpoint)
     conn.start()
     try {
         withTimeout(timeout) { connection.established() }
@@ -194,6 +198,44 @@ private suspend fun connectOnThisThread(
     }
     return CoreClient(connection, conn, loop)
 }
+
+/** [coreConnect] was given a set of loops that has been closed. */
+internal class ClientLoopsClosed : IllegalStateException()
+
+/**
+ * A channel connected to [peer] from the source address the route to [peer] uses. A bind that names no address
+ * chooses its port without looking at the sockets already connected to [peer], so with many connections to one
+ * peer the connect fails with "address in use"; a bind to the named source address excludes those ports.
+ */
+private fun openConnectedChannel(peer: InetSocketAddress): DatagramChannel {
+    val source = routeSource(peer)
+    val channel = DatagramChannel.open()
+    try {
+        return channel.bind(InetSocketAddress(source, 0)).connect(peer)
+    } catch (failed: Exception) {
+        channel.close()
+        throw failed
+    }
+}
+
+/**
+ * The source address the routing table picks for [peer], read from a connected probe that sends nothing. The probe
+ * names a port other than [peer]'s so it never holds a four-tuple the connection could need.
+ */
+private fun routeSource(peer: InetSocketAddress): java.net.InetAddress {
+    val probePort = if (peer.port == PROBE_PORT) PROBE_PORT + 1 else PROBE_PORT
+    DatagramChannel.open().use { probe ->
+        probe.connect(InetSocketAddress(peer.address, probePort))
+        val local = probe.localAddress
+        if (local !is InetSocketAddress || local.address.isAnyLocalAddress) throw RouteSourceUnknown(peer.address)
+        return local.address
+    }
+}
+
+/** The route to [peer] named no source address, so the connection has no address to bind. */
+internal class RouteSourceUnknown(
+    val peer: java.net.InetAddress,
+) : IllegalStateException()
 
 private fun nullTerminated(
     text: String,
@@ -217,6 +259,7 @@ private fun hex(buffer: PlatformBuffer): String {
 private const val HEX = "0123456789abcdef"
 private const val QUIC_V1 = 1
 private const val MAX_BATCH = 64
+private const val PROBE_PORT = 9
 
 /** Lanes callers send from in place, datagrams each holds, and slots for datagrams that arrive while a caller is inside. */
 private const val CALLER_LANES = 4

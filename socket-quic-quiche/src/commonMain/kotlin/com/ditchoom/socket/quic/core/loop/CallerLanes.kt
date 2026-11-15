@@ -33,14 +33,20 @@ internal class CallerSend(
     LaneLink {
     /** Loop thread only: the next lane waiting for the network. */
     internal var nextLane: LaneLink = LaneLink.End
-    internal val handOff: LoopWork = HandOff(this)
 }
 
-/** Loop work that takes a lane whose datagrams the network refused. */
-private class HandOff(
+/** What takes over a lane whose datagrams the network refused: the loop thread of the socket they are for. */
+internal interface LaneHost {
+    /** Loop thread: [lane] holds datagrams to send when the socket can take them. */
+    fun adopt(lane: CallerSend)
+}
+
+/** Loop work that hands a lane whose datagrams the network refused to its [host]. */
+internal class AdoptLane(
+    private val host: LaneHost,
     private val lane: CallerSend,
 ) : LoopWork() {
-    override fun run(loop: Loop) = loop.adopt(lane)
+    override fun run(loop: LoopHost) = host.adopt(lane)
 
     // The loop has stopped: the datagrams have nowhere to go.
     override fun gone() = Unit

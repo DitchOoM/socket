@@ -102,9 +102,28 @@ internal class StreamEntry(
     }
 }
 
+/** Whether the connection that owns a [StreamMap] has ended, and how. */
+internal sealed interface StreamsEnding {
+    object Open : StreamsEnding
+
+    class By(
+        val failure: Throwable,
+    ) : StreamsEnding
+}
+
 /** A connection's streams by id. Confined to whoever is inside the connection. */
 internal class StreamMap {
     private val entries = MutableLongObjectMap<StreamEntry>()
+
+    /** What an operation that starts after the connection ended must fail with: nothing would ever wake it. */
+    var ending: StreamsEnding = StreamsEnding.Open
+        private set
+
+    /** The connection ended with [failure]: every waiting operation fails with it, and so does every later one. */
+    fun end(failure: Throwable) {
+        ending = StreamsEnding.By(failure)
+        entries.forEachValue { it.endWaiters(failure) }
+    }
 
     fun contains(id: QuicStreamId): Boolean = entries.containsKey(id.id)
 

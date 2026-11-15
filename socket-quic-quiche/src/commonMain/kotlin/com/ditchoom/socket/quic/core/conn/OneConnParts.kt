@@ -43,6 +43,14 @@ internal class OneConnParts : LoopParts {
         }
     }
 
+    /** The socket of this one connection failed: the connection ends with [cause]. */
+    fun socketFailed(cause: Exception) {
+        when (val now = attached) {
+            Attached.Nothing -> Unit
+            is Attached.One -> now.conn.socketFailed(cause)
+        }
+    }
+
     override fun collect(out: SendBatch): Collected =
         when (val now = attached) {
             Attached.Nothing -> Collected.Everything
