@@ -124,7 +124,8 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
 done
 report="$diag/adb-link-loss-1.txt"
 for want in 'adb ended with status 255: adb -s emulator-5554 shell lose' '--- adb get-state ---' '--- adb devices -l ---' \
-  '--- adb shell echo ok ---' '--- adb server processes' '--- emulator processes' 'trace-line for' '[exit 0]'; do
+  '--- adb shell echo ok ---' '--- adb server processes' '--- emulator processes' 'trace-line for' '[exit 0]' \
+  'attempt 5: exit' '--- device: kernel log' '--- device: logcat, every buffer'; do
   if grep -qF -- "$want" "$report" 2>/dev/null; then ok "the capture holds: $want"; else bad "the capture lacks: $want" "$(cat "$report" 2>/dev/null)"; fi
 done
 if grep -q 'ADB_TRACE' "$diag/adb-journal.txt"; then bad "trace output reached the journal"; else ok "no trace output in the journal"; fi

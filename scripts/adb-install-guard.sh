@@ -76,13 +76,32 @@ fi
 LINK_LOSS_CAPTURES=3
 PROBE_S=4
 
+PROBE_BYTES=6000
+
 probe() { # <title> <command...>: the command's output, bounded, with its exit status
   local title="$1"
   shift
   echo
   echo "--- $title ---"
-  bounded "$PROBE_S" "$@" 2>&1 | head -c 6000
+  bounded "$PROBE_S" "$@" 2>&1 | head -c "$PROBE_BYTES"
   echo "[exit ${PIPESTATUS[0]}]"
+}
+
+# The device's own account. A shell that ends 255 with no output while the device stays listed is a
+# refusal on the device (adbd could not start the shell), which only the device's logs explain.
+device_side() {
+  local PROBE_BYTES=40000 i
+  echo
+  echo "--- adb shell echo ok, five times 200 ms apart (how long shells keep failing) ---"
+  for i in 1 2 3 4 5; do
+    bounded "$PROBE_S" "$REAL_ADB" "${global[@]}" shell echo ok >/dev/null 2>&1
+    echo "attempt $i: exit $? at $(date -u +%T.%N | cut -c1-12)"
+    sleep 0.2
+  done
+  probe "device: adbd and shells, load, memory" "$REAL_ADB" "${global[@]}" shell \
+    'ps | grep -E "adbd|[^a-z]sh$"; cat /proc/loadavg; grep -E "MemFree|MemAvailable|SwapFree" /proc/meminfo'
+  probe "device: kernel log, last 80 lines" "$REAL_ADB" "${global[@]}" shell 'dmesg | tail -n 80'
+  probe "device: logcat, every buffer, last 200 lines" "$REAL_ADB" "${global[@]}" logcat -d -b all -t 200
 }
 
 record_link_loss() { # <exit status> <failed command line>
@@ -103,10 +122,11 @@ record_link_loss() { # <exit status> <failed command line>
     # shellcheck disable=SC2016
     probe "emulator processes (pid, state, age, cpu%, rss KiB)" bash -c \
       'for p in $(pgrep -f "[q]emu-system|[e]mulator64"); do ps -o pid=,stat=,etime=,pcpu=,rss=,comm= -p "$p"; done'
+    device_side
     probe "adb get-state, traced (adb,transport)" env ADB_TRACE=adb,transport "$REAL_ADB" "${global[@]}" get-state
     probe "adb shell echo ok, traced (adb,transport)" env ADB_TRACE=adb,transport "$REAL_ADB" "${global[@]}" shell echo ok
     # shellcheck disable=SC2016
-    probe "adb server log, tail" bash -c 'tail -n 60 "$1"/adb.*.log 2>&1' _ "${TMPDIR:-/tmp}"
+    PROBE_BYTES=40000 probe "adb server log, tail" bash -c 'tail -n 300 "$1"/adb.*.log 2>&1' _ "${TMPDIR:-/tmp}"
   } >"$report" 2>&1
 }
 
