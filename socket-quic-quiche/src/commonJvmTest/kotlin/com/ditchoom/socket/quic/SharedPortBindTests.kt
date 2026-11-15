@@ -11,7 +11,6 @@ import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.DatagramSendOptions
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
-import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.socket.udp.UdpBindError
 import com.ditchoom.socket.udp.UdpBindException
 import kotlinx.coroutines.awaitCancellation
@@ -168,7 +167,7 @@ class SharedPortBindTests {
         }
 
     /** Received lengths for an oversized datagram then two ordinary ones. */
-    private suspend fun receiveThrough(open: suspend (BufferPool) -> AddressedDatagramChannel): List<Int> {
+    private suspend fun receiveThrough(open: suspend (DriverBuffers) -> AddressedDatagramChannel): List<Int> {
         val pool = QuicheDriver.newRecvBufPool(BufferFactory.deterministic())
         val channel = open(pool)
         try {

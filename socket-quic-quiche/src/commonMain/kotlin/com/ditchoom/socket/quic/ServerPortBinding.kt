@@ -5,7 +5,6 @@ package com.ditchoom.socket.quic
 import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
-import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.socket.udp.UdpSocket
 
 /**
@@ -59,7 +58,7 @@ internal fun interface UnpinnedWildcard {
     suspend fun serve(
         wildcard: AddressedDatagramChannel,
         binding: QuicPortBinding.Own,
-        recvBufPool: BufferPool,
+        recvBufPool: DriverBuffers,
     ): ServerChannel
 
     companion object {
@@ -82,7 +81,7 @@ internal fun interface UnpinnedWildcard {
  * which is why a demultiplexed port should be bound with the pool the QUIC server will use.
  */
 internal suspend fun QuicPortBinding.openServerChannel(
-    recvBufPool: BufferPool,
+    recvBufPool: DriverBuffers,
     unpinnedWildcard: UnpinnedWildcard,
 ): ServerChannel =
     when (this) {
@@ -97,7 +96,7 @@ internal suspend fun QuicPortBinding.openServerChannel(
     }
 
 /** The one socket an owned binding names, staged at the QUIC datagram size from [recvBufPool]. */
-internal suspend fun QuicPortBinding.Own.bindServerSocket(recvBufPool: BufferPool): AddressedDatagramChannel =
+internal suspend fun QuicPortBinding.Own.bindServerSocket(recvBufPool: DriverBuffers): AddressedDatagramChannel =
     UdpSocket.bind(
         host,
         port,

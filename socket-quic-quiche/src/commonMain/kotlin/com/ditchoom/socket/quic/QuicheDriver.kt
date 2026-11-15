@@ -12,8 +12,6 @@ import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.managed
 import com.ditchoom.buffer.nativeMemoryAccess
-import com.ditchoom.buffer.pool.BufferPool
-import com.ditchoom.buffer.pool.ThreadingMode
 import com.ditchoom.socket.ConnectionFailureReason
 import com.ditchoom.socket.SocketConnectionException
 import com.ditchoom.socket.SocketTimeoutException
@@ -208,7 +206,7 @@ class QuicheDriver(
      *
      * Hoisted to a constructor parameter (default: a fresh per-connection pool) so a client build
      * site can create ONE pool and inject it *both* here and into the `:socket-udp` receive channel
-     * (`UdpSocket.connect(bufferFactory = recvBufPool)`, since a [BufferPool] *is* a [BufferFactory]):
+     * (`UdpSocket.connect(bufferFactory = recvBufPool)`, since a [DriverBuffers] *is* a [BufferFactory]):
      * the channel then allocates each datagram straight from this pool and, for an [UdpChannel] that
      * [UdpChannel.ownsReceiveBuffer], hands the pooled buffer to [udpReaderLoop] with no copy — the B2
      * receive-copy elimination. Server-accepted drivers and every test double omit it and get the
@@ -221,14 +219,10 @@ class QuicheDriver(
      * maxPoolSize=64 → ~87 KB cached (64 × 1350), generous for a single
      * connection's in-flight datagram count.
      *
-     * Ownership invariant: [bufferFactory] is a **leaf** factory per the
-     * `TransportConfig.bufferFactory` contract — this pool is built *from* it.
-     * Never pass an already-pooled factory: wrapping a pool in a pool means the
-     * inner pool reclaims on `freeNativeMemory()` while the outer pool's
-     * accounting still counts the buffer, so the cap stops bounding RSS. Same
-     * shape as the server-side pool in CommonJvmWithQuicServer.
+     * Ownership: [DriverBuffers.of] pools a factory known not to pool and uses any other as given, so
+     * a buffer is always freed to the pool it came from.
      */
-    internal val recvBufPool: BufferPool = newRecvBufPool(bufferFactory),
+    internal val recvBufPool: DriverBuffers = newRecvBufPool(bufferFactory),
     /**
      * When the active path counts as having stopped answering — the data-plane half of the migration
      * trigger.
@@ -930,15 +924,9 @@ class QuicheDriver(
      * beyond the cap fall through to the leaf factory and over-cap returns are freed, so the cap
      * bounds cached RSS, not concurrency.
      *
-     * Same leaf-factory-in, pool-built-here ownership invariant as [recvBufPool].
+     * Same ownership as [recvBufPool].
      */
-    internal val streamReadPool: BufferPool =
-        BufferPool(
-            threadingMode = ThreadingMode.MultiThreaded,
-            maxPoolSize = 16,
-            defaultBufferSize = STREAM_READ_BUFFER_SIZE,
-            factory = bufferFactory,
-        )
+    internal val streamReadPool: DriverBuffers = DriverBuffers.of(bufferFactory, maxPoolSize = 16, bufferSize = STREAM_READ_BUFFER_SIZE)
 
     /**
      * One network path the connection can send/receive on. The connection always has
@@ -5089,19 +5077,13 @@ class QuicheDriver(
         private const val RECV_BUF_POOL_SIZE = 64
 
         /**
-         * Build a per-connection datagram recv [BufferPool] from a **leaf** [factory]. One construction
-         * shared by the driver's default and the client build sites, which create the pool up front and
-         * inject the SAME instance into both the driver ([recvBufPool]) and the `:socket-udp` receive
-         * channel (`UdpSocket.connect(bufferFactory = pool)`) so datagrams land in it with no copy. Never
-         * pass an already-pooled factory (the `80575c1` double-wrap regression).
+         * Per-connection datagram receive buffers over [factory]. One construction shared by the driver's
+         * default and the client build sites, which create it up front and inject the SAME instance into
+         * both the driver ([recvBufPool]) and the `:socket-udp` receive channel
+         * (`UdpSocket.connect(bufferFactory = buffers)`) so datagrams land in it with no copy.
          */
-        internal fun newRecvBufPool(factory: BufferFactory): BufferPool =
-            BufferPool(
-                threadingMode = ThreadingMode.MultiThreaded,
-                maxPoolSize = RECV_BUF_POOL_SIZE,
-                defaultBufferSize = MAX_DATAGRAM_SIZE,
-                factory = factory,
-            )
+        internal fun newRecvBufPool(factory: BufferFactory): DriverBuffers =
+            DriverBuffers.of(factory, maxPoolSize = RECV_BUF_POOL_SIZE, bufferSize = MAX_DATAGRAM_SIZE)
 
         /**
          * Default per-read buffer size for QUIC stream reads — [QuicheStreamByteStream]'s default
