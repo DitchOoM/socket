@@ -335,6 +335,25 @@ abstract class QuicCapabilityConformanceTestSuite {
         return outcome
     }
 
+    /** A server that binds its own port sizes that socket's kernel receive buffer and says what the host gave it. */
+    @Test
+    fun aServerReportsTheKernelReceiveBufferOfTheSocketItOpened() =
+        runQuicTest(timeout = 30.seconds) {
+            withQuicServer(port = 0, host = "127.0.0.1", tlsConfig = testTlsConfig(), quicOptions = permitting) {
+                val buffer = udpReceiveBuffers.single()
+                val (requested, usable) =
+                    when (buffer) {
+                        is UdpReceiveBuffer.Granted -> buffer.requestedBytes to buffer.usableBytes
+                        is UdpReceiveBuffer.Capped -> buffer.requestedBytes to buffer.usableBytes
+                        is UdpReceiveBuffer.Unread, UdpReceiveBuffer.Unsupported ->
+                            throw AssertionError("the server's socket was not sized: $buffer")
+                    }
+                assertEquals(SERVER_KERNEL_RECEIVE_BUFFER_BYTES, requested, "what the server asked for")
+                assertTrue(usable > 0, "what the host gave: $buffer")
+                assertEquals(usable >= requested, buffer is UdpReceiveBuffer.Granted, "granted means the whole request: $buffer")
+            }
+        }
+
     /** The declaration this live connection was built with — the claim every test here measures. */
     private fun QuicScope.declaredMigration(): MigrationCapability = (this as QuicheBackedConnection).quicheDriver.migration
 

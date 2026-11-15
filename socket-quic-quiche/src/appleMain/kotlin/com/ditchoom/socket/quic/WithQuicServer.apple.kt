@@ -86,6 +86,7 @@ internal suspend fun buildAppleQuicServer(
                 config = config,
                 channel = channel,
                 replySourcePinning = served.pinning,
+                udpReceiveBuffers = served.requestReceiveBuffers(binding),
                 localAddress = localAddress,
                 codec = SocketAddressCodec(appleSockAddrLayout),
                 bufferFactory = bufferFactory,

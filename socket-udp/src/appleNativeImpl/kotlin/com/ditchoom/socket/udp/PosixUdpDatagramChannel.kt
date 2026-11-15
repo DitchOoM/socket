@@ -32,6 +32,7 @@ import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.CArrayPointer
 import kotlinx.cinterop.CPointer
 import kotlinx.cinterop.IntVar
+import kotlinx.cinterop.UIntVar
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.allocArray
 import kotlinx.cinterop.convert
@@ -57,15 +58,19 @@ import platform.posix.F_GETFL
 import platform.posix.F_SETFL
 import platform.posix.O_NONBLOCK
 import platform.posix.POLLIN
+import platform.posix.SOL_SOCKET
+import platform.posix.SO_RCVBUF
 import platform.posix.close
 import platform.posix.errno
 import platform.posix.fcntl
+import platform.posix.getsockopt
 import platform.posix.memset
 import platform.posix.pipe
 import platform.posix.poll
 import platform.posix.pollfd
 import platform.posix.read
 import platform.posix.sendto
+import platform.posix.setsockopt
 import platform.posix.sockaddr_storage
 import platform.posix.write
 
@@ -165,6 +170,25 @@ internal class PosixUdpDatagramChannel(
             requiresNativeMemoryBuffers = true,
         )
 
+    /**
+     * `SO_RCVBUF`, set and read back. Darwin refuses a request over `kern.ipc.maxsockbuf`, so the request is
+     * halved until one is taken.
+     */
+    fun requestKernelReceiveBuffer(bytes: Int): KernelBufferGrant =
+        memScoped {
+            val wanted = alloc<IntVar>()
+            wanted.value = bytes
+            while (setsockopt(fd, SOL_SOCKET, SO_RCVBUF, wanted.ptr, sizeOf<IntVar>().convert()) != 0) {
+                wanted.value /= 2
+                if (wanted.value < SMALLEST_BUFFER_REQUEST) return KernelBufferGrant.Unread(bytes)
+            }
+            val reported = alloc<IntVar>()
+            val length = alloc<UIntVar>() // socklen_t is uint32 on Darwin
+            length.value = sizeOf<IntVar>().convert()
+            if (getsockopt(fd, SOL_SOCKET, SO_RCVBUF, reported.ptr, length.ptr) != 0) return KernelBufferGrant.Unread(bytes)
+            KernelBufferGrant.of(bytes, reported.value)
+        }
+
     override suspend fun receive(): DatagramReadResult {
         val payload = bufferFactory.allocate(receiveBufferSize)
         val ptr = payload.nativeMemoryAccess!!.nativeAddress.toCPointer<ByteVar>()!!
@@ -194,20 +218,28 @@ internal class PosixUdpDatagramChannel(
                             watched[INTERRUPT_SLOT].fd = interrupt.readEnd
                             watched[INTERRUPT_SLOT].events = POLLIN.convert()
                             memset(addr.ptr, 0, sizeOf<sockaddr_storage>().convert())
-                            // The blocking wait cannot see cancellation, so cancellation is made to reach
-                            // it: the handler writes the interrupt pipe, poll returns, and the hop back
-                            // throws the CancellationException.
-                            val onCancel =
-                                currentCoroutineContext().job.invokeOnCompletion(onCancelling = true, invokeImmediately = true) {
-                                    interruptReceiver()
-                                }
                             val step =
-                                try {
-                                    withContext(recvDispatcher) {
-                                        pollThenReceive(watched, ptr, payload.capacity, addr.ptr, destination.ptr)
+                                when (val queued = receiveNow(ptr, payload.capacity, addr.ptr, destination.ptr)) {
+                                    is Queued.Answered -> queued.step
+                                    Queued.Nothing -> {
+                                        // The blocking wait cannot see cancellation, so cancellation is made to
+                                        // reach it: the handler writes the interrupt pipe, poll returns, and the
+                                        // hop back throws the CancellationException.
+                                        val onCancel =
+                                            currentCoroutineContext().job.invokeOnCompletion(
+                                                onCancelling = true,
+                                                invokeImmediately = true,
+                                            ) {
+                                                interruptReceiver()
+                                            }
+                                        try {
+                                            withContext(recvDispatcher) {
+                                                pollThenReceive(watched, ptr, payload.capacity, addr.ptr, destination.ptr)
+                                            }
+                                        } finally {
+                                            onCancel.dispose()
+                                        }
                                     }
-                                } finally {
-                                    onCancel.dispose()
                                 }
                             when (step) {
                                 is Step.Woken -> DatagramReadResult.Closed()
@@ -264,6 +296,49 @@ internal class PosixUdpDatagramChannel(
     private fun arrivalAddressOf(destination: sockaddr_storage): LocalAddress {
         val address = sockaddrToAppleSocketAddress(destination.ptr.reinterpret()) ?: return LocalAddress.Unknown
         return LocalAddress.of(AppleSocketAddress(address.host, localAddress.port, address.family, address.hi, address.lo))
+    }
+
+    /** What [receiveNow] found without waiting. */
+    private sealed interface Queued {
+        /** The socket holds no datagram (or it is this receiver's turn to wait): wait on [recvDispatcher]. */
+        data object Nothing : Queued
+
+        class Answered(
+            val step: Step,
+        ) : Queued
+    }
+
+    /** Receives in a row that [receiveNow] answered. One receiver at a time by this channel's contract. */
+    private var receivedWithoutWaiting = 0
+
+    /**
+     * Takes a datagram the socket already holds, on the caller's thread and without waiting, so a receiver
+     * that is behind pays one system call per datagram and no hop to [recvDispatcher] and back. An empty
+     * socket sends the caller there to wait; so does every [RECEIVE_BURST]th call in a row that found a
+     * datagram, because the wait is where a receiver that shares a thread with whoever consumes its datagrams
+     * lets them run; and so does a closed channel, whose wake pipe is what the wait reports.
+     */
+    private fun receiveNow(
+        payload: CPointer<ByteVar>,
+        capacity: Int,
+        addr: CPointer<sockaddr_storage>,
+        destination: CPointer<sockaddr_storage>,
+    ): Queued {
+        if (handoff.closed || receivedWithoutWaiting == RECEIVE_BURST) {
+            receivedWithoutWaiting = 0
+            return Queued.Nothing
+        }
+        while (true) {
+            val n = udp_recv_with_destination(fd, payload, capacity, addr, destination)
+            if (n >= 0) {
+                receivedWithoutWaiting++
+                return Queued.Answered(Step.Delivered(n))
+            }
+            val code = errno
+            if (code == EINTR) continue
+            receivedWithoutWaiting = 0
+            return if (code == EAGAIN || code == EWOULDBLOCK) Queued.Nothing else Queued.Answered(Step.Failed(code))
+        }
     }
 
     /**
@@ -574,6 +649,12 @@ internal class PosixUdpDatagramChannel(
         private const val WAKE_SLOT = 1
         private const val INTERRUPT_SLOT = 2
         private const val WATCHED_DESCRIPTORS = 3
+
+        /** Below this a kernel buffer request is not worth halving further. */
+        private const val SMALLEST_BUFFER_REQUEST = 64 * 1024
+
+        /** How many datagrams in a row a receiver takes without waiting before it waits once. */
+        private const val RECEIVE_BURST = 64
 
         /** `poll` blocks until one of the two speaks; the wake is what ends the wait, not a deadline. */
         private const val NO_TIMEOUT = -1

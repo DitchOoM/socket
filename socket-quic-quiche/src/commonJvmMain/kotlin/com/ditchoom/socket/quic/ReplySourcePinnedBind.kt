@@ -41,7 +41,11 @@ internal fun socketPerLocalAddress(
         wildcard.close()
         when (val bind = bindEachAddress(addresses, binding.port) { host, port -> bindServerMember(host, port, recvBufPool) }) {
             is SharedPortBind.Bound ->
-                ServerChannel(PerLocalAddressServerChannel.of(bind.members, readerContext), ReplySourcePinning.SocketPerAddress)
+                ServerChannel(
+                    PerLocalAddressServerChannel.of(bind.members, readerContext),
+                    ReplySourcePinning.SocketPerAddress,
+                    sockets = bind.members,
+                )
             is SharedPortBind.NoAddressAvailable ->
                 ServerChannel(binding.bindServerSocket(recvBufPool), ReplySourcePinning.PlatformChooses)
         }

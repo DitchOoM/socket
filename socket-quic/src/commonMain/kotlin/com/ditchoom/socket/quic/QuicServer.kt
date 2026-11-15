@@ -26,6 +26,12 @@ interface QuicServer {
     val alpnProtocols: List<String> get() = emptyList()
 
     /**
+     * The kernel receive buffer of each UDP socket this server opened. Empty when the server serves a port its
+     * caller bound: that socket is the caller's to size.
+     */
+    val udpReceiveBuffers: List<UdpReceiveBuffer> get() = emptyList()
+
+    /**
      * Accept connections and run [handler] for each.
      *
      * Each connection gets its own [QuicScope]. The handler runs once the handshake completes or,

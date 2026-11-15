@@ -90,6 +90,7 @@ internal suspend fun buildJvmQuicServer(
                 config = config,
                 channel = channel,
                 replySourcePinning = served.pinning,
+                udpReceiveBuffers = served.requestReceiveBuffers(binding),
                 localAddress = localAddress,
                 codec = SocketAddressCodec(hostOsSockAddrLayout()),
                 bufferFactory = bufferFactory,

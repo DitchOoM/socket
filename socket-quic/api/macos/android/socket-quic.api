@@ -1869,10 +1869,12 @@ public abstract interface class com/ditchoom/socket/quic/QuicServer {
 	public abstract fun connections (Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public fun getAlpnProtocols ()Ljava/util/List;
 	public abstract fun getPort ()I
+	public fun getUdpReceiveBuffers ()Ljava/util/List;
 }
 
 public final class com/ditchoom/socket/quic/QuicServer$DefaultImpls {
 	public static fun getAlpnProtocols (Lcom/ditchoom/socket/quic/QuicServer;)Ljava/util/List;
+	public static fun getUdpReceiveBuffers (Lcom/ditchoom/socket/quic/QuicServer;)Ljava/util/List;
 }
 
 public final class com/ditchoom/socket/quic/QuicSessionId {
@@ -2287,6 +2289,53 @@ public final class com/ditchoom/socket/quic/StreamOpenPolicy$UntilClosed : com/d
 	public fun equals (Ljava/lang/Object;)Z
 	public fun hashCode ()I
 	public fun toDeadline-UwyO8pc ()J
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/quic/UdpReceiveBuffer {
+}
+
+public final class com/ditchoom/socket/quic/UdpReceiveBuffer$Capped : com/ditchoom/socket/quic/UdpReceiveBuffer {
+	public fun <init> (II)V
+	public final fun component1 ()I
+	public final fun component2 ()I
+	public final fun copy (II)Lcom/ditchoom/socket/quic/UdpReceiveBuffer$Capped;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/quic/UdpReceiveBuffer$Capped;IIILjava/lang/Object;)Lcom/ditchoom/socket/quic/UdpReceiveBuffer$Capped;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getRequestedBytes ()I
+	public final fun getUsableBytes ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/quic/UdpReceiveBuffer$Granted : com/ditchoom/socket/quic/UdpReceiveBuffer {
+	public fun <init> (II)V
+	public final fun component1 ()I
+	public final fun component2 ()I
+	public final fun copy (II)Lcom/ditchoom/socket/quic/UdpReceiveBuffer$Granted;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/quic/UdpReceiveBuffer$Granted;IIILjava/lang/Object;)Lcom/ditchoom/socket/quic/UdpReceiveBuffer$Granted;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getRequestedBytes ()I
+	public final fun getUsableBytes ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/quic/UdpReceiveBuffer$Unread : com/ditchoom/socket/quic/UdpReceiveBuffer {
+	public fun <init> (I)V
+	public final fun component1 ()I
+	public final fun copy (I)Lcom/ditchoom/socket/quic/UdpReceiveBuffer$Unread;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/quic/UdpReceiveBuffer$Unread;IILjava/lang/Object;)Lcom/ditchoom/socket/quic/UdpReceiveBuffer$Unread;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getRequestedBytes ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/quic/UdpReceiveBuffer$Unsupported : com/ditchoom/socket/quic/UdpReceiveBuffer {
+	public static final field INSTANCE Lcom/ditchoom/socket/quic/UdpReceiveBuffer$Unsupported;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
 }
 

@@ -190,6 +190,61 @@ public final class com/ditchoom/socket/udp/InternedJvmSocketAddressKt {
 	public static final fun hostOsSockAddrLayout ()Lcom/ditchoom/socket/udp/SockAddrLayout;
 }
 
+public abstract interface class com/ditchoom/socket/udp/KernelBufferGrant {
+	public static final field Companion Lcom/ditchoom/socket/udp/KernelBufferGrant$Companion;
+}
+
+public final class com/ditchoom/socket/udp/KernelBufferGrant$Capped : com/ditchoom/socket/udp/KernelBufferGrant {
+	public fun <init> (II)V
+	public final fun component1 ()I
+	public final fun component2 ()I
+	public final fun copy (II)Lcom/ditchoom/socket/udp/KernelBufferGrant$Capped;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/udp/KernelBufferGrant$Capped;IIILjava/lang/Object;)Lcom/ditchoom/socket/udp/KernelBufferGrant$Capped;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getRequestedBytes ()I
+	public final fun getUsableBytes ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/KernelBufferGrant$Companion {
+}
+
+public final class com/ditchoom/socket/udp/KernelBufferGrant$Granted : com/ditchoom/socket/udp/KernelBufferGrant {
+	public fun <init> (II)V
+	public final fun component1 ()I
+	public final fun component2 ()I
+	public final fun copy (II)Lcom/ditchoom/socket/udp/KernelBufferGrant$Granted;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/udp/KernelBufferGrant$Granted;IIILjava/lang/Object;)Lcom/ditchoom/socket/udp/KernelBufferGrant$Granted;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getRequestedBytes ()I
+	public final fun getUsableBytes ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/KernelBufferGrant$Unread : com/ditchoom/socket/udp/KernelBufferGrant {
+	public fun <init> (I)V
+	public final fun component1 ()I
+	public final fun copy (I)Lcom/ditchoom/socket/udp/KernelBufferGrant$Unread;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/udp/KernelBufferGrant$Unread;IILjava/lang/Object;)Lcom/ditchoom/socket/udp/KernelBufferGrant$Unread;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getRequestedBytes ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/KernelBufferGrant$Unsupported : com/ditchoom/socket/udp/KernelBufferGrant {
+	public static final field INSTANCE Lcom/ditchoom/socket/udp/KernelBufferGrant$Unsupported;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/udp/KernelBufferGrant_jvmKt {
+	public static final fun requestKernelReceiveBuffer (Lcom/ditchoom/buffer/flow/AddressedDatagramChannel;I)Lcom/ditchoom/socket/udp/KernelBufferGrant;
+}
+
 public abstract interface class com/ditchoom/socket/udp/MulticastDatagramChannel : com/ditchoom/buffer/flow/AddressedDatagramChannel {
 	public abstract fun joinGroup (Lcom/ditchoom/socket/udp/MulticastMembership;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public abstract fun leaveGroup (Lcom/ditchoom/socket/udp/MulticastMembership;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
