@@ -99,7 +99,8 @@ allprojects {
 }
 
 // The host OS: a Linux host builds the harness's quic-echo image from its own natives (see composeArgs).
-val isLinux = org.jetbrains.kotlin.konan.target.HostManager.hostIsLinux
+// The JVM's answer, so linux-arm64 counts: Kotlin/Native's `HostManager.hostIsLinux` is linux-x64 only.
+val isLinux = System.getProperty("os.name") == "Linux"
 
 @Suppress("UNCHECKED_CAST")
 val getNextVersion = project.extra["getNextVersion"] as (Boolean) -> Any

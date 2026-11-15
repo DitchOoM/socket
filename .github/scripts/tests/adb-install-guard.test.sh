@@ -99,6 +99,37 @@ else
 fi
 wait "$guard_pid" 2>/dev/null
 
+# 4b. A SIGTERM that arrives while the guard is still writing the journal entry for the adb it just
+# started (a slow `date` stands in for a loaded runner) still stops adb and the guard.
+mkdir -p "$tmp/slowbin"
+cat >"$tmp/slowbin/date" <<'EOF2'
+#!/usr/bin/env bash
+sleep 1
+exec /bin/date "$@"
+EOF2
+chmod +x "$tmp/slowbin/date"
+rm -f "$tmp/sleeper.pid"
+PATH="$tmp/slowbin:$PATH" "$tmp/adb" shell sleep >/dev/null 2>&1 &
+guard_pid=$!
+for _ in $(seq 50); do [ -s "$tmp/sleeper.pid" ] && break; sleep 0.1; done
+sleeper=$(cat "$tmp/sleeper.pid" 2>/dev/null || true)
+kill -TERM "$guard_pid"
+gone=""
+for _ in $(seq 50); do
+  if ! kill -0 "$guard_pid" 2>/dev/null && { [ -z "$sleeper" ] || ! kill -0 "$sleeper" 2>/dev/null; }; then
+    gone=1
+    break
+  fi
+  sleep 0.1
+done
+if [ -n "$sleeper" ] && [ -n "$gone" ]; then
+  ok "SIGTERM while the guard writes its journal stops adb and the guard"
+else
+  bad "SIGTERM while the guard writes its journal stops adb and the guard" "sleeper=${sleeper:-never started} guard alive=$(kill -0 "$guard_pid" 2>/dev/null && echo yes || echo no)"
+  [ -n "$sleeper" ] && kill -9 "$sleeper" 2>/dev/null
+fi
+wait "$guard_pid" 2>/dev/null
+
 # 5. An install goes through the install path, and is journaled too.
 touch "$tmp/test.apk"
 out=$("$tmp/adb" -s emulator-5554 install -t -g "$tmp/test.apk" 2>&1)
