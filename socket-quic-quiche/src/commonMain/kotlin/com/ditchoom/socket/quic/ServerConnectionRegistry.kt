@@ -46,7 +46,6 @@ internal class ServerConnectionRegistry<K>(
      */
     private val connectionsByDcid: MutableMap<ConnectionIdKey, QuicheDriver> = mutableMapOf(),
 ) {
-
     /**
      * Hand-off of newly accepted connections from the receive loop to `connections()`'s consumer loop.
      * Carries the accepted driver together with its remote peer address so the handler's
