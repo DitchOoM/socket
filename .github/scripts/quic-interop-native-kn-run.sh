@@ -22,6 +22,15 @@ for spec in "$@"; do
   case "$kexe" in /*) ;; *) kexe="$root/$kexe" ;; esac
   [ -x "$kexe" ] || chmod +x "$kexe" || { echo "::error::$lane: no test binary at $kexe"; exit 1; }
   cmd="$client $kexe${udid:+ $udid}"
+  # The binary's first execution on a fresh runner, timed apart from the tests: a test that then times out was
+  # not waiting for the loader.
+  started=$(date +%s)
+  if [ -n "$udid" ]; then
+    xcrun simctl spawn "$udid" "$kexe" --ktest_filter='NoSuchTest.*' >/dev/null 2>&1 || true
+  else
+    "$kexe" --ktest_filter='NoSuchTest.*' >/dev/null 2>&1 || true
+  fi
+  echo "$lane: the test binary's first execution took $(( $(date +%s) - started )) s"
   python3 "$pair" --direction "$lane-our-client" --peer quic-go --tests "$TESTS" \
     --server "$peers/qgo-server" --client "$cmd" --results "$results" --captures "$root/interop-failures"
   python3 "$pair" --direction "$lane-our-client-migrating" --peer quic-go --tests transfer \
