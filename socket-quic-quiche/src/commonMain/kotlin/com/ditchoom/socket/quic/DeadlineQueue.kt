@@ -99,6 +99,9 @@ internal abstract class DeadlineNode(
     }
 
     internal fun isDisarmed(): Boolean = loadState() === NodeState.Disarmed
+
+    /** Neither fired nor disarmed. */
+    internal fun isArmed(): Boolean = loadState() === this
 }
 
 /** A [DeadlineNode] that runs a [Runnable]: what the code that is not on the stream-bound path arms. */

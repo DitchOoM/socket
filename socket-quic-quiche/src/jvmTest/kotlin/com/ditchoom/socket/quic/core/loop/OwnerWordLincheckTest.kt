@@ -10,9 +10,9 @@ import kotlin.test.Test
 import kotlin.test.assertFailsWith
 
 /**
- * [OwnerWord] as a connection uses it: a loop turn enters; callers leave work in the inbox and enter when nobody is
- * inside. The audit, after everything ran: nobody is inside, no work is stranded, every item ran once, and two
- * entrants were never inside together.
+ * [OwnerWord] as a connection uses it: a loop turn enters; callers, and the loop for a datagram that found a caller
+ * inside, leave work in the inbox and enter when nobody is inside. The audit, after everything ran: nobody is inside,
+ * no work is stranded, every item ran once, and two entrants were never inside together.
  */
 abstract class OwnerWordModel(
     private val leaveIgnoringWork: Boolean,
@@ -26,6 +26,10 @@ abstract class OwnerWordModel(
 
     @Operation
     fun loopTurn() = enterAndRun(LOOP)
+
+    /** A datagram that finds a caller inside is copied into work: the loop leaves work like a caller does. */
+    @Operation
+    fun loopLeavesCopiedDatagram() = leaveWorkAs(LOOP)
 
     @Operation
     fun callerOne() = leaveWorkAs(CALLER_ONE)
@@ -102,6 +106,8 @@ class OwnerWordLeavingWorkBehindLincheckTest : OwnerWordModel(leaveIgnoringWork 
 
 class OwnerWordSpec {
     fun loopTurn() = Unit
+
+    fun loopLeavesCopiedDatagram() = Unit
 
     fun callerOne() = Unit
 

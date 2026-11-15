@@ -20,6 +20,7 @@ import com.ditchoom.socket.quic.QuicRole
 import com.ditchoom.socket.quic.QuicStreamId
 import com.ditchoom.socket.quic.QuicUnreadAtClose
 import com.ditchoom.socket.quic.QuicheDriver
+import com.ditchoom.socket.quic.core.conn.CallerPlace
 import com.ditchoom.socket.quic.core.conn.Conn
 import com.ditchoom.socket.quic.core.conn.ConnEnd
 import com.ditchoom.socket.quic.core.conn.ConnEvents
@@ -30,6 +31,7 @@ import com.ditchoom.socket.quic.core.stream.StreamMap
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.MainCoroutineDispatcher
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.channels.Channel
@@ -40,6 +42,8 @@ import kotlinx.coroutines.flow.consumeAsFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
+import kotlin.coroutines.ContinuationInterceptor
+import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.time.Duration
@@ -62,7 +66,8 @@ private sealed interface WhenEnded {
 
 /**
  * A [QuicConnection] on the run-to-completion core. Every call becomes work inside the connection and suspends
- * until the connection has done it; nothing here blocks a thread.
+ * until the connection has done it; nothing here blocks a thread. A caller on a main dispatcher leaves its work
+ * for the loop; any other caller runs it in place when the connection is free.
  */
 internal class CoreConnection(
     override val bufferFactory: BufferFactory,
@@ -81,7 +86,7 @@ internal class CoreConnection(
     private val incoming = Channel<QuicByteStream>(Channel.UNLIMITED)
     private val mutableState = MutableStateFlow<QuicConnectionState>(QuicConnectionState.Handshaking)
     private val closed = CompletableDeferred<QuicCloseReason>()
-    private val submitWork: (ConnWork) -> Unit = ::submit
+    private val submitToLoop: (ConnWork) -> Unit = { submit(it, CallerPlace.HandToLoop) }
     private var nextBidi: Long = if (role == QuicRole.Client) 0L else 1L
 
     /** Opens waiting for the peer to allow another stream, oldest first. */
@@ -113,6 +118,7 @@ internal class CoreConnection(
 
                 override fun gone() = Unit
             },
+            CallerPlace.HandToLoop,
         )
 
     /** Suspends until the handshake completes; throws [QuicCloseException] if the connection ends first. */
@@ -129,8 +135,9 @@ internal class CoreConnection(
         val id =
             suspendCancellableCoroutine { cont ->
                 val open = OpenStream(cont)
-                submit(open)
-                cont.invokeOnCancellation { submit(WithdrawOpen(open)) }
+                val place = placeOf(cont.context)
+                submit(open, place)
+                cont.invokeOnCancellation { submit(WithdrawOpen(open), place) }
             }
         return streamFor(id)
     }
@@ -151,7 +158,7 @@ internal class CoreConnection(
         deadline: Duration,
     ): ReadResult =
         settle(deadline) { cont ->
-            ReadOp(streams, stream, deadline, cont, submitWork, bufferFactory, READ_CHUNK)
+            ReadOp(streams, stream, deadline, cont, submitToLoop, bufferFactory, READ_CHUNK)
         }
 
     internal suspend fun write(
@@ -162,7 +169,7 @@ internal class CoreConnection(
         deadline: Duration,
     ): Int =
         settle(deadline) { cont ->
-            WriteOp(streams, stream, deadline, cont, submitWork, buffer, address, end)
+            WriteOp(streams, stream, deadline, cont, submitToLoop, buffer, address, end)
         }
 
     /** Sends our FIN on [stream]. */
@@ -213,12 +220,13 @@ internal class CoreConnection(
                 is ConnEnd.ByPeer -> QuicCloseReason.ByPeer(end.error)
                 is ConnEnd.Locally -> QuicCloseReason.ByLocal(end.error)
                 is ConnEnd.Failed -> QuicCloseReason.ByLocal(QuicError.InternalError("processing the connection failed"))
-                ConnEnd.Quietly, is ConnEnd.LoopFailed -> QuicCloseReason.Unspecified
+                ConnEnd.Quietly, is ConnEnd.LoopFailed, is ConnEnd.CallerFailed -> QuicCloseReason.Unspecified
             }
         val failure =
             when (end) {
                 is ConnEnd.Failed -> QuicCloseException(reason, "processing the connection failed", end.cause)
                 is ConnEnd.LoopFailed -> QuicCloseException(reason, "the connection's loop thread failed", end.cause)
+                is ConnEnd.CallerFailed -> QuicCloseException(reason, "a caller's thread failed inside the connection", end.cause)
                 else -> QuicCloseException(reason, "connection closed")
             }
         streams.forEach { it.endWaiters(failure) }
@@ -235,12 +243,19 @@ internal class CoreConnection(
 
     // ---
 
-    private fun submit(work: ConnWork) {
+    private fun submit(
+        work: ConnWork,
+        place: CallerPlace,
+    ) {
         when (val now = bound) {
             Binding.Nothing -> work.gone()
-            is Binding.To -> now.conn.submit(work)
+            is Binding.To -> now.conn.submit(work, place)
         }
     }
+
+    /** A caller on a main dispatcher never does system calls; any other may. */
+    private fun placeOf(context: CoroutineContext): CallerPlace =
+        if (context[ContinuationInterceptor] is MainCoroutineDispatcher) CallerPlace.HandToLoop else CallerPlace.MayEnter
 
     private fun initiatedByPeer(stream: QuicStreamId): Boolean = (stream.id and 1L == 1L) == (role == QuicRole.Client)
 
@@ -249,6 +264,7 @@ internal class CoreConnection(
     /** Runs [body] inside the connection and returns its value. */
     private suspend fun <T> run(body: (Conn.Inside) -> T): T =
         suspendCancellableCoroutine { cont ->
+            val place = placeOf(cont.context)
             submit(
                 object : ConnWork() {
                     override fun run(inside: Conn.Inside) {
@@ -259,6 +275,7 @@ internal class CoreConnection(
                         if (cont.isActive) cont.resumeWith(kotlin.Result.failure(ConnectionReleased.failure()))
                     }
                 },
+                place,
             )
         }
 
@@ -269,8 +286,9 @@ internal class CoreConnection(
         val outcome =
             suspendCancellableCoroutine { cont ->
                 val made = op(cont)
-                submit(made)
-                cont.invokeOnCancellation { submit(Withdraw(made)) }
+                val place = placeOf(cont.context)
+                submit(made, place)
+                cont.invokeOnCancellation { submit(Withdraw(made), place) }
             }
         return when (outcome) {
             is Outcome.Done -> outcome.value

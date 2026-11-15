@@ -502,6 +502,11 @@ object JniQuicheApi : QuicheApi {
         return if (nanos < 0) null else nanos.nanoseconds
     }
 
+    override fun connTimeoutNanos(conn: QuicheConn): Long {
+        val nanos = nConnTimeoutAsNanos(conn.handle)
+        return if (nanos < 0) NO_TIMEOUT_NANOS else nanos
+    }
+
     override fun connOnTimeout(conn: QuicheConn) = nConnOnTimeout(conn.handle)
 
     override fun setThreadVirtualTimeNanos(nanos: Long) = nSetVirtualTimeNanos(nanos)

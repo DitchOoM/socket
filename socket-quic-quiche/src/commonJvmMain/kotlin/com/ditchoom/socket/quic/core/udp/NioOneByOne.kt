@@ -15,18 +15,27 @@ import java.nio.ByteBuffer
 import java.nio.channels.ClosedChannelException
 import java.nio.channels.DatagramChannel
 
-/** A non-blocking [DatagramChannel], one datagram per system call. */
+/**
+ * A non-blocking [DatagramChannel], one datagram per system call.
+ *
+ * Sending is safe from any thread, one thread per [SendBatch] at a time: what a send touches besides the channel,
+ * which is thread-safe, is kept per batch lane. [batches] are every batch it may be asked to send, the loop's
+ * first; a batch's [SendBatch.lane] is its place in that list. Receiving is the loop's alone.
+ */
 internal class NioOneByOne(
     val channel: DatagramChannel,
-    send: SendBatch,
+    batches: List<SendBatch>,
 ) : DatagramBatchIo {
+    constructor(channel: DatagramChannel, send: SendBatch) : this(channel, listOf(send))
+
     override val capability: BatchCapability = BatchCapability.OneByOne
-    private val sendView: ByteBuffer = byteBufferOf(send.storage).duplicate()
-    private val targets = HashMap<PathKey, InetSocketAddress>()
+    private val sendViews: Array<ByteBuffer> = Array(batches.size) { byteBufferOf(batches[it].storage).duplicate() }
+    private val targets: Array<HashMap<PathKey, InetSocketAddress>> = Array(batches.size) { HashMap() }
     private var lastSender: Sender = Sender.None
 
     override fun send(batch: SendBatch): SendBatchResult {
         val count = batch.pending
+        val sendView = sendViews[batch.lane]
         for (n in 0 until count) {
             val offset = batch.offsetOf(n)
             sendView.limit(offset + batch.lengthOf(n)).position(offset)
@@ -38,7 +47,7 @@ internal class NioOneByOne(
                             if (target.to.family == NO_FAMILY) {
                                 return SendBatchResult.Partial(n, UdpError.HostUnreachable)
                             } else {
-                                channel.send(sendView, addressOf(target.to))
+                                channel.send(sendView, addressOf(batch.lane, target.to))
                             }
                     }
                 } catch (e: IOException) {
@@ -87,12 +96,16 @@ internal class NioOneByOne(
         return seen.key
     }
 
-    private fun addressOf(key: PathKey): InetSocketAddress {
-        targets[key]?.let { return it }
-        if (targets.size >= MAX_CACHED_TARGETS) targets.clear()
+    private fun addressOf(
+        lane: Int,
+        key: PathKey,
+    ): InetSocketAddress {
+        val cache = targets[lane]
+        cache[key]?.let { return it }
+        if (cache.size >= MAX_CACHED_TARGETS) cache.clear()
         // Only a key with an address family reaches here, and every such key converts.
         val address = key.toInetSocketAddress() as InetSocketAddress
-        targets[key] = address
+        cache[key] = address
         return address
     }
 }

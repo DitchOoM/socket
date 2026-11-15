@@ -1,6 +1,7 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget
 import java.net.URI
+import java.util.concurrent.Callable
 import java.security.MessageDigest
 
 plugins {
@@ -850,17 +851,43 @@ project(":socket-quic-quiche") {
         group = "verification"
         dependsOn("compileTestKotlinJvm")
     }
+    // Main-thread safety of the run-to-completion core: a caller on a main dispatcher must make no blocking
+    // call. BlockHound is a Java agent, so it gets its own JVM (see :socket-testsuite's mainThreadSafetyTest);
+    // unlike lincheckTest it drives a real handshake, so it runs on jvmTest's final classpath, which carries the
+    // quiche natives, and on its launcher, resolved when the task runs.
+    tasks.register<Test>("mainThreadSafetyTest") {
+        description = "Drives the core from a non-blocking main-like thread under BlockHound"
+        group = "verification"
+        dependsOn("compileTestKotlinJvm", "prepareQuicheNativeLib", "stageQuicheNativeResources")
+        forkEvery = 1
+        jvmArgs("-XX:+EnableDynamicAgentLoading", "-XX:+AllowRedefinitionToAddDeleteMethods")
+        testLogging {
+            events("passed", "skipped", "failed")
+            exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+            showStandardStreams = true
+        }
+    }
     afterEvaluate {
         dependencies.add("jvmTestImplementation", libs.lincheck)
+        dependencies.add("jvmTestImplementation", "io.projectreactor.tools:blockhound:${providers.gradleProperty("blockHoundVersion").get()}")
         val jvmTestTask = tasks.named<Test>("jvmTest").get()
         tasks.named<Test>("lincheckTest") {
             testClassesDirs = jvmTestTask.testClassesDirs
             classpath = jvmTestTask.classpath
             filter { includeTestsMatching("*Lincheck*") }
         }
+        tasks.named<Test>("mainThreadSafetyTest") {
+            testClassesDirs = jvmTestTask.testClassesDirs
+            classpath = files(Callable { jvmTestTask.classpath })
+            javaLauncher.set(jvmTestTask.javaLauncher)
+            jvmArgumentProviders.add(CommandLineArgumentProvider { jvmTestTask.jvmArgs.orEmpty() })
+            doFirst { environment(jvmTestTask.environment) }
+            filter { includeTestsMatching("*MainThreadSafety*") }
+        }
         tasks.named<Test>("jvmTest") {
             filter {
                 excludeTestsMatching("*Lincheck*")
+                excludeTestsMatching("*MainThreadSafety*")
                 isFailOnNoMatchingTests = false
             }
         }

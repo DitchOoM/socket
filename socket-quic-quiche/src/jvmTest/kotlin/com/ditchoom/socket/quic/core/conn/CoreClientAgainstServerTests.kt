@@ -151,7 +151,7 @@ class CoreClientAgainstServerTests {
         val parts = OneConnParts()
         val loop = Loop(SelectorWait(channel, clock), clock, NioOneByOne(channel, send), parts, receive, send)
         val echo = EchoClient(payload)
-        val conn = Conn(api, handle, path, loop, Entrant.loopTurn(loop = 1, generation = 1), clock, echo)
+        val conn = Conn(api, handle, path, loop, Entrant.loopTurn(loop = 1, generation = 1), clock, echo, factory, DatagramSlots.None)
         parts.attach(conn)
         val running = startLoop(loop, "core-client-test")
         conn.start()

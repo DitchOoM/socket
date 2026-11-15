@@ -28,6 +28,8 @@ internal class SendBatch(
     /** The native address of [storage]'s first byte. */
     val address: Long,
     val limits: BatchLimits,
+    /** Which thread-confined lane this batch is: 0 is the loop's, a caller's lane is its pool index plus one. */
+    val lane: Int = 0,
 ) {
     private val lengths = IntArray(limits.maxDatagrams)
     private val targets = Array<SendTarget>(limits.maxDatagrams) { SendTarget.ConnectedPeer }

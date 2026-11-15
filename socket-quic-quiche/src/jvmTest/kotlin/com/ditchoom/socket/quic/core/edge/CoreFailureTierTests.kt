@@ -18,12 +18,18 @@ import com.ditchoom.socket.quic.QuicWireConnectionId
 import com.ditchoom.socket.quic.ScopedRead
 import com.ditchoom.socket.quic.SendTarget
 import com.ditchoom.socket.quic.applyQuicOptions
+import com.ditchoom.socket.quic.core.conn.CallerPlace
 import com.ditchoom.socket.quic.core.conn.Conn
 import com.ditchoom.socket.quic.core.conn.ConnEnd
 import com.ditchoom.socket.quic.core.conn.ConnEvents
+import com.ditchoom.socket.quic.core.conn.ConnFreed
 import com.ditchoom.socket.quic.core.conn.ConnPath
 import com.ditchoom.socket.quic.core.conn.ConnWork
+import com.ditchoom.socket.quic.core.conn.DatagramSlot
+import com.ditchoom.socket.quic.core.conn.DatagramSlots
 import com.ditchoom.socket.quic.core.conn.OneConnParts
+import com.ditchoom.socket.quic.core.loop.CallerLanes
+import com.ditchoom.socket.quic.core.loop.CallerSend
 import com.ditchoom.socket.quic.core.loop.Entrant
 import com.ditchoom.socket.quic.core.loop.Loop
 import com.ditchoom.socket.quic.core.loop.LoopClock
@@ -41,6 +47,8 @@ import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.ReceiveBatchResult
 import com.ditchoom.socket.quic.core.udp.ReceiveBuffer
 import com.ditchoom.socket.quic.core.udp.SendBatch
+import com.ditchoom.socket.quic.core.udp.SendBatchResult
+import com.ditchoom.socket.quic.core.udp.UdpError
 import com.ditchoom.socket.quic.encodeAlpnList
 import com.ditchoom.socket.quic.generateScid
 import com.ditchoom.socket.quic.loadQuicheApi
@@ -148,6 +156,68 @@ class CoreFailureTierTests {
             assertSame(planted, end.cause)
         }
 
+    @Test
+    fun aConnectionWorkThatThrowsInsideACallerEndsThatConnectionAndTheCallerLeaves() =
+        withRig { rig ->
+            val planted = IllegalStateException("planted in connection work, run by a caller")
+            runOnACaller(rig) { OnACaller(planted) }
+
+            val end = assertIs<ConnEnd.Failed>(rig.ended.get(10, TimeUnit.SECONDS))
+            assertSame(planted, end.cause)
+            assertTrue(rig.conn.counts.enteredInPlace >= 1, "a caller ran the work, not the loop")
+            val later = LateWork()
+            rig.conn.submit(later, CallerPlace.MayEnter)
+            assertEquals(1, later.gone.get(5, TimeUnit.SECONDS), "work for the failed connection is answered as gone, so nobody holds it")
+            assertTrue(rig.runOnLoop() > 0, "the loop kept running")
+        }
+
+    @Test
+    fun anErrorInsideACallerEndsThatConnectionIsReportedAndTheCallerLeaves() =
+        withRig { rig ->
+            val planted = PlantedError()
+            val reported = CompletableFuture<Throwable>()
+            runOnACaller(rig, reported) { OnACaller(planted) }
+
+            val end = assertIs<ConnEnd.CallerFailed>(rig.ended.get(10, TimeUnit.SECONDS))
+            assertSame(planted, end.cause)
+            assertSame(planted, reported.get(5, TimeUnit.SECONDS), "the Error was reported on the caller's thread")
+            val later = LateWork()
+            rig.conn.submit(later, CallerPlace.MayEnter)
+            assertEquals(1, later.gone.get(5, TimeUnit.SECONDS), "the caller left: later work is answered as gone")
+            assertTrue(rig.runOnLoop() > 0, "the loop kept running")
+        }
+
+    @Test
+    fun aFullSocketHandsTheCallersDatagramsToTheLoopWhichSendsThem() =
+        withRig { rig ->
+            rig.io.refuseCallerSends(3)
+            val stream = rig.connection.openStream()
+            val payload = Random(9).nextBytes(20_000)
+            assertContentEquals(payload, echo(stream, payload), "echo while the socket refused the callers' sends")
+            assertTrue(rig.loop.callerCounts.sendsDeferred >= 1, "a caller's send was deferred to the loop")
+        }
+
+    /**
+     * Submits the work [make] builds from a caller thread until a caller, not the loop, ran it: work that finds the loop
+     * inside runs on the loop, where [OnACaller] declines.
+     */
+    private fun runOnACaller(
+        rig: Rig,
+        reported: CompletableFuture<Throwable> = CompletableFuture(),
+        make: () -> OnACaller,
+    ) {
+        repeat(100) {
+            val work = make()
+            val caller = Thread { rig.conn.submit(work, CallerPlace.MayEnter) }
+            caller.setUncaughtExceptionHandler { _, error -> reported.complete(error) }
+            caller.start()
+            caller.join(10_000)
+            work.settled.get(10, TimeUnit.SECONDS)
+            if (work.ranOnACaller) return
+        }
+        throw AssertionError("the work never ran on a caller")
+    }
+
     private suspend fun echo(
         stream: QuicByteStream,
         payload: ByteArray,
@@ -252,6 +322,24 @@ private class ThrowingErrorWork(
     override fun gone() = Unit
 }
 
+/** Throws what it is given when a caller runs it, and does nothing when the loop does. */
+private class OnACaller(
+    private val planted: Throwable,
+) : ConnWork() {
+    val settled = CompletableFuture<Unit>()
+    var ranOnACaller = false
+
+    override fun run(inside: Conn.Inside) {
+        ranOnACaller = Thread.currentThread().name != "core-failure-tiers"
+        settled.complete(Unit)
+        if (ranOnACaller) throw planted
+    }
+
+    override fun gone() {
+        settled.complete(Unit)
+    }
+}
+
 private class LateWork : ConnWork() {
     val gone = CompletableFuture<Int>()
 
@@ -299,6 +387,19 @@ private class FlakyIo(
 ) : DatagramBatchIo by real {
     @Volatile
     var plant: Plant = Plant.None
+    private val refusals =
+        java.util.concurrent.atomic
+            .AtomicInteger()
+
+    /** The next [count] sends from a thread other than the loop's are refused as a full socket, taking nothing. */
+    fun refuseCallerSends(count: Int) = refusals.set(count)
+
+    override fun send(batch: SendBatch): SendBatchResult =
+        if (Thread.currentThread().name != "core-failure-tiers" && refusals.getAndDecrement() > 0) {
+            SendBatchResult.Partial(0, UdpError.WouldBlock)
+        } else {
+            real.send(batch)
+        }
 
     override fun receive(into: ReceiveBatch): ReceiveBatchResult =
         when (val now = plant) {
@@ -381,8 +482,16 @@ private class Rig(
                 )
             val clock = LoopClock { System.nanoTime() }
             val parts = OneConnParts()
-            val io = FlakyIo(NioOneByOne(channel, send))
-            val loop = Loop(SelectorWait(channel, clock), clock, io, parts, receive, send)
+            val callerLimits = BatchLimits(maxDatagrams = 16, maxDatagramSize = 1500)
+            val callerSends =
+                FixedPool(2) { i ->
+                    val storage = factory.allocate(callerLimits.maxDatagrams * callerLimits.maxDatagramSize)
+                    CallerSend(i, SendBatch(storage, addressOf(storage), callerLimits, lane = i + 1))
+                }
+            val copies =
+                FixedPool(4) { i -> factory.allocate(1500).let { DatagramSlot(i, it, addressOf(it)) } }
+            val io = FlakyIo(NioOneByOne(channel, listOf(send) + List(2) { callerSends[it].batch }))
+            val loop = Loop(SelectorWait(channel, clock), clock, io, parts, receive, send, CallerLanes.Of(callerSends))
             val scope = CoroutineScope(SupervisorJob())
             val connection =
                 CoreConnection(
@@ -402,14 +511,15 @@ private class Rig(
                         ended.complete(end)
                     }
                 }
-            val conn = Conn(api, handle, path, loop, Entrant.loopTurn(loop = 1, generation = 1), clock, events)
+            val conn =
+                Conn(api, handle, path, loop, Entrant.loopTurn(loop = 1, generation = 1), clock, events, factory, DatagramSlots.Of(copies))
             connection.bind(conn)
             parts.attach(conn)
             startLoop(loop, "core-failure-tiers")
             conn.start()
             connection.established()
             return Rig(connection, conn, loop, io, ended) {
-                conn.release()
+                conn.release(ConnFreed { })
                 api.configFree(config)
                 scope.cancel()
             }

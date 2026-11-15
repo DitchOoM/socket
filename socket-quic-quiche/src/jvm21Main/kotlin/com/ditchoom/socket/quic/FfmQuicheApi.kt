@@ -1012,6 +1012,11 @@ class FfmQuicheApi private constructor(
         return if (nanos < 0) null else nanos.nanoseconds
     }
 
+    override fun connTimeoutNanos(conn: QuicheConn): Long {
+        val nanos = hTimeoutNanos.invokeExact(conn.handle) as Long
+        return if (nanos < 0) NO_TIMEOUT_NANOS else nanos
+    }
+
     override fun connOnTimeout(conn: QuicheConn) {
         hOnTimeout.invokeExact(conn.handle)
     }

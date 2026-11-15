@@ -3,7 +3,10 @@
 package com.ditchoom.socket.quic.core.conn
 
 import androidx.collection.MutableLongSet
+import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.socket.quic.DeadlineNode
+import com.ditchoom.socket.quic.NO_TIMEOUT_NANOS
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicStreamId
 import com.ditchoom.socket.quic.QuicheApi
@@ -13,10 +16,13 @@ import com.ditchoom.socket.quic.QuicheSendInfo
 import com.ditchoom.socket.quic.SendTarget
 import com.ditchoom.socket.quic.StreamRecvResult
 import com.ditchoom.socket.quic.StreamSendResult
+import com.ditchoom.socket.quic.core.edge.addressOf
+import com.ditchoom.socket.quic.core.loop.CallerSend
 import com.ditchoom.socket.quic.core.loop.Collected
 import com.ditchoom.socket.quic.core.loop.Entrant
 import com.ditchoom.socket.quic.core.loop.Entry
 import com.ditchoom.socket.quic.core.loop.InboxItem
+import com.ditchoom.socket.quic.core.loop.LaneSent
 import com.ditchoom.socket.quic.core.loop.Leave
 import com.ditchoom.socket.quic.core.loop.Loop
 import com.ditchoom.socket.quic.core.loop.LoopClock
@@ -25,11 +31,17 @@ import com.ditchoom.socket.quic.core.loop.OwnerWord
 import com.ditchoom.socket.quic.core.loop.Pushed
 import com.ditchoom.socket.quic.core.loop.WorkInbox
 import com.ditchoom.socket.quic.core.loop.WorkLeft
+import com.ditchoom.socket.quic.core.pool.FixedPool
+import com.ditchoom.socket.quic.core.pool.Pooled
+import com.ditchoom.socket.quic.core.pool.Taken
 import com.ditchoom.socket.quic.core.udp.ReceiveBuffer
 import com.ditchoom.socket.quic.core.udp.Room
 import com.ditchoom.socket.quic.core.udp.SendBatch
+import com.ditchoom.socket.quic.reportOnThisThread
 import kotlinx.coroutines.Runnable
 import kotlin.concurrent.atomics.AtomicInt
+import kotlin.concurrent.atomics.AtomicLong
+import kotlin.concurrent.atomics.AtomicReference
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 
 /** The one path a connection has until migration arrives: what quiche is told on receive, and where output goes. */
@@ -70,6 +82,11 @@ internal sealed interface ConnEnd {
 
     /** The loop thread failed; quiche's connection was not closed on the wire. */
     class LoopFailed(
+        val cause: Throwable,
+    ) : ConnEnd
+
+    /** An `Error` was thrown while a caller's thread was inside; quiche's connection was not closed on the wire. */
+    class CallerFailed(
         val cause: Throwable,
     ) : ConnEnd
 }
@@ -117,9 +134,88 @@ private sealed interface LoopHold {
     object In : LoopHold
 }
 
+/** Told once, by the thread that frees the connection, when nothing can reach the memory callers used. */
+internal fun interface ConnFreed {
+    fun freed()
+}
+
+/** Whether the connection's quiche handle has been freed, or is to be freed by whoever is inside last. */
+private sealed interface Release {
+    object Live : Release
+
+    class Requested(
+        val then: ConnFreed,
+    ) : Release
+
+    object Freed : Release
+}
+
+/** What a connection did with the threads and datagrams that reached it. Atomic: any thread counts, tests read. */
+internal class ConnCounts {
+    private val entered = AtomicLong(0L)
+    private val busy = AtomicLong(0L)
+    private val handed = AtomicLong(0L)
+    private val copied = AtomicLong(0L)
+    private val dropped = AtomicLong(0L)
+
+    /** Times a caller entered a free connection and served it on its own thread. */
+    val enteredInPlace: Long get() = entered.load()
+
+    /** Times a caller left work for the thread already inside. */
+    val leftForHolder: Long get() = busy.load()
+
+    /** Times work reached a free connection and the loop was asked to serve it. */
+    val handedToLoop: Long get() = handed.load()
+
+    /** Datagrams that arrived while a caller was inside and were copied into the connection's work. */
+    val datagramsCopied: Long get() = copied.load()
+
+    /** Datagrams that arrived after the connection stopped taking work. */
+    val datagramsDropped: Long get() = dropped.load()
+
+    internal fun enteredInPlace() {
+        entered.fetchAndAdd(1L)
+    }
+
+    internal fun leftForHolder() {
+        busy.fetchAndAdd(1L)
+    }
+
+    internal fun handedToLoop() {
+        handed.fetchAndAdd(1L)
+    }
+
+    internal fun datagramCopied() {
+        copied.fetchAndAdd(1L)
+    }
+
+    internal fun datagramDropped() {
+        dropped.fetchAndAdd(1L)
+    }
+}
+
+/** A receive-sized buffer a datagram is copied into when it arrives while a caller is inside. */
+internal class DatagramSlot(
+    index: Int,
+    val buffer: PlatformBuffer,
+    /** The native address of [buffer]'s first byte. */
+    val address: Long,
+) : Pooled(index)
+
+/** What a connection copies datagrams into when they arrive while a caller is inside: slots, or nothing. */
+internal sealed interface DatagramSlots {
+    object None : DatagramSlots
+
+    class Of(
+        val pool: FixedPool<DatagramSlot>,
+    ) : DatagramSlots
+}
+
 /**
- * One QUIC connection on one loop. The loop enters it when a datagram, a deadline or queued work touches it, serves
- * it, collects its output and leaves it in the same pass. Any other thread hands it work through [submit].
+ * One QUIC connection on one loop. Whoever holds its ownership word is inside it and the only one touching its
+ * quiche handle: the loop, when a datagram, a deadline or queued work touches it, or a caller that is allowed to
+ * enter ([CallerPlace.MayEnter]) and finds it free. Whoever is inside serves it, collects its output and leaves.
+ * Any thread hands it work through [submit].
  */
 internal class Conn(
     private val api: QuicheApi,
@@ -129,6 +225,10 @@ internal class Conn(
     private val loopEntrant: Entrant,
     private val clock: LoopClock,
     private val events: ConnEvents,
+    /** The caller's factory: a datagram that finds no free slot is copied into a buffer from it. */
+    private val factory: BufferFactory,
+    /** Where datagrams that arrive while a caller is inside are copied to. */
+    private val slots: DatagramSlots,
 ) {
     private val owner = OwnerWord()
     private val inbox = WorkInbox<ConnWork>()
@@ -137,9 +237,19 @@ internal class Conn(
     private val onTimer = Runnable { timerFired() }
     private val serve = ServeConn(this)
     private val serveQueued = AtomicInt(IDLE)
+    private val timerWork = TimerWork()
+    private val timerQueued = AtomicInt(IDLE)
+    private val callerEntrant = Entrant.caller(CALLER_TOKEN)
+    private val releasing = AtomicReference<Release>(Release.Live)
+    private val slotWork: Array<SlotRecv> =
+        when (slots) {
+            DatagramSlots.None -> emptyArray()
+            is DatagramSlots.Of -> Array(slots.pool.size) { SlotRecv(slots.pool, slots.pool[it]) }
+        }
     private var hold: LoopHold = LoopHold.Out
     private var timer: TimerState = TimerState.Unarmed
     private val writeWaiters = MutableLongSet()
+    val counts = ConnCounts()
     internal var lifecycle: ConnLifecycle = ConnLifecycle.Handshaking
         private set
 
@@ -188,33 +298,82 @@ internal class Conn(
             length: Int,
         ): Int = api.connApplicationProto(handle, address, length)
 
-        /** A deadline [afterNanos] from now on this connection's loop. */
+        /** A deadline [afterNanos] from now on this connection's loop; the loop wakes for it if it must. */
         fun deadline(
             afterNanos: Long,
             fire: Runnable,
-        ): DeadlineNode = loop.deadlines.arm(clock.nowNanos() + afterNanos, fire)
+        ): DeadlineNode = loop.armDeadline(clock.nowNanos() + afterNanos, fire)
+
+        /** Hands quiche a datagram that is [length] bytes at [address]. */
+        fun receive(
+            address: Long,
+            length: Int,
+        ) {
+            api.connRecv(handle, address, length, path.recvInfo)
+        }
     }
 
     /** Any thread. Puts the connection in the loop's next pass: a new client's first flight goes out there. */
     fun start() = scheduleServe()
 
     /** Any thread. [work] runs inside the connection, on the loop or on whichever thread holds it then. */
-    fun submit(work: ConnWork) {
+    fun submit(work: ConnWork) = submit(work, CallerPlace.HandToLoop)
+
+    /**
+     * Any thread. [work] runs inside the connection: on the thread that holds it, or else, when the connection is
+     * free, on this thread if [place] allows it and on the loop if not.
+     */
+    fun submit(
+        work: ConnWork,
+        place: CallerPlace,
+    ) {
         if (inbox.push(work) === Pushed.Refused) return work.gone()
         when (owner.leaveWork()) {
-            WorkLeft.ForHolder -> Unit
-            WorkLeft.NobodyInside -> scheduleServe()
+            WorkLeft.ForHolder -> counts.leftForHolder()
+            WorkLeft.NobodyInside ->
+                when (place) {
+                    CallerPlace.MayEnter -> enterInPlace()
+                    CallerPlace.HandToLoop -> handToLoop()
+                }
         }
     }
 
-    /** Loop thread: a datagram for this connection. */
+    /**
+     * Loop thread: a datagram for this connection. Inside, quiche reads it from [datagram] now; when a caller is
+     * inside, it is copied into work for that caller to run before it leaves, and never dropped.
+     */
     fun received(
         datagram: ReceiveBuffer,
         length: Int,
     ) {
         when (touch()) {
             LoopHold.In -> contained { if (!isFailed()) api.connRecv(handle, datagram.address, length, path.recvInfo) }
-            LoopHold.Out -> Unit
+            LoopHold.Out -> copyForHolder(datagram, length)
+        }
+    }
+
+    private fun copyForHolder(
+        datagram: ReceiveBuffer,
+        length: Int,
+    ) {
+        val slot =
+            when (slots) {
+                DatagramSlots.None -> Taken.Empty
+                is DatagramSlots.Of -> slots.pool.tryTake()
+            }
+        val work: ConnWork =
+            when (slot) {
+                is DatagramSlot -> slotWork[slot.index].also { it.fill(datagram, length) }
+                else -> FreshRecv(factory.allocate(length)).also { it.fill(datagram, length) }
+            }
+        if (inbox.push(work) === Pushed.Refused) {
+            counts.datagramDropped()
+            return work.gone()
+        }
+        counts.datagramCopied()
+        when (owner.leaveWork()) {
+            WorkLeft.ForHolder -> Unit
+            WorkLeft.NobodyInside -> scheduleServe()
         }
     }
 
@@ -224,22 +383,119 @@ internal class Conn(
      */
     fun collect(out: SendBatch): Collected {
         if (hold === LoopHold.Out) return Collected.Everything
-        val written =
-            try {
-                if (isFailed()) lastOutput(out, NoCause) else serveAndWrite(out)
-            } catch (failure: Exception) {
-                fail(failure)
-                lastOutput(out, Cause(failure))
-            }
-        if (written === Collected.MoreWaiting) return Collected.MoreWaiting
+        if (collectInto(out) === Collected.MoreWaiting) return Collected.MoreWaiting
         return when (owner.tryLeave(loopEntrant)) {
             Leave.Left -> {
                 hold = LoopHold.Out
+                freeWhenNobodyInside()
                 Collected.Everything
             }
             // Work arrived while the loop was inside: collect again in this pass.
             Leave.WorkArrived -> Collected.MoreWaiting
         }
+    }
+
+    /** Inside: serves the connection and writes what quiche has to say into [out]. */
+    private fun collectInto(out: SendBatch): Collected =
+        try {
+            if (isFailed()) lastOutput(out, NoCause) else serveAndWrite(out)
+        } catch (failure: Exception) {
+            fail(failure)
+            lastOutput(out, Cause(failure))
+        }
+
+    /**
+     * A caller, with the connection free, takes a lane and the connection, serves it and sends in place. Without a
+     * lane, or when someone entered first, the work is left for them or for the loop.
+     */
+    private fun enterInPlace() {
+        val lane = loop.takeLane()
+        if (lane !is CallerSend) return handToLoop()
+        when (owner.tryEnter(callerEntrant)) {
+            // Whoever entered after the work was pushed runs it before it leaves.
+            Entry.Busy -> {
+                counts.leftForHolder()
+                loop.returnLane(lane)
+            }
+            Entry.Entered -> {
+                counts.enteredInPlace()
+                serveAsCaller(lane)
+            }
+        }
+    }
+
+    /**
+     * Inside, as a caller: drains work, serves, sends from [first] on this thread and leaves. When the network
+     * is full the lane goes to the loop with the unsent datagrams and the loop serves what is left.
+     */
+    private fun serveAsCaller(first: CallerSend) {
+        var lane: Taken = first
+        try {
+            while (true) {
+                val sink = lane
+                var more = false
+                if (sink is CallerSend) {
+                    val collected = collectInto(sink.batch)
+                    if (sink.batch.pending > 0 && loop.sendInPlace(sink) === LaneSent.Deferred) {
+                        lane = Taken.Empty
+                    } else {
+                        more = collected === Collected.MoreWaiting
+                    }
+                } else {
+                    serveWithoutOutput()
+                }
+                if (more) continue
+                when (owner.tryLeave(callerEntrant)) {
+                    Leave.Left -> break
+                    Leave.WorkArrived -> Unit
+                }
+            }
+        } catch (error: Throwable) {
+            abandon(error)
+        }
+        freeWhenNobodyInside()
+        val last = lane
+        if (last is CallerSend) {
+            // Datagrams a failure left collected are not sent: the connection they belong to has ended.
+            last.batch.took(last.batch.pending)
+            loop.returnLane(last)
+        } else {
+            handToLoop()
+        }
+    }
+
+    /** Inside, with no lane: what is left to send is the loop's. */
+    private fun serveWithoutOutput() {
+        try {
+            if (!isFailed()) {
+                inbox.drain(runWork)
+                serveEvents()
+            }
+        } catch (failure: Exception) {
+            fail(failure)
+        }
+    }
+
+    /** A caller thread threw an `Error` inside: the connection ends with it, the thread leaves, the `Error` is reported. */
+    private fun abandon(error: Throwable) {
+        if (lifecycle !is ConnLifecycle.Closed) {
+            val end = ConnEnd.CallerFailed(error)
+            lifecycle = ConnLifecycle.Closed(end)
+            disarm()
+            inbox.close(ConnWork::gone)
+            try {
+                events.closed(end)
+            } catch (late: Exception) {
+                error.addSuppressed(late)
+            }
+        }
+        while (owner.tryLeave(callerEntrant) === Leave.WorkArrived) inbox.close(ConnWork::gone)
+        reportOnThisThread(error)
+    }
+
+    private fun handToLoop() {
+        counts.handedToLoop()
+        scheduleServe()
     }
 
     private fun serveAndWrite(out: SendBatch): Collected {
@@ -276,7 +532,11 @@ internal class Conn(
 
     private fun isFailed(): Boolean =
         when (val now = lifecycle) {
-            is ConnLifecycle.Closed -> now.end is ConnEnd.Failed
+            is ConnLifecycle.Closed ->
+                when (now.end) {
+                    is ConnEnd.Failed, is ConnEnd.CallerFailed -> true
+                    ConnEnd.TimedOut, is ConnEnd.ByPeer, is ConnEnd.Locally, ConnEnd.Quietly, is ConnEnd.LoopFailed -> false
+                }
             ConnLifecycle.Handshaking, ConnLifecycle.Established -> false
         }
 
@@ -303,25 +563,63 @@ internal class Conn(
         }
     }
 
-    /** Loop thread: the loop failed with [cause]. The connection ends with it. */
+    /**
+     * Loop thread: the loop failed with [cause]. The connection ends with it, inside: on this thread when it is
+     * free or the loop holds it, else on the caller that is inside, which runs the work before it leaves.
+     */
     fun loopFailed(cause: Throwable) {
-        if (lifecycle is ConnLifecycle.Closed) return
-        val end = ConnEnd.LoopFailed(cause)
-        lifecycle = ConnLifecycle.Closed(end)
-        disarm()
-        events.closed(end)
+        val work = LoopFailedWork(cause)
+        if (inbox.push(work) === Pushed.Refused) return
+        when (owner.leaveWork()) {
+            WorkLeft.ForHolder -> if (hold === LoopHold.In) finishAsLoop()
+            WorkLeft.NobodyInside ->
+                when (owner.tryEnter(loopEntrant)) {
+                    Entry.Entered -> {
+                        hold = LoopHold.In
+                        finishAsLoop()
+                    }
+                    Entry.Busy -> Unit
+                }
+        }
+    }
+
+    /** Loop thread, inside, with the loop stopped: runs what is queued and leaves. */
+    private fun finishAsLoop() {
+        do {
+            inbox.drain(runWork)
+        } while (owner.tryLeave(loopEntrant) === Leave.WorkArrived)
+        hold = LoopHold.Out
+        freeWhenNobodyInside()
     }
 
     /**
-     * Loop thread, after the loop has stopped: frees quiche's connection and its path. Work queued until now, and
-     * any submitted later, is told [ConnWork.gone].
+     * Loop thread, after the loop has stopped: frees quiche's connection and its path as soon as nobody is inside
+     * it, then tells [then]. Work queued until then, and any submitted later, is told [ConnWork.gone].
      */
-    fun release() {
-        inbox.close(ConnWork::gone)
-        disarm()
-        api.connFree(handle)
-        api.recvInfoFree(path.recvInfo)
-        api.sendInfoFree(path.sendInfo)
+    fun release(then: ConnFreed) {
+        releasing.store(Release.Requested(then))
+        freeWhenNobodyInside()
+    }
+
+    /**
+     * Whoever leaves the connection calls this: when a release was requested and nobody is inside, the caller
+     * enters for good and frees. The word then stays held, so nothing enters a freed connection.
+     */
+    private fun freeWhenNobodyInside() {
+        val requested = releasing.load()
+        if (requested !is Release.Requested) return
+        when (owner.tryEnter(loopEntrant)) {
+            Entry.Busy -> Unit
+            Entry.Entered -> {
+                releasing.store(Release.Freed)
+                inbox.close(ConnWork::gone)
+                disarm()
+                api.connFree(handle)
+                api.recvInfoFree(path.recvInfo)
+                api.sendInfoFree(path.sendInfo)
+                requested.then.freed()
+            }
+        }
     }
 
     internal fun touchedByLoop() {
@@ -334,8 +632,6 @@ internal class Conn(
         hold =
             when (owner.tryEnter(loopEntrant)) {
                 Entry.Entered -> LoopHold.In
-                // Only the loop enters until callers do (the edge); a datagram that finds a caller inside is then
-                // copied into the connection's work, never dropped.
                 Entry.Busy -> LoopHold.Out
             }
         return hold
@@ -398,19 +694,20 @@ internal class Conn(
     }
 
     /**
-     * A deadline already armed for the same time or earlier is kept: it fires early, quiche ignores timers that
+     * A deadline still armed for the same time or earlier is kept: it fires early, quiche ignores timers that
      * have not expired, and the connection re-arms from quiche's timeout then. Only a timeout that moved earlier
      * arms a new deadline, so a connection under traffic allocates no deadline per pass.
      */
     private fun rearm() {
-        val wait = api.connTimeout(handle) ?: return
-        val due = clock.nowNanos() + wait.inWholeNanoseconds
+        val wait = api.connTimeoutNanos(handle)
+        if (wait == NO_TIMEOUT_NANOS) return
+        val due = clock.nowNanos() + wait
         when (val armed = timer) {
-            is TimerState.Armed -> if (armed.node.dueNanos <= due) return
+            is TimerState.Armed -> if (armed.node.isArmed() && armed.node.dueNanos <= due) return
             TimerState.Unarmed -> Unit
         }
         disarm()
-        timer = TimerState.Armed(loop.deadlines.arm(due, onTimer))
+        timer = TimerState.Armed(loop.armDeadline(due, onTimer))
     }
 
     private fun disarm() {
@@ -421,13 +718,9 @@ internal class Conn(
         timer = TimerState.Unarmed
     }
 
+    /** Loop thread: the connection's deadline fell due. Quiche's timeout runs inside, with the other work. */
     private fun timerFired() {
-        timer = TimerState.Unarmed
-        when (touch()) {
-            LoopHold.In -> contained { if (!isFailed()) api.connOnTimeout(handle) }
-            // Whoever is inside leaves; the loop's next touch rearms from quiche's current timeout.
-            LoopHold.Out -> scheduleServe()
-        }
+        if (timerQueued.compareAndSet(IDLE, QUEUED)) submit(timerWork)
     }
 
     private fun endOf(): ConnEnd {
@@ -436,6 +729,102 @@ internal class Conn(
         api.connLocalError(handle)?.let { return ConnEnd.Locally(it) }
         return ConnEnd.Quietly
     }
+
+    /** Inside: quiche's timeout, and a connection with no deadline of its own armed. */
+    private inner class TimerWork : ConnWork() {
+        override fun run(inside: Inside) {
+            timerQueued.store(IDLE)
+            when (val armed = timer) {
+                is TimerState.Armed -> if (!armed.node.isArmed()) timer = TimerState.Unarmed
+                TimerState.Unarmed -> Unit
+            }
+            if (!isFailed()) api.connOnTimeout(handle)
+        }
+
+        override fun gone() = timerQueued.store(IDLE)
+    }
+
+    /** Inside: a datagram that arrived while a caller was inside, copied into the slot this work is for. */
+    private inner class SlotRecv(
+        private val pool: FixedPool<DatagramSlot>,
+        private val slot: DatagramSlot,
+    ) : ConnWork() {
+        private var length = 0
+
+        fun fill(
+            datagram: ReceiveBuffer,
+            length: Int,
+        ) {
+            this.length = length
+            copyDatagram(datagram, length, slot.buffer)
+        }
+
+        override fun run(inside: Inside) {
+            try {
+                if (!isFailed()) inside.receive(slot.address, length)
+            } finally {
+                pool.give(slot)
+            }
+        }
+
+        override fun gone() = pool.give(slot)
+    }
+
+    /** Inside: a datagram copied into a buffer from the connection's factory, because every slot was in use. */
+    private inner class FreshRecv(
+        private val buffer: PlatformBuffer,
+    ) : ConnWork() {
+        private var length = 0
+
+        fun fill(
+            datagram: ReceiveBuffer,
+            length: Int,
+        ) {
+            this.length = length
+            copyDatagram(datagram, length, buffer)
+        }
+
+        override fun run(inside: Inside) {
+            try {
+                if (!isFailed()) inside.receive(addressOf(buffer), length)
+            } finally {
+                buffer.freeNativeMemory()
+            }
+        }
+
+        override fun gone() = buffer.freeNativeMemory()
+    }
+
+    /** Inside, once: the loop failed, so the connection ends. */
+    private inner class LoopFailedWork(
+        private val cause: Throwable,
+    ) : ConnWork() {
+        override fun run(inside: Inside) {
+            if (lifecycle is ConnLifecycle.Closed) return
+            val end = ConnEnd.LoopFailed(cause)
+            lifecycle = ConnLifecycle.Closed(end)
+            disarm()
+            try {
+                events.closed(end)
+            } catch (late: Exception) {
+                cause.addSuppressed(late)
+            }
+        }
+
+        override fun gone() = Unit
+    }
+}
+
+private fun copyDatagram(
+    datagram: ReceiveBuffer,
+    length: Int,
+    into: PlatformBuffer,
+) {
+    into.setLimit(into.capacity)
+    into.position(0)
+    datagram.buffer.position(0)
+    datagram.buffer.setLimit(length)
+    into.write(datagram.buffer)
 }
 
 private sealed interface TimerState {
@@ -467,3 +856,4 @@ private class Cause(
 private const val FAILED_DETAIL = "processing the connection failed"
 private const val IDLE = 0
 private const val QUEUED = 1
+private const val CALLER_TOKEN = 1L

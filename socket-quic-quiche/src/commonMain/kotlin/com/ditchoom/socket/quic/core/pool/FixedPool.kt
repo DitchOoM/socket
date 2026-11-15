@@ -32,6 +32,9 @@ internal class FixedPool<T : Pooled>(
 
     val size: Int get() = items.size
 
+    /** The item at [index], taken or not: for owners that keep a companion object per item. */
+    operator fun get(index: Int): T = items[index]
+
     fun tryTake(): Taken {
         while (true) {
             val seen = head.load()

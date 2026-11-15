@@ -387,6 +387,12 @@ interface QuicheApi {
      */
     fun connTimeout(conn: QuicheConn): Duration?
 
+    /**
+     * [connTimeout] in nanoseconds, with [NO_TIMEOUT_NANOS] for no timeout: a nullable [Duration] is boxed on every
+     * call that has a timeout, which the core's hot path may not do. Backends override it to read the raw value.
+     */
+    fun connTimeoutNanos(conn: QuicheConn): Long = connTimeout(conn)?.inWholeNanoseconds ?: NO_TIMEOUT_NANOS
+
     fun connOnTimeout(conn: QuicheConn)
 
     /**
@@ -898,6 +904,9 @@ interface QuicheApi {
     fun sockAddrV6Lo(addr: Long): Long
 }
 
+/** What [QuicheApi.connTimeoutNanos] answers when quiche has no timer armed. */
+const val NO_TIMEOUT_NANOS = -1L
+
 /**
  * Slot width for [QuicheApi.connDrainRetiredScids]'s output buffer: one length byte followed by the
  * connection ID's bytes. Declared once here so the four backends and the driver cannot disagree about
@@ -906,4 +915,5 @@ interface QuicheApi {
  * Public for the same reason [QuicheApi] itself is: the FFM backend lives in the `jvm21` compilation,
  * which `internal` does not reach.
  */
+
 const val RETIRED_SCID_SLOT_BYTES = 1 + QUIC_MAX_CONN_ID_LEN

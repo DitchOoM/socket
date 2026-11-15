@@ -132,7 +132,7 @@ class CoreEdgeTests {
                             timeout = 10.seconds,
                             readPolicy = ReadPolicy.Bounded(10.seconds),
                             writePolicy = WritePolicy.Bounded(10.seconds),
-                        )
+                        ).connection
                     try {
                         body(connection)
                     } finally {
