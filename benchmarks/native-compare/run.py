@@ -12,7 +12,7 @@ import argparse, json, os, platform, re, statistics, subprocess, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DIAG = {"dir": "", "runs": 0}  # --diag-dir: where each run's diagnostic lines are kept, one file per run
-DIAG_LINES = ("UDP ", "CONNECTED ", "PROGRESS ", "STUCK", "WORKING ")
+DIAG_LINES = ("UDP ", "RCVBUF ", "CONNECTED ", "PROGRESS ", "STUCK", "WORKING ")
 
 def keep_diagnostics(stack, workload, lines):
     """Writes a run's diagnostic lines (the many-connection workload's UDP/PROGRESS/STUCK/WORKING) to --diag-dir."""
