@@ -22,6 +22,12 @@ internal object IntakeExperiment {
     var readerYield: ReaderYield = ReaderYield.Every(ServerDatagramIntake.DATAGRAMS_PER_READ)
     var capacity: Int = ServerDatagramIntake.HELD_DATAGRAMS
 
+    /** Datagrams the loop may take without waiting before it waits again; 0 is the loop as it was. */
+    var loopTakesPerPass: Int = ServerDatagramIntake.DATAGRAMS_PER_PASS
+
+    /** Bytes of kernel receive buffer the server asks for; 0 leaves the socket as the host made it. */
+    var kernelReceiveBufferBytes: Int = SERVER_KERNEL_RECEIVE_BUFFER_BYTES
+
     val datagramsRead = AtomicLong(0)
     val readerYields = AtomicLong(0)
     val loopWaits = AtomicLong(0)

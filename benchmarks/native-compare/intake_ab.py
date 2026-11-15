@@ -15,6 +15,9 @@ import argparse, json, os, re, statistics, subprocess
 VARIANTS = [  # (name, jar key, JVM properties)
     ("base", "base", []),
     ("rendezvous", "new", ["-Dintake.capacity=0"]),
+    ("loop-takes-only", "new", ["-Dintake.capacity=0", "-Dintake.rcvbuf=0"]),
+    ("buffer-only", "new", ["-Dintake.capacity=0", "-Dintake.looptakes=0"]),
+    ("neither", "new", ["-Dintake.capacity=0", "-Dintake.looptakes=0", "-Dintake.rcvbuf=0"]),
     ("yield-1", "new", ["-Dintake.yield=1"]),
     ("yield-8", "new", ["-Dintake.yield=8"]),
     ("yield-32", "new", ["-Dintake.yield=32"]),

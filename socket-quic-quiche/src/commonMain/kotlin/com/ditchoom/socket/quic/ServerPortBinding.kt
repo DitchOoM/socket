@@ -62,8 +62,8 @@ internal fun ServerChannel.requestReceiveBuffers(binding: QuicPortBinding): List
     when (binding) {
         is QuicPortBinding.Shared -> emptyList()
         is QuicPortBinding.Own ->
-            sockets.map { socket ->
-                when (val grant = socket.requestKernelReceiveBuffer(SERVER_KERNEL_RECEIVE_BUFFER_BYTES)) {
+            (if (IntakeExperiment.kernelReceiveBufferBytes > 0) sockets else emptyList()).map { socket ->
+                when (val grant = socket.requestKernelReceiveBuffer(IntakeExperiment.kernelReceiveBufferBytes)) {
                     is KernelBufferGrant.Granted -> UdpReceiveBuffer.Granted(grant.requestedBytes, grant.usableBytes)
                     is KernelBufferGrant.Capped -> UdpReceiveBuffer.Capped(grant.requestedBytes, grant.usableBytes)
                     is KernelBufferGrant.Unread -> UdpReceiveBuffer.Unread(grant.requestedBytes)

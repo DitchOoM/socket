@@ -305,9 +305,7 @@ internal class SharedQuicheServer(
                 var routedInARow = 0
                 loop@ while (!closed.load()) {
                     val held =
-                        if (routedInARow <
-                            ServerDatagramIntake.DATAGRAMS_PER_PASS
-                        ) {
+                        if (routedInARow < IntakeExperiment.loopTakesPerPass) {
                             intake.poll()
                         } else {
                             ServerDatagramIntake.Held.Nothing
@@ -321,7 +319,7 @@ internal class SharedQuicheServer(
                             ServerDatagramIntake.Held.ReaderEnded -> readerDone
                             ServerDatagramIntake.Held.Nothing -> {
                                 // A full pass: whatever else shares this thread runs before the next.
-                                if (routedInARow >= ServerDatagramIntake.DATAGRAMS_PER_PASS) {
+                                if (routedInARow >= ServerDatagramIntake.DATAGRAMS_PER_PASS && IntakeExperiment.loopTakesPerPass > 0) {
                                     IntakeExperiment.loopYields.fetchAndAdd(1)
                                     yield()
                                 }

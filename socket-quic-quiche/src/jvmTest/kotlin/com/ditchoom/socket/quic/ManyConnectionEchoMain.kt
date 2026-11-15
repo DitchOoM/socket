@@ -41,6 +41,8 @@ fun main(args: Array<String>) {
             }
     }
     System.getProperty("intake.capacity")?.let { IntakeExperiment.capacity = it.toInt() }
+    System.getProperty("intake.looptakes")?.let { IntakeExperiment.loopTakesPerPass = it.toInt() }
+    System.getProperty("intake.rcvbuf")?.let { IntakeExperiment.kernelReceiveBufferBytes = it.toInt() }
     val os = ManagementFactory.getOperatingSystemMXBean() as com.sun.management.OperatingSystemMXBean
     val host =
         object : ManyConnectionHost {
