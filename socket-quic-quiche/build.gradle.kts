@@ -326,6 +326,9 @@ fun downloadQuicheSource(
     // A client's Handshake PTO probe also re-sends its oldest unacknowledged 1-RTT data, which a server
     // that has confirmed can read (RFC 9002 §6.2.4). Idempotent, fails loudly on drift. See the KDoc.
     patchQuicheHandshakeProbeCarriesAppData(sourceDir)
+    // The 1-RTT data a client's Handshake probe re-sends leaves in a datagram of its own, so a confirmed peer
+    // that drops a datagram's undecryptable Handshake packet still reads it. Idempotent, fails loudly on drift.
+    patchQuicheProbeAppDataInItsOwnDatagram(sourceDir)
 
     // Name the patch set this tree now carries. The tree outlives the run (CI caches it with a
     // prefix fallback), so a reader that compiles it outside these tasks checks this stamp rather
@@ -1499,6 +1502,58 @@ fun patchQuicheHandshakeProbeCarriesAppData(sourceDir: File) {
         """.trimMargin() + timeoutAnchor,
     )
     logger.lifecycle("Patched quiche source: a client's Handshake probe carries its unacknowledged 1-RTT data")
+}
+
+/**
+ * Send the 1-RTT data that [patchQuicheHandshakeProbeCarriesAppData] queues on a client's Handshake PTO in a
+ * datagram of its own rather than coalesced behind the Handshake probe.
+ *
+ * **Why.** The probe exists for a server that has confirmed its handshake and discarded its Handshake keys.
+ * That server cannot decrypt the Handshake packet, and RFC 9000 §12.2 lets a receiver drop the rest of a
+ * datagram once one packet in it fails to process: stock quiche logs "dropped invalid packet" and discards the
+ * whole datagram, request included (quic-interop-runner `handshakeloss`, our client against the quiche server,
+ * run 43612995827). [patchQuicheCloseBeforeConfirmationAlsoInOneRtt] sends its 1-RTT CONNECTION_CLOSE copy
+ * alone for the same reason. Reproduced by
+ * `MigrationSimTestSuite.aHandshakeProbeCarriesTheRequestTheConfirmedServerNeverGot`.
+ *
+ * The edit: the coalescing loop of `send_on_path` stops after a Handshake packet while an unconfirmed client
+ * has Application Data frames queued for retransmission, so the next `send` call writes them alone.
+ *
+ * **Idempotent and loud** (the [patchQuicheForCallerClock] discipline).
+ */
+fun patchQuicheProbeAppDataInItsOwnDatagram(sourceDir: File) {
+    val marker = "socket-probe-app-data-own-datagram"
+    val libRs = sourceDir.resolve("quiche/src/lib.rs")
+    if (!libRs.exists()) return
+    val text = libRs.readText()
+    if (text.contains(marker)) return
+    val anchor = "            if self.socket_close_short_due() {\n                break;\n            }\n\n            match ty {\n"
+    if (text.split(anchor).size != 2) {
+        throw GradleException(
+            "$marker: the close-before-confirmation break in send_on_path's coalescing loop was not found exactly " +
+                "once in quiche's lib.rs — a quiche bump or a change to patchQuicheCloseBeforeConfirmationAlsoInOneRtt " +
+                "moved it. Re-fit patchQuicheProbeAppDataInItsOwnDatagram and re-verify with " +
+                "MigrationSimTestSuite.aHandshakeProbeCarriesTheRequestTheConfirmedServerNeverGot.",
+        )
+    }
+    libRs.writeText(
+        text.replace(
+            anchor,
+            "            if self.socket_close_short_due() {\n                break;\n            }\n\n" +
+                "            // $marker: 1-RTT data re-sent on a client's Handshake PTO leaves in a\n" +
+                "            // datagram of its own; a confirmed peer drops the Handshake packet it rides behind.\n" +
+                "            if ty == Type::Handshake &&\n" +
+                "                !self.is_server &&\n" +
+                "                !self.handshake_confirmed &&\n" +
+                "                self.paths\n" +
+                "                    .get(send_pid)?\n" +
+                "                    .recovery\n" +
+                "                    .has_lost_frames(packet::Epoch::Application)\n" +
+                "            {\n                break;\n            }\n\n" +
+                "            match ty {\n",
+        ),
+    )
+    logger.lifecycle("Patched quiche source: 1-RTT data re-sent on a client's Handshake probe leaves in a datagram of its own")
 }
 
 /**

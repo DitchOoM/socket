@@ -1,0 +1,25 @@
+name: "Keep only downloads in the Gradle cache"
+description: >-
+  Run just before ~/.gradle/caches is saved. Keeps what is expensive to fetch (modules-2: dependency
+  downloads; jars-9; the compiled build scripts) and deletes what a job rebuilds cheaply and what made the
+  gradle-linux entry 2.7 GB of the repository's 10 GB cache: the local build cache (task outputs), artifact
+  transforms, and lock and GC files. Prints each directory's size before and after.
+runs:
+  using: "composite"
+  steps:
+    - name: Prune ~/.gradle/caches
+      shell: bash
+      run: |
+        set -euo pipefail
+        caches="$HOME/.gradle/caches"
+        [ -d "$caches" ] || { echo "no $caches"; exit 0; }
+        echo "::group::~/.gradle/caches before pruning"
+        du -sh "$caches"/* 2>/dev/null | sort -h || true
+        du -sh "$caches"
+        echo "::endgroup::"
+        rm -rf "$caches"/build-cache-* "$caches"/transforms-* "$caches"/[0-9]*/transforms
+        find "$caches" \( -name '*.lock' -o -name 'gc.properties' \) -type f -delete
+        echo "::group::~/.gradle/caches after pruning"
+        du -sh "$caches"/* 2>/dev/null | sort -h || true
+        echo "::endgroup::"
+        echo "Gradle cache to save: $(du -sh "$caches" | cut -f1)"

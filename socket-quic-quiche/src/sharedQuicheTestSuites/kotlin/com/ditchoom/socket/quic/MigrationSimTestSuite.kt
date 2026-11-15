@@ -655,7 +655,8 @@ abstract class MigrationSimTestSuite {
 
                     repeat(LOST_FINISHED_PTOS) { pto ->
                         pair.elapse(pair.nextTimer(pair.client)!!)
-                        val probes = pair.sends(pair.client)
+                        // Beside the probes, the request leaves again in a 1-RTT datagram of its own.
+                        val probes = pair.sends(pair.client).filterNot { it.packetTypes == listOf("1-RTT") }
                         assertTrue(
                             probes.isNotEmpty() && probes.all { "Handshake" in it.packetTypes },
                             "PTO ${pto + 1} must probe with the Finished (Handshake packets) while the handshake is " +
@@ -733,7 +734,8 @@ abstract class MigrationSimTestSuite {
 
     /**
      * A client whose Finished reached the server, but whose request and the server's HANDSHAKE_DONE were
-     * lost, sends the request again with its next Handshake probe, which the server can read.
+     * lost, sends the request again with its next Handshake probe, in a datagram of its own, which the
+     * server can read.
      *
      * RFC 9002 §6.2.4: besides the space whose timer expired, a sender SHOULD send ack-eliciting packets
      * in the other spaces with data in flight, coalescing them, "when the client has both Handshake and
@@ -742,7 +744,9 @@ abstract class MigrationSimTestSuite {
      * Handshake probes, and an unconfirmed client arms no Application Data PTO (§6.2.1): quiche re-sent
      * only the Finished until HANDSHAKE_DONE arrived, each probe backed off further. The quic-interop-runner
      * `handshakeloss` against s2n-quic, quinn and rama ended on the client's idle timeout or read deadline
-     * this way.
+     * this way. The copy may not ride behind the Handshake packet: a receiver may drop the rest of a datagram
+     * once one packet in it cannot be decrypted, and a confirmed server cannot decrypt the Handshake probe
+     * (stock quiche does exactly that).
      */
     @Test
     fun aHandshakeProbeCarriesTheRequestTheConfirmedServerNeverGot() =
@@ -764,13 +768,14 @@ abstract class MigrationSimTestSuite {
 
                     pair.elapse(pair.nextTimer(pair.client)!!)
                     val probes = pair.sends(pair.client)
+                    val ownDatagrams = probes.filter { it.packetTypes == listOf("1-RTT") }
                     assertTrue(
-                        probes.any { "Handshake" in it.packetTypes && "1-RTT" in it.packetTypes },
-                        "the Handshake probe must coalesce the unacknowledged request in a 1-RTT packet; it sent " +
-                            "${probes.map { it.packetTypes }}",
+                        probes.any { "Handshake" in it.packetTypes } && ownDatagrams.isNotEmpty(),
+                        "the Handshake probe must be followed by the unacknowledged request in a 1-RTT datagram of " +
+                            "its own; it sent ${probes.map { it.packetTypes }}",
                     )
                     pair.elapse(DEFAULT_PATH_LATENCY)
-                    pair.deliver(probes, pair.server)
+                    pair.deliver(ownDatagrams, pair.server)
                     assertEquals("request" to true, pair.readText(pair.server, QuicStreamId(0)), "the server reads the request")
                 } finally {
                     pair.close()
@@ -791,13 +796,14 @@ abstract class MigrationSimTestSuite {
                 try {
                     pair.handshakeUpToTheClientsFinished()
                     assertEquals(7, pair.streamSend(pair.client, QuicStreamId(0), "request", fin = true))
-                    // The Finished is lost, and so is the one probe of the first PTO.
+                    // The Finished is lost, and so is the one probe of the first PTO. Beside the probes, the request
+                    // leaves again in a 1-RTT datagram of its own; only the probes are counted.
                     assertTrue(pair.sends(pair.client).isNotEmpty())
                     pair.elapse(pair.nextTimer(pair.client)!!)
-                    assertEquals(1, pair.sends(pair.client).size, "the first PTO sends one probe")
+                    assertEquals(1, pair.sends(pair.client).count { "Handshake" in it.packetTypes }, "the first PTO sends one probe")
                     // The second PTO sends two, and only the second arrives.
                     pair.elapse(pair.nextTimer(pair.client)!!)
-                    val probes = pair.sends(pair.client)
+                    val probes = pair.sends(pair.client).filter { "Handshake" in it.packetTypes }
                     assertEquals(2, probes.size, "the second PTO sends two probes")
                     pair.deliver(listOf(probes.last()), pair.server)
 
