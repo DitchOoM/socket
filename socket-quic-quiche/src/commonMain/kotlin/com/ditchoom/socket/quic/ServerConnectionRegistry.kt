@@ -447,34 +447,34 @@ internal class ConnectionPaths<K>(
     // (Kotlin/Native's LinkedHashMap has no accessOrder constructor).
     private val recvInfos = LinkedHashMap<K, CachedRecvInfo>()
 
-    /** The recv_info of the path [key] names, now the most recently used; null when it must be built ([put]). */
-    fun lookup(key: K): CachedRecvInfo? {
-        val cached = recvInfos[key] ?: return null
-        if (recvInfos.size > 1) {
-            recvInfos.remove(key)
-            recvInfos[key] = cached
-        }
+    /**
+     * The recv_info of the path [key] names, now the most recently used. A path this connection has
+     * not been seen on gets the one [build] makes, and an idle entry is evicted once over [MAX_PATHS].
+     * [build] also pins what the platform needs for it (the `from` sockaddr, the [replyAddresses]
+     * entry), released by the [CachedRecvInfo] it returns.
+     */
+    inline fun recvInfoFor(
+        key: K,
+        build: () -> CachedRecvInfo,
+    ): CachedRecvInfo {
+        val held = recvInfos.size
+        val cached = recvInfos.getOrPut(key, build)
+        if (recvInfos.size == held) markUsed(key, cached) else if (recvInfos.size > MAX_PATHS) freeLeastRecentlyUsedIdle()
         return cached
     }
 
-    /**
-     * Hold a freshly built recv_info for [key]. [releaseSource] frees what the platform pinned for it
-     * (the `from` sockaddr, the [replyAddresses] entry). Evicts an idle entry once over [MAX_PATHS].
-     */
-    fun put(
+    private fun markUsed(
         key: K,
-        info: QuicheRecvInfo,
-        releaseSource: () -> Unit,
-    ): CachedRecvInfo {
-        val cached = CachedRecvInfo(info, releaseSource)
+        cached: CachedRecvInfo,
+    ) {
+        if (recvInfos.size == 1) return
+        recvInfos.remove(key)
         recvInfos[key] = cached
-        if (recvInfos.size > MAX_PATHS) freeLeastRecentlyUsedIdle()
-        return cached
     }
 
     /**
      * Frees the least recently used entry no queued packet references. When every entry is referenced
-     * the bound is exceeded until the next [put] rather than a recv_info freed under a driver.
+     * the bound is exceeded until the next new path rather than a recv_info freed under a driver.
      */
     private fun freeLeastRecentlyUsedIdle() {
         val entries = recvInfos.values.iterator()

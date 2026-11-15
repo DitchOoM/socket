@@ -429,7 +429,7 @@ internal class SharedQuicheServer(
                         val recvKey = ServerPathPair(peer = peer, local = localAddr)
                         val paths = registry.pathsOf(existingDriver)
                         val cached =
-                            paths.lookup(recvKey) ?: run {
+                            paths.recvInfoFor(recvKey) {
                                 // A path new to this connection: build a recv_info with from = the datagram's
                                 // source and to = the address it arrived on (encoded once per local address).
                                 val local =
@@ -445,7 +445,7 @@ internal class SharedQuicheServer(
                                 // the recv_info — a local address outlives any one peer's path,
                                 // and re-adding it for every new path would be the only effect.
                                 locals.put(api.decodePathKey(local.address), localAddr)
-                                paths.put(recvKey, info) {
+                                CachedRecvInfo(info) {
                                     from.free()
                                     paths.replyAddresses.remove(fromKey)
                                 }

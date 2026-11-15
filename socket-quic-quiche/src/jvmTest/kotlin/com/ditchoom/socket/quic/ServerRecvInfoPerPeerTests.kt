@@ -21,6 +21,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
@@ -50,7 +51,7 @@ class ServerRecvInfoPerPeerTests {
     }
 
     private fun certPath(name: String): String {
-        val url = this::class.java.classLoader.getResource("certs/$name") ?: error("Test cert not found: certs/$name")
+        val url = assertNotNull(this::class.java.classLoader.getResource("certs/$name"), "test cert certs/$name")
         return File(url.toURI()).absolutePath
     }
 
