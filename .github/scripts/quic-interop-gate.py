@@ -356,9 +356,9 @@ class PeerRequestNeverArrived:
 
 
 class PeerHandshakePacketsNeverArrived:
-    """Our server answered a ClientHello and re-sent its flight until its handshake timeout without one
-    Handshake-space packet from the client arriving, while the simulator corrupted or dropped at least
-    min_lost of the datagrams one client port sent us: every copy of the client's Finished was lost."""
+    """Our endpoint sent its handshake CRYPTO data more than once and reached its handshake timeout without one
+    Handshake-space packet from the peer arriving, while the simulator corrupted or dropped at least min_lost of
+    the datagrams one peer port sent us: every Handshake packet the peer sent was lost."""
 
     kind = "peer-handshake-packets-never-arrived"
 
@@ -369,9 +369,49 @@ class PeerHandshakePacketsNeverArrived:
         lost = [p for p in test_evidence.get("sim_from_peer", []) if p["datagrams"] - p["delivered"] >= self.min_lost]
         for c in test_evidence.get("connections", []):
             unanswered = c["rx_handshake_crypto"] == 0 and c["rx_handshake_acks"] == 0
-            if c.get("close_reason") == NOT_ESTABLISHED and c["rx_initial_crypto"] > 0 and c["tx_crypto"] > 1 and unanswered and lost:
+            if c.get("close_reason") == NOT_ESTABLISHED and c["tx_crypto"] > 1 and unanswered and lost:
                 gone = lost[0]["datagrams"] - lost[0]["delivered"]
                 return Matched(f"{c['qlog']}: no Handshake packet arrived; the simulator lost {gone} of {lost[0]['datagrams']} datagrams from port {lost[0]['port']}")
+        return NotMatched()
+
+
+class PeerGoneWhileWeProbed:
+    """Our endpoint had data in flight and sent at least min_probes packets over at least silence_s seconds after
+    the last packet it received, and none was answered: the peer had already given the connection up."""
+
+    kind = "peer-gone-while-we-probed"
+
+    def __init__(self, fields):
+        if set(fields) != {"min_probes", "silence_s"}:
+            raise ExpectationError(f"{self.kind} takes exactly min_probes and silence_s, got {sorted(fields)}")
+        self.min_probes = positive_int(self.kind, {"min_probes": fields["min_probes"]}, "min_probes")
+        self.silence_ms = positive_int(self.kind, {"silence_s": fields["silence_s"]}, "silence_s") * 1000
+
+    def match(self, test_evidence, peer_role):
+        for c in test_evidence.get("connections", []):
+            if "last_rx_ms" not in c or "end_ms" not in c or c["bytes_in_flight_at_end"] == 0:
+                continue
+            silent = c["end_ms"] - c["last_rx_ms"]
+            if silent >= self.silence_ms and c["tx_after_last_rx"] >= self.min_probes:
+                return Matched(f"{c['qlog']}: {c['tx_after_last_rx']} packets sent over {silent / 1000:.1f} s after the peer's last, none answered")
+        return NotMatched()
+
+
+class PeerClientHelloNeverCompleted:
+    """Our server received part of a ClientHello and never the rest, so it could send no CRYPTO of its own, while
+    the simulator corrupted or dropped at least min_lost of the datagrams one client port sent us."""
+
+    kind = "peer-client-hello-never-completed"
+
+    def __init__(self, fields):
+        self.min_lost = positive_int(self.kind, fields, "min_lost")
+
+    def match(self, test_evidence, peer_role):
+        lost = [p for p in test_evidence.get("sim_from_peer", []) if p["datagrams"] - p["delivered"] >= self.min_lost]
+        for c in test_evidence.get("connections", []):
+            if c["rx_initial_crypto"] > 0 and c["tx_crypto"] == 0 and c["fin_sent_streams"] == 0 and lost:
+                gone = lost[0]["datagrams"] - lost[0]["delivered"]
+                return Matched(f"{c['qlog']}: the ClientHello never completed; the simulator lost {gone} of {lost[0]['datagrams']} datagrams from port {lost[0]['port']}")
         return NotMatched()
 
 
@@ -456,6 +496,8 @@ SIGNATURES = {
         PeerRequestNeverArrived,
         PeerServerDidNotChallengeNewPathFirst,
         PeerHandshakePacketsNeverArrived,
+        PeerGoneWhileWeProbed,
+        PeerClientHelloNeverCompleted,
         AnyOf,
     )
 }

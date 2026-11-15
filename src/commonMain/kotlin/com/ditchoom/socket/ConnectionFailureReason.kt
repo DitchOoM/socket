@@ -101,7 +101,10 @@ sealed interface ConnectionFailureReason {
 enum class NetworkAccess(
     val description: String,
 ) {
-    /** Reaching devices on the local network: Apple's Local Network privacy grant. */
+    /**
+     * Reaching devices on the local network: Apple's Local Network privacy grant, or Android's
+     * `ACCESS_LOCAL_NETWORK` runtime permission (Android 17+, for apps targeting API 37+).
+     */
     LocalNetwork("This app is not allowed to reach the local network"),
 
     /** Cellular data for this app. */

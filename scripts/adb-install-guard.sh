@@ -153,11 +153,17 @@ run_journaled() {
     exec "$REAL_ADB" "$@"
   fi
   start=$(now_ms)
+  # The trap is in place before adb starts: a signal that lands while this shell still forks (the
+  # journal's `date`) would otherwise kill the guard and leave adb running. One that arrives before adb
+  # has a pid is passed on as soon as it has one.
+  child=""
+  early=""
+  trap 'if [ -n "$child" ]; then kill -TERM "$child" 2>/dev/null; else early=TERM; fi' TERM INT HUP
   # `0<&0`: a background command's stdin is /dev/null unless it is redirected explicitly.
   "$REAL_ADB" "$@" 0<&0 2>"$errf" &
   child=$!
+  [ -z "$early" ] || kill -TERM "$child" 2>/dev/null
   journal "start pid=$child caller=$caller($PPID) adb $*"
-  trap 'kill -TERM "$child" 2>/dev/null' TERM INT HUP
   while :; do
     wait "$child"
     rc=$?

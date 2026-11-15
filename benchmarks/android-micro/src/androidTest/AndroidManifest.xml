@@ -2,4 +2,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <!-- The loopback QUIC server and client open UDP sockets. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- From API 37 an app without it never receives a datagram from a local-network peer. -->
+    <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
+    <application android:gwpAsanMode="${gwpAsanMode}">
+        <profileable android:shell="true" />
+    </application>
 </manifest>

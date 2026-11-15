@@ -74,6 +74,8 @@ android {
     defaultConfig {
         minSdk = 24
         testInstrumentationRunner = "androidx.benchmark.junit4.AndroidBenchmarkRunner"
+        // -PbenchGwpAsan=always sets the test app's android:gwpAsanMode, so GWP-ASan watches native allocations on every run.
+        manifestPlaceholders["gwpAsanMode"] = providers.gradleProperty("benchGwpAsan").getOrElse("default")
     }
 
     // Benchmarks run against the release build type, which is the minified one.
@@ -121,9 +123,16 @@ kotlin {
 }
 
 dependencies {
-    androidTestImplementation(project(":socket-quic"))
-    androidTestImplementation(project(":socket-quic-default"))
-    androidTestImplementation(project(":socket-quic-quiche"))
+    // -PbenchLibVersion=<version> builds the same benchmarks against that published release instead of
+    // this checkout, so a release and the working tree can be measured with one harness.
+    val benchLibVersion = providers.gradleProperty("benchLibVersion")
+    listOf("socket-quic", "socket-quic-default", "socket-quic-quiche").forEach { module ->
+        if (benchLibVersion.isPresent) {
+            androidTestImplementation("com.ditchoom:$module:${benchLibVersion.get()}")
+        } else {
+            androidTestImplementation(project(":$module"))
+        }
+    }
     androidTestImplementation(libs.buffer)
     androidTestImplementation(libs.buffer.flow)
     androidTestImplementation(libs.kotlinx.coroutines.core)
