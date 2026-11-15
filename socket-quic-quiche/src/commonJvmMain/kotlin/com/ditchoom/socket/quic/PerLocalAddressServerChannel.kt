@@ -24,6 +24,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ClosedSendChannelException
 import kotlinx.coroutines.launch
 import java.net.InetAddress
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.concurrent.Volatile
 import kotlin.coroutines.CoroutineContext
 
@@ -64,8 +65,8 @@ import kotlin.coroutines.CoroutineContext
  *
  * By quiche's own `send_info.from`, handed down as [DatagramSendOptions.fromLocal], when the server
  * names one; a named address no socket is bound to is refused, typed, never sent from another socket.
- * Otherwise by the peer: the socket its most recent datagram arrived on, remembered in the
- * [replyRoute] map.
+ * Otherwise by the peer: the socket its most recent datagram arrived on, remembered in
+ * [replyRoutes].
  *
  * ## What this narrows
  *
@@ -108,29 +109,11 @@ internal class PerLocalAddressServerChannel private constructor(
             freeUndeliveredDatagram(result)
         }
 
-    /**
-     * peer -> the socket its last datagram arrived on, i.e. the local address it dialled.
-     *
-     * Keyed by the numeric host and port because [SocketAddress] is an interface with no equality
-     * contract, so it cannot be a map key.
-     *
-     * **Bounded, least-recently-seen first.** The key is whatever source a datagram *claims*, and UDP
-     * lets a peer claim anything: left unbounded, a spray of spoofed sources would grow this without
-     * limit — the same attack [ServerConnectionRegistry] bounds its recv_info cache against. Evicting
-     * a live peer costs at most one reply routed by the fallback, because its next datagram puts it
-     * back; so the bound is sized well past any plausible concurrent-peer count rather than to the
-     * recv_info cache's, whose entries are native allocations and far dearer than a short string.
-     *
-     * Guarded by its own monitor: the receive loop writes, every connection's driver reads.
-     */
-    private val replyRoute =
-        object : LinkedHashMap<String, AddressedDatagramChannel>(16, 0.75f, true) {
-            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, AddressedDatagramChannel>): Boolean =
-                size > MAX_REPLY_ROUTES
-        }
+    /** peer -> the socket its last datagram arrived on, i.e. the local address it dialled. */
+    private val replyRoutes = ReplyRoutes(MAX_REPLY_ROUTES)
 
-    /** How many peers currently hold a route. Exists so the bound on [replyRoute] can be tested. */
-    internal val routeCount: Int get() = synchronized(replyRoute) { replyRoute.size }
+    /** How many peers currently hold a route. Exists so the bound on [replyRoutes] can be tested. */
+    internal val routeCount: Int get() = replyRoutes.size
 
     @Volatile
     private var closed = false
@@ -201,8 +184,7 @@ internal class PerLocalAddressServerChannel private constructor(
         val (member, result) = inbound.receiveCatching().getOrNull() ?: return DatagramReadResult.Closed()
         if (result !is DatagramReadResult.Received) return result
         val datagram = result.datagram
-        val key = datagram.peer.routeKey()
-        synchronized(replyRoute) { replyRoute[key] = member }
+        replyRoutes.arrived(datagram.peer, member)
         // Stamp the destination the client actually dialled. The wildcard socket could not know it;
         // this composite does, because the socket it arrived on is bound to exactly that address.
         return DatagramReadResult.Received(
@@ -234,19 +216,39 @@ internal class PerLocalAddressServerChannel private constructor(
         options: DatagramSendOptions,
     ) {
         val member =
-            when (val source = sourceOf(options.fromLocal)) {
-                Source.Unnamed -> synchronized(replyRoute) { replyRoute[to.routeKey()] } ?: members.first()
-                is Source.Named ->
-                    members.getOrElse(memberAddresses.indexOf(source.address)) {
-                        throw DatagramSendException(
-                            DatagramSendError.SourceAddressUnavailable(source.host, SourceAddressRejection.NotBound),
-                        )
-                    }
+            when (val named = options.fromLocal) {
+                null -> replyRoutes.routeTo(to, otherwise = members.first())
+                else -> namedMembers[named] ?: memberNamed(named, to)
             }
         // fromLocal is consumed here, by choosing the socket; passing it down to a member that
         // reports sourceAddressSelect=false would be asking for something it silently ignores.
         member.send(payload, to, if (options.fromLocal == null) options else options.withoutFromLocal())
     }
+
+    /**
+     * The member each source a send has named is bound to, so a source is read and matched once and
+     * found by itself after that. Only sources that matched a member are kept, and no more than
+     * [MAX_NAMED_SOURCES] of them: the addresses quiche names are this host's own, a handful.
+     */
+    private val namedMembers = ConcurrentHashMap<SocketAddress, AddressedDatagramChannel>()
+
+    private fun memberNamed(
+        fromLocal: SocketAddress,
+        to: SocketAddress,
+    ): AddressedDatagramChannel =
+        when (val source = sourceOf(fromLocal)) {
+            Source.Unnamed -> replyRoutes.routeTo(to, otherwise = members.first())
+            is Source.Named -> {
+                val member =
+                    members.getOrElse(memberAddresses.indexOf(source.address)) {
+                        throw DatagramSendException(
+                            DatagramSendError.SourceAddressUnavailable(source.host, SourceAddressRejection.NotBound),
+                        )
+                    }
+                if (namedMembers.size < MAX_NAMED_SOURCES) namedMembers[fromLocal] = member
+                member
+            }
+        }
 
     /** Each member's bound address, in [members] order, as the JDK compares addresses. */
     private val memberAddresses: List<InetAddress> = members.map { it.localAddress.inetAddress() }
@@ -263,8 +265,7 @@ internal class PerLocalAddressServerChannel private constructor(
         ) : Source
     }
 
-    private fun sourceOf(fromLocal: SocketAddress?): Source {
-        if (fromLocal == null) return Source.Unnamed
+    private fun sourceOf(fromLocal: SocketAddress): Source {
         val address = fromLocal.inetAddress()
         return if (address.isAnyLocalAddress) Source.Unnamed else Source.Named(address, fromLocal.host)
     }
@@ -285,14 +286,14 @@ internal class PerLocalAddressServerChannel private constructor(
 
     internal companion object {
         /**
-         * Upper bound on [replyRoute]. An entry is a short string and a reference, so this caps a
-         * spoofed-source spray at well under a megabyte while covering far more concurrent peers than
-         * any one server socket plausibly serves. See the field's doc for what eviction costs.
+         * Upper bound on [replyRoutes]. An entry is two references, so this caps a spoofed-source spray
+         * at well under a megabyte while covering far more concurrent peers than any one server socket
+         * plausibly serves. See [ReplyRoutes] for what eviction costs.
          */
         internal const val MAX_REPLY_ROUTES = 4096
 
-        /** Stable identity for a [SocketAddress], which is an interface with no equality contract. */
-        internal fun SocketAddress.routeKey(): String = "$host/$port"
+        /** Upper bound on the named sources remembered with their member; past it a source is matched per send. */
+        internal const val MAX_NAMED_SOURCES = 256
 
         /** The address a numeric [SocketAddress] names; a literal, so no lookup. Any zone suffix is dropped. */
         private fun SocketAddress.inetAddress(): InetAddress = InetAddress.getByName(host.substringBefore('%'))

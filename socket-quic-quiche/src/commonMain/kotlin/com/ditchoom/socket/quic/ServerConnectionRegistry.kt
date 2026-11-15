@@ -16,7 +16,8 @@ import kotlin.time.TimeMark
  *
  *  - the [connectionsByDcid] *routing* table (DCID/SCID → driver),
  *  - the authoritative [liveDrivers] lifecycle ledger,
- *  - the per-source `recv_info` cache (passive-migration support) with its reference-counted eviction,
+ *  - each connection's [ConnectionPaths]: its per-path `recv_info`s (passive-migration support) and
+ *    their reference-counted release,
  *  - the driver-cleanup and source-CID projection queues, and
  *  - the load-bearing [reapAllDriversAndFreeRecvInfoCache] close sweep.
  *
@@ -25,10 +26,10 @@ import kotlin.time.TimeMark
  * `kotlin.concurrent` atomics on Kotlin/Native) sit behind the [LiveDriverLedger] /
  * [RecvInfoRefCount] `expect`/`actual` seam.
  *
- * @param K the platform's recv_info cache source key — `java.net.InetSocketAddress` on the JVM, an
- *   allocation-free [PathKey] on Kotlin/Native. The registry never inspects it beyond map identity.
+ * @param K what identifies one path of a connection to the server (see [ServerPathPair]). The registry
+ *   never inspects it beyond map identity.
  *
- * Threading: [connectionsByDcid] and the recv_info cache are single-writer — mutated only on the
+ * Threading: [connectionsByDcid] and every [ConnectionPaths] are single-writer — mutated only on the
  * platform's receive-loop coroutine (route/lookup/drain), plus the one-shot [reapAllDriversAndFreeRecvInfoCache]
  * after that loop has been joined. [liveDrivers] and each [CachedRecvInfo.inFlight] are the only
  * cross-thread state (driver-cleanup coroutines / driver command execution) and use the seam atomics.
@@ -37,14 +38,21 @@ internal class ServerConnectionRegistry<K>(
     private val api: QuicheApi,
     /** The clock a closed connection's draining period is measured on — the drivers' own. */
     private val clock: DriverClock = RealDriverClock,
-) {
     /**
      * Routing table: every DCID and server-issued SCID currently mapping to a live driver. NOT a
      * lifecycle set — an entry is dropped the instant a driver stops routing new packets (see
      * [drainRoutingQueues] and the trySend-failure path via [deRouteDriver]) even though that
      * driver's run loop may still be draining buffered packets. Single-writer (receive loop).
+     *
+     * Each value is its connection's one [DcidRoute.Live], so answering a datagram's route is a lookup
+     * and nothing else.
      */
-    private val connectionsByDcid = mutableMapOf<ConnectionIdKey, QuicheDriver>()
+    private val connectionsByDcid: MutableMap<ConnectionIdKey, DcidRoute.Live> = mutableMapOf(),
+) {
+    /** The [DcidRoute.Live] every id of a driver routes to, from its first route to its retirement. Receive-loop only. */
+    private val liveRoutes = mutableMapOf<QuicheDriver, DcidRoute.Live>()
+
+    private fun liveRouteOf(driver: QuicheDriver): DcidRoute.Live = liveRoutes.getOrPut(driver) { DcidRoute.Live(driver) }
 
     /**
      * Hand-off of newly accepted connections from the receive loop to `connections()`'s consumer loop.
@@ -62,10 +70,10 @@ internal class ServerConnectionRegistry<K>(
      *
      * [connectionsByDcid] is a *routing* table, NOT a lifecycle set: a driver is dropped from it the
      * moment it stops routing new packets — while its run loop can still be draining already-buffered
-     * `RecvPacket`s, each of which `connRecv`s a shared [peerRecvInfos] entry via
-     * `QuicheCmd.RecvPacket.recvInfoOverride`. [reapAllDriversAndFreeRecvInfoCache] must therefore
+     * `RecvPacket`s, each of which `connRecv`s one of its [ConnectionPaths]' recv_infos
+     * ([PacketSource.FromServerSocket]). [reapAllDriversAndFreeRecvInfoCache] must therefore
      * destroy+join every driver in *this* set (a superset of the routing map), not just those still
-     * routing, before it frees the recv_info cache — otherwise a lagging run loop `connRecv`s a
+     * routing, before it frees the recv_infos — otherwise a lagging run loop `connRecv`s a
      * recv_info the sweep already freed: an intermittent native use-after-free.
      */
     private val liveDrivers = LiveDriverLedger()
@@ -105,28 +113,34 @@ internal class ServerConnectionRegistry<K>(
     private val projectedRoutes = mutableMapOf<QuicheDriver, Set<ConnectionIdKey>>()
 
     /**
-     * Passive-migration support: one server socket sees a client's source address change after the
-     * client migrates (RFC 9000 §9). quiche needs the *actual* per-datagram source as `recv_info.from`
-     * to recognise the new path, so the platform caches one recv_info per distinct source (its `to` is
-     * the server's fixed local addr, owned platform-side).
-     *
-     * Bounded ([maxPeerRecvInfos]) so a peer spraying spoofed source addresses can't grow native memory
-     * without bound. Access order is maintained manually (remove+reinsert on hit in [lookupRecvInfo])
-     * because Kotlin/Native's `LinkedHashMap` has no `accessOrder` constructor. A cached recv_info
-     * pointer is handed to a driver over an UNLIMITED command channel, so a lagging driver may still
-     * hold it after the source goes idle; [CachedRecvInfo.inFlight] tracks outstanding references so
-     * [evictIdlePeerRecvInfo] never frees one still in use. Single-writer (receive loop); [inFlight] is
-     * the only field a driver coroutine mutates.
+     * The ids [routeDriver] registered for each driver outside any projection. With [projectedRoutes]
+     * it names every id a driver can hold a route for, so retiring one visits its own ids and not the
+     * table. Receive-loop only.
      */
-    private val maxPeerRecvInfos = 256
-    private val peerRecvInfos = LinkedHashMap<K, CachedRecvInfo>()
+    private val registeredRoutes = mutableMapOf<QuicheDriver, MutableList<ConnectionIdKey>>()
+
+    /**
+     * The [ConnectionPaths] of every connection that is still routed or was tracked and not yet
+     * retired. Keyed by connection, so the paths one peer is seen on are bounded for that peer alone:
+     * no number of other connections, and no spray of source addresses at one of them, costs a
+     * different connection its own. Receive-loop only.
+     */
+    private val pathsByDriver = mutableMapOf<QuicheDriver, ConnectionPaths<K>>()
+
+    /**
+     * The paths of retired connections that a queued packet still referenced when their connection
+     * was retired; each is freed by a later [drainRoutingQueues] once its driver has let go.
+     * Receive-loop only.
+     */
+    private val retiredPaths = mutableListOf<ConnectionPaths<K>>()
 
     /**
      * The ids of connections closed within their draining period (RFC 9000 §10.2), each with the moment
      * it ends. A closing or draining endpoint keeps enough state to recognise packets for a connection it
      * has just closed, and on every close some arrive: the peer's packets already in flight, its own
      * CONNECTION_CLOSE crossing ours. Recognised, they are an expected drop rather than an unknown id.
-     * Receive-loop only; expired entries are pruned on every [drainRoutingQueues].
+     * Receive-loop only; an entry is dropped when its [Retirement] expires, or by the first lookup after
+     * its own period ends.
      */
     private val closedConnections = mutableMapOf<ConnectionIdKey, TimeMark>()
 
@@ -135,19 +149,28 @@ internal class ServerConnectionRegistry<K>(
      * fact, so it is recorded as one rather than left to the order the queues happen to drain in: a
      * driver's last turn can enqueue a projection *after* the receive loop has applied its cleanup, and
      * a projection applied on its own finds no baseline and would route the dead driver again and erase
-     * its [closedConnections] entries. A projection for a retired driver is dropped. Entries live as
-     * long as the ids they retired (the pruning in [drainRoutingQueues]): the driver's loop ends within
-     * a turn of its cleanup, far inside one draining period. Receive-loop only.
+     * its [closedConnections] entries. A projection for a retired driver is dropped. Entries live at
+     * least as long as the ids they retired: the driver's loop ends within a turn of its cleanup, far
+     * inside one draining period. Receive-loop only.
      */
     private val retiredDrivers = mutableMapOf<QuicheDriver, TimeMark>()
 
+    /**
+     * Every retirement whose [closedConnections] and [retiredDrivers] entries are still held, oldest
+     * first. [drainRoutingQueues] forgets from the front while the front has expired, so a drain reads
+     * the clock once however many connections closed recently. Draining periods differ per connection,
+     * so an entry can wait behind an older, longer one; it is forgotten late, never early, and
+     * [routeFor] judges each id by its own period. Receive-loop only.
+     */
+    private val retirements = ArrayDeque<Retirement>()
+
     // --- Routing table (receive-loop coroutine only) ---
 
-    fun driverForDcid(key: ConnectionIdKey): QuicheDriver? = connectionsByDcid[key]
+    fun driverForDcid(key: ConnectionIdKey): QuicheDriver? = connectionsByDcid[key]?.driver
 
     /** Where a datagram addressed to [key] belongs. See [DcidRoute]. */
     fun routeFor(key: ConnectionIdKey): DcidRoute {
-        connectionsByDcid[key]?.let { return DcidRoute.Live(it) }
+        connectionsByDcid[key]?.let { return it }
         val until = closedConnections[key] ?: return DcidRoute.Unknown
         if (until.hasPassedNow()) {
             closedConnections.remove(key)
@@ -159,21 +182,26 @@ internal class ServerConnectionRegistry<K>(
     /** Move every id routed to [driver] into [closedConnections] for the driver's draining period. */
     private fun retire(driver: QuicheDriver) {
         val until = clock.markNow() + driver.drainingPeriod
-        val keys = connectionsByDcid.keys.filter { connectionsByDcid[it] === driver }
-        for (key in keys) {
+        val held = registeredRoutes.remove(driver).orEmpty() + projectedRoutes.remove(driver).orEmpty()
+        // Identity-checked: an id this driver once held may route another connection by now.
+        val closed = held.filter { connectionsByDcid[it]?.driver === driver }
+        for (key in closed) {
             connectionsByDcid.remove(key)
             closedConnections[key] = until
         }
-        projectedRoutes.remove(driver)
+        liveRoutes.remove(driver)
         retiredDrivers[driver] = until
+        retirements.addLast(Retirement(driver, closed, until))
+        pathsByDriver.remove(driver)?.let { if (!it.freeIdle()) retiredPaths += it }
     }
 
     fun routeDriver(
         key: ConnectionIdKey,
         driver: QuicheDriver,
     ) {
-        connectionsByDcid[key] = driver
+        connectionsByDcid[key] = liveRouteOf(driver)
         closedConnections.remove(key)
+        registeredRoutes.getOrPut(driver) { mutableListOf() } += key
     }
 
     /**
@@ -214,8 +242,25 @@ internal class ServerConnectionRegistry<K>(
      * any order leaves the map at the newest one per driver.)
      */
     fun drainRoutingQueues(): List<ConnectionIdKey> {
+        val contested =
+            when (val first = routeProjectionQueue.tryReceive().getOrNull()) {
+                null -> emptyList()
+                else -> applyProjections(first)
+            }
+        while (true) {
+            val driver = driverCleanupQueue.tryReceive().getOrNull() ?: break
+            retire(driver)
+        }
+        forgetExpiredRetirements()
+        if (retiredPaths.isNotEmpty()) retiredPaths.removeAll { it.freeIdle() }
+        return contested
+    }
+
+    /** Apply [first] and every projection queued behind it; the ids a second driver could not have. */
+    private fun applyProjections(first: RouteProjection): List<ConnectionIdKey> {
         // Each projection is a whole set, so only a driver's newest matters.
         val newest = LinkedHashMap<QuicheDriver, RouteProjection>()
+        newest[first.driver] = first
         while (true) {
             val projection = routeProjectionQueue.tryReceive().getOrNull() ?: break
             newest[projection.driver] = projection
@@ -224,17 +269,21 @@ internal class ServerConnectionRegistry<K>(
         // Every release before any claim: the same bytes re-issued by a later connection are claimed
         // in the same drain that releases them, in whichever order the queue holds the two projections.
         for (projection in projections) releaseDroppedIds(projection)
-        var contested: MutableList<ConnectionIdKey>? = null
-        for (projection in projections) {
-            claimIds(projection) { key -> (contested ?: mutableListOf<ConnectionIdKey>().also { contested = it }).add(key) }
-        }
+        val contested = mutableListOf<ConnectionIdKey>()
+        for (projection in projections) claimIds(projection) { key -> contested += key }
+        return contested
+    }
+
+    private fun forgetExpiredRetirements() {
         while (true) {
-            val driver = driverCleanupQueue.tryReceive().getOrNull() ?: break
-            retire(driver)
+            val oldest = retirements.firstOrNull() ?: return
+            if (!oldest.until.hasPassedNow()) return
+            retirements.removeFirst()
+            // Only what this retirement recorded: the id may have been closed again since, by a later
+            // connection, and the driver retired again by its cleanup.
+            for (key in oldest.closed) if (closedConnections[key] == oldest.until) closedConnections.remove(key)
+            if (retiredDrivers[oldest.driver] == oldest.until) retiredDrivers.remove(oldest.driver)
         }
-        closedConnections.values.removeAll { it.hasPassedNow() }
-        retiredDrivers.values.removeAll { it.hasPassedNow() }
-        return contested.orEmpty()
     }
 
     /**
@@ -246,7 +295,7 @@ internal class ServerConnectionRegistry<K>(
         val driver = projection.driver
         val previous = projectedRoutes[driver] ?: return
         for (key in previous) {
-            if (key !in projection.sourceIds && connectionsByDcid[key] === driver) connectionsByDcid.remove(key)
+            if (key !in projection.sourceIds && connectionsByDcid[key]?.driver === driver) connectionsByDcid.remove(key)
         }
     }
 
@@ -274,11 +323,11 @@ internal class ServerConnectionRegistry<K>(
         val claimed = HashSet<ConnectionIdKey>(projection.sourceIds.size)
         for (key in projection.sourceIds) {
             val holder = connectionsByDcid[key]
-            if (holder != null && holder !== driver) {
+            if (holder != null && holder.driver !== driver) {
                 contested(key)
                 continue
             }
-            connectionsByDcid[key] = driver
+            connectionsByDcid[key] = liveRouteOf(driver)
             closedConnections.remove(key)
             claimed += key
         }
@@ -292,59 +341,22 @@ internal class ServerConnectionRegistry<K>(
      * untracked driver. Additions happen only on the receive-loop coroutine, so they cease once close()
      * has joined the receive loop — the set is then stable for [reapAllDriversAndFreeRecvInfoCache].
      */
-    fun trackLiveDriver(driver: QuicheDriver) = liveDrivers.add(driver)
+    fun trackLiveDriver(
+        driver: QuicheDriver,
+        replyAddresses: PathAddressTable,
+    ) {
+        liveDrivers.add(driver)
+        pathsByDriver[driver] = ConnectionPaths(api, replyAddresses)
+    }
 
     /** Called from a driver's `onCleanup` (after `run()` fully returns, so it can no longer connRecv). */
     fun untrackLiveDriver(driver: QuicheDriver) = liveDrivers.remove(driver)
 
-    // --- recv_info cache (receive-loop coroutine only, except CachedRecvInfo.inFlight) ---
-
-    /** Cache hit → promote to most-recently-used and return; miss → null (caller builds via [putRecvInfo]). */
-    fun lookupRecvInfo(key: K): CachedRecvInfo? {
-        peerRecvInfos.remove(key)?.let {
-            peerRecvInfos[key] = it // bump to most-recently-used
-            return it
-        }
-        return null
-    }
-
     /**
-     * Insert a freshly-built recv_info for [key]. [info] is the native recv_info handle; [releaseSource]
-     * frees the pinned per-source `from` sockaddr the platform allocated for it (a `NativeSockAddr` on
-     * the JVM, a `PlatformBuffer` on Kotlin/Native). Evicts an idle over-cap entry afterwards.
+     * The paths [driver]'s connection has been seen on. A driver routed without having been tracked
+     * has paths whose reply addresses nothing reads. Receive-loop only.
      */
-    fun putRecvInfo(
-        key: K,
-        info: QuicheRecvInfo,
-        releaseSource: () -> Unit,
-    ): CachedRecvInfo {
-        val cached = CachedRecvInfo(info, releaseSource)
-        peerRecvInfos[key] = cached
-        evictIdlePeerRecvInfo()
-        return cached
-    }
-
-    /**
-     * Free the least-recently-used cached recv_info whose [CachedRecvInfo.inFlight] is zero once over
-     * [maxPeerRecvInfos]. If every over-cap entry is still in flight (pathological), skip rather than
-     * risk a use-after-free — we briefly exceed the cap and the next miss retries.
-     */
-    private fun evictIdlePeerRecvInfo() {
-        if (peerRecvInfos.size <= maxPeerRecvInfos) return
-        val iterator = peerRecvInfos.entries.iterator() // insertion order == access order (maintained above)
-        while (iterator.hasNext()) {
-            val cached = iterator.next().value
-            if (cached.inFlight.get() == 0) {
-                // Unpublish BEFORE freeing, so that no throw between the two steps can leave a freed
-                // handle reachable from the cache for the next lookupRecvInfo to hand out. Every
-                // backend's recvInfoFree really releases the memory, so a stale entry would dangle.
-                iterator.remove()
-                api.recvInfoFree(cached.info)
-                cached.releaseSource()
-                return
-            }
-        }
-    }
+    fun pathsOf(driver: QuicheDriver): ConnectionPaths<K> = pathsByDriver.getOrPut(driver) { ConnectionPaths(api, PathAddressTable()) }
 
     // --- Teardown ---
 
@@ -354,11 +366,11 @@ internal class ServerConnectionRegistry<K>(
      * platform frees the shared `to` sockaddr or the native config.
      *
      * Destroys+joins EVERY driver in [liveDrivers] — a superset of [connectionsByDcid] — before freeing
-     * the recv_info cache, so a driver dropped from the routing map but still draining buffered packets
+     * any recv_info, so a driver dropped from the routing map but still draining buffered packets
      * can't `connRecv` a recv_info this sweep already freed. The [LiveDriverLedger.snapshot]
      * is race-safe against a driver concurrently removing itself via `onCleanup`. `destroy()` is
-     * idempotent, so a driver that already finished is harmless here. The `check(inFlight == 0)` tripwire
-     * is unreachable given the join — asserted so any future regression trips deterministically instead
+     * idempotent, so a driver that already finished is harmless here. [RecvInfoInFlightAtClose] is
+     * unreachable given the join — thrown so any future regression trips deterministically instead
      * of as an opaque native connRecv SIGSEGV.
      */
     suspend fun reapAllDriversAndFreeRecvInfoCache() {
@@ -367,16 +379,16 @@ internal class ServerConnectionRegistry<K>(
         }
         liveDrivers.clear()
         connectionsByDcid.clear()
+        liveRoutes.clear()
         projectedRoutes.clear()
+        registeredRoutes.clear()
         closedConnections.clear()
-        for (cached in peerRecvInfos.values) {
-            check(cached.inFlight.get() == 0) {
-                "recv_info still in-flight at server close (inFlight=${cached.inFlight.get()})"
-            }
-            api.recvInfoFree(cached.info)
-            cached.releaseSource()
-        }
-        peerRecvInfos.clear()
+        retiredDrivers.clear()
+        retirements.clear()
+        for (paths in pathsByDriver.values) paths.freeAll()
+        pathsByDriver.clear()
+        for (paths in retiredPaths) paths.freeAll()
+        retiredPaths.clear()
     }
 
     /** Close the hand-off + routing channels. Call after [reapAllDriversAndFreeRecvInfoCache]. */
@@ -407,6 +419,7 @@ internal class ServerConnectionRegistry<K>(
     internal fun deRouteAllDriversForTest() {
         connectionsByDcid.clear()
         projectedRoutes.clear()
+        registeredRoutes.clear()
     }
 }
 
@@ -438,6 +451,13 @@ internal fun decodeConnectionIdSlots(
     return ids
 }
 
+/** One driver's retirement: the ids it [closed], recognised as recently closed [until] its draining period ends. */
+internal class Retirement(
+    val driver: QuicheDriver,
+    val closed: List<ConnectionIdKey>,
+    val until: TimeMark,
+)
+
 /** Where a datagram belongs, by its destination connection id. */
 internal sealed interface DcidRoute {
     /** A connection that is open: hand the datagram to its [driver]. */
@@ -462,9 +482,129 @@ internal class RouteProjection(
 )
 
 /**
- * A cached per-source `recv_info` (passive-migration path). [info] is the native handle; [releaseSource]
- * frees the platform-pinned `from` sockaddr it points at. [inFlight] counts references handed to drivers
- * but not yet consumed, guarding [ServerConnectionRegistry] eviction/teardown against a use-after-free.
+ * The paths one accepted connection's datagrams have arrived on, each with the `recv_info` that tells
+ * quiche the truth about it: a client's source address changes when it migrates (RFC 9000 §9), and
+ * quiche needs the actual per-datagram source as `recv_info.from` to recognise the new path.
+ *
+ * Bounded at [MAX_PATHS] per connection, least recently used first, so the addresses a connection can
+ * make the server remember do not grow with the datagrams sent at it — whoever sends them — and one
+ * connection's paths are never evicted on another's account. A path evicted while quiche still uses
+ * it is rebuilt by that path's next datagram.
+ *
+ * A recv_info is handed to the driver over an UNLIMITED command channel, so a lagging driver may
+ * still hold one after its path went quiet; [CachedRecvInfo.inFlight] counts those references and
+ * nothing here frees an entry that has any. Single-writer (receive loop); [CachedRecvInfo.inFlight]
+ * and [replyAddresses] are what a driver coroutine touches.
+ *
+ * @param replyAddresses `sendInfo.to` → the address to send to, for this connection's egress channel:
+ *   the peer half of every path held here, entered when the path is and removed with it.
+ */
+internal class ConnectionPaths<K>(
+    private val api: QuicheApi,
+    val replyAddresses: PathAddressTable,
+) {
+    // Insertion order is access order: a hit on any but the only entry is removed and re-inserted
+    // (Kotlin/Native's LinkedHashMap has no accessOrder constructor).
+    private val recvInfos = LinkedHashMap<K, CachedRecvInfo>()
+
+    /**
+     * The recv_info of the path [key] names, now the most recently used. A path this connection has
+     * not been seen on gets the one [build] makes, and an idle entry is evicted once over [MAX_PATHS].
+     * [build] also pins what the platform needs for it (the `from` sockaddr, the [replyAddresses]
+     * entry), released by the [CachedRecvInfo] it returns.
+     */
+    inline fun recvInfoFor(
+        key: K,
+        build: () -> CachedRecvInfo,
+    ): CachedRecvInfo {
+        val held = recvInfos.size
+        val cached = recvInfos.getOrPut(key, build)
+        if (recvInfos.size == held) {
+            markUsed(key, cached)
+        } else if (recvInfos.size > MAX_PATHS) {
+            freeLeastRecentlyUsedIdle()
+        }
+        return cached
+    }
+
+    private fun markUsed(
+        key: K,
+        cached: CachedRecvInfo,
+    ) {
+        if (recvInfos.size == 1) return
+        recvInfos.remove(key)
+        recvInfos[key] = cached
+    }
+
+    /**
+     * Frees the least recently used entry no queued packet references. When every entry is referenced
+     * the bound is exceeded until the next new path rather than a recv_info freed under a driver.
+     */
+    private fun freeLeastRecentlyUsedIdle() {
+        val entries = recvInfos.values.iterator()
+        while (entries.hasNext()) {
+            val cached = entries.next()
+            if (cached.inFlight.get() == 0) {
+                // Unpublished before it is freed: a throw between the two must not leave a freed
+                // handle where the next lookup hands it out.
+                entries.remove()
+                free(cached)
+                return
+            }
+        }
+    }
+
+    /** Frees every entry no queued packet references; whether none are left. */
+    fun freeIdle(): Boolean {
+        val entries = recvInfos.values.iterator()
+        while (entries.hasNext()) {
+            val cached = entries.next()
+            if (cached.inFlight.get() == 0) {
+                entries.remove()
+                free(cached)
+            }
+        }
+        return recvInfos.isEmpty()
+    }
+
+    /** Frees every entry, once no driver can hold one. Throws [RecvInfoInFlightAtClose] if one does. */
+    fun freeAll() {
+        for (cached in recvInfos.values) {
+            val inFlight = cached.inFlight.get()
+            if (inFlight != 0) throw RecvInfoInFlightAtClose(inFlight)
+        }
+        val entries = recvInfos.values.iterator()
+        while (entries.hasNext()) {
+            val cached = entries.next()
+            entries.remove()
+            free(cached)
+        }
+    }
+
+    private fun free(cached: CachedRecvInfo) {
+        api.recvInfoFree(cached.info)
+        cached.releaseSource()
+    }
+
+    companion object {
+        /**
+         * Paths remembered per connection. A connection has as many live paths as its peer has
+         * connection ids to spend on them, [com.ditchoom.socket.quic.QuicOptions.activeConnectionIdLimit]
+         * by default.
+         */
+        const val MAX_PATHS = 8
+    }
+}
+
+/** A server closed while a driver still held [inFlight] references to one of its recv_infos. */
+internal class RecvInfoInFlightAtClose(
+    val inFlight: Int,
+) : IllegalStateException("recv_info still in-flight at server close (inFlight=$inFlight)")
+
+/**
+ * One path's `recv_info`. [info] is the native handle; [releaseSource] frees the platform-pinned
+ * `from` sockaddr it points at. [inFlight] counts references handed to drivers but not yet consumed,
+ * guarding [ConnectionPaths] eviction/teardown against a use-after-free.
  */
 internal class CachedRecvInfo(
     val info: QuicheRecvInfo,
@@ -473,7 +613,7 @@ internal class CachedRecvInfo(
     /** Packets handed to a driver but not yet consumed; guards against evict/free-while-in-use. */
     val inFlight = RecvInfoRefCount(0)
 
-    /** Free the pinned per-source `from` sockaddr. Called by the registry after `recvInfoFree(info)`. */
+    /** Free the pinned per-source `from` sockaddr. Called after `recvInfoFree(info)`. */
     fun releaseSource() = releaseSourceAddr()
 }
 

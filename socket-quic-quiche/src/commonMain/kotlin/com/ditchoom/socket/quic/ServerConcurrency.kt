@@ -73,7 +73,7 @@ internal expect fun readNativeSizeT(buf: PlatformBuffer): Int
  * The identity of one server-side path: which client address a datagram came **from**, and which of
  * this host's local addresses it arrived **at**.
  *
- * The key of the shared server's per-source `recv_info` cache. Keying that cache on the peer alone
+ * The key of a connection's `recv_info`s ([ConnectionPaths]). Keying them on the peer alone
  * would be wrong: a client addressing two of a multi-homed host's addresses is two distinct paths to
  * quiche, and a single cache entry would give the second path the first one's `recv_info.to` — so
  * quiche would echo the wrong `send_info.from` and the reply would leave from an address that client
@@ -89,16 +89,18 @@ internal data class ServerPathPair(
 
 /**
  * A `PathKey → SocketAddress` map the server's egress channels consult to turn one of quiche's opaque
- * [PathKey]s back into a real address, without reconstructing it (RFC §4). The server keeps two:
+ * [PathKey]s back into a real address, without reconstructing it (RFC §4):
  *
- *  - **peers** — `sendInfo.to` → the client address to send to, so replies follow a migrated peer; and
- *  - **locals** — `sendInfo.from` → the local address to send *from*, so a wildcard-bound server pins
- *    its own reply source instead of letting the kernel choose.
+ *  - **peers**, one table per connection ([ConnectionPaths.replyAddresses]) — `sendInfo.to` → the
+ *    client address to send to, so replies follow a migrated peer; and
+ *  - **locals**, one table per server — `sendInfo.from` → the local address to send *from*, so a
+ *    wildcard-bound server pins its own reply source instead of letting the kernel choose.
  *
- * Both are written only on the receive loop (cache-miss insert, LRU-evict remove) plus the post-join
- * close sweep — never two writers at once — but read concurrently by driver egress coroutines.
- * `ConcurrentHashMap` on the JVM; copy-on-write over `AtomicReference<Map>` on Kotlin/Native (no
- * `java.util.concurrent`), the same split as [LiveDriverLedger].
+ * Written only on the receive loop plus the post-join close sweep — never two writers at once — but
+ * read concurrently by driver egress coroutines. Each holds a handful of entries: a connection's
+ * paths, a host's addresses. `ConcurrentHashMap` on the JVM; copy-on-write over
+ * `AtomicReference<Map>` on Kotlin/Native (no `java.util.concurrent`), the same split as
+ * [LiveDriverLedger].
  */
 internal expect class PathAddressTable() {
     fun put(

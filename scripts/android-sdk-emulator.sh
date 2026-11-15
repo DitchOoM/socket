@@ -43,16 +43,56 @@ gh_escape() {
 }
 
 # Prints why the installed emulator/system image is unusable and returns 1, or prints the emulator
-# version and returns 0.
-check_installed() {
-  local out
+# version and returns 0. A failed version check is reported with its exit status, stderr, the installed
+# package and the emulator processes alive at that moment, and is repeated once only when such a process
+# exists.
+# The emulator and qemu processes of this machine, one per line; empty when there are none.
+emulator_processes() {
+  ps -eo pid,ppid,stat,etime,args 2>/dev/null | awk 'NR > 1 && $5 ~ /(^|\/)(emulator|qemu-system[^ ]*|crashpad_handler)$/' || true
+}
+
+# Runs the version check once: its stdout in $VERSION_OUT, and on failure a report of the exit status,
+# stderr, the installed package and the emulator processes alive at that moment in $VERSION_WHY.
+version_check() {
+  local errf status=0
+  errf=$(mktemp)
   # -no-window as the lane launches it: that selects the headless qemu. Without it the emulator
   # runs the windowed qemu, which needs libpulse.so.0, absent on the runner.
-  if ! out=$(timeout 60 "$EMULATOR" -no-window -version 2>&1); then
-    echo "'$EMULATOR -no-window -version' failed:"
-    echo "$out"
-    return 1
+  VERSION_OUT=$(timeout 60 "$EMULATOR" -no-window -version 2>"$errf") || status=$?
+  VERSION_PROCESSES=$(emulator_processes)
+  VERSION_WHY=""
+  if [ "$status" != "0" ]; then
+    VERSION_WHY=$(
+      echo "'$EMULATOR -no-window -version' exited $status"
+      echo "stdout: ${VERSION_OUT:-(empty)}"
+      echo "stderr: $(cat "$errf" 2>/dev/null | head -20)"
+      echo "installed: $(grep -m1 '^Pkg.Revision' "$ANDROID_HOME/emulator/source.properties" 2>/dev/null || echo 'no source.properties'); $(ls -l "$EMULATOR" 2>&1)"
+      echo "emulator processes at that moment: ${VERSION_PROCESSES:-none}"
+    )
   fi
+  rm -f "$errf"
+  return "$status"
+}
+
+check_installed() {
+  local out
+  if ! version_check; then
+    # A previous emulator of this job that is still exiting is the one case worth a second look.
+    if [ -z "$VERSION_PROCESSES" ]; then
+      echo "$VERSION_WHY"
+      return 1
+    fi
+    local first="$VERSION_WHY"
+    sleep "${EMULATOR_RECHECK_WAIT_S:-10}"
+    if ! version_check; then
+      echo "$first"
+      echo "--- again after ${EMULATOR_RECHECK_WAIT_S:-10} s ---"
+      echo "$VERSION_WHY"
+      return 1
+    fi
+    echo "::warning::the emulator's version check failed while another emulator was still running, and passed ${EMULATOR_RECHECK_WAIT_S:-10} s later: $(gh_escape "$first")" >&2
+  fi
+  out="$VERSION_OUT"
   case "$out" in
     *"Android emulator version"*) ;;
     *)

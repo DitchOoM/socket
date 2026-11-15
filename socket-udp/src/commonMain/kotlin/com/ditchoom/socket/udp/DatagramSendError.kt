@@ -108,7 +108,8 @@ sealed interface DatagramSendError {
     data object PortUnreachable : DatagramSendError
 
     /**
-     * Refused by policy — e.g. a broadcast destination without `SO_BROADCAST` (`EACCES`). [errno] is
+     * Refused by policy — a broadcast destination without `SO_BROADCAST` (`EACCES`), or a packet filter
+     * that dropped the datagram on its way out (`EPERM`). [errno] is
      * [ERRNO_NOT_SURFACED] on the backends that do not expose one; see [Unreachable].
      */
     data class NotPermitted(

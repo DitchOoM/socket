@@ -171,6 +171,16 @@ class JvmSendErrorMappingTests {
         assertIs<DatagramSendError.NotPermitted>(report(SocketException("Permission denied")))
     }
 
+    /**
+     * `EPERM`: a packet filter dropped the datagram on its way out. Android's local-network protection
+     * answers a connected channel's write with a bare `IOException("Operation not permitted")`.
+     */
+    @Test
+    fun aSendAPacketFilterRefusesIsNotPermitted() {
+        assertIs<DatagramSendError.NotPermitted>(report(IOException("Operation not permitted")))
+        assertIs<DatagramSendError.NotPermitted>(report(SocketException("Operation not permitted")))
+    }
+
     // --- what stays Transport, and why -----------------------------------------------------------
 
     /** A close racing the send keeps the JDK's own type as the detail; there is no closed member. */

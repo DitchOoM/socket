@@ -113,21 +113,19 @@ jobs:
       # `gradle-macos-*` here), which matters because the repo sits at the 10GB cap and the
       # resulting LRU eviction is what makes "cached" quiche natives still cost ~339s.
       #
-      # ⚠️ RESTORE here, SAVE only on main (the two `Save Gradle …` steps at the end of this job).
-      # Cache entries are ref-scoped: a PR can read main's, main can never read a PR's, and a merged
-      # PR's entries linger for the 7-day idle window evicting live ones. Measured 2026-08-12: the
-      # explicit gradle-* families were 3192MB of a 10240MB cap, 100% of it on PR refs. merged.yaml
-      # calls this workflow on `pull_request_target: closed` (github.ref = refs/heads/main), so main
-      # is rewritten on every merge and each PR prefix-restores that one copy. Same pattern
-      # gradle/actions/setup-gradle uses by default.
+      # Restore only. Cache entries are ref-scoped: a pull request can read main's, main can never read
+      # a pull request's, and a merged pull request's entries linger for the 7-day idle window, evicting
+      # live ones. native-deps-freshness.yaml's cache-warm-apple writes these keys on main.
+      # The one Gradle entry every Apple job restores (gradle-macos-kn, written by
+      # native-deps-freshness.yaml's cache-warm-apple). This job used to keep a family of its own,
+      # gradle-macos, a 2 GB near-copy of it that was saved whenever this job ran on main.
       - name: Restore Gradle build outputs
-        id: restore_gradle_caches
         uses: actions/cache/restore@v6
         with:
           path: ~/.gradle/caches
-          key: gradle-macos-${{ hashFiles('gradle/libs.versions.toml', '**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
+          key: gradle-macos-kn-${{ hashFiles('gradle/libs.versions.toml', '**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
           restore-keys: |
-            gradle-macos-
+            gradle-macos-kn-
 
       # The wrapper distribution is cached SEPARATELY from ~/.gradle/caches on purpose, mirroring
       # what setup-java did (its `additionalCaches: [{name: 'gradle-wrapper', ...}]`, added for
@@ -171,8 +169,10 @@ jobs:
       # built from a DIFFERENT quiche source patch — exactly the #260/#263 bug where a pre-caller-clock
       # dylib (missing quiche_set_virtual_time_nanos) satisfied the marker and the JNI shim failed to link.
       # An exact-key miss must force a clean rebuild; cargo warm-start still comes from the cargo-target cache.
-      - name: Cache quiche Apple native libs
-        uses: actions/cache@v6
+      # Restore only: cache-warm-apple writes this key on main. A copy per pull-request ref (95 MB each)
+      # crowded the 10 GB cache; a pull request that changes the quiche build rebuilds these on each push.
+      - name: Restore quiche Apple native libs
+        uses: actions/cache/restore@v6
         with:
           path: |
             socket-quic-quiche/libs/quiche/macos-arm64/lib
@@ -278,51 +278,6 @@ jobs:
           path: '**/build/quiche-build-logs/'
           if-no-files-found: ignore
           retention-days: 7
-
-      # ── The write half of the restore-only Gradle caches at the top of this job ──────────────
-      # Only in main's ref scope — see the note on the restore steps. `!cancelled()` rather than
-      # `success()` mirrors what actions/cache's post-step did (it saved on failure too);
-      # continue-on-error because a save whose key already exists warns rather than fails, and a
-      # cache problem must never redden the job every other job here is `needs:` on.
-      #
-      # ⚠️ The `cache-hit != 'true'` guard is NOT redundant with continue-on-error, and splitting
-      # actions/cache into restore+save is exactly what makes it necessary. The full action knows
-      # it restored an EXACT primary-key hit and skips its own post-save; `actions/cache/save` has
-      # no such knowledge and will happily re-save every run. @actions/cache tars the directory
-      # FIRST and only then reserves the cache entry, so on the common already-cached main run
-      # these steps would tar ~1GB of ~/.gradle/caches and only then discover the key is taken —
-      # minutes of wasted wall time per run, silently swallowed by continue-on-error. `cache-hit`
-      # is true only on an exact primary-key match (a restore-keys prefix hit leaves it false),
-      # which is precisely when a re-save would be a no-op anyway.
-      - name: Save Gradle build outputs (main only)
-        id: save_gradle_caches
-        if: ${{ !cancelled() && github.ref == 'refs/heads/main' && steps.restore_gradle_caches.outputs.cache-hit != 'true' }}
-        continue-on-error: true
-        uses: actions/cache/save@v6
-        with:
-          path: ~/.gradle/caches
-          key: gradle-macos-${{ hashFiles('gradle/libs.versions.toml', '**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
-
-      - name: Save Gradle wrapper distribution (main only)
-        id: save_gradle_wrapper
-        if: ${{ !cancelled() && github.ref == 'refs/heads/main' && steps.restore_gradle_wrapper.outputs.cache-hit != 'true' }}
-        continue-on-error: true
-        uses: actions/cache/save@v6
-        with:
-          path: ~/.gradle/wrapper
-          key: gradle-wrapper-macos-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
-
-      # See the twin of this step in build-linux.yaml for the full story. Short version:
-      # `continue-on-error: true` rewrites a FAILED step's `conclusion` to `success`, and these two
-      # saves are refused on the merged.yaml/`pull_request_target` path with "cache write denied:
-      # token has no writable scopes". Apple never noticed because native-deps-freshness.yaml's
-      # cache-warm-apple job holds `actions/cache@v6` (not restore-only) for the same two keys and
-      # quietly does the writing — the Linux warm job did not, which is exactly why Linux starved.
-      # `outcome` is the unmasked result. Annotation only, never `exit 1`.
-      - name: Surface a masked cache-save failure
-        if: ${{ !cancelled() && (steps.save_gradle_caches.outcome == 'failure' || steps.save_gradle_wrapper.outcome == 'failure') }}
-        run: |
-          echo "::warning::A Gradle cache SAVE failed here and continue-on-error hid it (caches=${{ steps.save_gradle_caches.outcome }}, wrapper=${{ steps.save_gradle_wrapper.outcome }}). Expected on the merged.yaml/pull_request_target path; native-deps-freshness.yaml's cache-warm-apple job is the real writer for gradle-macos-* / gradle-wrapper-macos-*."
 
   # ── Stage 2a: Kotlin/Native test shards ──────────────────────────────────────────────────────
   # Task names are UNQUALIFIED (no leading colon) so Gradle runs them in every subproject that has
