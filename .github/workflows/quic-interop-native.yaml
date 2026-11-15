@@ -163,6 +163,12 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
+      - uses: ./.github/actions/await-artifact
+        if: ${{ inputs.await-natives }}
+        with:
+          name: quiche-linux-natives-full
+          producer: "quiche natives (Linux/Android/Windows)"
+          github-token: ${{ github.token }}
       - uses: ./.github/actions/linux-quiche-env
         with:
           natives-run-id: ${{ inputs.linux-natives-run-id }}
