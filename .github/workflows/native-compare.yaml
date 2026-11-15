@@ -14,6 +14,7 @@ on:
     paths:
       - 'benchmarks/native-compare/**'
       - 'socket-quic-quiche/src/nativeTest/kotlin/com/ditchoom/socket/quic/NativeCompareBench.kt'
+      - 'benchmarks/jvm/src/main/kotlin/com/ditchoom/socket/benchmark/QuicManyConnectionEcho.kt'
       - '.github/workflows/native-compare.yaml'
   workflow_dispatch:
     inputs:
@@ -160,7 +161,7 @@ jobs:
     name: "macOS arm64"
     needs: natives
     runs-on: macos-26
-    timeout-minutes: 240
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/apple-quiche-env

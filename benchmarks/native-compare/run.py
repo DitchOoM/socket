@@ -134,26 +134,27 @@ def run_jvm(workload, jar, java, certs_repo, seconds, warmup, trace=""):
     return r
 
 def run_jvm_conns(n, jar, java, certs_repo, seconds, warmup, trace=""):
-    """Our JVM build's QuicMultiConnectionLoad RT phase (benchmarks/jvm): n connections, a thread each, 64 B echo."""
+    """Our JVM build's QuicManyConnectionEcho (benchmarks/jvm): the JVM twin of qconns, a coroutine per connection."""
     cmd = [java, "--enable-native-access=ALL-UNNAMED", "--add-opens", "java.base/java.nio=ALL-UNNAMED",
-           "-Dquiche.expectedJvmBackend=ffm", f"-Dbench.certDir={certs_repo}", "-Xss512k"] + jfr_flag(trace) + ["-cp", jar,
-           "com.ditchoom.socket.benchmark.QuicMultiConnectionLoadKt", str(n), str(warmup), str(seconds), "rt"]
+           "-Dquiche.expectedJvmBackend=ffm", f"-Dbench.certDir={certs_repo}"] + jfr_flag(trace) + ["-cp", jar,
+           "com.ditchoom.socket.benchmark.QuicManyConnectionEchoKt", str(n), str(warmup), str(seconds)]
     load = subprocess.run(["uptime"], capture_output=True, text=True).stdout.split("load average")[-1].strip(" s:\n")
-    t0 = time.monotonic()
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True)
-    line = ""
-    for out in p.stdout:
-        if out.startswith("RT "):
-            line = out
+    nthreads, result = 0, None
+    for line in p.stdout:
+        if line.startswith("MEASURING"):
+            time.sleep(seconds / 2)
+            nthreads = threads(p.pid)
+        m = re.match(r"RESULT (.*)", line)
+        if m:
+            result = dict(kv.split("=", 1) for kv in m.group(1).split())
     _, _, ru = os.wait4(p.pid, 0)
-    m = re.search(r"agg\s+([\d.]+) op/s.*p50 med\s+([\d.]+) us\s+p99 med\s+([\d.]+) us\s+p99 worst\s+([\d.]+) us.*cpu\s+([\d.]+) cores", line)
-    if not m:
+    if result is None:
         return None
-    ops, p50, p99, worst, cores = (float(g) for g in m.groups())
-    return {"stack": "jvm-ours", "workload": f"qconns{n}", "threads": 0, "load": load, "p50_us": p50, "p99_us": p99,
-            "p999_us": worst, "ops_per_s": ops, "mib_per_s": 0.0, "cpu_us_per_op": cores * 1e6 / ops if ops else 0.0,
-            "cpu_us_per_mib": 0.0, "rss_mib": ru.ru_maxrss / (1024 if LINUX else 1048576),
-            "wall_s": time.monotonic() - t0}
+    r = {k: (v if k in ("stack", "workload") else float(v)) for k, v in result.items()}
+    r.update(threads=nthreads, load=load, rss_mib=ru.ru_maxrss / (1024 if LINUX else 1048576),
+             cpu_us_per_op=r["cpu_us"] / r["ops"] if r["ops"] else 0.0, cpu_us_per_mib=0.0)
+    return r
 
 def main():
     a = argparse.ArgumentParser()
