@@ -4952,6 +4952,36 @@ if (androidJniTasks.isNotEmpty()) {
 // answer moves with every commit and every edit, but rewrites a file only when the stamp changed, so a
 // build whose stamp did not move recompiles nothing. An empty stamp means git had no answer; the
 // binary reports that as `build=unknown(NotStamped)` rather than leaving the field out.
+val coreAndroidTestDir = layout.buildDirectory.dir("generated/coreAndroidTests")
+val stageCoreAndroidTests =
+    tasks.register<Sync>("stageCoreAndroidTests") {
+        group = "verification"
+        description = "Copy the JVM-tool-free core test sources into the Android instrumented test source set"
+        from("src/jvmTest/kotlin/com/ditchoom/socket/quic/core") {
+            include(
+                "edge/CoreTestSupport.kt",
+                "edge/CoreEdgeTests.kt",
+                "edge/CallerInPlaceTests.kt",
+                "edge/CoreFailureTierTests.kt",
+                "edge/CoreBulkTransferTests.kt",
+                "demux/ServerTestSupport.kt",
+                "demux/CoreServerEchoTests.kt",
+                "demux/CoreServerStatelessTests.kt",
+                "demux/CoreServerCloseTests.kt",
+                "demux/CoreServerAdmissionTests.kt",
+                "conn/CoreClientAgainstServerTests.kt",
+                "loop/SharedClientLoopTests.kt",
+                "loop/NioLoopEchoTests.kt",
+                "loop/LoopDeadlineWakeTests.kt",
+            )
+            into("com/ditchoom/socket/quic/core")
+        }
+        from("src/commonTest/kotlin/com/ditchoom/socket/quic/core") {
+            include("loop/LoopPassTests.kt", "stream/ReadChunkTests.kt")
+            into("com/ditchoom/socket/quic/core")
+        }
+        into(coreAndroidTestDir.map { it.dir("kotlin") })
+    }
 val buildStampDir = layout.buildDirectory.dir("generated/buildStamp")
 val generateBuildStamp =
     tasks.register("generateBuildStamp") {
@@ -6252,6 +6282,10 @@ kotlin {
             // for #393, a defect found on an Android device. They need no native lib and no socket
             // (StubQuicheApi + a gated UdpChannel), so nothing about them is desktop-only.
             kotlin.srcDir("src/sharedQuicheTestSuites/kotlin")
+            // The run-to-completion core suites live in jvmTest because the JVM-only tools (BlockHound,
+            // Lincheck, allocation counters) sit beside them. The rest use nothing but kotlin.test and the
+            // JDK, so they are copied here unchanged and an ART device runs the very same source.
+            kotlin.srcDir(stageCoreAndroidTests.map { coreAndroidTestDir })
             dependencies {
                 implementation(kotlin("test"))
                 implementation(libs.kotlinx.coroutines.test)

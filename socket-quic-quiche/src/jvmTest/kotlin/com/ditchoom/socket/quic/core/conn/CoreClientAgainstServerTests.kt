@@ -14,6 +14,7 @@ import com.ditchoom.socket.quic.QuicTlsConfig
 import com.ditchoom.socket.quic.ScopedRead
 import com.ditchoom.socket.quic.SendTarget
 import com.ditchoom.socket.quic.applyQuicOptions
+import com.ditchoom.socket.quic.core.edge.coreTlsConfig
 import com.ditchoom.socket.quic.core.loop.Entrant
 import com.ditchoom.socket.quic.core.loop.Loop
 import com.ditchoom.socket.quic.core.loop.LoopClock
@@ -251,15 +252,7 @@ class CoreClientAgainstServerTests {
         }
     }
 
-    private fun tlsConfig(): QuicTlsConfig = QuicTlsConfig(certChainPath = certPath("cert.crt"), privKeyPath = certPath("cert.key"))
-
-    private fun certPath(name: String): String =
-        java.io
-            .File(
-                this::class.java.classLoader
-                    .getResource("certs/$name")!!
-                    .toURI(),
-            ).absolutePath
+    private fun tlsConfig(): QuicTlsConfig = coreTlsConfig()
 
     private companion object {
         const val PAYLOAD = 1 shl 20

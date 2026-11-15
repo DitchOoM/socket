@@ -136,12 +136,20 @@ internal suspend fun echoOver(
 internal fun coreTlsConfig(): QuicTlsConfig =
     QuicTlsConfig(certChainPath = coreCertPath("cert.crt"), privKeyPath = coreCertPath("cert.key"))
 
-private fun coreCertPath(name: String): String =
-    java.io
-        .File(
-            CoreEdgeTests::class.java.classLoader
-                .getResource("certs/$name")!!
-                .toURI(),
-        ).absolutePath
+/**
+ * A path quiche can open. On a JVM the resource is a file on the classpath; on Android it lives inside
+ * the test APK, so it is copied out once per name.
+ */
+private fun coreCertPath(name: String): String {
+    val loader = CoreEdgeTests::class.java.classLoader
+    val url = loader.getResource("certs/$name") ?: error("missing test resource certs/$name")
+    if (url.protocol == "file") return java.io.File(url.toURI()).absolutePath
+    val out =
+        java.io.File
+            .createTempFile("core-cert-", "-$name")
+            .apply { deleteOnExit() }
+    url.openStream().use { src -> out.outputStream().use { dst -> src.copyTo(dst) } }
+    return out.absolutePath
+}
 
 internal suspend fun <T> onIo(block: suspend CoroutineScope.() -> T): T = withContext(Dispatchers.IO, block)

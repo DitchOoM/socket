@@ -289,15 +289,7 @@ class CoreFailureTierTests {
             }
         }
 
-    private fun tlsConfig(): QuicTlsConfig = QuicTlsConfig(certChainPath = certPath("cert.crt"), privKeyPath = certPath("cert.key"))
-
-    private fun certPath(name: String): String =
-        java.io
-            .File(
-                this::class.java.classLoader
-                    .getResource("certs/$name")!!
-                    .toURI(),
-            ).absolutePath
+    private fun tlsConfig(): QuicTlsConfig = coreTlsConfig()
 
     private companion object {
         val NOT_ENDED: ConnEnd = ConnEnd.Quietly
