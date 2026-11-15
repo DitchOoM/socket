@@ -6,8 +6,8 @@ Usage: quic-interop-evidence.py <runner logs dir> <direction> <peer> <out.json>
 The runner writes <logs>/<server>_<client>/<test>/ with the two endpoints' logs and its own output.txt. Two
 sources are read, both written by something this repository controls or the runner itself:
   - our endpoint's qlog (quiche's, under <our side>/qlog/*.sqlog): one record per connection with the
-    transport parameters each side set, the MAX_STREAMS we sent, the highest stream the peer opened and the
-    CONNECTION_CLOSE frames we sent;
+    transport parameters each side set, the MAX_STREAMS we sent, the highest stream the peer opened, the
+    source connection id lengths of the peer's Initial packets and the CONNECTION_CLOSE frames we sent;
   - the runner's output.txt: each container's exit code, and our client's MIGRATION-SUMMARY line (its typed
     move results) when it migrated.
 
@@ -50,6 +50,7 @@ def connection_facts(path, side):
         "qlog": os.path.basename(path),
         "local_initial_max_streams_bidi": 0,
         "remote_disable_active_migration": False,
+        "peer_source_cid_lengths": [],
         "max_streams_bidi_sent": 0,
         "peer_bidi_streams_opened": 0,
         "local_closes": [],
@@ -73,6 +74,9 @@ def connection_facts(path, side):
                         {"space": frame.get("error_space", ""), "code": int(frame.get("error_code", 0))}
                     )
         elif name.endswith("packet_received"):
+            header = data.get("header") or {}
+            if header.get("packet_type") == "initial" and "scil" in header and int(header["scil"]) not in facts["peer_source_cid_lengths"]:
+                facts["peer_source_cid_lengths"].append(int(header["scil"]))
             for frame in data.get("frames") or []:
                 if frame.get("frame_type") == "stream":
                     stream_id = int(frame.get("stream_id", 0))

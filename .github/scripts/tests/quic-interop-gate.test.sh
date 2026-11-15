@@ -195,6 +195,26 @@ sed 's/"signal": "SIGSEGV"/"signal": "SIGWHAT"/' "$tmp/sig-exp.json" >"$tmp/bad-
 python3 "$script" judge "$tmp/bad-exp.json" "$tmp/sig" >/dev/null 2>"$tmp/bad.err"
 expect_rc "an unknown signal stops the gate" $? 1
 
+# A FRAME_ENCODING_ERROR close counts only against a peer whose source connection id is zero-length.
+cat >"$tmp/cid-exp.json" <<'EOF2'
+{"our-server": {"k": {"handshake": {"known-failure": {"why": "peer: sends NEW_CONNECTION_ID with a zero-length id", "signature": {"kind": "frame-encoding-error-from-zero-length-cid-peer"}}}}}}
+EOF2
+mkdir "$tmp/cid"
+runner "$tmp/cid/our-server__k.json" handshake:failed
+cid_conn() { # <close code> <peer scid lengths json>
+  printf '{"qlog":"q","local_initial_max_streams_bidi":100,"max_streams_bidi_sent":0,"peer_bidi_streams_opened":1,"remote_disable_active_migration":false,"local_closes":[{"space":"transport","code":%s}],"peer_source_cid_lengths":%s}' "$1" "$2"
+}
+evidence "$tmp/cid/our-server__k.evidence.json" our-server k handshake "{\"connections\":[$(cid_conn 7 '[0]')],\"exits\":{},\"migrations\":[]}"
+out="$(python3 "$script" judge "$tmp/cid-exp.json" "$tmp/cid" --stale=fail)"
+expect_rc "a 0x7 close against a zero-length-id peer matches" $? 0
+expect "the zero-length-id match is shown" "$out" "peer's source connection id is zero-length; we closed 0x7 (FRAME_ENCODING_ERROR)"
+evidence "$tmp/cid/our-server__k.evidence.json" our-server k handshake "{\"connections\":[$(cid_conn 7 '[8]')],\"exits\":{},\"migrations\":[]}"
+python3 "$script" judge "$tmp/cid-exp.json" "$tmp/cid" --stale=fail >/dev/null
+expect_rc "a 0x7 close against a peer with connection ids is a regression" $? 1
+evidence "$tmp/cid/our-server__k.evidence.json" our-server k handshake "{\"connections\":[$(cid_conn 10 '[0]')],\"exits\":{},\"migrations\":[]}"
+python3 "$script" judge "$tmp/cid-exp.json" "$tmp/cid" --stale=fail >/dev/null
+expect_rc "another close code against a zero-length-id peer is a regression" $? 1
+
 # The evidence extractor reads our endpoint's qlog and the runner's output.
 extract="$here/../quic-interop-evidence.py"
 d="$tmp/logs/ditchoom_x/multiplexing"
@@ -203,6 +223,7 @@ mkdir -p "$d/server/qlog"
   printf '{"file_schema":"urn:ietf:params:qlog:file:sequential"}\n'
   printf '{"name":"quic:parameters_set","data":{"initiator":"local","initial_max_streams_bidi":100}}\n'
   printf '{"name":"quic:parameters_set","data":{"initiator":"remote","disable_active_migration":true}}\n'
+  printf '{"name":"quic:packet_received","data":{"header":{"packet_type":"initial","scil":0},"frames":[]}}\n'
   printf '{"name":"quic:packet_received","data":{"frames":[{"frame_type":"stream","stream_id":400},{"frame_type":"stream","stream_id":401}]}}\n'
   printf '{"name":"quic:packet_sent","data":{"frames":[{"frame_type":"max_streams","stream_type":"bidirectional","maximum":90}]}}\n'
   printf '{"name":"quic:packet_sent","data":{"frames":[{"frame_type":"connection_close","error_space":"transport","error_code":4}]}}\n'
@@ -211,8 +232,8 @@ mkdir -p "$d/server/qlog"
 printf "2026-11-14 13:40:27,246 Container exits: b'client exited with code 0'\n" >"$d/output.txt"
 python3 -I "$extract" "$tmp/logs" our-server x "$tmp/ev.json"
 expect_rc "the extractor runs" $? 0
-ev="$(python3 -c 'import json,sys; t=json.load(open(sys.argv[1]))["tests"]["multiplexing"]; c=t["connections"][0]; print(c["local_initial_max_streams_bidi"], c["max_streams_bidi_sent"], c["peer_bidi_streams_opened"], c["local_closes"], c["remote_disable_active_migration"], t["exits"])' "$tmp/ev.json")"
-expect "the extractor reads limits, streams, one close per code and exits" "$ev" "100 90 101 [{'code': 4, 'space': 'transport'}] True {'client': 0}"
+ev="$(python3 -c 'import json,sys; t=json.load(open(sys.argv[1]))["tests"]["multiplexing"]; c=t["connections"][0]; print(c["local_initial_max_streams_bidi"], c["max_streams_bidi_sent"], c["peer_bidi_streams_opened"], c["local_closes"], c["remote_disable_active_migration"], t["exits"], c["peer_source_cid_lengths"])' "$tmp/ev.json")"
+expect "the extractor reads limits, streams, one close per code and exits" "$ev" "100 90 101 [{'code': 4, 'space': 'transport'}] True {'client': 0} [0]"
 
 echo "quic-interop-gate: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
