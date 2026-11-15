@@ -847,6 +847,25 @@ interface QuicheApi {
         outLen: Int,
     ): Int
 
+    /**
+     * `quiche_retry`: writes a Retry packet for the Initial whose source id is at [scidAddr] and destination id at
+     * [dcidAddr], naming [newScidAddr] as the id the client must use next and carrying the token at [tokenAddr].
+     * Returns the packet's length, or a negative error.
+     */
+    fun retry(
+        scidAddr: Long,
+        scidLen: Int,
+        dcidAddr: Long,
+        dcidLen: Int,
+        newScidAddr: Long,
+        newScidLen: Int,
+        tokenAddr: Long,
+        tokenLen: Int,
+        version: Int,
+        outAddr: Long,
+        outLen: Int,
+    ): Int
+
     // --- Stream iteration ---
 
     /** Get iterator over readable streams. Check [QuicheStreamIter.isExhausted] before iterating. */

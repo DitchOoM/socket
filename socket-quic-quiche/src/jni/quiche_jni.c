@@ -951,6 +951,23 @@ JNIEXPORT jint JNICALL JNI_FN(nNegotiateVersion)(
         (uint8_t *)(uintptr_t)out_addr, (size_t)out_len);
 }
 
+JNIEXPORT jint JNICALL JNI_FN(nRetry)(
+    JNIEnv *env, jclass cls,
+    jlong scid_addr, jint scid_len,
+    jlong dcid_addr, jint dcid_len,
+    jlong new_scid_addr, jint new_scid_len,
+    jlong token_addr, jint token_len,
+    jint version,
+    jlong out_addr, jint out_len) {
+    return (jint)quiche_retry(
+        (const uint8_t *)(uintptr_t)scid_addr, (size_t)scid_len,
+        (const uint8_t *)(uintptr_t)dcid_addr, (size_t)dcid_len,
+        (const uint8_t *)(uintptr_t)new_scid_addr, (size_t)new_scid_len,
+        (const uint8_t *)(uintptr_t)token_addr, (size_t)token_len,
+        (uint32_t)version,
+        (uint8_t *)(uintptr_t)out_addr, (size_t)out_len);
+}
+
 /* --- Stream iteration --- */
 
 JNIEXPORT jlong JNICALL JNI_FN(nConnReadable)(JNIEnv *env, jclass cls, jlong conn) {

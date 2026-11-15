@@ -1318,6 +1318,25 @@ class FfmQuicheApi private constructor(
             FunctionDescriptor.of(JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG),
         )
     }
+    private val hRetry by lazy {
+        downcall(
+            "quiche_retry",
+            FunctionDescriptor.of(
+                JAVA_LONG,
+                JAVA_LONG,
+                JAVA_LONG,
+                JAVA_LONG,
+                JAVA_LONG,
+                JAVA_LONG,
+                JAVA_LONG,
+                JAVA_LONG,
+                JAVA_LONG,
+                JAVA_INT,
+                JAVA_LONG,
+                JAVA_LONG,
+            ),
+        )
+    }
     private val hConnReadable by lazy {
         downcall("quiche_conn_readable", FunctionDescriptor.of(JAVA_LONG, JAVA_LONG))
     }
@@ -1437,6 +1456,35 @@ class FfmQuicheApi private constructor(
                 scidLen.toLong(),
                 dcidAddr,
                 dcidLen.toLong(),
+                outAddr,
+                outLen.toLong(),
+            ) as Long
+        ).toInt()
+
+    override fun retry(
+        scidAddr: Long,
+        scidLen: Int,
+        dcidAddr: Long,
+        dcidLen: Int,
+        newScidAddr: Long,
+        newScidLen: Int,
+        tokenAddr: Long,
+        tokenLen: Int,
+        version: Int,
+        outAddr: Long,
+        outLen: Int,
+    ): Int =
+        (
+            hRetry.invokeExact(
+                scidAddr,
+                scidLen.toLong(),
+                dcidAddr,
+                dcidLen.toLong(),
+                newScidAddr,
+                newScidLen.toLong(),
+                tokenAddr,
+                tokenLen.toLong(),
+                version,
                 outAddr,
                 outLen.toLong(),
             ) as Long

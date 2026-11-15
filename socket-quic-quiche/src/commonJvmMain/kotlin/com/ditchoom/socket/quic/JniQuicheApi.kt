@@ -717,6 +717,20 @@ object JniQuicheApi : QuicheApi {
         outLen: Int,
     ): Int = nNegotiateVersion(scidAddr, scidLen, dcidAddr, dcidLen, outAddr, outLen)
 
+    override fun retry(
+        scidAddr: Long,
+        scidLen: Int,
+        dcidAddr: Long,
+        dcidLen: Int,
+        newScidAddr: Long,
+        newScidLen: Int,
+        tokenAddr: Long,
+        tokenLen: Int,
+        version: Int,
+        outAddr: Long,
+        outLen: Int,
+    ): Int = nRetry(scidAddr, scidLen, dcidAddr, dcidLen, newScidAddr, newScidLen, tokenAddr, tokenLen, version, outAddr, outLen)
+
     // --- Stream iteration ---
     override fun connReadable(conn: QuicheConn): QuicheStreamIter = QuicheStreamIter(nConnReadable(conn.handle))
 
@@ -1300,6 +1314,20 @@ object JniQuicheApi : QuicheApi {
         scidLen: Int,
         dcidAddr: Long,
         dcidLen: Int,
+        outAddr: Long,
+        outLen: Int,
+    ): Int
+
+    @JvmStatic private external fun nRetry(
+        scidAddr: Long,
+        scidLen: Int,
+        dcidAddr: Long,
+        dcidLen: Int,
+        newScidAddr: Long,
+        newScidLen: Int,
+        tokenAddr: Long,
+        tokenLen: Int,
+        version: Int,
         outAddr: Long,
         outLen: Int,
     ): Int

@@ -25,6 +25,8 @@ import java.nio.channels.DatagramChannel
 internal class NioOneByOne(
     val channel: DatagramChannel,
     batches: List<SendBatch>,
+    /** Destinations whose [InetSocketAddress] each lane keeps; a server with more peers than this converts again past it. */
+    private val maxCachedTargets: Int = MAX_CACHED_TARGETS,
 ) : DatagramBatchIo {
     constructor(channel: DatagramChannel, send: SendBatch) : this(channel, listOf(send))
 
@@ -102,7 +104,7 @@ internal class NioOneByOne(
     ): InetSocketAddress {
         val cache = targets[lane]
         cache[key]?.let { return it }
-        if (cache.size >= MAX_CACHED_TARGETS) cache.clear()
+        if (cache.size >= maxCachedTargets) cache.clear()
         // Only a key with an address family reaches here, and every such key converts.
         val address = key.toInetSocketAddress() as InetSocketAddress
         cache[key] = address
@@ -152,7 +154,7 @@ internal fun udpErrorOf(e: IOException): UdpError =
         else -> UdpError.Other(e)
     }
 
-private const val MAX_CACHED_TARGETS = 4096
+internal const val MAX_CACHED_TARGETS = 4096
 
 /** The family of a [PathKey] quiche could not decode. */
 private const val NO_FAMILY = 0

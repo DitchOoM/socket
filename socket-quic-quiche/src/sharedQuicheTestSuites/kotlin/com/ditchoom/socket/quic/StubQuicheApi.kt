@@ -544,6 +544,20 @@ internal class StubQuicheApi : QuicheApi {
         config: QuicheConfig,
     ) = QuicheConn(1L)
 
+    override fun retry(
+        scidAddr: Long,
+        scidLen: Int,
+        dcidAddr: Long,
+        dcidLen: Int,
+        newScidAddr: Long,
+        newScidLen: Int,
+        tokenAddr: Long,
+        tokenLen: Int,
+        version: Int,
+        outAddr: Long,
+        outLen: Int,
+    ) = 0
+
     override fun negotiateVersion(
         scidAddr: Long,
         scidLen: Int,

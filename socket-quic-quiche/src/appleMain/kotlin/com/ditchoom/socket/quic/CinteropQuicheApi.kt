@@ -106,6 +106,7 @@ import com.ditchoom.socket.quic.quiche.quiche_path_event_type
 import com.ditchoom.socket.quic.quiche.quiche_path_event_validated
 import com.ditchoom.socket.quic.quiche.quiche_path_stats
 import com.ditchoom.socket.quic.quiche.quiche_recv_info
+import com.ditchoom.socket.quic.quiche.quiche_retry
 import com.ditchoom.socket.quic.quiche.quiche_send_info
 import com.ditchoom.socket.quic.quiche.quiche_set_thread_random_state
 import com.ditchoom.socket.quic.quiche.quiche_set_virtual_time_nanos
@@ -1104,6 +1105,33 @@ internal object CinteropQuicheApi : QuicheApi, QuicheRandomPin {
             ) ?: error("quiche_accept returned null")
         return QuicheConn(conn.rawValue.toLong())
     }
+
+    override fun retry(
+        scidAddr: Long,
+        scidLen: Int,
+        dcidAddr: Long,
+        dcidLen: Int,
+        newScidAddr: Long,
+        newScidLen: Int,
+        tokenAddr: Long,
+        tokenLen: Int,
+        version: Int,
+        outAddr: Long,
+        outLen: Int,
+    ): Int =
+        quiche_retry(
+            scidAddr.toCPointer<UByteVar>()!!,
+            scidLen.convert(),
+            dcidAddr.toCPointer<UByteVar>()!!,
+            dcidLen.convert(),
+            newScidAddr.toCPointer<UByteVar>()!!,
+            newScidLen.convert(),
+            tokenAddr.toCPointer<UByteVar>()!!,
+            tokenLen.convert(),
+            version.convert(),
+            outAddr.toCPointer<UByteVar>()!!,
+            outLen.convert(),
+        ).toInt()
 
     override fun negotiateVersion(
         scidAddr: Long,
