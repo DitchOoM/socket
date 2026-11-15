@@ -6,8 +6,10 @@ import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.core.edge.connectCore
+import com.ditchoom.socket.quic.core.loop.ClientLoopSet
 import kotlinx.coroutines.runBlocking
 import java.lang.management.ManagementFactory
+import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertTrue
 import kotlin.test.fail
@@ -24,11 +26,17 @@ import kotlin.time.Duration.Companion.seconds
  * cancelled read can free its buffer. The gate sits just above the measurement.
  */
 class CoreServerAllocationTests {
+    /** Client loops of this class's own, so connections it leaves ending never share a thread with another test's. */
+    private val loops = ClientLoopSet(2)
+
+    @AfterTest
+    fun closeLoops() = loops.close()
+
     @Test
     fun theServerLoopAllocatesLittlePerEcho() =
         runBlocking {
             withCoreEchoServer { server ->
-                val client = connectCore(server.port)
+                val client = connectCore(server.port, loops = loops)
                 val stream = client.connection.openStream()
                 val payload =
                     BufferFactory.Default.allocate(PAYLOAD).apply {

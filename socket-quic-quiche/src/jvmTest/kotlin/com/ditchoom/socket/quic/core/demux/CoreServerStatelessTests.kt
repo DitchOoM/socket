@@ -6,12 +6,14 @@ import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.core.edge.connectCore
 import com.ditchoom.socket.quic.core.edge.echoOver
+import com.ditchoom.socket.quic.core.loop.ClientLoopSet
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.nio.channels.DatagramChannel
 import kotlin.random.Random
+import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
@@ -22,6 +24,12 @@ import kotlin.time.Duration.Companion.milliseconds
 
 /** Version Negotiation and Retry: the packets a server answers with before it has a connection. */
 class CoreServerStatelessTests {
+    /** Client loops of this class's own, so connections it leaves ending never share a thread with another test's. */
+    private val loops = ClientLoopSet(2)
+
+    @AfterTest
+    fun closeLoops() = loops.close()
+
     @Test
     fun anInitialOfAnUnsupportedVersionGetsAVersionNegotiationListingQuichesVersionsAndNoConnection() =
         runBlocking {
@@ -63,7 +71,7 @@ class CoreServerStatelessTests {
     fun aClientCompletesTheHandshakeThroughRetry() =
         runBlocking {
             withCoreEchoServer(ServerConfig(addressValidation = AddressValidation.Retry())) { server ->
-                val client = connectCore(server.port)
+                val client = connectCore(server.port, loops = loops)
                 try {
                     val payload = Random(7).nextBytes(4_096)
                     assertContentEquals(payload, echoOver(client.connection.openStream(), payload))

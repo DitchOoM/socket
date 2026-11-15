@@ -62,6 +62,7 @@ internal class ServerParts(
     private val newScid = s.factory.allocate(QUIC_ISSUED_CONN_ID_LEN)
     private val tokenOut = s.factory.allocate(MAX_TOKEN)
     private val oneScid = CidRead()
+    private val tick = Tick()
     private var admissionPass = -1L
     private var startedThisPass = 0
 
@@ -129,15 +130,13 @@ internal class ServerParts(
             s.counts.droppedRunt++
             return
         }
-        val tokenLength = headerScratch.readToken(s.api, buffer, length)
-        if (tokenLength < 0) {
-            s.counts.droppedUnknown++
-            return
-        }
         when (val validation = tokens) {
             Tokens.None -> admit(buffer, length, from, Admit.Fresh)
-            is Tokens.Of ->
-                if (tokenLength == 0) {
+            is Tokens.Of -> {
+                val tokenLength = headerScratch.readToken(s.api, buffer, length)
+                if (tokenLength < 0) {
+                    s.counts.droppedUnknown++
+                } else if (tokenLength == 0) {
                     retry(validation.tokens, buffer, from)
                 } else {
                     val checked = validation.tokens.check(headerScratch.token, tokenLength, s.clock.nowNanos(), header.cid, from)
@@ -146,6 +145,7 @@ internal class ServerParts(
                         TokenCheck.Malformed, TokenCheck.Forged, TokenCheck.Expired -> s.counts.droppedToken++
                     }
                 }
+            }
         }
     }
 
@@ -347,7 +347,7 @@ internal class ServerParts(
         shutdown = Shutdown.Draining(loop.counts.passes, closed)
         for (peer in peers) peer.close(QuicError.NoError)
         // A pass after this one is owed even when every connection was held by a caller and queued nothing here.
-        loop.submit(Tick)
+        loop.submit(tick)
     }
 
     private fun finishShutdownWhenFlushed() {

@@ -86,8 +86,8 @@ internal sealed interface Tokens {
     ) : Tokens
 }
 
-/** Loop work that does nothing but guarantee another pass. */
-internal object Tick : com.ditchoom.socket.quic.core.loop.LoopWork() {
+/** Loop work that does nothing but guarantee another pass. One per server: a work item sits in one inbox at a time. */
+internal class Tick : com.ditchoom.socket.quic.core.loop.LoopWork() {
     override fun run(loop: com.ditchoom.socket.quic.core.loop.LoopHost) = Unit
 
     override fun gone() = Unit

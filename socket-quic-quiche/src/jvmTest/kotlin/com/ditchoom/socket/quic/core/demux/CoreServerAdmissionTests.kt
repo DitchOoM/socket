@@ -6,6 +6,7 @@ import com.ditchoom.socket.quic.QuicheConn
 import com.ditchoom.socket.quic.QuicheRecvInfo
 import com.ditchoom.socket.quic.core.edge.connectCore
 import com.ditchoom.socket.quic.core.edge.echoOver
+import com.ditchoom.socket.quic.core.loop.ClientLoopSet
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.ReceiveBatchResult
@@ -17,6 +18,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.random.Random
+import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
@@ -25,6 +27,12 @@ import kotlin.time.Duration.Companion.milliseconds
 
 /** What the server does when more handshakes start than it admits, and what a connection's `recv_info` costs. */
 class CoreServerAdmissionTests {
+    /** Client loops of this class's own, so connections it leaves ending never share a thread with another test's. */
+    private val loops = ClientLoopSet(2)
+
+    @AfterTest
+    fun closeLoops() = loops.close()
+
     @Test
     fun aBurstOverTheBoundOfHandshakesPerPassIsDroppedCountedAndStillAllCompletes() =
         runBlocking {
@@ -34,7 +42,7 @@ class CoreServerAdmissionTests {
                 val connects =
                     (0 until 4 * bound).map { n ->
                         async(Dispatchers.IO) {
-                            val client = connectCore(server.port)
+                            val client = connectCore(server.port, loops = loops)
                             try {
                                 val payload = Random(n).nextBytes(512)
                                 payload to echoOver(client.connection.openStream(), payload)
@@ -67,7 +75,7 @@ class CoreServerAdmissionTests {
                     (0 until wave)
                         .map { n ->
                             async(Dispatchers.IO) {
-                                val client = connectCore(server.port)
+                                val client = connectCore(server.port, loops = loops)
                                 try {
                                     // Each peer sends again and again after it is established.
                                     val stream = client.connection.openStream()

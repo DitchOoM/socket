@@ -34,7 +34,7 @@ internal class ServerConfig(
 
 /** What a server did with the datagrams that reached it. Loop thread writes; any thread may read. */
 internal class ServerCounts {
-    @kotlin.concurrent.Volatile
+    /** Datagrams handed to a connection. Written for every datagram, so read it once the server is quiet. */
     var routed = 0L
 
     @kotlin.concurrent.Volatile

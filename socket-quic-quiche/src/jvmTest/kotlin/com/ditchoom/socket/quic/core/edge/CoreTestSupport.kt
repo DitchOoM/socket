@@ -9,6 +9,7 @@ import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicTlsConfig
 import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.core.loop.ClientLoopSet
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.ReceiveBatchResult
@@ -89,10 +90,12 @@ internal suspend fun withEchoServer(
 
 internal suspend fun connectCore(
     port: Int,
+    host: String = "127.0.0.1",
+    loops: ClientLoopSet = ClientLoopSet.shared,
     wrapIo: (DatagramBatchIo) -> DatagramBatchIo = { it },
 ): CoreClient =
     coreConnect(
-        host = "127.0.0.1",
+        host = host,
         port = port,
         serverName = "localhost",
         options = coreTestOptions,
@@ -102,6 +105,7 @@ internal suspend fun connectCore(
         readPolicy = ReadPolicy.Bounded(10.seconds),
         writePolicy = WritePolicy.Bounded(10.seconds),
         wrapIo = wrapIo,
+        loops = loops,
     )
 
 /** Writes [payload] on [stream] while reading the echo; returns what came back. */

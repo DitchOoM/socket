@@ -47,16 +47,18 @@ import kotlin.time.Duration.Companion.seconds
  * Which thread serves a read moves bytes between the two (a read served on the loop thread allocates its result buffer
  * there), so each thread's gate allows for the whole read and the total is the tight one; a failure message lists the
  * allocation sites of both. Per echo that measures about 1,025 bytes in total over one stream (72 on the loop thread,
- * 953 on the caller's) and 2,560 when each echo opens a stream (129 and 2,432); the total gates sit just above.
+ * 953 on the caller's) and 2,560 when each echo opens a stream (129 and 2,432). The gates sit above the figures measured
+ * in a JVM that has also run the server: the call sites every connection shares, through `ConnHost` and `ConnEvents`,
+ * then see three receiver types, are no longer inlined, and the same echo measures about 1,100 and 2,680.
  */
 class CoreQuicAllocationTests {
     @Test
     fun anEchoOnOneStreamAllocatesOnlyWhatTheCallersApiForces() =
-        measure("one stream", OneStream, loopGate = 450, callerGate = 1_000, totalGate = 1_100)
+        measure("one stream", OneStream, loopGate = 450, callerGate = 1_050, totalGate = 1_150)
 
     @Test
     fun anEchoOnANewStreamAllocatesOnlyWhatTheCallersApiForces() =
-        measure("new stream per echo", NewStream, loopGate = 600, callerGate = 2_500, totalGate = 2_650)
+        measure("new stream per echo", NewStream, loopGate = 600, callerGate = 2_550, totalGate = 2_750)
 
     /** One echo from the caller's side. */
     private sealed interface Shape {

@@ -9,7 +9,11 @@ import com.ditchoom.socket.quic.QuicheRecvInfo
 import com.ditchoom.socket.quic.core.edge.CoreConnection
 import com.ditchoom.socket.quic.core.edge.connectCore
 import com.ditchoom.socket.quic.core.edge.echoOver
+import com.ditchoom.socket.quic.core.loop.ClientLoopSet
 import com.ditchoom.socket.quic.loadQuicheApi
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -21,6 +25,7 @@ import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.thread
 import kotlin.random.Random
+import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
@@ -32,11 +37,17 @@ import kotlin.time.TimeSource
 
 /** Closing a server, and what one connection's failure does to the others. */
 class CoreServerCloseTests {
+    /** Client loops of this class's own, so connections it leaves ending never share a thread with another test's. */
+    private val loops = ClientLoopSet(2)
+
+    @AfterTest
+    fun closeLoops() = loops.close()
+
     @Test
     fun closeDuringAFloodReturnsPromptlyEndsItsConnectionsAndStopsTheLoopThread() =
         runBlocking {
             withCoreEchoServer { server ->
-                val client = connectCore(server.port)
+                val client = connectCore(server.port, loops = loops)
                 val payload = Random(1).nextBytes(2_000)
                 assertContentEquals(payload, echoOver(client.connection.openStream(), payload))
 
@@ -64,7 +75,7 @@ class CoreServerCloseTests {
     fun closingAServerSendsConnectionCloseToItsClients() =
         runBlocking {
             withCoreEchoServer { server ->
-                val client = connectCore(server.port)
+                val client = connectCore(server.port, loops = loops)
                 val payload = Random(2).nextBytes(100)
                 assertContentEquals(payload, echoOver(client.connection.openStream(), payload))
                 server.close()
@@ -76,11 +87,23 @@ class CoreServerCloseTests {
         }
 
     @Test
+    fun closesThatRaceAllReturnOnceTheLoopHasStopped() =
+        runBlocking {
+            withCoreEchoServer { server ->
+                val client = connectCore(server.port, loops = loops)
+                val closes = (0 until 4).map { async(Dispatchers.IO) { withTimeout(5.seconds) { server.close() } } }
+                closes.awaitAll()
+                assertEquals(0, liveServerLoops())
+                client.connection.close(QuicError.NoError)
+            }
+        }
+
+    @Test
     fun aServerThatWasClosedAcceptsNoMoreConnections() =
         runBlocking {
             withCoreEchoServer { server ->
                 server.close()
-                val outcome = runCatching { withTimeout(2.seconds) { connectCore(server.port) } }
+                val outcome = runCatching { withTimeout(2.seconds) { connectCore(server.port, loops = loops) } }
                 assertTrue(outcome.isFailure, "a connect to a closed server fails")
             }
         }
@@ -91,8 +114,8 @@ class CoreServerCloseTests {
             val api = PlantingApi(loadQuicheApi())
             val accepted = ConcurrentLinkedQueue<CoreConnection>()
             withCoreEchoServer(api = api, onAccepted = accepted::add) { server ->
-                val doomed = connectCore(server.port)
-                val healthy = connectCore(server.port)
+                val doomed = connectCore(server.port, loops = loops)
+                val healthy = connectCore(server.port, loops = loops)
                 val doomedStream = doomed.connection.openStream()
                 val healthyStream = healthy.connection.openStream()
                 val first = Random(3).nextBytes(300)

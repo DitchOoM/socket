@@ -1,4 +1,4 @@
-@file:OptIn(ExperimentalDatagramApi::class)
+@file:OptIn(ExperimentalDatagramApi::class, ExperimentalAtomicApi::class)
 
 package com.ditchoom.socket.quic.core.edge
 
@@ -52,6 +52,8 @@ import kotlinx.coroutines.withContext
 import java.net.InetSocketAddress
 import java.net.StandardSocketOptions
 import java.nio.channels.DatagramChannel
+import kotlin.concurrent.atomics.AtomicReference
+import kotlin.concurrent.atomics.ExperimentalAtomicApi
 
 /**
  * A server on the run-to-completion core: one loop thread over one unconnected socket, serving every connection it
@@ -76,10 +78,27 @@ internal class CoreServer(
      * closed its socket. The loop owns the socket, so nothing here waits for a receive.
      */
     suspend fun close() {
-        val done = CompletableDeferred<Unit>()
-        loop.submit(ShutServer(parts, LoopClosed { done.complete(Unit) }))
+        val mine = Closing.Started(CompletableDeferred())
+        val done =
+            if (closing.compareAndSet(Closing.Not, mine)) {
+                loop.submit(ShutServer(parts, LoopClosed { mine.done.complete(Unit) }))
+                mine.done
+            } else {
+                (closing.load() as Closing.Started).done
+            }
         done.await()
     }
+
+    private val closing = AtomicReference<Closing>(Closing.Not)
+}
+
+/** Whether [CoreServer.close] has been called; later calls wait for the first. */
+private sealed interface Closing {
+    object Not : Closing
+
+    class Started(
+        val done: CompletableDeferred<Unit>,
+    ) : Closing
 }
 
 /** Loop work: the server's owner closes it. */

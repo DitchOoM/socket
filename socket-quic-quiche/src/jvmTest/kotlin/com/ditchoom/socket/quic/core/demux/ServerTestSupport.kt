@@ -30,6 +30,7 @@ import kotlin.time.Duration.Companion.seconds
  */
 internal suspend fun withCoreEchoServer(
     config: ServerConfig = ServerConfig(),
+    bind: InetSocketAddress = InetSocketAddress("127.0.0.1", 0),
     wrapIo: (DatagramBatchIo) -> DatagramBatchIo = { it },
     api: QuicheApi = loadQuicheApi(),
     onAccepted: (CoreConnection) -> Unit = {},
@@ -37,7 +38,7 @@ internal suspend fun withCoreEchoServer(
 ) {
     val server =
         coreServe(
-            bind = InetSocketAddress("127.0.0.1", 0),
+            bind = bind,
             tls = coreTlsConfig(),
             options = coreTestOptions,
             factory = BufferFactory.Default,
