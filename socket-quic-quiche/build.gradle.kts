@@ -25,15 +25,18 @@ plugins {
     signing
 }
 
-// The host OS decides which quiche shared library and JNI shim the JVM tests load (isMacOS / isLinux).
-// K/N targets: Apple on a macOS host, Linux on a Linux host, unless `-PappleTargets=false` /
-// `-PlinuxTargets=false` (see the root build.gradle.kts).
+// The host OS decides which quiche shared library and JNI shim the JVM tests load (isMacOS / isLinux). It
+// is the JVM's own answer, on any architecture: Kotlin/Native's `HostManager.hostIsLinux` is true only on
+// linux-x64, the one Linux host its compiler runs on, and a linux-arm64 host builds JVM natives too.
+// K/N targets: Apple on a macOS host, Linux on a Linux host Kotlin/Native compiles on, unless
+// `-PappleTargets=false` / `-PlinuxTargets=false` (see the root build.gradle.kts).
 val isMacOS = org.jetbrains.kotlin.konan.target.HostManager.hostIsMac
-val isLinux = org.jetbrains.kotlin.konan.target.HostManager.hostIsLinux
+val isLinux = System.getProperty("os.name") == "Linux"
 val appleTargets =
     isMacOS && providers.gradleProperty("appleTargets").map(String::toBooleanStrict).getOrElse(true)
 val linuxTargets =
-    isLinux && providers.gradleProperty("linuxTargets").map(String::toBooleanStrict).getOrElse(true)
+    org.jetbrains.kotlin.konan.target.HostManager.hostIsLinux &&
+        providers.gradleProperty("linuxTargets").map(String::toBooleanStrict).getOrElse(true)
 val isRunningOnGithub = System.getenv("GITHUB_REPOSITORY")?.isNotBlank() == true
 val isMainBranchGithub = System.getenv("GITHUB_REF") == "refs/heads/main"
 
@@ -4415,6 +4418,34 @@ tasks.register<Copy>("stageQuicheNativeResources") {
         val libDir = projectDir.resolve("libs/quiche/$platform/lib")
         into("META-INF/native/$platform") {
             from(libDir) { include(*libs.toTypedArray()) }
+        }
+    }
+    // A jar built on this host loads this host's natives: staging without them is a build failure here,
+    // not an UnsatisfiedLinkError in whoever runs the jar. (A Windows host stages what CI cross-built.)
+    val hostArch = if (System.getProperty("os.arch") == "aarch64") "arm64" else "x64"
+    val required =
+        (listOf("linux").filter { isLinux } + listOf("macos").filter { isMacOS }).flatMap { os ->
+            if (quicEchoAllArches) listOf("$os-x64", "$os-arm64") else listOf("$os-$hostArch")
+        }
+    val stagedDir = stagedNativeResourcesDir
+    val expected = required.associateWith { nativeLibsByPlatform.getValue(it) }
+    doLast {
+        val missing =
+            expected.flatMap { (platform, libs) ->
+                libs.map { "META-INF/native/$platform/$it" }.filterNot {
+                    stagedDir
+                        .get()
+                        .file(it)
+                        .asFile.isFile
+                }
+            }
+        if (missing.isNotEmpty()) {
+            throw GradleException(
+                "stageQuicheNativeResources staged no ${missing.joinToString()} on a ${System.getProperty("os.name")} " +
+                    "$hostArch host: the " +
+                    "native build for this host did not run or produced nothing, and a jar built from this " +
+                    "directory could not load quiche.",
+            )
         }
     }
 
