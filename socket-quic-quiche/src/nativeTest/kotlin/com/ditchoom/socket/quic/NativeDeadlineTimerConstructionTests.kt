@@ -1,28 +1,23 @@
-@file:OptIn(NativeRuntimeApi::class, ExperimentalForeignApi::class, ExperimentalNativeApi::class)
+@file:OptIn(NativeRuntimeApi::class)
 
 package com.ditchoom.socket.quic
 
-import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.cinterop.alloc
-import kotlinx.cinterop.memScoped
-import kotlinx.cinterop.ptr
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.newFixedThreadPoolContext
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
-import platform.posix.RUSAGE_SELF
-import platform.posix.getrusage
-import platform.posix.rusage
 import kotlin.concurrent.AtomicLong
-import kotlin.experimental.ExperimentalNativeApi
 import kotlin.native.runtime.GC
 import kotlin.native.runtime.NativeRuntimeApi
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
-/** [NativeDeadlineTimer]'s construction under contention. */
-class NativeDeadlineTimerConstructionTests {
+/** [NativeDeadlineTimer]'s construction under contention. Each platform family supplies [peakResidentBytes]. */
+abstract class NativeDeadlineTimerConstructionTests {
+    /** The process's peak resident set, in bytes (`ru_maxrss`). */
+    abstract fun peakResidentBytes(): Long
+
     /** The timer thread reads the timer's fields from its first pass, so it must not start before every one is set. */
     @Test
     fun aNewTimersThreadNeverSeesItHalfBuilt() =
@@ -64,15 +59,6 @@ class NativeDeadlineTimerConstructionTests {
                     "bytes the process's peak resident set grew by during the test; the bound is $MAX_GROWTH_BYTES",
                 )
             }
-        }
-
-    /** The process's peak resident set: `ru_maxrss`, which is bytes on Apple platforms and KiB on Linux. */
-    private fun peakResidentBytes(): Long =
-        memScoped {
-            val usage = alloc<rusage>()
-            getrusage(RUSAGE_SELF, usage.ptr)
-            val raw = usage.ru_maxrss.toLong()
-            if (Platform.osFamily == OsFamily.LINUX) raw * 1024 else raw
         }
 
     private companion object {
