@@ -21,6 +21,11 @@ name: QUIC interop gate
 on:
   workflow_call:
     inputs:
+      await-natives:
+        description: "Wait for this run's natives artifacts instead of expecting them to exist (a caller that runs beside the natives jobs, not after them)."
+        required: false
+        default: false
+        type: boolean
       version:
         description: "The version to build the endpoint jar with."
         required: true
@@ -81,6 +86,12 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
+      - uses: ./.github/actions/await-artifact
+        if: ${{ inputs.await-natives }}
+        with:
+          name: quiche-linux-natives-full
+          producer: "quiche natives (Linux/Android/Windows)"
+          github-token: ${{ github.token }}
       - uses: ./.github/actions/linux-quiche-env
         with:
           natives-run-id: ${{ inputs.natives-run-id }}
