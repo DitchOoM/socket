@@ -149,6 +149,7 @@ internal suspend fun writeAbsorbingBackpressure(
  *   on a virtual thread (a virtual thread in `select()` holds its carrier).
  *
  * Not thread-safe; confine [receive] and `send` each to one coroutine, per the buffer-flow contract.
+ * [close] may come from any thread and never waits for either: see [SocketCalls].
  */
 @ExperimentalDatagramApi
 internal abstract class NioDatagramChannelCore(
@@ -164,6 +165,9 @@ internal abstract class NioDatagramChannelCore(
 
     @Volatile
     private var closed = false
+
+    /** Every `receive`, `send` and `write` on [channel] runs inside this, and its close goes through it. */
+    private val socketCalls = SocketCalls { runCatching { channel.close() } }
 
     override val isOpen: Boolean get() = !closed && channel.isOpen
 
@@ -251,7 +255,7 @@ internal abstract class NioDatagramChannelCore(
                 // under load) costs one syscall and no wait. Only an empty socket waits for readiness.
                 // Both modes receive via channel.receive(): on a connected socket the reported sender IS
                 // the connected peer (value-equal via InternedJvmSocketAddress).
-                val sender = channel.receive(byteBuffer) as InetSocketAddress?
+                val sender = socketCalls.during { channel.receive(byteBuffer) } as InetSocketAddress?
                 if (sender == null) {
                     // Give the staging buffer back while waiting: a wait can last the connection's life.
                     payload = null
@@ -358,7 +362,9 @@ internal abstract class NioDatagramChannelCore(
         }
         // Off the Android main thread, where even a non-blocking `sendto` is a violation; anywhere else
         // (the QUIC datapath included) this sends in place.
-        offTheAndroidMainThread { writeAbsorbingBackpressure(view, write, ::awaitWritable, limit = maxWritableSize) }
+        offTheAndroidMainThread {
+            writeAbsorbingBackpressure(view, { socketCalls.during { write(it) } }, ::awaitWritable, limit = maxWritableSize)
+        }
     }
 
     /**
@@ -380,7 +386,7 @@ internal abstract class NioDatagramChannelCore(
         }
         val written =
             try {
-                write(view)
+                socketCalls.during { write(view) }
             } catch (e: IOException) {
                 throw DatagramSendException(jvmSendErrorOf(e, attempted = length, limit = maxWritableSize))
             }
@@ -424,7 +430,7 @@ internal abstract class NioDatagramChannelCore(
         // Every loop this channel waited on wakes its waiters before the key is cancelled: a cancelled
         // key is never selected, so a waiter the loop was not told about would wait forever.
         for (loop in loops) loop.channelClosing(channel)
-        runCatching { channel.close() }
+        socketCalls.close()
     }
 }
 

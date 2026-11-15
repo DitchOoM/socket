@@ -2917,3 +2917,41 @@ jobs:
             echo "::error::BoringSSL archive has NO __asan_ symbols — CFLAGS did not propagate to the C build; ASAN covers quiche's Rust only"
             exit 1
           fi
+
+  # A linux-arm64 HOST builds and stages its own JVM natives. Every other job here is a linux-x64 host that
+  # cross-builds arm64; on an arm64 host the JVM native build was skipped (it was gated on Kotlin/Native's
+  # host check, which is linux-x64 only) and the jar came out without libquiche, silently.
+  jvm-natives-arm64-host:
+    name: "JVM natives on a linux-arm64 host"
+    if: ${{ !inputs.natives-only }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install the native toolchain
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential perl pkg-config cmake nasm libclang-dev unzip
+      - name: Build the quic-echo jar (no Kotlin/Native targets on this host)
+        run: ./gradlew :socket-quic-quiche:quicEchoJar -PlinuxTargets=false --no-configuration-cache
+      - name: The jar holds this host's natives, built for arm64
+        run: |
+          set -euo pipefail
+          jar=test-harness/quic-echo/quic-echo.jar
+          listing=$(unzip -l "$jar")
+          for lib in libquiche.so libquiche_jni.so; do
+            if ! grep -q "META-INF/native/linux-arm64/$lib" <<<"$listing"; then
+              echo "::error::$jar has no META-INF/native/linux-arm64/$lib"
+              grep "META-INF/native" <<<"$listing" || echo "(no natives at all)"
+              exit 1
+            fi
+          done
+          grep "META-INF/native" <<<"$listing"
+          unzip -p "$jar" META-INF/native/linux-arm64/libquiche.so > /tmp/libquiche.so
+          file /tmp/libquiche.so | tee /dev/stderr | grep -q "ARM aarch64"
