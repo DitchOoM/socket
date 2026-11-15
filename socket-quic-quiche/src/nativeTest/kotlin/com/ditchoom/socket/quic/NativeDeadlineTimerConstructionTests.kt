@@ -66,7 +66,7 @@ abstract class NativeDeadlineTimerConstructionTests {
     private companion object {
         const val BUILDERS = 64
         const val CONSTRUCTIONS = 300
-        const val COLLECT_EVERY = 4
+        const val COLLECT_EVERY = 2
         const val MAX_GROWTH_BYTES = 512L * 1024 * 1024
         const val WITHIN_BOUND = 0L
     }
