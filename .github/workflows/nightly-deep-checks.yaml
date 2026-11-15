@@ -524,9 +524,122 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  # The benchmark APKs under androidx.benchmark's method-tracing pass and nothing else, on the API 34
+  # emulator (where the process has crashed in JIT code as a traced pass ends) and on API 36 as the
+  # control. Shares heap_verify_minutes. What a hit proves: scripts/android-trace-crash-hunt.sh.
+  android-trace-crash-hunt:
+    name: "Android method-tracing crash hunt (API ${{ matrix.api-level }}, ${{ matrix.shard }})"
+    runs-on: ubuntu-latest
+    timeout-minutes: 160
+    strategy:
+      fail-fast: false
+      # Four emulators on API 34: the crash is about 1 run in 130 and an hour fits about 64 runs.
+      matrix:
+        include:
+          - { api-level: 34, shard: a }
+          - { api-level: 34, shard: b }
+          - { api-level: 34, shard: c }
+          - { api-level: 34, shard: d }
+          - { api-level: 36, shard: control }
+    env:
+      ORG_GRADLE_PROJECT_linuxTargets: "false"
+      HUNT_MINUTES: ${{ inputs.heap_verify_minutes || '60' }}
+    steps:
+      - name: Check the duration input
+        run: |
+          case "$HUNT_MINUTES" in '' | *[!0-9]*) echo "::error::heap_verify_minutes must be a whole number, got '$HUNT_MINUTES'"; exit 1 ;; esac
+          [ "$HUNT_MINUTES" -le 100 ] || { echo "::error::heap_verify_minutes must be at most 100 (job timeout is 160)"; exit 1; }
+
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+
+      - name: Restore Gradle wrapper distribution
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.gradle/wrapper
+          key: gradle-wrapper-linux-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+
+      - name: Restore Gradle dependency cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.gradle/caches
+          key: gradle-linux-${{ hashFiles('gradle/libs.versions.toml', '**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-linux-
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Install libclang
+        uses: ./.github/actions/apt-install-cached
+        with:
+          purpose: "android trace crash hunt: libclang for boring-sys bindgen"
+          packages: libclang-dev
+
+      - name: Install Rust + cargo-ndk
+        uses: dtolnay/rust-toolchain@stable
+      - run: |
+          rustup target add x86_64-linux-android aarch64-linux-android armv7-linux-androideabi
+          cargo install cargo-ndk
+
+      - name: Build Android QUIC native libs
+        run: .github/scripts/gradle-retry.sh :socket-quic-quiche:buildAndroidNativeLibs --no-configuration-cache
+
+      - name: Build the R8 and no-R8 benchmark APKs
+        run: |
+          set -euo pipefail
+          mkdir -p apks
+          .github/scripts/gradle-retry.sh :benchmark-android:assembleReleaseAndroidTest -PbenchMinify=true --no-configuration-cache
+          cp "$(find benchmarks/android-micro/build/outputs/apk/androidTest -name '*.apk' | head -1)" apks/R8.apk
+          # R8's name mapping for that APK, kept with the crash evidence: a tombstone of the R8 build
+          # names methods by their minified names.
+          mkdir -p trace-crash-hunt
+          find benchmarks/android-micro/build/outputs/mapping -name 'mapping.txt' | while read -r m; do
+            gzip -c "$m" > "trace-crash-hunt/r8-mapping-$(basename "$(dirname "$m")").txt.gz"
+          done
+          ls -la trace-crash-hunt
+          .github/scripts/gradle-retry.sh :benchmark-android:assembleReleaseAndroidTest -PbenchMinify=false --no-configuration-cache
+          cp "$(find benchmarks/android-micro/build/outputs/apk/androidTest -name '*.apk' | head -1)" apks/noR8.apk
+
+      - name: Install + verify Android Emulator and system image
+        timeout-minutes: 6
+        run: bash scripts/android-sdk-emulator.sh install ${{ matrix.api-level }}
+
+      - name: Loop the benchmark APKs under method tracing
+        timeout-minutes: 125
+        uses: reactivecircus/android-emulator-runner@v2
+        env:
+          ANDROID_EMULATOR_WAIT_TIME_BEFORE_KILL: 1
+        with:
+          api-level: ${{ matrix.api-level }}
+          target: default
+          arch: x86_64
+          disk-size: 4096M
+          emulator-options: -no-snapshot -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          pre-emulator-launch-script: bash scripts/android-sdk-emulator.sh verify ${{ matrix.api-level }}
+          # ONE line: the action runs each line of `script:` in its own shell.
+          script: bash scripts/android-trace-crash-hunt.sh ${{ matrix.api-level }} "$HUNT_MINUTES" apks
+
+      - name: Upload crash evidence
+        if: ${{ failure() || cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: trace-crash-hunt-api${{ matrix.api-level }}-${{ matrix.shard }}
+          path: trace-crash-hunt/
+          if-no-files-found: ignore
+          retention-days: 14
+
   report:
     name: Report
-    needs: [find-natives, lincheck, fuzz-jvm, fuzz-native, soak-linux-x64, soak-macos-arm64, android-heap-verify]
+    needs: [find-natives, lincheck, fuzz-jvm, fuzz-native, soak-linux-x64, soak-macos-arm64, android-heap-verify, android-trace-crash-hunt]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
