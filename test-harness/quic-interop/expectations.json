@@ -602,8 +602,8 @@
       "handshakeloss": "pass",
       "ipv6": "pass",
       "longrtt": {
-        "known-failure": {
-          "why": "peer: in this test kwik's client uses a zero-length source connection id and still sends NEW_CONNECTION_ID frames (five, with connection id length 0, in its first 1-RTT packet); RFC 9000 §19.15 makes that a FRAME_ENCODING_ERROR, which our server closes with. kwik's other tests use 8-byte ids and pass",
+        "flaky": {
+          "why": "peer: in this test kwik's client uses a zero-length source connection id and still sends NEW_CONNECTION_ID frames (five, with connection id length 0, in its first 1-RTT packet); RFC 9000 §19.15 makes that a FRAME_ENCODING_ERROR, which our server closes with. kwik's other tests use 8-byte ids and pass; in longrtt the transfer sometimes completes before our close reaches it (failed in run 43671782277, passed in 43674919594)",
           "signature": {
             "kind": "frame-encoding-error-from-zero-length-cid-peer"
           }
