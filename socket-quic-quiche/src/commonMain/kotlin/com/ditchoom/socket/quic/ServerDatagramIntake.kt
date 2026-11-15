@@ -5,6 +5,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ChannelResult
 import kotlinx.coroutines.selects.SelectClause1
+import kotlinx.coroutines.yield
 
 /**
  * Takes datagrams off a server's socket as fast as the socket gives them and holds up to [capacity] for the
@@ -40,8 +41,13 @@ internal class ServerDatagramIntake(
     /**
      * The reader: receives until the socket closes or its coroutine is cancelled. A receive that throws is
      * retried, unless the server is closing.
+     *
+     * After [DATAGRAMS_PER_READ] datagrams in a row it yields, so the receive loop, which may share its thread,
+     * routes them before more are read: a reader that read until the socket was empty held every datagram back
+     * for as long as others kept arriving.
      */
     suspend fun read() {
+        var readInARow = 0
         try {
             while (true) {
                 val result =
@@ -54,6 +60,10 @@ internal class ServerDatagramIntake(
                     }
                 held.send(result)
                 if (result is DatagramReadResult.Closed) break
+                if (++readInARow == DATAGRAMS_PER_READ) {
+                    readInARow = 0
+                    yield()
+                }
             }
         } catch (_: CancellationException) {
         } finally {
@@ -82,6 +92,9 @@ internal class ServerDatagramIntake(
     companion object {
         /** Two datagrams (data and acknowledgement) from each of 2,048 connections arriving at once. */
         const val HELD_DATAGRAMS = 4096
+
+        /** Datagrams the reader takes in a row before it lets the receive loop route them. */
+        const val DATAGRAMS_PER_READ = 32
 
         /** Datagrams the receive loop routes in a row before it lets other work on its thread run. */
         const val DATAGRAMS_PER_PASS = 256
