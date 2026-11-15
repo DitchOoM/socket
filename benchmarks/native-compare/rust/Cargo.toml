@@ -1,0 +1,20 @@
+[package]
+name = "native-compare"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+libc = "0.2"
+quiche = "=0.30.0"
+quinn = "0.11"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "macros", "time", "sync"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+
+# The repo's libquiche is built against this boring crate (gradle/libs.versions.toml: quicheBoringCrate).
+[dependencies.boring]
+version = "=4.22.0"

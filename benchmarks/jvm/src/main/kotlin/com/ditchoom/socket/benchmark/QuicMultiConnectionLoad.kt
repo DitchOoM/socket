@@ -151,7 +151,7 @@ private fun latencyPhase(
     setup: suspend (QuicScope) -> LatencyOp,
 ) {
     val phase = Phase(warmupS, measureS)
-    val lat = Array(m) { LongArray(2_000_000) }
+    val lat = Array(m) { LongArray(4096) }
     val counts = IntArray(m)
     val workers =
         clients.mapIndexed { i, scope ->
@@ -162,7 +162,10 @@ private fun latencyPhase(
                         val t0 = System.nanoTime()
                         op.op()
                         val dt = System.nanoTime() - t0
-                        if (phase.measuring() && counts[i] < lat[i].size) lat[i][counts[i]++] = dt
+                        if (phase.measuring()) {
+                            if (counts[i] == lat[i].size) lat[i] = lat[i].copyOf(counts[i] * 2)
+                            lat[i][counts[i]++] = dt
+                        }
                     }
                     op.close()
                 }

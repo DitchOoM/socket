@@ -5818,6 +5818,8 @@ kotlin {
             }
         }
         linuxX64 {
+            // An optimized (-opt) test binary for benchmarks/native-compare, like macosArm64's below.
+            binaries { test(listOf(org.jetbrains.kotlin.gradle.plugin.mpp.NativeBuildType.RELEASE)) }
             val quicheLibDir = projectDir.resolve("libs/quiche/linux-x64/lib")
             val quicheStatic = quicheLibDir.resolve("libquiche.a")
             val generatedDef = projectDir.resolve("build/generated/cinterop/Quiche-linux-x64.def")
@@ -5890,6 +5892,8 @@ kotlin {
             }
         }
         linuxArm64 {
+            // An optimized (-opt) test binary for benchmarks/native-compare, like linuxX64's above.
+            binaries { test(listOf(org.jetbrains.kotlin.gradle.plugin.mpp.NativeBuildType.RELEASE)) }
             val quicheLibDir = projectDir.resolve("libs/quiche/linux-arm64/lib")
             val quicheStatic = quicheLibDir.resolve("libquiche.a")
             val generatedDef = projectDir.resolve("build/generated/cinterop/Quiche-linux-arm64.def")
