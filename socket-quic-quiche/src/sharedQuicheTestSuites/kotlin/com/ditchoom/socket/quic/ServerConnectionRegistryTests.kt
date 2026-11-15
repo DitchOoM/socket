@@ -354,10 +354,17 @@ class ServerConnectionRegistryTests {
     private class SteppedClock : DriverClock {
         var elapsed: Duration = Duration.ZERO
 
+        /** How many times a mark this clock handed out has been asked how long ago it was. */
+        var reads = 0
+            private set
+
         override fun markNow(): TimeMark {
             val origin = elapsed
             return object : TimeMark {
-                override fun elapsedNow(): Duration = elapsed - origin
+                override fun elapsedNow(): Duration {
+                    reads++
+                    return elapsed - origin
+                }
             }
         }
 
@@ -366,6 +373,111 @@ class ServerConnectionRegistryTests {
             wait: Duration,
         ) = throw UnsupportedOperationException("the registry arms no timers")
     }
+
+    /** A routing table that counts the lookups made in it. */
+    private class CountingRoutes(
+        private val routes: MutableMap<ConnectionIdKey, DcidRoute.Live> = mutableMapOf(),
+    ) : MutableMap<ConnectionIdKey, DcidRoute.Live> by routes {
+        var lookups = 0
+            private set
+
+        override fun get(key: ConnectionIdKey): DcidRoute.Live? {
+            lookups++
+            return routes[key]
+        }
+    }
+
+    // ── What one datagram or one close costs does not grow with the connections a server holds ──
+
+    @Test
+    fun aDrainWithNothingQueuedReadsTheClockOnceHoweverManyConnectionsClosedRecently() =
+        runQuicTest {
+            val clock = SteppedClock()
+            val registry = ServerConnectionRegistry<Int>(StubQuicheApi(), clock)
+            repeat(MANY_CONNECTIONS) { connection ->
+                val driver = idleDriver()
+                registry.routeDriver(cid(connection shr 8, connection and 0xFF), driver)
+                registry.enqueueCleanup(driver)
+            }
+            registry.drainRoutingQueues()
+
+            val before = clock.reads
+            registry.drainRoutingQueues()
+
+            assertEquals(1, clock.reads - before, "one drain, with $MANY_CONNECTIONS connections inside their draining period")
+        }
+
+    @Test
+    fun everyDatagramOfAConnectionIsAnsweredWithItsOneRoute() =
+        runQuicTest {
+            val registry = ServerConnectionRegistry<Int>(StubQuicheApi())
+            val driver = idleDriver()
+            registry.routeDriver(cid(1), driver)
+            registry.routeDriver(cid(2), driver)
+            registry.enqueueRouteProjection(driver, setOf(cid(2), cid(3)))
+            registry.drainRoutingQueues()
+
+            val route = assertIs<DcidRoute.Live>(registry.routeFor(cid(1)))
+            assertSame(driver, route.driver)
+            repeat(3) { assertSame(route, registry.routeFor(cid(1)), "a second datagram is answered with the same route") }
+            assertSame(route, registry.routeFor(cid(2)), "another id of the connection has the same route")
+            assertSame(route, registry.routeFor(cid(3)), "and so has one a projection added")
+        }
+
+    @Test
+    fun recentlyClosedConnectionsAreForgottenOnceTheirDrainingPeriodEnds() =
+        runQuicTest {
+            val clock = SteppedClock()
+            val registry = ServerConnectionRegistry<Int>(StubQuicheApi(), clock)
+            val first = idleDriver()
+            val second = idleDriver()
+            registry.routeDriver(cid(1), first)
+            registry.routeDriver(cid(2), second)
+            registry.deRouteDriver(first)
+            clock.elapsed += 1.milliseconds
+            registry.deRouteDriver(second)
+
+            clock.elapsed += first.drainingPeriod - 1.milliseconds
+            registry.drainRoutingQueues()
+            assertIs<DcidRoute.Unknown>(registry.routeFor(cid(1)), "the first connection's period has ended")
+            assertIs<DcidRoute.RecentlyClosed>(registry.routeFor(cid(2)), "the second closed a millisecond later")
+
+            // A connection that takes the first one's id and closes is recognised for its own period.
+            val reborn = idleDriver()
+            registry.routeDriver(cid(1), reborn)
+            registry.deRouteDriver(reborn)
+            clock.elapsed += 1.milliseconds
+            registry.drainRoutingQueues()
+            assertIs<DcidRoute.Unknown>(registry.routeFor(cid(2)))
+            assertIs<DcidRoute.RecentlyClosed>(registry.routeFor(cid(1)), "the later connection's period is still running")
+        }
+
+    @Test
+    fun retiringAConnectionLooksUpItsOwnIdsNotTheWholeRoutingTable() =
+        runQuicTest {
+            val routes = CountingRoutes()
+            val registry = ServerConnectionRegistry<Int>(StubQuicheApi(), SteppedClock(), routes)
+            repeat(MANY_CONNECTIONS) { connection ->
+                registry.routeDriver(cid(connection shr 8, connection and 0xFF), idleDriver())
+            }
+            val closing = idleDriver()
+            registry.routeDriver(cid(0xF0, 1), closing)
+            registry.routeDriver(cid(0xF0, 2), closing)
+            registry.enqueueRouteProjection(closing, setOf(cid(0xF0, 2), cid(0xF0, 3)))
+            registry.drainRoutingQueues()
+
+            val before = routes.lookups
+            registry.deRouteDriver(closing)
+
+            assertTrue(
+                routes.lookups - before <= IDS_HELD_BY_THE_CLOSING_CONNECTION + 1,
+                "retiring one connection of ${MANY_CONNECTIONS + 1} made ${routes.lookups - before} lookups in the routing table",
+            )
+            for (id in listOf(cid(0xF0, 1), cid(0xF0, 2), cid(0xF0, 3))) {
+                assertIs<DcidRoute.RecentlyClosed>(registry.routeFor(id), "every id the connection held is recently closed")
+            }
+            assertIs<DcidRoute.Live>(registry.routeFor(cid(0, 7)), "another connection still routes")
+        }
 
     @Test
     fun aClosedConnectionsIdsAreRecentlyClosedForItsDrainingPeriodThenUnknown() =
@@ -454,5 +566,8 @@ class ServerConnectionRegistryTests {
         /** More connections than any fixed-size table of peers a server might keep. */
         const val MANY_CONNECTIONS = 1024
         const val SPRAYED_ADDRESSES = 100
+
+        /** Two registered at accept (one of them also projected) and one more projected. */
+        const val IDS_HELD_BY_THE_CLOSING_CONNECTION = 4
     }
 }

@@ -38,14 +38,21 @@ internal class ServerConnectionRegistry<K>(
     private val api: QuicheApi,
     /** The clock a closed connection's draining period is measured on — the drivers' own. */
     private val clock: DriverClock = RealDriverClock,
-) {
     /**
      * Routing table: every DCID and server-issued SCID currently mapping to a live driver. NOT a
      * lifecycle set — an entry is dropped the instant a driver stops routing new packets (see
      * [drainRoutingQueues] and the trySend-failure path via [deRouteDriver]) even though that
      * driver's run loop may still be draining buffered packets. Single-writer (receive loop).
+     *
+     * Each value is its connection's one [DcidRoute.Live], so answering a datagram's route is a lookup
+     * and nothing else.
      */
-    private val connectionsByDcid = mutableMapOf<ConnectionIdKey, QuicheDriver>()
+    private val connectionsByDcid: MutableMap<ConnectionIdKey, DcidRoute.Live> = mutableMapOf(),
+) {
+    /** The [DcidRoute.Live] every id of a driver routes to, from its first route to its retirement. Receive-loop only. */
+    private val liveRoutes = mutableMapOf<QuicheDriver, DcidRoute.Live>()
+
+    private fun liveRouteOf(driver: QuicheDriver): DcidRoute.Live = liveRoutes.getOrPut(driver) { DcidRoute.Live(driver) }
 
     /**
      * Hand-off of newly accepted connections from the receive loop to `connections()`'s consumer loop.
@@ -106,6 +113,13 @@ internal class ServerConnectionRegistry<K>(
     private val projectedRoutes = mutableMapOf<QuicheDriver, Set<ConnectionIdKey>>()
 
     /**
+     * The ids [routeDriver] registered for each driver outside any projection. With [projectedRoutes]
+     * it names every id a driver can hold a route for, so retiring one visits its own ids and not the
+     * table. Receive-loop only.
+     */
+    private val registeredRoutes = mutableMapOf<QuicheDriver, MutableList<ConnectionIdKey>>()
+
+    /**
      * The [ConnectionPaths] of every connection that is still routed or was tracked and not yet
      * retired. Keyed by connection, so the paths one peer is seen on are bounded for that peer alone:
      * no number of other connections, and no spray of source addresses at one of them, costs a
@@ -125,7 +139,8 @@ internal class ServerConnectionRegistry<K>(
      * it ends. A closing or draining endpoint keeps enough state to recognise packets for a connection it
      * has just closed, and on every close some arrive: the peer's packets already in flight, its own
      * CONNECTION_CLOSE crossing ours. Recognised, they are an expected drop rather than an unknown id.
-     * Receive-loop only; expired entries are pruned on every [drainRoutingQueues].
+     * Receive-loop only; an entry is dropped when its [Retirement] expires, or by the first lookup after
+     * its own period ends.
      */
     private val closedConnections = mutableMapOf<ConnectionIdKey, TimeMark>()
 
@@ -134,19 +149,28 @@ internal class ServerConnectionRegistry<K>(
      * fact, so it is recorded as one rather than left to the order the queues happen to drain in: a
      * driver's last turn can enqueue a projection *after* the receive loop has applied its cleanup, and
      * a projection applied on its own finds no baseline and would route the dead driver again and erase
-     * its [closedConnections] entries. A projection for a retired driver is dropped. Entries live as
-     * long as the ids they retired (the pruning in [drainRoutingQueues]): the driver's loop ends within
-     * a turn of its cleanup, far inside one draining period. Receive-loop only.
+     * its [closedConnections] entries. A projection for a retired driver is dropped. Entries live at
+     * least as long as the ids they retired: the driver's loop ends within a turn of its cleanup, far
+     * inside one draining period. Receive-loop only.
      */
     private val retiredDrivers = mutableMapOf<QuicheDriver, TimeMark>()
 
+    /**
+     * Every retirement whose [closedConnections] and [retiredDrivers] entries are still held, oldest
+     * first. [drainRoutingQueues] forgets from the front while the front has expired, so a drain reads
+     * the clock once however many connections closed recently. Draining periods differ per connection,
+     * so an entry can wait behind an older, longer one; it is forgotten late, never early, and
+     * [routeFor] judges each id by its own period. Receive-loop only.
+     */
+    private val retirements = ArrayDeque<Retirement>()
+
     // --- Routing table (receive-loop coroutine only) ---
 
-    fun driverForDcid(key: ConnectionIdKey): QuicheDriver? = connectionsByDcid[key]
+    fun driverForDcid(key: ConnectionIdKey): QuicheDriver? = connectionsByDcid[key]?.driver
 
     /** Where a datagram addressed to [key] belongs. See [DcidRoute]. */
     fun routeFor(key: ConnectionIdKey): DcidRoute {
-        connectionsByDcid[key]?.let { return DcidRoute.Live(it) }
+        connectionsByDcid[key]?.let { return it }
         val until = closedConnections[key] ?: return DcidRoute.Unknown
         if (until.hasPassedNow()) {
             closedConnections.remove(key)
@@ -158,13 +182,16 @@ internal class ServerConnectionRegistry<K>(
     /** Move every id routed to [driver] into [closedConnections] for the driver's draining period. */
     private fun retire(driver: QuicheDriver) {
         val until = clock.markNow() + driver.drainingPeriod
-        val keys = connectionsByDcid.keys.filter { connectionsByDcid[it] === driver }
-        for (key in keys) {
+        val held = registeredRoutes.remove(driver).orEmpty() + projectedRoutes.remove(driver).orEmpty()
+        // Identity-checked: an id this driver once held may route another connection by now.
+        val closed = held.filter { connectionsByDcid[it]?.driver === driver }
+        for (key in closed) {
             connectionsByDcid.remove(key)
             closedConnections[key] = until
         }
-        projectedRoutes.remove(driver)
+        liveRoutes.remove(driver)
         retiredDrivers[driver] = until
+        retirements.addLast(Retirement(driver, closed, until))
         pathsByDriver.remove(driver)?.let { if (!it.freeIdle()) retiredPaths += it }
     }
 
@@ -172,8 +199,9 @@ internal class ServerConnectionRegistry<K>(
         key: ConnectionIdKey,
         driver: QuicheDriver,
     ) {
-        connectionsByDcid[key] = driver
+        connectionsByDcid[key] = liveRouteOf(driver)
         closedConnections.remove(key)
+        registeredRoutes.getOrPut(driver) { mutableListOf() } += key
     }
 
     /**
@@ -214,8 +242,25 @@ internal class ServerConnectionRegistry<K>(
      * any order leaves the map at the newest one per driver.)
      */
     fun drainRoutingQueues(): List<ConnectionIdKey> {
+        val contested =
+            when (val first = routeProjectionQueue.tryReceive().getOrNull()) {
+                null -> emptyList()
+                else -> applyProjections(first)
+            }
+        while (true) {
+            val driver = driverCleanupQueue.tryReceive().getOrNull() ?: break
+            retire(driver)
+        }
+        forgetExpiredRetirements()
+        if (retiredPaths.isNotEmpty()) retiredPaths.removeAll { it.freeIdle() }
+        return contested
+    }
+
+    /** Apply [first] and every projection queued behind it; the ids a second driver could not have. */
+    private fun applyProjections(first: RouteProjection): List<ConnectionIdKey> {
         // Each projection is a whole set, so only a driver's newest matters.
         val newest = LinkedHashMap<QuicheDriver, RouteProjection>()
+        newest[first.driver] = first
         while (true) {
             val projection = routeProjectionQueue.tryReceive().getOrNull() ?: break
             newest[projection.driver] = projection
@@ -224,18 +269,21 @@ internal class ServerConnectionRegistry<K>(
         // Every release before any claim: the same bytes re-issued by a later connection are claimed
         // in the same drain that releases them, in whichever order the queue holds the two projections.
         for (projection in projections) releaseDroppedIds(projection)
-        var contested: MutableList<ConnectionIdKey>? = null
-        for (projection in projections) {
-            claimIds(projection) { key -> (contested ?: mutableListOf<ConnectionIdKey>().also { contested = it }).add(key) }
-        }
+        val contested = mutableListOf<ConnectionIdKey>()
+        for (projection in projections) claimIds(projection) { key -> contested += key }
+        return contested
+    }
+
+    private fun forgetExpiredRetirements() {
         while (true) {
-            val driver = driverCleanupQueue.tryReceive().getOrNull() ?: break
-            retire(driver)
+            val oldest = retirements.firstOrNull() ?: return
+            if (!oldest.until.hasPassedNow()) return
+            retirements.removeFirst()
+            // Only what this retirement recorded: the id may have been closed again since, by a later
+            // connection, and the driver retired again by its cleanup.
+            for (key in oldest.closed) if (closedConnections[key] == oldest.until) closedConnections.remove(key)
+            if (retiredDrivers[oldest.driver] == oldest.until) retiredDrivers.remove(oldest.driver)
         }
-        closedConnections.values.removeAll { it.hasPassedNow() }
-        retiredDrivers.values.removeAll { it.hasPassedNow() }
-        if (retiredPaths.isNotEmpty()) retiredPaths.removeAll { it.freeIdle() }
-        return contested.orEmpty()
     }
 
     /**
@@ -247,7 +295,7 @@ internal class ServerConnectionRegistry<K>(
         val driver = projection.driver
         val previous = projectedRoutes[driver] ?: return
         for (key in previous) {
-            if (key !in projection.sourceIds && connectionsByDcid[key] === driver) connectionsByDcid.remove(key)
+            if (key !in projection.sourceIds && connectionsByDcid[key]?.driver === driver) connectionsByDcid.remove(key)
         }
     }
 
@@ -275,11 +323,11 @@ internal class ServerConnectionRegistry<K>(
         val claimed = HashSet<ConnectionIdKey>(projection.sourceIds.size)
         for (key in projection.sourceIds) {
             val holder = connectionsByDcid[key]
-            if (holder != null && holder !== driver) {
+            if (holder != null && holder.driver !== driver) {
                 contested(key)
                 continue
             }
-            connectionsByDcid[key] = driver
+            connectionsByDcid[key] = liveRouteOf(driver)
             closedConnections.remove(key)
             claimed += key
         }
@@ -331,8 +379,12 @@ internal class ServerConnectionRegistry<K>(
         }
         liveDrivers.clear()
         connectionsByDcid.clear()
+        liveRoutes.clear()
         projectedRoutes.clear()
+        registeredRoutes.clear()
         closedConnections.clear()
+        retiredDrivers.clear()
+        retirements.clear()
         for (paths in pathsByDriver.values) paths.freeAll()
         pathsByDriver.clear()
         for (paths in retiredPaths) paths.freeAll()
@@ -367,6 +419,7 @@ internal class ServerConnectionRegistry<K>(
     internal fun deRouteAllDriversForTest() {
         connectionsByDcid.clear()
         projectedRoutes.clear()
+        registeredRoutes.clear()
     }
 }
 
@@ -397,6 +450,13 @@ internal fun decodeConnectionIdSlots(
     }
     return ids
 }
+
+/** One driver's retirement: the ids it [closed], recognised as recently closed [until] its draining period ends. */
+internal class Retirement(
+    val driver: QuicheDriver,
+    val closed: List<ConnectionIdKey>,
+    val until: TimeMark,
+)
 
 /** Where a datagram belongs, by its destination connection id. */
 internal sealed interface DcidRoute {
