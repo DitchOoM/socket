@@ -215,7 +215,12 @@
       "longrtt": "pass",
       "multiplexing": "pass",
       "rebind-addr": {
-        "known-failure": "unclassified: fails in both runs; needs log analysis"
+        "flaky": {
+          "why": "peer: the runner fails the test when mvfst's first packet to our client's new address carries no PATH_CHALLENGE, a check of the server's own packets; our client downloads every file and exits 0. Failed in 12 of 14 gate runs on 2026-11-15, passed in 2 (run 43674919594 failed, run 43674774605 passed)",
+          "signature": {
+            "kind": "peer-server-did-not-challenge-new-path-first"
+          }
+        }
       },
       "rebind-port": "pass",
       "resumption": "pass",

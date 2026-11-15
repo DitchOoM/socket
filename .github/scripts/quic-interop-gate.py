@@ -355,6 +355,22 @@ class PeerRequestNeverArrived:
         return NotMatched()
 
 
+class PeerServerDidNotChallengeNewPathFirst:
+    """The runner failed a rebinding test because the peer server's first packet to our client's new address
+    carried no PATH_CHALLENGE, while our client exited 0: the verdict is on the server's own packets."""
+
+    kind = "peer-server-did-not-challenge-new-path-first"
+
+    def __init__(self, fields):
+        no_fields(self.kind, fields)
+
+    def match(self, test_evidence, peer_role):
+        count = test_evidence.get("runner", {}).get("server_first_packets_without_path_challenge", 0)
+        if peer_role == "server" and count and test_evidence.get("exits", {}).get("client") == 0:
+            return Matched(f"runner: the server's first packet on {count} new path(s) had no PATH_CHALLENGE; our client exited 0")
+        return NotMatched()
+
+
 class AnyOf:
     """The cell has more than one proven failure; a failure must match one of the listed signatures (each a
     {"kind": ..., ...fields} of another kind)."""
@@ -418,6 +434,7 @@ SIGNATURES = {
         SimLostEveryDatagramToThePeer,
         PeerLeftADownloadEmpty,
         PeerRequestNeverArrived,
+        PeerServerDidNotChallengeNewPathFirst,
         AnyOf,
     )
 }

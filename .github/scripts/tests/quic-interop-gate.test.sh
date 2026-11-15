@@ -292,6 +292,9 @@ check_kind "an unanswered connection is not the signature" "$empty" our-server "
 never='{"kind":"peer-request-never-arrived","min_packets":5}'
 check_kind "a confirmed connection that never got a request" "$never" our-server "{\"connections\":[$(hconn a '"handshake_done_sent_ms":35' | sed 's/"fin_sent_streams":1/"fin_sent_streams":0/;s/"rx_packets":5/"rx_packets":10/')]}" Matched
 check_kind "a connection with a request is not the signature" "$never" our-server "{\"connections\":[$(hconn a '"handshake_done_sent_ms":35,"first_request_ms":40' | sed 's/"fin_sent_streams":1/"fin_sent_streams":0/;s/"rx_packets":5/"rx_packets":10/')]}" NotMatched
+nochallenge='{"kind":"peer-server-did-not-challenge-new-path-first"}'
+check_kind "the server's first packet on a new path had no challenge" "$nochallenge" our-client "{\"connections\":[$(hconn a)],\"exits\":{\"client\":0},\"runner\":{\"server_first_packets_without_path_challenge\":2}}" Matched
+check_kind "a client that failed is not the signature" "$nochallenge" our-client "{\"connections\":[$(hconn a)],\"exits\":{\"client\":1},\"runner\":{\"server_first_packets_without_path_challenge\":2}}" NotMatched
 anyof='{"kind":"any-of","signatures":[{"kind":"peer-request-arrived-late","after_s":20},{"kind":"sim-lost-every-datagram-to-the-peer","min_datagrams":5}]}'
 check_kind "any-of matches its second signature" "$anyof" our-server "{\"connections\":[$(hconn a '"tx_crypto":0')],\"sim_to_peer\":[{\"port\":40390,\"datagrams\":5,\"delivered\":0}]}" Matched
 check_kind "any-of matches neither" "$anyof" our-server "{\"connections\":[$(hconn a)]}" NotMatched
@@ -316,12 +319,13 @@ mkdir -p "$d/client/qlog"
 {
   printf "sim  | Corrupting 1200 bytes 193.167.100.100:443 -> 193.167.0.100:40000 offset 3 0x1 -> 0x2\n"
   printf "sim  | Forwarding 1200 bytes 193.167.100.100:443 -> 193.167.0.100:40001, corrupted 1/2\n"
+  printf "First server packet on new path (('193.167.100.100', 443), ('193.167.0.224', 59022)) did not contain a PATH_CHALLENGE frame\n"
   printf "2026-11-14 15:23:49,438 Expected 50 handshakes. Got: 51\n"
 } >"$d/output.txt"
 python3 -I "$extract" "$tmp/logs2" our-client p "$tmp/ev2.json"
 expect_rc "the extractor reads a handshake-loss test" $? 0
 ev="$(python3 -c 'import json,sys; t=json.load(open(sys.argv[1]))["tests"]["handshakeloss"]; c=t["connections"][0]; print(c["rx_initial_acks"], c["rx_initial_crypto"], c["rx_handshake_crypto"], c["last_rx_ms"], c["end_ms"], c["bytes_in_flight_at_end"], c["longest_wait_in_flight_ms"], c["peer_resets"], c["close_reason"], t["runner"], t["sim_to_us"])' "$tmp/ev2.json")"
-expect "the extractor reads the handshake facts" "$ev" "1 0 1 1090.0 31091.0 0 1000.0 [{'final_size': 0, 'our_copies': 2, 'stream_id': 0}] Failed to establish connection {'handshakes': {'expected': 50, 'got': 51}} [{'datagrams': 1, 'delivered': 0, 'port': 40000}, {'datagrams': 1, 'delivered': 1, 'port': 40001}]"
+expect "the extractor reads the handshake facts" "$ev" "1 0 1 1090.0 31091.0 0 1000.0 [{'final_size': 0, 'our_copies': 2, 'stream_id': 0}] Failed to establish connection {'handshakes': {'expected': 50, 'got': 51}, 'server_first_packets_without_path_challenge': 1} [{'datagrams': 1, 'delivered': 0, 'port': 40000}, {'datagrams': 1, 'delivered': 1, 'port': 40001}]"
 
 echo "quic-interop-gate: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

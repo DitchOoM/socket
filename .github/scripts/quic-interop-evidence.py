@@ -27,6 +27,7 @@ import sys
 EXIT_LINE = re.compile(r"\b(client|server|sim) exited with code (\d+)")
 HANDSHAKES = re.compile(r"Expected (\d+) handshakes\. Got: (\d+)")
 TIME_LIMIT = re.compile(r"took longer than (\d+)s")
+NO_PATH_CHALLENGE = re.compile(r"First server packet on new path .* did not contain a PATH_CHALLENGE frame")
 EMPTY_DOWNLOAD = re.compile(r"doesn't match\. Original: \d+ bytes, downloaded: 0 bytes")
 SIM_DATAGRAM = re.compile(r"\b(Forwarding|Corrupting|Dropping) \d+ bytes [\d.]+:\d+ -> ([\d.]+):(\d+)")
 OUR_ADDRESS = {"client": "193.167.0.100", "server": "193.167.100.100"}
@@ -169,6 +170,10 @@ def runner_output(output_txt, side):
                 m = TIME_LIMIT.search(line)
                 if m:
                     runner["time_limit_s"] = int(m.group(1))
+                if NO_PATH_CHALLENGE.search(line):
+                    runner["server_first_packets_without_path_challenge"] = (
+                        runner.get("server_first_packets_without_path_challenge", 0) + 1
+                    )
                 if EMPTY_DOWNLOAD.search(line):
                     runner["empty_downloads"] = runner.get("empty_downloads", 0) + 1
                 for action, address, port in SIM_DATAGRAM.findall(line):
