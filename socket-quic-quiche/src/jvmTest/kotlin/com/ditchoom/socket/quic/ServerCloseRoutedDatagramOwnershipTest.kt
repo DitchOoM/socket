@@ -195,6 +195,8 @@ class ServerCloseRoutedDatagramOwnershipTest {
                 tuning =
                     QuicheDriverTuning(
                         driverContext = Dispatchers.Default + CoroutineExceptionHandler { _, t -> escaped += t },
+                        // Rendezvous, so one frozen datagram parks the server's reader in its hand-off.
+                        serverHeldDatagrams = Channel.RENDEZVOUS,
                     ),
                 api = api,
             )

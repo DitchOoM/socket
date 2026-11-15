@@ -30,13 +30,13 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.yield
 import kotlin.concurrent.atomics.AtomicBoolean
 import kotlin.concurrent.atomics.AtomicInt
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.concurrent.atomics.decrementAndFetch
 import kotlin.concurrent.atomics.incrementAndFetch
 import kotlin.coroutines.CoroutineContext
-import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.Duration
 
 /**
@@ -110,6 +110,7 @@ internal class SharedQuicheServer(
     // [QuicServer.alpnProtocols] — quiche keeps the offer inside the opaque config, so the build
     // functions pass QuicOptions.alpnProtocols through rather than reading it back out.
     override val alpnProtocols: List<String> = emptyList(),
+    override val udpReceiveBuffers: List<UdpReceiveBuffer> = emptyList(),
     /**
      * Where the receive loop, its packet reader and the Version Negotiation replies run: an event loop
      * of their own in production on JVM/Android, [serverReceiveDispatcher] otherwise. Held until the
@@ -294,41 +295,39 @@ internal class SharedQuicheServer(
             val tokenBuf = bufferFactory.allocate(MAX_TOKEN_LEN)
             val tokenLenBuf = bufferFactory.allocate(8)
 
-            // The loop owns what it takes; a datagram the reader offered and the loop never took — the
-            // reader cancelled mid-hand-off as the server closes — is freed by the channel, never by
-            // the reader, whose cancelled `send` cannot say whether the hand-off happened.
-            val inbound = Channel<DatagramReadResult>(Channel.RENDEZVOUS, onUndeliveredElement = ::freeUndeliveredDatagram)
-            val reader =
-                launch(receiveContext + CoroutineName("quic-server/receive/$port/reader")) {
-                    try {
-                        while (true) {
-                            val r =
-                                try {
-                                    channel.receive()
-                                } catch (e: CancellationException) {
-                                    throw e
-                                } catch (_: Exception) {
-                                    // Transient receive error — retry, unless the server is closing, in
-                                    // which case fall through to shut the reader down.
-                                    if (closed.load()) break else continue
-                                }
-                            inbound.send(r)
-                            if (r is DatagramReadResult.Closed) break
-                        }
-                    } catch (_: CancellationException) {
-                    } finally {
-                        inbound.close()
-                    }
-                }
+            val intake = ServerDatagramIntake(channel::receive, isClosing = closed::load, capacity = tuning.serverHeldDatagrams)
+            val reader = launch(receiveContext + CoroutineName("quic-server/receive/$port/reader")) { intake.read() }
 
             val wake = Any()
             val readerDone = Any()
             try {
+                // Datagrams routed since the loop last waited or yielded.
+                var routedInARow = 0
                 loop@ while (!closed.load()) {
+                    val held =
+                        if (routedInARow <
+                            ServerDatagramIntake.DATAGRAMS_PER_PASS
+                        ) {
+                            intake.poll()
+                        } else {
+                            ServerDatagramIntake.Held.Nothing
+                        }
                     val item =
-                        select<Any?> {
-                            inbound.onReceiveCatching { res -> res.getOrNull() ?: readerDone }
-                            wakeups.onReceive { wake }
+                        when (held) {
+                            is ServerDatagramIntake.Held.Next -> {
+                                routedInARow++
+                                held.result
+                            }
+                            ServerDatagramIntake.Held.ReaderEnded -> readerDone
+                            ServerDatagramIntake.Held.Nothing -> {
+                                // A full pass: whatever else shares this thread runs before the next.
+                                if (routedInARow >= ServerDatagramIntake.DATAGRAMS_PER_PASS) yield()
+                                routedInARow = 0
+                                select<Any?> {
+                                    intake.onNext { res -> res.getOrNull() ?: readerDone }
+                                    wakeups.onReceive { wake }
+                                }
+                            }
                         }
                     // Register spare SCIDs / drop closed drivers BEFORE routing anything. Receive-loop only.
                     for (key in registry.drainRoutingQueues()) {
@@ -503,6 +502,7 @@ internal class SharedQuicheServer(
                 }
             } finally {
                 reader.cancel()
+                intake.freeHeld()
                 versionBuf.freeNativeMemory()
                 typeBuf.freeNativeMemory()
                 scidBuf.freeNativeMemory()

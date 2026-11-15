@@ -53,6 +53,7 @@ import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.CPointer
 import kotlinx.cinterop.IntVar
 import kotlinx.cinterop.MemScope
+import kotlinx.cinterop.UIntVar
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.allocArray
 import kotlinx.cinterop.convert
@@ -82,8 +83,11 @@ import platform.posix.IPV6_TCLASS
 import platform.posix.IP_TOS
 import platform.posix.IP_TTL
 import platform.posix.SOCK_DGRAM
+import platform.posix.SOL_SOCKET
+import platform.posix.SO_RCVBUF
 import platform.posix.close
 import platform.posix.errno
+import platform.posix.getsockopt
 import platform.posix.memset
 import platform.posix.setsockopt
 import platform.posix.sockaddr
@@ -196,6 +200,21 @@ internal abstract class IoUringDatagramChannelCore(
      */
     private val beforeSendSubmit: suspend () -> Unit = {},
 ) : DatagramChannel {
+    /** `SO_RCVBUF`, set and read back. Linux reports twice what is usable (the rest is its own bookkeeping). */
+    fun requestKernelReceiveBuffer(bytes: Int): KernelBufferGrant =
+        memScoped {
+            val wanted = alloc<IntVar>()
+            wanted.value = bytes
+            if (setsockopt(fd, SOL_SOCKET, SO_RCVBUF, wanted.ptr, sizeOf<IntVar>().convert()) != 0) {
+                return KernelBufferGrant.Unread(bytes)
+            }
+            val reported = alloc<IntVar>()
+            val length = alloc<UIntVar>()
+            length.value = sizeOf<IntVar>().convert()
+            if (getsockopt(fd, SOL_SOCKET, SO_RCVBUF, reported.ptr, length.ptr) != 0) return KernelBufferGrant.Unread(bytes)
+            KernelBufferGrant.of(bytes, reported.value / 2)
+        }
+
     /**
      * Who releases the descriptor — the last party out — in one CAS; see [LastOutHandoff].
      *

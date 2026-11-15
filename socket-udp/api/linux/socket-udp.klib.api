@@ -158,6 +158,61 @@ sealed interface com.ditchoom.socket.udp/DatagramSendError { // com.ditchoom.soc
     }
 }
 
+sealed interface com.ditchoom.socket.udp/KernelBufferGrant { // com.ditchoom.socket.udp/KernelBufferGrant|null[0]
+    final class Capped : com.ditchoom.socket.udp/KernelBufferGrant { // com.ditchoom.socket.udp/KernelBufferGrant.Capped|null[0]
+        constructor <init>(kotlin/Int, kotlin/Int) // com.ditchoom.socket.udp/KernelBufferGrant.Capped.<init>|<init>(kotlin.Int;kotlin.Int){}[0]
+
+        final val requestedBytes // com.ditchoom.socket.udp/KernelBufferGrant.Capped.requestedBytes|{}requestedBytes[0]
+            final fun <get-requestedBytes>(): kotlin/Int // com.ditchoom.socket.udp/KernelBufferGrant.Capped.requestedBytes.<get-requestedBytes>|<get-requestedBytes>(){}[0]
+        final val usableBytes // com.ditchoom.socket.udp/KernelBufferGrant.Capped.usableBytes|{}usableBytes[0]
+            final fun <get-usableBytes>(): kotlin/Int // com.ditchoom.socket.udp/KernelBufferGrant.Capped.usableBytes.<get-usableBytes>|<get-usableBytes>(){}[0]
+
+        final fun component1(): kotlin/Int // com.ditchoom.socket.udp/KernelBufferGrant.Capped.component1|component1(){}[0]
+        final fun component2(): kotlin/Int // com.ditchoom.socket.udp/KernelBufferGrant.Capped.component2|component2(){}[0]
+        final fun copy(kotlin/Int = ..., kotlin/Int = ...): com.ditchoom.socket.udp/KernelBufferGrant.Capped // com.ditchoom.socket.udp/KernelBufferGrant.Capped.copy|copy(kotlin.Int;kotlin.Int){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.udp/KernelBufferGrant.Capped.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.udp/KernelBufferGrant.Capped.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.udp/KernelBufferGrant.Capped.toString|toString(){}[0]
+    }
+
+    final class Granted : com.ditchoom.socket.udp/KernelBufferGrant { // com.ditchoom.socket.udp/KernelBufferGrant.Granted|null[0]
+        constructor <init>(kotlin/Int, kotlin/Int) // com.ditchoom.socket.udp/KernelBufferGrant.Granted.<init>|<init>(kotlin.Int;kotlin.Int){}[0]
+
+        final val requestedBytes // com.ditchoom.socket.udp/KernelBufferGrant.Granted.requestedBytes|{}requestedBytes[0]
+            final fun <get-requestedBytes>(): kotlin/Int // com.ditchoom.socket.udp/KernelBufferGrant.Granted.requestedBytes.<get-requestedBytes>|<get-requestedBytes>(){}[0]
+        final val usableBytes // com.ditchoom.socket.udp/KernelBufferGrant.Granted.usableBytes|{}usableBytes[0]
+            final fun <get-usableBytes>(): kotlin/Int // com.ditchoom.socket.udp/KernelBufferGrant.Granted.usableBytes.<get-usableBytes>|<get-usableBytes>(){}[0]
+
+        final fun component1(): kotlin/Int // com.ditchoom.socket.udp/KernelBufferGrant.Granted.component1|component1(){}[0]
+        final fun component2(): kotlin/Int // com.ditchoom.socket.udp/KernelBufferGrant.Granted.component2|component2(){}[0]
+        final fun copy(kotlin/Int = ..., kotlin/Int = ...): com.ditchoom.socket.udp/KernelBufferGrant.Granted // com.ditchoom.socket.udp/KernelBufferGrant.Granted.copy|copy(kotlin.Int;kotlin.Int){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.udp/KernelBufferGrant.Granted.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.udp/KernelBufferGrant.Granted.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.udp/KernelBufferGrant.Granted.toString|toString(){}[0]
+    }
+
+    final class Unread : com.ditchoom.socket.udp/KernelBufferGrant { // com.ditchoom.socket.udp/KernelBufferGrant.Unread|null[0]
+        constructor <init>(kotlin/Int) // com.ditchoom.socket.udp/KernelBufferGrant.Unread.<init>|<init>(kotlin.Int){}[0]
+
+        final val requestedBytes // com.ditchoom.socket.udp/KernelBufferGrant.Unread.requestedBytes|{}requestedBytes[0]
+            final fun <get-requestedBytes>(): kotlin/Int // com.ditchoom.socket.udp/KernelBufferGrant.Unread.requestedBytes.<get-requestedBytes>|<get-requestedBytes>(){}[0]
+
+        final fun component1(): kotlin/Int // com.ditchoom.socket.udp/KernelBufferGrant.Unread.component1|component1(){}[0]
+        final fun copy(kotlin/Int = ...): com.ditchoom.socket.udp/KernelBufferGrant.Unread // com.ditchoom.socket.udp/KernelBufferGrant.Unread.copy|copy(kotlin.Int){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.udp/KernelBufferGrant.Unread.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.udp/KernelBufferGrant.Unread.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.udp/KernelBufferGrant.Unread.toString|toString(){}[0]
+    }
+
+    final object Companion // com.ditchoom.socket.udp/KernelBufferGrant.Companion|null[0]
+
+    final object Unsupported : com.ditchoom.socket.udp/KernelBufferGrant { // com.ditchoom.socket.udp/KernelBufferGrant.Unsupported|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.udp/KernelBufferGrant.Unsupported.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.udp/KernelBufferGrant.Unsupported.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.udp/KernelBufferGrant.Unsupported.toString|toString(){}[0]
+    }
+}
+
 sealed interface com.ditchoom.socket.udp/MulticastInterface { // com.ditchoom.socket.udp/MulticastInterface|null[0]
     final class ByIndex : com.ditchoom.socket.udp/MulticastInterface { // com.ditchoom.socket.udp/MulticastInterface.ByIndex|null[0]
         constructor <init>(kotlin/Int) // com.ditchoom.socket.udp/MulticastInterface.ByIndex.<init>|<init>(kotlin.Int){}[0]
@@ -685,6 +740,7 @@ final const val com.ditchoom.socket.udp/SOCKADDR_IN_SIZE // com.ditchoom.socket.
     final fun <get-SOCKADDR_IN_SIZE>(): kotlin/Int // com.ditchoom.socket.udp/SOCKADDR_IN_SIZE.<get-SOCKADDR_IN_SIZE>|<get-SOCKADDR_IN_SIZE>(){}[0]
 
 final fun (com.ditchoom.buffer.flow/AddressedDatagramChannel).com.ditchoom.socket.udp/demultiplex(kotlinx.coroutines/CoroutineScope, com.ditchoom.socket.udp/TurnRelays = ..., kotlin/Int = ...): com.ditchoom.socket.udp/MultiplexedUdpSocket // com.ditchoom.socket.udp/demultiplex|demultiplex@com.ditchoom.buffer.flow.AddressedDatagramChannel(kotlinx.coroutines.CoroutineScope;com.ditchoom.socket.udp.TurnRelays;kotlin.Int){}[0]
+final fun (com.ditchoom.buffer.flow/AddressedDatagramChannel).com.ditchoom.socket.udp/requestKernelReceiveBuffer(kotlin/Int): com.ditchoom.socket.udp/KernelBufferGrant // com.ditchoom.socket.udp/requestKernelReceiveBuffer|requestKernelReceiveBuffer@com.ditchoom.buffer.flow.AddressedDatagramChannel(kotlin.Int){}[0]
 final fun (com.ditchoom.buffer/ReadBuffer).com.ditchoom.socket.udp/classifyMultiplexedDatagram(): com.ditchoom.socket.udp/MultiplexedProtocol // com.ditchoom.socket.udp/classifyMultiplexedDatagram|classifyMultiplexedDatagram@com.ditchoom.buffer.ReadBuffer(){}[0]
 final fun com.ditchoom.socket.udp/classifyMultiplexedDatagram(kotlin/Byte): com.ditchoom.socket.udp/MultiplexedProtocol // com.ditchoom.socket.udp/classifyMultiplexedDatagram|classifyMultiplexedDatagram(kotlin.Byte){}[0]
 

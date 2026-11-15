@@ -84,6 +84,7 @@ internal suspend fun buildLinuxQuicServer(
                 config = config,
                 channel = channel,
                 replySourcePinning = served.pinning,
+                udpReceiveBuffers = served.requestReceiveBuffers(binding),
                 localAddress = localAddress,
                 codec = SocketAddressCodec(linuxSockAddrLayout),
                 bufferFactory = bufferFactory,

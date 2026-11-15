@@ -171,6 +171,8 @@ abstract interface com.ditchoom.socket.quic/QuicServer { // com.ditchoom.socket.
         abstract fun <get-port>(): kotlin/Int // com.ditchoom.socket.quic/QuicServer.port.<get-port>|<get-port>(){}[0]
     open val alpnProtocols // com.ditchoom.socket.quic/QuicServer.alpnProtocols|{}alpnProtocols[0]
         open fun <get-alpnProtocols>(): kotlin.collections/List<kotlin/String> // com.ditchoom.socket.quic/QuicServer.alpnProtocols.<get-alpnProtocols>|<get-alpnProtocols>(){}[0]
+    open val udpReceiveBuffers // com.ditchoom.socket.quic/QuicServer.udpReceiveBuffers|{}udpReceiveBuffers[0]
+        open fun <get-udpReceiveBuffers>(): kotlin.collections/List<com.ditchoom.socket.quic/UdpReceiveBuffer> // com.ditchoom.socket.quic/QuicServer.udpReceiveBuffers.<get-udpReceiveBuffers>|<get-udpReceiveBuffers>(){}[0]
 
     abstract suspend fun close() // com.ditchoom.socket.quic/QuicServer.close|close(){}[0]
     abstract suspend fun connections(kotlin.coroutines/SuspendFunction1<com.ditchoom.socket.quic/QuicScope, kotlin/Unit>) // com.ditchoom.socket.quic/QuicServer.connections|connections(kotlin.coroutines.SuspendFunction1<com.ditchoom.socket.quic.QuicScope,kotlin.Unit>){}[0]
@@ -2199,6 +2201,59 @@ sealed interface com.ditchoom.socket.quic/StreamOpenPolicy { // com.ditchoom.soc
         final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/StreamOpenPolicy.UntilClosed.equals|equals(kotlin.Any?){}[0]
         final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/StreamOpenPolicy.UntilClosed.hashCode|hashCode(){}[0]
         final fun toString(): kotlin/String // com.ditchoom.socket.quic/StreamOpenPolicy.UntilClosed.toString|toString(){}[0]
+    }
+}
+
+sealed interface com.ditchoom.socket.quic/UdpReceiveBuffer { // com.ditchoom.socket.quic/UdpReceiveBuffer|null[0]
+    final class Capped : com.ditchoom.socket.quic/UdpReceiveBuffer { // com.ditchoom.socket.quic/UdpReceiveBuffer.Capped|null[0]
+        constructor <init>(kotlin/Int, kotlin/Int) // com.ditchoom.socket.quic/UdpReceiveBuffer.Capped.<init>|<init>(kotlin.Int;kotlin.Int){}[0]
+
+        final val requestedBytes // com.ditchoom.socket.quic/UdpReceiveBuffer.Capped.requestedBytes|{}requestedBytes[0]
+            final fun <get-requestedBytes>(): kotlin/Int // com.ditchoom.socket.quic/UdpReceiveBuffer.Capped.requestedBytes.<get-requestedBytes>|<get-requestedBytes>(){}[0]
+        final val usableBytes // com.ditchoom.socket.quic/UdpReceiveBuffer.Capped.usableBytes|{}usableBytes[0]
+            final fun <get-usableBytes>(): kotlin/Int // com.ditchoom.socket.quic/UdpReceiveBuffer.Capped.usableBytes.<get-usableBytes>|<get-usableBytes>(){}[0]
+
+        final fun component1(): kotlin/Int // com.ditchoom.socket.quic/UdpReceiveBuffer.Capped.component1|component1(){}[0]
+        final fun component2(): kotlin/Int // com.ditchoom.socket.quic/UdpReceiveBuffer.Capped.component2|component2(){}[0]
+        final fun copy(kotlin/Int = ..., kotlin/Int = ...): com.ditchoom.socket.quic/UdpReceiveBuffer.Capped // com.ditchoom.socket.quic/UdpReceiveBuffer.Capped.copy|copy(kotlin.Int;kotlin.Int){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/UdpReceiveBuffer.Capped.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/UdpReceiveBuffer.Capped.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/UdpReceiveBuffer.Capped.toString|toString(){}[0]
+    }
+
+    final class Granted : com.ditchoom.socket.quic/UdpReceiveBuffer { // com.ditchoom.socket.quic/UdpReceiveBuffer.Granted|null[0]
+        constructor <init>(kotlin/Int, kotlin/Int) // com.ditchoom.socket.quic/UdpReceiveBuffer.Granted.<init>|<init>(kotlin.Int;kotlin.Int){}[0]
+
+        final val requestedBytes // com.ditchoom.socket.quic/UdpReceiveBuffer.Granted.requestedBytes|{}requestedBytes[0]
+            final fun <get-requestedBytes>(): kotlin/Int // com.ditchoom.socket.quic/UdpReceiveBuffer.Granted.requestedBytes.<get-requestedBytes>|<get-requestedBytes>(){}[0]
+        final val usableBytes // com.ditchoom.socket.quic/UdpReceiveBuffer.Granted.usableBytes|{}usableBytes[0]
+            final fun <get-usableBytes>(): kotlin/Int // com.ditchoom.socket.quic/UdpReceiveBuffer.Granted.usableBytes.<get-usableBytes>|<get-usableBytes>(){}[0]
+
+        final fun component1(): kotlin/Int // com.ditchoom.socket.quic/UdpReceiveBuffer.Granted.component1|component1(){}[0]
+        final fun component2(): kotlin/Int // com.ditchoom.socket.quic/UdpReceiveBuffer.Granted.component2|component2(){}[0]
+        final fun copy(kotlin/Int = ..., kotlin/Int = ...): com.ditchoom.socket.quic/UdpReceiveBuffer.Granted // com.ditchoom.socket.quic/UdpReceiveBuffer.Granted.copy|copy(kotlin.Int;kotlin.Int){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/UdpReceiveBuffer.Granted.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/UdpReceiveBuffer.Granted.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/UdpReceiveBuffer.Granted.toString|toString(){}[0]
+    }
+
+    final class Unread : com.ditchoom.socket.quic/UdpReceiveBuffer { // com.ditchoom.socket.quic/UdpReceiveBuffer.Unread|null[0]
+        constructor <init>(kotlin/Int) // com.ditchoom.socket.quic/UdpReceiveBuffer.Unread.<init>|<init>(kotlin.Int){}[0]
+
+        final val requestedBytes // com.ditchoom.socket.quic/UdpReceiveBuffer.Unread.requestedBytes|{}requestedBytes[0]
+            final fun <get-requestedBytes>(): kotlin/Int // com.ditchoom.socket.quic/UdpReceiveBuffer.Unread.requestedBytes.<get-requestedBytes>|<get-requestedBytes>(){}[0]
+
+        final fun component1(): kotlin/Int // com.ditchoom.socket.quic/UdpReceiveBuffer.Unread.component1|component1(){}[0]
+        final fun copy(kotlin/Int = ...): com.ditchoom.socket.quic/UdpReceiveBuffer.Unread // com.ditchoom.socket.quic/UdpReceiveBuffer.Unread.copy|copy(kotlin.Int){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/UdpReceiveBuffer.Unread.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/UdpReceiveBuffer.Unread.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/UdpReceiveBuffer.Unread.toString|toString(){}[0]
+    }
+
+    final object Unsupported : com.ditchoom.socket.quic/UdpReceiveBuffer { // com.ditchoom.socket.quic/UdpReceiveBuffer.Unsupported|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/UdpReceiveBuffer.Unsupported.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/UdpReceiveBuffer.Unsupported.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/UdpReceiveBuffer.Unsupported.toString|toString(){}[0]
     }
 }
 

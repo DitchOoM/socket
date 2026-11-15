@@ -81,6 +81,35 @@ withQuicServer(
 `connections { … }` handles multiple connections concurrently — each invocation is a fresh scope.
 You can also collect `streams(): Flow<QuicByteStream>` to react to every peer-opened stream.
 
+### Many connections: the UDP receive buffer
+
+Every connection a server holds sends to the same UDP socket. Datagrams that arrive while that socket's kernel
+receive buffer is full are dropped, and a connection that loses the same packet several times in a row waits
+seconds before it tries again. The server asks the operating system for a 4 MiB buffer on each socket it opens
+and reports what it was given:
+
+```kotlin
+withQuicServer(port = 4433, tlsConfig = tls, quicOptions = options) {
+    udpReceiveBuffers.forEach { buffer ->
+        when (buffer) {
+            is UdpReceiveBuffer.Granted -> Unit
+            is UdpReceiveBuffer.Capped -> log("UDP receive buffer capped at ${buffer.usableBytes} of ${buffer.requestedBytes} bytes")
+            is UdpReceiveBuffer.Unread, UdpReceiveBuffer.Unsupported -> log("UDP receive buffer left at the host default")
+        }
+    }
+    connections { /* … */ }
+}
+```
+
+On Linux an unprivileged process is capped at `net.core.rmem_max`, which defaults to about 208 KiB (room for a
+few hundred small datagrams). A server expected to hold more than a few hundred connections should raise it:
+
+```sh
+sysctl -w net.core.rmem_max=4194304
+```
+
+`udpReceiveBuffers` is empty when the server serves a port you bound yourself: that socket is yours to size.
+
 ## The `QuicByteStream` Lifecycle
 
 A stream has independent send and receive sides. The methods map directly onto QUIC frames:
