@@ -36,7 +36,7 @@ concurrency:
 env:
   ORG_GRADLE_PROJECT_version: "0.0.0-bench"
   ROUNDS: ${{ inputs.rounds || '3' }}
-  WORKLOADS: ${{ inputs.workloads || 'qrr,qspr,qbulk,qconns64,qconns1024' }}
+  WORKLOADS: ${{ inputs.workloads || 'qconns64,qconns1024' }}
 
 jobs:
   # The natives Build and Test uploads for this same commit (it runs on the same push), waited for: natives of
