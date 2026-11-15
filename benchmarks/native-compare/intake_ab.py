@@ -42,8 +42,18 @@ def run(args, name, jar, props, conns, jfr=""):
     out = subprocess.run(cmd, capture_output=True, text=True, timeout=900).stdout
     r = {"variant": name, "conns": conns}
     udp = re.findall(r"^UDP \w+ .*?Udp: (\d+) (\d+) (\d+) (\d+) (\d+)", out, re.M)
+    udp6 = [int(v) for v in re.findall(r"^UDP \w+ .*?Udp6RcvbufErrors=(\d+)", out, re.M)]
     if len(udp) >= 2:
         r["rcvbuf_errors"] = int(udp[-1][4]) - int(udp[0][4])
+        r["rcvbuf_errors_v4"] = r["rcvbuf_errors"]
+    if len(udp6) >= 2:
+        r["rcvbuf_errors_v6"] = udp6[-1] - udp6[0]
+        r["rcvbuf_errors"] = r.get("rcvbuf_errors", 0) + r["rcvbuf_errors_v6"]
+    m = re.search(r"^UDPSOCK server_ports=\[(\d+)\] sockets_with_drops=(\d+) dropped_total=(\d+) worst_port_drops=(\S*)", out, re.M)
+    if m:
+        server_port = m.group(1)
+        on_server = sum(int(d) for p, d in (x.split(":") for x in m.group(4).split(",") if x) if p == server_port)
+        r.update(sockets_with_drops=int(m.group(2)), socket_drops_total=int(m.group(3)), server_socket_drops=on_server)
     m = re.search(r"^STUCK-COUNT (\d+)", out, re.M)
     if m:
         r["stuck"] = int(m.group(1))
@@ -77,20 +87,22 @@ def per_echo(rs, key):
 
 def table(runs, conns):
     out = [f"\n### {conns} connections\n",
-           "| variant | op/s | p50 ms | p99 ms | CPU us/op | no-echo conns | RcvbufErrors | socket-empty waits /echo | "
-           "reader yields /echo | datagrams per yield | loop waits /echo | taken by waiting /echo | taken without waiting /echo |",
-           "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+           "| variant | op/s | p50 ms | p99 ms | CPU us/op | no-echo conns | RcvbufErrors v4+v6 | socket-empty waits /echo | "
+           "reader yields /echo | datagrams per yield | loop waits /echo | taken by waiting /echo | taken without waiting /echo | "
+           "drops on the server's socket (lifetime) | sockets with drops |",
+           "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for name, _, _ in VARIANTS:
         rs = [r for r in runs if r["variant"] == name and r["conns"] == conns and "ops" in r]
         if not rs:
-            out.append(f"| {name} | failed | | | | | | | | | | | |")
+            out.append(f"| {name} | failed | | | | | | | | | | | | | |")
             continue
         per_yield = [r["datagrams_read"] / r["reader_yields"] for r in rs if r.get("reader_yields")]
         out.append(
             f"| {name} | {rng(rs, 'ops_per_s')} | {rng(rs, 'p50_ms', '{:.1f}')} | {rng(rs, 'p99_ms')} | {rng(rs, 'cpu_us_per_op')} | "
-            f"{[r.get('stuck', '-') for r in rs]} | {rng(rs, 'rcvbuf_errors')} | {per_echo(rs, 'socket_empty_waits')} | "
+            f"{[r.get('stuck', '-') for r in rs]} | {rng(rs, 'rcvbuf_errors')} (v6: {rng(rs, 'rcvbuf_errors_v6')}) | {per_echo(rs, 'socket_empty_waits')} | "
             f"{per_echo(rs, 'reader_yields')} | {'-' if not per_yield else f'{statistics.median(per_yield):.1f}'} | "
-            f"{per_echo(rs, 'loop_waits')} | {per_echo(rs, 'taken_by_waiting')} | {per_echo(rs, 'taken_without_waiting')} |")
+            f"{per_echo(rs, 'loop_waits')} | {per_echo(rs, 'taken_by_waiting')} | {per_echo(rs, 'taken_without_waiting')} | "
+            f"{rng(rs, 'server_socket_drops')} | {rng(rs, 'sockets_with_drops')} |")
     return "\n".join(out)
 
 

@@ -27,6 +27,9 @@ internal interface ManyConnectionHost {
     /** The process's peak resident set as the platform reports it (see benchmarks/native-compare/run.py). */
     fun maxRssRaw(): Long
 
+    /** Datagrams the kernel dropped per UDP socket, by local port (Linux /proc/net/udp and udp6); empty elsewhere. */
+    fun socketDrops(): String = ""
+
     /** Counters of the platform's own (measurement only); empty where there are none. */
     fun platformCounters(): String = ""
 
@@ -121,6 +124,7 @@ internal suspend fun manyConnectionEcho(
             val cpuUs = host.cpuMicros() - cpu0
             println("INTAKE end ${IntakeExperiment.counters()} ${host.platformCounters()}")
             println("UDP after ${host.udpCounters()}")
+            println("UDPSOCK server_ports=$ports ${host.socketDrops()}")
             reportProgress(firstDone, opStarted, started.elapsedNow().inWholeNanoseconds)
             reportDrivers(clientScopes, serverScopes, counts, connectedAfterNanos)
             reportResult(host, conns, samples, counts, window, cpuUs, connectSeconds)

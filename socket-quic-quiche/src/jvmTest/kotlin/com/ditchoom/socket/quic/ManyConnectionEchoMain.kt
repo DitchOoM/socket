@@ -54,10 +54,35 @@ fun main(args: Array<String>) {
 
             override fun platformCounters(): String = "socket_empty_waits=${com.ditchoom.socket.udp.ReceiveWaits.count.get()}"
 
+            override fun socketDrops(): String {
+                // Each row: sk, RefCnt..., local_address:port, ..., drops (the last column), port in hex.
+                val byPort =
+                    listOf("/proc/net/udp", "/proc/net/udp6")
+                        .map(::File)
+                        .filter { it.exists() }
+                        .flatMap { it.readLines().drop(1) }
+                        .mapNotNull { row ->
+                            val columns = row.trim().split(Regex("\\s+"))
+                            val port = columns.getOrNull(1)?.substringAfterLast(':')?.toIntOrNull(16)
+                            val drops = columns.lastOrNull()?.toLongOrNull()
+                            if (port == null || drops == null || drops == 0L) null else port to drops
+                        }
+                val total = byPort.sumOf { it.second }
+                val worst = byPort.sortedByDescending { it.second }.take(4).joinToString(",") { "${it.first}:${it.second}" }
+                return "sockets_with_drops=${byPort.size} dropped_total=$total worst_port_drops=$worst"
+            }
+
             override fun udpCounters(): String {
                 val snmp = File("/proc/net/snmp")
                 if (!snmp.exists()) return "unavailable (no /proc/net/snmp)"
-                return snmp.readLines().filter { it.startsWith("Udp:") }.joinToString(" | ")
+                // A dual-stack (IPv6) socket's drops are counted in snmp6, not on the IPv4 line.
+                val v6 = File("/proc/net/snmp6").takeIf { it.exists() }?.readLines().orEmpty()
+                val udp6 =
+                    v6
+                        .filter {
+                            it.startsWith("Udp6RcvbufErrors") || it.startsWith("Udp6InDatagrams")
+                        }.joinToString(" ") { it.replace(Regex("\\s+"), "=") }
+                return snmp.readLines().filter { it.startsWith("Udp:") }.joinToString(" | ") + " | " + udp6
             }
         }
     val code =
