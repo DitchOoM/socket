@@ -41,6 +41,7 @@ import sys
 MIGRATION_TEST = "active-migration"
 CELL_FILE = re.compile(r"((?:[a-z0-9]+-)*our-(?:client-migrating|client|server-raised-streams|server))__([^.]+)\.json")
 STREAM_LIMIT_ERROR = 0x4
+FRAME_ENCODING_ERROR = 0x7
 SIGNAL_EXIT_BASE = 128
 
 
@@ -379,12 +380,32 @@ class AnyOf:
         return NotMatched()
 
 
+class FrameEncodingErrorFromZeroLengthCidPeer:
+    """Our endpoint closed with FRAME_ENCODING_ERROR on a connection whose peer uses a zero-length source
+    connection id (its Initial's scil is 0). Such a peer has no connection ids to issue, so a NEW_CONNECTION_ID
+    from it carries an invalid length (RFC 9000 §19.15); quiche's qlog does not record the frame it rejected."""
+
+    kind = "frame-encoding-error-from-zero-length-cid-peer"
+
+    def __init__(self, fields):
+        if fields:
+            raise ExpectationError(f"{self.kind} takes no fields, got {sorted(fields)}")
+
+    def match(self, test_evidence, peer_role):
+        for c in test_evidence.get("connections", []):
+            closed = {"space": "transport", "code": FRAME_ENCODING_ERROR} in c["local_closes"]
+            if closed and c.get("peer_source_cid_lengths") == [0]:
+                return Matched("peer's source connection id is zero-length; we closed 0x7 (FRAME_ENCODING_ERROR)")
+        return NotMatched()
+
+
 SIGNATURES = {
     s.kind: s
     for s in (
         PeerExceededStreamLimit,
         PeerProcessDied,
         MigrationRefusedPeerForbids,
+        FrameEncodingErrorFromZeroLengthCidPeer,
         PeerSilentUntilOurTimeout,
         PeerNeverResentServerHello,
         PeerFinishedNeverArrived,
