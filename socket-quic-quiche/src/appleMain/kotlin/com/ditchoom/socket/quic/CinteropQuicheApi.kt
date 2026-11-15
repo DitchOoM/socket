@@ -1242,6 +1242,14 @@ internal object CinteropQuicheApi : QuicheApi, QuicheRandomPin {
         return si.from_len.toInt()
     }
 
+    override fun sendInfoAtNanos(info: QuicheSendInfo): Long {
+        val at =
+            info.handle
+                .toCPointer<quiche_send_info>()!!
+                .pointed.at
+        return at.tv_sec.toLong() * 1_000_000_000L + at.tv_nsec.toLong()
+    }
+
     // --- sockaddr decode (slice 3 migration) ---
     // BSD/Darwin layout differs from Linux: sa_len (uint8) at byte 0, sa_family (uint8) at byte 1
     // (Linux has no sa_len and stores sa_family as a uint16 LE at byte 0). The port (BE uint16 at

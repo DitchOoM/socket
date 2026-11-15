@@ -253,6 +253,7 @@ internal class Conn(
         }
     private var hold: LoopHold = LoopHold.Out
     private var timer: TimerState = TimerState.Unarmed
+    private var sendHold: SendHold = SendHold.None
     private val writeWaiters = MutableLongSet()
     val counts = ConnCounts()
     internal var lifecycle: ConnLifecycle = ConnLifecycle.Handshaking
@@ -522,6 +523,7 @@ internal class Conn(
         failed: FailureCause,
     ): Collected =
         try {
+            sendHold = SendHold.None
             writeOutput(out)
         } catch (late: Exception) {
             when (failed) {
@@ -704,12 +706,28 @@ internal class Conn(
         }
     }
 
+    /**
+     * Writes quiche's output into [out] at the pace quiche asks for. Each datagram carries the time its pacer wants
+     * it on the wire; once one is due later than [PACING_ALLOWANCE_NANOS] from now, collecting stops and the
+     * connection holds its sending until then ([rearm] arms the deadline). That datagram is already written, so it
+     * leaves up to one pacing interval early, and no datagram after it does. The allowance lets a pass send
+     * everything due within the next millisecond at once: a pacing interval is often shorter than a loop can sleep,
+     * and waking for each datagram would cost more than it smooths.
+     */
     private fun writeOutput(out: SendBatch): Collected {
+        val now = clock.nowNanos()
+        if (sendHold.holdsAt(now)) return Collected.Everything
+        sendHold = SendHold.None
         while (out.room() === Room.Open) {
             val offset = out.nextOffset()
             val written = api.connSend(handle, out.address + offset, out.limits.maxDatagramSize, path.sendInfo)
             if (written <= 0) return Collected.Everything
             out.commit(written, path.target)
+            val due = api.sendInfoAtNanos(path.sendInfo)
+            if (SendHold.pacesAt(due, now)) {
+                sendHold = SendHold(due)
+                return Collected.Everything
+            }
         }
         return Collected.MoreWaiting
     }
@@ -721,8 +739,14 @@ internal class Conn(
      */
     private fun rearm() {
         val wait = api.connTimeoutNanos(handle)
-        if (wait == NO_TIMEOUT_NANOS) return
-        val due = clock.nowNanos() + wait
+        val now = clock.nowNanos()
+        val held = sendHold
+        val due =
+            when {
+                wait == NO_TIMEOUT_NANOS -> if (held.isHolding) held.dueNanos else return
+                held.isHolding -> minOf(now + wait, held.dueNanos)
+                else -> now + wait
+            }
         when (val armed = timer) {
             is TimerState.Armed -> if (armed.node.isArmed() && armed.node.dueNanos <= due) return
             TimerState.Unarmed -> Unit
@@ -858,6 +882,41 @@ private fun copyDatagram(
     datagram.buffer.setLimit(length)
     into.write(datagram.buffer)
 }
+
+/**
+ * The time before which the connection sends nothing, because quiche's pacer scheduled its last datagram then.
+ * [None] when it is not holding. A value class: it lives in a field and is replaced on every pacing step.
+ */
+@kotlin.jvm.JvmInline
+private value class SendHold(
+    val dueNanos: Long,
+) {
+    val isHolding: Boolean get() = dueNanos != NOT_HOLDING
+
+    /** Whether the hold still keeps datagrams in at [now]: the next one is due later than the allowance. */
+    fun holdsAt(now: Long): Boolean = isHolding && dueNanos - now > PACING_ALLOWANCE_NANOS
+
+    companion object {
+        val None = SendHold(NOT_HOLDING)
+
+        /**
+         * Whether a datagram due at [due] has to wait at [now]. A time further ahead than [PACING_LIMIT_NANOS] is not
+         * a pacing time (a clock libquiche reads that this loop's does not): the datagram goes at once.
+         */
+        fun pacesAt(
+            due: Long,
+            now: Long,
+        ): Boolean = due - now in (PACING_ALLOWANCE_NANOS + 1)..PACING_LIMIT_NANOS
+    }
+}
+
+private const val NOT_HOLDING = Long.MIN_VALUE
+
+/** A datagram due this soon is sent now. */
+internal const val PACING_ALLOWANCE_NANOS = 1_000_000L
+
+/** Quiche paces within a round trip; a delay beyond this is not pacing and is not obeyed. */
+private const val PACING_LIMIT_NANOS = 1_000_000_000L
 
 private sealed interface TimerState {
     object Unarmed : TimerState

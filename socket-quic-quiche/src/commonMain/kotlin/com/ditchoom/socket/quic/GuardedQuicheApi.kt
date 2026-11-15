@@ -449,6 +449,11 @@ internal class GuardedQuicheApi(
         return delegate.sendInfoFromAddr(info)
     }
 
+    override fun sendInfoAtNanos(info: QuicheSendInfo): Long {
+        guard.assertOnLoop(LoopSite.Quiche)
+        return delegate.sendInfoAtNanos(info)
+    }
+
     override fun sendInfoFromAddrLen(info: QuicheSendInfo): Int {
         guard.assertOnLoop(LoopSite.Quiche)
         return delegate.sendInfoFromAddrLen(info)

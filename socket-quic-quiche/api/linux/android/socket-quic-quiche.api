@@ -203,6 +203,7 @@ public final class com/ditchoom/socket/quic/JniQuicheApi : com/ditchoom/socket/q
 	public fun recvInfoFree-RNyYMFw (J)V
 	public fun recvInfoNew-u6CMxgY (JIJI)J
 	public fun retry (JIJIJIJIIJI)I
+	public fun sendInfoAtNanos-Ny8-tdU (J)J
 	public fun sendInfoFree-Ny8-tdU (J)V
 	public fun sendInfoFromAddr-Ny8-tdU (J)J
 	public fun sendInfoFromAddrLen-Ny8-tdU (J)I
@@ -685,6 +686,7 @@ public abstract interface class com/ditchoom/socket/quic/QuicheApi {
 	public abstract fun recvInfoFree-RNyYMFw (J)V
 	public abstract fun recvInfoNew-u6CMxgY (JIJI)J
 	public abstract fun retry (JIJIJIJIIJI)I
+	public fun sendInfoAtNanos-Ny8-tdU (J)J
 	public abstract fun sendInfoFree-Ny8-tdU (J)V
 	public abstract fun sendInfoFromAddr-Ny8-tdU (J)J
 	public abstract fun sendInfoFromAddrLen-Ny8-tdU (J)I
@@ -720,6 +722,7 @@ public final class com/ditchoom/socket/quic/QuicheApi$DefaultImpls {
 	public static fun connStreamRecvStep-CtlJxC8 (Lcom/ditchoom/socket/quic/QuicheApi;JJJI)J
 	public static fun connTimeoutNanos-ObL0uzk (Lcom/ditchoom/socket/quic/QuicheApi;J)J
 	public static fun connTraceId-RTtnfzo (Lcom/ditchoom/socket/quic/QuicheApi;JJI)I
+	public static fun sendInfoAtNanos-Ny8-tdU (Lcom/ditchoom/socket/quic/QuicheApi;J)J
 	public static fun setThreadVirtualTimeNanos (Lcom/ditchoom/socket/quic/QuicheApi;J)V
 	public static fun streamIterNextId-mqD17U0 (Lcom/ditchoom/socket/quic/QuicheApi;J)J
 }

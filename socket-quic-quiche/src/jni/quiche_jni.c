@@ -1050,6 +1050,11 @@ JNIEXPORT jint JNICALL JNI_FN(nSendInfoFromAddrLen)(JNIEnv *env, jclass cls, jlo
     return (jint)info->from_len;
 }
 
+JNIEXPORT jlong JNICALL JNI_FN(nSendInfoAtNanos)(JNIEnv *env, jclass cls, jlong ptr) {
+    quiche_send_info *info = (quiche_send_info *)(uintptr_t)ptr;
+    return (jlong)info->at.tv_sec * 1000000000LL + (jlong)info->at.tv_nsec;
+}
+
 /* --- sockaddr decode (slice 3 migration) ---
  * Native code knows the platform's sockaddr layout (sa_family value, field
  * offsets), so the JVM side never branches on OS for the JNI backend. The

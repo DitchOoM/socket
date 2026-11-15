@@ -1655,6 +1655,10 @@ class FfmQuicheApi private constructor(
 
     override fun sendInfoFromAddrLen(info: QuicheSendInfo): Int = NATIVE.get(JAVA_INT, info.handle + SEND_INFO_FROM_LEN_OFFSET)
 
+    override fun sendInfoAtNanos(info: QuicheSendInfo): Long =
+        NATIVE.get(JAVA_LONG, info.handle + SEND_INFO_AT_OFFSET) * 1_000_000_000L +
+            NATIVE.get(JAVA_LONG, info.handle + SEND_INFO_AT_OFFSET + 8)
+
     // --- sockaddr decode (slice 3 migration) ---
     // FFM reads the struct directly. The JVM runs on Linux/macOS/Windows, so this
     // must mirror SockAddrUtil's encode layout: BSD puts sin_len at byte 0 and
@@ -1731,6 +1735,7 @@ class FfmQuicheApi private constructor(
         private const val SEND_INFO_SIZE = 288
         private const val SEND_INFO_TO_OFFSET = 136 // after sockaddr_storage(128) + socklen_t(4) + pad(4)
         private const val SEND_INFO_TO_LEN_OFFSET = 264 // after to sockaddr_storage(128)
+        private const val SEND_INFO_AT_OFFSET = 272 // struct timespec after to_len(4) + pad(4)
         private const val SEND_INFO_FROM_LEN_OFFSET = 128 // after from sockaddr_storage(128)
 
         fun create(libraryPath: String): FfmQuicheApi {

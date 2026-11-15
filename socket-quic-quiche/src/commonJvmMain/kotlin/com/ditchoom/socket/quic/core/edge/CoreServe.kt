@@ -39,6 +39,8 @@ import com.ditchoom.socket.quic.core.udp.NioOneByOne
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.ReceiveBuffer
 import com.ditchoom.socket.quic.core.udp.SendBatch
+import com.ditchoom.socket.quic.core.udp.SocketBuffers
+import com.ditchoom.socket.quic.core.udp.SocketReport
 import com.ditchoom.socket.quic.core.udp.toPathKey
 import com.ditchoom.socket.quic.encodeAlpnList
 import com.ditchoom.socket.quic.toNativeSockAddr
@@ -50,7 +52,6 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.consumeAsFlow
 import kotlinx.coroutines.withContext
 import java.net.InetSocketAddress
-import java.net.StandardSocketOptions
 import java.nio.channels.DatagramChannel
 import kotlin.concurrent.atomics.AtomicReference
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
@@ -67,6 +68,8 @@ internal class CoreServer(
     val parts: ServerParts,
     val counts: ServerCounts,
     private val accepted: Channel<CoreConnection>,
+    /** The socket's granted buffer sizes, and its drop count on demand. */
+    val socket: SocketReport,
 ) {
     /** The next established connection; raises the failure that ended the server if it failed, or a closed-channel exception once closed. */
     suspend fun accept(): CoreConnection = accepted.receive()
@@ -127,9 +130,10 @@ internal suspend fun coreServe(
     writePolicy: WritePolicy,
     config: ServerConfig = ServerConfig(),
     wrapIo: (DatagramBatchIo) -> DatagramBatchIo = { it },
+    buffers: SocketBuffers = SocketBuffers.Default,
 ): CoreServer =
     withContext(Dispatchers.IO) {
-        serveOnThisThread(bind, tls, options, factory, api, readPolicy, writePolicy, config, wrapIo)
+        serveOnThisThread(bind, tls, options, factory, api, readPolicy, writePolicy, config, wrapIo, buffers)
     }
 
 private fun serveOnThisThread(
@@ -142,6 +146,7 @@ private fun serveOnThisThread(
     writePolicy: WritePolicy,
     serverConfig: ServerConfig,
     wrapIo: (DatagramBatchIo) -> DatagramBatchIo,
+    buffers: SocketBuffers,
 ): CoreServer {
     val quicheConfig = api.configNew(QUIC_V1)
     writeNullTerminatedString(tls.certChainPath, factory).use { path ->
@@ -157,8 +162,7 @@ private fun serveOnThisThread(
     api.applySessionTicketKeys(quicheConfig, tls.sessionTicketKeys, factory)
 
     val channel = DatagramChannel.open()
-    channel.setOption(StandardSocketOptions.SO_RCVBUF, SOCKET_BUFFER)
-    channel.setOption(StandardSocketOptions.SO_SNDBUF, SOCKET_BUFFER)
+    val granted = buffers.applyTo(channel)
     channel.bind(bind)
     channel.configureBlocking(false)
     val boundAddress = channel.localAddress as InetSocketAddress
@@ -222,7 +226,7 @@ private fun serveOnThisThread(
     val loop = Loop(SelectorWait(channel, clock), clock, io, parts, receive, send, CallerLanes.Of(callerSends))
     parts.attach(loop)
     startLoop(loop, SERVER_THREAD)
-    return CoreServer(boundAddress.port, loop, parts, counts, accepted)
+    return CoreServer(boundAddress.port, loop, parts, counts, accepted, SocketReport(granted, boundAddress.port))
 }
 
 /** The name of the server loop's thread. */
@@ -234,5 +238,4 @@ private const val CALLER_LANES = 16
 private const val CALLER_BATCH = 16
 private const val COPY_SLOTS = 16
 private const val MAX_DATAGRAM = 1500
-private const val SOCKET_BUFFER = 4 shl 20
 private const val MAX_PEERS_CACHED = 1 shl 16

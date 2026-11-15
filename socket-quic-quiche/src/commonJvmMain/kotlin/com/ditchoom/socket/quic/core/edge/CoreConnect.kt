@@ -34,6 +34,8 @@ import com.ditchoom.socket.quic.core.udp.BatchLimits
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 import com.ditchoom.socket.quic.core.udp.NioOneByOne
 import com.ditchoom.socket.quic.core.udp.SendBatch
+import com.ditchoom.socket.quic.core.udp.SocketBuffers
+import com.ditchoom.socket.quic.core.udp.SocketReport
 import com.ditchoom.socket.quic.encodeAlpnList
 import com.ditchoom.socket.quic.generateScid
 import com.ditchoom.socket.quic.loadTrustAnchors
@@ -68,9 +70,10 @@ internal suspend fun coreConnect(
     writePolicy: WritePolicy,
     wrapIo: (DatagramBatchIo) -> DatagramBatchIo = { it },
     loops: ClientLoopSet = ClientLoopSet.shared,
+    buffers: SocketBuffers = SocketBuffers.Default,
 ): CoreClient =
     withContext(Dispatchers.IO) {
-        connectOnThisThread(host, port, serverName, options, factory, api, timeout, readPolicy, writePolicy, wrapIo, loops)
+        connectOnThisThread(host, port, serverName, options, factory, api, timeout, readPolicy, writePolicy, wrapIo, loops, buffers)
     }
 
 /** Everything [coreConnect] does that opens a file, a socket or a native library, off the caller's thread. */
@@ -86,8 +89,10 @@ private suspend fun connectOnThisThread(
     writePolicy: WritePolicy,
     wrapIo: (DatagramBatchIo) -> DatagramBatchIo,
     loops: ClientLoopSet,
+    buffers: SocketBuffers,
 ): CoreClient {
     val channel = openConnectedChannel(InetSocketAddress(host, port))
+    val granted = buffers.applyTo(channel)
     channel.configureBlocking(false)
     val local = (channel.localAddress as InetSocketAddress).toNativeSockAddr(factory)
     val peer = (channel.remoteAddress as InetSocketAddress).toNativeSockAddr(factory)
@@ -196,7 +201,7 @@ private suspend fun connectOnThisThread(
         connection.closeNow(QuicError.NoError)
         throw failed
     }
-    return CoreClient(connection, conn, loop)
+    return CoreClient(connection, conn, loop, SocketReport(granted, (channel.localAddress as InetSocketAddress).port))
 }
 
 /** [coreConnect] was given a set of loops that has been closed. */

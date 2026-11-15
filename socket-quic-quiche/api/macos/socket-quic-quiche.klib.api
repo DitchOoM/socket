@@ -147,6 +147,7 @@ abstract interface com.ditchoom.socket.quic/QuicheApi { // com.ditchoom.socket.q
     open fun connStreamRecvStep(com.ditchoom.socket.quic/QuicheConn, com.ditchoom.socket.quic/QuicStreamId, kotlin/Long, kotlin/Int): com.ditchoom.socket.quic/StreamRecvStep // com.ditchoom.socket.quic/QuicheApi.connStreamRecvStep|connStreamRecvStep(com.ditchoom.socket.quic.QuicheConn;com.ditchoom.socket.quic.QuicStreamId;kotlin.Long;kotlin.Int){}[0]
     open fun connTimeoutNanos(com.ditchoom.socket.quic/QuicheConn): kotlin/Long // com.ditchoom.socket.quic/QuicheApi.connTimeoutNanos|connTimeoutNanos(com.ditchoom.socket.quic.QuicheConn){}[0]
     open fun connTraceId(com.ditchoom.socket.quic/QuicheConn, kotlin/Long, kotlin/Int): kotlin/Int // com.ditchoom.socket.quic/QuicheApi.connTraceId|connTraceId(com.ditchoom.socket.quic.QuicheConn;kotlin.Long;kotlin.Int){}[0]
+    open fun sendInfoAtNanos(com.ditchoom.socket.quic/QuicheSendInfo): kotlin/Long // com.ditchoom.socket.quic/QuicheApi.sendInfoAtNanos|sendInfoAtNanos(com.ditchoom.socket.quic.QuicheSendInfo){}[0]
     open fun setThreadVirtualTimeNanos(kotlin/Long) // com.ditchoom.socket.quic/QuicheApi.setThreadVirtualTimeNanos|setThreadVirtualTimeNanos(kotlin.Long){}[0]
     open fun streamIterNextId(com.ditchoom.socket.quic/QuicheStreamIter): com.ditchoom.socket.quic/NextStream // com.ditchoom.socket.quic/QuicheApi.streamIterNextId|streamIterNextId(com.ditchoom.socket.quic.QuicheStreamIter){}[0]
 }

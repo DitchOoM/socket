@@ -1235,6 +1235,11 @@ internal object CinteropQuicheApi : QuicheApi, QuicheRandomPin {
         return si.from_len.toInt()
     }
 
+    override fun sendInfoAtNanos(info: QuicheSendInfo): Long {
+        val at = info.handle.toCPointer<quiche_send_info>()!!.pointed.at
+        return at.tv_sec.toLong() * 1_000_000_000L + at.tv_nsec.toLong()
+    }
+
     // --- sockaddr decode (slice 3 migration) ---
     // Linux layout is fixed (sa_family uint16 LE at byte 0, sin_port at 2,
     // sin_addr at 4, sin6_addr at 8); read the bytes directly. Apple is out of

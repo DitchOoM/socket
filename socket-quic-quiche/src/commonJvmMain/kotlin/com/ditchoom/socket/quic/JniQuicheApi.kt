@@ -774,6 +774,8 @@ object JniQuicheApi : QuicheApi {
 
     override fun sendInfoFromAddrLen(info: QuicheSendInfo): Int = nSendInfoFromAddrLen(info.handle)
 
+    override fun sendInfoAtNanos(info: QuicheSendInfo): Long = nSendInfoAtNanos(info.handle)
+
     override fun sockAddrFamily(addr: Long): Int = nSockAddrFamily(addr)
 
     override fun sockAddrPort(addr: Long): Int = nSockAddrPort(addr)
@@ -1256,6 +1258,8 @@ object JniQuicheApi : QuicheApi {
     @JvmStatic private external fun nSendInfoFromAddr(ptr: Long): Long
 
     @JvmStatic private external fun nSendInfoFromAddrLen(ptr: Long): Int
+
+    @JvmStatic private external fun nSendInfoAtNanos(ptr: Long): Long
 
     @JvmStatic private external fun nSockAddrFamily(addr: Long): Int
 
