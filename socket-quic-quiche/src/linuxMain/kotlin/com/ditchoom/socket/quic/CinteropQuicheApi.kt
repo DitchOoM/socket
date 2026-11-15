@@ -1236,7 +1236,10 @@ internal object CinteropQuicheApi : QuicheApi, QuicheRandomPin {
     }
 
     override fun sendInfoAtNanos(info: QuicheSendInfo): Long {
-        val at = info.handle.toCPointer<quiche_send_info>()!!.pointed.at
+        val at =
+            info.handle
+                .toCPointer<quiche_send_info>()!!
+                .pointed.at
         return at.tv_sec.toLong() * 1_000_000_000L + at.tv_nsec.toLong()
     }
 
