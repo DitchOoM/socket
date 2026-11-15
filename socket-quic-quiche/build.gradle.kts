@@ -6118,6 +6118,7 @@ kotlin {
             // @ExperimentalDatagramApi, opted into at the adapter call sites.
             implementation(project(":socket-udp"))
             implementation(libs.kotlinx.coroutines.core)
+            implementation(libs.androidx.collection)
         }
         commonTest {
             kotlin.srcDir(generateQuicHarnessConfig.map { quicHarnessGeneratedDir })

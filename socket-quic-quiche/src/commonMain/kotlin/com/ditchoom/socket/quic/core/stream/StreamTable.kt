@@ -1,5 +1,6 @@
 package com.ditchoom.socket.quic.core.stream
 
+import androidx.collection.MutableLongObjectMap
 import com.ditchoom.socket.quic.QuicStreamId
 import com.ditchoom.socket.quic.core.conn.Conn
 
@@ -72,11 +73,11 @@ internal class StreamEntry(
 
 /** A connection's streams by id. Confined to whoever is inside the connection. */
 internal class StreamMap {
-    private val entries = HashMap<Long, StreamEntry>()
+    private val entries = MutableLongObjectMap<StreamEntry>()
 
     fun contains(id: QuicStreamId): Boolean = entries.containsKey(id.id)
 
     fun entry(id: QuicStreamId): StreamEntry = entries.getOrPut(id.id) { StreamEntry(id) }
 
-    fun forEach(visit: (StreamEntry) -> Unit) = entries.values.forEach(visit)
+    fun forEach(visit: (StreamEntry) -> Unit) = entries.forEachValue(visit)
 }

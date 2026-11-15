@@ -2,6 +2,7 @@
 
 package com.ditchoom.socket.quic.core.conn
 
+import androidx.collection.MutableLongSet
 import com.ditchoom.socket.quic.DeadlineNode
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicStreamId
@@ -138,7 +139,7 @@ internal class Conn(
     private val serveQueued = AtomicInt(IDLE)
     private var hold: LoopHold = LoopHold.Out
     private var timer: TimerState = TimerState.Unarmed
-    private val writeWaiters = HashSet<Long>()
+    private val writeWaiters = MutableLongSet()
     internal var lifecycle: ConnLifecycle = ConnLifecycle.Handshaking
         private set
 

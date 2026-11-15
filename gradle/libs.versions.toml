@@ -145,6 +145,8 @@ androidxCore = "1.19.1"
 # Context on Android without the app remembering to call NetworkMonitor.installAndroidContext().
 # minSdk 21 (matches ours); its consumer proguard.txt already keeps `* extends Initializer`.
 androidxStartup = "1.2.0"
+# Primitive-keyed collections for the QUIC core's hot path (no boxing of stream ids). 1.6.0: Java 8 bytecode (1.7.0 is 11, above our floor); no Intel Apple targets.
+androidxCollection = "1.6.0"
 # Robolectric — host-JVM Android framework for :network-monitor's androidUnitTest. The Android monitor
 # (ConnectivityManager callbacks, the App Startup initializer, the ACCESS_NETWORK_STATE failure) is
 # otherwise testable only on the emulator lane, which is one API-29 job that also boots an AVD and
@@ -171,6 +173,7 @@ kotlin-web = { module = "org.jetbrains.kotlin-wrappers:kotlin-web", version.ref 
 kotlin-js = { module = "org.jetbrains.kotlin-wrappers:kotlin-js", version.ref = "kotlinWrappers" }
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "androidxCore" }
 androidx-startup-runtime = { module = "androidx.startup:startup-runtime", version.ref = "androidxStartup" }
+androidx-collection = { module = "androidx.collection:collection", version.ref = "androidxCollection" }
 robolectric = { module = "org.robolectric:robolectric", version.ref = "robolectric" }
 jazzer = { module = "com.code-intelligence:jazzer", version.ref = "jazzer" }
 r8 = { module = "com.android.tools:r8", version.ref = "r8" }
