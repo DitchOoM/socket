@@ -1188,7 +1188,7 @@ final class com.ditchoom.socket.quic/QuicStatsSnapshot { // com.ditchoom.socket.
 }
 
 final class com.ditchoom.socket.quic/QuicheDriver { // com.ditchoom.socket.quic/QuicheDriver|null[0]
-    constructor <init>(com.ditchoom.socket.quic/QuicheApi, com.ditchoom.socket.quic/QuicheConn, com.ditchoom.buffer/BufferFactory, com.ditchoom.socket.quic/QuicheRecvInfo, com.ditchoom.socket.quic/QuicheSendInfo, com.ditchoom.socket.quic/UdpChannel, com.ditchoom.socket.quic/QuicRole = ..., com.ditchoom.socket.quic/DatagramIngress = ..., kotlin.time/Duration? = ..., com.ditchoom.buffer.flow/ReadPolicy = ..., com.ditchoom.buffer.flow/WritePolicy = ..., com.ditchoom.socket.quic/StreamOpenPolicy = ..., com.ditchoom.socket.quic/DriverClock = ..., kotlin.coroutines/CoroutineContext = ..., kotlin.time/Duration = ..., kotlin.random/Random = ..., com.ditchoom.socket.quic.trace/TraceCapture = ..., com.ditchoom.socket.quic/MigrationCapability, com.ditchoom.socket.quic/ConnectionNetworkObservation = ..., kotlin/Function0<kotlin/Unit> = ..., com.ditchoom.socket.quic/SourceIdSink? = ..., com.ditchoom.buffer.pool/BufferPool = ..., com.ditchoom.socket.quic/SilenceThreshold = ..., com.ditchoom.socket.quic/SessionOffer = ...) // com.ditchoom.socket.quic/QuicheDriver.<init>|<init>(com.ditchoom.socket.quic.QuicheApi;com.ditchoom.socket.quic.QuicheConn;com.ditchoom.buffer.BufferFactory;com.ditchoom.socket.quic.QuicheRecvInfo;com.ditchoom.socket.quic.QuicheSendInfo;com.ditchoom.socket.quic.UdpChannel;com.ditchoom.socket.quic.QuicRole;com.ditchoom.socket.quic.DatagramIngress;kotlin.time.Duration?;com.ditchoom.buffer.flow.ReadPolicy;com.ditchoom.buffer.flow.WritePolicy;com.ditchoom.socket.quic.StreamOpenPolicy;com.ditchoom.socket.quic.DriverClock;kotlin.coroutines.CoroutineContext;kotlin.time.Duration;kotlin.random.Random;com.ditchoom.socket.quic.trace.TraceCapture;com.ditchoom.socket.quic.MigrationCapability;com.ditchoom.socket.quic.ConnectionNetworkObservation;kotlin.Function0<kotlin.Unit>;com.ditchoom.socket.quic.SourceIdSink?;com.ditchoom.buffer.pool.BufferPool;com.ditchoom.socket.quic.SilenceThreshold;com.ditchoom.socket.quic.SessionOffer){}[0]
+    constructor <init>(com.ditchoom.socket.quic/QuicheApi, com.ditchoom.socket.quic/QuicheConn, com.ditchoom.buffer/BufferFactory, com.ditchoom.socket.quic/QuicheRecvInfo, com.ditchoom.socket.quic/QuicheSendInfo, com.ditchoom.socket.quic/UdpChannel, com.ditchoom.socket.quic/QuicRole = ..., com.ditchoom.socket.quic/DatagramIngress = ..., kotlin.time/Duration? = ..., com.ditchoom.buffer.flow/ReadPolicy = ..., com.ditchoom.buffer.flow/WritePolicy = ..., com.ditchoom.socket.quic/StreamOpenPolicy = ..., com.ditchoom.socket.quic/DriverClock = ..., kotlin.coroutines/CoroutineContext = ..., kotlin.time/Duration = ..., kotlin.random/Random = ..., com.ditchoom.socket.quic.trace/TraceCapture = ..., com.ditchoom.socket.quic/MigrationCapability, com.ditchoom.socket.quic/ConnectionNetworkObservation = ..., kotlin/Function0<kotlin/Unit> = ..., com.ditchoom.socket.quic/SourceIdSink? = ..., com.ditchoom.socket.quic/DriverBuffers = ..., com.ditchoom.socket.quic/SilenceThreshold = ..., com.ditchoom.socket.quic/SessionOffer = ...) // com.ditchoom.socket.quic/QuicheDriver.<init>|<init>(com.ditchoom.socket.quic.QuicheApi;com.ditchoom.socket.quic.QuicheConn;com.ditchoom.buffer.BufferFactory;com.ditchoom.socket.quic.QuicheRecvInfo;com.ditchoom.socket.quic.QuicheSendInfo;com.ditchoom.socket.quic.UdpChannel;com.ditchoom.socket.quic.QuicRole;com.ditchoom.socket.quic.DatagramIngress;kotlin.time.Duration?;com.ditchoom.buffer.flow.ReadPolicy;com.ditchoom.buffer.flow.WritePolicy;com.ditchoom.socket.quic.StreamOpenPolicy;com.ditchoom.socket.quic.DriverClock;kotlin.coroutines.CoroutineContext;kotlin.time.Duration;kotlin.random.Random;com.ditchoom.socket.quic.trace.TraceCapture;com.ditchoom.socket.quic.MigrationCapability;com.ditchoom.socket.quic.ConnectionNetworkObservation;kotlin.Function0<kotlin.Unit>;com.ditchoom.socket.quic.SourceIdSink?;com.ditchoom.socket.quic.DriverBuffers;com.ditchoom.socket.quic.SilenceThreshold;com.ditchoom.socket.quic.SessionOffer){}[0]
 
     final val commands // com.ditchoom.socket.quic/QuicheDriver.commands|{}commands[0]
         final fun <get-commands>(): kotlinx.coroutines.channels/Channel<com.ditchoom.socket.quic/QuicheCmd> // com.ditchoom.socket.quic/QuicheDriver.commands.<get-commands>|<get-commands>(){}[0]
@@ -1426,6 +1426,32 @@ final value class com.ditchoom.socket.quic/StreamRecvStep { // com.ditchoom.sock
         final fun error(kotlin/Int): com.ditchoom.socket.quic/StreamRecvStep // com.ditchoom.socket.quic/StreamRecvStep.Companion.error|error(kotlin.Int){}[0]
         final fun of(com.ditchoom.socket.quic/StreamRecvResult): com.ditchoom.socket.quic/StreamRecvStep // com.ditchoom.socket.quic/StreamRecvStep.Companion.of|of(com.ditchoom.socket.quic.StreamRecvResult){}[0]
         final fun reset(com.ditchoom.socket.quic/QuicAppErrorCode): com.ditchoom.socket.quic/StreamRecvStep // com.ditchoom.socket.quic/StreamRecvStep.Companion.reset|reset(com.ditchoom.socket.quic.QuicAppErrorCode){}[0]
+    }
+}
+
+sealed class com.ditchoom.socket.quic/DriverBuffers : com.ditchoom.buffer/BufferFactory { // com.ditchoom.socket.quic/DriverBuffers|null[0]
+    abstract fun clear() // com.ditchoom.socket.quic/DriverBuffers.clear|clear(){}[0]
+    open fun allocate(kotlin/Int, com.ditchoom.buffer/ByteOrder): com.ditchoom.buffer/PlatformBuffer // com.ditchoom.socket.quic/DriverBuffers.allocate|allocate(kotlin.Int;com.ditchoom.buffer.ByteOrder){}[0]
+    open fun decorate(com.ditchoom.buffer/PlatformBuffer): com.ditchoom.buffer/PlatformBuffer // com.ditchoom.socket.quic/DriverBuffers.decorate|decorate(com.ditchoom.buffer.PlatformBuffer){}[0]
+    open fun wrap(kotlin/ByteArray, com.ditchoom.buffer/ByteOrder): com.ditchoom.buffer/PlatformBuffer // com.ditchoom.socket.quic/DriverBuffers.wrap|wrap(kotlin.ByteArray;com.ditchoom.buffer.ByteOrder){}[0]
+
+    final class Callers : com.ditchoom.socket.quic/DriverBuffers { // com.ditchoom.socket.quic/DriverBuffers.Callers|null[0]
+        constructor <init>(com.ditchoom.buffer/BufferFactory) // com.ditchoom.socket.quic/DriverBuffers.Callers.<init>|<init>(com.ditchoom.buffer.BufferFactory){}[0]
+
+        final fun clear() // com.ditchoom.socket.quic/DriverBuffers.Callers.clear|clear(){}[0]
+    }
+
+    final class Owned : com.ditchoom.socket.quic/DriverBuffers { // com.ditchoom.socket.quic/DriverBuffers.Owned|null[0]
+        constructor <init>(com.ditchoom.buffer.pool/BufferPool) // com.ditchoom.socket.quic/DriverBuffers.Owned.<init>|<init>(com.ditchoom.buffer.pool.BufferPool){}[0]
+
+        final val pool // com.ditchoom.socket.quic/DriverBuffers.Owned.pool|{}pool[0]
+            final fun <get-pool>(): com.ditchoom.buffer.pool/BufferPool // com.ditchoom.socket.quic/DriverBuffers.Owned.pool.<get-pool>|<get-pool>(){}[0]
+
+        final fun clear() // com.ditchoom.socket.quic/DriverBuffers.Owned.clear|clear(){}[0]
+    }
+
+    final object Companion { // com.ditchoom.socket.quic/DriverBuffers.Companion|null[0]
+        final fun of(com.ditchoom.buffer/BufferFactory, kotlin/Int, kotlin/Int): com.ditchoom.socket.quic/DriverBuffers // com.ditchoom.socket.quic/DriverBuffers.Companion.of|of(com.ditchoom.buffer.BufferFactory;kotlin.Int;kotlin.Int){}[0]
     }
 }
 

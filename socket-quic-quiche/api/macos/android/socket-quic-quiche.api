@@ -47,6 +47,30 @@ public final class com/ditchoom/socket/quic/DeadlineTimerUnavailableException : 
 	public fun <init> (Ljava/lang/Throwable;)V
 }
 
+public abstract class com/ditchoom/socket/quic/DriverBuffers : com/ditchoom/buffer/BufferFactory {
+	public static final field Companion Lcom/ditchoom/socket/quic/DriverBuffers$Companion;
+	public synthetic fun <init> (Lcom/ditchoom/buffer/BufferFactory;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun allocate (ILcom/ditchoom/buffer/ByteOrder;)Lcom/ditchoom/buffer/PlatformBuffer;
+	public abstract fun clear ()V
+	public fun decorate (Lcom/ditchoom/buffer/PlatformBuffer;)Lcom/ditchoom/buffer/PlatformBuffer;
+	public fun wrap ([BLcom/ditchoom/buffer/ByteOrder;)Lcom/ditchoom/buffer/PlatformBuffer;
+}
+
+public final class com/ditchoom/socket/quic/DriverBuffers$Callers : com/ditchoom/socket/quic/DriverBuffers {
+	public fun <init> (Lcom/ditchoom/buffer/BufferFactory;)V
+	public fun clear ()V
+}
+
+public final class com/ditchoom/socket/quic/DriverBuffers$Companion {
+	public final fun of (Lcom/ditchoom/buffer/BufferFactory;II)Lcom/ditchoom/socket/quic/DriverBuffers;
+}
+
+public final class com/ditchoom/socket/quic/DriverBuffers$Owned : com/ditchoom/socket/quic/DriverBuffers {
+	public fun <init> (Lcom/ditchoom/buffer/pool/BufferPool;)V
+	public fun clear ()V
+	public final fun getPool ()Lcom/ditchoom/buffer/pool/BufferPool;
+}
+
 public abstract interface class com/ditchoom/socket/quic/DriverClock {
 	public abstract fun armTimeout-HG0u8IE (Lkotlinx/coroutines/selects/SelectBuilder;J)V
 	public abstract fun markNow ()Lkotlin/time/TimeMark;
@@ -906,8 +930,8 @@ public final class com/ditchoom/socket/quic/QuicheDriver {
 	public static final field SOCKADDR_STORAGE_SIZE I
 	public static final field STATELESS_RESET_TOKEN_LEN I
 	public static final field STREAM_READ_BUFFER_SIZE I
-	public synthetic fun <init> (Lcom/ditchoom/socket/quic/QuicheApi;JLcom/ditchoom/buffer/BufferFactory;JJLcom/ditchoom/socket/quic/UdpChannel;Lcom/ditchoom/socket/quic/QuicRole;Lcom/ditchoom/socket/quic/DatagramIngress;Lkotlin/time/Duration;Lcom/ditchoom/buffer/flow/ReadPolicy;Lcom/ditchoom/buffer/flow/WritePolicy;Lcom/ditchoom/socket/quic/StreamOpenPolicy;Lcom/ditchoom/socket/quic/DriverClock;Lkotlin/coroutines/CoroutineContext;JLkotlin/random/Random;Lcom/ditchoom/socket/quic/trace/TraceCapture;Lcom/ditchoom/socket/quic/MigrationCapability;Lcom/ditchoom/socket/quic/ConnectionNetworkObservation;Lkotlin/jvm/functions/Function0;Lcom/ditchoom/socket/quic/SourceIdSink;Lcom/ditchoom/buffer/pool/BufferPool;Lcom/ditchoom/socket/quic/SilenceThreshold;Lcom/ditchoom/socket/quic/SessionOffer;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
-	public synthetic fun <init> (Lcom/ditchoom/socket/quic/QuicheApi;JLcom/ditchoom/buffer/BufferFactory;JJLcom/ditchoom/socket/quic/UdpChannel;Lcom/ditchoom/socket/quic/QuicRole;Lcom/ditchoom/socket/quic/DatagramIngress;Lkotlin/time/Duration;Lcom/ditchoom/buffer/flow/ReadPolicy;Lcom/ditchoom/buffer/flow/WritePolicy;Lcom/ditchoom/socket/quic/StreamOpenPolicy;Lcom/ditchoom/socket/quic/DriverClock;Lkotlin/coroutines/CoroutineContext;JLkotlin/random/Random;Lcom/ditchoom/socket/quic/trace/TraceCapture;Lcom/ditchoom/socket/quic/MigrationCapability;Lcom/ditchoom/socket/quic/ConnectionNetworkObservation;Lkotlin/jvm/functions/Function0;Lcom/ditchoom/socket/quic/SourceIdSink;Lcom/ditchoom/buffer/pool/BufferPool;Lcom/ditchoom/socket/quic/SilenceThreshold;Lcom/ditchoom/socket/quic/SessionOffer;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (Lcom/ditchoom/socket/quic/QuicheApi;JLcom/ditchoom/buffer/BufferFactory;JJLcom/ditchoom/socket/quic/UdpChannel;Lcom/ditchoom/socket/quic/QuicRole;Lcom/ditchoom/socket/quic/DatagramIngress;Lkotlin/time/Duration;Lcom/ditchoom/buffer/flow/ReadPolicy;Lcom/ditchoom/buffer/flow/WritePolicy;Lcom/ditchoom/socket/quic/StreamOpenPolicy;Lcom/ditchoom/socket/quic/DriverClock;Lkotlin/coroutines/CoroutineContext;JLkotlin/random/Random;Lcom/ditchoom/socket/quic/trace/TraceCapture;Lcom/ditchoom/socket/quic/MigrationCapability;Lcom/ditchoom/socket/quic/ConnectionNetworkObservation;Lkotlin/jvm/functions/Function0;Lcom/ditchoom/socket/quic/SourceIdSink;Lcom/ditchoom/socket/quic/DriverBuffers;Lcom/ditchoom/socket/quic/SilenceThreshold;Lcom/ditchoom/socket/quic/SessionOffer;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (Lcom/ditchoom/socket/quic/QuicheApi;JLcom/ditchoom/buffer/BufferFactory;JJLcom/ditchoom/socket/quic/UdpChannel;Lcom/ditchoom/socket/quic/QuicRole;Lcom/ditchoom/socket/quic/DatagramIngress;Lkotlin/time/Duration;Lcom/ditchoom/buffer/flow/ReadPolicy;Lcom/ditchoom/buffer/flow/WritePolicy;Lcom/ditchoom/socket/quic/StreamOpenPolicy;Lcom/ditchoom/socket/quic/DriverClock;Lkotlin/coroutines/CoroutineContext;JLkotlin/random/Random;Lcom/ditchoom/socket/quic/trace/TraceCapture;Lcom/ditchoom/socket/quic/MigrationCapability;Lcom/ditchoom/socket/quic/ConnectionNetworkObservation;Lkotlin/jvm/functions/Function0;Lcom/ditchoom/socket/quic/SourceIdSink;Lcom/ditchoom/socket/quic/DriverBuffers;Lcom/ditchoom/socket/quic/SilenceThreshold;Lcom/ditchoom/socket/quic/SessionOffer;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun awaitEstablished-VtjQ1oo (JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public final fun closeReasonOr (Lcom/ditchoom/socket/quic/QuicError;)Lcom/ditchoom/socket/quic/QuicCloseReason;
 	public final fun destroy (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
