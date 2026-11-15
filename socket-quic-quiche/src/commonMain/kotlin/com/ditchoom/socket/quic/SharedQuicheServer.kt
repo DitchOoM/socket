@@ -176,8 +176,8 @@ internal class SharedQuicheServer(
     /**
      * The server-level half of trace capture: what no *connection's* recorder can ever see.
      *
-     * A connection's recorder starts when its driver does, and the driver's channel wrap records every
-     * datagram after that — so three things are structurally invisible to a per-connection trace: the
+     * A connection's recorder starts when its driver does, and the driver records every datagram
+     * routed to it after that — so three things are structurally invisible to a per-connection trace: the
      * Initial that created the connection (fed to quiche in [acceptNewConnection] before the driver
      * exists), a datagram `quiche_header_info` rejected, and a datagram for a connection that has
      * already closed. An empty server trace would therefore have three readings — nothing arrived,
@@ -445,7 +445,7 @@ internal class SharedQuicheServer(
                                 // the recv_info — a local address outlives any one peer's path,
                                 // and re-adding it for every new path would be the only effect.
                                 locals.put(api.decodePathKey(local.address), localAddr)
-                                CachedRecvInfo(info) {
+                                CachedRecvInfo(info, fromKey) {
                                     from.free()
                                     paths.replyAddresses.remove(fromKey)
                                 }
@@ -459,6 +459,9 @@ internal class SharedQuicheServer(
                                 received,
                                 PacketSource.FromServerSocket(cached.info) { cached.inFlight.decrementAndGet() },
                             )
+                        // The connection's own trace: its driver has no channel of its own to record what
+                        // arrives, and the packet is the driver's to release once the channel takes it.
+                        existingDriver.capture.record { it.datagram(out = false, buffer = recvBuf, len = received, path = cached.from) }
                         if (existingDriver.commands.trySend(packet).isFailure) {
                             // The connection closed before the handler's cleanup unrouted it: the same
                             // late datagram RecentlyClosed names, one hop earlier.
