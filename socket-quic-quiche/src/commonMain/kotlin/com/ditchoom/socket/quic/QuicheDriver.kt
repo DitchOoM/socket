@@ -14,6 +14,8 @@ import com.ditchoom.buffer.managed
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.pool.ThreadingMode
+import com.ditchoom.socket.ConnectionFailureReason
+import com.ditchoom.socket.SocketConnectionException
 import com.ditchoom.socket.SocketTimeoutException
 import com.ditchoom.socket.TimeoutContext
 import com.ditchoom.socket.quic.trace.QlogFile
@@ -390,9 +392,10 @@ class QuicheDriver(
      * [QuicStreamOrigin.Early] stream's reads make.
      */
     internal suspend fun awaitHandshakeConfirmed() {
-        when (handshakeSettled.await()) {
+        when (val settled = handshakeSettled.await()) {
             is HandshakeSettled.Confirmed -> Unit
             HandshakeSettled.Failed -> throw connectionClosed()
+            is HandshakeSettled.Denied -> throw accessDenied(settled)
         }
     }
 
@@ -728,8 +731,18 @@ class QuicheDriver(
             is HandshakeSettled.Confirmed -> settled.resumption
             HandshakeSettled.Failed ->
                 throw QuicCloseException(closeReasonOr(QuicError.NoError), "QUIC handshake failed", attribution = closeAttribution())
+            is HandshakeSettled.Denied -> {
+                destroy()
+                throw accessDenied(settled)
+            }
         }
     }
+
+    private fun accessDenied(denied: HandshakeSettled.Denied): SocketConnectionException =
+        SocketConnectionException.Other(
+            ConnectionFailureReason.AccessDenied(denied.access),
+            "${denied.access.description}: ${denied.remedy}",
+        )
 
     /**
      * End a handshake the caller's bound gave up on: close through the protocol with [reason] (which
@@ -3550,6 +3563,13 @@ class QuicheDriver(
             when (outcome) {
                 is SendOutcome.Sent -> Unit // keep draining quiche's send queue
                 is SendOutcome.Failed -> {
+                    // The one send failure that ends a handshake: the system will not let this app reach
+                    // the peer at all, so no retransmission can get through and the wait would only run
+                    // out the caller's bound. An established connection is left to migrate or idle out.
+                    when (val withheld = withheldAccess(outcome.error)) {
+                        WithheldAccess.None -> Unit
+                        is WithheldAccess.Known -> handshakeSettled.complete(HandshakeSettled.Denied(withheld.access, withheld.remedy))
+                    }
                     // Stop draining this flush — but do NOT end the connection.
                     //
                     // An undelivered datagram is the most ordinary event in QUIC: loss detection and

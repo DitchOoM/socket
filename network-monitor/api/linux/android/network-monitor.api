@@ -33,6 +33,42 @@ public final class com/ditchoom/socket/AndroidApplicationContextKt {
 	public static final fun resetAndroidContextForTesting (Lcom/ditchoom/socket/NetworkMonitor$Companion;)V
 }
 
+public abstract interface class com/ditchoom/socket/AndroidLocalNetworkAccess {
+	public static final field Companion Lcom/ditchoom/socket/AndroidLocalNetworkAccess$Companion;
+	public static final field ENFORCED_FROM_API I
+	public static final field PERMISSION Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/AndroidLocalNetworkAccess$Allowed : com/ditchoom/socket/AndroidLocalNetworkAccess {
+	public static final field INSTANCE Lcom/ditchoom/socket/AndroidLocalNetworkAccess$Allowed;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/AndroidLocalNetworkAccess$Companion {
+	public static final field ENFORCED_FROM_API I
+	public static final field PERMISSION Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/AndroidLocalNetworkAccess$Denied : com/ditchoom/socket/AndroidLocalNetworkAccess {
+	public static final field INSTANCE Lcom/ditchoom/socket/AndroidLocalNetworkAccess$Denied;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/AndroidLocalNetworkAccess$Unknown : com/ditchoom/socket/AndroidLocalNetworkAccess {
+	public static final field INSTANCE Lcom/ditchoom/socket/AndroidLocalNetworkAccess$Unknown;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/AndroidLocalNetworkAccessKt {
+	public static final fun androidLocalNetworkAccess (Lcom/ditchoom/socket/NetworkMonitor$Companion;)Lcom/ditchoom/socket/AndroidLocalNetworkAccess;
+}
+
 public final class com/ditchoom/socket/AndroidNetworkMonitor : com/ditchoom/socket/NetworkMonitor {
 	public fun <init> (Landroid/content/Context;)V
 	public fun close ()V
