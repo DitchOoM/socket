@@ -9,6 +9,7 @@ import com.ditchoom.buffer.flow.Ecn
 import com.ditchoom.buffer.flow.HopLimit
 import com.ditchoom.buffer.flow.LocalAddress
 import com.ditchoom.buffer.flow.SocketAddress
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runCurrent
@@ -65,6 +66,26 @@ class ServerDatagramIntakeTests {
 
             assertEquals(100, socket.received, "datagrams read off the socket while the loop has taken none")
             assertEquals(100, intake.takeHeld(), "datagrams one pass of the loop finds held")
+            reader.cancel()
+        }
+
+    @Test
+    fun theReaderLetsTheLoopRouteWhatItHasReadBeforeItReadsMore() =
+        runTest {
+            val socket = QueuedSocket(queued = 100)
+            val intake = ServerDatagramIntake(socket::receive, isClosing = { false })
+            val readWhenTheLoopFirstRan = CompletableDeferred<Int>()
+            val reader = launch { intake.read() }
+            // Queued behind the reader on the same thread, as the receive loop is.
+            launch { readWhenTheLoopFirstRan.complete(socket.received) }
+            runCurrent()
+
+            assertEquals(
+                ServerDatagramIntake.DATAGRAMS_PER_READ,
+                readWhenTheLoopFirstRan.await(),
+                "datagrams the reader had read when it first let the loop's thread go",
+            )
+            intake.takeHeld()
             reader.cancel()
         }
 
