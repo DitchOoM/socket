@@ -131,10 +131,21 @@ internal suspend fun coreServe(
     config: ServerConfig = ServerConfig(),
     wrapIo: (DatagramBatchIo) -> DatagramBatchIo = { it },
     buffers: SocketBuffers = SocketBuffers.Default,
+    clock: LoopClock = LoopClock { System.nanoTime() },
+    driver: LoopDriver = LoopDriver.OwnThread,
 ): CoreServer =
     withContext(Dispatchers.IO) {
-        serveOnThisThread(bind, tls, options, factory, api, readPolicy, writePolicy, config, wrapIo, buffers)
+        serveOnThisThread(bind, tls, options, factory, api, readPolicy, writePolicy, config, wrapIo, buffers, clock, driver)
     }
+
+/** Who runs a server's [Loop]. */
+internal sealed interface LoopDriver {
+    /** A dedicated platform thread, started with the server. */
+    object OwnThread : LoopDriver
+
+    /** The caller, which makes every pass itself on a clock of its own; a test uses it to run a server on virtual time. */
+    object Caller : LoopDriver
+}
 
 private fun serveOnThisThread(
     bind: InetSocketAddress,
@@ -147,6 +158,8 @@ private fun serveOnThisThread(
     serverConfig: ServerConfig,
     wrapIo: (DatagramBatchIo) -> DatagramBatchIo,
     buffers: SocketBuffers,
+    clock: LoopClock,
+    driver: LoopDriver,
 ): CoreServer {
     val quicheConfig = api.configNew(QUIC_V1)
     writeNullTerminatedString(tls.certChainPath, factory).use { path ->
@@ -191,7 +204,6 @@ private fun serveOnThisThread(
             },
             limits,
         )
-    val clock = LoopClock { System.nanoTime() }
     val io =
         wrapIo(
             NioOneByOne(channel, listOf(send) + List(CALLER_LANES) { callerSends[it].batch }, maxCachedTargets = MAX_PEERS_CACHED),
@@ -225,7 +237,10 @@ private fun serveOnThisThread(
         )
     val loop = Loop(SelectorWait(channel, clock), clock, io, parts, receive, send, CallerLanes.Of(callerSends))
     parts.attach(loop)
-    startLoop(loop, SERVER_THREAD)
+    when (driver) {
+        LoopDriver.OwnThread -> startLoop(loop, SERVER_THREAD)
+        LoopDriver.Caller -> Unit
+    }
     return CoreServer(boundAddress.port, loop, parts, counts, accepted, SocketReport(granted, boundAddress.port))
 }
 

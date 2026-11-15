@@ -110,8 +110,15 @@ internal class ReceiveBatch(
 
     val count: Int get() = held.size
 
+    private var allowed = limits.maxDatagrams
+
+    /** The next receive takes at most [datagrams] (at least one, at most the batch's own limit). */
+    fun allow(datagrams: Int) {
+        allowed = datagrams.coerceIn(1, limits.maxDatagrams)
+    }
+
     /** A buffer to receive the next datagram into, or [Taken.Empty] when the batch is full or the pool is empty. */
-    fun take(): Taken = if (held.size == limits.maxDatagrams) Taken.Empty else pool.tryTake()
+    fun take(): Taken = if (held.size >= allowed) Taken.Empty else pool.tryTake()
 
     /** A buffer from [take] that received nothing. */
     fun giveBack(buffer: ReceiveBuffer) = pool.give(buffer)

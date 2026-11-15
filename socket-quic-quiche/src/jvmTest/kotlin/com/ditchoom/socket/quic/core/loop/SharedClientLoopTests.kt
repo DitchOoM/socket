@@ -118,10 +118,22 @@ class SharedClientLoopTests {
                         assertContentEquals(payload, echoOver(brokenStream, payload))
 
                         (doomed[0] as NioOneByOne).channel.close()
-                        val failure = assertFailsWith<QuicCloseException> { withTimeout(10.seconds) { echoOver(brokenStream, payload) } }
-                        assertTrue(failure.cause is SocketFailure, "the cause says the socket failed: ${failure.cause}")
+                        try {
+                            val failure =
+                                assertFailsWith<QuicCloseException> { withTimeout(10.seconds) { echoOver(brokenStream, payload) } }
+                            assertTrue(failure.cause is SocketFailure, "the cause says the socket failed: ${failure.cause}")
 
-                        repeat(ECHOES) { round -> assertContentEquals(payload, echoOver(healthyStream, payload), "healthy echo $round") }
+                            repeat(
+                                ECHOES,
+                            ) { round -> assertContentEquals(payload, echoOver(healthyStream, payload), "healthy echo $round") }
+                        } catch (failed: Throwable) {
+                            // Where each side stood when it went wrong, so the next occurrence names its cause.
+                            throw AssertionError(
+                                "broken=${broken.connection.state.value} healthy=${healthy.connection.state.value} " +
+                                    "loop=${broken.loop.life.load()} connectionsOnLoop=${broken.loop.connections.load()}",
+                                failed,
+                            )
+                        }
                         healthy.connection.close(QuicError.NoError)
                     } finally {
                         loops.close()

@@ -16,6 +16,7 @@ import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicRole
 import com.ditchoom.socket.quic.QuicSessionId
+import com.ditchoom.socket.quic.QuicStreamId
 import com.ditchoom.socket.quic.QuicTlsConfig
 import com.ditchoom.socket.quic.QuicWireConnectionId
 import com.ditchoom.socket.quic.ScopedRead
@@ -31,6 +32,7 @@ import com.ditchoom.socket.quic.core.conn.ConnWork
 import com.ditchoom.socket.quic.core.conn.DatagramSlot
 import com.ditchoom.socket.quic.core.conn.DatagramSlots
 import com.ditchoom.socket.quic.core.conn.OneConnParts
+import com.ditchoom.socket.quic.core.conn.WriteEnd
 import com.ditchoom.socket.quic.core.loop.CallerLanes
 import com.ditchoom.socket.quic.core.loop.CallerSend
 import com.ditchoom.socket.quic.core.loop.Entrant
@@ -209,12 +211,51 @@ class CoreFailureTierTests {
     @Test
     fun aFullSocketHandsTheCallersDatagramsToTheLoopWhichSendsThem() =
         withRig { rig ->
-            rig.io.refuseCallerSends(3)
             val stream = rig.connection.openStream()
             val payload = Random(9).nextBytes(20_000)
-            assertContentEquals(payload, echo(stream, payload), "echo while the socket refused the callers' sends")
-            assertTrue(rig.loop.callerCounts.sendsDeferred >= 1, "a caller's send was deferred to the loop")
+            val head = BufferFactory.Default.allocate(HEAD_BYTES)
+            head.writeBytes(payload, 0, HEAD_BYTES)
+            head.resetForRead()
+            rig.io.refuseCallerSends(1)
+            // A caller sends the first bytes in place: the full socket refuses them, and the loop must finish the send.
+            sendOnACaller(rig, QuicStreamId(0), head)
+            assertEquals(1L, rig.loop.callerCounts.sendsDeferred, "the caller's send was deferred to the loop")
+            val received = ByteArrayOutputStream()
+            kotlinx.coroutines.coroutineScope {
+                val reader =
+                    async {
+                        while (received.size() < payload.size) {
+                            if (stream.read(10.seconds) { received.write(it.readByteArray(it.remaining())) } !is ScopedRead.Data<*>) break
+                        }
+                    }
+                stream.writeFully(
+                    BufferFactory.Default.allocate(payload.size - HEAD_BYTES).apply {
+                        writeBytes(payload, HEAD_BYTES, payload.size - HEAD_BYTES)
+                        resetForRead()
+                    },
+                    10.seconds,
+                )
+                reader.await()
+            }
+            assertContentEquals(payload, received.toByteArray(), "echo of what the loop sent after the socket refused the caller")
         }
+
+    /** Sends [bytes] on [stream] from a caller thread, not the loop: work that finds the loop inside runs there and is tried again. */
+    private fun sendOnACaller(
+        rig: Rig,
+        stream: QuicStreamId,
+        bytes: com.ditchoom.buffer.ReadBuffer,
+    ) {
+        repeat(1_000) {
+            val work = SendOnACaller(stream, bytes)
+            val caller = Thread { rig.conn.submit(work, CallerPlace.MayEnter) }
+            caller.start()
+            caller.join(10_000)
+            work.settled.get(10, TimeUnit.SECONDS)
+            if (work.sent) return
+        }
+        throw AssertionError("no caller ever sent")
+    }
 
     /**
      * Submits the work [make] builds from a caller thread until a caller, not the loop, ran it: work that finds the loop
@@ -299,6 +340,7 @@ class CoreFailureTierTests {
 
     private companion object {
         val NOT_ENDED: ConnEnd = ConnEnd.Quietly
+        const val HEAD_BYTES = 1_000
     }
 }
 
@@ -350,6 +392,29 @@ private class OnACaller(
         ranOnACaller = Thread.currentThread().name != "core-failure-tiers"
         settled.complete(Unit)
         if (ranOnACaller) throw planted
+    }
+
+    override fun gone() {
+        settled.complete(Unit)
+    }
+}
+
+/** Writes [bytes] to [stream] when a caller runs it, and does nothing when the loop does. */
+private class SendOnACaller(
+    private val stream: QuicStreamId,
+    private val bytes: com.ditchoom.buffer.ReadBuffer,
+) : ConnWork() {
+    val settled = CompletableFuture<Unit>()
+
+    @Volatile
+    var sent = false
+
+    override fun run(inside: Conn.Inside) {
+        if (Thread.currentThread().name != "core-failure-tiers") {
+            inside.streamSend(stream, addressOf(bytes), bytes.remaining(), WriteEnd.More)
+            sent = true
+        }
+        settled.complete(Unit)
     }
 
     override fun gone() {

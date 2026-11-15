@@ -24,6 +24,9 @@ import kotlin.time.Duration.Companion.milliseconds
 
 /** Version Negotiation and Retry: the packets a server answers with before it has a connection. */
 class CoreServerStatelessTests {
+    @get:org.junit.Rule
+    val noLeak: org.junit.rules.TestRule = NoServerLoopLeft()
+
     /** Client loops of this class's own, so connections it leaves ending never share a thread with another test's. */
     private val loops = ClientLoopSet(2)
 

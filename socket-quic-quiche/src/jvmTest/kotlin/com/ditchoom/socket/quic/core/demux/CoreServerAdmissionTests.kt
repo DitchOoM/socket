@@ -22,11 +22,13 @@ import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
-import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.milliseconds
 
-/** What the server does when more handshakes start than it admits, and what a connection's `recv_info` costs. */
+/** What the server does when more handshakes start than a pass admits, and what a connection's `recv_info` costs. */
 class CoreServerAdmissionTests {
+    @get:org.junit.Rule
+    val noLeak: org.junit.rules.TestRule = NoServerLoopLeft()
+
     /** Client loops of this class's own, so connections it leaves ending never share a thread with another test's. */
     private val loops = ClientLoopSet(2)
 
@@ -34,7 +36,7 @@ class CoreServerAdmissionTests {
     fun closeLoops() = loops.close()
 
     @Test
-    fun aBurstOverTheBoundOfHandshakesPerPassIsDroppedCountedAndStillAllCompletes() =
+    fun aBurstOverTheBoundOfHandshakesPerPassIsLeftInTheSocketForTheNextPassesAndNothingIsDropped() =
         runBlocking {
             val gate = GatedIo()
             val bound = 4
@@ -57,10 +59,7 @@ class CoreServerAdmissionTests {
                 val echoed = connects.awaitAll()
                 echoed.forEachIndexed { n, (sent, back) -> assertContentEquals(sent, back, "connection $n") }
                 assertEquals((4 * bound).toLong(), server.counts.accepted)
-                assertTrue(
-                    server.counts.droppedAdmission >= (3 * bound).toLong(),
-                    "the pass that took the burst dropped what was over its bound: ${server.counts.droppedAdmission}",
-                )
+                assertEquals(0L, server.counts.droppedAdmission, "what was over a pass's bound waited in the socket and was not dropped")
             }
         }
 

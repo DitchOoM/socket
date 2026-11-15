@@ -71,6 +71,24 @@ internal class ServerParts(
         attached = Attached.To(loop)
     }
 
+    /** An Initial may start a handshake, so each datagram counts as one until the pass has started [Admission.perPass]. */
+    override fun receiveBudget(): Int =
+        when (val now = attached) {
+            Attached.Nothing -> Int.MAX_VALUE
+            is Attached.To -> {
+                startPassIfNew(now.loop)
+                s.serverConfig.admission.perPass - startedThisPass
+            }
+        }
+
+    private fun startPassIfNew(loop: Loop) {
+        val pass = loop.counts.passes
+        if (pass != admissionPass) {
+            admissionPass = pass
+            startedThisPass = 0
+        }
+    }
+
     // --- datagrams ---
 
     override fun onDatagram(
@@ -171,11 +189,7 @@ internal class ServerParts(
         how: Admit,
     ) {
         val loop = (attached as Attached.To).loop
-        val pass = loop.counts.passes
-        if (pass != admissionPass) {
-            admissionPass = pass
-            startedThisPass = 0
-        }
+        startPassIfNew(loop)
         if (startedThisPass >= s.serverConfig.admission.perPass || handshakes.inProgress >= s.serverConfig.admission.inProgress) {
             s.counts.droppedAdmission++
             return

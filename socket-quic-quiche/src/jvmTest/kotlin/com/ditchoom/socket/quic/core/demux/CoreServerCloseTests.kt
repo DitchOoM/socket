@@ -37,6 +37,9 @@ import kotlin.time.TimeSource
 
 /** Closing a server, and what one connection's failure does to the others. */
 class CoreServerCloseTests {
+    @get:org.junit.Rule
+    val noLeak: org.junit.rules.TestRule = NoServerLoopLeft()
+
     /** Client loops of this class's own, so connections it leaves ending never share a thread with another test's. */
     private val loops = ClientLoopSet(2)
 
@@ -139,12 +142,6 @@ class CoreServerCloseTests {
                 healthy.connection.close(QuicError.NoError)
             }
         }
-
-    private fun liveServerLoops(): Int =
-        Thread
-            .getAllStackTraces()
-            .keys
-            .count { it.name == SERVER_LOOP_THREAD && it.isAlive }
 
     /** Sends random 1200-byte datagrams at [port] as fast as the socket takes them, until stopped. */
     private class Flood(

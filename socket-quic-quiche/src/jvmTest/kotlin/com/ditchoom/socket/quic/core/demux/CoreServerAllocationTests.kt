@@ -26,6 +26,9 @@ import kotlin.time.Duration.Companion.seconds
  * cancelled read can free its buffer. Buffers come from the pooled `BufferFactory.network()`, so the count does not depend on how the JDK frees a native segment. The gate is twice the measurement, for JIT inlining that differs by JDK and host.
  */
 class CoreServerAllocationTests {
+    @get:org.junit.Rule
+    val noLeak: org.junit.rules.TestRule = NoServerLoopLeft()
+
     /** Client loops of this class's own, so connections it leaves ending never share a thread with another test's. */
     private val loops = ClientLoopSet(2)
 
