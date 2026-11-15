@@ -756,6 +756,14 @@ jobs:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/linux-quiche-env
 
+      # The seven defaults on the run-to-completion core's production sources. The self-test plants one
+      # violation of each kind first, so a checker that stopped catching one fails here.
+      - name: Seven defaults in the QUIC core
+        run: |
+          set -euo pipefail
+          java scripts/CoreDefaultsCheck.java --selftest
+          java scripts/CoreDefaultsCheck.java .
+
       # Flight Recorder ring on every Gradle test worker of this job (JNI backend, JDK 21): dumped
       # only if a test fails or a worker hangs, uploaded only on failure. Traced lanes on Linux:
       # this one and the quiche-jvm FFM leg; the quiche-jvm JNI, JDK 17 and JDK 25 legs stay UNTRACED.
