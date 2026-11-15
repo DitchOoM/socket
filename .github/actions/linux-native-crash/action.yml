@@ -1,0 +1,55 @@
+name: "Linux native crash and hang capture"
+description: >-
+  Cores of a Kotlin/Native test binary routed to the runner's temp dir and read with gdb on the
+  runner, plus every thread's stack when a run outlives its budget. `mode: start` before the test
+  steps, which run their binary through `.github/scripts/linux-native-crash.sh run`; `mode: collect`
+  with `if: failure() || cancelled()`. Logic and caps: .github/scripts/linux-native-crash.sh.
+
+inputs:
+  mode:
+    description: "`start` (route cores, check gdb) or `collect` (compress, cap, upload)"
+    required: true
+  artifact-name:
+    description: "collect: artifact name; unique per job and matrix shard"
+    required: false
+    default: ""
+
+runs:
+  using: "composite"
+  steps:
+    - name: Does this runner have gdb
+      id: have
+      if: ${{ inputs.mode == 'start' }}
+      shell: bash
+      run: |
+        if gdb --version >/dev/null 2>&1; then echo "missing=false" >> "$GITHUB_OUTPUT"; else echo "missing=true" >> "$GITHUB_OUTPUT"; fi
+
+    - name: Install gdb (only when the image lacks it)
+      if: ${{ inputs.mode == 'start' && steps.have.outputs.missing == 'true' }}
+      uses: ./.github/actions/apt-install-cached
+      with:
+        packages: gdb
+        purpose: gdb for native crash backtraces
+
+    - name: Route cores
+      if: ${{ inputs.mode == 'start' }}
+      shell: bash
+      run: |
+        "${{ github.action_path }}/../../scripts/linux-native-crash.sh" start "${RUNNER_TEMP}/native-crash"
+        echo "NATIVE_CRASH_DIR=${RUNNER_TEMP}/native-crash" >> "$GITHUB_ENV"
+        echo "NATIVE_CRASH=${{ github.action_path }}/../../scripts/linux-native-crash.sh" >> "$GITHUB_ENV"
+
+    - name: Collect crash and hang evidence
+      if: ${{ inputs.mode == 'collect' }}
+      shell: bash
+      run: |
+        "${{ github.action_path }}/../../scripts/linux-native-crash.sh" collect "$NATIVE_CRASH_DIR" "${RUNNER_TEMP}/native-crash-out" || true
+
+    - name: Upload crash and hang evidence
+      if: ${{ inputs.mode == 'collect' }}
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ runner.temp }}/native-crash-out
+        retention-days: 14
+        if-no-files-found: ignore

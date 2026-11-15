@@ -265,6 +265,10 @@ fun downloadQuicheSource(
     // with PROTOCOL_VIOLATION (the interop runner's handshakeloss / handshakecorruption against quinn, after
     // the previous patch). Idempotent, fails loudly on drift.
     patchQuicheRepeatedRetirementIsIgnored(sourceDir)
+    // Receive a packet bearing a source id the peer has just retired when it arrives on a path quiche still
+    // holds, so a peer's last packets on a slower path the client left are not dropped behind the faster
+    // RETIRE_CONNECTION_ID. Idempotent, fails loudly on drift. See the KDoc.
+    patchQuicheRetiredScidStillReceivedOnAHeldPath(sourceDir)
     // Send a CONNECTION_CLOSE made before the handshake is confirmed in a 1-RTT packet as well as the
     // Handshake one, so a peer that has already confirmed and discarded its Handshake keys can read it.
     // Idempotent, fails loudly on drift OR on an upstream fix. See the KDoc.
@@ -316,6 +320,12 @@ fun downloadQuicheSource(
     // 1-RTT CONNECTION_CLOSE behind a Handshake packet whose keys are gone is not dropped with it.
     // Idempotent, fails loudly on drift. See the KDoc.
     patchQuicheCoalescedPacketsAfterAnUndecryptableOne(sourceDir)
+    // Reset the PTO backoff when Initial or Handshake keys are discarded (RFC 9002 §6.2.1, A.10), in both
+    // recovery implementations. Idempotent, fails loudly on drift. See the KDoc.
+    patchQuichePtoBackoffResetsOnKeyDiscard(sourceDir)
+    // A client's Handshake PTO probe also re-sends its oldest unacknowledged 1-RTT data, which a server
+    // that has confirmed can read (RFC 9002 §6.2.4). Idempotent, fails loudly on drift. See the KDoc.
+    patchQuicheHandshakeProbeCarriesAppData(sourceDir)
 
     // Name the patch set this tree now carries. The tree outlives the run (CI caches it with a
     // prefix fallback), so a reader that compiles it outside these tasks checks this stamp rather
@@ -1307,6 +1317,191 @@ fun patchQuicheHandshakeDoneRidesEveryProbe(sourceDir: File) {
 }
 
 /**
+ * Reset the PTO backoff when a packet number space's keys are discarded, as RFC 9002 §6.2.1 requires
+ * ("When Initial or Handshake keys are discarded, the PTO and loss detection timers MUST be reset") and
+ * its Appendix A.10 spells out (`pto_count = 0` in `OnPacketNumberSpaceDiscarded`).
+ *
+ * **Why.** quiche's `on_pkt_num_space_discarded` cleared the space but kept `pto_count`, so the backoff a
+ * lossy handshake had built up carried into the next space: a client whose Finished took two PTOs to
+ * arrive waited four PTOs to re-send a lost request, and one whose ClientHello took three waited eight to
+ * re-send its Finished. quic-interop-runner `handshakeloss` / `handshakecorruption` with our client: against
+ * quic-go (run 43559668153) the Finished went out again 8 s after it was lost, after quic-go's 5 s
+ * handshake limit; against s2n-quic (run 43604040594) a request waited 25 s after HANDSHAKE_DONE, and the
+ * read deadline fired first. Reproduced by
+ * `MigrationSimTestSuite.theClientsPtoBackoffStartsAgainWhenItDiscardsItsHandshakeKeys`.
+ *
+ * The edit adds `self.pto_count = 0` before the timer is re-armed, in both recovery implementations.
+ *
+ * **Idempotent and loud** (the [patchQuicheForCallerClock] discipline).
+ */
+fun patchQuichePtoBackoffResetsOnKeyDiscard(sourceDir: File) {
+    val marker = "socket-pto-backoff-resets-on-key-discard"
+    val legacyRs = sourceDir.resolve("quiche/src/recovery/congestion/recovery.rs")
+    val gcongestionRs = sourceDir.resolve("quiche/src/recovery/gcongestion/recovery.rs")
+    if (listOf(legacyRs, gcongestionRs).any { !it.exists() }) return
+    if (legacyRs.readText().contains(marker)) return
+
+    fun replaceOnce(
+        file: File,
+        anchor: String,
+        replacement: String,
+    ) {
+        val text = file.readText()
+        if (text.split(anchor).size != 2) {
+            throw GradleException(
+                "$marker: the end of on_pkt_num_space_discarded was not found exactly once in ${file.name} — a " +
+                    "quiche bump moved it, or upstream now resets the PTO backoff there. If so, DELETE " +
+                    "patchQuichePtoBackoffResetsOnKeyDiscard and KEEP " +
+                    "MigrationSimTestSuite.theClientsPtoBackoffStartsAgainWhenItDiscardsItsHandshakeKeys; otherwise " +
+                    "re-fit the anchor.",
+            )
+        }
+        file.writeText(text.replace(anchor, replacement))
+    }
+
+    val rearm = "        self.set_loss_detection_timer(handshake_status, now);\n    }\n"
+    val reset = "        // $marker: RFC 9002 §6.2.1 and A.10.\n        self.pto_count = 0;\n\n"
+    val legacyEnd = "        epoch.loss_probes = 0;\n        epoch.in_flight_count = 0;\n\n"
+    replaceOnce(legacyRs, legacyEnd + rearm, legacyEnd + reset + rearm)
+    val gcongestionEnd = "            .saturating_subtract(epoch.discard(&mut self.pacer), now);\n"
+    replaceOnce(gcongestionRs, gcongestionEnd + rearm, gcongestionEnd + reset + rearm)
+    logger.lifecycle("Patched quiche source: the PTO backoff resets when a packet number space's keys are discarded")
+}
+
+/**
+ * Make a client's Handshake PTO probe also re-send its oldest unacknowledged 1-RTT data while the
+ * handshake is unconfirmed, coalesced behind the Handshake packet.
+ *
+ * **Why.** A server discards its Handshake keys once its handshake completes, so a client whose Finished
+ * arrived but whose 1-RTT request and the server's HANDSHAKE_DONE were lost probes in a space the server
+ * can no longer read, and an unconfirmed client arms no Application Data PTO (RFC 9002 §6.2.1,
+ * [patchQuichePtoWaitsForConfirmation]): the request waited for the server's own PTO to bring
+ * HANDSHAKE_DONE. RFC 9002 §6.2.4 names this case: a sender SHOULD also send ack-eliciting packets from
+ * the other spaces with data in flight, "when the client has both Handshake and Application Data in
+ * flight because the peer might only have receive keys for one of the two." quic-interop-runner
+ * `handshakeloss` with our client against s2n-quic, quinn and rama (runs 43559668153, 43556869462,
+ * 43569919260): the server confirmed, HANDSHAKE_DONE was lost, the client sent eight Handshake-only probes
+ * over 19 s, and the read deadline or idle timeout fired. Reproduced by
+ * `MigrationSimTestSuite.aHandshakeProbeCarriesTheRequestTheConfirmedServerNeverGot`.
+ *
+ * The edits: `RecoveryOps` gains `socket_requeue_oldest_unacked_data`, which queues the frames of the
+ * space's oldest packet carrying data that is neither acknowledged nor lost, unless frames are already
+ * queued there; `on_timeout` calls it for the Application space of every path probing the Handshake space
+ * of an unconfirmed client holding 1-RTT keys. The frames go out as ordinary data, under congestion control.
+ *
+ * Chosen over RFC 9001 §4.1.2 (confirming on an acknowledged 1-RTT packet): that needs a 1-RTT
+ * acknowledgement to arrive, and in these captures nothing 1-RTT reached the server to be acknowledged.
+ *
+ * **Idempotent and loud** (the [patchQuicheForCallerClock] discipline).
+ */
+fun patchQuicheHandshakeProbeCarriesAppData(sourceDir: File) {
+    val marker = "socket-handshake-probe-carries-app-data"
+    val recoveryRs = sourceDir.resolve("quiche/src/recovery/mod.rs")
+    val legacyRs = sourceDir.resolve("quiche/src/recovery/congestion/recovery.rs")
+    val gcongestionRs = sourceDir.resolve("quiche/src/recovery/gcongestion/recovery.rs")
+    val libRs = sourceDir.resolve("quiche/src/lib.rs")
+    if (listOf(recoveryRs, legacyRs, gcongestionRs, libRs).any { !it.exists() }) return
+    if (libRs.readText().contains(marker)) return
+
+    fun replaceOnce(
+        file: File,
+        anchor: String,
+        replacement: String,
+    ) {
+        val text = file.readText()
+        if (text.split(anchor).size != 2) {
+            throw GradleException(
+                "$marker: `${anchor.trim().lines().first()}` not found exactly once in ${file.name} — a quiche " +
+                    "bump moved it. Re-fit patchQuicheHandshakeProbeCarriesAppData, or delete it if quiche's " +
+                    "Handshake PTO probes now carry the client's unacknowledged 1-RTT data. Either way keep " +
+                    "MigrationSimTestSuite.aHandshakeProbeCarriesTheRequestTheConfirmedServerNeverGot.",
+            )
+        }
+        file.writeText(text.replace(anchor, replacement))
+    }
+
+    val traitAnchor = "    fn has_lost_frames(&self, epoch: packet::Epoch) -> bool;\n"
+    replaceOnce(
+        recoveryRs,
+        traitAnchor,
+        traitAnchor +
+            "\n    // $marker: queue the frames of the oldest packet in [epoch] carrying data that is\n" +
+            "    // neither acknowledged nor lost, unless frames are already queued there.\n" +
+            "    fn socket_requeue_oldest_unacked_data(&mut self, epoch: packet::Epoch);\n",
+    )
+    val legacyAnchor = "    fn has_lost_frames(&self, epoch: Epoch) -> bool {\n        self.epochs[epoch].has_lost_frames()\n    }\n"
+    replaceOnce(
+        legacyRs,
+        legacyAnchor,
+        legacyAnchor +
+            """
+            |
+            |    // $marker
+            |    fn socket_requeue_oldest_unacked_data(&mut self, epoch: Epoch) {
+            |        let e = &mut self.epochs[epoch];
+            |        if e.has_lost_frames() {
+            |            return;
+            |        }
+            |        if let Some(p) = e.sent_packets.iter().find(|p| {
+            |            p.has_data && p.time_acked.is_none() && p.time_lost.is_none()
+            |        }) {
+            |            e.lost_frames_pto.extend_from_slice(&p.frames);
+            |        }
+            |    }
+            |
+            """.trimMargin(),
+    )
+    val gcongestionAnchor =
+        "    fn has_lost_frames(&self, epoch: packet::Epoch) -> bool {\n        self.epochs[epoch].has_lost_frames()\n    }\n"
+    replaceOnce(
+        gcongestionRs,
+        gcongestionAnchor,
+        gcongestionAnchor +
+            """
+            |
+            |    // $marker
+            |    fn socket_requeue_oldest_unacked_data(&mut self, epoch: packet::Epoch) {
+            |        let e = &mut self.epochs[epoch];
+            |        if e.has_lost_frames() {
+            |            return;
+            |        }
+            |        let oldest = e.sent_packets.iter().find_map(|p| match &p.status {
+            |            SentStatus::Sent { has_data: true, frames, .. } => Some(frames.clone()),
+            |            _ => None,
+            |        });
+            |        if let Some(frames) = oldest {
+            |            e.lost_frames_pto.extend(frames);
+            |        }
+            |    }
+            |
+            """.trimMargin(),
+    )
+    val timeoutAnchor = "        // Notify timeout events to the application.\n        self.paths.notify_failed_validations();\n"
+    replaceOnce(
+        libRs,
+        timeoutAnchor,
+        """
+        |        // $marker: a client's Handshake probe also re-sends its oldest
+        |        // unacknowledged 1-RTT data, which a confirmed server can read (RFC 9002 §6.2.4).
+        |        if !self.is_server &&
+        |            !self.handshake_confirmed &&
+        |            self.crypto_ctx[packet::Epoch::Application].has_keys()
+        |        {
+        |            for (_, p) in self.paths.iter_mut() {
+        |                if p.recovery.loss_probes(packet::Epoch::Handshake) > 0 {
+        |                    p.recovery
+        |                        .socket_requeue_oldest_unacked_data(packet::Epoch::Application);
+        |                }
+        |            }
+        |        }
+        |
+        |
+        """.trimMargin() + timeoutAnchor,
+    )
+    logger.lifecycle("Patched quiche source: a client's Handshake probe carries its unacknowledged 1-RTT data")
+}
+
+/**
  * Make a server buffer the 1-RTT packets that arrive before its handshake completes, and process them once
  * it does, rather than dropping them.
  *
@@ -2107,6 +2302,92 @@ fun patchQuicheCloseBeforeConfirmationAlsoInOneRtt(sourceDir: File) {
         """.trimMargin(),
     )
     libRs.writeText(text)
+}
+
+/**
+ * Receive a packet that bears a source connection id the peer has retired when it arrives on a 4-tuple
+ * quiche still holds, instead of dropping it.
+ *
+ * After a client moves, the peer retires the id its packets on the left path carried, and that
+ * RETIRE_CONNECTION_ID travels the new path. When the new path is the faster one it arrives first, quiche
+ * removes the id, and the peer's last packets on the left path then miss the id lookup in
+ * `get_or_create_recv_path_id` and are dropped (`socket-retired-cid-recv-is-drop`). A peer that cannot
+ * declare a left path's packets lost (stock quiche) never resends what they carried.
+ *
+ * The edits: `ConnectionIdentifiers` keeps the ids the peer retired, the newest `2 * source_conn_id_limit`
+ * of them, and a packet whose id is among them is received on the path its 4-tuple names. Nothing else
+ * follows from it: no path is created for such a packet and no id is linked. A retired id on a new
+ * 4-tuple is still dropped, and every packet still has to decrypt.
+ *
+ * Reproduced by `MigrationSimTestSuite.packetsOnASlowerLeftPathAreReceivedAfterThePeerRetiresTheirConnectionId`.
+ * Applied after [patchQuicheRetiredCidRecvIsDrop] and [patchQuicheRetiredScidIsNotAdvertised], whose edits
+ * its anchors include. Marker-guarded and loud: a re-run returns, a moved anchor throws.
+ */
+fun patchQuicheRetiredScidStillReceivedOnAHeldPath(sourceDir: File) {
+    val marker = "socket-retired-scid-still-received"
+    val cidRs = sourceDir.resolve("quiche/src/cid.rs")
+    val libRs = sourceDir.resolve("quiche/src/lib.rs")
+    if (!cidRs.exists() || !libRs.exists()) return
+    if (cidRs.readText().contains(marker)) return
+
+    fun replaceOnce(
+        file: File,
+        anchor: String,
+        replacement: String,
+    ) {
+        val text = file.readText()
+        if (text.split(anchor).size != 2) {
+            throw GradleException(
+                "$marker: `${anchor.trim().lines().first()}` not found exactly once in ${file.name}: a quiche bump " +
+                    "moved it. Re-fit patchQuicheRetiredScidStillReceivedOnAHeldPath, or delete it if quiche now " +
+                    "receives a packet bearing a just-retired id on a path it holds. Either way keep " +
+                    "MigrationSimTestSuite.packetsOnASlowerLeftPathAreReceivedAfterThePeerRetiresTheirConnectionId.",
+            )
+        }
+        file.writeText(text.replace(anchor, replacement))
+    }
+
+    replaceOnce(
+        cidRs,
+        "    retired_scids: VecDeque<ConnectionId<'static>>,\n",
+        "    retired_scids: VecDeque<ConnectionId<'static>>,\n\n" +
+            "    /// $marker: source ids the peer retired, newest last, so a packet already in flight on a path\n" +
+            "    /// quiche still holds is received rather than dropped.\n" +
+            "    socket_retired_scids_seen: VecDeque<ConnectionId<'static>>,\n",
+    )
+    replaceOnce(
+        cidRs,
+        "            self.retired_scids.push_back(e.cid);\n",
+        "            // $marker\n" +
+            "            self.socket_retired_scids_seen.push_back(e.cid.clone());\n" +
+            "            while self.socket_retired_scids_seen.len() > 2 * self.source_conn_id_limit {\n" +
+            "                self.socket_retired_scids_seen.pop_front();\n" +
+            "            }\n" +
+            "            self.retired_scids.push_back(e.cid);\n",
+    )
+    replaceOnce(
+        cidRs,
+        "    pub fn find_scid_seq(\n",
+        "    /// $marker: whether [scid] is one of ours the peer retired.\n" +
+            "    pub fn socket_was_retired(&self, scid: &ConnectionId) -> bool {\n" +
+            "        self.socket_retired_scids_seen.iter().any(|c| c == scid)\n" +
+            "    }\n\n" +
+            "    pub fn find_scid_seq(\n",
+    )
+    replaceOnce(
+        libRs,
+        "        let (in_scid_seq, mut in_scid_pid) =\n            ids.find_scid_seq(dcid).ok_or(Error::Done)?;\n",
+        "        // $marker: a packet bearing an id the peer just retired, on a path\n" +
+            "        // quiche holds, is the peer's packet on that path; anywhere else it is dropped.\n" +
+            "        let (in_scid_seq, mut in_scid_pid) = match ids.find_scid_seq(dcid) {\n" +
+            "            Some(found) => found,\n" +
+            "            None => match recv_pid {\n" +
+            "                Some(recv_pid) if ids.socket_was_retired(dcid) => return Ok(recv_pid),\n" +
+            "                _ => return Err(Error::Done),\n" +
+            "            },\n" +
+            "        };\n",
+    )
+    logger.lifecycle("Patched quiche source: a just-retired id is still received on a path quiche holds")
 }
 
 /**

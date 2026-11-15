@@ -49,6 +49,11 @@ name: "Build & Test (Linux)"
 on:
   workflow_call:
     inputs:
+      natives-only:
+        description: "Build only the natives job's artifacts (the QUIC interop gate's runs on main and on demand); skip every test, link and publish job."
+        required: false
+        default: false
+        type: boolean
       gradle-args:
         description: "Extra Gradle arguments (e.g., -PincrementMinor=true)"
         required: false
@@ -317,8 +322,10 @@ jobs:
       # source hash so the cache invalidates on either change.
       # restore-keys gives a partial-hit on version bumps so cargo incremental
       # recompile picks up from the previous build instead of from zero.
-      - name: Cache quiche cargo target/ (all triples)
-        uses: actions/cache@v6
+      # Restore only: native-deps-freshness.yaml's cache-warm writes it on main. A pull request's own
+      # copy (about 1 GB per ref) pushed the small natives entries out of the 10 GB cache.
+      - name: Restore quiche cargo target/ (all triples)
+        uses: actions/cache/restore@v6
         with:
           path: socket-quic-quiche/build/quiche
           key: quiche-cargo-target-v3-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/build.gradle.kts', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
@@ -714,6 +721,10 @@ jobs:
       # silently swallowed by continue-on-error. `cache-hit` is true only on an exact primary-key
       # match (a restore-keys prefix hit leaves it false), which is precisely the case where a
       # re-save is impossible anyway: cache entries are immutable per key.
+      - name: Keep only downloads in the Gradle cache (main only)
+        if: ${{ !cancelled() && github.ref == 'refs/heads/main' && steps.restore_gradle_caches.outputs.cache-hit != 'true' }}
+        uses: ./.github/actions/gradle-cache-prune
+
       - name: Save Gradle build outputs (main only)
         id: save_gradle_caches
         if: ${{ !cancelled() && github.ref == 'refs/heads/main' && steps.restore_gradle_caches.outputs.cache-hit != 'true' }}
@@ -756,6 +767,7 @@ jobs:
   checks-tests:
     name: "Linux / JVM / JS / Android"
     needs: natives
+    if: ${{ !inputs.natives-only }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     # Every jvmTest worker in this job mirrors its JVM fatal-error log (hs_err) to
@@ -1248,6 +1260,7 @@ jobs:
   abi-linux:
     name: "ABI (binary compatibility, Linux)"
     needs: natives
+    if: ${{ !inputs.natives-only }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -1311,6 +1324,7 @@ jobs:
   quiche-jvm:
     name: "QUIC quiche JVM (${{ matrix.leg.name }})"
     needs: natives
+    if: ${{ !inputs.natives-only }}
     runs-on: ubuntu-24.04
     # 40, not 25: the step lid below is now 24 (see its note on QUIC_TEST_TIME_SCALE=3), and a job
     # timeout at or below the step timeout would fire first, which is the failure mode the step lid
@@ -1719,6 +1733,7 @@ jobs:
   jvm-jdk25:
     name: "JVM tests (JDK 25)"
     needs: natives
+    if: ${{ !inputs.natives-only }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
@@ -1836,6 +1851,7 @@ jobs:
   browser-interop:
     name: "WebTransport interop (headless Chrome)"
     needs: natives
+    if: ${{ !inputs.natives-only }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -1885,6 +1901,7 @@ jobs:
   link:
     name: "Link native test binaries + quic-echo (Linux)"
     needs: natives
+    if: ${{ !inputs.natives-only }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -1994,6 +2011,7 @@ jobs:
   publish:
     name: "Publish Linux targets to Maven Local"
     needs: natives
+    if: ${{ !inputs.natives-only }}
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
@@ -2233,6 +2251,12 @@ jobs:
         with:
           mode: start
 
+      # Every lane (traced or not): a core becomes gdb backtraces on this runner, and a run past its
+      # budget (a healthy one takes ~4 min) leaves every thread's stack. Uploaded only on failure.
+      - uses: ./.github/actions/linux-native-crash
+        with:
+          mode: start
+
       - name: Run socket-quic-quiche native tests (quiche cinterop)
         run: |
           # pipefail is NOT on by default in Actions' `bash -e {0}` (only an explicit
@@ -2247,7 +2271,7 @@ jobs:
           chmod +x "$BIN"
           # cwd = repo root (harness reached over the network; CA trusted via /etc/ssl/certs).
           # tee stdout so the audit step below can grep harness OK/SKIP markers without re-running.
-          "$BIN" 2>&1 | tee /tmp/socket-quic-x64.log
+          "$NATIVE_CRASH" run "$NATIVE_CRASH_DIR" 720 "$BIN" 2>&1 | tee /tmp/socket-quic-x64.log
 
       # Audit step: mirror integration-linux-arm64 / the JVM audit — count
       # QuicHarnessIntegrationTests OK vs SKIP from the captured stdout, surfacing a
@@ -2288,6 +2312,14 @@ jobs:
         with:
           mode: collect
           artifact-name: perf-ring-linux-x64-native
+
+      - name: Native crash and hang evidence (on failure)
+        if: ${{ failure() || cancelled() }}
+        continue-on-error: true
+        uses: ./.github/actions/linux-native-crash
+        with:
+          mode: collect
+          artifact-name: native-crash-linux-x64
 
       - name: Bring down test harness
         if: always()
@@ -2355,10 +2387,16 @@ jobs:
       - name: Bring up test harness (with quic-echo)
         run: bash test-harness/compose-up-retry.sh echo http tls toxiproxy netem-blackhole rst quic-echo
 
+      # A core becomes gdb backtraces on this runner, and a run past its budget leaves every
+      # thread's stack. Uploaded only on failure. (This lane carries no perf ring: it is the untraced one.)
+      - uses: ./.github/actions/linux-native-crash
+        with:
+          mode: start
+
       - name: Run ARM64 tests (base module)
         run: |
           chmod +x build/bin/linuxArm64/debugTest/test.kexe
-          ./build/bin/linuxArm64/debugTest/test.kexe
+          "$NATIVE_CRASH" run "$NATIVE_CRASH_DIR" 300 ./build/bin/linuxArm64/debugTest/test.kexe
 
       # :socket-udp's io_uring datagram suite. This runs here (real ubuntu-24.04-arm hardware)
       # rather than under the x64 job's qemu-user, which returns ENOSYS for io_uring_setup —
@@ -2368,7 +2406,7 @@ jobs:
         run: |
           if [ -f socket-udp/build/bin/linuxArm64/debugTest/test.kexe ]; then
             chmod +x socket-udp/build/bin/linuxArm64/debugTest/test.kexe
-            ./socket-udp/build/bin/linuxArm64/debugTest/test.kexe
+            "$NATIVE_CRASH" run "$NATIVE_CRASH_DIR" 300 ./socket-udp/build/bin/linuxArm64/debugTest/test.kexe
           else
             echo "socket-udp ARM64 binary not found — skipping"
           fi
@@ -2384,7 +2422,7 @@ jobs:
             # tee stdout into /tmp/socket-quic-arm64.log so the audit
             # step below can grep harness OK/SKIP markers from
             # QuicHarnessIntegrationTests.withHarness without re-running.
-            ./socket-quic-quiche/build/bin/linuxArm64/debugTest/test.kexe 2>&1 | tee /tmp/socket-quic-arm64.log
+            "$NATIVE_CRASH" run "$NATIVE_CRASH_DIR" 720 ./socket-quic-quiche/build/bin/linuxArm64/debugTest/test.kexe 2>&1 | tee /tmp/socket-quic-arm64.log
           else
             echo "socket-quic ARM64 binary not found — skipping"
           fi
@@ -2460,6 +2498,14 @@ jobs:
           retention-days: 1
           if-no-files-found: warn
 
+      - name: Native crash and hang evidence (on failure)
+        if: ${{ failure() || cancelled() }}
+        continue-on-error: true
+        uses: ./.github/actions/linux-native-crash
+        with:
+          mode: collect
+          artifact-name: native-crash-linux-arm64
+
       - name: Bring down test harness
         if: always()
         run: cd test-harness && docker compose down -v
@@ -2509,6 +2555,7 @@ jobs:
   malloc-check:
     name: "QUIC malloc-check (Linux x64)"
     needs: natives
+    if: ${{ !inputs.natives-only }}
     runs-on: ubuntu-24.04
     # 40, not 20: the step lid below is now 24 (QUIC_TEST_TIME_SCALE=3 — see its note). A job
     # timeout at or below the step lid fires first and takes the core-dump post-mortem steps with
@@ -2628,6 +2675,7 @@ jobs:
   fuzz-jvm:
     name: "Fuzz JVM (${{ matrix.lane }})"
     needs: natives
+    if: ${{ !inputs.natives-only }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     strategy:
@@ -2781,6 +2829,7 @@ jobs:
   fuzz-native:
     name: "Fuzz native ASAN (${{ matrix.lane }})"
     needs: natives
+    if: ${{ !inputs.natives-only }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     strategy:
@@ -2849,6 +2898,7 @@ jobs:
   fuzz-boringssl-asan:
     name: "Fuzz BoringSSL-C ASAN proof (Linux x64)"
     needs: natives
+    if: ${{ !inputs.natives-only }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:

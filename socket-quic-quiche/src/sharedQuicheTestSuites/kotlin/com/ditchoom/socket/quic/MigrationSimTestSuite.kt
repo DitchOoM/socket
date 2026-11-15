@@ -669,6 +669,116 @@ abstract class MigrationSimTestSuite {
         }
 
     /**
+     * A client's PTO backoff starts again when HANDSHAKE_DONE makes it discard its Handshake keys, so a
+     * request lost behind a lossy handshake is sent again one PTO later, not a backed-off multiple of it.
+     *
+     * RFC 9002 §6.2.1: when Initial or Handshake keys are discarded the PTO and loss detection timers MUST
+     * be reset; Appendix A.10 sets `pto_count` to 0. quiche kept the count, so a client whose Finished took
+     * two PTOs to arrive waited four PTOs to re-send its request. The quic-interop-runner `handshakeloss`
+     * against s2n-quic and quinn: HANDSHAKE_DONE arrived after the Finished had been probed four and eight
+     * times, the request's next copy went out 25 s later, and the read deadline or idle timeout fired first.
+     */
+    @Test
+    fun theClientsPtoBackoffStartsAgainWhenItDiscardsItsHandshakeKeys() =
+        runTest {
+            wrapTestBody {
+                val baseline = QuichePairByHand.open(simEnv())
+                val firstRequestPto =
+                    try {
+                        baseline.handshakeUpToTheClientsFinished()
+                        baseline.exchange(DEFAULT_PATH_LATENCY) { true }
+                        assertTrue(baseline.confirmed(baseline.client), "the client confirms a handshake that lost nothing")
+                        assertEquals(7, baseline.streamSend(baseline.client, QuicStreamId(0), "request", fin = true))
+                        assertTrue(baseline.sends(baseline.client).isNotEmpty(), "the client sends its request")
+                        baseline.nextTimer(baseline.client)!!
+                    } finally {
+                        baseline.close()
+                    }
+
+                val pair = QuichePairByHand.open(simEnv())
+                try {
+                    pair.handshakeUpToTheClientsFinished()
+                    assertEquals(7, pair.streamSend(pair.client, QuicStreamId(0), "request", fin = true))
+                    // The Finished, the request and the first PTO's probe are lost.
+                    assertTrue(pair.sends(pair.client).isNotEmpty(), "the client sends its Finished and request")
+                    pair.elapse(pair.nextTimer(pair.client)!!)
+                    assertTrue(pair.sends(pair.client).isNotEmpty(), "the first PTO probes")
+                    // Of the second PTO's probes only one Handshake packet, the Finished, arrives.
+                    pair.elapse(pair.nextTimer(pair.client)!!)
+                    val probe = pair.sends(pair.client).last { "Handshake" in it.packetTypes }
+                    pair.elapse(DEFAULT_PATH_LATENCY)
+                    pair.deliver(listOf(QuichePairByHand.Datagram(probe.packet("Handshake"), probe.clientEndpoint)), pair.server)
+                    assertTrue(pair.confirmed(pair.server), "the server confirms its handshake on the Finished")
+                    // Only the server's 1-RTT packet, HANDSHAKE_DONE, arrives; its Handshake acknowledgement is lost.
+                    val done = pair.sends(pair.server).filter { "1-RTT" in it.packetTypes }
+                    assertTrue(done.isNotEmpty(), "the server sends HANDSHAKE_DONE")
+                    pair.elapse(DEFAULT_PATH_LATENCY)
+                    pair.deliver(done.map { QuichePairByHand.Datagram(it.packet("1-RTT"), it.clientEndpoint) }, pair.client)
+                    assertTrue(pair.confirmed(pair.client), "HANDSHAKE_DONE confirms the client's handshake")
+                    // The client writes again, so its PTO is measured from now, as the baseline's is.
+                    assertEquals(4, pair.streamSend(pair.client, QuicStreamId(4), "more", fin = true))
+                    assertTrue(pair.sends(pair.client).isNotEmpty(), "the client sends its second request")
+
+                    val due = pair.nextTimer(pair.client)!!
+                    assertTrue(
+                        due <= firstRequestPto * 3 / 2,
+                        "the PTO must start from no backoff once the Handshake keys are discarded: it is due in $due, a " +
+                            "handshake that lost nothing re-sends its request in $firstRequestPto",
+                    )
+                } finally {
+                    pair.close()
+                }
+            }
+        }
+
+    /**
+     * A client whose Finished reached the server, but whose request and the server's HANDSHAKE_DONE were
+     * lost, sends the request again with its next Handshake probe, which the server can read.
+     *
+     * RFC 9002 §6.2.4: besides the space whose timer expired, a sender SHOULD send ack-eliciting packets
+     * in the other spaces with data in flight, coalescing them, "when the client has both Handshake and
+     * Application Data in flight because the peer might only have receive keys for one of the two". A
+     * server discards its Handshake keys once its handshake completes, so it ignores the client's
+     * Handshake probes, and an unconfirmed client arms no Application Data PTO (§6.2.1): quiche re-sent
+     * only the Finished until HANDSHAKE_DONE arrived, each probe backed off further. The quic-interop-runner
+     * `handshakeloss` against s2n-quic, quinn and rama ended on the client's idle timeout or read deadline
+     * this way.
+     */
+    @Test
+    fun aHandshakeProbeCarriesTheRequestTheConfirmedServerNeverGot() =
+        runTest {
+            wrapTestBody {
+                val pair = QuichePairByHand.open(simEnv())
+                try {
+                    pair.handshakeUpToTheClientsFinished()
+                    assertEquals(7, pair.streamSend(pair.client, QuicStreamId(0), "request", fin = true))
+                    val first = pair.sends(pair.client)
+                    // Only the Finished arrives; the request riding beside it is lost.
+                    val finished = first.filter { "Handshake" in it.packetTypes }
+                    assertTrue(finished.isNotEmpty(), "the client sends its Finished")
+                    pair.elapse(DEFAULT_PATH_LATENCY)
+                    pair.deliver(finished.map { QuichePairByHand.Datagram(it.packet("Handshake"), it.clientEndpoint) }, pair.server)
+                    assertTrue(pair.confirmed(pair.server), "the server completes and confirms its handshake on the Finished")
+                    // HANDSHAKE_DONE and the server's acknowledgements are lost.
+                    assertTrue(pair.sends(pair.server).isNotEmpty(), "the server sends HANDSHAKE_DONE")
+
+                    pair.elapse(pair.nextTimer(pair.client)!!)
+                    val probes = pair.sends(pair.client)
+                    assertTrue(
+                        probes.any { "Handshake" in it.packetTypes && "1-RTT" in it.packetTypes },
+                        "the Handshake probe must coalesce the unacknowledged request in a 1-RTT packet; it sent " +
+                            "${probes.map { it.packetTypes }}",
+                    )
+                    pair.elapse(DEFAULT_PATH_LATENCY)
+                    pair.deliver(probes, pair.server)
+                    assertEquals("request" to true, pair.readText(pair.server, QuicStreamId(0)), "the server reads the request")
+                } finally {
+                    pair.close()
+                }
+            }
+        }
+
+    /**
      * Both probes of a PTO carry a lost Finished, so the server completes its handshake when only the
      * second arrives. Before, the second was a bare PING: the same loss pattern that strands a ClientHello
      * ([bothProbesOfAPtoCarryALostClientHello]) one flight later.
@@ -2437,88 +2547,102 @@ abstract class MigrationSimTestSuite {
      */
     @Test
     fun packetsThePeerSentOnTheLeftPathBeforeItSawTheMoveAreStillReceived() =
-        runTest {
-            wrapTestBody {
-                withMigrationSim(
-                    simEnv(),
-                    seed = 904_029L,
-                    primaryImpairment = PathImpairment(latency = 20.milliseconds),
-                    probeImpairment = { PathImpairment(latency = 20.milliseconds) },
-                ) {
-                    val serverJob =
+        assertTheLeftPathsPacketsAreReceived(leftLatency = 20.milliseconds, newLatency = 20.milliseconds)
+
+    /**
+     * As above, with the left path slower than the new one: the peer's RETIRE_CONNECTION_ID for the id
+     * its left-path packets carry overtakes them on the faster new path, so they arrive bearing an id the
+     * client has dropped. They are still the peer's packets on a path quiche holds, and are received.
+     */
+    @Test
+    fun packetsOnASlowerLeftPathAreReceivedAfterThePeerRetiresTheirConnectionId() =
+        assertTheLeftPathsPacketsAreReceived(leftLatency = 40.milliseconds, newLatency = 5.milliseconds)
+
+    private fun assertTheLeftPathsPacketsAreReceived(
+        leftLatency: Duration,
+        newLatency: Duration,
+    ) = runTest {
+        wrapTestBody {
+            withMigrationSim(
+                simEnv(),
+                seed = 904_029L,
+                primaryImpairment = PathImpairment(latency = leftLatency),
+                probeImpairment = { PathImpairment(latency = newLatency) },
+            ) {
+                val serverJob =
+                    client.launch {
+                        val st = server.acceptStream()
+                        while (true) {
+                            val d = st.read(60.seconds)
+                            if (d !is ReadResult.Data) break
+                            st.writeFully(d.buffer, 30.seconds)
+                            d.buffer.freeIfNeeded()
+                        }
+                    }
+                try {
+                    awaitSpareDcids()
+
+                    fun deliveredToClient() = pipe.paths().sumOf { it.stats.deliveredToClient.toLong() }
+
+                    suspend fun receivedByClient() =
+                        assertNotNull(clientDriver.stats().connStats, "an established connection has stats").recv
+                    val deliveredBefore = deliveredToClient()
+                    val receivedBefore = receivedByClient()
+                    val stream = client.openStream()
+                    var echoed = 0L
+                    val readerJob =
                         client.launch {
-                            val st = server.acceptStream()
                             while (true) {
-                                val d = st.read(60.seconds)
+                                val d = stream.read(60.seconds)
                                 if (d !is ReadResult.Data) break
-                                st.writeFully(d.buffer, 30.seconds)
+                                echoed += d.buffer.remaining()
                                 d.buffer.freeIfNeeded()
                             }
                         }
-                    try {
-                        awaitSpareDcids()
-
-                        fun deliveredToClient() = pipe.paths().sumOf { it.stats.deliveredToClient.toLong() }
-
-                        suspend fun receivedByClient() =
-                            assertNotNull(clientDriver.stats().connStats, "an established connection has stats").recv
-                        val deliveredBefore = deliveredToClient()
-                        val receivedBefore = receivedByClient()
-                        val stream = client.openStream()
-                        var echoed = 0L
-                        val readerJob =
-                            client.launch {
-                                while (true) {
-                                    val d = stream.read(60.seconds)
-                                    if (d !is ReadResult.Data) break
-                                    echoed += d.buffer.remaining()
-                                    d.buffer.freeIfNeeded()
-                                }
+                    val chunks = 60
+                    val writerJob =
+                        client.launch {
+                            repeat(chunks) {
+                                val out = BufferFactory.network().allocate(ECHO_CHUNK_BYTES)
+                                repeat(ECHO_CHUNK_BYTES) { i -> out.writeByte((i and 0x7f).toByte()) }
+                                out.resetForRead()
+                                stream.write(out, 30.seconds)
+                                out.freeNativeMemory()
+                                delay(5.milliseconds)
                             }
-                        val chunks = 60
-                        val writerJob =
-                            client.launch {
-                                repeat(chunks) {
-                                    val out = BufferFactory.network().allocate(ECHO_CHUNK_BYTES)
-                                    repeat(ECHO_CHUNK_BYTES) { i -> out.writeByte((i and 0x7f).toByte()) }
-                                    out.resetForRead()
-                                    stream.write(out, 30.seconds)
-                                    out.freeNativeMemory()
-                                    delay(5.milliseconds)
-                                }
-                            }
-                        delay(50.milliseconds)
-
-                        val result = withTimeout(30.seconds) { migrate().await() }
-                        assertIs<MigrationResult.Succeeded>(result, "the migration itself failed")
-                        val left = pipe.paths().first()
-                        val reachedLeftPathAtSwitch = left.stats.deliveredToClient
-
-                        withTimeout(30.seconds) { writerJob.join() }
-                        withTimeout(30.seconds) {
-                            while (echoed < chunks.toLong() * ECHO_CHUNK_BYTES) delay(10.milliseconds)
                         }
+                    delay(50.milliseconds)
 
-                        assertTrue(
-                            left.stats.deliveredToClient > reachedLeftPathAtSwitch,
-                            "no datagram reached the left path after the switch, so this run never opened the " +
-                                "window it exists for: ${pipeTraffic()}",
-                        )
-                        delay(2.seconds)
-                        assertEquals(
-                            deliveredToClient() - deliveredBefore,
-                            receivedByClient() - receivedBefore,
-                            "datagrams delivered to the client (left) against packets its quiche received (right): the " +
-                                "difference is what the client discarded. ${pipeTraffic()}",
-                        )
-                        readerJob.cancel()
-                        stream.close()
-                    } finally {
-                        serverJob.cancel()
+                    val result = withTimeout(30.seconds) { migrate().await() }
+                    assertIs<MigrationResult.Succeeded>(result, "the migration itself failed")
+                    val left = pipe.paths().first()
+                    val reachedLeftPathAtSwitch = left.stats.deliveredToClient
+
+                    withTimeout(30.seconds) { writerJob.join() }
+                    withTimeout(30.seconds) {
+                        while (echoed < chunks.toLong() * ECHO_CHUNK_BYTES) delay(10.milliseconds)
                     }
+
+                    assertTrue(
+                        left.stats.deliveredToClient > reachedLeftPathAtSwitch,
+                        "no datagram reached the left path after the switch, so this run never opened the " +
+                            "window it exists for: ${pipeTraffic()}",
+                    )
+                    delay(2.seconds)
+                    assertEquals(
+                        deliveredToClient() - deliveredBefore,
+                        receivedByClient() - receivedBefore,
+                        "datagrams delivered to the client (left) against packets its quiche received (right): the " +
+                            "difference is what the client discarded. ${pipeTraffic()}",
+                    )
+                    readerJob.cancel()
+                    stream.close()
+                } finally {
+                    serverJob.cancel()
                 }
             }
         }
+    }
 
     /**
      * A PATH_RESPONSE lost after the PATH_CHALLENGE it answers was acknowledged costs nothing: the peer's
