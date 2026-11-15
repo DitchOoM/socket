@@ -13,6 +13,7 @@ import kotlinx.coroutines.runBlocking
 import java.net.InetSocketAddress
 import java.net.StandardProtocolFamily
 import java.nio.channels.DatagramChannel
+import java.util.concurrent.ConcurrentLinkedQueue
 import kotlin.random.Random
 import kotlin.test.AfterTest
 import kotlin.test.Test
@@ -91,21 +92,41 @@ class CoreServerEchoTests {
     private fun concurrentEchoes(connections: Int) =
         runBlocking {
             withCoreEchoServer(ServerConfig(admission = Admission(perPass = 256, inProgress = 2_048))) { server ->
-                val echoed =
-                    (0 until connections)
-                        .map { n ->
-                            async(Dispatchers.IO) {
-                                val client = connectCore(server.port, loops = loops)
-                                try {
-                                    val payload = Random(n).nextBytes(1_024)
-                                    payload to echoOver(client.connection.openStream(), payload)
-                                } finally {
-                                    client.connection.close(QuicError.NoError)
+                val connectedAfter = ConcurrentLinkedQueue<Long>()
+                val started = System.nanoTime()
+                try {
+                    val echoed =
+                        (0 until connections)
+                            .map { n ->
+                                async(Dispatchers.IO) {
+                                    val client = connectCore(server.port, loops = loops)
+                                    connectedAfter.add((System.nanoTime() - started) / NANOS_PER_MILLI)
+                                    try {
+                                        val payload = Random(n).nextBytes(1_024)
+                                        payload to echoOver(client.connection.openStream(), payload)
+                                    } finally {
+                                        client.connection.close(QuicError.NoError)
+                                    }
                                 }
-                            }
-                        }.awaitAll()
-                echoed.forEachIndexed { n, (sent, back) -> assertContentEquals(sent, back, "connection $n") }
-                assertEquals(connections.toLong(), server.counts.accepted)
+                            }.awaitAll()
+                    echoed.forEachIndexed { n, (sent, back) -> assertContentEquals(sent, back, "connection $n") }
+                    assertEquals(connections.toLong(), server.counts.accepted)
+                } catch (failed: Throwable) {
+                    // What the server and its socket saw, so the next occurrence names where the handshakes went.
+                    val times = connectedAfter.sorted()
+                    val counts = server.counts
+                    throw AssertionError(
+                        "$connections connections, ${times.size} connected after ${times.lastOrNull()} ms (median ${times.getOrNull(
+                            times.size / 2,
+                        )}): " +
+                            "accepted=${counts.accepted} routed=${counts.routed} droppedAdmission=${counts.droppedAdmission} " +
+                            "droppedUnknown=${counts.droppedUnknown} loopPasses=${server.loop.counts.passes} " +
+                            "datagramsIn=${server.loop.counts.datagramsIn} datagramsOut=${server.loop.counts.datagramsOut} " +
+                            "receiveFailures=${server.loop.counts.receiveFailures} sendRefusals=${server.loop.counts.sendRefusals} " +
+                            "socket=${server.socket.granted.receiveBytes} B receive buffer, drops=${server.socket.drops()}",
+                        failed,
+                    )
+                }
             }
         }
 
@@ -126,6 +147,10 @@ class CoreServerEchoTests {
                 assertEquals(hosts.size.toLong(), server.counts.accepted)
             }
         }
+
+    private companion object {
+        const val NANOS_PER_MILLI = 1_000_000L
+    }
 
     private fun hasIPv6Loopback(): Boolean =
         runCatching {
