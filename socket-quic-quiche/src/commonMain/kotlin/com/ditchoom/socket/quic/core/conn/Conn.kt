@@ -91,6 +91,9 @@ internal sealed interface ConnEnd {
     class CallerFailed(
         val cause: Throwable,
     ) : ConnEnd
+
+    /** Its server was closed: the connection's CONNECTION_CLOSE went out before the server's loop stopped. */
+    object ServerClosed : ConnEnd
 }
 
 /** What a connection tells whoever drives its streams. Called inside the connection, on the thread inside it. */
@@ -542,7 +545,9 @@ internal class Conn(
             is ConnLifecycle.Closed ->
                 when (now.end) {
                     is ConnEnd.Failed, is ConnEnd.CallerFailed -> true
-                    ConnEnd.TimedOut, is ConnEnd.ByPeer, is ConnEnd.Locally, ConnEnd.Quietly, is ConnEnd.LoopFailed -> false
+                    ConnEnd.TimedOut, is ConnEnd.ByPeer, is ConnEnd.Locally, ConnEnd.Quietly, is ConnEnd.LoopFailed,
+                    ConnEnd.ServerClosed,
+                    -> false
                 }
             ConnLifecycle.Handshaking, ConnLifecycle.Established -> false
         }
@@ -574,8 +579,13 @@ internal class Conn(
      * Loop thread: the loop failed with [cause]. The connection ends with it, inside: on this thread when it is
      * free or the loop holds it, else on the caller that is inside, which runs the work before it leaves.
      */
-    fun loopFailed(cause: Throwable) {
-        val work = LoopFailedWork(cause)
+    fun loopFailed(cause: Throwable) = endWithLoop(ConnEnd.LoopFailed(cause))
+
+    /** Loop thread: the server closed and its loop is stopping after this connection's close was flushed. */
+    fun serverClosed() = endWithLoop(ConnEnd.ServerClosed)
+
+    private fun endWithLoop(end: ConnEnd) {
+        val work = EndWithLoopWork(end)
         if (inbox.push(work) === Pushed.Refused) return
         when (owner.leaveWork()) {
             WorkLeft.ForHolder -> if (hold === LoopHold.In) finishAsLoop()
@@ -815,19 +825,21 @@ internal class Conn(
         override fun gone() = Unit
     }
 
-    /** Inside, once: the loop failed, so the connection ends. */
-    private inner class LoopFailedWork(
-        private val cause: Throwable,
+    /** Inside, once: the loop is stopping, so the connection ends with [end]. */
+    private inner class EndWithLoopWork(
+        private val end: ConnEnd,
     ) : ConnWork() {
         override fun run(inside: Inside) {
             if (lifecycle is ConnLifecycle.Closed) return
-            val end = ConnEnd.LoopFailed(cause)
             lifecycle = ConnLifecycle.Closed(end)
             disarm()
             try {
                 events.closed(end)
             } catch (late: Exception) {
-                cause.addSuppressed(late)
+                when (end) {
+                    is ConnEnd.LoopFailed -> end.cause.addSuppressed(late)
+                    else -> reportOnThisThread(late)
+                }
             }
         }
 

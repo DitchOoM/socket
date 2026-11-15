@@ -219,22 +219,19 @@ private fun openConnectedChannel(peer: InetSocketAddress): DatagramChannel {
 }
 
 /**
- * The source address the routing table picks for [peer], read from a connected probe that sends nothing. The probe
- * names a port other than [peer]'s so it never holds a four-tuple the connection could need. Every probe to one peer
- * has the same destination, so two probes that run at once and are given the same ephemeral port clash on their
- * four-tuple and the second connect fails with "address in use"; a fresh probe is given another port.
+ * The source address the routing table picks for [peer], read from a connected probe that sends nothing. A route is
+ * chosen by destination address, so the probe's port is free: each probe takes the next of [PROBE_PORTS] ports, so
+ * probes running at once name different four-tuples and never clash on an ephemeral port, and none names [peer]'s own.
  */
 private fun routeSource(peer: InetSocketAddress): java.net.InetAddress {
-    val probePort = if (peer.port == PROBE_PORT) PROBE_PORT + 1 else PROBE_PORT
-    var clashes = 0
-    while (true) {
-        try {
-            return probeSource(InetSocketAddress(peer.address, probePort), peer)
-        } catch (clash: java.net.BindException) {
-            if (++clashes == MAX_PROBE_CLASHES) throw clash
-        }
-    }
+    val next = PROBE_BASE + Math.floorMod(probeTurn.getAndIncrement(), PROBE_PORTS)
+    val probePort = if (next == peer.port) PROBE_BASE + PROBE_PORTS else next
+    return probeSource(InetSocketAddress(peer.address, probePort), peer)
 }
+
+private val probeTurn =
+    java.util.concurrent.atomic
+        .AtomicInteger()
 
 private fun probeSource(
     probed: InetSocketAddress,
@@ -275,8 +272,8 @@ private fun hex(buffer: PlatformBuffer): String {
 private const val HEX = "0123456789abcdef"
 private const val QUIC_V1 = 1
 private const val MAX_BATCH = 64
-private const val PROBE_PORT = 9
-private const val MAX_PROBE_CLASHES = 16
+private const val PROBE_BASE = 20_000
+private const val PROBE_PORTS = 4_096
 
 /** Lanes callers send from in place, datagrams each holds, and slots for datagrams that arrive while a caller is inside. */
 private const val CALLER_LANES = 4

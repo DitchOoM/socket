@@ -224,6 +224,7 @@ internal class CoreConnection(
                 is ConnEnd.ByPeer -> QuicCloseReason.ByPeer(end.error)
                 is ConnEnd.Locally -> QuicCloseReason.ByLocal(end.error)
                 is ConnEnd.Failed -> QuicCloseReason.ByLocal(QuicError.ProcessingFailed)
+                ConnEnd.ServerClosed -> QuicCloseReason.ByLocal(QuicError.NoError)
                 ConnEnd.Quietly, is ConnEnd.LoopFailed, is ConnEnd.CallerFailed -> QuicCloseReason.Unspecified
             }
         val failure =

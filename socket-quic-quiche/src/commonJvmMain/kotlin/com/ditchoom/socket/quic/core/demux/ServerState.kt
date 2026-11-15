@@ -21,9 +21,6 @@ import kotlin.concurrent.atomics.AtomicInt
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.random.Random
 
-/** Why every connection of a server ended: its owner stopped it. */
-internal class ServerStopped : Exception()
-
 /** Memory shared by the loop and the connections on it, freed when the last of them has let go. */
 internal class ServerResources(
     private val freeAll: () -> Unit,

@@ -356,11 +356,10 @@ internal class ServerParts(
         val loop = (attached as Attached.To).loop
         if (loop.counts.passes <= now.startedPass || touchedHead !== PeerLink.End) return
         shutdown = Shutdown.Finished
-        val cause = ServerStopped()
-        for (peer in ArrayList(peers)) peer.conn.loopFailed(cause)
+        for (peer in ArrayList(peers)) peer.conn.serverClosed()
         loop.beginClosing(
             LoopClosed { counts ->
-                loopEnded(ServerStopped())
+                loopEnded(LoopEnd.Stopped)
                 now.closed.closed(counts)
             },
         )
@@ -368,13 +367,15 @@ internal class ServerParts(
 
     override fun loopFailed(cause: Throwable) {
         for (peer in ArrayList(peers)) peer.conn.loopFailed(cause)
-        s.accepted.close(cause)
-        loopEnded(cause)
+        loopEnded(LoopEnd.Failed(cause))
     }
 
     /** The loop is over: what only it used is freed, and the memory connections share is released from its hold. */
-    private fun loopEnded(cause: Throwable) {
-        if (cause is ServerStopped) s.accepted.close() else s.accepted.close(cause)
+    private fun loopEnded(end: LoopEnd) {
+        when (end) {
+            LoopEnd.Stopped -> s.accepted.close()
+            is LoopEnd.Failed -> s.accepted.close(end.cause)
+        }
         peers.clear()
         stateless.free()
         headerScratch.free()
@@ -391,4 +392,13 @@ internal class ServerParts(
         const val MAX_TOKEN = 256
         const val WORD = 8
     }
+}
+
+/** How a server's loop ended: its owner closed it, or it failed. */
+private sealed interface LoopEnd {
+    object Stopped : LoopEnd
+
+    class Failed(
+        val cause: Throwable,
+    ) : LoopEnd
 }
