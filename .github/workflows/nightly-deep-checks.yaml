@@ -40,6 +40,10 @@ on:
         description: "Minutes each soak loop runs, after the binary is linked (at most 100)"
         required: true
         default: "45"
+      heap_verify_minutes:
+        description: "Minutes the Android benchmark APK loops under CheckJNI, heap verification and GWP-ASan (at most 100)"
+        required: true
+        default: "60"
 
 permissions:
   contents: read
@@ -431,9 +435,98 @@ jobs:
           if-no-files-found: ignore
 
   # ── Report ──────────────────────────────────────────────────────────────────────────────────────
+  # The Android release APK under the runtime's own memory checks: CheckJNI, ART heap verification
+  # before and after every GC, and GWP-ASan on the test process's native allocations
+  # (scripts/android-heap-verify.sh). A release APK runs none of them by default, and only release
+  # APKs have shown the benchmark lane's SIGSEGV in JIT code. The emulator is the benchmark lane's
+  # (API 34, x86_64, the rootable `default` image the checks need).
+  android-heap-verify:
+    name: "Android memory checks (CheckJNI, heap verify, GWP-ASan)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 160
+    env:
+      ORG_GRADLE_PROJECT_linuxTargets: "false"
+      HEAP_VERIFY_MINUTES: ${{ inputs.heap_verify_minutes || '60' }}
+    steps:
+      - name: Check the duration input
+        run: |
+          case "$HEAP_VERIFY_MINUTES" in '' | *[!0-9]*) echo "::error::heap_verify_minutes must be a whole number, got '$HEAP_VERIFY_MINUTES'"; exit 1 ;; esac
+          [ "$HEAP_VERIFY_MINUTES" -le 100 ] || { echo "::error::heap_verify_minutes must be at most 100 (job timeout is 160)"; exit 1; }
+
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+
+      - name: Restore Gradle wrapper distribution
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.gradle/wrapper
+          key: gradle-wrapper-linux-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+
+      - name: Restore Gradle dependency cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.gradle/caches
+          key: gradle-linux-${{ hashFiles('gradle/libs.versions.toml', '**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-linux-
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Install libclang
+        uses: ./.github/actions/apt-install-cached
+        with:
+          purpose: "android memory checks: libclang for boring-sys bindgen"
+          packages: libclang-dev
+
+      - name: Install Rust + cargo-ndk
+        uses: dtolnay/rust-toolchain@stable
+      - run: |
+          rustup target add x86_64-linux-android aarch64-linux-android armv7-linux-androideabi
+          cargo install cargo-ndk
+
+      - name: Build Android QUIC native libs
+        run: .github/scripts/gradle-retry.sh :socket-quic-quiche:buildAndroidNativeLibs --no-configuration-cache
+
+      - name: Install + verify Android Emulator and system image
+        timeout-minutes: 6
+        run: bash scripts/android-sdk-emulator.sh install 34
+
+      - name: Loop the benchmark APK under the memory checks
+        timeout-minutes: 140
+        uses: reactivecircus/android-emulator-runner@v2
+        env:
+          ANDROID_EMULATOR_WAIT_TIME_BEFORE_KILL: 1
+        with:
+          api-level: 34
+          target: default
+          arch: x86_64
+          disk-size: 4096M
+          emulator-options: -no-snapshot -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          pre-emulator-launch-script: bash scripts/android-sdk-emulator.sh verify 34
+          # ONE line: the action runs each line of `script:` in its own shell.
+          script: bash scripts/android-heap-verify.sh 34 "$HEAP_VERIFY_MINUTES"
+
+      - name: Upload memory-check evidence
+        if: ${{ failure() || cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-heap-verify
+          path: heap-verify/
+          if-no-files-found: ignore
+          retention-days: 14
+
   report:
     name: Report
-    needs: [find-natives, lincheck, fuzz-jvm, fuzz-native, soak-linux-x64, soak-macos-arm64]
+    needs: [find-natives, lincheck, fuzz-jvm, fuzz-native, soak-linux-x64, soak-macos-arm64, android-heap-verify]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10

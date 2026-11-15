@@ -436,6 +436,11 @@ jobs:
             -o -name 'symbol-processing-common-deps-*.jar' -o -name 'kotlinx-coroutines-core-jvm-*.jar' \) \
             -printf '%f\n' 2>/dev/null | sort | tee -a "$GITHUB_STEP_SUMMARY"
 
+      # Last step: the gradle-linux entry is saved at post-job, after this.
+      - name: Keep only downloads in the Gradle cache
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/gradle-cache-prune
+
   # -------------------------------------------------------------------------
   # 3. Apple native cache-warm.
   #

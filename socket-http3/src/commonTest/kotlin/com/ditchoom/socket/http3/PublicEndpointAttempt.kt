@@ -8,8 +8,10 @@ import com.ditchoom.socket.quic.ServerCertVerifier
 import com.ditchoom.socket.quic.trace.QuicTraceCapture
 import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.testkit.trace.TraceSink
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -204,11 +206,13 @@ internal class PublicEndpointAttempt private constructor(
             endpoint: String,
             budget: Duration,
             cancelGrace: Duration = CANCEL_GRACE,
+            dispatcher: CoroutineDispatcher = Dispatchers.Default,
             block: suspend PublicEndpointAttempt.() -> T,
         ): Outcome<T> {
             val attempt = PublicEndpointAttempt(endpoint)
-            val scope = CoroutineScope(Dispatchers.Default + Job() + CoroutineName("public-endpoint $endpoint"))
-            val work = scope.async { attempt.block() }
+            val scope = CoroutineScope(dispatcher + Job() + CoroutineName("public-endpoint $endpoint"))
+            // Started on the caller's thread, so the budget never runs while the attempt waits for a busy pool.
+            val work = scope.async(start = CoroutineStart.UNDISPATCHED) { attempt.block() }
             val finished = withTimeoutOrNull(budget) { work.join() } != null
             if (finished) {
                 val failure = work.getCompletionExceptionOrNull()
