@@ -44,8 +44,14 @@ capture() { # <label>
   adb shell dumpsys dropbox --print SYSTEM_TOMBSTONE >"$OUT/tombstone-$label.txt" 2>&1 || true
   # DropBox prints the crashing thread and cuts the entry off inside the memory map. The files
   # debuggerd wrote hold every thread; they need root, taken only now that the run is over.
-  adb root >/dev/null 2>&1 && adb wait-for-device
-  adb pull /data/tombstones "$OUT/tombstones-$label" >/dev/null 2>&1 || true
+  adb root >/dev/null 2>&1
+  # adbd restarts as root: the first pull can find the device offline.
+  for _ in $(seq 1 15); do
+    adb wait-for-device
+    if adb pull /data/tombstones "$OUT/tombstones-$label" >/dev/null 2>&1; then break; fi
+    sleep 1
+  done
+  [ -d "$OUT/tombstones-$label" ] || echo "::warning title=No tombstone files::/data/tombstones could not be pulled; only the DropBox print is kept"
   # The traced pass that had just ended (or was ending) when the process died.
   trace="$(adb shell "ls -t $MEDIA/*methodTracing*.trace 2>/dev/null | head -1" | tr -d '\r')"
   if [ -n "$trace" ]; then
