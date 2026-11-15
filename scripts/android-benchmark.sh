@@ -15,6 +15,10 @@
 #
 # Emulator numbers are regression signals only (androidx.benchmark.suppressErrors=EMULATOR).
 #
+# androidx.benchmark's method-tracing pass is off (profiling.mode=None): nothing reads its trace, and on
+# the API 34 emulator the process dies with SIGSEGV or SIGILL in JIT code within seconds of a traced
+# pass ending, in about 1 run in 130. API 29 and API 36 do not show it.
+#
 # Called from android_integration.yaml's emulator step as ONE line (the action runs each line in its own
 # shell). Usage: android-benchmark.sh <api-level>
 set -euo pipefail
@@ -37,6 +41,7 @@ run() { # <label> <gradle property args...>
   adb logcat -c || true
   if ! ./gradlew :benchmark-android:connectedReleaseAndroidTest \
     -Pandroid.testInstrumentationRunnerArguments.androidx.benchmark.suppressErrors=EMULATOR \
+    -Pandroid.testInstrumentationRunnerArguments.androidx.benchmark.profiling.mode=None \
     -PlinuxTargets=false --no-configuration-cache "$@"; then
     # Failure-only capture: AGP's report says only "Process crashed", and its own logcat file is not
     # kept. The crash buffer and the app's log say what crashed and where.
