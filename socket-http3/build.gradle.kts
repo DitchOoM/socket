@@ -166,7 +166,7 @@ android {
         manifest.srcFile("src/androidMain/AndroidManifest.xml")
     }
     defaultConfig {
-        minSdk = 24
+        minSdk = 28
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     namespace = "com.ditchoom.socket.http3"

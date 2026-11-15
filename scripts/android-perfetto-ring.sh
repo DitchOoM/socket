@@ -14,8 +14,8 @@
 # thread, with the app's own atrace slices) is the missing view. Read the result at ui.perfetto.dev
 # or with trace_processor_shell (see the README written next to it).
 #
-# API 24 has NO Perfetto (it ships from Android 9/10; perfetto + traced are absent from the API 24
-# image), so that lane keeps logcat only and this is a no-op there. Enabled per lane by
+# Below API 29 the device has no Perfetto service (it ships with Android 10), so the API 28 lane
+# keeps logcat only and this is a no-op there. Enabled per lane by
 # PERFETTO_RING=1 so the recorder is never the only configuration the Android matrix has run.
 #
 # The ring lives in the device's tracing service: buffers are RING_BUFFER (oldest overwritten) and

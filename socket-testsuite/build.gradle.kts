@@ -131,7 +131,7 @@ kotlin {
 android {
     compileSdk = 37
     defaultConfig {
-        minSdk = 24
+        minSdk = 28
     }
     namespace = "com.ditchoom.socket.quic.testsuite"
 }

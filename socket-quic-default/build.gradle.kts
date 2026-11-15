@@ -140,7 +140,7 @@ android {
         .baselineProfiles
         .srcDir("src/androidMain/baselineProfiles")
     defaultConfig {
-        minSdk = 24
+        minSdk = 28
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     namespace = "com.ditchoom.socket.quic.defaults"

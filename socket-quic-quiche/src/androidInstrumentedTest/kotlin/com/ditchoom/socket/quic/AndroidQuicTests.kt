@@ -9,7 +9,7 @@ import org.junit.runner.RunWith
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * Android instrumented tests — runs on real device/emulator (API 24+).
+ * Android instrumented tests — runs on real device/emulator (API 28+).
  * Validates JNI native lib loads and QUIC entry points work.
  */
 @RunWith(AndroidJUnit4::class)

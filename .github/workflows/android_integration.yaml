@@ -65,12 +65,12 @@ jobs:
         # accounting among them — so a lane that stops at 29 cannot observe them. Both use the
         # `default` (AOSP userdebug) image, which is what makes `adb root` + `su 0 iptables/tc`
         # work for the QUIC netem suite; `google_apis*` images would break that.
-        # 24 = :socket-quic-quiche's minSdk: the oldest device the published AAR claims to run on,
+        # 28 = the minSdk of every published module: the oldest device the AAR claims to run on,
         # and the one place a call to a newer API without a version guard fails. 36 = the newest
         # platform with a `default` x86_64 image: the next tightening lands here before it reaches users.
         # No arm64 lane: GitHub's arm64 runners offer no KVM, and an unaccelerated emulator cannot
         # finish this suite inside the job's budget. The arm64 JNI build is covered by build-linux.
-        api-level: [24, 29, 35, 36]
+        api-level: [28, 29, 35, 36]
     steps:
       - name: checkout
         uses: actions/checkout@v7
@@ -291,8 +291,8 @@ jobs:
           # A Perfetto ring of the device (scheduling, process stats, ss/am/network atrace for the
           # test APKs), written out only if the run fails or hangs: scripts/android-perfetto-ring.sh.
           # Traced: 29 and 35. UNTRACED: 36 (an instrument has hidden the race it was built to catch
-          # on this project, so the matrix always has an uninstrumented lane) and 24, which has no
-          # Perfetto at all and keeps logcat only.
+          # on this project, so the matrix always has an uninstrumented lane) and 28, which has no
+          # Perfetto service and keeps logcat only.
           PERFETTO_RING: ${{ contains(fromJSON('[29, 35]'), matrix.api-level) && '1' || '0' }}
         with:
           api-level: ${{ matrix.api-level }}

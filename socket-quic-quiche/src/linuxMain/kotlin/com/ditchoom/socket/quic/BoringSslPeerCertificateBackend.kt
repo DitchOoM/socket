@@ -6,6 +6,7 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.WriteBuffer
+import com.ditchoom.buffer.crypto.secure
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.socket.quic.boringssl.ditchoom_p256_generate
 import com.ditchoom.socket.quic.boringssl.ditchoom_p256_sign
@@ -19,16 +20,15 @@ private const val P256_POINT_BYTES = 65
 
 /**
  * Linux [PeerCertificateBackend]: the BoringSSL already linked into this binary (the `ditchoom_p256_*`
- * wrappers in `BoringSslX509.def`), the module's SHA-256, `mkstemp` files. Never buffer-crypto: a second
- * static BoringSSL in one K/N binary collides with this one (see [sha256Into]).
+ * wrappers in `BoringSslX509.def`), the module's SHA-256, `mkstemp` files. The private scalar lives in a
+ * [secure] buffer, wiped when the key pair closes.
  */
 internal object BoringSslPeerCertificateBackend : PeerCertificateBackend {
     override fun generateKeyPair(): P256KeyPair {
-        val native = BufferFactory.network()
-        val scalar = native.allocate(P256_SCALAR_BYTES)
-        val point = native.allocate(P256_POINT_BYTES)
+        val scalar = BufferFactory.network().secure(maxAllocationBytes = P256_SCALAR_BYTES).allocate(P256_SCALAR_BYTES)
+        val point = BufferFactory.network().allocate(P256_POINT_BYTES)
         if (ditchoom_p256_generate(scalar.pointer(), point.pointer()) != 1) {
-            scalar.zeroAndFree()
+            scalar.freeNativeMemory()
             point.freeNativeMemory()
             throw PeerCertificateException(PeerCertificateFailure.KeyGenerationFailed("EC_KEY_generate_key failed"))
         }
@@ -47,7 +47,7 @@ internal object BoringSslPeerCertificateBackend : PeerCertificateBackend {
     ): R = withPosixPemFiles(certificatePem, privateKeyPem, block)
 }
 
-/** [scalar] and [point] were filled by `ditchoom_p256_generate`; [close] zeroes the scalar. */
+/** [scalar] and [point] were filled by `ditchoom_p256_generate`; freeing the secure [scalar] zeroes it. */
 private class BoringSslP256KeyPair(
     private val scalar: PlatformBuffer,
     private val point: PlatformBuffer,
@@ -83,15 +83,9 @@ private class BoringSslP256KeyPair(
     }
 
     override fun close() {
-        scalar.zeroAndFree()
+        scalar.freeNativeMemory()
         point.freeNativeMemory()
     }
 }
 
 private fun PlatformBuffer.pointer(): CPointer<UByteVar> = nativeMemoryAccess!!.nativeAddress.toCPointer()!!
-
-private fun PlatformBuffer.zeroAndFree() {
-    resetForWrite()
-    fill(0)
-    freeNativeMemory()
-}

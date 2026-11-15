@@ -1,8 +1,8 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget
 import java.net.URI
-import java.util.concurrent.Callable
 import java.security.MessageDigest
+import java.util.concurrent.Callable
 
 plugins {
     alias(libs.plugins.kotlin.multiplatform)
@@ -673,10 +673,9 @@ android {
         .manifest
         .srcFile("src/androidMain/AndroidManifest.xml")
     defaultConfig {
-        // 23, following :network-monitor (an `api` dependency, so its floor is ours — a lower value here
-        // is a manifest-merger failure, not a silent downgrade). See that module's build file for why the
-        // monitor cannot usefully support API 21/22: RFC_NETWORK_REACHABILITY §8.1.
-        minSdk = 23
+        // Same floor as :network-monitor (an `api` dependency, so its floor is ours — a lower value here
+        // is a manifest-merger failure, not a silent downgrade).
+        minSdk = 28
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // Shipped in the AAR as proguard.txt. Every module of this library depends on :socket, so this
         // is where a rule for the shared com.ditchoom:buffer dependency lives; see the file.
@@ -869,7 +868,10 @@ project(":socket-quic-quiche") {
     }
     afterEvaluate {
         dependencies.add("jvmTestImplementation", libs.lincheck)
-        dependencies.add("jvmTestImplementation", "io.projectreactor.tools:blockhound:${providers.gradleProperty("blockHoundVersion").get()}")
+        dependencies.add(
+            "jvmTestImplementation",
+            "io.projectreactor.tools:blockhound:${providers.gradleProperty("blockHoundVersion").get()}",
+        )
         val jvmTestTask = tasks.named<Test>("jvmTest").get()
         tasks.named<Test>("lincheckTest") {
             testClassesDirs = jvmTestTask.testClassesDirs

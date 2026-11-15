@@ -72,7 +72,7 @@ android {
     compileSdk = 37
 
     defaultConfig {
-        minSdk = 24
+        minSdk = 28
         testInstrumentationRunner = "androidx.benchmark.junit4.AndroidBenchmarkRunner"
         // -PbenchGwpAsan=always sets the test app's android:gwpAsanMode, so GWP-ASan watches native allocations on every run.
         manifestPlaceholders["gwpAsanMode"] = providers.gradleProperty("benchGwpAsan").getOrElse("default")

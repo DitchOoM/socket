@@ -4,7 +4,6 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.LinkProperties
 import android.net.Network
-import android.net.NetworkRequest
 import android.os.Build
 import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.transport.NetworkKind
@@ -50,11 +49,8 @@ class AndroidNetworkMonitor(
     override val state: StateFlow<NetworkState> = _state.asStateFlow()
 
     /**
-     * One bump per [ConnectivityManager.NetworkCallback] delivery that concerns the tracked network —
-     * i.e. per callback that passes [acceptsUpdateFor]. Rejected chatter from a concurrent non-default
-     * network (the pre-O request-based path) is *its* network's story, not density on ours, so it does
-     * not count. The constructor's synchronous seed is not a platform observation and does not count
-     * either.
+     * One bump per [ConnectivityManager.NetworkCallback] delivery for the default network. The
+     * constructor's synchronous seed is not a platform observation and does not count.
      */
     private val observationRelay = ObservationRelay(_state)
     override val observationCount: StateFlow<Long> = observationRelay.count
@@ -91,25 +87,11 @@ class AndroidNetworkMonitor(
     override val linkAddresses: StateFlow<LinkAddresses> = _linkAddresses.asStateFlow()
 
     /**
-     * Whether this monitor tracks the process's **default** network rather than every network matching
-     * an INTERNET request.
-     *
-     * The floor is [O][Build.VERSION_CODES.O], not [N][Build.VERSION_CODES.N] where
-     * `registerDefaultNetworkCallback` was introduced, because O is where the platform *documents* that
-     * `onAvailable` "will always immediately be followed by a call to `onCapabilitiesChanged`". This
-     * class relies on that ordering to publish one coherent state, and relying on it below the API level
-     * that guarantees it would be relying on an implementation detail.
-     */
-    private val tracksDefaultNetwork = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
-
-    /**
      * The network currently reflected in [state], so a stale
      * [onLost][ConnectivityManager.NetworkCallback.onLost] can't clear a newer one.
      *
-     * Only used on the pre-O request-based path — the default-network callback needs no such guard (see
-     * [onLost][ConnectivityManager.NetworkCallback.onLost] below). Written from the framework's internal
-     * callback Handler and read on the same, but also written by the constructor on the caller's thread,
-     * so it is [Volatile] rather than a plain field.
+     * Written from the framework's internal callback Handler and read on the same, but also written by
+     * the constructor on the caller's thread, so it is [Volatile] rather than a plain field.
      */
     @Volatile
     private var currentNetwork: Network? = null
@@ -143,38 +125,25 @@ class AndroidNetworkMonitor(
                 // "Do NOT call getNetworkCapabilities(Network) ... in this callback as this is prone to
                 // race conditions ... may return an outdated or even a null object. Instead, wait for a
                 // call to onCapabilitiesChanged ... whose arguments are guaranteed to be well-ordered."
-                if (tracksDefaultNetwork) {
-                    // onCapabilitiesChanged is guaranteed to follow immediately on O+, and it publishes
-                    // one coherent NetworkState. Publishing here too would open a window where a consumer
-                    // sees the new network's reachability beside the old network's identity — precisely
-                    // the torn read collapsing to one value was meant to make impossible.
-                    return
-                }
-                if (!acceptsUpdateFor(network)) return
-                currentNetwork = network
-                val caps = connectivityManager.getNetworkCapabilities(network)
-                observationRelay.record(fold(network, caps))
-                publishLinkQuality(caps)
+                // onCapabilitiesChanged is guaranteed to follow immediately, and it publishes one
+                // coherent NetworkState. Publishing here too would open a window where a consumer sees
+                // the new network's reachability beside the old network's identity — precisely the
+                // torn read collapsing to one value was meant to make impossible.
             }
 
             override fun onLost(network: Network) {
-                if (tracksDefaultNetwork) {
-                    // For registerDefaultNetworkCallback the platform "will only be invoked against the
-                    // last network returned by onAvailable() when that network is lost AND no other
-                    // network satisfies the criteria of the request" — so there is genuinely nothing
-                    // left to fall back to and no stale-onLost race to guard against. A handover to a
-                    // better network arrives as onAvailable/onCapabilitiesChanged instead, never here.
-                    clear()
-                    return
-                }
-                if (network == currentNetwork) clear()
+                // For registerDefaultNetworkCallback the platform "will only be invoked against the
+                // last network returned by onAvailable() when that network is lost AND no other
+                // network satisfies the criteria of the request" — so there is genuinely nothing
+                // left to fall back to and no stale-onLost race to guard against. A handover to a
+                // better network arrives as onAvailable/onCapabilitiesChanged instead, never here.
+                clear()
             }
 
             override fun onCapabilitiesChanged(
                 network: Network,
                 caps: AndroidNetworkCapabilities,
             ) {
-                if (!acceptsUpdateFor(network)) return
                 observationRelay.record(fold(network, caps))
                 publishLinkQuality(caps)
             }
@@ -203,7 +172,6 @@ class AndroidNetworkMonitor(
                 // registration contract orders onCapabilitiesChanged before onBlockedStatusChanged —
                 // so by the time a verdict lands for the current network, its capabilities are already
                 // retained in currentCaps and the re-fold below cannot tear.
-                if (!acceptsUpdateFor(network)) return
                 blockedNetwork = network
                 blockedForApp = blocked
                 // A verdict for a network that is not the tracked one changes nothing to publish, but the
@@ -217,29 +185,6 @@ class AndroidNetworkMonitor(
                 }
             }
         }
-
-    /**
-     * Whether a callback for [network] may reach [fold]. Only the pre-O request-based path ever says
-     * no — see [acceptsNetworkUpdate] for why that path multi-fires and how the gate decides.
-     *
-     * Reading [ConnectivityManager.activeNetwork] *inside* a callback is deliberate, even though the
-     * platform javadoc warns against synchronous `ConnectivityManager` calls in callbacks: the risk
-     * a stale read carries is tolerated by construction. A `null` answer falls back to the tracked
-     * network ([acceptsNetworkUpdate]'s both-null arm accepts the first comer), and the tracked
-     * network is accepted even when a different default is read — so staleness can at worst delay a
-     * switch until the next callback, never wedge the gate. The default is also the same authority
-     * [seedInitialState] already trusts. Handles stand in for the [Network]s ([Network] equality is
-     * its netId, and `networkHandle` is derived from that same netId), keeping the decision itself pure.
-     */
-    private fun acceptsUpdateFor(network: Network): Boolean {
-        if (tracksDefaultNetwork) return true
-        return acceptsNetworkUpdate(
-            tracksDefaultNetwork = false,
-            candidateHandle = network.networkHandle,
-            activeHandle = connectivityManager.activeNetwork?.networkHandle,
-            trackedHandle = currentNetwork?.networkHandle,
-        )
-    }
 
     /** The link is gone: forget it and record the loss as the observation it is. */
     private fun clear() {
@@ -281,15 +226,8 @@ class AndroidNetworkMonitor(
                 hasInternet = caps.has(AndroidNetworkCapabilities.NET_CAPABILITY_INTERNET),
                 hasValidated = caps.has(AndroidNetworkCapabilities.NET_CAPABILITY_VALIDATED),
                 hasCaptivePortal = caps.has(AndroidNetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL),
-                // NOT_SUSPENDED is API 28+. Below that the bit does not exist, and its ABSENCE is the
-                // suspended signal — so it must default to `true` (not suspended), never `false`, or every
-                // pre-28 device would report a permanently suspended link.
-                notSuspended =
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                        caps.has(AndroidNetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED)
-                    } else {
-                        true
-                    },
+                // The ABSENCE of NOT_SUSPENDED is the suspended signal.
+                notSuspended = caps.has(AndroidNetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED),
                 // Applies only while the verdict still names the network being published — a verdict
                 // for a superseded network must not brand its successor. The seed path runs before any
                 // verdict has arrived, so it publishes unblocked and the registration replay (which on
@@ -334,16 +272,7 @@ class AndroidNetworkMonitor(
         seedInitialState()
 
         try {
-            if (tracksDefaultNetwork) {
-                connectivityManager.registerDefaultNetworkCallback(callback)
-            } else {
-                val request =
-                    NetworkRequest
-                        .Builder()
-                        .addCapability(AndroidNetworkCapabilities.NET_CAPABILITY_INTERNET)
-                        .build()
-                connectivityManager.registerNetworkCallback(request, callback)
-            }
+            connectivityManager.registerDefaultNetworkCallback(callback)
         } catch (e: SecurityException) {
             // ACCESS_NETWORK_STATE was stripped from the merged manifest. Without it the callback is
             // registered-but-never-invoked: state would sit at Unknown forever while `capability` claimed
@@ -507,42 +436,6 @@ internal fun androidLinkQuality(signalStrength: Int?): LinkQuality =
         LinkQuality.Unavailable
     } else {
         LinkQuality.Rssi(signalStrength)
-    }
-
-/**
- * Accept/ignore decision for a network callback, pure so the full matrix is unit-testable without
- * Robolectric. Handles stand in for [Network] instances: `Network` equality is its netId, and
- * `networkHandle` is derived from that same netId, so handle equality *is* network equality.
- *
- * Why a gate exists at all: below O the monitor registers an `INTERNET` [NetworkRequest], and
- * `registerNetworkCallback` fires for **every** network satisfying the request — with Wi-Fi associated
- * and cell data enabled (the ordinary phone state), `onCapabilitiesChanged` interleaves for two live
- * networks on a completely stable device. Publishing each one flaps [NetworkMonitor.state] between
- * two [NetworkId.Link]s, and that flap drives `pathChanges()` — and QUIC auto-migration — into spurious
- * migrations. The process's
- * **default** network is the tie-break authority (the same one `seedInitialState` already uses to
- * answer "which network are we on"), so a non-default network's chatter is ignored.
- *
- * [activeHandle] is nullable because `getActiveNetwork()` is transiently null mid-handoff. In that
- * window the network already reflected in state ([trackedHandle]) is still accepted, so an in-place
- * capability change on the link we track lands rather than being dropped; when nothing is tracked yet
- * either, any network is accepted — a wrong first pick is corrected by the next callback once the
- * default reappears. [trackedHandle] is also accepted when a *different* default exists, for the same
- * reason: state still names that network, and a stale value is worse than a late switch.
- *
- * O+ ([tracksDefaultNetwork]) needs none of this: `registerDefaultNetworkCallback` already scopes every
- * callback to the single default network, so the decision is constantly `true`.
- */
-internal fun acceptsNetworkUpdate(
-    tracksDefaultNetwork: Boolean,
-    candidateHandle: Long,
-    activeHandle: Long?,
-    trackedHandle: Long?,
-): Boolean =
-    when {
-        tracksDefaultNetwork -> true
-        activeHandle == null && trackedHandle == null -> true
-        else -> candidateHandle == activeHandle || candidateHandle == trackedHandle
     }
 
 /**

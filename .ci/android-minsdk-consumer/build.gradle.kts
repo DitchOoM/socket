@@ -1,16 +1,15 @@
-// The minSdk regression guard: a minimal Android APPLICATION with minSdk 24 that depends on every
+// The minSdk regression guard: a minimal Android APPLICATION with minSdk 28 that depends on every
 // library module an Android user consumes, as PUBLISHED. Assembling it runs the manifest merger over
 // every AAR in the graph, our own and the transitive ones, so any dependency that declares a higher
-// minSdk fails the build with "uses-sdk:minSdkVersion 24 cannot be smaller than version N declared in
+// minSdk fails the build with "uses-sdk:minSdkVersion 28 cannot be smaller than version N declared in
 // library ...".
 //
-// That is not hypothetical: :socket-quic-quiche declared minSdk 24 but depended on buffer-crypto, whose
-// Android artifact declares minSdk 28, so every app below 28 that added the QUIC module failed to build.
-// Nothing in the library builds can see this: a library's own manifest merge does not check its
+// That is not hypothetical: a module that declared a lower minSdk than a dependency it pulled in
+// (buffer-crypto's Android artifact declares 28) failed to build for every app between the two. Nothing in the library builds can see this: a library's own manifest merge does not check its
 // dependencies' minSdk against its own, only an application's does.
 //
 // Assemble only: no code, no emulator. The app has no sources on purpose; what it checks is the
-// dependency graph (manifest merge, AAR metadata, dexing at minSdk 24), not an API.
+// dependency graph (manifest merge, AAR metadata, dexing at minSdk 28), not an API.
 //
 // Parameterised like .ci/consumer-smoke: -PsocketVersion + -PmavenRepoPath point it at the merged
 // maven-local repo in CI; without -PmavenRepoPath it reads mavenLocal().
@@ -23,7 +22,7 @@ val mavenRepoPath = findProperty("mavenRepoPath") as String?
 
 // The floor this check holds the published modules to. Raising it hides exactly the regression this
 // build exists to catch; it moves only when the libraries' own minSdk moves.
-val consumerMinSdk = 24
+val consumerMinSdk = 28
 
 repositories {
     if (mavenRepoPath != null) {

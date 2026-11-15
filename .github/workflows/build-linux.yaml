@@ -1938,6 +1938,9 @@ jobs:
       # still RUN in "Run checks and tests" (now the `checks-tests` job); only
       # socket-quic-quiche's native run relocated (it's the allocation-heavy quiche
       # cinterop suite, grouped with the fuzz/ASAN lanes in the integration job).
+      # The quiche link passes --allow-multiple-definition, so a second libcrypto.a would link without error.
+      # LinuxOneBoringSslTests (in the socket-quic-quiche test binary linked here) runs quiche's BoringSSL and
+      # buffer-crypto's SHA-256/HKDF in one process and crashes or disagrees if two copies are present.
       - name: Link native test binaries (x64 + arm64) for integration jobs
         run: >-
           .github/scripts/gradle-retry.sh

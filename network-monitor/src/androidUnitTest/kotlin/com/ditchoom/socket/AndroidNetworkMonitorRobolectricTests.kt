@@ -202,23 +202,6 @@ class AndroidNetworkMonitorRobolectricTests {
         }
     }
 
-    /**
-     * Below API 28 the bit does not exist, and defaulting it to `false` would report every pre-28 device
-     * as permanently suspended.
-     */
-    @Test
-    @Config(sdk = [Build.VERSION_CODES.N_MR1])
-    fun beforeApi28TheAbsentNotSuspendedBitIsNotReadAsSuspended() {
-        // Pre-O the request-based path only accepts updates for the current default network.
-        setActiveNetwork(NET_ID)
-        withMonitor { monitor, callback ->
-            callback.onCapabilitiesChanged(ShadowNetwork.newInstance(NET_ID), wifi(validated = true))
-
-            val state = assertIs<NetworkState.Routable>(monitor.state.value)
-            assertEquals(InternetAccess.Observed.Confirmed, state.internet)
-        }
-    }
-
     @Test
     fun aCaptivePortalNeedsUserActionRatherThanARetry() {
         withMonitor { monitor, callback ->
@@ -229,126 +212,6 @@ class AndroidNetworkMonitorRobolectricTests {
             assertTrue(state.needsUserAction, "retrying a portal-intercepted network is futile")
             assertFalse(state.canRouteOffLink)
             assertFalse(state.isTransient)
-        }
-    }
-
-    @Test
-    @Config(sdk = [Build.VERSION_CODES.N_MR1])
-    fun preOAStaleOnLostCannotClearANewerNetwork() {
-        // Below O the monitor registers an INTERNET NetworkRequest, which per the platform javadoc is
-        // "called for each network which no longer satisfies the criteria of the callback" — so a late
-        // onLost for a superseded network really can arrive after the new one is already current. That
-        // is the race the `network == currentNetwork` guard exists for. Without it the monitor reports
-        // UNAVAILABLE while a perfectly good network is up, and QUIC auto-migration would tear down a
-        // connection that had just migrated correctly. The default network moves with the switch here,
-        // as it does on a device — the framework re-routes first, then delivers the stragglers.
-        setActiveNetwork(NET_ID)
-        withMonitor { monitor, callback ->
-            val old = ShadowNetwork.newInstance(NET_ID)
-            val new = ShadowNetwork.newInstance(NET_ID + 1)
-
-            callback.onCapabilitiesChanged(old, wifi())
-            setActiveNetwork(NET_ID + 1)
-            callback.onCapabilitiesChanged(new, capabilities(NetworkCapabilities.TRANSPORT_CELLULAR))
-            callback.onLost(old)
-
-            val state = monitor.state.value
-            assertTrue(
-                state.canRouteOffLink,
-                "a late onLost for the superseded network must not clear the current one, was $state",
-            )
-            assertEquals(NetworkKind.Cellular, assertIs<NetworkId.Link>(state.networkId).kind)
-        }
-    }
-
-    @Test
-    @Config(sdk = [Build.VERSION_CODES.M])
-    fun preOConcurrentNetworksDoNotFlapStateOffTheDefaultNetwork() {
-        // Below O the INTERNET NetworkRequest matches EVERY satisfying network, so with Wi-Fi
-        // associated and cell data enabled — the ordinary phone state — onCapabilitiesChanged
-        // interleaves for two live networks on a completely stable device. Unfiltered, state alternated
-        // between two NetworkId.Links, and on this branch that flap feeds pathChanges() and QUIC
-        // auto-migration. The default network is the tie-break; the concurrent one's chatter must not
-        // publish.
-        setActiveNetwork(NET_ID)
-        withMonitor { monitor, callback ->
-            val wifiNetwork = ShadowNetwork.newInstance(NET_ID)
-            val cellular = ShadowNetwork.newInstance(NET_ID + 1)
-
-            callback.onCapabilitiesChanged(wifiNetwork, wifi(validated = true))
-            val settled = monitor.state.value
-            assertEquals(NetworkKind.Wifi, assertIs<NetworkId.Link>(settled.networkId).kind)
-
-            // The concurrent cellular network reports in — repeatedly, as real baseband does — while
-            // the default has not moved.
-            callback.onCapabilitiesChanged(cellular, capabilities(NetworkCapabilities.TRANSPORT_CELLULAR))
-            callback.onCapabilitiesChanged(
-                cellular,
-                capabilities(NetworkCapabilities.TRANSPORT_CELLULAR, validated = true),
-            )
-
-            assertEquals(settled, monitor.state.value, "a non-default network's callback must not flap state")
-        }
-    }
-
-    @Test
-    @Config(sdk = [Build.VERSION_CODES.M])
-    fun preOAGenuineDefaultSwitchStillPropagates() {
-        // The gate must not over-filter: when the default really moves (Wi-Fi out of range), the new
-        // default's callback is authoritative and the migration signal must still fire.
-        setActiveNetwork(NET_ID)
-        withMonitor { monitor, callback ->
-            callback.onCapabilitiesChanged(ShadowNetwork.newInstance(NET_ID), wifi(validated = true))
-
-            setActiveNetwork(NET_ID + 1)
-            callback.onCapabilitiesChanged(
-                ShadowNetwork.newInstance(NET_ID + 1),
-                capabilities(NetworkCapabilities.TRANSPORT_CELLULAR, validated = true),
-            )
-
-            assertEquals(NetworkKind.Cellular, assertIs<NetworkId.Link>(monitor.state.value.networkId).kind)
-        }
-    }
-
-    @Test
-    @Config(sdk = [Build.VERSION_CODES.M])
-    fun preOANullActiveNetworkStillLandsInPlaceChangesOnTheTrackedNetwork() {
-        // getActiveNetwork() is transiently null mid-handoff. The gate falls back to the network
-        // already reflected in state, so a capability change on the link we track (e.g. VALIDATED
-        // finally landing) is not dropped — while an untracked network still cannot steal the state.
-        setActiveNetwork(NET_ID)
-        withMonitor { monitor, callback ->
-            val wifiNetwork = ShadowNetwork.newInstance(NET_ID)
-            val cellular = ShadowNetwork.newInstance(NET_ID + 1)
-
-            callback.onCapabilitiesChanged(wifiNetwork, wifi())
-            shadowOf(connectivityManager).setDefaultNetworkActive(false)
-
-            callback.onCapabilitiesChanged(wifiNetwork, wifi(validated = true))
-            val state = assertIs<NetworkState.Routable>(monitor.state.value)
-            assertEquals(InternetAccess.Observed.Confirmed, state.internet)
-
-            callback.onCapabilitiesChanged(cellular, capabilities(NetworkCapabilities.TRANSPORT_CELLULAR))
-            assertEquals(state, monitor.state.value, "an untracked network must not win a null-default window")
-        }
-    }
-
-    @Test
-    @Config(sdk = [Build.VERSION_CODES.M])
-    fun preOWithNothingTrackedAndNoDefaultTheFirstNetworkIsAccepted() {
-        // Cold start with no default yet (airplane mode dropping, first association): there is nothing
-        // to be loyal to, so the first network to report is accepted rather than leaving state stuck at
-        // Offline. A wrong first pick is corrected by the next callback once the default reappears.
-        shadowOf(connectivityManager).setDefaultNetworkActive(false)
-        withMonitor { monitor, callback ->
-            assertEquals(NetworkState.Offline, monitor.state.value, "seeded from a null active network")
-
-            callback.onCapabilitiesChanged(
-                ShadowNetwork.newInstance(NET_ID + 1),
-                capabilities(NetworkCapabilities.TRANSPORT_CELLULAR, validated = true),
-            )
-
-            assertEquals(NetworkKind.Cellular, assertIs<NetworkId.Link>(monitor.state.value.networkId).kind)
         }
     }
 
@@ -528,26 +391,6 @@ class AndroidNetworkMonitorRobolectricTests {
 
             assertEquals(settled, monitor.state.value, "identical capabilities fold to an unchanged state")
             assertEquals(3L, monitor.observationCount.value, "…but every delivery still counts once")
-        }
-    }
-
-    @Test
-    @Config(sdk = [Build.VERSION_CODES.M])
-    fun preOARejectedNonDefaultCallbackIsNotAnObservation() {
-        // The counter reads as density on the tracked network. Below O the INTERNET request multi-fires
-        // for every satisfying network; a concurrent network's chatter is its own story and must not
-        // inflate ours — otherwise the ordinary two-live-networks phone state reads as a permanent flap.
-        setActiveNetwork(NET_ID)
-        withMonitor { monitor, callback ->
-            callback.onCapabilitiesChanged(ShadowNetwork.newInstance(NET_ID), wifi(validated = true))
-            val counted = monitor.observationCount.value
-
-            callback.onCapabilitiesChanged(
-                ShadowNetwork.newInstance(NET_ID + 1),
-                capabilities(NetworkCapabilities.TRANSPORT_CELLULAR),
-            )
-
-            assertEquals(counted, monitor.observationCount.value, "rejected chatter must not count")
         }
     }
 
@@ -733,16 +576,13 @@ class AndroidNetworkMonitorRobolectricTests {
         ShadowNetworkCapabilities.newInstance().also {
             transports.forEach { transport -> shadowOf(it).addTransportType(transport) }
             shadowOf(it).addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                shadowOf(it).addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED)
-            }
+            shadowOf(it).addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED)
         }
 
     /**
      * A capabilities object shaped like a real one. [notSuspended] defaults to `true` because that is
      * what every working Android network reports and its **absence** is the suspended signal — a shadow
-     * that omitted it would make every test below see `Blocked(Suspended)`. The bit only exists from
-     * API 28, so it is only set where the platform has it (below that the monitor hardcodes `true`).
+     * that omitted it would make every test below see `Blocked(Suspended)`.
      */
     private fun capabilities(
         transport: Int,
@@ -754,7 +594,7 @@ class AndroidNetworkMonitorRobolectricTests {
             shadowOf(it).addTransportType(transport)
             if (internet) shadowOf(it).addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
             if (validated) shadowOf(it).addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
-            if (notSuspended && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            if (notSuspended) {
                 shadowOf(it).addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED)
             }
         }

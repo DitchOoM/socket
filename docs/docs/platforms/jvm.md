@@ -22,7 +22,7 @@ TLS is implemented using Java's `SSLEngine`, which wraps the underlying NIO sock
 ## Requirements
 
 - **JVM**: Java 17+ (bytecode target)
-- **Android**: API 24+ (minSdk)
+- **Android**: API 28+ (minSdk)
 - **Build**: JDK 21 (Gradle toolchain)
 
 ## Source Sets

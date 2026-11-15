@@ -238,14 +238,13 @@ jobs:
             -PmavenRepoPath=/tmp/maven-local-merged \
             --no-daemon
 
-  # Android minSdk floor: a minimal Android APP with minSdk 24 (.ci/android-minsdk-consumer) that
+  # Android minSdk floor: a minimal Android APP with minSdk 28 (.ci/android-minsdk-consumer) that
   # depends on every module an Android user consumes, assembled against the same merged maven-local
   # the smoke above uses. The manifest merger only compares a dependency's minSdk against an
-  # APPLICATION's, so no library build can see a transitive dependency that raises the floor: that is
-  # how :socket-quic-quiche shipped with minSdk 24 while depending on buffer-crypto (minSdk 28), and
-  # every app below 28 that added QUIC failed to build. Assemble only, no emulator, GitHub-hosted.
+  # APPLICATION's, so no library build can see a transitive dependency that raises the floor above
+  # ours. Assemble only, no emulator, GitHub-hosted.
   android-minsdk-consumer:
-    name: "Android minSdk 24 consumer (assemble)"
+    name: "Android minSdk 28 consumer (assemble)"
     needs: [version, validate]
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -276,7 +275,7 @@ jobs:
             exit 1
           fi
           echo "RESOLVED_VERSION=${version}" >> "$GITHUB_ENV"
-          echo "Assembling the minSdk 24 consumer against version: ${version}"
+          echo "Assembling the minSdk 28 consumer against version: ${version}"
       - name: Set up JDK 21
         uses: actions/setup-java@v6
         with:
@@ -322,7 +321,7 @@ jobs:
           key: gradle-wrapper-linux-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
       # The repo's wrapper with -p: the standalone build gets the same Gradle the library build uses,
       # and its AGP version comes from gradle/libs.versions.toml (see its settings.gradle.kts).
-      - name: Assemble the minSdk 24 consumer app
+      - name: Assemble the minSdk 28 consumer app
         run: |
           ./gradlew -p .ci/android-minsdk-consumer assembleDebug \
             -PsocketVersion="${RESOLVED_VERSION}" \

@@ -6119,6 +6119,8 @@ kotlin {
             implementation(project(":socket-udp"))
             implementation(libs.kotlinx.coroutines.core)
             implementation(libs.androidx.collection)
+            // SecureBuffer: the session ticket key and the Linux P-256 scalar are wiped when freed.
+            implementation(libs.buffer.crypto)
         }
         commonTest {
             kotlin.srcDir(generateQuicHarnessConfig.map { quicHarnessGeneratedDir })
@@ -6161,11 +6163,11 @@ kotlin {
         }
         val commonJvmMain by creating {
             dependsOn(commonMain.get())
-            // No buffer-crypto here, ever: the SHA-256 behind W3C serverCertificateHashes (sha256Into actual)
-            // is JCA MessageDigest directly. buffer-crypto-android declares minSdk 28, above this module's 24,
-            // so depending on it failed manifest merging for every app with minSdk 24-27. It must also never
-            // reach the Linux link: it bundles a SECOND static BoringSSL alongside quiche's → duplicate
-            // SHA256_* symbols → SIGSEGV (Linux uses the already-linked BoringSSL; see Sha256.linux.kt).
+            // buffer-crypto is a dependency of commonMain (SecureBuffer). Its Android artifact declares
+            // minSdk 28, the floor of this module. On Linux its klib depends on the same canonical
+            // boringssl-canonical owner klib as this module, and its own cinterop declares no static
+            // library, so one libcrypto.a reaches the link (SHA-256 for serverCertificateHashes still calls
+            // that libcrypto directly; see Sha256.linux.kt).
         }
         jvmMain.get().dependsOn(commonJvmMain)
         androidMain.get().dependsOn(commonJvmMain)
@@ -6343,7 +6345,7 @@ android {
         baselineProfiles.srcDir("src/androidMain/baselineProfiles")
     }
     defaultConfig {
-        minSdk = 24
+        minSdk = 28
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // Shipped in the AAR as proguard.txt: keeps JniQuicheApi's by-name JNI binding intact in any app
         // that minifies, whether or not it uses AGP's default rules. Without it (and without AGP's

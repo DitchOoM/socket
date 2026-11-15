@@ -18,10 +18,9 @@ private const val SHA256_DIGEST_BYTES = 32
 /**
  * Linux (Kotlin/Native) SHA-256 via the BoringSSL `SHA256` already linked into this binary — the same
  * libcrypto quiche and the [parsePinnedLeafFieldsLinux] X.509 parser use — through the `ditchoom_sha256`
- * C wrapper (see `BoringSslX509.def`). Linux deliberately does **not** route through buffer-crypto: it
- * bundles its *own* static BoringSSL, and a second libcrypto in the same K/N binary collides with quiche's
- * (duplicate `SHA256_*` symbols under `--allow-multiple-definition`) → SIGSEGV. JVM/Android have no such
- * conflict (they call JCA `MessageDigest` directly); see the commonJvmMain actual.
+ * C wrapper (see `BoringSslX509.def`). buffer-crypto's Linux klib links the same canonical libcrypto.a,
+ * so one copy of BoringSSL is in the binary. JVM/Android call JCA `MessageDigest` directly; see the
+ * commonJvmMain actual.
  *
  * The leaf DER read+hashed by the verifier is always a native-memory buffer (allocated to hand quiche a
  * `nativeAddress`), so the fast pointer path always applies; a non-native input fails closed via the

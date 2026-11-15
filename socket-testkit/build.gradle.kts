@@ -109,7 +109,7 @@ android {
         .manifest
         .srcFile("src/androidMain/AndroidManifest.xml")
     defaultConfig {
-        minSdk = 21
+        minSdk = 28
     }
     namespace = "com.ditchoom.socket.testkit"
 

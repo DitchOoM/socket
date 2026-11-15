@@ -68,8 +68,7 @@ android {
 
     defaultConfig {
         applicationId = "com.ditchoom.socket.benchmark.app"
-        // 28, not :socket-quic-quiche's declared 24: its dependency com.ditchoom:buffer-crypto-android
-        // declares minSdk 28, so an app below 28 fails manifest merging.
+        // The library floor: every published module and com.ditchoom:buffer-crypto-android declare 28.
         minSdk = 28
         targetSdk = 37
         versionCode = 1

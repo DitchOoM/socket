@@ -42,10 +42,10 @@ source "$lib"
 unset PERFETTO_RING; perfetto_ring_start 35 "$tmp/out0" >/dev/null
 [ ! -f "$tmp/device/running" ] && [ "$PERFETTO_STATE" = off ]; check "a lane that is not enabled records nothing" $?
 
-# API 24 has no Perfetto
+# API 28 has no Perfetto
 export PERFETTO_RING=1
-perfetto_ring_start 24 "$tmp/out24" >"$tmp/log" 2>&1
-[ ! -f "$tmp/device/running" ] && grep -q 'no Perfetto' "$tmp/log"; check "API 24 keeps logcat only and says so" $?
+perfetto_ring_start 28 "$tmp/out28" >"$tmp/log" 2>&1
+[ ! -f "$tmp/device/running" ] && grep -q 'no Perfetto' "$tmp/log"; check "API 28 keeps logcat only and says so" $?
 
 # config contents
 perfetto_ring_start 29 "$tmp/out29" >"$tmp/log" 2>&1

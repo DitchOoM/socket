@@ -1,6 +1,7 @@
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.crypto.secure
 import kotlinx.coroutines.CompletableDeferred
 
 /**
@@ -242,16 +243,14 @@ internal fun QuicheApi.applySessionTicketKeys(
         QuicSessionTicketKeys.PerServer -> Unit
         is QuicSessionTicketKeys.Shared -> {
             val material = keys.material()
-            val native = bufferFactory.allocate(material.remaining())
+            // A secure buffer wipes its whole backing on free, so the key does not linger in a pooled buffer.
+            val native = bufferFactory.secure(maxAllocationBytes = QuicSessionTicketKeys.Shared.KEY_BYTES).allocate(material.remaining())
             try {
                 native.write(material)
                 native.resetForRead()
                 val rc = configSetTicketKey(config, native.driverOwnedNativeAddress(), native.remaining())
                 if (rc < 0) throw SessionTicketKeyRefused(rc)
             } finally {
-                // The key must not linger in a pooled buffer the next allocation reuses.
-                native.resetForWrite()
-                native.fill(0)
                 native.freeNativeMemory()
             }
         }

@@ -4,7 +4,6 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkRequest
-import android.os.Build
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -291,10 +290,7 @@ private fun standbyLinkState(
         hasInternet = caps.hasCapability(AndroidNetworkCapabilities.NET_CAPABILITY_INTERNET),
         hasValidated = caps.hasCapability(AndroidNetworkCapabilities.NET_CAPABILITY_VALIDATED),
         hasCaptivePortal = caps.hasCapability(AndroidNetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL),
-        // Below API 28 the bit does not exist and its absence would read as suspended; see AndroidNetworkMonitor.
-        notSuspended =
-            Build.VERSION.SDK_INT < Build.VERSION_CODES.P ||
-                caps.hasCapability(AndroidNetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED),
+        notSuspended = caps.hasCapability(AndroidNetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED),
         blockedForApp = false,
     )
 
