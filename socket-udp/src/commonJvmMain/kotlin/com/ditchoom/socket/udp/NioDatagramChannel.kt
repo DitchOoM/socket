@@ -29,6 +29,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.io.IOException
 import java.net.InetSocketAddress
 import java.net.SocketOption
+import java.net.StandardSocketOptions
 import java.nio.ByteBuffer
 import java.nio.channels.ClosedChannelException
 import java.util.concurrent.CopyOnWriteArraySet
@@ -116,6 +117,12 @@ internal suspend fun writeAbsorbingBackpressure(
         }
     }
 }
+
+/** What the reported `SO_RCVBUF` is divided by for the usable size: Linux (Android included) reports twice it. */
+private val REPORTED_PER_USABLE = if (System.getProperty("os.name").orEmpty().startsWith("Linux")) 2 else 1
+
+/** Below this a kernel buffer request is not worth halving further. */
+private const val SMALLEST_BUFFER_REQUEST = 64 * 1024
 
 /**
  * JVM/Android [DatagramChannel] machinery backed by a NIO [NioChannel] — the real-socket
@@ -223,6 +230,27 @@ internal abstract class NioDatagramChannelCore(
             runCatching { channel.setOption(dfOpt as SocketOption<Boolean>, options.dontFragment) }
                 .onSuccess { appliedDontFragment = options.dontFragment }
         }
+    }
+
+    /**
+     * `SO_RCVBUF`, set and read back. Linux caps a request at its limit and reports twice what is usable (the
+     * rest is its own bookkeeping); macOS refuses a request over its limit, so the request is halved until one
+     * is taken.
+     */
+    fun requestKernelReceiveBuffer(bytes: Int): KernelBufferGrant {
+        var asked = bytes
+        while (asked >= SMALLEST_BUFFER_REQUEST) {
+            try {
+                channel.setOption(StandardSocketOptions.SO_RCVBUF, asked)
+                val reported = channel.getOption(StandardSocketOptions.SO_RCVBUF)
+                return KernelBufferGrant.of(bytes, reported / REPORTED_PER_USABLE)
+            } catch (_: IOException) {
+                asked /= 2
+            } catch (_: UnsupportedOperationException) {
+                break
+            }
+        }
+        return KernelBufferGrant.Unread(bytes)
     }
 
     /** Off the Android main thread, where even a non-blocking `recvfrom` is a violation: see [offTheAndroidMainThread]. */

@@ -6,7 +6,9 @@ import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.pool.BufferPool
+import com.ditchoom.socket.udp.KernelBufferGrant
 import com.ditchoom.socket.udp.UdpSocket
+import com.ditchoom.socket.udp.requestKernelReceiveBuffer
 
 /**
  * How a server channel decides the source address each reply leaves from.
@@ -48,7 +50,30 @@ internal sealed interface ReplySourcePinning {
 internal class ServerChannel(
     val channel: AddressedDatagramChannel,
     val pinning: ReplySourcePinning,
+    /** The sockets behind [channel]: itself, or every member when it is one socket per local address. */
+    val sockets: List<AddressedDatagramChannel> = listOf(channel),
 )
+
+/**
+ * Asks for [SERVER_KERNEL_RECEIVE_BUFFER_BYTES] on every socket an owned [binding] opened, and reports what each
+ * was given. A shared port's socket belongs to whoever bound it and is left as it is.
+ */
+internal fun ServerChannel.requestReceiveBuffers(binding: QuicPortBinding): List<UdpReceiveBuffer> =
+    when (binding) {
+        is QuicPortBinding.Shared -> emptyList()
+        is QuicPortBinding.Own ->
+            sockets.map { socket ->
+                when (val grant = socket.requestKernelReceiveBuffer(SERVER_KERNEL_RECEIVE_BUFFER_BYTES)) {
+                    is KernelBufferGrant.Granted -> UdpReceiveBuffer.Granted(grant.requestedBytes, grant.usableBytes)
+                    is KernelBufferGrant.Capped -> UdpReceiveBuffer.Capped(grant.requestedBytes, grant.usableBytes)
+                    is KernelBufferGrant.Unread -> UdpReceiveBuffer.Unread(grant.requestedBytes)
+                    KernelBufferGrant.Unsupported -> UdpReceiveBuffer.Unsupported
+                }
+            }
+    }
+
+/** Room for a burst of about 2,000 full-size datagrams, or more small ones, while the receive loop is busy. */
+internal const val SERVER_KERNEL_RECEIVE_BUFFER_BYTES = 4 * 1024 * 1024
 
 /**
  * What a platform serves a wildcard bind with when the wildcard socket cannot pin its replies

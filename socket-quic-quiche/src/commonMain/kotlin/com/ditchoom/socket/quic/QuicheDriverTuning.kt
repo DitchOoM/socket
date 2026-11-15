@@ -59,6 +59,11 @@ internal class QuicheDriverTuning(
      */
     val networkObservation: ConnectionNetworkObservation = ConnectionNetworkObservation.Unobserved,
     /**
+     * How many datagrams a server's reader holds for its receive loop ([ServerDatagramIntake]). A test that
+     * has to park the reader in its hand-off sets it to rendezvous.
+     */
+    val serverHeldDatagrams: Int = ServerDatagramIntake.HELD_DATAGRAMS,
+    /**
      * How long `QuicheDriver.flushOutgoing` waits for one `UdpChannel.send` before calling the path's
      * egress stalled. Default [DEFAULT_SEND_STALL_BOUND].
      *
