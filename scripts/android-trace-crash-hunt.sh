@@ -6,7 +6,7 @@
 # The benchmark process has died with SIGSEGV or SIGILL in JIT code within seconds of a traced pass
 # ending, on the API 34 emulator only, and never with a memory checker attached. This lane keeps the
 # conditions that showed it. What a hit proves depends on the leg:
-#   API 34   the crash still exists. Its full tombstone (every thread, registers, maps), the last
+#   API 34   the crash still exists. debuggerd's tombstone (every thread, registers, maps), the last
 #            method trace and the logcat around the end of the traced pass say which threads were in
 #            JIT code, in JNI or in the tracing teardown at that moment.
 #   API 36   the control. A hit here means the crash is not confined to API 34's runtime, so the
@@ -42,6 +42,10 @@ capture() { # <label>
   adb logcat -d -b crash >"$OUT/logcat-crash-$label.txt" 2>&1 || true
   adb logcat -d -v threadtime -b main,system >"$OUT/logcat-$label.txt" 2>&1 || true
   adb shell dumpsys dropbox --print SYSTEM_TOMBSTONE >"$OUT/tombstone-$label.txt" 2>&1 || true
+  # DropBox prints the crashing thread and cuts the entry off inside the memory map. The files
+  # debuggerd wrote hold every thread; they need root, taken only now that the run is over.
+  adb root >/dev/null 2>&1 && adb wait-for-device
+  adb pull /data/tombstones "$OUT/tombstones-$label" >/dev/null 2>&1 || true
   # The traced pass that had just ended (or was ending) when the process died.
   trace="$(adb shell "ls -t $MEDIA/*methodTracing*.trace 2>/dev/null | head -1" | tr -d '\r')"
   if [ -n "$trace" ]; then
@@ -49,6 +53,7 @@ capture() { # <label>
     echo "$trace" >"$OUT/last-method-trace-$label.name"
   fi
   gzip -f "$OUT/logcat-$label.txt" "$OUT"/last-method-trace-"$label".trace 2>/dev/null || true
+  gzip -rf "$OUT/tombstones-$label" 2>/dev/null || true
   echo "::error title=Crash under method tracing (API $API_LEVEL, $label)::tombstone, last method trace and logcat are in this job's trace-crash-hunt artifact"
   grep -h -m6 -E 'Fatal signal|^signal [0-9]+|#0[0-3] pc' "$OUT/logcat-crash-$label.txt" "$OUT/tombstone-$label.txt" | cut -c1-220 || true
 }
