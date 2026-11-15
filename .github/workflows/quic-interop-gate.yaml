@@ -50,6 +50,16 @@ on:
         required: false
         default: ""
         type: string
+      tests:
+        description: "Comma-separated runner tests; empty runs peers.json's list. Only a full run (every peer, every test) is judged."
+        required: false
+        default: ""
+        type: string
+      repeat:
+        description: "How many times each cell runs its tests, each run kept in its own log directory."
+        required: false
+        default: "1"
+        type: string
 
 permissions:
   contents: read
@@ -120,6 +130,8 @@ jobs:
     env:
       PEER: ${{ matrix.peer }}
       DIRECTION: ${{ matrix.direction }}
+      TESTS: ${{ inputs.tests }}
+      REPEAT: ${{ inputs.repeat }}
     steps:
       - uses: actions/checkout@v7
 
@@ -181,7 +193,7 @@ jobs:
           exp="$GITHUB_WORKSPACE/test-harness/quic-interop/expectations.json"
           [ -f "$exp" ] || echo '{}' > "$exp"
           gate="$GITHUB_WORKSPACE/.github/scripts/quic-interop-gate.py"
-          tests=$(jq -r .tests "$GITHUB_WORKSPACE/test-harness/quic-interop/peers.json")
+          tests=${TESTS:-$(jq -r .tests "$GITHUB_WORKSPACE/test-harness/quic-interop/peers.json")}
           # The runner's whole output is kept beside its results. A run that wrote no results is the runner
           # failing, not a test: what it was doing and what the machine looked like are recorded for it.
           runner_crash() { # <logs> <json> <exit status> <runner log>
@@ -219,7 +231,12 @@ jobs:
             *) echo "::error::unknown direction $DIRECTION"; exit 1 ;;
           esac
           run_pair "$tests" /tmp/interop/logs "$results/${DIRECTION}__${PEER}.json" "${roles[@]}"
-          if [ -s "$results/${DIRECTION}__${PEER}.json" ]; then
+          for n in $(seq 2 "${REPEAT:-1}"); do
+            run_pair "$tests" "/tmp/interop/logs-repeat-$n" "$results/${DIRECTION}__${PEER}.repeat-$n" "${roles[@]}"
+          done
+          if [ -n "$TESTS" ]; then
+            :
+          elif [ -s "$results/${DIRECTION}__${PEER}.json" ]; then
             again=$(python3 "$gate" retry "$exp" "$DIRECTION" "$PEER" "$results/${DIRECTION}__${PEER}.json")
             if [ -n "$again" ]; then
               echo "retrying: $again"
@@ -228,7 +245,7 @@ jobs:
           fi
           evidence="$GITHUB_WORKSPACE/.github/scripts/quic-interop-evidence.py"
           python3 -I "$evidence" /tmp/interop/logs "$DIRECTION" "$PEER" "$results/${DIRECTION}__${PEER}.evidence.json"
-          if [ "$DIRECTION" = our-server ]; then
+          if [ "$DIRECTION" = our-server ] && [ -z "$TESTS" ]; then
             # The runner's compose file hands the server container SERVER_PARAMS from this environment.
             export SERVER_PARAMS=streams=raised
             raised="our-server-raised-streams"
@@ -242,7 +259,7 @@ jobs:
             unset SERVER_PARAMS
             python3 -I "$evidence" /tmp/interop/logs-raised-streams "$raised" "$PEER" "$results/${raised}__${PEER}.evidence.json"
           fi
-          if [ "$DIRECTION" = our-client ]; then
+          if [ "$DIRECTION" = our-client ] && [ -z "$TESTS" ]; then
             # The runner's compose file hands the client container CLIENT_PARAMS from this environment.
             export CLIENT_PARAMS=migrate=active
             run_pair transfer /tmp/interop/logs-migrating "$results/our-client-migrating__${PEER}.json" "${roles[@]}"
@@ -295,7 +312,7 @@ jobs:
           path: interop-results
           merge-multiple: true
       - name: Judge every cell against the expectations
-        if: ${{ inputs.peers == '' }}
+        if: ${{ inputs.peers == '' && inputs.tests == '' }}
         run: |
           set -uo pipefail
           exp=test-harness/quic-interop/expectations.json
