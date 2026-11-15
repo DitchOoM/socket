@@ -24,6 +24,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ClosedSendChannelException
 import kotlinx.coroutines.launch
 import java.net.InetAddress
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.concurrent.Volatile
 import kotlin.coroutines.CoroutineContext
 
@@ -215,19 +216,39 @@ internal class PerLocalAddressServerChannel private constructor(
         options: DatagramSendOptions,
     ) {
         val member =
-            when (val source = sourceOf(options.fromLocal)) {
-                Source.Unnamed -> replyRoutes.routeTo(to, otherwise = members.first())
-                is Source.Named ->
-                    members.getOrElse(memberAddresses.indexOf(source.address)) {
-                        throw DatagramSendException(
-                            DatagramSendError.SourceAddressUnavailable(source.host, SourceAddressRejection.NotBound),
-                        )
-                    }
+            when (val named = options.fromLocal) {
+                null -> replyRoutes.routeTo(to, otherwise = members.first())
+                else -> namedMembers[named] ?: memberNamed(named, to)
             }
         // fromLocal is consumed here, by choosing the socket; passing it down to a member that
         // reports sourceAddressSelect=false would be asking for something it silently ignores.
         member.send(payload, to, if (options.fromLocal == null) options else options.withoutFromLocal())
     }
+
+    /**
+     * The member each source a send has named is bound to, so a source is read and matched once and
+     * found by itself after that. Only sources that matched a member are kept, and no more than
+     * [MAX_NAMED_SOURCES] of them: the addresses quiche names are this host's own, a handful.
+     */
+    private val namedMembers = ConcurrentHashMap<SocketAddress, AddressedDatagramChannel>()
+
+    private fun memberNamed(
+        fromLocal: SocketAddress,
+        to: SocketAddress,
+    ): AddressedDatagramChannel =
+        when (val source = sourceOf(fromLocal)) {
+            Source.Unnamed -> replyRoutes.routeTo(to, otherwise = members.first())
+            is Source.Named -> {
+                val member =
+                    members.getOrElse(memberAddresses.indexOf(source.address)) {
+                        throw DatagramSendException(
+                            DatagramSendError.SourceAddressUnavailable(source.host, SourceAddressRejection.NotBound),
+                        )
+                    }
+                if (namedMembers.size < MAX_NAMED_SOURCES) namedMembers[fromLocal] = member
+                member
+            }
+        }
 
     /** Each member's bound address, in [members] order, as the JDK compares addresses. */
     private val memberAddresses: List<InetAddress> = members.map { it.localAddress.inetAddress() }
@@ -244,8 +265,7 @@ internal class PerLocalAddressServerChannel private constructor(
         ) : Source
     }
 
-    private fun sourceOf(fromLocal: SocketAddress?): Source {
-        if (fromLocal == null) return Source.Unnamed
+    private fun sourceOf(fromLocal: SocketAddress): Source {
         val address = fromLocal.inetAddress()
         return if (address.isAnyLocalAddress) Source.Unnamed else Source.Named(address, fromLocal.host)
     }
@@ -271,6 +291,9 @@ internal class PerLocalAddressServerChannel private constructor(
          * plausibly serves. See [ReplyRoutes] for what eviction costs.
          */
         internal const val MAX_REPLY_ROUTES = 4096
+
+        /** Upper bound on the named sources remembered with their member; past it a source is matched per send. */
+        internal const val MAX_NAMED_SOURCES = 256
 
         /** The address a numeric [SocketAddress] names; a literal, so no lookup. Any zone suffix is dropped. */
         private fun SocketAddress.inetAddress(): InetAddress = InetAddress.getByName(host.substringBefore('%'))

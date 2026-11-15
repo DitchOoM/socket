@@ -376,12 +376,12 @@ class ServerConnectionRegistryTests {
 
     /** A routing table that counts the lookups made in it. */
     private class CountingRoutes(
-        private val routes: MutableMap<ConnectionIdKey, QuicheDriver> = mutableMapOf(),
-    ) : MutableMap<ConnectionIdKey, QuicheDriver> by routes {
+        private val routes: MutableMap<ConnectionIdKey, DcidRoute.Live> = mutableMapOf(),
+    ) : MutableMap<ConnectionIdKey, DcidRoute.Live> by routes {
         var lookups = 0
             private set
 
-        override fun get(key: ConnectionIdKey): QuicheDriver? {
+        override fun get(key: ConnectionIdKey): DcidRoute.Live? {
             lookups++
             return routes[key]
         }
@@ -405,6 +405,23 @@ class ServerConnectionRegistryTests {
             registry.drainRoutingQueues()
 
             assertEquals(1, clock.reads - before, "one drain, with $MANY_CONNECTIONS connections inside their draining period")
+        }
+
+    @Test
+    fun everyDatagramOfAConnectionIsAnsweredWithItsOneRoute() =
+        runQuicTest {
+            val registry = ServerConnectionRegistry<Int>(StubQuicheApi())
+            val driver = idleDriver()
+            registry.routeDriver(cid(1), driver)
+            registry.routeDriver(cid(2), driver)
+            registry.enqueueRouteProjection(driver, setOf(cid(2), cid(3)))
+            registry.drainRoutingQueues()
+
+            val route = assertIs<DcidRoute.Live>(registry.routeFor(cid(1)))
+            assertSame(driver, route.driver)
+            repeat(3) { assertSame(route, registry.routeFor(cid(1)), "a second datagram is answered with the same route") }
+            assertSame(route, registry.routeFor(cid(2)), "another id of the connection has the same route")
+            assertSame(route, registry.routeFor(cid(3)), "and so has one a projection added")
         }
 
     @Test

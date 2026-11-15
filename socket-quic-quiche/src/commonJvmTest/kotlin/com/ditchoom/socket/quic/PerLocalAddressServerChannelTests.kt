@@ -394,6 +394,24 @@ class PerLocalAddressServerChannelTests {
             assertEquals(0, peer.hostReads, "the peer's address text was read ${peer.hostReads} times for $DATAGRAMS datagrams")
         }
 
+    /** A source a send names is read and matched to its socket once, not on every send. */
+    @Test
+    fun aNamedSourceIsMatchedToItsSocketOnce() =
+        runBlocking {
+            val loopback = FakeSocket("127.0.0.1", 4433)
+            val alias = FakeSocket("127.0.0.2", 4433)
+            val channel = PerLocalAddressServerChannel.of(listOf(loopback, alias))
+            val source = CountingAddress("127.0.0.2", 4433)
+            val peer = literal("198.51.100.7", 4000)
+
+            channel.send(payload(), peer, DatagramSendOptions(fromLocal = source))
+            val readsToMatchIt = source.hostReads
+            repeat(DATAGRAMS) { channel.send(payload(), peer, DatagramSendOptions(fromLocal = source)) }
+
+            assertEquals(DATAGRAMS + 1, alias.sent.size, "every send left by the socket bound to the named source")
+            assertEquals(readsToMatchIt, source.hostReads, "the source's address text was read again after it was matched")
+        }
+
     /** An address that compares by value, as every platform's does, and counts reads of its text. */
     private class CountingAddress(
         private val text: String,

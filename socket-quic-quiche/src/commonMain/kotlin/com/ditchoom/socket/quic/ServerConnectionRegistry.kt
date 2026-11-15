@@ -43,9 +43,17 @@ internal class ServerConnectionRegistry<K>(
      * lifecycle set — an entry is dropped the instant a driver stops routing new packets (see
      * [drainRoutingQueues] and the trySend-failure path via [deRouteDriver]) even though that
      * driver's run loop may still be draining buffered packets. Single-writer (receive loop).
+     *
+     * Each value is its connection's one [DcidRoute.Live], so answering a datagram's route is a lookup
+     * and nothing else.
      */
-    private val connectionsByDcid: MutableMap<ConnectionIdKey, QuicheDriver> = mutableMapOf(),
+    private val connectionsByDcid: MutableMap<ConnectionIdKey, DcidRoute.Live> = mutableMapOf(),
 ) {
+    /** The [DcidRoute.Live] every id of a driver routes to, from its first route to its retirement. Receive-loop only. */
+    private val liveRoutes = mutableMapOf<QuicheDriver, DcidRoute.Live>()
+
+    private fun liveRouteOf(driver: QuicheDriver): DcidRoute.Live = liveRoutes.getOrPut(driver) { DcidRoute.Live(driver) }
+
     /**
      * Hand-off of newly accepted connections from the receive loop to `connections()`'s consumer loop.
      * Carries the accepted driver together with its remote peer address so the handler's
@@ -158,11 +166,11 @@ internal class ServerConnectionRegistry<K>(
 
     // --- Routing table (receive-loop coroutine only) ---
 
-    fun driverForDcid(key: ConnectionIdKey): QuicheDriver? = connectionsByDcid[key]
+    fun driverForDcid(key: ConnectionIdKey): QuicheDriver? = connectionsByDcid[key]?.driver
 
     /** Where a datagram addressed to [key] belongs. See [DcidRoute]. */
     fun routeFor(key: ConnectionIdKey): DcidRoute {
-        connectionsByDcid[key]?.let { return DcidRoute.Live(it) }
+        connectionsByDcid[key]?.let { return it }
         val until = closedConnections[key] ?: return DcidRoute.Unknown
         if (until.hasPassedNow()) {
             closedConnections.remove(key)
@@ -176,11 +184,12 @@ internal class ServerConnectionRegistry<K>(
         val until = clock.markNow() + driver.drainingPeriod
         val held = registeredRoutes.remove(driver).orEmpty() + projectedRoutes.remove(driver).orEmpty()
         // Identity-checked: an id this driver once held may route another connection by now.
-        val closed = held.filter { connectionsByDcid[it] === driver }
+        val closed = held.filter { connectionsByDcid[it]?.driver === driver }
         for (key in closed) {
             connectionsByDcid.remove(key)
             closedConnections[key] = until
         }
+        liveRoutes.remove(driver)
         retiredDrivers[driver] = until
         retirements.addLast(Retirement(driver, closed, until))
         pathsByDriver.remove(driver)?.let { if (!it.freeIdle()) retiredPaths += it }
@@ -190,7 +199,7 @@ internal class ServerConnectionRegistry<K>(
         key: ConnectionIdKey,
         driver: QuicheDriver,
     ) {
-        connectionsByDcid[key] = driver
+        connectionsByDcid[key] = liveRouteOf(driver)
         closedConnections.remove(key)
         registeredRoutes.getOrPut(driver) { mutableListOf() } += key
     }
@@ -286,7 +295,7 @@ internal class ServerConnectionRegistry<K>(
         val driver = projection.driver
         val previous = projectedRoutes[driver] ?: return
         for (key in previous) {
-            if (key !in projection.sourceIds && connectionsByDcid[key] === driver) connectionsByDcid.remove(key)
+            if (key !in projection.sourceIds && connectionsByDcid[key]?.driver === driver) connectionsByDcid.remove(key)
         }
     }
 
@@ -314,11 +323,11 @@ internal class ServerConnectionRegistry<K>(
         val claimed = HashSet<ConnectionIdKey>(projection.sourceIds.size)
         for (key in projection.sourceIds) {
             val holder = connectionsByDcid[key]
-            if (holder != null && holder !== driver) {
+            if (holder != null && holder.driver !== driver) {
                 contested(key)
                 continue
             }
-            connectionsByDcid[key] = driver
+            connectionsByDcid[key] = liveRouteOf(driver)
             closedConnections.remove(key)
             claimed += key
         }
@@ -370,6 +379,7 @@ internal class ServerConnectionRegistry<K>(
         }
         liveDrivers.clear()
         connectionsByDcid.clear()
+        liveRoutes.clear()
         projectedRoutes.clear()
         registeredRoutes.clear()
         closedConnections.clear()
