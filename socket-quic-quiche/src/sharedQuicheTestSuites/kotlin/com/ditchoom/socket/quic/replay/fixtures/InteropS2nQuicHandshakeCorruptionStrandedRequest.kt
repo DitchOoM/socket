@@ -13,6 +13,7 @@ import com.ditchoom.socket.quic.replay.PacketKind.Initial
 import com.ditchoom.socket.quic.replay.PacketKind.OneRtt
 import com.ditchoom.socket.quic.replay.PeerPackets
 import com.ditchoom.socket.quic.replay.StreamEnd
+import com.ditchoom.socket.quic.replay.TestCertificate
 import com.ditchoom.socket.quic.replay.TransportSetup
 import com.ditchoom.socket.quic.replay.captureSchedule
 import kotlin.time.Duration.Companion.milliseconds
@@ -22,6 +23,7 @@ internal val interopS2nQuicHandshakeCorruptionStrandedRequest: CaptureSchedule =
         ourTransport(TransportSetup(idleTimeout = 30000.milliseconds, activeConnectionIdLimit = 8, activeMigration = ActiveMigration.Disabled, maxData = 67108864, maxStreamDataBidiLocal = 16777216, maxStreamDataBidiRemote = 16777216, maxStreamDataUni = 1048576, maxStreamsBidi = 100, maxStreamsUni = 100))
         peerTransport(TransportSetup(idleTimeout = 300000.milliseconds, activeConnectionIdLimit = 3, activeMigration = ActiveMigration.Allowed, maxData = 3750000, maxStreamDataBidiLocal = 3750000, maxStreamDataBidiRemote = 3750000, maxStreamDataUni = 3750000, maxStreamsBidi = 100, maxStreamsUni = 100))
         peerPackets(PeerPackets.WholeFlights)
+        serverCertificate(TestCertificate.Rsa)
         sent(0, 16144, Initial) // crypto
         peerSentLost(17858, Initial, Handshake)
         sentLost(1000837, Initial) // crypto

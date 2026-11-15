@@ -185,14 +185,13 @@ internal class SharedQuicheServer(
     /**
      * The server-level half of trace capture: what no *connection's* recorder can ever see.
      *
-     * A connection's recorder starts when its driver does, and the driver records every datagram
-     * routed to it after that — so three things are structurally invisible to a per-connection trace: the
-     * Initial that created the connection (fed to quiche in [acceptNewConnection] before the driver
-     * exists), a datagram `quiche_header_info` rejected, and a datagram for a connection that has
+     * A connection's own trace holds the Initial that created it ([acceptNewConnection]) and every
+     * datagram routed to it afterwards. Three arrivals belong to no connection: an Initial quiche
+     * refused, a datagram `quiche_header_info` rejected, and a datagram for a connection that has
      * already closed. An empty server trace would therefore have three readings — nothing arrived,
-     * something arrived and was rejected, something arrived and was refused. This records those three
-     * at the receive loop, typed ([ServerDatagramDrop]) and with the datagram's 4-tuple, so a report
-     * says which.
+     * something arrived and was rejected, something arrived and was refused. This records those at the
+     * receive loop, typed ([ServerDatagramDrop]) and with the datagram's 4-tuple, so a report says
+     * which; and each accepted Initial, so the arrivals that did create a connection read beside them.
      *
      * Same [QuicheDriverTuning.captureFactory] every accepted connection uses, so with the single-sink
      * [com.ditchoom.socket.quic.trace.QuicTraceCapture] the lines interleave with the connections' own
@@ -690,9 +689,10 @@ internal class SharedQuicheServer(
             recvBuf.freeNativeMemory()
             return AcceptOutcome.Refused(ServerDatagramDrop.InitialRejected(received, peer, fed))
         }
-        // The one datagram the connection's own recorder can never show: it is consumed here, before
-        // the driver (and its recording channel wrap) exists. Recorded at the server level so a trace
-        // that begins with STATE lines is preceded by the arrival that caused them (see serverCapture).
+        // The datagram that created the connection is consumed here, before its driver exists. It is
+        // recorded on the connection's own trace, which then holds everything the connection received,
+        // and at the server level, where an arrival that created nothing is recorded too (see serverCapture).
+        capture.record { it.datagram(out = false, buffer = recvBuf, len = received, path = peerKey) }
         serverCapture.record { it.datagram(out = false, buffer = recvBuf, len = received, path = peerKey) }
         recvBuf.freeNativeMemory()
 

@@ -22,6 +22,7 @@ internal class CaptureSchedule(
     val ourTransport: TransportSetup,
     val peerTransport: TransportSetup,
     val peerPackets: PeerPackets,
+    val serverCertificate: TestCertificate,
     /**
      * In the order our endpoint took them: a peer datagram stands where our endpoint processed it,
      * which the times of two threads' records do not always say.
@@ -47,6 +48,7 @@ internal class CaptureSchedule(
             ourTransport = ourTransport,
             peerTransport = peerTransport,
             peerPackets = peerPackets,
+            serverCertificate = serverCertificate,
             steps = steps.filter { it.at < at },
             established = if (established is Moment.At && established.at < at) established else Moment.Never,
             end = ConnectionEnd.Open,
@@ -69,6 +71,7 @@ internal class CaptureSchedule(
             ourTransport = ourTransport,
             peerTransport = peerTransport,
             peerPackets = peerPackets,
+            serverCertificate = serverCertificate,
             steps = steps.map { if (it is Step.PeerSent && it in lost) it.copy(fate = Fate.Lost) else it },
             established = established,
             end = end,
@@ -111,11 +114,13 @@ internal sealed interface Step {
         val carries: Carries = Carries.Data,
     ) : Step
 
-    /** The peer sent a datagram of [shape] at [at]. */
+    /** The peer sent a datagram of [shape] at [at], the first to carry what its application [wrote]. */
     data class PeerSent(
         override val at: Duration,
         val shape: List<PacketKind>,
         val fate: Fate,
+        val wrote: List<PeerWrite> = emptyList(),
+        val carries: Carries = Carries.Data,
     ) : Step
 
     /** Our endpoint's driver or application acted on the connection at [at]. */
@@ -137,14 +142,27 @@ internal enum class PeerPackets {
     WholeFlights,
 }
 
-/** What a datagram of ours was for. */
+/**
+ * Which test certificate the replay's server presents. Its size decides how many packets the server's
+ * handshake flight takes, which is part of every datagram shape after it.
+ */
+internal enum class TestCertificate {
+    /** `cert.crt`, RSA: a flight of two Handshake packets. */
+    Rsa,
+
+    /** `pinned.crt`, ECDSA P-256: a flight of one Handshake packet, as the interop runner's certificates give. */
+    Ecdsa,
+}
+
+/** What a datagram was for. */
 internal enum class Carries {
-    /** Something the peer must acknowledge. */
+    /** Something its receiver must acknowledge. */
     Data,
 
     /**
-     * Acknowledgements only. Whether one is sent depends on which frames the peer chose to send, which
-     * a modelled peer does not reproduce, so a replay that does not send it is still the capture.
+     * Acknowledgements only. Whether one is sent depends on which frames the other end chose to send,
+     * which a modelled peer does not reproduce: a replay in which our endpoint does not send one is
+     * still the capture, and the modelled peer is not made to retransmit to stand in for one.
      */
     AcksOnly,
 }
@@ -168,6 +186,13 @@ internal sealed interface OurAction {
 }
 
 internal enum class StreamEnd { Open, Finished }
+
+/** [bytes] more bytes of [stream] from the peer's application. */
+internal data class PeerWrite(
+    val stream: Long,
+    val bytes: Int,
+    val end: StreamEnd,
+)
 
 internal sealed interface Moment {
     data object Never : Moment
@@ -232,6 +257,8 @@ internal class CaptureScheduleBuilder(
     private var ourTransport = TransportSetup()
     private var peerTransport = TransportSetup()
     private var peerPackets = PeerPackets.WholeFlights
+    private var serverCertificate = TestCertificate.Rsa
+    private val peerWrites = mutableListOf<PeerWrite>()
     private var established: Moment = Moment.Never
     private var end: ConnectionEnd = ConnectionEnd.Open
     private var runsFor: Duration = Duration.ZERO
@@ -243,6 +270,10 @@ internal class CaptureScheduleBuilder(
 
     fun peerTransport(setup: TransportSetup) {
         peerTransport = setup
+    }
+
+    fun serverCertificate(certificate: TestCertificate) {
+        serverCertificate = certificate
     }
 
     fun peerPackets(packets: PeerPackets) {
@@ -297,13 +328,34 @@ internal class CaptureScheduleBuilder(
         steps += Step.OursSent(at.microseconds, shape.toList(), Fate.Lost)
     }
 
+    /** The peer's application wrote [bytes] more bytes of [stream], which leave in the peer's next datagram here. */
+    fun peerWrote(
+        stream: Long,
+        bytes: Int,
+        end: StreamEnd,
+    ) {
+        peerWrites += PeerWrite(stream, bytes, end)
+    }
+
+    /** The writes declared since the peer's last datagram, which this one carries. */
+    private fun carried(): List<PeerWrite> = peerWrites.toList().also { peerWrites.clear() }
+
     /** The peer sent [shape] at [at]; our endpoint received it at [arrives]. */
     fun peerSent(
         at: Long,
         arrives: Long,
         vararg shape: PacketKind,
     ) {
-        steps += Step.PeerSent(at.microseconds, shape.toList(), Fate.Delivered(arrives.microseconds))
+        steps += Step.PeerSent(at.microseconds, shape.toList(), Fate.Delivered(arrives.microseconds), carried())
+    }
+
+    /** The peer sent only acknowledgements, in [shape], at [at]; our endpoint received them at [arrives]. */
+    fun peerSentAcks(
+        at: Long,
+        arrives: Long,
+        vararg shape: PacketKind,
+    ) {
+        steps += Step.PeerSent(at.microseconds, shape.toList(), Fate.Delivered(arrives.microseconds), carried(), Carries.AcksOnly)
     }
 
     /** The peer sent [shape] at [at]; our endpoint received it at [arrives] with the packets at [unreadable] unread. */
@@ -313,7 +365,7 @@ internal class CaptureScheduleBuilder(
         unreadable: List<Int>,
         vararg shape: PacketKind,
     ) {
-        steps += Step.PeerSent(at.microseconds, shape.toList(), Fate.Unread(arrives.microseconds, unreadable))
+        steps += Step.PeerSent(at.microseconds, shape.toList(), Fate.Unread(arrives.microseconds, unreadable), carried())
     }
 
     /** The peer sent [shape] at [at]; the network lost it. */
@@ -372,6 +424,7 @@ internal class CaptureScheduleBuilder(
             ourTransport = ourTransport,
             peerTransport = peerTransport,
             peerPackets = peerPackets,
+            serverCertificate = serverCertificate,
             steps = steps.toList(),
             established = established,
             end = end,

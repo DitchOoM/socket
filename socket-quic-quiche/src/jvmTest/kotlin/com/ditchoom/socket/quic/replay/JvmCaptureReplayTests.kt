@@ -6,7 +6,11 @@ import com.ditchoom.socket.quic.recordMissingNativeLib
 
 /** JVM member of [CaptureReplayTestSuite], on whichever `libquiche` binding `-PquicheJvmBackend` selected. */
 class JvmCaptureReplayTests : CaptureReplayTestSuite() {
-    override fun simEnv(): MigrationSimEnv = jvmMigrationSimEnv()
+    override fun simEnv(certificate: TestCertificate): MigrationSimEnv =
+        when (certificate) {
+            TestCertificate.Rsa -> jvmMigrationSimEnv()
+            TestCertificate.Ecdsa -> jvmMigrationSimEnv(certChain = "pinned.crt", privKey = "pinned.key")
+        }
 
     override suspend fun wrapTestBody(block: suspend () -> Unit) {
         try {

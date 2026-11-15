@@ -12,6 +12,7 @@ import com.ditchoom.socket.quic.replay.PacketKind.Handshake
 import com.ditchoom.socket.quic.replay.PacketKind.Initial
 import com.ditchoom.socket.quic.replay.PacketKind.OneRtt
 import com.ditchoom.socket.quic.replay.PeerPackets
+import com.ditchoom.socket.quic.replay.TestCertificate
 import com.ditchoom.socket.quic.replay.TransportSetup
 import com.ditchoom.socket.quic.replay.captureSchedule
 import kotlin.time.Duration.Companion.milliseconds
@@ -21,6 +22,7 @@ internal val interopQuicGoHandshakeLossPeerGaveUp: CaptureSchedule =
         ourTransport(TransportSetup(idleTimeout = 30000.milliseconds, activeConnectionIdLimit = 8, activeMigration = ActiveMigration.Disabled, maxData = 67108864, maxStreamDataBidiLocal = 16777216, maxStreamDataBidiRemote = 16777216, maxStreamDataUni = 1048576, maxStreamsBidi = 100, maxStreamsUni = 100))
         peerTransport(TransportSetup(idleTimeout = 30000.milliseconds, activeConnectionIdLimit = 8, activeMigration = ActiveMigration.Allowed, maxData = 10485760, maxStreamDataBidiLocal = 1048576, maxStreamDataBidiRemote = 1048576, maxStreamDataUni = 1048576, maxStreamsBidi = 100, maxStreamsUni = 100))
         peerPackets(PeerPackets.WholeFlights)
+        serverCertificate(TestCertificate.Rsa)
         sentLost(0, Initial) // crypto
         sent(1000182, 1016374, Initial) // crypto
         peerSentLost(1017353, Initial, Handshake, OneRtt)

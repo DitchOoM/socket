@@ -50,8 +50,8 @@ private val OPTIONS = setOf("name", "source", "role", "cell", "trace", "qlog", "
 private const val USAGE = """capture -> replay schedule
 
   --name <words-with-dashes>   names the schedule, its file and its val            (required)
-  --cell <dir>                 a quic-interop-runner cell our client ran in: <dir>/client/trace/*.trace,
-                               <dir>/client/qlog, <dir>/sim/trace_node_{left,right}.pcap
+  --cell <dir>                 a quic-interop-runner cell our endpoint ran in: <dir>/<role>/trace/*.trace,
+                               <dir>/<role>/qlog, <dir>/sim/trace_node_{left,right}.pcap (left is the client's side)
   --trace <file>               our endpoint's replay trace (required without --cell, or when the cell kept several)
   --qlog <file>                our endpoint's qlog for that connection
   --pcap-ours <file>           a capture taken on our side of the lossy link
@@ -115,13 +115,23 @@ private fun parse(args: Array<String>): Cli {
                 when (val cell = option("cell")) {
                     Option.Absent -> return Cli.Refused(CliRefusal.MissingOption("--trace"))
                     is Option.Given -> {
-                        val kept = File(cell.value).resolve("client/trace").listFiles { file -> file.name.endsWith(".trace") }.orEmpty()
+                        val kept =
+                            File(cell.value)
+                                .resolve("${role.label}/trace")
+                                .listFiles { file ->
+                                    file.name.endsWith(".trace")
+                                }.orEmpty()
                         if (kept.size != 1) return Cli.Refused(CliRefusal.CellTraceNotSingle(File(cell.value), kept.size))
                         kept.single()
                     }
                 }
         }
-    val captures = file("pcap-ours", "sim/trace_node_left.pcap") + file("pcap-peer", "sim/trace_node_right.pcap")
+    val (oursSide, peerSide) =
+        when (role) {
+            QuicRole.Client -> "sim/trace_node_left.pcap" to "sim/trace_node_right.pcap"
+            QuicRole.Server -> "sim/trace_node_right.pcap" to "sim/trace_node_left.pcap"
+        }
+    val captures = file("pcap-ours", oursSide) + file("pcap-peer", peerSide)
     val link =
         if (captures.size == 2) {
             LinkEvidence.BothEnds(captures.first(), captures.last())
@@ -135,7 +145,7 @@ private fun parse(args: Array<String>): Cli {
             is Option.Given -> QlogEvidence.Recorded(File(explicit.value))
             Option.Absent ->
                 when (val cell = option("cell")) {
-                    is Option.Given -> qlogOfConnection(File(cell.value).resolve("client/qlog"), trace)
+                    is Option.Given -> qlogOfConnection(File(cell.value).resolve("${role.label}/qlog"), trace)
                     Option.Absent -> QlogEvidence.Absent
                 }
         }
@@ -143,7 +153,7 @@ private fun parse(args: Array<String>): Cli {
     return Cli.Inputs(CaptureInputs(name, given.getOrElse("source") { trace.path }, role, trace, link, qlog), out)
 }
 
-/** The qlog in [directory] named for the source connection ID of [trace]'s first datagram, as our client names them. */
+/** The qlog in [directory] named for the source connection ID of [trace]'s first datagram, as our endpoints name them. */
 private fun qlogOfConnection(
     directory: File,
     trace: File,
@@ -180,7 +190,7 @@ private fun describe(refusal: CliRefusal): String =
         is CliRefusal.UnknownOption -> "unknown option ${refusal.option}"
         is CliRefusal.OptionWithoutValue -> "${refusal.option} needs a value"
         is CliRefusal.MissingOption -> "${refusal.option} is required"
-        is CliRefusal.CellTraceNotSingle -> "${refusal.directory}/client/trace holds ${refusal.count} traces: name one with --trace"
+        is CliRefusal.CellTraceNotSingle -> "${refusal.directory} kept ${refusal.count} traces of ours: name one with --trace"
         is CliRefusal.NotARole -> "--role is client or server, not ${refusal.value}"
         is CliRefusal.NotMilliseconds -> "--one-way-ms is a whole number of milliseconds, not ${refusal.value}"
     }

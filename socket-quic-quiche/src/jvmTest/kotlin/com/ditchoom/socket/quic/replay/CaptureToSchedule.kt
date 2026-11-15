@@ -141,8 +141,19 @@ internal object CaptureToSchedule {
                 is TraceRead.Unreadable -> return Extraction.Refused(ExtractionRefusal.TraceLineUnreadable(inputs.trace, read.line))
             }
         val outs = events.filterIsInstance<TraceEvent.DgramOut>().map { TraceDatagram(it.at, hex(it.payloadHex)) }
-        val ins = events.filterIsInstance<TraceEvent.DgramIn>().map { TraceDatagram(it.at, hex(it.payloadHex)) }
         if (outs.isEmpty()) return Extraction.Refused(ExtractionRefusal.TraceHoldsNoDatagramOfOurs)
+        val recorded = events.filterIsInstance<TraceEvent.DgramIn>().map { TraceDatagram(it.at, hex(it.payloadHex)) }
+        val link = inputs.link
+        val ins =
+            if (recorded.isEmpty() && link is LinkEvidence.BothEnds) {
+                notes += "The trace records no datagram our endpoint received: they are the ones the capture on our side of the link holds."
+                when (val arrived = arrivedOnOurSide(link, outs)) {
+                    is Arrived.Datagrams -> arrived.datagrams
+                    is Arrived.Refused -> return Extraction.Refused(arrived.refusal)
+                }
+            } else {
+                recorded
+            }
         val origin = (outs + ins).minOf { it.at }
         val qlog =
             when (val evidence = inputs.qlog) {
@@ -158,7 +169,8 @@ internal object CaptureToSchedule {
                                     }
                                 },
                                 outs.first().at,
-                                ins.map { it.spans },
+                                // A server reads the datagram that creates its connection before the qlog is open.
+                                ins.mapIndexed { index, received -> if (index < unlogged(inputs.role)) emptyList() else received.spans },
                             )
                     ) {
                         is QlogRead.Read -> read.qlog
@@ -166,7 +178,7 @@ internal object CaptureToSchedule {
                     }
             }
         val (ours, peers) =
-            when (val link = inputs.link) {
+            when (link) {
                 is LinkEvidence.BothEnds ->
                     when (val fates = fatesFromCaptures(link, outs, ins, qlog)) {
                         is LinkFates.Known -> fates.ours to fates.peers
@@ -196,7 +208,7 @@ internal object CaptureToSchedule {
                 is LinkEvidence.BothEnds -> unreadByPeer(ours, peers, qlog)
                 is LinkEvidence.OurRecordsOnly -> ours
             }
-        val ordered = inOurOrder(read, peers, outs, ins, qlog)
+        val ordered = inOurOrder(read, peers, outs, ins, qlog, unlogged(inputs.role))
         val steps = ordered.map { it.rebased(origin) }
         val frames =
             buildMap {
@@ -213,6 +225,7 @@ internal object CaptureToSchedule {
                 ourTransport = qlog.local,
                 peerTransport = qlog.remote,
                 peerPackets = peerPackets(peers),
+                serverCertificate = serverCertificate(inputs.role, read),
                 steps = steps,
                 established = established.fold<TraceEvent.State, Moment>(Moment.Never) { _, state -> Moment.At(state.at - origin) },
                 end = closed.fold<TraceEvent.State, ConnectionEnd>(ConnectionEnd.Open) { _, state -> endOf(state, origin) },
@@ -221,6 +234,13 @@ internal object CaptureToSchedule {
             )
         return Extraction.Extracted(schedule, frames, notes)
     }
+
+    /** How many of the first datagrams [role] receives are read before its qlog opens: a server's creating Initial. */
+    private fun unlogged(role: QuicRole): Int =
+        when (role) {
+            QuicRole.Client -> 0
+            QuicRole.Server -> 1
+        }
 
     /** How the trace's `Closed` state says the connection ended. */
     private fun endOf(
@@ -257,6 +277,30 @@ internal object CaptureToSchedule {
         }
     }
 
+    /**
+     * The test certificate that gives the replay's server the captured server's flight. Only our own
+     * server's flight is ours to reproduce: one Handshake packet in its first datagrams is the small
+     * certificate, more is the large one. A captured peer's flight is [peerPackets]'s to follow.
+     */
+    private fun serverCertificate(
+        role: QuicRole,
+        ours: List<Captured.Ours>,
+    ): TestCertificate =
+        when (role) {
+            QuicRole.Client -> TestCertificate.Rsa
+            QuicRole.Server -> {
+                val first = ours.map { it.step }
+                val flight = first.takeWhile { it.at - first.first().at <= FLIGHT_WITHIN }
+                if (flight.sumOf { step -> step.shape.count { it == PacketKind.Handshake } } >
+                    1
+                ) {
+                    TestCertificate.Rsa
+                } else {
+                    TestCertificate.Ecdsa
+                }
+            }
+        }
+
     private sealed interface TraceRead {
         class Whole(
             val events: List<TraceEvent>,
@@ -283,6 +327,40 @@ internal object CaptureToSchedule {
             }
         }
         return TraceRead.Whole(events)
+    }
+
+    private sealed interface Arrived {
+        class Datagrams(
+            val datagrams: List<TraceDatagram>,
+        ) : Arrived
+
+        data class Refused(
+            val refusal: ExtractionRefusal,
+        ) : Arrived
+    }
+
+    /**
+     * What reached our endpoint, read off the capture on our side of the link and stamped on the trace's
+     * clock: for a trace that records none of it, as a server connection's did before its Initial and
+     * the datagrams routed to it were recorded there.
+     */
+    private fun arrivedOnOurSide(
+        link: LinkEvidence.BothEnds,
+        outs: List<TraceDatagram>,
+    ): Arrived {
+        val oursSide =
+            when (val read = readPcap(link.oursSide)) {
+                is PcapRead.Datagrams -> read.datagrams
+                is PcapRead.Unreadable -> return Arrived.Refused(ExtractionRefusal.CaptureUnreadable(link.oursSide, read.fault))
+            }
+        val shared = oursSide.filter { it.payload.contentEquals(outs.first().bytes) }.take(1)
+        if (shared.isEmpty()) return Arrived.Refused(ExtractionRefusal.ConnectionNotInCapture(link.oursSide))
+        val first = shared.single()
+        return Arrived.Datagrams(
+            oursSide
+                .filter { it.from == first.to && it.to == first.from }
+                .map { TraceDatagram(it.at - first.at + outs.first().at, it.payload) },
+        )
     }
 
     private sealed interface LinkFates {
@@ -469,6 +547,7 @@ internal object CaptureToSchedule {
         outs: List<TraceDatagram>,
         ins: List<TraceDatagram>,
         qlog: Qlog,
+        unlogged: Int,
     ): List<Placed> {
         val placed = mutableListOf<Placed>()
         val placedOuts = mutableSetOf<Int>()
@@ -480,7 +559,10 @@ internal object CaptureToSchedule {
 
         fun placeIn(index: Int) {
             peers.filter { it.received == Received.At(index) }.take(1).forEach { peer ->
-                if (placedIns.add(index)) placed += Placed(peer.step, qlog.receivedFrames(index))
+                if (placedIns.add(index)) {
+                    val step = peer.step.copy(wrote = qlog.peerWrote(index), carries = qlog.receivedCarries(index))
+                    placed += Placed(step, qlog.receivedFrames(index))
+                }
             }
         }
 
@@ -492,6 +574,7 @@ internal object CaptureToSchedule {
             ins.indices.filter { it !in read && ins[it].at <= before }.forEach { placeIn(it) }
         }
 
+        ins.indices.take(unlogged).forEach { placeIn(it) }
         when (qlog) {
             Qlog.None -> {
                 val byTraceClock =
@@ -540,13 +623,21 @@ internal object CaptureToSchedule {
                         is Step.OursDid -> emptyList()
                     }
                 }.toSortedSet()
-        val writes = schedule.steps.any { it is Step.OursDid && it.action is OurAction.Write }
+        val writes =
+            schedule.steps.any {
+                when (it) {
+                    is Step.OursDid -> it.action is OurAction.Write
+                    is Step.PeerSent -> it.wrote.isNotEmpty()
+                    is Step.OursSent -> false
+                }
+            }
         val imports =
             buildList {
                 add("com.ditchoom.socket.quic.QuicRole")
                 add("com.ditchoom.socket.quic.replay.ActiveMigration")
                 add("com.ditchoom.socket.quic.replay.CaptureSchedule")
                 add("com.ditchoom.socket.quic.replay.PeerPackets")
+                add("com.ditchoom.socket.quic.replay.TestCertificate")
                 kinds.forEach { add("com.ditchoom.socket.quic.replay.PacketKind.${it.name}") }
                 if (writes) add("com.ditchoom.socket.quic.replay.StreamEnd")
                 add("com.ditchoom.socket.quic.replay.TransportSetup")
@@ -569,7 +660,11 @@ internal object CaptureToSchedule {
             appendLine("        ourTransport(${render(schedule.ourTransport)})")
             appendLine("        peerTransport(${render(schedule.peerTransport)})")
             appendLine("        peerPackets(PeerPackets.${schedule.peerPackets.name})")
+            appendLine("        serverCertificate(TestCertificate.${schedule.serverCertificate.name})")
             schedule.steps.forEachIndexed { index, step ->
+                peerWrites(
+                    step,
+                ).forEach { appendLine("        peerWrote(stream = ${it.stream}, bytes = ${it.bytes}, end = StreamEnd.${it.end.name})") }
                 val carried = extracted.frames.getOrElse(index) { "" }
                 appendLine("        ${render(step)}${if (carried.isEmpty()) "" else " // $carried"}")
             }
@@ -619,7 +714,7 @@ internal object CaptureToSchedule {
             appendLine("        runTest {")
             appendLine("            wrapTestBody {")
             appendLine("                val beyond = Beyond.HealthyPath(oneWay = 15.milliseconds, runFor = 10.seconds)")
-            appendLine("                val report = replayCapture(simEnv(), $valName, beyond)")
+            appendLine("                val report = replayCapture(simEnv($valName.serverCertificate), $valName, beyond)")
             appendLine("                // The scenario is every loss up to here. Once a fix makes the replay leave the capture sooner,")
             appendLine("                // lower this to just before that point, having checked the fix is what moved it.")
             appendLine("                assertTrue(report.followedCaptureUntil(${micros(lastLoss)}.microseconds), report.describe())")
@@ -648,7 +743,7 @@ internal object CaptureToSchedule {
                 val shape = shape(step.shape)
                 when (val fate = step.fate) {
                     Fate.Lost -> "peerSentLost($at, $shape)"
-                    is Fate.Delivered -> "peerSent($at, ${micros(fate.at)}, $shape)"
+                    is Fate.Delivered -> "peerSent${if (step.carries == Carries.AcksOnly) "Acks" else ""}($at, ${micros(fate.at)}, $shape)"
                     is Fate.Unread -> "peerSentUnread($at, ${micros(fate.at)}, listOf(${fate.packets.joinToString()}), $shape)"
                 }
             }
@@ -661,6 +756,12 @@ internal object CaptureToSchedule {
                 }
         }
     }
+
+    private fun peerWrites(step: Step): List<PeerWrite> =
+        when (step) {
+            is Step.PeerSent -> step.wrote
+            is Step.OursSent, is Step.OursDid -> emptyList()
+        }
 
     private fun render(setup: TransportSetup): String =
         "TransportSetup(idleTimeout = ${setup.idleTimeout.inWholeMilliseconds}.milliseconds, " +
@@ -691,7 +792,7 @@ internal object CaptureToSchedule {
     private fun hex(text: String): ByteArray = ByteArray(text.length / 2) { text.substring(it * 2, it * 2 + 2).toInt(16).toByte() }
 
     /** Datagrams the peer sent this close together are one flight. */
-    private val FLIGHT_WITHIN = 5.milliseconds
+    private val FLIGHT_WITHIN = 1.milliseconds
 
     /** How many of the peer's acknowledgement delays of silence say a packet went unread. */
     private const val ACK_DELAYS_WAITED = 3
@@ -752,6 +853,12 @@ internal sealed interface Qlog {
 
     fun receivedFrames(datagram: Int): String
 
+    /** What received datagram [datagram] was for. */
+    fun receivedCarries(datagram: Int): Carries
+
+    /** What the peer's application wrote that received datagram [datagram] was the first to carry. */
+    fun peerWrote(datagram: Int): List<PeerWrite>
+
     data object None : Qlog {
         override val local = TransportSetup()
         override val remote = TransportSetup()
@@ -761,6 +868,10 @@ internal sealed interface Qlog {
         override fun carries(datagram: Int): Carries = Carries.Data
 
         override fun receivedFrames(datagram: Int): String = ""
+
+        override fun peerWrote(datagram: Int): List<PeerWrite> = emptyList()
+
+        override fun receivedCarries(datagram: Int): Carries = Carries.Data
     }
 
     class Recorded(
@@ -872,6 +983,38 @@ internal sealed interface Qlog {
                         .fold<Triple<Int, PacketKind, Int>, Placement>(Placement.Nowhere) { _, hit -> Placement.In(hit.first) }
                 }
             }
+
+        /** For each received packet event, the stream bytes it was the first to carry. */
+        private val writesOfReceived: List<List<PeerWrite>> =
+            run {
+                val carried = mutableMapOf<Long, Long>()
+                val finished = mutableSetOf<Long>()
+                received.map { event ->
+                    event.data["frames"]
+                        .elements
+                        .filter { it["frame_type"].text() == "stream" }
+                        .flatMap { frame ->
+                            val stream = frame["stream_id"].number().toLong()
+                            val reaches = frame["offset"].number().toLong() + frame["raw"]["payload_length"].number().toLong()
+                            val fresh = reaches - carried.getOrElse(stream) { 0L }
+                            val ends = frame["fin"].flag() && finished.add(stream)
+                            if (fresh > 0) carried[stream] = reaches
+                            if (fresh > 0 || ends) {
+                                listOf(PeerWrite(stream, maxOf(fresh, 0L).toInt(), if (ends) StreamEnd.Finished else StreamEnd.Open))
+                            } else {
+                                emptyList()
+                            }
+                        }
+                }
+            }
+
+        override fun receivedCarries(datagram: Int): Carries {
+            val packets = received.indices.filter { datagramOfReceived[it] == Placement.In(datagram) }.map { received[it] }
+            return if (packets.isNotEmpty() && packets.none { asksForAcknowledgement(it) }) Carries.AcksOnly else Carries.Data
+        }
+
+        override fun peerWrote(datagram: Int): List<PeerWrite> =
+            received.indices.filter { datagramOfReceived[it] == Placement.In(datagram) }.flatMap { writesOfReceived[it] }
 
         /** The received datagrams quiche read a packet of. */
         val readDatagrams: Set<Int> = datagramOfReceived.filterIsInstance<Placement.In>().map { it.datagram }.toSet()

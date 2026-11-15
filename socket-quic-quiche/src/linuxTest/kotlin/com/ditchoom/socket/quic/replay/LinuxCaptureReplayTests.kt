@@ -16,11 +16,19 @@ class LinuxCaptureReplayTests : CaptureReplayTestSuite() {
             .take(1)
             .fold("testcerts/$name") { _, found -> found }
 
-    override fun simEnv(): MigrationSimEnv =
+    override fun simEnv(certificate: TestCertificate): MigrationSimEnv =
         MigrationSimEnv(
             api = CinteropQuicheApi,
-            certChainPath = certPath("cert.crt"),
-            privKeyPath = certPath("cert.key"),
+            certChainPath =
+                when (certificate) {
+                    TestCertificate.Rsa -> certPath("cert.crt")
+                    TestCertificate.Ecdsa -> certPath("pinned.crt")
+                },
+            privKeyPath =
+                when (certificate) {
+                    TestCertificate.Rsa -> certPath("cert.key")
+                    TestCertificate.Ecdsa -> certPath("pinned.key")
+                },
             codec = SocketAddressCodec(linuxSockAddrLayout),
             randomPin = CinteropQuicheApi,
         )

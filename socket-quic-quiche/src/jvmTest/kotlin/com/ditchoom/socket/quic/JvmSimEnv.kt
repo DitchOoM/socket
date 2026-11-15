@@ -11,11 +11,14 @@ import com.ditchoom.socket.udp.hostOsSockAddrLayout
  * Shared by every JVM sim test so the classpath probe lives in one place — the Kotlin/Native members
  * find their fixtures by filesystem instead, which is the whole reason this is not in the sim itself.
  */
-internal fun jvmMigrationSimEnv(): MigrationSimEnv =
+internal fun jvmMigrationSimEnv(
+    certChain: String = "cert.crt",
+    privKey: String = "cert.key",
+): MigrationSimEnv =
     MigrationSimEnv(
         api = loadQuicheApi(),
-        certChainPath = jvmSimCertPath("cert.crt"),
-        privKeyPath = jvmSimCertPath("cert.key"),
+        certChainPath = jvmSimCertPath(certChain),
+        privKeyPath = jvmSimCertPath(privKey),
         codec = SocketAddressCodec(hostOsSockAddrLayout()),
         randomPin = loadQuicheRandomPin(),
     )

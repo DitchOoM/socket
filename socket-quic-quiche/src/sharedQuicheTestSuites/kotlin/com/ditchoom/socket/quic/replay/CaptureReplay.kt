@@ -84,6 +84,13 @@ internal sealed interface Divergence {
         val action: OurAction,
     ) : Divergence
 
+    /** The modelled peer's quiche refused a write the captured peer made, with [code]. */
+    data class PeerWriteRefused(
+        override val at: Duration,
+        val write: PeerWrite,
+        val code: Int,
+    ) : Divergence
+
     /** quiche refused a captured action with [code]. */
     data class OurActionRefused(
         override val at: Duration,
@@ -201,6 +208,7 @@ internal class ReplayReport(
             is Divergence.OurDatagramUncaptured ->
                 "our datagram ${divergence.ordinal} ${divergence.replayed} is one more than the capture holds"
             is Divergence.OurActionBeforeHandshake -> "${divergence.action} fell due before our handshake completed"
+            is Divergence.PeerWriteRefused -> "the modelled peer's quiche answered ${divergence.code} to ${divergence.write}"
             is Divergence.OurActionRefused -> "quiche answered ${divergence.code} to ${divergence.action}"
             is Divergence.EndsDifferently ->
                 "our connection is ${divergence.replayed}, the capture's ${divergence.captured}"
@@ -275,6 +283,9 @@ private class CaptureReplay(
 
     private enum class PeerState { Answering, Gone }
 
+    /** Where the modelled peer's new packets go among those waiting to stand in. */
+    private enum class StandInOrder { Last, First }
+
     private class InFlight(
         val arrives: Duration,
         val order: Int,
@@ -345,6 +356,9 @@ private class CaptureReplay(
     private var end: ConnectionEnd = ConnectionEnd.Open
     private var peerHeardFirst: Moment = Moment.Never
     private var peerState = PeerState.Answering
+
+    /** How far the modelled peer's clock has been brought forward for retransmissions. */
+    private var peerLead = Duration.ZERO
     private var phase: Phase = Phase.OnCapture
     private var events = 0
 
@@ -683,7 +697,7 @@ private class CaptureReplay(
     }
 
     /** Take what the modelled peer has to send now: stand-ins while the capture is followed, datagrams after. */
-    private fun collectPeer() {
+    private fun collectPeer(order: StandInOrder = StandInOrder.Last) {
         if (peerState == PeerState.Gone) return
         val datagrams = pair.sends(peer)
         if (phase == Phase.OnCapture) {
@@ -695,12 +709,30 @@ private class CaptureReplay(
                     }
                 }
             when (schedule.peerPackets) {
-                PeerPackets.AsQuiche -> packets.forEach { (kind, packet) -> standIns.getValue(kind).addLast(listOf(packet)) }
+                PeerPackets.AsQuiche -> packets.reversedIf(order).forEach { (kind, packet) -> queue(kind, listOf(packet), order) }
                 PeerPackets.WholeFlights ->
-                    packets.groupBy({ it.first }, { it.second }).forEach { (kind, flight) -> standIns.getValue(kind).addLast(flight) }
+                    packets.groupBy({ it.first }, { it.second }).forEach { (kind, flight) -> queue(kind, flight, order) }
             }
         } else {
             datagrams.forEach { sendHealthy(it.bytes, Side.Ours) }
+        }
+    }
+
+    /** [packets] in the order that leaves them in their own order once each is queued by [order]. */
+    private fun <T> List<T>.reversedIf(order: StandInOrder): List<T> =
+        when (order) {
+            StandInOrder.Last -> this
+            StandInOrder.First -> reversed()
+        }
+
+    private fun queue(
+        kind: PacketKind,
+        flight: List<ByteArray>,
+        order: StandInOrder,
+    ) {
+        when (order) {
+            StandInOrder.Last -> standIns.getValue(kind).addLast(flight)
+            StandInOrder.First -> standIns.getValue(kind).addFirst(flight)
         }
     }
 
@@ -709,7 +741,13 @@ private class CaptureReplay(
         step: Step.PeerSent,
         ordinal: Int,
     ) {
-        if (step.fate != Fate.Lost) retransmitFor(step.shape)
+        for (write in step.wrote) {
+            val wrote = pair.streamSend(peer, QuicStreamId(write.stream), "x".repeat(write.bytes), write.end == StreamEnd.Finished)
+            if (wrote != write.bytes) return leave(Divergence.PeerWriteRefused(now, write, wrote))
+        }
+        // What the peer's application has just written leaves in this datagram, ahead of anything waiting.
+        if (step.wrote.isNotEmpty()) collectPeer(StandInOrder.First)
+        if (step.fate != Fate.Lost && step.carries == Carries.Data) retransmitFor(step.shape)
         val flights =
             step.shape.map { kind ->
                 val waiting = standIns.getValue(kind)
@@ -749,9 +787,15 @@ private class CaptureReplay(
         repeat(PEER_RETRANSMISSIONS) {
             val wanted = shape.groupingBy { it }.eachCount()
             if (wanted.all { (kind, count) -> standIns.getValue(kind).size >= count }) return
-            when (pair.bringTimerForward(peer)) {
+            when (val timer = pair.timer(peer)) {
                 QuichePairByHand.Timer.Unarmed -> return
-                is QuichePairByHand.Timer.DueIn -> collectPeer()
+                is QuichePairByHand.Timer.DueIn -> {
+                    // A timer this far out is not a loss timer; firing it would idle the modelled peer out.
+                    if (peerLead + timer.span > schedule.peerTransport.idleTimeout / 2) return
+                    peerLead += timer.span
+                    pair.bringTimerForward(peer)
+                    collectPeer()
+                }
             }
         }
     }

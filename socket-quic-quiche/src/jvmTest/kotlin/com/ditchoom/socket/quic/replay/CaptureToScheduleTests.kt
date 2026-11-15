@@ -177,6 +177,46 @@ class CaptureToScheduleTests {
     }
 
     @Test
+    fun aServersScheduleBeginsWithTheDatagramThatCreatedItsConnectionReadOffItsSideOfTheLink() {
+        // A server connection's trace as it was before it recorded what it received: only what it sent.
+        val serverTrace = trace(out(40_000, serverHello), out(72_500, done))
+        val ahead = 5_000_000L
+        val clientSide =
+            pcap(
+                Captured(ahead + 1_000, CLIENT, SERVER, hello),
+                Captured(ahead + 55_000, SERVER, CLIENT, serverHello),
+                Captured(ahead + 56_000, CLIENT, SERVER, finished),
+                Captured(ahead + 57_000, CLIENT, SERVER, request),
+            )
+        val serverSide =
+            pcap(
+                Captured(ahead + 16_000, CLIENT, SERVER, hello),
+                Captured(ahead + 40_000, SERVER, CLIENT, serverHello),
+                Captured(ahead + 72_000, CLIENT, SERVER, request),
+                Captured(ahead + 72_500, SERVER, CLIENT, done),
+            )
+        val link = LinkEvidence.BothEnds(file("server-side.pcap", serverSide), file("client-side.pcap", clientSide))
+        val inputs = CaptureInputs("a-server-capture", "a test", QuicRole.Server, serverTrace, link, QlogEvidence.Absent)
+        val extracted = assertIs<Extraction.Extracted>(CaptureToSchedule.extract(inputs))
+        assertEquals(
+            listOf(
+                Step.PeerSent((-15_000).microseconds, listOf(PacketKind.Initial), Fate.Delivered(0.microseconds)),
+                Step.OursSent(24_000.microseconds, listOf(PacketKind.Initial, PacketKind.Handshake), Fate.Delivered(39_000.microseconds)),
+                Step.PeerSent(40_000.microseconds, listOf(PacketKind.Initial, PacketKind.Handshake), Fate.Lost),
+                Step.PeerSent(41_000.microseconds, listOf(PacketKind.Handshake, PacketKind.OneRtt), Fate.Delivered(56_000.microseconds)),
+                Step.OursSent(56_500.microseconds, listOf(PacketKind.OneRtt), Fate.Lost),
+            ),
+            extracted.schedule.steps,
+        )
+        assertEquals(
+            TestCertificate.Ecdsa,
+            extracted.schedule.serverCertificate,
+            "a flight of one Handshake packet is the small certificate's",
+        )
+        assertTrue(extracted.notes.any { "records no datagram our endpoint received" in it }, extracted.notes.toString())
+    }
+
+    @Test
     fun aQlogThatStopsBeforeTheTraceDoesIsUsedAsFarAsItGoes() {
         val qlog =
             file(

@@ -418,10 +418,12 @@ class JvmQuicTraceCaptureTests {
                             "the receive loop recorded accept-time datagrams for $acceptedPaths but connections " +
                                 "exist for ${pathToSinks.keys}: the server-level record missed an Initial",
                         )
-                        // A connection's own trace holds what it received as well as what it sent: every
-                        // datagram after the Initial that created it is routed to its driver.
+                        // A connection's own trace holds everything it received: the Initial that created
+                        // it, ahead of anything it sent, and each datagram routed to its driver afterwards.
                         perConn.filter { s -> s.any { ".Established" in it } }.forEachIndexed { i, s ->
-                            assertTrue(s.any { " DGRAM_IN " in it }, "connection sink #$i records no datagram it received: $s")
+                            val datagrams = s.filter { " DGRAM_IN " in it || " DGRAM_OUT " in it }
+                            assertTrue(" DGRAM_IN " in datagrams.first(), "connection sink #$i does not begin with its Initial: $s")
+                            assertTrue(datagrams.count { " DGRAM_IN " in it } >= 2, "connection sink #$i records no later arrival: $s")
                         }
                         val established = establishedSinks(perConn)
                         assertTrue(established >= 2, "expected >=2 fully-established server-side traces, got $established")
