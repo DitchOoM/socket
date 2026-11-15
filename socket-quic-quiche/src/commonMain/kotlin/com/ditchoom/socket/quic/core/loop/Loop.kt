@@ -117,11 +117,8 @@ internal interface LoopParts {
      */
     fun collect(out: SendBatch): Collected
 
-    /**
-     * How many more datagrams the loop may take from the socket in this pass, asked before each receive; at 0 the loop
-     * leaves the rest in the socket for its next pass, so work the parts bound per pass is delayed and never dropped.
-     */
-    fun receiveBudget(): Int = Int.MAX_VALUE
+    /** Called first in every pass, before the loop takes datagrams from the socket: work the parts held back from earlier passes. */
+    fun passBegan() {}
 
     /** The loop thread failed with [cause] and stops; end everything on it. Called once, on the loop thread. */
     fun loopFailed(cause: Throwable)
@@ -309,6 +306,7 @@ internal class Loop(
     fun pass(now: Long): NextDue {
         counts.passes++
         deadlines.fireDue(now)
+        parts.passBegan()
         receiveWaiting()
         counts.work += inbox.drain(runWork)
         flushLanes()
@@ -327,9 +325,6 @@ internal class Loop(
     private fun receiveWaiting() {
         var datagrams = 0
         while (datagrams < MAX_DATAGRAMS_PER_PASS) {
-            val budget = parts.receiveBudget()
-            if (budget <= 0) break
-            receive.allow(budget)
             when (val got = io.receive(receive)) {
                 ReceiveBatchResult.Got -> {
                     datagrams += receive.count

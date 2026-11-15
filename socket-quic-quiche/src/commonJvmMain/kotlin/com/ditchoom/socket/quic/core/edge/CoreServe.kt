@@ -233,6 +233,7 @@ private fun serveOnThisThread(
                 resources = resources,
                 accepted = accepted,
                 counts = counts,
+                datagramSize = MAX_DATAGRAM,
             ),
         )
     val loop = Loop(SelectorWait(channel, clock), clock, io, parts, receive, send, CallerLanes.Of(callerSends))

@@ -63,6 +63,9 @@ internal class ServerParts(
     private val tokenOut = s.factory.allocate(MAX_TOKEN)
     private val oneScid = CidRead()
     private val tick = Tick()
+    private val backlog = InitialBacklog(s.serverConfig.admission.backlog, s.datagramSize, s.factory)
+    private val backlogTick = Tick()
+    private var tickedPass = -1L
     private var admissionPass = -1L
     private var startedThisPass = 0
 
@@ -71,15 +74,17 @@ internal class ServerParts(
         attached = Attached.To(loop)
     }
 
-    /** An Initial may start a handshake, so each datagram counts as one until the pass has started [Admission.perPass]. */
-    override fun receiveBudget(): Int =
-        when (val now = attached) {
-            Attached.Nothing -> Int.MAX_VALUE
-            is Attached.To -> {
-                startPassIfNew(now.loop)
-                s.serverConfig.admission.perPass - startedThisPass
-            }
+    /** Admits what earlier passes held, oldest first, before this pass takes anything new from the socket. */
+    override fun passBegan() {
+        val now = attached
+        if (now !is Attached.To) return
+        startPassIfNew(now.loop)
+        val admission = s.serverConfig.admission
+        while (!backlog.isEmpty && startedThisPass < admission.perPass && handshakes.inProgress < admission.inProgress) {
+            onDatagram(backlog.oldest(), backlog.oldestLength(), backlog.oldestFrom(), ArrivedOn.Unreported)
+            backlog.dropOldest()
         }
+    }
 
     private fun startPassIfNew(loop: Loop) {
         val pass = loop.counts.passes
@@ -190,8 +195,12 @@ internal class ServerParts(
     ) {
         val loop = (attached as Attached.To).loop
         startPassIfNew(loop)
-        if (startedThisPass >= s.serverConfig.admission.perPass || handshakes.inProgress >= s.serverConfig.admission.inProgress) {
+        if (handshakes.inProgress >= s.serverConfig.admission.inProgress) {
             s.counts.droppedAdmission++
+            return
+        }
+        if (startedThisPass >= s.serverConfig.admission.perPass) {
+            hold(buffer, length, from)
             return
         }
         val scidAddress: Long
@@ -225,6 +234,18 @@ internal class ServerParts(
         peer.slot = peers.size
         peers.add(peer)
         peer.conn.received(buffer, length)
+    }
+
+    /** The pass has admitted all it may: the Initial waits for a later pass, or is dropped when the backlog is full. */
+    private fun hold(
+        buffer: ReceiveBuffer,
+        length: Int,
+        from: PathKey,
+    ) {
+        when (backlog.hold(buffer, length, from)) {
+            Held.Yes -> s.counts.backlogged++
+            Held.Full -> s.counts.droppedBacklog++
+        }
     }
 
     private fun create(
@@ -338,6 +359,7 @@ internal class ServerParts(
     internal fun release(peer: ServerPeer) = peer.conn.release(peer.freed(s.resources))
 
     override fun collect(out: SendBatch): Collected {
+        owePassForBacklog()
         if (stateless.writeInto(out) === Collected.MoreWaiting) return Collected.MoreWaiting
         while (true) {
             val head = touchedHead
@@ -351,6 +373,14 @@ internal class ServerParts(
         }
         finishShutdownWhenFlushed()
         return Collected.Everything
+    }
+
+    /** A pass that admitted all it may leaves the backlog to the next pass, which must run even with nothing else to do. */
+    private fun owePassForBacklog() {
+        val loop = (attached as Attached.To).loop
+        if (backlog.isEmpty || startedThisPass < s.serverConfig.admission.perPass || tickedPass == loop.counts.passes) return
+        tickedPass = loop.counts.passes
+        loop.submit(backlogTick)
     }
 
     // --- ending ---
@@ -393,6 +423,7 @@ internal class ServerParts(
         peers.clear()
         stateless.free()
         headerScratch.free()
+        backlog.free()
         newScid.freeNativeMemory()
         tokenOut.freeNativeMemory()
         s.resources.release()

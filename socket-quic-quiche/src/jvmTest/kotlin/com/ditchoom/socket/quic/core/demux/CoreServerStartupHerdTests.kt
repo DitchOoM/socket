@@ -56,143 +56,161 @@ class CoreServerStartupHerdTests {
 
     @Test
     fun aThousandClientsThatStartTogetherAllCompleteTheirHandshakesBeforeTheirIdleTimeout() =
-        runBlocking {
-            val api = loadQuicheApi()
-            val factory = BufferFactory.Default
-            val network = MemoryNetwork()
-            val server =
-                coreServe(
-                    bind = InetSocketAddress("127.0.0.1", 0),
-                    tls = coreTlsConfig(),
-                    options = coreTestOptions,
-                    factory = factory,
-                    api = api,
-                    readPolicy = ReadPolicy.Bounded(10.seconds),
-                    writePolicy = WritePolicy.Bounded(10.seconds),
-                    wrapIo = { network },
-                    clock = LoopClock { network.now },
-                    driver = LoopDriver.Caller,
-                )
-            val serverAddress = InetSocketAddress("127.0.0.1", server.port)
-            val peer = serverAddress.toNativeSockAddr(factory)
-            val config = api.configNew(1)
-            encodeAlpnList(
-                coreTestOptions.alpnProtocols,
-                factory,
-            ).let { api.configSetApplicationProtos(config, addressOf(it), it.remaining()) }
-            applyQuicOptions(coreTestOptions, CommonJvmQuicConfigCalls(api, config), QuicRole.Client)
-            val serverName =
-                factory.allocate(10).apply {
-                    writeString("localhost", Charset.UTF8)
-                    writeByte(0)
-                    resetForRead()
-                }
-            val out = factory.allocate(MAX_DATAGRAM)
-            val outView = (out.unwrapFully() as BaseJvmBuffer).byteBuffer
-            val sendInfo = api.sendInfoNew()
-            val clients =
-                List(CLIENTS) { i ->
-                    val local = InetSocketAddress("127.0.0.1", FIRST_PORT + i)
-                    val localNative = local.toNativeSockAddr(factory)
-                    network.now = START
-                    api.setThreadVirtualTimeNanos(START)
-                    val scid = generateScid(factory, Random(i))
-                    val conn =
-                        api.connect(
-                            addressOf(serverName),
-                            9,
-                            addressOf(scid),
-                            QUIC_ISSUED_CONN_ID_LEN,
-                            localNative.address,
-                            localNative.length,
-                            peer.address,
-                            peer.length,
-                            config,
-                        )
-                    Client(i, local.toPathKey(), conn, api.recvInfoNew(peer.address, peer.length, localNative.address, localNative.length))
-                }
-            val byPath = clients.associateBy { it.path }
-            try {
-                var now = START
-                val end = START + OBSERVED.inWholeNanoseconds
-                while (now <= end && clients.any { it.state == State.Handshaking }) {
-                    network.now = now
-                    api.setThreadVirtualTimeNanos(now)
-                    var next = Long.MAX_VALUE
-                    var rounds = 0
-                    do {
-                        for (client in clients) {
-                            if (client.state != State.Handshaking) continue
-                            val due = api.connTimeoutNanos(client.conn)
-                            if (due == 0L) api.connOnTimeout(client.conn)
-                            while (true) {
-                                val length = api.connSend(client.conn, addressOf(out), MAX_DATAGRAM, sendInfo)
-                                if (length <= 0) break
-                                if (isInitial(outView.get(0))) client.initials.add(now)
-                                network.toServer.addLast(
-                                    Datagram(client.path, ByteArray(length).also { outView.duplicate().get(it, 0, length) }),
-                                )
-                            }
-                        }
-                        val pending = network.toServer.isNotEmpty()
-                        do {
-                            val due = server.loop.pass(now)
-                            due.fold(none = {}, due = { next = minOf(next, it) })
-                        } while (network.toServer.isNotEmpty())
-                        val replies = network.toClients.toList()
-                        network.toClients.clear()
-                        for (reply in replies) {
-                            val client = byPath.getValue(reply.path)
-                            val bytes = factory.allocate(reply.bytes.size).apply { writeBytes(reply.bytes) }
-                            api.connRecv(client.conn, addressOf(bytes), reply.bytes.size, client.recvInfo)
-                            bytes.freeNativeMemory()
-                        }
-                        for (client in clients) {
-                            if (client.state != State.Handshaking) continue
-                            if (api.connIsEstablished(client.conn)) {
-                                client.state = State.Established
-                                client.establishedAt = now
-                            } else if (api.connIsClosed(client.conn)) {
-                                client.state = State.Closed
-                                client.closedAt = now
-                            }
-                        }
-                        rounds++
-                    } while ((pending || replies.isNotEmpty()) && rounds < 200)
+        herd(kernelBuffer = Int.MAX_VALUE, wave = Int.MAX_VALUE)
+
+    /**
+     * The same herd against a kernel receive buffer of 200 datagrams, which is what an emulator grants however much the
+     * server asks for: the clients send in waves of 200 Initials with one server pass between waves, and a datagram that
+     * arrives at a full buffer is dropped as a kernel would. A server that leaves what it did not admit in the socket
+     * lets the buffer overflow and loses Initials, whose clients then retransmit on a doubling timeout.
+     */
+    @Test
+    fun aThousandClientsStartingTogetherAllCompleteTheirHandshakesThroughAKernelBufferOfTwoHundredDatagrams() =
+        herd(kernelBuffer = 200, wave = 200)
+
+    private fun herd(
+        kernelBuffer: Int,
+        wave: Int,
+    ) = runBlocking {
+        val api = loadQuicheApi()
+        val factory = BufferFactory.Default
+        val network = MemoryNetwork(kernelBuffer)
+        val server =
+            coreServe(
+                bind = InetSocketAddress("127.0.0.1", 0),
+                tls = coreTlsConfig(),
+                options = coreTestOptions,
+                factory = factory,
+                api = api,
+                readPolicy = ReadPolicy.Bounded(10.seconds),
+                writePolicy = WritePolicy.Bounded(10.seconds),
+                wrapIo = { network },
+                clock = LoopClock { network.now },
+                driver = LoopDriver.Caller,
+            )
+        val serverAddress = InetSocketAddress("127.0.0.1", server.port)
+        val peer = serverAddress.toNativeSockAddr(factory)
+        val config = api.configNew(1)
+        encodeAlpnList(
+            coreTestOptions.alpnProtocols,
+            factory,
+        ).let { api.configSetApplicationProtos(config, addressOf(it), it.remaining()) }
+        applyQuicOptions(coreTestOptions, CommonJvmQuicConfigCalls(api, config), QuicRole.Client)
+        val serverName =
+            factory.allocate(10).apply {
+                writeString("localhost", Charset.UTF8)
+                writeByte(0)
+                resetForRead()
+            }
+        val out = factory.allocate(MAX_DATAGRAM)
+        val outView = (out.unwrapFully() as BaseJvmBuffer).byteBuffer
+        val sendInfo = api.sendInfoNew()
+        val clients =
+            List(CLIENTS) { i ->
+                val local = InetSocketAddress("127.0.0.1", FIRST_PORT + i)
+                val localNative = local.toNativeSockAddr(factory)
+                network.now = START
+                api.setThreadVirtualTimeNanos(START)
+                val scid = generateScid(factory, Random(i))
+                val conn =
+                    api.connect(
+                        addressOf(serverName),
+                        9,
+                        addressOf(scid),
+                        QUIC_ISSUED_CONN_ID_LEN,
+                        localNative.address,
+                        localNative.length,
+                        peer.address,
+                        peer.length,
+                        config,
+                    )
+                Client(i, local.toPathKey(), conn, api.recvInfoNew(peer.address, peer.length, localNative.address, localNative.length))
+            }
+        val byPath = clients.associateBy { it.path }
+        try {
+            var now = START
+            val end = START + OBSERVED.inWholeNanoseconds
+            while (now <= end && clients.any { it.state == State.Handshaking }) {
+                network.now = now
+                api.setThreadVirtualTimeNanos(now)
+                var next = Long.MAX_VALUE
+                var rounds = 0
+                var sent = 0
+                do {
                     for (client in clients) {
                         if (client.state != State.Handshaking) continue
-                        val timeout = api.connTimeoutNanos(client.conn)
-                        if (timeout >= 0) next = minOf(next, now + timeout)
+                        val due = api.connTimeoutNanos(client.conn)
+                        if (due == 0L) api.connOnTimeout(client.conn)
+                        while (true) {
+                            val length = api.connSend(client.conn, addressOf(out), MAX_DATAGRAM, sendInfo)
+                            if (length <= 0) break
+                            if (isInitial(outView.get(0))) client.initials.add(now)
+                            network.arrive(Datagram(client.path, ByteArray(length).also { outView.duplicate().get(it, 0, length) }))
+                            if (++sent % wave == 0) server.loop.pass(now)
+                        }
                     }
-                    now = if (next <= now) now + MILLI else next
+                    val pending = network.toServer.isNotEmpty()
+                    do {
+                        val due = server.loop.pass(now)
+                        due.fold(none = {}, due = { next = minOf(next, it) })
+                    } while (network.toServer.isNotEmpty())
+                    val replies = network.toClients.toList()
+                    network.toClients.clear()
+                    for (reply in replies) {
+                        val client = byPath.getValue(reply.path)
+                        val bytes = factory.allocate(reply.bytes.size).apply { writeBytes(reply.bytes) }
+                        api.connRecv(client.conn, addressOf(bytes), reply.bytes.size, client.recvInfo)
+                        bytes.freeNativeMemory()
+                    }
+                    for (client in clients) {
+                        if (client.state != State.Handshaking) continue
+                        if (api.connIsEstablished(client.conn)) {
+                            client.state = State.Established
+                            client.establishedAt = now
+                        } else if (api.connIsClosed(client.conn)) {
+                            client.state = State.Closed
+                            client.closedAt = now
+                        }
+                    }
+                    rounds++
+                } while ((pending || replies.isNotEmpty()) && rounds < 200)
+                for (client in clients) {
+                    if (client.state != State.Handshaking) continue
+                    val timeout = api.connTimeoutNanos(client.conn)
+                    if (timeout >= 0) next = minOf(next, now + timeout)
                 }
-                val established = clients.count { it.state == State.Established }
-                val closed = clients.filter { it.state == State.Closed }
-                val initialsPerClient = clients.groupingBy { it.initials.size }.eachCount().toSortedMap()
-                val slowest = clients.filter { it.state == State.Established }.maxOfOrNull { (it.establishedAt - START) / MILLI } ?: -1
-                val firstClosed = closed.minOfOrNull { (it.closedAt - START) / MILLI } ?: -1
-                println(
-                    "[startup herd] $CLIENTS clients: established=$established closed=${closed.size} (first at $firstClosed ms), " +
-                        "slowest handshake=$slowest ms, server dropped ${server.counts.droppedAdmission} Initials for admission, " +
-                        "accepted=${server.counts.accepted}, Initials sent per client (initials=clients)=$initialsPerClient, " +
-                        "retransmit times of the last client=${clients.last().initials.map { (it - START) / MILLI }} ms",
-                )
-                assertEquals(
-                    0,
-                    closed.size,
-                    "clients that ended before their handshake completed (idle timeout ${coreTestOptions.idleTimeout}): ${closed.size}",
-                )
-                assertEquals(CLIENTS, established, "handshakes completed")
-            } finally {
-                api.clearThreadVirtualTime()
-                clients.forEach { api.connFree(it.conn) }
-                // Nothing else runs the loop: asking for the close and then running it to its end is the whole shutdown.
-                val closing = async { server.close() }
-                yield()
-                server.loop.run()
-                closing.await()
+                now = if (next <= now) now + MILLI else next
             }
+            val established = clients.count { it.state == State.Established }
+            val closed = clients.filter { it.state == State.Closed }
+            val initialsPerClient = clients.groupingBy { it.initials.size }.eachCount().toSortedMap()
+            val slowest = clients.filter { it.state == State.Established }.maxOfOrNull { (it.establishedAt - START) / MILLI } ?: -1
+            val firstClosed = closed.minOfOrNull { (it.closedAt - START) / MILLI } ?: -1
+            println(
+                "[startup herd] $CLIENTS clients: established=$established closed=${closed.size} (first at $firstClosed ms), " +
+                    "slowest handshake=$slowest ms, server dropped ${server.counts.droppedAdmission} Initials for admission, " +
+                    "accepted=${server.counts.accepted}, " +
+                    "kernel dropped ${network.kernelDrops}, backlog dropped ${server.counts.droppedBacklog}, " +
+                    "Initials sent per client (initials=clients)=$initialsPerClient, " +
+                    "retransmit times of the last client=${clients.last().initials.map { (it - START) / MILLI }} ms",
+            )
+            assertEquals(
+                0,
+                closed.size,
+                "clients that ended before their handshake completed (idle timeout ${coreTestOptions.idleTimeout}): ${closed.size}",
+            )
+            assertEquals(CLIENTS, established, "handshakes completed")
+            assertEquals(0, network.kernelDrops, "Initials the kernel buffer dropped because the server had not taken them yet")
+        } finally {
+            api.clearThreadVirtualTime()
+            clients.forEach { api.connFree(it.conn) }
+            // Nothing else runs the loop: asking for the close and then running it to its end is the whole shutdown.
+            val closing = async { server.close() }
+            yield()
+            server.loop.run()
+            closing.await()
         }
+    }
 
     private enum class State { Handshaking, Established, Closed }
 
@@ -213,8 +231,19 @@ class CoreServerStartupHerdTests {
         val bytes: ByteArray,
     )
 
-    /** The network between the clients and the server: datagrams cross at once, in order, and nothing is lost on the way. */
-    private class MemoryNetwork : DatagramBatchIo {
+    /**
+     * The network between the clients and the server: datagrams cross at once and in order. The server's socket holds
+     * [kernelBuffer] datagrams; one that arrives while it is full is lost, as a kernel loses it.
+     */
+    private class MemoryNetwork(
+        private val kernelBuffer: Int,
+    ) : DatagramBatchIo {
+        var kernelDrops = 0
+
+        fun arrive(datagram: Datagram) {
+            if (toServer.size >= kernelBuffer) kernelDrops++ else toServer.addLast(datagram)
+        }
+
         override val capability: BatchCapability = BatchCapability.OneByOne
         var now = 0L
         val toServer = ArrayDeque<Datagram>()

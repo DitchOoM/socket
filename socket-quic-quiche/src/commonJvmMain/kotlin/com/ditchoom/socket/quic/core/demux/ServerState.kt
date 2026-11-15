@@ -73,6 +73,8 @@ internal class ServerSetup(
     val resources: ServerResources,
     val accepted: Channel<CoreConnection>,
     val counts: ServerCounts,
+    /** The largest datagram the server's socket delivers. */
+    val datagramSize: Int,
 )
 
 internal sealed interface Tokens {

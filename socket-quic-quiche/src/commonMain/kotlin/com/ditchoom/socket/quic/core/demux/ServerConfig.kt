@@ -14,14 +14,23 @@ internal sealed interface AddressValidation {
     ) : AddressValidation
 }
 
-/** How many handshakes the server runs at once: an Initial over either bound is dropped, and the client retransmits. */
+/**
+ * How many handshakes the server runs at once. An Initial over [perPass] waits in a backlog that is admitted first on
+ * the next passes; one over [inProgress], or one that finds the backlog full, is dropped and its client retransmits.
+ */
 internal class Admission(
     /** Handshakes started in one pass of the loop. */
     val perPass: Int,
     /** Handshakes begun and not yet complete, in total. */
     val inProgress: Int,
+    /**
+     * Initials the server holds past a pass's bound, so a small kernel receive buffer never has to. Allocated up front
+     * at one 1,500-byte slot each: the default is 6 MiB of native memory per server.
+     */
+    val backlog: Int = DEFAULT_BACKLOG,
 ) {
     companion object {
+        const val DEFAULT_BACKLOG = 4_096
         val Default = Admission(perPass = 64, inProgress = 1024)
     }
 }
@@ -47,6 +56,14 @@ internal class ServerCounts {
     /** Initials dropped because the handshake bounds were reached. */
     @kotlin.concurrent.Volatile
     var droppedAdmission = 0L
+
+    /** Initials that arrived with the backlog full and were dropped. */
+    @kotlin.concurrent.Volatile
+    var droppedBacklog = 0L
+
+    /** Initials held in the backlog because their pass had already admitted all it may. */
+    @kotlin.concurrent.Volatile
+    var backlogged = 0L
 
     /** Initials dropped for carrying a token that is malformed, forged or expired. */
     @kotlin.concurrent.Volatile
