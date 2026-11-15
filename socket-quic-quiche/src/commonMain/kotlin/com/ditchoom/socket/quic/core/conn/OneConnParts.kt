@@ -36,6 +36,13 @@ internal class OneConnParts : LoopParts {
         }
     }
 
+    override fun loopFailed(cause: Throwable) {
+        when (val now = attached) {
+            Attached.Nothing -> Unit
+            is Attached.One -> now.conn.loopFailed(cause)
+        }
+    }
+
     override fun collect(out: SendBatch): Collected =
         when (val now = attached) {
             Attached.Nothing -> Collected.Everything

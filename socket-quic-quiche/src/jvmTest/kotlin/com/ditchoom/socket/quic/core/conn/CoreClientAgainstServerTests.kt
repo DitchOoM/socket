@@ -216,6 +216,8 @@ class CoreClientAgainstServerTests {
             }
         }
 
+        override fun served(inside: Conn.Inside) = Unit
+
         override fun closed(end: ConnEnd) {
             result.completeExceptionally(AssertionError("closed before the echo completed: $end"))
             ended.complete(end)

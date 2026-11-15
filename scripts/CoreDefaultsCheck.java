@@ -35,7 +35,9 @@ public class CoreDefaultsCheck {
         new Rule("lock", Pattern.compile(
             "\\bsynchronized\\s*\\(|@Synchronized\\b|\\bMutex\\b|\\bSemaphore\\b|\\bReentrant(ReadWrite)?Lock\\b"
                 + "|\\bStampedLock\\b|\\bThreadPoolExecutor\\b|\\bExecutors\\."), List.of()),
-        new Rule("boolean-property", Pattern.compile("\\b(val|var)\\s+`?\\w+`?\\s*:\\s*Boolean\\b"), List.of()),
+        // A stored Boolean is state; a getter computed from sealed state is a predicate, which default 3 allows.
+        new Rule("boolean-property", Pattern.compile(
+            "\\bvar\\s+`?\\w+`?\\s*:\\s*Boolean\\b|\\bval\\s+`?\\w+`?\\s*:\\s*Boolean\\b(?!\\s*get\\s*\\()"), List.of()),
         new Rule("nullable", Pattern.compile(
             "[:<,(]\\s*[A-Za-z_][\\w.]*(<[^=;{}]*>)?\\s*\\?(?![:.?])|\\)\\s*\\?(?![:.?\\s]*[\\w(])|\\bas\\?|\\barrayOfNulls\\b"),
             List.of()),
@@ -193,7 +195,7 @@ public class CoreDefaultsCheck {
     static void selfTest() {
         Map<String, String> planted = Map.ofEntries(
             Map.entry("lock", "fun f() { synchronized(this) { } }"),
-            Map.entry("boolean-property", "class A(val ready: Boolean)"),
+            Map.entry("boolean-property", "class A(val ready: Boolean) { var done: Boolean = false }"),
             Map.entry("nullable", "fun f(): String? = x"),
             Map.entry("message-exception", "fun f() { require(x > 0) { \"x must be positive\" } }"),
             Map.entry("throw-outside-edge", "fun f(): Nothing = throw IllegalStateException()"),
@@ -222,6 +224,7 @@ public class CoreDefaultsCheck {
             "when (x) { is A -> 1 else -> 2 }",
             "fun <T : Any> pick(items: List<T>): T = items[0]",
             "fun read(factory: BufferFactory) = factory.allocate(1500)",
+            "override val isOpen: Boolean get() = use.load() !== Use.Closed",
             "");
         List<Finding> cleanFindings = check("clean.kt", "loop", clean);
         if (!cleanFindings.isEmpty()) {

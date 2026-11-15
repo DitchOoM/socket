@@ -118,6 +118,8 @@ class LoopAllocationTests {
             send.commit(length, reply)
         }
 
+        override fun loopFailed(cause: Throwable) = Unit
+
         override fun collect(out: SendBatch): Collected = Collected.Everything
     }
 

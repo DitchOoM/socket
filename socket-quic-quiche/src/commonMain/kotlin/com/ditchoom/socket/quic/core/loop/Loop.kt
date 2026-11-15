@@ -55,6 +55,9 @@ internal fun interface LoopClock {
 /** Work any thread hands the loop. Runs on the loop, once. */
 internal abstract class LoopWork : InboxItem() {
     abstract fun run(loop: Loop)
+
+    /** The loop had stopped; called once, instead of [run], on the thread that handed the work over or the loop's. */
+    abstract fun gone()
 }
 
 /** What the loop does with the network's input and where its output comes from. */
@@ -72,6 +75,9 @@ internal interface LoopParts {
      * Called again in the same pass while it answers [Collected.MoreWaiting] and the network keeps up.
      */
     fun collect(out: SendBatch): Collected
+
+    /** The loop thread failed with [cause] and stops; end everything on it. Called once, on the loop thread. */
+    fun loopFailed(cause: Throwable)
 }
 
 internal sealed interface Collected {
@@ -127,21 +133,29 @@ internal class Loop(
 
     /** Any thread. */
     fun submit(work: LoopWork) {
-        inbox.push(work)
+        if (inbox.push(work) === Pushed.Refused) return work.gone()
         if (sleep.load() == ASLEEP && sleep.compareAndSet(ASLEEP, WOKEN)) wait.wake()
     }
 
     /** Any thread. [closed] is told once the loop has stopped and closed its socket. */
     fun close(closed: LoopClosed) = submit(CloseLoop(closed))
 
-    /** Loop thread only, until [close]. The body a platform's loop thread runs. */
+    /**
+     * Loop thread only, until [close]. The body a platform's loop thread runs. A failure stops the loop and is
+     * handed to [LoopParts.loopFailed]; work handed over afterwards is answered with [LoopWork.gone].
+     */
     fun run() {
-        while (true) {
-            val next = pass(clock.nowNanos())
-            when (val now = state) {
-                LoopState.Running -> sleepUntil(next)
-                is LoopState.Closing -> return finish(now.closed)
+        try {
+            while (true) {
+                val next = pass(clock.nowNanos())
+                when (val now = state) {
+                    LoopState.Running -> sleepUntil(next)
+                    is LoopState.Closing -> return finish(now.closed)
+                }
             }
+        } catch (failure: Throwable) {
+            // Reported, not rethrown: the parts end every connection on this loop with it as the cause.
+            stopAfter(failure)
         }
     }
 
@@ -211,7 +225,16 @@ internal class Loop(
     private fun finish(closed: LoopClosed) {
         io.close()
         wait.close()
+        inbox.close(LoopWork::gone)
         closed.closed(counts)
+    }
+
+    /** Connections first, so their own close requests are queued before the inbox closes and runs them as gone. */
+    private fun stopAfter(failure: Throwable) {
+        parts.loopFailed(failure)
+        io.close()
+        wait.close()
+        inbox.close(LoopWork::gone)
     }
 }
 
@@ -219,6 +242,8 @@ private class CloseLoop(
     private val closed: LoopClosed,
 ) : LoopWork() {
     override fun run(loop: Loop) = loop.beginClosing(closed)
+
+    override fun gone() = closed.closed(LoopCounts())
 }
 
 private const val AWAKE = 0

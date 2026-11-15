@@ -21,6 +21,7 @@ import com.ditchoom.socket.quic.core.loop.Loop
 import com.ditchoom.socket.quic.core.loop.LoopClock
 import com.ditchoom.socket.quic.core.loop.LoopWork
 import com.ditchoom.socket.quic.core.loop.OwnerWord
+import com.ditchoom.socket.quic.core.loop.Pushed
 import com.ditchoom.socket.quic.core.loop.WorkInbox
 import com.ditchoom.socket.quic.core.loop.WorkLeft
 import com.ditchoom.socket.quic.core.udp.ReceiveBuffer
@@ -60,6 +61,11 @@ internal sealed interface ConnEnd {
 
     /** Closed with no error recorded on either side. */
     object Quietly : ConnEnd
+
+    /** The loop thread failed; quiche's connection was not closed on the wire. */
+    class LoopFailed(
+        val cause: Throwable,
+    ) : ConnEnd
 }
 
 /** What a connection tells whoever drives its streams. Called inside the connection, on the thread inside it. */
@@ -79,11 +85,17 @@ internal interface ConnEvents {
     )
 
     fun closed(end: ConnEnd)
+
+    /** Once per pass of an established connection, after [readable] and [writable]. */
+    fun served(inside: Conn.Inside)
 }
 
 /** Work for one connection, run inside it by whoever holds it. */
 internal abstract class ConnWork : InboxItem() {
     abstract fun run(inside: Conn.Inside)
+
+    /** The connection was released before the work could run. Called once, instead of [run]. */
+    abstract fun gone()
 }
 
 internal sealed interface WriteEnd {
@@ -153,6 +165,28 @@ internal class Conn(
         fun close(error: QuicError) {
             api.connClose(handle, error)
         }
+
+        /** [direction] 0 stops the peer's sending (STOP_SENDING), 1 resets ours (RESET_STREAM). */
+        fun shutdown(
+            stream: QuicStreamId,
+            direction: Int,
+            code: Long,
+        ): Int = api.connStreamShutdown(handle, stream, direction, code)
+
+        /** Bidirectional streams the peer currently lets us open. */
+        fun peerStreamsLeftBidi(): Long = api.connPeerStreamsLeftBidi(handle)
+
+        /** Copies the negotiated ALPN to [address]; returns its length. */
+        fun applicationProtocol(
+            address: Long,
+            length: Int,
+        ): Int = api.connApplicationProto(handle, address, length)
+
+        /** A deadline [afterNanos] from now on this connection's loop. */
+        fun deadline(
+            afterNanos: Long,
+            fire: Runnable,
+        ): DeadlineNode = loop.deadlines.arm(clock.nowNanos() + afterNanos, fire)
     }
 
     /** Any thread. Puts the connection in the loop's next pass: a new client's first flight goes out there. */
@@ -160,7 +194,7 @@ internal class Conn(
 
     /** Any thread. [work] runs inside the connection, on the loop or on whichever thread holds it then. */
     fun submit(work: ConnWork) {
-        inbox.push(work)
+        if (inbox.push(work) === Pushed.Refused) return work.gone()
         when (owner.leaveWork()) {
             WorkLeft.ForHolder -> Unit
             WorkLeft.NobodyInside -> scheduleServe()
@@ -196,6 +230,27 @@ internal class Conn(
             // Work arrived while the loop was inside: collect again in this pass.
             Leave.WorkArrived -> Collected.MoreWaiting
         }
+    }
+
+    /** Loop thread: the loop failed with [cause]. The connection ends with it. */
+    fun loopFailed(cause: Throwable) {
+        if (lifecycle is ConnLifecycle.Closed) return
+        val end = ConnEnd.LoopFailed(cause)
+        lifecycle = ConnLifecycle.Closed(end)
+        disarm()
+        events.closed(end)
+    }
+
+    /**
+     * Loop thread, after the loop has stopped: frees quiche's connection and its path. Work queued until now, and
+     * any submitted later, is told [ConnWork.gone].
+     */
+    fun release() {
+        inbox.close(ConnWork::gone)
+        disarm()
+        api.connFree(handle)
+        api.recvInfoFree(path.recvInfo)
+        api.sendInfoFree(path.sendInfo)
     }
 
     internal fun touchedByLoop() {
@@ -239,6 +294,7 @@ internal class Conn(
                 api.streamIterFree(readable)
             }
             if (writeWaiters.isNotEmpty()) tellWritable()
+            events.served(inside)
         }
         if (lifecycle !is ConnLifecycle.Closed && api.connIsClosed(handle)) {
             val end = endOf()
@@ -324,6 +380,8 @@ private class ServeConn(
     private val conn: Conn,
 ) : LoopWork() {
     override fun run(loop: Loop) = conn.touchedByLoop()
+
+    override fun gone() = Unit
 }
 
 private const val IDLE = 0

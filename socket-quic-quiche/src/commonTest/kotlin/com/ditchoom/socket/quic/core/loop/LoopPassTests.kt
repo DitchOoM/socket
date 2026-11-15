@@ -62,6 +62,8 @@ class LoopPassTests {
                 override fun run(loop: Loop) {
                     ran++
                 }
+
+                override fun gone() = Unit
             },
         )
         assertEquals(0, ran)
@@ -119,6 +121,28 @@ class LoopPassTests {
         assertEquals(1500L, rig.loop.counts.datagramsIn)
     }
 
+    @Test
+    fun aLoopThatFailsEndsItsPartsAndAnswersLaterWorkAsGone() {
+        val failure = IllegalStateException("planted")
+        val parts = FailingParts(failure)
+        val rig = Rig(parts = parts)
+        var gone = 0
+        val work =
+            object : LoopWork() {
+                override fun run(loop: Loop) = Unit
+
+                override fun gone() {
+                    gone++
+                }
+            }
+
+        rig.loop.run()
+
+        assertEquals(listOf<Throwable>(failure), parts.failures, "the loop stopped and told its parts, once")
+        rig.loop.submit(work)
+        assertEquals(1, gone, "work handed to a stopped loop is answered as gone")
+    }
+
     private fun peer(n: Int) = PathKey(family = 4, port = 1000 + n, hi = 0L, lo = 0x7F000001L)
 }
 
@@ -144,6 +168,8 @@ internal class EchoParts : LoopParts {
         copy.resetForRead()
         waiting.addLast(Waiting(copy, from))
     }
+
+    override fun loopFailed(cause: Throwable) = Unit
 
     override fun collect(out: SendBatch): Collected {
         while (waiting.isNotEmpty()) {
@@ -211,8 +237,28 @@ private class FakeIo : DatagramBatchIo {
     override fun close(): SocketClosed = SocketClosed
 }
 
+private class FailingParts(
+    private val failure: Throwable,
+) : LoopParts {
+    val failures = ArrayList<Throwable>()
+
+    override fun onDatagram(
+        buffer: ReceiveBuffer,
+        length: Int,
+        from: PathKey,
+        to: ArrivedOn,
+    ) = Unit
+
+    override fun collect(out: SendBatch): Collected = throw failure
+
+    override fun loopFailed(cause: Throwable) {
+        failures.add(cause)
+    }
+}
+
 private class Rig(
     maxDatagrams: Int = 64,
+    parts: LoopParts = EchoParts(),
 ) {
     val io = FakeIo()
     private val limits = BatchLimits(maxDatagrams = maxDatagrams, maxDatagramSize = 1500)
@@ -221,7 +267,7 @@ private class Rig(
             wait = NeverWaits,
             clock = { 0L },
             io = io,
-            parts = EchoParts(),
+            parts = parts,
             receive =
                 ReceiveBatch(
                     FixedPool(maxDatagrams) { ReceiveBuffer(it, BufferFactory.managed().allocate(1500), address = 0L) },

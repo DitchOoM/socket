@@ -117,23 +117,7 @@ internal suspend fun buildJvmQuicConnection(
         // quiche only loads anchors from a file, so the bundle goes to a temp file whose path is handed
         // to the native call; verifyPeer is forced on in applyQuicOptions whenever explicit anchors are
         // present, and resolveVerifyPeer mirrors that decision here.
-        val caPems =
-            when {
-                quicOptions.trustedCaCertificatesPem.isNotEmpty() -> quicOptions.trustedCaCertificatesPem
-                resolveVerifyPeer(quicOptions) -> loadPlatformDefaultCaCertificatesPem()
-                else -> emptyList()
-            }
-        if (caPems.isNotEmpty()) {
-            val caBundlePath = writeCaBundleToTempFile(caPems)
-            try {
-                writeNullTerminatedString(caBundlePath, bufferFactory).use { caBuf ->
-                    val rc = api.configLoadVerifyLocationsFromFile(config, caBuf.nativeMemoryAccess!!.nativeAddress.toLong())
-                    check(rc == 0) { "Failed to load trusted CA certificates: $rc" }
-                }
-            } finally {
-                runCatching { java.io.File(caBundlePath).delete() }
-            }
-        }
+        loadTrustAnchors(api, config, quicOptions, bufferFactory)
 
         // 2. Resolve the peer once (numeric literal → no DNS), then open the connection's primary
         // :socket-udp path through the same factory that opens every migration path — so the first path
@@ -471,4 +455,34 @@ private fun encodeCertificateToPem(cert: java.security.cert.X509Certificate): St
             .getMimeEncoder(64, byteArrayOf('\n'.code.toByte()))
             .encodeToString(der)
     return "-----BEGIN CERTIFICATE-----\n$base64\n-----END CERTIFICATE-----"
+}
+
+/**
+ * The client's CA trust anchors: the caller's pinned PEM bundle if it gave one, else, when the peer is verified,
+ * the JVM's or Android's default store. quiche bundles BoringSSL with no default verify paths and loads anchors
+ * only from a file, so the bundle goes through a temporary file.
+ */
+internal fun loadTrustAnchors(
+    api: QuicheApi,
+    config: QuicheConfig,
+    quicOptions: QuicOptions,
+    bufferFactory: com.ditchoom.buffer.BufferFactory,
+) {
+    val caPems =
+        when {
+            quicOptions.trustedCaCertificatesPem.isNotEmpty() -> quicOptions.trustedCaCertificatesPem
+            resolveVerifyPeer(quicOptions) -> loadPlatformDefaultCaCertificatesPem()
+            else -> emptyList()
+        }
+    if (caPems.isNotEmpty()) {
+        val caBundlePath = writeCaBundleToTempFile(caPems)
+        try {
+            writeNullTerminatedString(caBundlePath, bufferFactory).use { caBuf ->
+                val rc = api.configLoadVerifyLocationsFromFile(config, caBuf.nativeMemoryAccess!!.nativeAddress.toLong())
+                check(rc == 0) { "Failed to load trusted CA certificates: $rc" }
+            }
+        } finally {
+            runCatching { java.io.File(caBundlePath).delete() }
+        }
+    }
 }

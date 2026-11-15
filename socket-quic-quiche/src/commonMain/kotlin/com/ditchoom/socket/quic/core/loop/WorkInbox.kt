@@ -8,6 +8,9 @@ import kotlin.concurrent.atomics.ExperimentalAtomicApi
 /** A link in a [WorkInbox]: the next item, or the end. */
 internal sealed interface InboxLink {
     object End : InboxLink
+
+    /** The inbox was closed; nothing more is taken. */
+    object Closed : InboxLink
 }
 
 /** An item that can sit in one [WorkInbox] at a time. The item is its own link, so pushing allocates nothing. */
@@ -20,6 +23,9 @@ internal sealed interface Pushed {
     object First : Pushed
 
     object Behind : Pushed
+
+    /** The inbox is closed: the item was not taken. */
+    object Refused : Pushed
 }
 
 /**
@@ -32,14 +38,31 @@ internal class WorkInbox<T : InboxItem> {
     fun push(item: T): Pushed {
         while (true) {
             val seen = head.load()
+            if (seen === InboxLink.Closed) return Pushed.Refused
             item.next = seen
             if (head.compareAndSet(seen, item)) return if (seen === InboxLink.End) Pushed.First else Pushed.Behind
         }
     }
 
     /** Consumer only. Runs every item pushed before this call, oldest first; returns how many. */
-    fun drain(run: (T) -> Unit): Int {
-        var newestFirst = head.exchange(InboxLink.End)
+    fun drain(run: (T) -> Unit): Int = runAll(take(InboxLink.End), run)
+
+    /** Consumer only, once. Refuses every later push and runs what was still queued, oldest first. */
+    fun close(run: (T) -> Unit): Int = runAll(take(InboxLink.Closed), run)
+
+    private fun take(replacement: InboxLink): InboxLink {
+        while (true) {
+            val seen = head.load()
+            if (seen === InboxLink.Closed) return InboxLink.End
+            if (head.compareAndSet(seen, replacement)) return seen
+        }
+    }
+
+    private fun runAll(
+        taken: InboxLink,
+        run: (T) -> Unit,
+    ): Int {
+        var newestFirst = taken
         var oldestFirst: InboxLink = InboxLink.End
         while (newestFirst is InboxItem) {
             val following = newestFirst.next
@@ -59,5 +82,5 @@ internal class WorkInbox<T : InboxItem> {
         return count
     }
 
-    fun looksEmpty(): Boolean = head.load() === InboxLink.End
+    fun looksEmpty(): Boolean = head.load() !is InboxItem
 }
