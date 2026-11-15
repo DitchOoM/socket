@@ -91,7 +91,7 @@ internal class DeadlineTimer(
         while (true) {
             when (val current = lifecycle.get()) {
                 is Lifecycle.Running -> return current.thread
-                Lifecycle.Starting -> Thread.yield()
+                Lifecycle.Starting -> SpinWait.ofThisRuntime.pause()
                 Lifecycle.NotStarted -> if (lifecycle.compareAndSet(Lifecycle.NotStarted, Lifecycle.Starting)) return launch()
             }
         }
