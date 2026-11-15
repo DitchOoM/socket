@@ -375,24 +375,19 @@ class JvmQuicTraceCaptureTests {
                         val minted = snapshotSinks(sinks)
                         assertTrue(minted.isNotEmpty(), "server capture minted no sinks at all")
                         minted.forEachIndexed { i, s ->
-                            assertTrue(s.isNotEmpty(), "sink #$i captured nothing: $minted")
                             assertTrue(s.all { it.startsWith("v1 ") }, "sink #$i must be a versioned trace: $s")
                         }
 
-                        // The FIRST sink is the receive loop's own (`SharedQuicheServer.serverRecorder`),
-                        // minted at construction before any client can dial. It is the one place the
-                        // accept-time Initial of every connection is recorded — the datagram that
-                        // creates a connection is consumed before that connection's driver exists —
-                        // so by design it carries every peer's path, and it is exactly the sink whose
-                        // per-connection isolation is NOT expected. It holds nothing but those inbound
-                        // records, typed errors, and the typed DROP of a datagram that arrived for a
-                        // connection after it closed — every close has some in flight: no STATE, no
-                        // DGRAM_OUT.
+                        // The FIRST sink is the receive loop's own, minted at construction before any
+                        // client can dial. It holds what belongs to no connection: typed errors, and the
+                        // typed DROP of a datagram that arrived for a connection after it closed. No
+                        // datagram, no STATE: each connection's datagrams, its Initial included, are on
+                        // its own sink, once.
                         val receiveLoop = minted.first()
                         val lateForClosed = " DROP ${ServerDatagramDrop.ForClosedConnection::class.qualifiedName} "
                         assertTrue(
-                            receiveLoop.all { it.contains(" DGRAM_IN ") || it.contains(" ERROR ") || it.contains(lateForClosed) },
-                            "the receive loop's sink must carry only accept-time DGRAM_IN and typed drops: $receiveLoop",
+                            receiveLoop.all { it.contains(" ERROR ") || it.contains(lateForClosed) },
+                            "the receive loop's sink must carry only typed drops: $receiveLoop",
                         )
                         val perConn = minted.drop(1)
 
@@ -410,14 +405,6 @@ class JvmQuicTraceCaptureTests {
                         pathToSinks.forEach { (path, idxs) ->
                             assertEquals(1, idxs.size, "client $path appears on multiple sinks $idxs (interleaved/split)")
                         }
-                        // Every connection that got its own sink began as an Initial the receive loop
-                        // recorded — the server-level half of the capture is wired, and complete.
-                        val acceptedPaths = receiveLoop.mapNotNull(::datagramPathKey).toSet()
-                        assertTrue(
-                            acceptedPaths.containsAll(pathToSinks.keys),
-                            "the receive loop recorded accept-time datagrams for $acceptedPaths but connections " +
-                                "exist for ${pathToSinks.keys}: the server-level record missed an Initial",
-                        )
                         // A connection's own trace holds everything it received: the Initial that created
                         // it, ahead of anything it sent, and each datagram routed to its driver afterwards.
                         perConn.filter { s -> s.any { ".Established" in it } }.forEachIndexed { i, s ->

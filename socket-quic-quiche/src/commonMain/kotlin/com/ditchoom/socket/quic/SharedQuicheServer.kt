@@ -188,10 +188,10 @@ internal class SharedQuicheServer(
      * A connection's own trace holds the Initial that created it ([acceptNewConnection]) and every
      * datagram routed to it afterwards. Three arrivals belong to no connection: an Initial quiche
      * refused, a datagram `quiche_header_info` rejected, and a datagram for a connection that has
-     * already closed. An empty server trace would therefore have three readings — nothing arrived,
-     * something arrived and was rejected, something arrived and was refused. This records those at the
-     * receive loop, typed ([ServerDatagramDrop]) and with the datagram's 4-tuple, so a report says
-     * which; and each accepted Initial, so the arrivals that did create a connection read beside them.
+     * already closed. A server whose connections' traces are all empty would therefore have three
+     * readings — nothing arrived, something arrived and was rejected, something arrived and was
+     * refused. This records those at the receive loop, typed ([ServerDatagramDrop]) and with the
+     * datagram's 4-tuple, so a report says which.
      *
      * Same [QuicheDriverTuning.captureFactory] every accepted connection uses, so with the single-sink
      * [com.ditchoom.socket.quic.trace.QuicTraceCapture] the lines interleave with the connections' own
@@ -282,7 +282,7 @@ internal class SharedQuicheServer(
         api.configFree(config)
         registry.closeChannels()
         serverJob.cancel()
-        // The server-level trace (accept-time arrivals, drops) reaches its sink off the loop: deliver it
+        // The server-level trace (the typed drops) reaches its sink off the loop: deliver it
         // before close returns (bounded).
         serverCapture.record { it.flush() }
         // Finally, cancel the per-call parent scope (the build function wires this). serverJob is a child
@@ -689,11 +689,9 @@ internal class SharedQuicheServer(
             recvBuf.freeNativeMemory()
             return AcceptOutcome.Refused(ServerDatagramDrop.InitialRejected(received, peer, fed))
         }
-        // The datagram that created the connection is consumed here, before its driver exists. It is
-        // recorded on the connection's own trace, which then holds everything the connection received,
-        // and at the server level, where an arrival that created nothing is recorded too (see serverCapture).
+        // The datagram that created the connection is consumed here, before its driver exists: it is
+        // recorded on the connection's own trace, which then holds everything the connection received.
         capture.record { it.datagram(out = false, buffer = recvBuf, len = received, path = peerKey) }
-        serverCapture.record { it.datagram(out = false, buffer = recvBuf, len = received, path = peerKey) }
         recvBuf.freeNativeMemory()
 
         // Per-connection egress over the shared server socket. fixedPeerKey is this peer's PathKey (what
@@ -804,8 +802,8 @@ internal sealed interface AcceptOutcome {
  * A `Throwable` because that is what those lines carry: the **qualified** class name plus a message, so
  * the reason stays typed and retraceable (never a bare string), exactly as every other recorded error
  * in this module. The message names the datagram's size and source; the subclass names which exit it
- * took. Together with the accept-time `DGRAM_IN` the receive loop also records, they make an empty
- * server trace mean one thing only: nothing was dequeued from the socket at all.
+ * took. Together with the `DGRAM_IN` each connection's own trace begins with, they make a server whose
+ * traces are all empty mean one thing only: nothing was dequeued from the socket at all.
  */
 internal sealed class ServerDatagramDrop(
     message: String,

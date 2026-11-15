@@ -37,10 +37,10 @@ import kotlin.time.Duration.Companion.seconds
  *
  * ## How it is observed
  *
- * Through the server-level trace record (#562): the receive loop records every datagram it dequeues
- * and cannot route as a typed `ERROR`, and the accept-time Initial of every connection it creates as
- * a `DGRAM_IN`. So "dropped for the right reason" and "no connection was created" are both readable
- * off one sink, deterministically, instead of asserting that a handler *did not* run within some
+ * Through the trace: the receive loop records every datagram it dequeues and cannot route as a typed
+ * `ERROR`, and a connection's own trace begins with the Initial that created it, a `DGRAM_IN`. The
+ * server and its connections record to one sink here, so "dropped for the right reason" and "no
+ * connection was created" are both readable off it, deterministically, instead of asserting that a handler *did not* run within some
  * wait. Each crafted datagram is sent from a plain UDP socket, so no client-side QUIC state exists
  * to be confused with the server's.
  *
