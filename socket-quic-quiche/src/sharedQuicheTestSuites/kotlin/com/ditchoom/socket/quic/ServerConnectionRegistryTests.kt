@@ -80,9 +80,9 @@ class ServerConnectionRegistryTests {
             val routed = idleDriver()
             val deRouted = idleDriver()
             // Both are accepted (ledgered) and routing.
-            registry.trackLiveDriver(routed)
+            registry.trackLiveDriver(routed, PathAddressTable())
             registry.routeDriver(cid(1), routed)
-            registry.trackLiveDriver(deRouted)
+            registry.trackLiveDriver(deRouted, PathAddressTable())
             registry.routeDriver(cid(2), deRouted)
 
             // Reproduce the production hazard: a driver stops routing (trySend-failure removal /
@@ -109,9 +109,9 @@ class ServerConnectionRegistryTests {
             val registry = ServerConnectionRegistry<Int>(StubQuicheApi())
             val first = idleDriver()
             val second = idleDriver()
-            registry.trackLiveDriver(first)
+            registry.trackLiveDriver(first, PathAddressTable())
             registry.routeDriver(cid(1), first)
-            registry.trackLiveDriver(second)
+            registry.trackLiveDriver(second, PathAddressTable())
 
             // The second driver's spare ids include the first connection's SCID: two ids drawn equal.
             registry.enqueueRouteProjection(second, setOf(cid(2), cid(1), cid(3)))
@@ -135,18 +135,15 @@ class ServerConnectionRegistryTests {
         runQuicTest {
             val api = CountingFreeApi(StubQuicheApi())
             val registry = ServerConnectionRegistry<Int>(api)
-            val cached = registry.putRecvInfo(7, QuicheRecvInfo(1L)) { }
+            val cached = registry.pathsOf(idleDriver()).put(7, QuicheRecvInfo(1L)) { }
             // Simulate a lagging driver still holding a reference to the cached recv_info.
             cached.inFlight.incrementAndGet()
 
             val error =
-                assertFailsWith<IllegalStateException> {
+                assertFailsWith<RecvInfoInFlightAtClose> {
                     registry.reapAllDriversAndFreeRecvInfoCache()
                 }
-            assertTrue(
-                error.message?.contains("in-flight") == true,
-                "tripwire message names the in-flight recv_info, got: ${error.message}",
-            )
+            assertEquals(1, error.inFlight, "the tripwire reports the references still held")
             // The offending entry must NOT have been freed (that would be the UAF).
             assertEquals(0, api.recvInfoFrees, "a still-in-flight recv_info is never freed")
         }
@@ -159,26 +156,118 @@ class ServerConnectionRegistryTests {
             val api = CountingFreeApi(StubQuicheApi())
             val registry = ServerConnectionRegistry<Int>(api)
             var released = 0
-            registry.putRecvInfo(1, QuicheRecvInfo(1L)) { released++ }
-            registry.putRecvInfo(2, QuicheRecvInfo(2L)) { released++ }
+            val paths = registry.pathsOf(idleDriver())
+            paths.put(1, QuicheRecvInfo(1L)) { released++ }
+            registry.pathsOf(idleDriver()).put(2, QuicheRecvInfo(2L)) { released++ }
 
             registry.reapAllDriversAndFreeRecvInfoCache()
 
             assertEquals(2, api.recvInfoFrees, "every cached recv_info struct was freed")
             assertEquals(2, released, "every pinned per-source `from` sockaddr was released")
-            assertNull(registry.lookupRecvInfo(1), "cache is cleared after the sweep")
+            assertNull(paths.lookup(1), "nothing is held after the sweep")
         }
 
-    // ── recv_info cache: a hit promotes to most-recently-used and returns the same entry ──
+    // ── A connection's paths: a hit returns the same entry, and only that connection's ──
 
     @Test
-    fun lookupRecvInfoReturnsTheCachedEntryOnHitAndNullOnMiss() =
+    fun lookupReturnsTheConnectionsOwnEntryOnHitAndNullOnMiss() =
         runQuicTest {
             val registry = ServerConnectionRegistry<Int>(StubQuicheApi())
-            assertNull(registry.lookupRecvInfo(42), "miss before any put")
-            val cached = registry.putRecvInfo(42, QuicheRecvInfo(1L)) { }
-            assertSame(cached, registry.lookupRecvInfo(42), "hit returns the same cached entry")
-            assertNull(registry.lookupRecvInfo(99), "unrelated key still misses")
+            val driver = idleDriver()
+            val paths = registry.pathsOf(driver)
+            assertNull(paths.lookup(42), "miss before any put")
+            val cached = paths.put(42, QuicheRecvInfo(1L)) { }
+            assertSame(cached, registry.pathsOf(driver).lookup(42), "hit returns the same cached entry")
+            assertNull(paths.lookup(99), "unrelated key still misses")
+            assertNull(registry.pathsOf(idleDriver()).lookup(42), "another connection on the same path has its own entry")
+        }
+
+    // ── However many connections a server holds, each keeps the path it is on ──
+
+    @Test
+    fun everyConnectionKeepsItsPathHoweverManyConnectionsThereAre() =
+        runQuicTest {
+            val api = CountingFreeApi(StubQuicheApi())
+            val registry = ServerConnectionRegistry<Int>(api)
+            val connections = List(MANY_CONNECTIONS) { idleDriver() }
+            val built = connections.mapIndexed { peer, driver -> registry.pathsOf(driver).put(peer, QuicheRecvInfo(1L)) { } }
+
+            repeat(3) {
+                connections.forEachIndexed { peer, driver ->
+                    assertSame(built[peer], registry.pathsOf(driver).lookup(peer), "connection $peer still holds its recv_info")
+                }
+            }
+            assertEquals(0, api.recvInfoFrees, "no connection's recv_info was freed to make room for another's")
+        }
+
+    // ── The bound: source addresses sprayed at one connection cost that connection alone ──
+
+    @Test
+    fun addressesSprayedAtOneConnectionAreBoundedAndEvictNoOtherConnectionsPath() =
+        runQuicTest {
+            val api = CountingFreeApi(StubQuicheApi())
+            val registry = ServerConnectionRegistry<Int>(api)
+            val bystander = registry.pathsOf(idleDriver())
+            val bystanderPath = bystander.put(0, QuicheRecvInfo(1L)) { }
+            val sprayed = registry.pathsOf(idleDriver())
+            var released = 0
+
+            repeat(SPRAYED_ADDRESSES) { address -> sprayed.put(address, QuicheRecvInfo(1L)) { released++ } }
+
+            val evicted = SPRAYED_ADDRESSES - ConnectionPaths.MAX_PATHS
+            assertEquals(evicted, api.recvInfoFrees, "the sprayed connection holds at most ${ConnectionPaths.MAX_PATHS} paths")
+            assertEquals(evicted, released, "each evicted path's source address was released with it")
+            assertNull(sprayed.lookup(0), "the least recently used path went first")
+            assertTrue(sprayed.lookup(SPRAYED_ADDRESSES - 1) != null, "the most recent path is held")
+            assertSame(bystanderPath, bystander.lookup(0), "the other connection's path is untouched")
+        }
+
+    @Test
+    fun aPathInUseOutlivesTheBoundAndARecentlyUsedOneOutlivesAnOlderOne() =
+        runQuicTest {
+            val api = CountingFreeApi(StubQuicheApi())
+            val paths = ServerConnectionRegistry<Int>(api).pathsOf(idleDriver())
+            val inFlight = paths.put(0, QuicheRecvInfo(1L)) { }
+            inFlight.inFlight.incrementAndGet()
+            for (address in 1 until ConnectionPaths.MAX_PATHS) paths.put(address, QuicheRecvInfo(1L)) { }
+            val touched = paths.lookup(1)
+
+            paths.put(ConnectionPaths.MAX_PATHS, QuicheRecvInfo(1L)) { }
+
+            assertEquals(1, api.recvInfoFrees, "one path made room")
+            assertSame(inFlight, paths.lookup(0), "a recv_info a queued packet references is never freed")
+            assertSame(touched, paths.lookup(1), "the path just used is not the one evicted")
+            assertNull(paths.lookup(2), "the least recently used idle path is")
+            inFlight.inFlight.decrementAndGet()
+        }
+
+    // ── A retired connection's recv_infos are freed once its driver has let go of them ──
+
+    @Test
+    fun aRetiredConnectionsRecvInfosAreFreedOnceNoQueuedPacketReferencesThem() =
+        runQuicTest {
+            val api = CountingFreeApi(StubQuicheApi())
+            val registry = ServerConnectionRegistry<Int>(api)
+            val driver = idleDriver()
+            registry.trackLiveDriver(driver, PathAddressTable())
+            registry.routeDriver(cid(1), driver)
+            val paths = registry.pathsOf(driver)
+            paths.put(1, QuicheRecvInfo(1L)) { }
+            val queued = paths.put(2, QuicheRecvInfo(2L)) { }
+            queued.inFlight.incrementAndGet()
+
+            registry.deRouteDriver(driver)
+            assertEquals(1, api.recvInfoFrees, "the idle recv_info is freed with the connection")
+
+            registry.drainRoutingQueues()
+            assertEquals(1, api.recvInfoFrees, "the one a queued packet references is kept")
+
+            queued.inFlight.decrementAndGet()
+            registry.drainRoutingQueues()
+            assertEquals(2, api.recvInfoFrees, "and freed once the driver has consumed the packet")
+
+            registry.reapAllDriversAndFreeRecvInfoCache()
+            assertEquals(2, api.recvInfoFrees, "nothing is freed twice")
         }
 
     // ── Routing: de-routing a driver removes ALL of its entries (SCID + every DCID), only its own ──
@@ -331,4 +420,10 @@ class ServerConnectionRegistryTests {
 
             assertIs<DcidRoute.RecentlyClosed>(registry.routeFor(cid(0x71)))
         }
+
+    private companion object {
+        /** More connections than any fixed-size table of peers a server might keep. */
+        const val MANY_CONNECTIONS = 1024
+        const val SPRAYED_ADDRESSES = 100
+    }
 }
