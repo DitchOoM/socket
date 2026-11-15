@@ -9,6 +9,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.newFixedThreadPoolContext
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
@@ -261,9 +262,23 @@ class NativeDeadlineTimerTests {
     fun aNewTimersThreadNeverSeesItHalfBuilt() =
         runTest {
             real {
-                repeat(CONSTRUCTIONS) {
-                    val timer = NativeDeadlineTimer()
-                    timer.close()
+                // More builder threads than cores, so a builder is often descheduled mid-construction while its new
+                // thread makes its first pass. Each timer is closed, which waits for its thread, before the next, so
+                // at most [BUILDERS] timer threads are alive.
+                val builders = newFixedThreadPoolContext(BUILDERS, "timer-builders")
+                try {
+                    withContext(builders) {
+                        repeat(BUILDERS) {
+                            launch {
+                                repeat(CONSTRUCTIONS) {
+                                    val timer = NativeDeadlineTimer()
+                                    timer.close()
+                                }
+                            }
+                        }
+                    }
+                } finally {
+                    builders.close()
                 }
             }
         }
@@ -291,6 +306,7 @@ class NativeDeadlineTimerTests {
         }
 
     private companion object {
-        const val CONSTRUCTIONS = 20_000
+        const val BUILDERS = 64
+        const val CONSTRUCTIONS = 300
     }
 }

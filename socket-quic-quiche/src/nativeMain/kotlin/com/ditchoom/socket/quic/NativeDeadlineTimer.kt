@@ -198,11 +198,14 @@ internal class NativeDeadlineTimer private constructor(
         }
     }
 
-    /** Stops the thread; deadlines armed afterwards are not scheduled. Tests only: production's is never stopped. */
+    /**
+     * Stops the thread and returns once it has ended; deadlines armed afterwards are not scheduled. Tests only:
+     * production's is never stopped. Not to be called on the timer thread, which it waits for.
+     */
     fun close() {
         thread.value = TimerThread.Closed
         worker.executeAfter(0L) {}
-        worker.requestTermination(processScheduledJobs = false)
+        worker.requestTermination(processScheduledJobs = false).result
     }
 
     /** [dispatcher], with every `delay`, `withTimeout` and `onTimeout` inside it firing on this timer. */
