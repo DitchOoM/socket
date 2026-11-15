@@ -23,6 +23,7 @@ internal class NioOneByOne(
     override val capability: BatchCapability = BatchCapability.OneByOne
     private val sendView: ByteBuffer = byteBufferOf(send.storage).duplicate()
     private val targets = HashMap<PathKey, InetSocketAddress>()
+    private var lastSender: Sender = Sender.None
 
     override fun send(batch: SendBatch): SendBatchResult {
         val count = batch.pending
@@ -60,21 +61,30 @@ internal class NioOneByOne(
                     channel.receive(bytes)
                 } catch (e: IOException) {
                     into.giveBack(buffer)
-                    return if (got > 0) ReceiveBatchResult.Got(got) else ReceiveBatchResult.Failed(udpErrorOf(e))
+                    return if (got > 0) ReceiveBatchResult.Got else ReceiveBatchResult.Failed(udpErrorOf(e))
                 }
             if (from !is InetSocketAddress) {
                 into.giveBack(buffer)
                 break
             }
-            into.received(buffer, bytes.position(), from.toPathKey(), ArrivedOn.Unreported)
+            into.received(buffer, bytes.position(), keyOf(from), ArrivedOn.Unreported)
             got++
         }
-        return if (got > 0) ReceiveBatchResult.Got(got) else ReceiveBatchResult.Nothing
+        return if (got > 0) ReceiveBatchResult.Got else ReceiveBatchResult.Nothing
     }
 
     override fun close(): SocketClosed {
         channel.close()
         return SocketClosed
+    }
+
+    /** The JDK hands back the same sender object while one peer keeps sending; its key is converted once. */
+    private fun keyOf(from: InetSocketAddress): PathKey {
+        val last = lastSender
+        if (last is Sender.Seen && last.address === from) return last.key
+        val seen = Sender.Seen(from, from.toPathKey())
+        lastSender = seen
+        return seen.key
     }
 
     private fun addressOf(key: PathKey): InetSocketAddress {
@@ -85,6 +95,15 @@ internal class NioOneByOne(
         targets[key] = address
         return address
     }
+}
+
+private sealed interface Sender {
+    object None : Sender
+
+    class Seen(
+        val address: InetSocketAddress,
+        val key: PathKey,
+    ) : Sender
 }
 
 private fun byteBufferOf(buffer: PlatformBuffer): ByteBuffer = (buffer.unwrapFully() as BaseJvmBuffer).byteBuffer

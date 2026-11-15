@@ -23,7 +23,7 @@ import com.ditchoom.socket.quic.core.loop.LoopWork
 import com.ditchoom.socket.quic.core.loop.OwnerWord
 import com.ditchoom.socket.quic.core.loop.WorkInbox
 import com.ditchoom.socket.quic.core.loop.WorkLeft
-import com.ditchoom.socket.quic.core.udp.ReceivedDatagram
+import com.ditchoom.socket.quic.core.udp.ReceiveBuffer
 import com.ditchoom.socket.quic.core.udp.Room
 import com.ditchoom.socket.quic.core.udp.SendBatch
 import kotlinx.coroutines.Runnable
@@ -115,6 +115,7 @@ internal class Conn(
     private val owner = OwnerWord()
     private val inbox = WorkInbox<ConnWork>()
     private val inside = Inside()
+    private val runWork: (ConnWork) -> Unit = { it.run(inside) }
     private val serve = ServeConn(this)
     private val serveQueued = AtomicInt(IDLE)
     private var hold: LoopHold = LoopHold.Out
@@ -166,9 +167,12 @@ internal class Conn(
     }
 
     /** Loop thread: a datagram for this connection. */
-    fun received(datagram: ReceivedDatagram) {
+    fun received(
+        datagram: ReceiveBuffer,
+        length: Int,
+    ) {
         when (touch()) {
-            LoopHold.In -> api.connRecv(handle, datagram.address, datagram.length, path.recvInfo)
+            LoopHold.In -> api.connRecv(handle, datagram.address, length, path.recvInfo)
             LoopHold.Out -> Unit
         }
     }
@@ -179,7 +183,7 @@ internal class Conn(
      */
     fun collect(out: SendBatch): Collected {
         if (hold === LoopHold.Out) return Collected.Everything
-        inbox.drain { it.run(inside) }
+        inbox.drain(runWork)
         serveEvents()
         if (writeOutput(out) === Collected.MoreWaiting) return Collected.MoreWaiting
         rearm()

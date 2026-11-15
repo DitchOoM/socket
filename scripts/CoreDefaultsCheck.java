@@ -17,7 +17,8 @@ import java.util.stream.Stream;
  *
  * Text rules on comment- and string-stripped Kotlin: no locks, no Boolean property, no nullable type, no message
  * exceptions, `throw` only in the edge, no ByteArray without the boundary suppression, no thread started from an
- * initializer, `suspend` only in the edge and resolver. Finding no file at all is a failure: a scan that matched
+ * initializer, `suspend` only in the edge and resolver, and no buffer factory of the core's own: buffers come
+ * from the factory the caller injected. Finding no file at all is a failure: a scan that matched
  * nothing must not look like a clean one.
  */
 public class CoreDefaultsCheck {
@@ -43,6 +44,9 @@ public class CoreDefaultsCheck {
             List.of()),
         new Rule("throw-outside-edge", Pattern.compile("\\bthrow\\b"), List.of("edge")),
         new Rule("suspend-outside-edge", Pattern.compile("\\bsuspend\\b"), List.of("edge", "resolve")),
+        new Rule("own-buffer-factory", Pattern.compile(
+            "\\bBufferFactory\\.(Default\\b|managed\\(|shared\\(|deterministic\\(|network\\(|wrapNativeAddress\\()"
+                + "|\\bPlatformBuffer\\.(allocate|wrap)"), List.of()),
         new Rule("thread-in-initializer", Pattern.compile(
             "^\\s*(private\\s+|internal\\s+|protected\\s+)?(val|var)\\s+\\w+[^=]*=.*(\\bthread\\s*[({]|\\.start\\(\\))"),
             List.of()));
@@ -195,7 +199,8 @@ public class CoreDefaultsCheck {
             Map.entry("throw-outside-edge", "fun f(): Nothing = throw IllegalStateException()"),
             Map.entry("suspend-outside-edge", "suspend fun f() = Unit"),
             Map.entry("thread-in-initializer", "class A { init { worker.start() } }"),
-            Map.entry("byte-array", "fun f(b: ByteArray) = Unit"));
+            Map.entry("byte-array", "fun f(b: ByteArray) = Unit"),
+            Map.entry("own-buffer-factory", "val b = BufferFactory.Default.allocate(1500)"));
         int failures = 0;
         for (var entry : planted.entrySet()) {
             List<Finding> found = check("planted-" + entry.getKey() + ".kt", "loop", entry.getValue() + "\n");
@@ -216,6 +221,7 @@ public class CoreDefaultsCheck {
             "fun bytes(): ByteArray = address.address",
             "when (x) { is A -> 1 else -> 2 }",
             "fun <T : Any> pick(items: List<T>): T = items[0]",
+            "fun read(factory: BufferFactory) = factory.allocate(1500)",
             "");
         List<Finding> cleanFindings = check("clean.kt", "loop", clean);
         if (!cleanFindings.isEmpty()) {

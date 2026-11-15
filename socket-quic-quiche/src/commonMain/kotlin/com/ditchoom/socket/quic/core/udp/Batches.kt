@@ -1,8 +1,6 @@
 package com.ditchoom.socket.quic.core.udp
 
-import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.PlatformBuffer
-import com.ditchoom.buffer.managed
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.SendTarget
 import com.ditchoom.socket.quic.core.pool.FixedPool
@@ -85,31 +83,14 @@ internal sealed interface ArrivedOn {
     ) : ArrivedOn
 }
 
-/** One received datagram. Valid only inside the visit that is handed it: the batch reuses it for the next. */
-internal class ReceivedDatagram {
-    var buffer: PlatformBuffer = NoBuffer.buffer
-        private set
-    var address: Long = 0L
-        private set
-    var length: Int = 0
-        private set
-    var from: PathKey = NoBuffer.path
-        private set
-    var to: ArrivedOn = ArrivedOn.Unreported
-        private set
-
-    internal fun set(
+/** Told each datagram of a [ReceiveBatch], in arrival order. [buffer] is valid only during the call. */
+internal fun interface DatagramVisitor {
+    fun datagram(
         buffer: ReceiveBuffer,
         length: Int,
         from: PathKey,
         to: ArrivedOn,
-    ) {
-        this.buffer = buffer.buffer
-        this.address = buffer.address
-        this.length = length
-        this.from = from
-        this.to = to
-    }
+    )
 }
 
 /**
@@ -122,9 +103,8 @@ internal class ReceiveBatch(
 ) {
     private val held = ArrayList<ReceiveBuffer>(limits.maxDatagrams)
     private val lengths = IntArray(limits.maxDatagrams)
-    private val froms = Array(limits.maxDatagrams) { NoBuffer.path }
-    private val tos = Array<ArrivedOn>(limits.maxDatagrams) { ArrivedOn.Unreported }
-    private val view = ReceivedDatagram()
+    private val froms = ArrayList<PathKey>(limits.maxDatagrams)
+    private val tos = ArrayList<ArrivedOn>(limits.maxDatagrams)
 
     val count: Int get() = held.size
 
@@ -140,28 +120,21 @@ internal class ReceiveBatch(
         from: PathKey,
         to: ArrivedOn,
     ) {
-        val at = held.size
-        lengths[at] = length
-        froms[at] = from
-        tos[at] = to
+        lengths[held.size] = length
+        froms.add(from)
+        tos.add(to)
         held.add(buffer)
     }
 
     /** Visits every datagram in arrival order, then gives every buffer back. */
-    fun forEachDatagram(visit: (ReceivedDatagram) -> Unit) {
+    fun forEachDatagram(visit: DatagramVisitor) {
         try {
-            for (i in held.indices) {
-                view.set(held[i], lengths[i], froms[i], tos[i])
-                visit(view)
-            }
+            for (i in held.indices) visit.datagram(held[i], lengths[i], froms[i], tos[i])
         } finally {
             for (i in held.indices) pool.give(held[i])
             held.clear()
+            froms.clear()
+            tos.clear()
         }
     }
-}
-
-private object NoBuffer {
-    val buffer: PlatformBuffer = BufferFactory.managed().allocate(0)
-    val path = PathKey(family = 0, port = 0, hi = 0L, lo = 0L)
 }

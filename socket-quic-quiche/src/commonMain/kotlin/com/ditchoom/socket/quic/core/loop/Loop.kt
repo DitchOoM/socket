@@ -4,10 +4,13 @@ package com.ditchoom.socket.quic.core.loop
 
 import com.ditchoom.socket.quic.DeadlineQueue
 import com.ditchoom.socket.quic.NextDue
+import com.ditchoom.socket.quic.PathKey
+import com.ditchoom.socket.quic.core.udp.ArrivedOn
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
+import com.ditchoom.socket.quic.core.udp.DatagramVisitor
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.ReceiveBatchResult
-import com.ditchoom.socket.quic.core.udp.ReceivedDatagram
+import com.ditchoom.socket.quic.core.udp.ReceiveBuffer
 import com.ditchoom.socket.quic.core.udp.SendBatch
 import com.ditchoom.socket.quic.core.udp.SendBatchResult
 import com.ditchoom.socket.quic.core.udp.UdpError
@@ -56,7 +59,13 @@ internal abstract class LoopWork : InboxItem() {
 
 /** What the loop does with the network's input and where its output comes from. */
 internal interface LoopParts {
-    fun onDatagram(datagram: ReceivedDatagram)
+    /** [buffer] is valid only during the call. */
+    fun onDatagram(
+        buffer: ReceiveBuffer,
+        length: Int,
+        from: PathKey,
+        to: ArrivedOn,
+    )
 
     /**
      * Called after input and queued work: serve what they touched and append output to [out] until it is full.
@@ -113,6 +122,8 @@ internal class Loop(
     private val inbox = WorkInbox<LoopWork>()
     private val sleep = AtomicInt(AWAKE)
     private var state: LoopState = LoopState.Running
+    private val visitor = DatagramVisitor(parts::onDatagram)
+    private val runWork: (LoopWork) -> Unit = { it.run(this) }
 
     /** Any thread. */
     fun submit(work: LoopWork) {
@@ -139,7 +150,7 @@ internal class Loop(
         counts.passes++
         deadlines.fireDue(now)
         receiveWaiting()
-        counts.work += inbox.drain { it.run(this) }
+        counts.work += inbox.drain(runWork)
         while (true) {
             val collected = parts.collect(send)
             if (send.pending > 0) flush()
@@ -156,14 +167,14 @@ internal class Loop(
         var datagrams = 0
         while (datagrams < MAX_DATAGRAMS_PER_PASS) {
             when (val got = io.receive(receive)) {
-                is ReceiveBatchResult.Got -> {
-                    datagrams += got.datagrams
-                    receive.forEachDatagram(parts::onDatagram)
+                ReceiveBatchResult.Got -> {
+                    datagrams += receive.count
+                    receive.forEachDatagram(visitor)
                 }
                 ReceiveBatchResult.Nothing -> break
                 is ReceiveBatchResult.Failed -> {
                     counts.receiveFailures++
-                    receive.forEachDatagram(parts::onDatagram)
+                    receive.forEachDatagram(visitor)
                     if (got.error === UdpError.SocketClosed) break
                 }
             }

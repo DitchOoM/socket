@@ -15,7 +15,6 @@ import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.ReceiveBatchResult
 import com.ditchoom.socket.quic.core.udp.ReceiveBuffer
-import com.ditchoom.socket.quic.core.udp.ReceivedDatagram
 import com.ditchoom.socket.quic.core.udp.Room
 import com.ditchoom.socket.quic.core.udp.SendBatch
 import com.ditchoom.socket.quic.core.udp.SendBatchResult
@@ -132,13 +131,18 @@ internal class EchoParts : LoopParts {
 
     private val waiting = ArrayDeque<Waiting>()
 
-    override fun onDatagram(datagram: ReceivedDatagram) {
-        val copy = BufferFactory.managed().allocate(datagram.length)
-        datagram.buffer.position(0)
-        datagram.buffer.setLimit(datagram.length)
-        copy.write(datagram.buffer)
+    override fun onDatagram(
+        buffer: ReceiveBuffer,
+        length: Int,
+        from: PathKey,
+        to: ArrivedOn,
+    ) {
+        val copy = BufferFactory.managed().allocate(length)
+        buffer.buffer.position(0)
+        buffer.buffer.setLimit(length)
+        copy.write(buffer.buffer)
         copy.resetForRead()
-        waiting.addLast(Waiting(copy, datagram.from))
+        waiting.addLast(Waiting(copy, from))
     }
 
     override fun collect(out: SendBatch): Collected {
@@ -201,7 +205,7 @@ private class FakeIo : DatagramBatchIo {
             into.received(buffer, arrival.bytes.size, arrival.from, ArrivedOn.Unreported)
             got++
         }
-        return if (got > 0) ReceiveBatchResult.Got(got) else ReceiveBatchResult.Nothing
+        return if (got > 0) ReceiveBatchResult.Got else ReceiveBatchResult.Nothing
     }
 
     override fun close(): SocketClosed = SocketClosed

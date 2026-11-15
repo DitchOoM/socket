@@ -57,9 +57,8 @@ internal sealed interface SendBatchResult {
 }
 
 internal sealed interface ReceiveBatchResult {
-    class Got(
-        val datagrams: Int,
-    ) : ReceiveBatchResult
+    /** The batch holds what was received; [ReceiveBatch.count] says how many. */
+    object Got : ReceiveBatchResult
 
     /** Nothing waiting, or no buffer free to receive into. */
     object Nothing : ReceiveBatchResult

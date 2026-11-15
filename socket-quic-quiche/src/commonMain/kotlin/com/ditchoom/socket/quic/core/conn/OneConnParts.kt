@@ -1,8 +1,10 @@
 package com.ditchoom.socket.quic.core.conn
 
+import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.core.loop.Collected
 import com.ditchoom.socket.quic.core.loop.LoopParts
-import com.ditchoom.socket.quic.core.udp.ReceivedDatagram
+import com.ditchoom.socket.quic.core.udp.ArrivedOn
+import com.ditchoom.socket.quic.core.udp.ReceiveBuffer
 import com.ditchoom.socket.quic.core.udp.SendBatch
 
 private sealed interface Attached {
@@ -22,10 +24,15 @@ internal class OneConnParts : LoopParts {
         attached = Attached.One(conn)
     }
 
-    override fun onDatagram(datagram: ReceivedDatagram) {
+    override fun onDatagram(
+        buffer: ReceiveBuffer,
+        length: Int,
+        from: PathKey,
+        to: ArrivedOn,
+    ) {
         when (val now = attached) {
             Attached.Nothing -> Unit
-            is Attached.One -> now.conn.received(datagram)
+            is Attached.One -> now.conn.received(buffer, length)
         }
     }
 
