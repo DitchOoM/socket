@@ -27,6 +27,8 @@ internal sealed interface Room {
  */
 internal class SendBatch(
     val storage: PlatformBuffer,
+    /** The native address of [storage]'s first byte. */
+    val address: Long,
     val limits: BatchLimits,
 ) {
     private val lengths = IntArray(limits.maxDatagrams)
@@ -70,6 +72,8 @@ internal class SendBatch(
 internal class ReceiveBuffer(
     index: Int,
     val buffer: PlatformBuffer,
+    /** The native address of [buffer]'s first byte. */
+    val address: Long,
 ) : Pooled(index)
 
 /** The address a datagram arrived on, when the socket reports it. */
@@ -85,6 +89,8 @@ internal sealed interface ArrivedOn {
 internal class ReceivedDatagram {
     var buffer: PlatformBuffer = NoBuffer.buffer
         private set
+    var address: Long = 0L
+        private set
     var length: Int = 0
         private set
     var from: PathKey = NoBuffer.path
@@ -93,12 +99,13 @@ internal class ReceivedDatagram {
         private set
 
     internal fun set(
-        buffer: PlatformBuffer,
+        buffer: ReceiveBuffer,
         length: Int,
         from: PathKey,
         to: ArrivedOn,
     ) {
-        this.buffer = buffer
+        this.buffer = buffer.buffer
+        this.address = buffer.address
         this.length = length
         this.from = from
         this.to = to
@@ -144,7 +151,7 @@ internal class ReceiveBatch(
     fun forEachDatagram(visit: (ReceivedDatagram) -> Unit) {
         try {
             for (i in held.indices) {
-                view.set(held[i].buffer, lengths[i], froms[i], tos[i])
+                view.set(held[i], lengths[i], froms[i], tos[i])
                 visit(view)
             }
         } finally {

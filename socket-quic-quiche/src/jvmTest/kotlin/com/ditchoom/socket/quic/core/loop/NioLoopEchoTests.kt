@@ -24,8 +24,14 @@ class NioLoopEchoTests {
         val limits = BatchLimits(maxDatagrams = 64, maxDatagramSize = 1500)
         val server = DatagramChannel.open().bind(InetSocketAddress("127.0.0.1", 0))
         server.configureBlocking(false)
-        val send = SendBatch(BufferFactory.Default.allocate(limits.maxDatagrams * limits.maxDatagramSize), limits)
-        val receive = ReceiveBatch(FixedPool(limits.maxDatagrams) { ReceiveBuffer(it, BufferFactory.Default.allocate(limits.maxDatagramSize)) }, limits)
+        val send = SendBatch(BufferFactory.Default.allocate(limits.maxDatagrams * limits.maxDatagramSize), address = 0L, limits)
+        val receive =
+            ReceiveBatch(
+                FixedPool(limits.maxDatagrams) {
+                    ReceiveBuffer(it, BufferFactory.Default.allocate(limits.maxDatagramSize), address = 0L)
+                },
+                limits,
+            )
         val clock = LoopClock { System.nanoTime() }
         val loop = Loop(SelectorWait(server, clock), clock, NioOneByOne(server, send), EchoParts(), receive, send)
         val running = startLoop(loop, "core-loop-test")

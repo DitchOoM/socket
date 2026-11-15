@@ -218,8 +218,12 @@ private class Rig(
             clock = { 0L },
             io = io,
             parts = EchoParts(),
-            receive = ReceiveBatch(FixedPool(maxDatagrams) { ReceiveBuffer(it, BufferFactory.managed().allocate(1500)) }, limits),
-            send = SendBatch(BufferFactory.managed().allocate(maxDatagrams * 1500), limits),
+            receive =
+                ReceiveBatch(
+                    FixedPool(maxDatagrams) { ReceiveBuffer(it, BufferFactory.managed().allocate(1500), address = 0L) },
+                    limits,
+                ),
+            send = SendBatch(BufferFactory.managed().allocate(maxDatagrams * 1500), address = 0L, limits),
         )
 }
 
