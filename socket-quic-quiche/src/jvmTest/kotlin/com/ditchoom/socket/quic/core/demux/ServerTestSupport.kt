@@ -34,6 +34,7 @@ internal suspend fun withCoreEchoServer(
     wrapIo: (DatagramBatchIo) -> DatagramBatchIo = { it },
     api: QuicheApi = loadQuicheApi(),
     onAccepted: (CoreConnection) -> Unit = {},
+    factory: BufferFactory = BufferFactory.Default,
     body: suspend CoroutineScope.(CoreServer) -> Unit,
 ) {
     val server =
@@ -41,7 +42,7 @@ internal suspend fun withCoreEchoServer(
             bind = bind,
             tls = coreTlsConfig(),
             options = coreTestOptions,
-            factory = BufferFactory.Default,
+            factory = factory,
             api = api,
             readPolicy = ReadPolicy.Bounded(10.seconds),
             writePolicy = WritePolicy.Bounded(10.seconds),

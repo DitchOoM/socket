@@ -1,12 +1,12 @@
 package com.ditchoom.socket.quic.core.demux
 
 import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.core.edge.connectCore
 import com.ditchoom.socket.quic.core.loop.ClientLoopSet
+import com.ditchoom.socket.quic.network
 import kotlinx.coroutines.runBlocking
 import java.lang.management.ManagementFactory
 import kotlin.test.AfterTest
@@ -23,7 +23,7 @@ import kotlin.time.Duration.Companion.seconds
  * is found in the route table by its id without a key object, and quiche reads the datagram where the socket wrote it.
  * About 104 bytes per echo remain, and both are what a suspended read forces on whoever resumes it: the task kotlinx
  * makes to dispatch the resumed read to the application's dispatcher, and the completed-continuation state it keeps so a
- * cancelled read can free its buffer. The gate sits just above the measurement.
+ * cancelled read can free its buffer. Buffers come from the pooled `BufferFactory.network()`, so the count does not depend on how the JDK frees a native segment. The gate is twice the measurement, for JIT inlining that differs by JDK and host.
  */
 class CoreServerAllocationTests {
     /** Client loops of this class's own, so connections it leaves ending never share a thread with another test's. */
@@ -35,11 +35,11 @@ class CoreServerAllocationTests {
     @Test
     fun theServerLoopAllocatesLittlePerEcho() =
         runBlocking {
-            withCoreEchoServer { server ->
-                val client = connectCore(server.port, loops = loops)
+            withCoreEchoServer(factory = BufferFactory.network()) { server ->
+                val client = connectCore(server.port, loops = loops, factory = BufferFactory.network())
                 val stream = client.connection.openStream()
                 val payload =
-                    BufferFactory.Default.allocate(PAYLOAD).apply {
+                    BufferFactory.network().allocate(PAYLOAD).apply {
                         repeat(PAYLOAD) { writeByte(it.toByte()) }
                         resetForRead()
                     }
@@ -108,6 +108,6 @@ class CoreServerAllocationTests {
         const val PAYLOAD = 64
         const val WARM_UP = 5_000
         const val MEASURED = 20_000
-        const val LOOP_GATE = 150
+        const val LOOP_GATE = 210
     }
 }

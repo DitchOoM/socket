@@ -92,6 +92,7 @@ internal suspend fun connectCore(
     port: Int,
     host: String = "127.0.0.1",
     loops: ClientLoopSet = ClientLoopSet.shared,
+    factory: BufferFactory = BufferFactory.Default,
     wrapIo: (DatagramBatchIo) -> DatagramBatchIo = { it },
 ): CoreClient =
     coreConnect(
@@ -99,7 +100,7 @@ internal suspend fun connectCore(
         port = port,
         serverName = "localhost",
         options = coreTestOptions,
-        factory = BufferFactory.Default,
+        factory = factory,
         api = loadQuicheApi(),
         timeout = 10.seconds,
         readPolicy = ReadPolicy.Bounded(10.seconds),

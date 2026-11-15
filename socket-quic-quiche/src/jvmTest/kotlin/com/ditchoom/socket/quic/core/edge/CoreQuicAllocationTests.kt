@@ -1,7 +1,6 @@
 package com.ditchoom.socket.quic.core.edge
 
 import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.flow.HalfCloseable
 import com.ditchoom.buffer.flow.ReadResult
@@ -10,22 +9,24 @@ import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.network
 import com.ditchoom.socket.quic.read
 import com.ditchoom.socket.quic.skipOnMissingNativeLib
 import com.ditchoom.socket.quic.withQuicServer
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import java.lang.management.ManagementFactory
 import java.time.Instant
+import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.CompletableFuture
-import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.Continuation
+import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.startCoroutine
 import kotlin.test.Test
 import kotlin.test.assertTrue
@@ -35,31 +36,29 @@ import kotlin.time.Duration.Companion.seconds
 /**
  * What the core client allocates per 64-byte echo against the 4.x server, split into the loop thread and the caller's
  * thread, measured with the JVM's per-thread allocation counter after warm-up; the server's threads are not counted.
- * The caller runs on a thread of its own, started without a debug-named coroutine, so neither a server coroutine nor
- * coroutine debugging allocates on it.
  *
- * What remains is what the callers' API forces. On the caller's thread, per read or write: the continuation kotlinx
- * makes for a suspend call (its dispatch wrapper and parent handle), the operation object that carries the call into the
- * connection, and, for a read, the result buffer from the caller's factory (a native segment with its arena, cleaner
- * and session) and the boxed [ReadResult.Data] around it. A read that has to wait also holds a deadline node and a cancellation
- * handler. On the loop thread: the [ReadResult.Data] box, the completed-continuation state kotlinx keeps so a read cancelled
- * after it resumed can free its buffer, and the executor's queue node. A stream per echo adds the stream's handle objects
- * and an open's continuation. The public QuicByteStream's own suspend frames and this test's executor are counted too.
- * Which thread serves a read moves bytes between the two (a read served on the loop thread allocates its result buffer
- * there), so each thread's gate allows for the whole read and the total is the tight one; a failure message lists the
- * allocation sites of both. Per echo that measures about 1,025 bytes in total over one stream (72 on the loop thread,
- * 953 on the caller's) and 2,560 when each echo opens a stream (129 and 2,432). The gates sit above the figures measured
- * in a JVM that has also run the server: the call sites every connection shares, through `ConnHost` and `ConnEvents`,
- * then see three receiver types, are no longer inlined, and the same echo measures about 1,100 and 2,680.
+ * The harness is built not to allocate on its own account: buffers come from `BufferFactory.network()`, whose pool turns
+ * a result buffer into a reuse, and the caller's thread takes tasks from a bounded array queue, which allocates no node
+ * per hand-off. What is left is what a call forces on any host: on the loop thread the [ReadResult.Data] box, the
+ * completed-continuation state kotlinx keeps for a cancellable read and the hand-off task; on the caller's thread the
+ * continuations of each suspend call, the operation object that carries a call into the connection, and, for a new
+ * stream, its handle objects and the open's continuation. The counters repeat to within one percent across runs, so
+ * both threads are gated. Run alone the loop thread measures about 48 and 105 bytes and the caller 740 and 1,930; after the
+ * server tests in one JVM the shared call sites stop inlining and the same echoes measure about 80 and 170, and 760 and 2,000.
+ * The gates leave a margin above that for JIT inlining that differs by JDK and host.
+ *
+ * The bytes of objects whose class is in `com.ditchoom.socket.quic.core` are reported from a JFR allocation sample as
+ * what the core itself allocates on the caller's thread. A sample is an estimate that swings by a factor of two between
+ * runs, so it is printed and listed in a failure message, never gated.
  */
 class CoreQuicAllocationTests {
     @Test
     fun anEchoOnOneStreamAllocatesOnlyWhatTheCallersApiForces() =
-        measure("one stream", OneStream, loopGate = 450, callerGate = 1_050, totalGate = 1_150)
+        measure("one stream", OneStream, loopGate = LOOP_GATE_ONE, callerGate = CALLER_GATE_ONE)
 
     @Test
     fun anEchoOnANewStreamAllocatesOnlyWhatTheCallersApiForces() =
-        measure("new stream per echo", NewStream, loopGate = 600, callerGate = 2_550, totalGate = 2_750)
+        measure("new stream per echo", NewStream, loopGate = LOOP_GATE_NEW, callerGate = CALLER_GATE_NEW)
 
     /** One echo from the caller's side. */
     private sealed interface Shape {
@@ -97,43 +96,41 @@ class CoreQuicAllocationTests {
         shape: Shape,
         loopGate: Int,
         callerGate: Int,
-        totalGate: Int,
     ) = runBlocking {
         skipOnMissingNativeLib(CoreQuicAllocationTests::class) {
             withClosingEchoServer { port ->
-                val client = connectCore(port)
-                val callerThread = Executors.newSingleThreadExecutor { Thread(it, CALLER_THREAD) }
+                val client = connectCore(port, factory = BufferFactory.network())
+                val dispatcher = ArrayQueueDispatcher(CALLER_THREAD)
                 val payload =
-                    BufferFactory.Default.allocate(PAYLOAD).apply {
+                    BufferFactory.network().allocate(PAYLOAD).apply {
                         repeat(PAYLOAD) { writeByte(it.toByte()) }
                         resetForRead()
                     }
                 val done = CompletableFuture<kotlin.Result<Report>>()
-                val dispatcher = callerThread.asCoroutineDispatcher()
                 suspend { run(client, shape, payload) }
                     .startCoroutine(Continuation(dispatcher + Job()) { done.complete(it) })
                 val report = done.get(120, TimeUnit.SECONDS).getOrThrow()
                 println(
-                    "[core quic allocation: $name] loop %.1f B/echo, caller %.1f B/echo, total %.1f B/echo\n%s".format(
+                    "[core quic allocation: $name] loop %.1f B/echo, caller core-owned %.1f B/echo, caller total %.1f B/echo\n%s".format(
                         report.loop,
+                        report.callerCore,
                         report.caller,
-                        report.loop + report.caller,
                         report.where,
                     ),
                 )
                 client.connection.close(QuicError.NoError)
-                callerThread.shutdown()
+                dispatcher.close()
                 assertTrue(
-                    report.loop <= loopGate && report.caller <= callerGate && report.loop + report.caller <= totalGate,
-                    "$name: loop %.1f B/echo (gate %d), caller %.1f B/echo (gate %d), total %.1f (gate %d), sampled from:\n%s".format(
-                        report.loop,
-                        loopGate,
-                        report.caller,
-                        callerGate,
-                        report.loop + report.caller,
-                        totalGate,
-                        report.where,
-                    ),
+                    report.loop <= loopGate && report.caller <= callerGate,
+                    "$name: loop %.1f B/echo (gate %d), caller total %.1f (gate %d), caller core-owned %.1f (not gated), sampled from:\n%s"
+                        .format(
+                            report.loop,
+                            loopGate,
+                            report.caller,
+                            callerGate,
+                            report.callerCore,
+                            report.where,
+                        ),
                 )
             }
         }
@@ -151,7 +148,7 @@ class CoreQuicAllocationTests {
         val loopId = threadId(client.loop.name)
         val callerId = Thread.currentThread().id
         val recording = jdk.jfr.Recording()
-        recording.enable("jdk.ObjectAllocationSample").with("throttle", "1000000/s").withStackTrace()
+        recording.enable("jdk.ObjectAllocationSample").with("throttle", "off").withStackTrace()
         recording.start()
         val loopBefore = threads.getThreadAllocatedBytes(loopId)
         val callerBefore = threads.getThreadAllocatedBytes(callerId)
@@ -160,7 +157,7 @@ class CoreQuicAllocationTests {
         val callerBytes = (threads.getThreadAllocatedBytes(callerId) - callerBefore).toDouble() / MEASURED
         val loopBytes = (threads.getThreadAllocatedBytes(loopId) - loopBefore).toDouble() / MEASURED
         recording.stop()
-        return Report(loopBytes, callerBytes, breakdown(recording, from))
+        return breakdown(recording, from, loopBytes, callerBytes)
     }
 
     /** An echo server that finishes its side of a stream once the client finishes its own, so streams are released. */
@@ -194,6 +191,7 @@ class CoreQuicAllocationTests {
     private class Report(
         val loop: Double,
         val caller: Double,
+        val callerCore: Double,
         val where: String,
     )
 
@@ -204,43 +202,55 @@ class CoreQuicAllocationTests {
             .first { it.name == name }
             .id
 
-    /** The top allocation sites on the client's two threads since [from], in bytes per echo. */
+    /**
+     * The allocation sites on the client's two threads since [from]: the top ones in bytes per echo, and the caller's
+     * bytes of objects whose class is the core's own, other than this test's.
+     */
     private fun breakdown(
         recording: jdk.jfr.Recording,
         from: Instant,
-    ): String {
+        loop: Double,
+        caller: Double,
+    ): Report {
         val dump =
             java.nio.file.Files
                 .createTempFile("core-quic", ".jfr")
         recording.dump(dump)
         val sites = HashMap<String, Long>()
+        var callerCore = 0L
         jdk.jfr.consumer.RecordingFile
             .readAllEvents(dump)
             .filter {
                 it.startTime >= from &&
-                    (
-                        it.thread?.javaName?.startsWith(
-                            LOOP_THREAD,
-                        ) == true ||
-                            it.thread?.javaName == CALLER_THREAD
-                    )
+                    (it.thread?.javaName?.startsWith(LOOP_THREAD) == true || it.thread?.javaName == CALLER_THREAD)
             }.forEach { e ->
+                val all = e.stackTrace?.frames.orEmpty()
                 val frames =
-                    e.stackTrace?.frames.orEmpty().take(7).joinToString(" < ") {
+                    all.take(7).joinToString(" < ") {
                         "${it.method.type.name.substringAfterLast('.')}.${it.method.name}"
                     }
+                if (e.thread?.javaName == CALLER_THREAD && isCore(e.getClass("objectClass").name)) callerCore += e.getLong("weight")
                 sites.merge("[${e.thread?.javaName}] ${e.getClass("objectClass").name} @ $frames", e.getLong("weight"), Long::plus)
             }
         java.nio.file.Files
             .delete(dump)
-        return sites.entries
-            .sortedByDescending { it.value }
-            .take(30)
-            .joinToString("\n") { "  ${it.value / MEASURED} B/echo ${it.key}" }
+        val where =
+            sites.entries
+                .sortedByDescending { it.value }
+                .take(30)
+                .joinToString("\n") { "  ${it.value / MEASURED} B/echo ${it.key}" }
+        return Report(loop, caller, callerCore.toDouble() / MEASURED, where)
     }
+
+    private fun isCore(className: String) = className.startsWith("com.ditchoom.socket.quic.core.") && !className.startsWith(TEST_CLASS)
 
     private companion object {
         const val CALLER_THREAD = "core-alloc-caller"
+        const val TEST_CLASS = "com.ditchoom.socket.quic.core.edge.CoreQuicAllocationTests"
+        const val LOOP_GATE_ONE = 130
+        const val CALLER_GATE_ONE = 950
+        const val LOOP_GATE_NEW = 260
+        const val CALLER_GATE_NEW = 2_400
         const val PAYLOAD = 64
         const val WARM_UP = 5_000
         const val MEASURED = 20_000
@@ -260,5 +270,38 @@ private suspend fun roundTrip(
         if (result !is ReadResult.Data) fail("the echo ended early: $result")
         received += result.buffer.remaining()
         result.buffer.freeIfNeeded()
+    }
+}
+
+/**
+ * Runs a caller's tasks on one thread of its own, taking them from a bounded array queue so a hand-off allocates no
+ * queue node. The queue holds the few tasks one sequential caller has in flight.
+ */
+private class ArrayQueueDispatcher(
+    name: String,
+) : CoroutineDispatcher() {
+    private val queue = ArrayBlockingQueue<Runnable>(QUEUE)
+    private val thread =
+        Thread({
+            try {
+                while (true) queue.take().run()
+            } catch (_: InterruptedException) {
+                // closed
+            }
+        }, name).apply { isDaemon = true }
+
+    init {
+        thread.start()
+    }
+
+    override fun dispatch(
+        context: CoroutineContext,
+        block: Runnable,
+    ) = queue.put(block)
+
+    fun close() = thread.interrupt()
+
+    private companion object {
+        const val QUEUE = 64
     }
 }
