@@ -214,6 +214,24 @@ object JniQuicheApi : QuicheApi {
         }
     }
 
+    override fun connStreamRecvStep(
+        conn: QuicheConn,
+        streamId: QuicStreamId,
+        buf: Long,
+        bufLen: Int,
+    ): StreamRecvStep {
+        val scratch = errorCodeScratch.get()
+        val raw = nConnStreamRecv(conn.handle, streamId.id, buf, bufLen, scratch.nativeMemoryAccess!!.nativeAddress.toLong())
+        // The same packing as [connStreamRecv]: lower 63 bits = bytes read, bit 63 = FIN; an error code is huge in them.
+        val lower63 = raw and 0x7FFFFFFFFFFFFFFFL
+        if (lower63 <= bufLen.toLong()) return StreamRecvStep.data(lower63.toInt(), raw < 0)
+        return when (raw) {
+            QUICHE_ERR_DONE -> StreamRecvStep.error(StreamRecvStep.QUICHE_ERR_DONE_CODE)
+            QuicheDriver.QUICHE_ERR_STREAM_RESET.toLong() -> StreamRecvStep.reset(QuicAppErrorCode(scratch.readErrorCode()))
+            else -> StreamRecvStep.error(raw.toInt())
+        }
+    }
+
     override fun connStreamSend(
         conn: QuicheConn,
         streamId: QuicStreamId,
@@ -708,6 +726,12 @@ object JniQuicheApi : QuicheApi {
         if (iter.isExhausted) return null
         val raw = nStreamIterNext(iter.handle)
         return if (raw >= 0) QuicStreamId(raw) else null
+    }
+
+    override fun streamIterNextId(iter: QuicheStreamIter): NextStream {
+        if (iter.isExhausted) return NextStream.End
+        val raw = nStreamIterNext(iter.handle)
+        return if (raw >= 0) NextStream.of(QuicStreamId(raw)) else NextStream.End
     }
 
     override fun streamIterFree(iter: QuicheStreamIter) {

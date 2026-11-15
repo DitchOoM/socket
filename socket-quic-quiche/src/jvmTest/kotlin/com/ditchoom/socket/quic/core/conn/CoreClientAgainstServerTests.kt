@@ -13,7 +13,6 @@ import com.ditchoom.socket.quic.QuicStreamId
 import com.ditchoom.socket.quic.QuicTlsConfig
 import com.ditchoom.socket.quic.ScopedRead
 import com.ditchoom.socket.quic.SendTarget
-import com.ditchoom.socket.quic.StreamRecvResult
 import com.ditchoom.socket.quic.applyQuicOptions
 import com.ditchoom.socket.quic.core.loop.Entrant
 import com.ditchoom.socket.quic.core.loop.Loop
@@ -200,20 +199,25 @@ class CoreClientAgainstServerTests {
             stream: QuicStreamId,
         ) {
             while (true) {
-                when (val got = inside.streamRecv(stream, inAddress, inBuffer.capacity)) {
-                    is StreamRecvResult.Data -> {
-                        inBuffer.position(0)
-                        inBuffer.setLimit(got.bytesRead)
-                        received.write(inBuffer.readByteArray(got.bytesRead))
-                        inBuffer.setLimit(inBuffer.capacity)
-                        if (got.fin) return finish(inside, "fin after $written written")
-                    }
-                    StreamRecvResult.Done -> return
-                    is StreamRecvResult.Error -> return finish(inside, "error ${got.code} after $written written")
-                    is StreamRecvResult.Reset -> return finish(inside, "reset ${got.applicationErrorCode} after $written written")
-                    StreamRecvResult.ConnectionGone -> return finish(inside, "connection gone after $written written")
-                }
+                inside.streamRecv(stream, inAddress, inBuffer.capacity).fold(
+                    more = { read -> take(read) },
+                    last = { read ->
+                        take(read)
+                        return finish(inside, "fin after $written written")
+                    },
+                    nothingYet = { return },
+                    gone = { return finish(inside, "connection gone after $written written") },
+                    reset = { return finish(inside, "reset $it after $written written") },
+                    error = { return finish(inside, "error $it after $written written") },
+                )
             }
+        }
+
+        private fun take(read: Int) {
+            inBuffer.position(0)
+            inBuffer.setLimit(read)
+            received.write(inBuffer.readByteArray(read))
+            inBuffer.setLimit(inBuffer.capacity)
         }
 
         override fun served(inside: Conn.Inside) = Unit

@@ -740,6 +740,11 @@ internal object CinteropQuicheApi : QuicheApi, QuicheRandomPin {
         return if (nanos == ULong.MAX_VALUE) null else nanos.toLong().nanoseconds
     }
 
+    override fun connTimeoutNanos(conn: QuicheConn): Long {
+        val nanos = quiche_conn_timeout_as_nanos(conn.handle.toCPointer()!!)
+        return if (nanos == ULong.MAX_VALUE) NO_TIMEOUT_NANOS else nanos.toLong()
+    }
+
     override fun connOnTimeout(conn: QuicheConn) = quiche_conn_on_timeout(conn.handle.toCPointer()!!)
 
     // Caller-clock (RFC §6.1): thread-local virtual clock in the patched libquiche. Simulation-only.

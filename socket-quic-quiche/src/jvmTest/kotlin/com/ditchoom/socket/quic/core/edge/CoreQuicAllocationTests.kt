@@ -37,19 +37,26 @@ import kotlin.time.Duration.Companion.seconds
  * The caller runs on a thread of its own, started without a debug-named coroutine, so neither a server coroutine nor
  * coroutine debugging allocates on it.
  *
- * What a caller's API forces, and so what the gates allow: a read's result buffer from the caller's factory (a native
- * segment with its arena, cleaner and session) and the boxed [ReadResult.Data] around it, and a continuation with its
- * cancellation handler for each suspend call. Per echo that measures about 570 bytes on the loop thread and 1,410 on the
- * caller's thread over one stream, and 1,120 and 3,240 when each echo opens a stream; the gates sit just above. Which thread
- * serves a read moves bytes between the two, so a failure message lists the allocation sites of both.
+ * What remains is what the callers' API forces. On the caller's thread, per read or write: the continuation kotlinx
+ * makes for a suspend call (its dispatch wrapper and parent handle), the operation object that carries the call into the
+ * connection, and, for a read, the result buffer from the caller's factory (a native segment with its arena, cleaner
+ * and session) and the boxed [ReadResult.Data] around it. A read that has to wait also holds a deadline node and a cancellation
+ * handler. On the loop thread: the [ReadResult.Data] box, the completed-continuation state kotlinx keeps so a read cancelled
+ * after it resumed can free its buffer, and the executor's queue node. A stream per echo adds the stream's handle objects
+ * and an open's continuation. The public QuicByteStream's own suspend frames and this test's executor are counted too.
+ * Which thread serves a read moves bytes between the two (a read served on the loop thread allocates its result buffer
+ * there), so each thread's gate allows for the whole read and the total is the tight one; a failure message lists the
+ * allocation sites of both. Per echo that measures about 1,025 bytes in total over one stream (72 on the loop thread,
+ * 953 on the caller's) and 2,560 when each echo opens a stream (129 and 2,432); the total gates sit just above.
  */
 class CoreQuicAllocationTests {
     @Test
-    fun anEchoOnOneStreamAllocatesOnlyWhatTheCallersApiForces() = measure("one stream", OneStream, loopGate = 600, callerGate = 1_500)
+    fun anEchoOnOneStreamAllocatesOnlyWhatTheCallersApiForces() =
+        measure("one stream", OneStream, loopGate = 450, callerGate = 1_000, totalGate = 1_100)
 
     @Test
     fun anEchoOnANewStreamAllocatesOnlyWhatTheCallersApiForces() =
-        measure("new stream per echo", NewStream, loopGate = 1_200, callerGate = 3_400)
+        measure("new stream per echo", NewStream, loopGate = 600, callerGate = 2_500, totalGate = 2_650)
 
     /** One echo from the caller's side. */
     private sealed interface Shape {
@@ -87,6 +94,7 @@ class CoreQuicAllocationTests {
         shape: Shape,
         loopGate: Int,
         callerGate: Int,
+        totalGate: Int,
     ) = runBlocking {
         skipOnMissingNativeLib(CoreQuicAllocationTests::class) {
             withClosingEchoServer { port ->
@@ -113,12 +121,14 @@ class CoreQuicAllocationTests {
                 client.connection.close(QuicError.NoError)
                 callerThread.shutdown()
                 assertTrue(
-                    report.loop <= loopGate && report.caller <= callerGate,
-                    "$name: loop %.1f B/echo (gate %d), caller %.1f B/echo (gate %d), sampled from:\n%s".format(
+                    report.loop <= loopGate && report.caller <= callerGate && report.loop + report.caller <= totalGate,
+                    "$name: loop %.1f B/echo (gate %d), caller %.1f B/echo (gate %d), total %.1f (gate %d), sampled from:\n%s".format(
                         report.loop,
                         loopGate,
                         report.caller,
                         callerGate,
+                        report.loop + report.caller,
+                        totalGate,
                         report.where,
                     ),
                 )

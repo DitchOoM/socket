@@ -37,9 +37,9 @@ import com.ditchoom.socket.quic.core.loop.LoopWork
 import com.ditchoom.socket.quic.core.loop.SelectorWait
 import com.ditchoom.socket.quic.core.loop.startLoop
 import com.ditchoom.socket.quic.core.pool.FixedPool
+import com.ditchoom.socket.quic.core.stream.Parked
 import com.ditchoom.socket.quic.core.stream.StreamEntry
 import com.ditchoom.socket.quic.core.stream.StreamMap
-import com.ditchoom.socket.quic.core.stream.Waiter
 import com.ditchoom.socket.quic.core.udp.BatchLimits
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 import com.ditchoom.socket.quic.core.udp.NioOneByOne
@@ -72,6 +72,7 @@ import java.net.InetSocketAddress
 import java.nio.channels.DatagramChannel
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
+import kotlin.coroutines.resume
 import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
@@ -101,7 +102,7 @@ class CoreFailureTierTests {
 
             val failure =
                 assertFailsWith<IllegalStateException> {
-                    suspendCancellableCoroutine<Outcome<Int>> { cont ->
+                    suspendCancellableCoroutine<Int> { cont ->
                         rig.conn.submit(PlantedOp(broken.streamId, cont, rig.conn::submit, planted))
                     }
                 }
@@ -354,23 +355,25 @@ private class LateWork : ConnWork() {
 
 private class PlantedOp(
     stream: com.ditchoom.socket.quic.QuicStreamId,
-    cont: CancellableContinuation<Outcome<Int>>,
+    cont: CancellableContinuation<Int>,
     submit: (ConnWork) -> Unit,
     private val planted: Exception,
 ) : StreamOp<Int>(StreamMap(), stream, Duration.INFINITE, cont, submit) {
     override fun attempt(
         inside: Conn.Inside,
         entry: StreamEntry,
-    ): Attempt<Int> = throw planted
+    ): Attempt = throw planted
+
+    override fun deliver() = cont.resume(0)
 
     override fun park(
         entry: StreamEntry,
-        waiter: Waiter,
+        waiter: Parked,
     ) {
         entry.reader = waiter
     }
 
-    override fun parked(entry: StreamEntry): Waiter = entry.reader
+    override fun parked(entry: StreamEntry): Parked = entry.reader
 }
 
 private sealed interface Plant {

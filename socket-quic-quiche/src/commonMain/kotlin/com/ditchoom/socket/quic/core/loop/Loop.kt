@@ -167,6 +167,12 @@ internal class Loop(
         return node
     }
 
+    /** Any thread. Arms [node], made on [deadlines], with the same wake rule as [armDeadline]. */
+    fun armDeadline(node: DeadlineNode) {
+        deadlines.arm(node)
+        if (node.dueNanos < sleepsUntil.load()) wakeIfAsleep()
+    }
+
     /** A lane for a thread that is not the loop to send from, or [Taken.Empty]: then the loop does the sending. */
     fun takeLane(): Taken =
         when (lanes) {
@@ -333,10 +339,7 @@ internal class Loop(
 
     private fun sleepUntil(next: NextDue) {
         sleepsUntil.store(
-            when (next) {
-                NextDue.None -> NO_DEADLINE
-                is NextDue.At -> next.nanos
-            },
+            next.fold(none = { NO_DEADLINE }, due = { it }),
         )
         sleep.store(ASLEEP)
         // A deadline armed, or work pushed, before ASLEEP was published is seen here; one after it sees ASLEEP.

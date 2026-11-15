@@ -3,92 +3,126 @@ package com.ditchoom.socket.quic.core.edge
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.flow.BytesWritten
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.socket.quic.DeadlineNode
+import com.ditchoom.socket.quic.DeadlineQueue
 import com.ditchoom.socket.quic.QuicAppErrorCode
 import com.ditchoom.socket.quic.QuicStreamAbort
 import com.ditchoom.socket.quic.QuicStreamException
 import com.ditchoom.socket.quic.QuicStreamId
 import com.ditchoom.socket.quic.QuicStreamReadError
 import com.ditchoom.socket.quic.QuicStreamReadException
-import com.ditchoom.socket.quic.StreamRecvResult
 import com.ditchoom.socket.quic.core.conn.Conn
 import com.ditchoom.socket.quic.core.conn.ConnWork
 import com.ditchoom.socket.quic.core.conn.WriteEnd
+import com.ditchoom.socket.quic.core.stream.Nobody
 import com.ditchoom.socket.quic.core.stream.Parked
 import com.ditchoom.socket.quic.core.stream.Received
 import com.ditchoom.socket.quic.core.stream.Retry
 import com.ditchoom.socket.quic.core.stream.StreamEntry
 import com.ditchoom.socket.quic.core.stream.StreamMap
-import com.ditchoom.socket.quic.core.stream.Waiter
 import kotlinx.coroutines.CancellableContinuation
-import kotlinx.coroutines.Runnable
+import kotlin.coroutines.Continuation
+import kotlin.coroutines.CoroutineContext
+import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+import kotlin.coroutines.startCoroutine
 import kotlin.time.Duration
 
-/** How a stream operation ended, as its caller learns it. */
-internal sealed interface Outcome<out T> {
-    class Done<T>(
-        val value: T,
-    ) : Outcome<T>
+/** What a deadline fires on: an operation that asks to be expired. */
+internal interface Expiring {
+    fun requestExpire()
+}
 
-    object TimedOut : Outcome<Nothing>
+private object Detached : Expiring {
+    override fun requestExpire() = Unit
+}
+
+/** A deadline on one parked operation: the node is its own action, so a bound costs this one object. */
+private class ExpireNode(
+    queue: DeadlineQueue,
+    dueNanos: Long,
+    private var target: Expiring,
+) : DeadlineNode(queue, dueNanos),
+    DeadlineBound {
+    override fun fire() = target.requestExpire()
+
+    // The operation, and the continuation behind it, are dropped when the deadline is disarmed, not when it would have fallen due.
+    override fun release() {
+        target = Detached
+    }
 }
 
 private sealed interface DeadlineBound {
     object None : DeadlineBound
+}
 
-    class Armed(
-        val node: DeadlineNode,
-    ) : DeadlineBound
+/** What one attempt at a stream operation came to. */
+internal sealed interface Attempt {
+    /** Done: the operation holds what its caller gets, and [StreamOp.deliver] hands it over. */
+    object Finished : Attempt
+
+    object Blocked : Attempt
+
+    class Failed(
+        val error: Throwable,
+    ) : Attempt
 }
 
 /**
  * One read or write: first run as work inside the connection, then parked on its stream until the stream can
- * serve it, its deadline passes, its caller is cancelled or the connection ends.
+ * serve it, its deadline passes, its caller is cancelled or the connection ends. It resumes its caller with the value
+ * itself; a deadline or a failure resumes it with an exception.
  */
 internal abstract class StreamOp<T>(
     protected val streams: StreamMap,
     protected val stream: QuicStreamId,
     private val deadline: Duration,
-    private val cont: CancellableContinuation<Outcome<T>>,
+    protected val cont: CancellableContinuation<T>,
     private val submit: (ConnWork) -> Unit,
 ) : ConnWork(),
-    Parked {
+    Parked,
+    Expiring {
     private var bound: DeadlineBound = DeadlineBound.None
 
     /** Tries once, inside the connection. */
     protected abstract fun attempt(
         inside: Conn.Inside,
         entry: StreamEntry,
-    ): Attempt<T>
+    ): Attempt
+
+    /** Resumes the caller with what a [Attempt.Finished] attempt left in this operation. */
+    protected abstract fun deliver()
 
     protected abstract fun park(
         entry: StreamEntry,
-        waiter: Waiter,
+        waiter: Parked,
     )
 
-    protected abstract fun parked(entry: StreamEntry): Waiter
+    protected abstract fun parked(entry: StreamEntry): Parked
 
-    /** Frees what a value holds when the caller is gone before it receives it. */
-    protected open fun discard(value: T) = Unit
+    /** Frees what the operation still holds when it ends without delivering. */
+    protected open fun release() = Unit
 
     override fun run(inside: Conn.Inside) = contained { start(inside) }
 
     private fun start(inside: Conn.Inside) {
         val entry = streams.entry(stream)
-        if (!cont.isActive) return
+        if (!cont.isActive) return release()
         when (val first = attempt(inside, entry)) {
-            is Attempt.Finished -> finish(first)
+            Attempt.Finished -> deliver()
             Attempt.Blocked -> {
-                park(entry, Waiter.Waiting(this))
+                park(entry, this)
                 if (deadline.isFinite()) {
-                    bound =
-                        DeadlineBound.Armed(inside.deadline(deadline.inWholeNanoseconds, Runnable { submit(Expire(this)) }))
+                    val node = ExpireNode(inside.deadlines, inside.dueAfter(deadline.inWholeNanoseconds), this)
+                    bound = node
+                    inside.arm(node)
                 }
             }
+            is Attempt.Failed -> fail(first.error)
         }
     }
 
@@ -110,35 +144,42 @@ internal abstract class StreamOp<T>(
     ): Retry {
         if (!cont.isActive) {
             disarm()
+            release()
             return Retry.Settled
         }
-        return when (val again = attempt(inside, stream)) {
-            is Attempt.Finished -> {
+        when (val again = attempt(inside, stream)) {
+            Attempt.Finished -> {
                 disarm()
-                finish(again)
-                Retry.Settled
+                deliver()
             }
-            Attempt.Blocked -> Retry.Again
+            Attempt.Blocked -> return Retry.Again
+            is Attempt.Failed -> fail(again.error)
         }
+        return Retry.Settled
     }
 
     override fun connectionEnded(failure: Throwable) {
         disarm()
+        release()
         if (cont.isActive) cont.resumeWithException(failure)
     }
 
     override fun gone() {
+        release()
         if (cont.isActive) cont.resumeWithException(ConnectionReleased.failure())
     }
+
+    /** On the deadline's thread: asks the connection to expire this operation. */
+    override fun requestExpire() = submit(Expire(this))
 
     /** Inside the connection: the deadline passed while parked. */
     internal fun expire(inside: Conn.Inside) =
         contained {
             val entry = streams.entry(stream)
-            val now = parked(entry)
-            if (now is Waiter.Waiting && now.op === this) {
-                park(entry, Waiter.Nobody)
-                if (cont.isActive) cont.resume(Outcome.TimedOut)
+            if (parked(entry) === this) {
+                park(entry, Nobody)
+                release()
+                if (cont.isActive) timeOut()
             }
         }
 
@@ -147,7 +188,14 @@ internal abstract class StreamOp<T>(
         contained {
             unpark()
             disarm()
+            release()
         }
+
+    /** The same exception a 4.x stream deadline raises, built where it is thrown from, so callers see one type for both cores. */
+    private fun timeOut() {
+        val bound = deadline
+        suspend { timedOut(bound) }.startCoroutine(Continuation(EmptyCoroutineContext) { it.onFailure(cont::resumeWithException) })
+    }
 
     /** What this operation throws fails this operation's caller and no other: it is unparked and resumed with it. */
     private inline fun contained(body: () -> Unit) {
@@ -158,61 +206,25 @@ internal abstract class StreamOp<T>(
         }
     }
 
-    private fun fail(failure: Exception) {
+    private fun fail(failure: Throwable) {
         disarm()
         unpark()
+        release()
         if (cont.isActive) cont.resumeWithException(failure)
     }
 
     private fun unpark() {
         val entry = streams.entry(stream)
-        val now = parked(entry)
-        if (now is Waiter.Waiting && now.op === this) park(entry, Waiter.Nobody)
-    }
-
-    private fun finish(done: Attempt.Finished<T>) {
-        when (val result = done.result) {
-            is Result.Value -> {
-                val value = result.value
-                cont.resume(Outcome.Done(value)) { _, _, _ -> discard(value) }
-            }
-            is Result.Failure -> cont.resumeWithException(result.error)
-        }
+        if (parked(entry) === this) park(entry, Nobody)
     }
 
     private fun disarm() {
         when (val armed = bound) {
             DeadlineBound.None -> Unit
-            is DeadlineBound.Armed -> armed.node.disarm()
+            is ExpireNode -> armed.disarm()
         }
         bound = DeadlineBound.None
     }
-}
-
-internal sealed interface Result<out T> {
-    class Value<T>(
-        val value: T,
-    ) : Result<T>
-
-    class Failure(
-        val error: Throwable,
-    ) : Result<Nothing>
-}
-
-internal sealed interface Attempt<out T> {
-    class Finished<T>(
-        val result: Result<T>,
-    ) : Attempt<T>
-
-    object Blocked : Attempt<Nothing>
-}
-
-private class Expire(
-    private val op: StreamOp<*>,
-) : ConnWork() {
-    override fun run(inside: Conn.Inside) = op.expire(inside)
-
-    override fun gone() = Unit
 }
 
 internal class Withdraw(
@@ -223,74 +235,108 @@ internal class Withdraw(
     override fun gone() = Unit
 }
 
-/** Reads the next chunk into a buffer from the connection's factory; the caller owns a returned buffer. */
+private class Expire(
+    private val op: StreamOp<*>,
+) : ConnWork() {
+    override fun run(inside: Conn.Inside) = op.expire(inside)
+
+    override fun gone() = Unit
+}
+
+/** Frees a read's buffer when its caller is cancelled after the read resumed it and before it received the result. */
+private val FreeUnreceived: (Throwable, ReadResult, CoroutineContext) -> Unit = { _, result, _ ->
+    if (result is ReadResult.Data) (result.buffer as PlatformBuffer).freeNativeMemory()
+}
+
+/**
+ * Reads the next chunk into a buffer from the connection's factory, sized by the stream's [ReadChunk]; the caller owns a
+ * returned buffer. A read that finds nothing keeps its buffer for the retry, [none] when it holds none.
+ */
 internal class ReadOp(
     streams: StreamMap,
     stream: QuicStreamId,
     deadline: Duration,
-    cont: CancellableContinuation<Outcome<ReadResult>>,
+    cont: CancellableContinuation<ReadResult>,
     submit: (ConnWork) -> Unit,
     private val factory: BufferFactory,
-    private val chunk: Int,
+    private val none: PlatformBuffer,
 ) : StreamOp<ReadResult>(streams, stream, deadline, cont, submit) {
+    private var result: ReadResult = ReadResult.End
+    private var spare: PlatformBuffer = none
+
     override fun attempt(
         inside: Conn.Inside,
         entry: StreamEntry,
-    ): Attempt<ReadResult> {
-        if (entry.received === Received.Finished) return done(ReadResult.End)
-        val buffer = factory.allocate(chunk)
-        val got =
+    ): Attempt {
+        if (entry.received === Received.Finished) return finished(ReadResult.End)
+        val buffer = if (spare === none) factory.allocate(entry.chunk.bytes) else spare
+        spare = none
+        val asked = buffer.limit()
+        val step =
             try {
-                inside.streamRecv(stream, addressOf(buffer), chunk)
+                inside.streamRecv(stream, addressOf(buffer), asked)
             } catch (failure: Exception) {
                 buffer.freeNativeMemory()
                 throw failure
             }
-        return when (got) {
-            is StreamRecvResult.Data -> {
-                if (got.fin) entry.received = Received.Finished
-                if (got.bytesRead == 0) {
-                    buffer.freeNativeMemory()
-                    if (got.fin) done(ReadResult.End) else Attempt.Blocked
-                } else {
-                    buffer.position(0)
-                    buffer.setLimit(got.bytesRead)
-                    done(ReadResult.Data(buffer))
-                }
-            }
-            StreamRecvResult.Done -> {
-                buffer.freeNativeMemory()
-                Attempt.Blocked
-            }
-            is StreamRecvResult.Reset -> {
-                buffer.freeNativeMemory()
-                done(ReadResult.Reset)
-            }
-            is StreamRecvResult.Error -> {
-                buffer.freeNativeMemory()
-                Attempt.Finished(Result.Failure(StreamFailure.ofRead(stream, got.code)))
-            }
-            StreamRecvResult.ConnectionGone -> {
-                buffer.freeNativeMemory()
-                Attempt.Finished(Result.Failure(ConnectionReleased.failure()))
-            }
-        }
+        return step.fold(
+            more = { read -> if (read == 0) holding(buffer) else data(entry, buffer, asked, read) },
+            last = { read ->
+                entry.received = Received.Finished
+                if (read == 0) discarding(buffer, finished(ReadResult.End)) else data(entry, buffer, asked, read)
+            },
+            nothingYet = { holding(buffer) },
+            gone = { discarding(buffer, Attempt.Failed(ConnectionReleased.failure())) },
+            reset = { discarding(buffer, finished(ReadResult.Reset)) },
+            error = { code -> discarding(buffer, Attempt.Failed(StreamFailure.ofRead(stream, code))) },
+        )
+    }
+
+    private fun data(
+        entry: StreamEntry,
+        buffer: PlatformBuffer,
+        asked: Int,
+        read: Int,
+    ): Attempt {
+        entry.chunk = entry.chunk.after(asked, read)
+        buffer.position(0)
+        buffer.setLimit(read)
+        return finished(ReadResult.Data(buffer))
+    }
+
+    private fun holding(buffer: PlatformBuffer): Attempt {
+        spare = buffer
+        return Attempt.Blocked
+    }
+
+    private fun discarding(
+        buffer: PlatformBuffer,
+        then: Attempt,
+    ): Attempt {
+        buffer.freeNativeMemory()
+        return then
+    }
+
+    private fun finished(value: ReadResult): Attempt {
+        result = value
+        return Attempt.Finished
+    }
+
+    override fun deliver() = cont.resume(result, FreeUnreceived)
+
+    override fun release() {
+        if (spare !== none) spare.freeNativeMemory()
+        spare = none
     }
 
     override fun park(
         entry: StreamEntry,
-        waiter: Waiter,
+        waiter: Parked,
     ) {
         entry.reader = waiter
     }
 
-    override fun parked(entry: StreamEntry): Waiter = entry.reader
-
-    override fun discard(value: ReadResult) {
-        if (value is ReadResult.Data) (value.buffer as PlatformBuffer).freeNativeMemory()
-    }
-
-    private fun done(result: ReadResult): Attempt<ReadResult> = Attempt.Finished(Result.Value(result))
+    override fun parked(entry: StreamEntry): Parked = entry.reader
 }
 
 /** Writes what quiche takes now of [buffer]'s remaining bytes, at least one; moves its position past them. */
@@ -298,40 +344,45 @@ internal class WriteOp(
     streams: StreamMap,
     stream: QuicStreamId,
     deadline: Duration,
-    cont: CancellableContinuation<Outcome<Int>>,
+    cont: CancellableContinuation<BytesWritten>,
     submit: (ConnWork) -> Unit,
     private val buffer: ReadBuffer,
     private val address: Long,
     private val end: WriteEnd,
-) : StreamOp<Int>(streams, stream, deadline, cont, submit) {
+) : StreamOp<BytesWritten>(streams, stream, deadline, cont, submit) {
+    private var sent = 0
+
     override fun attempt(
         inside: Conn.Inside,
         entry: StreamEntry,
-    ): Attempt<Int> {
+    ): Attempt {
         val start = buffer.position()
         val length = buffer.remaining()
-        val sent = inside.streamSend(stream, address + start, length, end)
+        val answer = inside.streamSend(stream, address + start, length, end)
         return when {
-            sent.result > 0 || (sent.result == 0 && length == 0) -> {
-                buffer.position(start + sent.result)
-                Attempt.Finished(Result.Value(sent.result))
+            answer.result > 0 || (answer.result == 0 && length == 0) -> {
+                buffer.position(start + answer.result)
+                sent = answer.result
+                Attempt.Finished
             }
-            sent.result == 0 || sent.result == QUICHE_ERR_DONE -> {
+            answer.result == 0 || answer.result == QUICHE_ERR_DONE -> {
                 inside.wantWritable(stream)
                 Attempt.Blocked
             }
-            else -> Attempt.Finished(Result.Failure(StreamFailure.ofSend(stream, sent.result, sent.errorCode ?: StreamFailure.UNKNOWN)))
+            else -> Attempt.Failed(StreamFailure.ofSend(stream, answer.result, answer.errorCode ?: StreamFailure.UNKNOWN))
         }
     }
 
+    override fun deliver() = cont.resume(BytesWritten(sent))
+
     override fun park(
         entry: StreamEntry,
-        waiter: Waiter,
+        waiter: Parked,
     ) {
         entry.writer = waiter
     }
 
-    override fun parked(entry: StreamEntry): Waiter = entry.writer
+    override fun parked(entry: StreamEntry): Parked = entry.writer
 }
 
 /** quiche's own error codes stay quiche's: they are never passed off as the peer's application error codes. */

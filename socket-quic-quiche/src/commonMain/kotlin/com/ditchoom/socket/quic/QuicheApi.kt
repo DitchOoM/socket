@@ -196,6 +196,17 @@ interface QuicheApi {
     ): StreamRecvResult
 
     /**
+     * [connStreamRecv] as a primitive: a stream read on the core's hot path allocates no result object. Backends
+     * override it to decode quiche's answer straight into the [StreamRecvStep].
+     */
+    fun connStreamRecvStep(
+        conn: QuicheConn,
+        streamId: QuicStreamId,
+        buf: Long,
+        bufLen: Int,
+    ): StreamRecvStep = StreamRecvStep.of(connStreamRecv(conn, streamId, buf, bufLen))
+
+    /**
      * Write to a QUIC stream. Returns a [StreamSendResult] carrying the raw quiche return plus the peer's
      * application error code (when the peer aborted the stream and the backend exposes `out_error_code`).
      */
@@ -849,6 +860,9 @@ interface QuicheApi {
      * Implementations handle the output-parameter pattern internally.
      */
     fun streamIterNext(iter: QuicheStreamIter): QuicStreamId?
+
+    /** [streamIterNext] as a primitive: a [QuicStreamId] in a nullable is boxed on every step. Backends override it. */
+    fun streamIterNextId(iter: QuicheStreamIter): NextStream = streamIterNext(iter)?.let { NextStream.of(it) } ?: NextStream.End
 
     fun streamIterFree(iter: QuicheStreamIter)
 

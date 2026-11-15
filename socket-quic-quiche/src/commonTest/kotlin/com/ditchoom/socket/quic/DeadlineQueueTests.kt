@@ -7,10 +7,10 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 private fun DeadlineQueue.nextDueNanos(now: Long = 0L): Long =
-    when (val next = nextDue(now)) {
-        is NextDue.At -> next.nanos
-        NextDue.None -> error("nothing is queued")
-    }
+    nextDue(now).fold(
+        none = { error("nothing is queued") },
+        due = { it },
+    )
 
 /**
  * [DeadlineQueue], the one implementation behind the JVM's `DeadlineTimer` and Kotlin/Native's

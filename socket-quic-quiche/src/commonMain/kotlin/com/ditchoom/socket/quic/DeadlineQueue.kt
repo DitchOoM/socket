@@ -12,15 +12,29 @@ import kotlin.concurrent.atomics.decrementAndFetch
 import kotlin.concurrent.atomics.fetchAndIncrement
 import kotlin.concurrent.atomics.incrementAndFetch
 
-/** What [DeadlineQueue.nextDue] answers: when the queue next needs looking at, or that there is nothing to wait for. */
-internal sealed interface NextDue {
-    /** Nothing worth waiting for: nothing armed, or only disarmed deadlines too near to sleep towards. */
-    object None : NextDue
+/**
+ * What [DeadlineQueue.nextDue] answers: the time the queue next needs looking at, or [None] when there is nothing to
+ * wait for. A primitive, so a pass allocates nothing; no deadline is ever due at [Long.MAX_VALUE].
+ */
+@kotlin.jvm.JvmInline
+internal value class NextDue private constructor(
+    private val nanos: Long,
+) {
+    /** Calls [due] with the time the earliest deadline worth waking for falls due, a far disarmed one included; [none] when nothing is worth waiting for. */
+    inline fun <R> fold(
+        none: () -> R,
+        due: (nanos: Long) -> R,
+    ): R = if (this == None) none() else due(dueNanos())
 
-    /** The earliest deadline worth waking for, a disarmed one included when it is far off, falls due at [nanos]. */
-    class At(
-        val nanos: Long,
-    ) : NextDue
+    @PublishedApi
+    internal fun dueNanos(): Long = nanos
+
+    companion object {
+        /** Nothing worth waiting for: nothing armed, or only disarmed deadlines too near to sleep towards. */
+        val None = NextDue(Long.MAX_VALUE)
+
+        fun at(nanos: Long): NextDue = NextDue(nanos)
+    }
 }
 
 /**
@@ -279,7 +293,7 @@ internal class DeadlineQueue(
                 disarmed.decrementAndFetch()
                 continue
             }
-            return NextDue.At(top.dueNanos)
+            return NextDue.at(top.dueNanos)
         }
         return NextDue.None
     }

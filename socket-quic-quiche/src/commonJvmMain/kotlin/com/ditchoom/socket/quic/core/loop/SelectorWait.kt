@@ -28,18 +28,18 @@ internal class SelectorWait(
             }
         if (key.interestOps() != wanted) key.interestOps(wanted)
         readyOps = 0
-        when (until) {
-            NextDue.None -> selector.select(onReady)
-            is NextDue.At -> {
-                val nanos = until.nanos - clock.nowNanos()
+        until.fold(
+            none = { selector.select(onReady) },
+            due = { due ->
+                val nanos = due - clock.nowNanos()
                 // The selector counts whole milliseconds; a shorter wait rounds up so a deadline is never early.
                 if (nanos <= 0) selector.selectNow(onReady) else selector.select(onReady, (nanos + NANOS_PER_MILLI - 1) / NANOS_PER_MILLI)
-            }
-        }
+            },
+        )
         return when {
             readyOps and SelectionKey.OP_READ != 0 -> WakeCause.Readable
             readyOps and SelectionKey.OP_WRITE != 0 -> WakeCause.Writable
-            until is NextDue.At -> WakeCause.Deadline
+            until != NextDue.None -> WakeCause.Deadline
             else -> WakeCause.Woken
         }
     }

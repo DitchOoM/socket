@@ -115,7 +115,12 @@ class CoreEdgeTests {
                                 val stream = acceptStream()
                                 launch {
                                     if (serverHolds) release.await()
-                                    while (stream.read(10.seconds) { stream.writeFully(it, 10.seconds) } is ScopedRead.Data<*>) Unit
+                                    // The client closing the connection ends the echo; it is not a failure of the server.
+                                    try {
+                                        while (stream.read(10.seconds) { stream.writeFully(it, 10.seconds) } is ScopedRead.Data<*>) Unit
+                                    } catch (closed: com.ditchoom.socket.quic.QuicCloseException) {
+                                        Unit
+                                    }
                                 }
                             }
                         }

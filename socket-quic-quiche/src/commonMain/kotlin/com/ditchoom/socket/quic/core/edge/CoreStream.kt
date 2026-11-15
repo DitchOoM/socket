@@ -55,7 +55,7 @@ internal class CoreStream(
             buffer.nativeMemoryAccess
                 ?: throw QuicNativeMemoryRequiredException.forBuffer(QuicWriteTarget.Stream(id.id), buffer, QuicheDriver.capabilities)
         if (buffer.remaining() == 0) return BytesWritten(0)
-        return BytesWritten(connection.write(id, buffer, native.nativeAddress.toLong(), WriteEnd.More, deadline))
+        return connection.write(id, buffer, native.nativeAddress.toLong(), WriteEnd.More, deadline)
     }
 
     override suspend fun shutdownSend() {

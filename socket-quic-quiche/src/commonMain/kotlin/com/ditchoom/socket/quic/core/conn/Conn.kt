@@ -6,6 +6,7 @@ import androidx.collection.MutableLongSet
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.socket.quic.DeadlineNode
+import com.ditchoom.socket.quic.DeadlineQueue
 import com.ditchoom.socket.quic.NO_TIMEOUT_NANOS
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicStreamId
@@ -14,7 +15,7 @@ import com.ditchoom.socket.quic.QuicheConn
 import com.ditchoom.socket.quic.QuicheRecvInfo
 import com.ditchoom.socket.quic.QuicheSendInfo
 import com.ditchoom.socket.quic.SendTarget
-import com.ditchoom.socket.quic.StreamRecvResult
+import com.ditchoom.socket.quic.StreamRecvStep
 import com.ditchoom.socket.quic.StreamSendResult
 import com.ditchoom.socket.quic.core.edge.addressOf
 import com.ditchoom.socket.quic.core.loop.CallerSend
@@ -271,7 +272,7 @@ internal class Conn(
             stream: QuicStreamId,
             address: Long,
             length: Int,
-        ): StreamRecvResult = api.connStreamRecv(handle, stream, address, length)
+        ): StreamRecvStep = api.connStreamRecvStep(handle, stream, address, length)
 
         /** Asks to be told [ConnEvents.writable] for [stream] once it can take bytes. */
         fun wantWritable(stream: QuicStreamId) {
@@ -298,11 +299,14 @@ internal class Conn(
             length: Int,
         ): Int = api.connApplicationProto(handle, address, length)
 
-        /** A deadline [afterNanos] from now on this connection's loop; the loop wakes for it if it must. */
-        fun deadline(
-            afterNanos: Long,
-            fire: Runnable,
-        ): DeadlineNode = loop.armDeadline(clock.nowNanos() + afterNanos, fire)
+        /** The queue of this connection's loop: a [DeadlineNode] for [arm] is made on it. */
+        val deadlines: DeadlineQueue get() = loop.deadlines
+
+        /** The time [afterNanos] from now, as a deadline's due time. */
+        fun dueAfter(afterNanos: Long): Long = clock.nowNanos() + afterNanos
+
+        /** Arms [node], made on [deadlines]; the loop wakes for it if it must. */
+        fun arm(node: DeadlineNode) = loop.armDeadline(node)
 
         /** Hands quiche a datagram that is [length] bytes at [address]. */
         fun receive(
@@ -654,8 +658,7 @@ internal class Conn(
             val readable = api.connReadable(handle)
             try {
                 while (true) {
-                    val id = api.streamIterNext(readable) ?: break
-                    events.readable(inside, id)
+                    api.streamIterNextId(readable).fold(end = { break }, stream = { events.readable(inside, it) })
                 }
             } finally {
                 api.streamIterFree(readable)
@@ -675,8 +678,10 @@ internal class Conn(
         val writable = api.connWritable(handle)
         try {
             while (true) {
-                val id = api.streamIterNext(writable) ?: break
-                if (writeWaiters.remove(id.id)) events.writable(inside, id)
+                api.streamIterNextId(writable).fold(
+                    end = { break },
+                    stream = { if (writeWaiters.remove(it.id)) events.writable(inside, it) },
+                )
             }
         } finally {
             api.streamIterFree(writable)

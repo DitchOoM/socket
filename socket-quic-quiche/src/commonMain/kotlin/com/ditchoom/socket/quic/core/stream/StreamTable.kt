@@ -24,12 +24,14 @@ internal interface Parked {
     fun connectionEnded(failure: Throwable)
 }
 
-internal sealed interface Waiter {
-    object Nobody : Waiter
+/** The slot of a stream that nothing waits on. */
+internal object Nobody : Parked {
+    override fun retry(
+        inside: Conn.Inside,
+        stream: StreamEntry,
+    ): Retry = Retry.Settled
 
-    class Waiting(
-        val op: Parked,
-    ) : Waiter
+    override fun connectionEnded(failure: Throwable) = Unit
 }
 
 /** What the peer's side of a stream has told us so far. */
@@ -40,34 +42,63 @@ internal sealed interface Received {
     object Finished : Received
 }
 
+/**
+ * How many bytes a stream's next read asks quiche for, which is the size of the buffer the read allocates: it starts at
+ * [Initial], doubles up to [Max] while reads fill it and halves down to [Initial] while they use a quarter or less of
+ * it, so a stream of small messages holds small buffers and a bulk stream converges on [Max].
+ */
+@kotlin.jvm.JvmInline
+internal value class ReadChunk private constructor(
+    val bytes: Int,
+) {
+    /** The chunk for the read after one that [asked] for that many bytes and got [read] of them. */
+    fun after(
+        asked: Int,
+        read: Int,
+    ): ReadChunk =
+        when {
+            read >= asked -> ReadChunk(minOf(asked * 2, MAX_BYTES))
+            read * SHRINK_BELOW <= asked -> ReadChunk(maxOf(asked / 2, INITIAL_BYTES))
+            else -> this
+        }
+
+    companion object {
+        private const val INITIAL_BYTES = 2_048
+        const val MAX_BYTES = 65_536
+        private const val SHRINK_BELOW = 4
+
+        val Initial = ReadChunk(INITIAL_BYTES)
+        val Max = ReadChunk(MAX_BYTES)
+    }
+}
+
 /** One stream's state. Confined to whoever is inside the connection. */
 internal class StreamEntry(
     val id: QuicStreamId,
 ) {
-    var reader: Waiter = Waiter.Nobody
-    var writer: Waiter = Waiter.Nobody
+    var reader: Parked = Nobody
+    var writer: Parked = Nobody
     var received: Received = Received.Open
+    var chunk: ReadChunk = ReadChunk.Initial
 
     /** Retries a parked reader; it stays parked while it answers [Retry.Again]. */
     fun wakeReader(inside: Conn.Inside) {
-        when (val now = reader) {
-            Waiter.Nobody -> Unit
-            is Waiter.Waiting -> if (now.op.retry(inside, this) === Retry.Settled && reader === now) reader = Waiter.Nobody
-        }
+        val now = reader
+        if (now.retry(inside, this) === Retry.Settled && reader === now) reader = Nobody
     }
 
     fun wakeWriter(inside: Conn.Inside) {
-        when (val now = writer) {
-            Waiter.Nobody -> Unit
-            is Waiter.Waiting -> if (now.op.retry(inside, this) === Retry.Settled && writer === now) writer = Waiter.Nobody
-        }
+        val now = writer
+        if (now.retry(inside, this) === Retry.Settled && writer === now) writer = Nobody
     }
 
     fun endWaiters(failure: Throwable) {
-        val waiting = listOf(reader, writer)
-        reader = Waiter.Nobody
-        writer = Waiter.Nobody
-        for (w in waiting) if (w is Waiter.Waiting) w.op.connectionEnded(failure)
+        val waitingReader = reader
+        val waitingWriter = writer
+        reader = Nobody
+        writer = Nobody
+        waitingReader.connectionEnded(failure)
+        waitingWriter.connectionEnded(failure)
     }
 }
 

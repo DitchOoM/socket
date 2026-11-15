@@ -654,6 +654,31 @@ class FfmQuicheApi private constructor(
         }
     }
 
+    override fun connStreamRecvStep(
+        conn: QuicheConn,
+        streamId: QuicStreamId,
+        buf: Long,
+        bufLen: Int,
+    ): StreamRecvStep {
+        val out = outParams.get()
+        val raw =
+            hStreamRecv.invokeExact(
+                conn.handle,
+                streamId.id,
+                buf,
+                bufLen.toLong(),
+                out.fin.address(),
+                out.errorCode.address(),
+            ) as Long
+        return if (raw >= 0) {
+            StreamRecvStep.data(raw.toInt(), out.fin.get(JAVA_BOOLEAN, 0))
+        } else if (raw.toInt() == QuicheDriver.QUICHE_ERR_STREAM_RESET) {
+            StreamRecvStep.reset(QuicAppErrorCode(out.errorCode.get(JAVA_LONG, 0)))
+        } else {
+            StreamRecvStep.error(raw.toInt())
+        }
+    }
+
     override fun connStreamSend(
         conn: QuicheConn,
         streamId: QuicStreamId,
@@ -1426,6 +1451,13 @@ class FfmQuicheApi private constructor(
         val streamIdOut = streamIdScratch.get()
         val hasNext = hStreamIterNext.invokeExact(iter.handle, streamIdOut.address()) as Boolean
         return if (hasNext) QuicStreamId(streamIdOut.get(JAVA_LONG, 0)) else null
+    }
+
+    override fun streamIterNextId(iter: QuicheStreamIter): NextStream {
+        if (iter.isExhausted) return NextStream.End
+        val streamIdOut = streamIdScratch.get()
+        val hasNext = hStreamIterNext.invokeExact(iter.handle, streamIdOut.address()) as Boolean
+        return if (hasNext) NextStream.of(QuicStreamId(streamIdOut.get(JAVA_LONG, 0))) else NextStream.End
     }
 
     /** [streamIterNext]'s out-parameter, one per thread so no two calls share it and no call allocates. */

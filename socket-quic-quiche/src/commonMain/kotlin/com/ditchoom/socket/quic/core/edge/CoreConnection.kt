@@ -2,11 +2,14 @@ package com.ditchoom.socket.quic.core.edge
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
+import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.flow.BytesWritten
 import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.flow.WritePolicy
+import com.ditchoom.socket.quic.OnCancel
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicCapabilities
 import com.ditchoom.socket.quic.QuicCloseException
@@ -93,7 +96,7 @@ internal class CoreConnection(
     private val opens = ArrayDeque<OpenStream>()
 
     /** The zero bytes a FIN is sent with: quiche reads no memory for a zero-length send. */
-    private val empty: ReadBuffer = bufferFactory.allocate(0)
+    private val empty: PlatformBuffer = bufferFactory.allocate(0)
 
     override val state: StateFlow<QuicConnectionState> = mutableState
     override val unreadAtClose: StateFlow<QuicUnreadAtClose> = MutableStateFlow(QuicUnreadAtClose.ConnectionOpen)
@@ -157,8 +160,8 @@ internal class CoreConnection(
         stream: QuicStreamId,
         deadline: Duration,
     ): ReadResult =
-        settle(deadline) { cont ->
-            ReadOp(streams, stream, deadline, cont, submitToLoop, bufferFactory, READ_CHUNK)
+        suspendCancellableCoroutine { cont ->
+            settle(ReadOp(streams, stream, deadline, cont, submitToLoop, bufferFactory, empty), cont)
         }
 
     internal suspend fun write(
@@ -167,18 +170,16 @@ internal class CoreConnection(
         address: Long,
         end: WriteEnd,
         deadline: Duration,
-    ): Int =
-        settle(deadline) { cont ->
-            WriteOp(streams, stream, deadline, cont, submitToLoop, buffer, address, end)
+    ): BytesWritten =
+        suspendCancellableCoroutine { cont ->
+            settle(WriteOp(streams, stream, deadline, cont, submitToLoop, buffer, address, end), cont)
         }
 
     /** Sends our FIN on [stream]. */
     internal suspend fun finish(
         stream: QuicStreamId,
         deadline: Duration,
-    ) {
-        write(stream, empty, NO_ADDRESS, WriteEnd.Finish, deadline)
-    }
+    ): BytesWritten = write(stream, empty, NO_ADDRESS, WriteEnd.Finish, deadline)
 
     // --- ConnEvents: inside the connection ---
 
@@ -279,26 +280,21 @@ internal class CoreConnection(
             )
         }
 
-    private suspend fun <T> settle(
-        deadline: Duration,
-        op: (CancellableContinuation<Outcome<T>>) -> StreamOp<T>,
-    ): T {
-        val outcome =
-            suspendCancellableCoroutine { cont ->
-                val made = op(cont)
-                val place = placeOf(cont.context)
-                submit(made, place)
-                cont.invokeOnCancellation { submit(Withdraw(made), place) }
-            }
-        return when (outcome) {
-            is Outcome.Done -> outcome.value
-            Outcome.TimedOut -> timedOut(deadline)
-        }
+    /**
+     * Hands [op] to the connection; one still waiting afterwards withdraws when its caller is cancelled. One that finished
+     * in place has resumed its caller already and needs no handler.
+     */
+    private fun settle(
+        op: StreamOp<*>,
+        cont: CancellableContinuation<*>,
+    ) {
+        val place = placeOf(cont.context)
+        submit(op, place)
+        if (cont.isActive) cont.invokeOnCancellation(Withdrawing(op, place))
     }
 
     private companion object {
         const val STREAM_ID_STEP = 4L
-        const val READ_CHUNK = 65_536
         const val MAX_ALPN = 255
         const val NO_ADDRESS = 0L
         const val QUICHE_ERR_STREAM_LIMIT = -12
@@ -336,6 +332,14 @@ internal class CoreConnection(
         override fun gone() = fail(ConnectionReleased.failure())
     }
 
+    /** The cancellation handler of a waiting stream operation: when its caller is cancelled it has the connection unpark the operation. */
+    private inner class Withdrawing(
+        private val op: StreamOp<*>,
+        private val place: CallerPlace,
+    ) : OnCancel() {
+        override fun cancelled() = submit(Withdraw(op), place)
+    }
+
     private inner class WithdrawOpen(
         private val open: OpenStream,
     ) : ConnWork() {
@@ -351,7 +355,7 @@ internal object ConnectionReleased {
 }
 
 /** The same exception a 4.x stream deadline raises, so callers see one type for both cores. */
-private suspend fun timedOut(bound: Duration): Nothing {
+internal suspend fun timedOut(bound: Duration): Nothing {
     try {
         withTimeout(Duration.ZERO) { awaitCancellation() }
     } catch (timeout: TimeoutCancellationException) {

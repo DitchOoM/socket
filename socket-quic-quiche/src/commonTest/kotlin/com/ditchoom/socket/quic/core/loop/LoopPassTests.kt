@@ -23,7 +23,6 @@ import com.ditchoom.socket.quic.core.udp.UdpError
 import kotlinx.coroutines.Runnable
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertIs
 
 /** One pass of [Loop] as a function of its inputs and the time: a fake socket, an echo, a clock that is a number. */
 class LoopPassTests {
@@ -47,7 +46,7 @@ class LoopPassTests {
 
         val next = rig.loop.pass(now = 50)
         assertEquals(0, fired)
-        assertEquals(100L, assertIs<NextDue.At>(next).nanos)
+        assertEquals(NextDue.at(100L), next)
 
         rig.loop.pass(now = 100)
         assertEquals(1, fired)
