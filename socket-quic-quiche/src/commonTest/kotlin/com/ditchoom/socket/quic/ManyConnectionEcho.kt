@@ -27,6 +27,9 @@ internal interface ManyConnectionHost {
     /** The process's peak resident set as the platform reports it (see benchmarks/native-compare/run.py). */
     fun maxRssRaw(): Long
 
+    /** Counters of the platform's own (measurement only); empty where there are none. */
+    fun platformCounters(): String = ""
+
     /** The host's UDP error counters as one line (Linux: the `Udp:` rows of /proc/net/snmp), or why there are none. */
     fun udpCounters(): String
 }
@@ -112,9 +115,11 @@ internal suspend fun manyConnectionEcho(
             go.complete(started)
             delay(warmup)
             println("MEASURING")
+            println("INTAKE start ${IntakeExperiment.counters()} ${host.platformCounters()}")
             val cpu0 = host.cpuMicros()
             delay(window)
             val cpuUs = host.cpuMicros() - cpu0
+            println("INTAKE end ${IntakeExperiment.counters()} ${host.platformCounters()}")
             println("UDP after ${host.udpCounters()}")
             reportProgress(firstDone, opStarted, started.elapsedNow().inWholeNanoseconds)
             reportDrivers(clientScopes, serverScopes, counts, connectedAfterNanos)

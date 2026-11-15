@@ -99,7 +99,6 @@ jobs:
         run: |
           sudo apt-get install -y -q "linux-tools-$(uname -r)" linux-tools-common >/dev/null
           sudo sysctl -w kernel.perf_event_paranoid=-1 kernel.kptr_restrict=0
-          sudo sysctl -w net.core.rmem_max=4194304
           sysctl net.core.rmem_default net.core.rmem_max net.core.wmem_default net.core.wmem_max
       - name: Run
         run: |
@@ -123,6 +122,61 @@ jobs:
             results-linux-x64.md
           retention-days: 14
 
+  # MEASUREMENT ONLY: the server's reader-to-loop hand-off, the base against variants of the intake, interleaved on
+  # this one machine, with counters per echo and a JFR CPU-time profile (benchmarks/native-compare/intake_ab.py).
+  jvm-intake-ab:
+    name: "JVM intake A/B (same machine)"
+    needs: natives
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/linux-quiche-env
+        with:
+          natives-run-id: ${{ needs.natives.outputs.linux }}
+          github-token: ${{ github.token }}
+          test-launcher-jdk: "25"
+      - name: Build the echo jar with the intake
+        run: |
+          set -euo pipefail
+          .github/scripts/gradle-retry.sh :socket-quic-quiche:quicEchoJar -PlinuxTargets=false --no-configuration-cache
+          cp test-harness/quic-echo/quic-echo.jar "$RUNNER_TEMP/new.jar"
+      - name: Build the echo jar of the base (this branch before the receive fix)
+        env:
+          BASE: 7a4aa8c1
+        run: |
+          set -euo pipefail
+          git worktree add --detach "$RUNNER_TEMP/base" "$BASE"
+          cp -R socket-quic-quiche/libs "$RUNNER_TEMP/base/socket-quic-quiche/"
+          cd "$RUNNER_TEMP/base"
+          ./gradlew :socket-quic-quiche:quicEchoJar -PlinuxTargets=false --no-configuration-cache
+          cp test-harness/quic-echo/quic-echo.jar "$RUNNER_TEMP/base.jar"
+      - name: Run
+        run: |
+          set -euo pipefail
+          sysctl net.core.rmem_default net.core.rmem_max
+          python3 -I benchmarks/native-compare/intake_ab.py --base-jar "$RUNNER_TEMP/base.jar" --jar "$RUNNER_TEMP/new.jar" \
+            --java "$JAVA_HOME_25_X64/bin/java" --certs socket-quic-quiche/testcerts --out results-ab --rounds 3
+      - name: Summarise
+        if: ${{ !cancelled() }}
+        env:
+          JFR: ${{ env.JAVA_HOME_25_X64 }}/bin/jfr
+        run: |
+          {
+            echo "## JVM intake A/B (hosted Linux x64, one machine)"
+            cat results-ab/intake-ab.md 2>/dev/null || echo "(no table)"
+            echo
+            for t in results-ab/*.jfr; do python3 -I benchmarks/native-compare/trace_buckets.py "$t"; done
+          } | tee results-ab/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: jvm-intake-ab
+          path: results-ab
+          retention-days: 14
+
   # Kotlin/Native only: the JMH jar carries the build host's natives, and the JVM's arm64 natives are not built on
   # an arm64 host here.
   linux-arm64:
@@ -140,7 +194,6 @@ jobs:
         run: |
           sudo apt-get install -y -q "linux-tools-$(uname -r)" linux-tools-common >/dev/null
           sudo sysctl -w kernel.perf_event_paranoid=-1 kernel.kptr_restrict=0
-          sudo sysctl -w net.core.rmem_max=4194304
           sysctl net.core.rmem_default net.core.rmem_max net.core.wmem_default net.core.wmem_max
       - name: Run
         run: |

@@ -121,6 +121,11 @@ internal suspend fun writeAbsorbingBackpressure(
 /** Below this a kernel buffer request is not worth halving further. */
 private const val SMALLEST_BUFFER_REQUEST = 64 * 1024
 
+/** MEASUREMENT ONLY (not for merge): receives that found the socket empty and waited for it. */
+object ReceiveWaits {
+    val count = java.util.concurrent.atomic.AtomicLong()
+}
+
 /**
  * JVM/Android [DatagramChannel] machinery backed by a NIO [NioChannel] — the real-socket
  * lift of the quiche `NioUdpChannel`, cleaned to the public datagram shape (RFC §7):
@@ -315,6 +320,7 @@ internal abstract class NioDatagramChannelCore(
      * is closed too; the caller re-checks [closed].
      */
     private suspend fun awaitReadable() {
+        ReceiveWaits.count.incrementAndGet()
         val loop = currentCoroutineContext()[ContinuationInterceptor] as? DatagramEventLoop
         if (loop != null && loop.isLoopThread()) {
             // Registered BEFORE the closed check, and close() sets `closed` before it reads the set:

@@ -31,6 +31,16 @@ fun main(args: Array<String>) {
                     initialMaxStreamsBidi = 1_000_000,
                 ),
         )
+    // MEASUREMENT ONLY: -Dintake.yield=<n>|never|wake and -Dintake.capacity=<n> (0 = rendezvous).
+    System.getProperty("intake.yield")?.let { rule ->
+        IntakeExperiment.readerYield =
+            when (rule) {
+                "never" -> ReaderYield.Never
+                "wake" -> ReaderYield.WhenItWakesTheLoop
+                else -> ReaderYield.Every(rule.toInt())
+            }
+    }
+    System.getProperty("intake.capacity")?.let { IntakeExperiment.capacity = it.toInt() }
     val os = ManagementFactory.getOperatingSystemMXBean() as com.sun.management.OperatingSystemMXBean
     val host =
         object : ManyConnectionHost {
@@ -39,6 +49,8 @@ fun main(args: Array<String>) {
             override fun cpuMicros(): Long = os.processCpuTime / 1000
 
             override fun maxRssRaw(): Long = 0
+
+            override fun platformCounters(): String = "socket_empty_waits=${com.ditchoom.socket.udp.ReceiveWaits.count.get()}"
 
             override fun udpCounters(): String {
                 val snmp = File("/proc/net/snmp")

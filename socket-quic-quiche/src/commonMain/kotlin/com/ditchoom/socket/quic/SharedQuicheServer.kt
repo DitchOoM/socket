@@ -295,7 +295,7 @@ internal class SharedQuicheServer(
             val tokenBuf = bufferFactory.allocate(MAX_TOKEN_LEN)
             val tokenLenBuf = bufferFactory.allocate(8)
 
-            val intake = ServerDatagramIntake(channel::receive, isClosing = closed::load, capacity = tuning.serverHeldDatagrams)
+            val intake = ServerDatagramIntake(channel::receive, isClosing = closed::load, capacity = IntakeExperiment.capacity)
             val reader = launch(receiveContext + CoroutineName("quic-server/receive/$port/reader")) { intake.read() }
 
             val wake = Any()
@@ -321,12 +321,22 @@ internal class SharedQuicheServer(
                             ServerDatagramIntake.Held.ReaderEnded -> readerDone
                             ServerDatagramIntake.Held.Nothing -> {
                                 // A full pass: whatever else shares this thread runs before the next.
-                                if (routedInARow >= ServerDatagramIntake.DATAGRAMS_PER_PASS) yield()
-                                routedInARow = 0
-                                select<Any?> {
-                                    intake.onNext { res -> res.getOrNull() ?: readerDone }
-                                    wakeups.onReceive { wake }
+                                if (routedInARow >= ServerDatagramIntake.DATAGRAMS_PER_PASS) {
+                                    IntakeExperiment.loopYields.fetchAndAdd(1)
+                                    yield()
                                 }
+                                routedInARow = 0
+                                IntakeExperiment.loopWaits.fetchAndAdd(1)
+                                val waited =
+                                    select<Any?> {
+                                        intake.onNext { res -> res.getOrNull() ?: readerDone }
+                                        wakeups.onReceive { wake }
+                                    }
+                                if (waited is DatagramReadResult) {
+                                    intake.took()
+                                    IntakeExperiment.takenByWaiting.fetchAndAdd(1)
+                                }
+                                waited
                             }
                         }
                     // Register spare SCIDs / drop closed drivers BEFORE routing anything. Receive-loop only.

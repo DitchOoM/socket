@@ -95,10 +95,15 @@ def from_perf(path):
 
 
 def from_jfr(path):
-    text = subprocess.run(["jfr", "print", "--events", "jdk.ExecutionSample", "--stack-depth", "64", path],
-                          capture_output=True, text=True).stdout
+    # CPU-time samples where the recording has them (Linux, JDK 25), else wall-clock execution samples.
     samples = []
-    for block in text.split("jdk.ExecutionSample")[1:]:
+    for event in ("jdk.CPUTimeSample", "jdk.ExecutionSample"):
+        text = subprocess.run([os.environ.get("JFR", "jfr"), "print", "--events", event, "--stack-depth", "64", path],
+                              capture_output=True, text=True).stdout
+        blocks = text.split(event)[1:]
+        if blocks:
+            break
+    for block in blocks:
         frames = re.findall(r"^\s+(\S[^\n]*?)\s+line:", block, re.M)
         if frames:
             samples.append((1, frames))

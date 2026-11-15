@@ -1,3 +1,5 @@
+@file:OptIn(kotlin.concurrent.atomics.ExperimentalAtomicApi::class)
+
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.flow.DatagramReadResult
@@ -32,7 +34,11 @@ internal class ServerDatagramIntake(
     fun poll(): Held {
         val next = held.tryReceive()
         return when {
-            next.isSuccess -> Held.Next(next.getOrThrow())
+            next.isSuccess -> {
+                took()
+                IntakeExperiment.takenWithoutWaiting.fetchAndAdd(1)
+                Held.Next(next.getOrThrow())
+            }
             next.isClosed -> Held.ReaderEnded
             else -> Held.Nothing
         }
@@ -58,10 +64,19 @@ internal class ServerDatagramIntake(
                     } catch (_: Exception) {
                         if (isClosing()) break else continue
                     }
+                val foundNothingHeld = heldNow.fetchAndAdd(1) == 0
                 held.send(result)
                 if (result is DatagramReadResult.Closed) break
-                if (++readInARow == DATAGRAMS_PER_READ) {
+                IntakeExperiment.datagramsRead.fetchAndAdd(1)
+                val letTheLoopRun =
+                    when (val rule = IntakeExperiment.readerYield) {
+                        is ReaderYield.Every -> ++readInARow >= rule.datagrams
+                        ReaderYield.Never -> false
+                        ReaderYield.WhenItWakesTheLoop -> foundNothingHeld
+                    }
+                if (letTheLoopRun) {
                     readInARow = 0
+                    IntakeExperiment.readerYields.fetchAndAdd(1)
                     yield()
                 }
             }
@@ -69,6 +84,13 @@ internal class ServerDatagramIntake(
         } finally {
             held.close()
         }
+    }
+
+    private val heldNow = kotlin.concurrent.atomics.AtomicInt(0)
+
+    /** The loop took one held datagram (measurement bookkeeping). */
+    fun took() {
+        heldNow.fetchAndAdd(-1)
     }
 
     /** Frees what is held and whatever the reader is still handing over: the loop has stopped taking. */
