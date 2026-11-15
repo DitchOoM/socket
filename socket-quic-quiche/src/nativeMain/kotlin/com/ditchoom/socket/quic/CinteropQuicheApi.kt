@@ -142,9 +142,10 @@ import kotlin.time.Duration
 import kotlin.time.Duration.Companion.nanoseconds
 
 /**
- * Linux [QuicheApi] implementation backed by K/N cinterop.
+ * Kotlin/Native [QuicheApi] implementation (Apple and Linux) backed by the `Quiche` cinterop.
  *
  * Converts between [Long]-based handles and [kotlinx.cinterop.CPointer] types.
+ * The only platform-specific read is the sockaddr family byte layout, [readSockAddrFamily].
  * All `memScoped` blocks use stack allocation — fast, no GC pressure.
  */
 internal object CinteropQuicheApi : QuicheApi, QuicheRandomPin {
@@ -1243,10 +1244,7 @@ internal object CinteropQuicheApi : QuicheApi, QuicheRandomPin {
         return at.tv_sec.toLong() * 1_000_000_000L + at.tv_nsec.toLong()
     }
 
-    // --- sockaddr decode (slice 3 migration) ---
-    // Linux layout is fixed (sa_family uint16 LE at byte 0, sin_port at 2,
-    // sin_addr at 4, sin6_addr at 8); read the bytes directly. Apple is out of
-    // scope for slice 3, so no BSD branch here.
+    // --- sockaddr decode (port at byte 2 BE, sin_addr at 4, sin6_addr at 8 on every supported platform) ---
 
     private fun u8(
         addr: Long,
@@ -1265,12 +1263,7 @@ internal object CinteropQuicheApi : QuicheApi, QuicheRandomPin {
         return v
     }
 
-    override fun sockAddrFamily(addr: Long): Int =
-        when (u8(addr, 0) or (u8(addr, 1) shl 8)) {
-            platform.posix.AF_INET -> 4
-            platform.posix.AF_INET6 -> 6
-            else -> 0
-        }
+    override fun sockAddrFamily(addr: Long): Int = readSockAddrFamily(addr)
 
     override fun sockAddrPort(addr: Long): Int = (u8(addr, 2) shl 8) or u8(addr, 3)
 
