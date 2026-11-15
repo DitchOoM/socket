@@ -255,7 +255,7 @@ private val FreeUnreceived: (Throwable, ReadResult, CoroutineContext) -> Unit = 
 
 /**
  * Reads the next chunk into a buffer from the connection's factory, sized by the stream's [ReadChunk]; the caller owns a
- * returned buffer. A read that finds nothing keeps its buffer for the retry, [none] when it holds none.
+ * returned buffer. A read that finds nothing keeps its buffer for the retry.
  */
 internal class ReadOp(
     streams: StreamMap,
@@ -264,18 +264,21 @@ internal class ReadOp(
     cont: CancellableContinuation<ReadResult>,
     submit: (ConnWork) -> Unit,
     private val factory: BufferFactory,
-    private val none: PlatformBuffer,
 ) : StreamOp<ReadResult>(streams, stream, deadline, cont, submit) {
     private var result: ReadResult = ReadResult.End
-    private var spare: PlatformBuffer = none
+    private var spare: Spare = Spare.None
 
     override fun attempt(
         inside: Conn.Inside,
         entry: StreamEntry,
     ): Attempt {
         if (entry.received === Received.Finished) return finished(ReadResult.End)
-        val buffer = if (spare === none) factory.allocate(entry.chunk.bytes) else spare
-        spare = none
+        val buffer =
+            when (val kept = spare) {
+                Spare.None -> factory.allocate(entry.chunk.bytes)
+                is Spare.Held -> kept.buffer
+            }
+        spare = Spare.None
         val asked = buffer.limit()
         val step =
             try {
@@ -310,7 +313,7 @@ internal class ReadOp(
     }
 
     private fun holding(buffer: PlatformBuffer): Attempt {
-        spare = buffer
+        spare = Spare.Held(buffer)
         return Attempt.Blocked
     }
 
@@ -330,8 +333,11 @@ internal class ReadOp(
     override fun deliver() = cont.resume(result, FreeUnreceived)
 
     override fun release() {
-        if (spare !== none) spare.freeNativeMemory()
-        spare = none
+        when (val kept = spare) {
+            Spare.None -> Unit
+            is Spare.Held -> kept.buffer.freeNativeMemory()
+        }
+        spare = Spare.None
     }
 
     override fun park(
@@ -440,3 +446,49 @@ private const val QUICHE_ERR_DONE = -1
 private const val QUICHE_ERR_INVALID_STREAM_STATE = -7
 private const val QUICHE_ERR_STREAM_STOPPED = -15
 private const val QUICHE_ERR_STREAM_RESET = -16
+
+/** The buffer a read that found nothing keeps for its retry. */
+private sealed interface Spare {
+    object None : Spare
+
+    class Held(
+        val buffer: PlatformBuffer,
+    ) : Spare
+}
+
+/** Sends [stream]'s FIN with no bytes: quiche is told a length of zero and given no buffer. */
+internal class FinishOp(
+    streams: StreamMap,
+    stream: QuicStreamId,
+    deadline: Duration,
+    cont: CancellableContinuation<BytesWritten>,
+    submit: (ConnWork) -> Unit,
+) : StreamOp<BytesWritten>(streams, stream, deadline, cont, submit) {
+    override fun attempt(
+        inside: Conn.Inside,
+        entry: StreamEntry,
+    ): Attempt {
+        val answer = inside.streamSend(stream, NO_BUFFER, 0, WriteEnd.Finish)
+        return when (answer.result) {
+            0 -> Attempt.Finished
+            QUICHE_ERR_DONE -> {
+                inside.wantWritable(stream)
+                Attempt.Blocked
+            }
+            else -> Attempt.Failed(StreamFailure.ofSend(stream, answer.result, answer.errorCode ?: StreamFailure.UNKNOWN))
+        }
+    }
+
+    override fun deliver() = cont.resume(BytesWritten(0))
+
+    override fun park(
+        entry: StreamEntry,
+        waiter: Parked,
+    ) {
+        entry.writer = waiter
+    }
+
+    override fun parked(entry: StreamEntry): Parked = entry.writer
+}
+
+private const val NO_BUFFER = 0L

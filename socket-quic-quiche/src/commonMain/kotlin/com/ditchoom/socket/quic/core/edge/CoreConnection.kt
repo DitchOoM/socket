@@ -2,7 +2,6 @@ package com.ditchoom.socket.quic.core.edge
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
-import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.BytesWritten
 import com.ditchoom.buffer.flow.ReadPolicy
@@ -98,7 +97,6 @@ internal class CoreConnection(
     private val opens = ArrayDeque<OpenStream>()
 
     /** The zero bytes a FIN is sent with: quiche reads no memory for a zero-length send. */
-    private val empty: PlatformBuffer = bufferFactory.allocate(0)
 
     override val state: StateFlow<QuicConnectionState> = mutableState
     override val unreadAtClose: StateFlow<QuicUnreadAtClose> = MutableStateFlow(QuicUnreadAtClose.ConnectionOpen)
@@ -163,7 +161,7 @@ internal class CoreConnection(
         deadline: Duration,
     ): ReadResult =
         suspendCancellableCoroutine { cont ->
-            settle(ReadOp(streams, stream, deadline, cont, submitToLoop, bufferFactory, empty), cont)
+            settle(ReadOp(streams, stream, deadline, cont, submitToLoop, bufferFactory), cont)
         }
 
     internal suspend fun write(
@@ -181,7 +179,10 @@ internal class CoreConnection(
     internal suspend fun finish(
         stream: QuicStreamId,
         deadline: Duration,
-    ): BytesWritten = write(stream, empty, NO_ADDRESS, WriteEnd.Finish, deadline)
+    ): BytesWritten =
+        suspendCancellableCoroutine { cont ->
+            settle(FinishOp(streams, stream, deadline, cont, submitToLoop), cont)
+        }
 
     // --- ConnEvents: inside the connection ---
 
