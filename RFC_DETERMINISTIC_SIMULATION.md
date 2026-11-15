@@ -109,6 +109,12 @@ Tier A cannot replay a capture whose failure is quiche's own behaviour (when a P
 
 writes `replay/fixtures/<Name>.kt` and prints the test to paste into `CaptureReplayTestSuite`. The test is red while the failure reproduces.
 
+**Red before, green after, for a quiche patch.** A replay test of a failure a quiche source patch fixes is shown red by building quiche without the patch:
+
+1. Comment out the patch's `patchQuicheXxx(sourceDir)` call in `socket-quic-quiche/build.gradle.kts`. The build's marker is named for a digest of that file, so the next build unpacks quiche afresh and applies the patches that are left. Editing the unpacked source under `build/quiche/` instead does nothing: it is unpacked again on every native build.
+2. Run the replay test together with the patch's own test (`./gradlew :socket-quic-quiche:jvmTest --rerun --tests …`). The patch's own test going red is what shows the unpatched binary is the one loaded.
+3. Restore `build.gradle.kts` and run both again: green, and `libs/quiche/<target>/lib/libquiche.*` has the checksum it had before step 1.
+
 **What it cannot replay.** The modelled peer is quiche: it reproduces when the peer transmitted and in which packet number space, not which frames the peer chose. A peer that withholds an ACK quiche would bundle, splits its handshake flight across datagrams, or retires connection IDs makes the replay leave the capture at the first datagram of ours that depends on it, and the report says which. Failures above quiche (the driver, the reader loop, platform sockets) are Tier A's. Without captures from both sides of the link, a peer datagram that never arrived is unknown and our datagrams' fates are inferred from acknowledgements.
 
 ## 5. Capture — `TraceRecorder`
