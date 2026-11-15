@@ -5,6 +5,7 @@ import java.net.StandardSocketOptions
 import java.nio.channels.DatagramChannel
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.Paths
 
 /**
  * The socket buffer sizes asked of the operating system for a UDP socket, in bytes. The receive buffer has to hold
@@ -85,7 +86,7 @@ internal class SocketReport(
     }
 
     private companion object {
-        val LINUX_UDP_TABLES: List<Path> = listOf(Path.of("/proc/net/udp"), Path.of("/proc/net/udp6"))
+        val LINUX_UDP_TABLES: List<Path> = listOf(Paths.get("/proc/net/udp"), Paths.get("/proc/net/udp6"))
     }
 }
 

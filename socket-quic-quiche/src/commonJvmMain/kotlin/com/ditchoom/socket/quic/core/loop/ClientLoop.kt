@@ -428,6 +428,7 @@ internal class ClientLoop(
     val life = AtomicReference<ClientLoopLife>(ClientLoopLife.Alive)
 
     private val selector: Selector = Selector.open()
+    private val scan: ReadinessScan = ReadinessScan.ofThisRuntime()
     private val inbox = WorkInbox<LoopWork>()
     private val sleepsUntil = AtomicLong(NO_DEADLINE)
     private val sleep = AtomicInt(AWAKE)
@@ -437,7 +438,6 @@ internal class ClientLoop(
     private var readyHead: EndpointLink = EndpointLink.End
     private var touchedHead: EndpointLink = EndpointLink.End
 
-    // The consumer form of select: the JDK's selected-key set would allocate a node per ready event.
     private val onReady =
         Consumer<SelectionKey> { key ->
             val endpoint = key.attachment() as ClientEndpoint
@@ -609,16 +609,16 @@ internal class ClientLoop(
         if (inbox.looksEmpty() && !deadlines.hasInbox()) {
             counts.waits++
             next.fold(
-                none = { selector.select(onReady) },
+                none = { scan.select(selector, onReady) },
                 due = { due ->
                     val nanos = due - clock.nowNanos()
                     // The selector counts whole milliseconds; a shorter wait rounds up so a deadline is never early.
                     if (nanos <=
                         0
                     ) {
-                        selector.selectNow(onReady)
+                        scan.selectNow(selector, onReady)
                     } else {
-                        selector.select(onReady, (nanos + NANOS_PER_MILLI - 1) / NANOS_PER_MILLI)
+                        scan.select(selector, (nanos + NANOS_PER_MILLI - 1) / NANOS_PER_MILLI, onReady)
                     }
                 },
             )

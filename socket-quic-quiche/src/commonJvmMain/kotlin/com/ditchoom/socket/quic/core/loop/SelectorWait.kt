@@ -11,9 +11,9 @@ internal class SelectorWait(
     private val clock: LoopClock,
 ) : LoopWait {
     private val selector: Selector = Selector.open()
+    private val scan: ReadinessScan = ReadinessScan.ofThisRuntime()
     private val key: SelectionKey = channel.register(selector, SelectionKey.OP_READ)
 
-    // The consumer form of select: the JDK's selected-key set would allocate a node per ready event.
     private var readyOps = 0
     private val onReady = java.util.function.Consumer<SelectionKey> { readyOps = readyOps or it.readyOps() }
 
@@ -29,11 +29,17 @@ internal class SelectorWait(
         if (key.interestOps() != wanted) key.interestOps(wanted)
         readyOps = 0
         until.fold(
-            none = { selector.select(onReady) },
+            none = { scan.select(selector, onReady) },
             due = { due ->
                 val nanos = due - clock.nowNanos()
                 // The selector counts whole milliseconds; a shorter wait rounds up so a deadline is never early.
-                if (nanos <= 0) selector.selectNow(onReady) else selector.select(onReady, (nanos + NANOS_PER_MILLI - 1) / NANOS_PER_MILLI)
+                if (nanos <=
+                    0
+                ) {
+                    scan.selectNow(selector, onReady)
+                } else {
+                    scan.select(selector, (nanos + NANOS_PER_MILLI - 1) / NANOS_PER_MILLI, onReady)
+                }
             },
         )
         return when {

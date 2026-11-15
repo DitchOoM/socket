@@ -271,7 +271,13 @@ class CoreFailureTierTests {
                                 while (true) {
                                     val stream = acceptStream()
                                     launch {
-                                        while (stream.read(10.seconds) { stream.writeFully(it, 10.seconds) } is ScopedRead.Data<*>) Unit
+                                        // The client closing the connection ends the read with a QuicCloseException; uncaught here it would end the
+                                        // whole process on Android.
+                                        try {
+                                            while (stream.read(10.seconds) { stream.writeFully(it, 10.seconds) } is ScopedRead.Data<*>) Unit
+                                        } catch (closed: QuicCloseException) {
+                                            // The peer is gone: the echo is over.
+                                        }
                                     }
                                 }
                             }

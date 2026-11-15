@@ -11,6 +11,7 @@ import java.net.Inet4Address
 import java.net.InetSocketAddress
 import java.net.NoRouteToHostException
 import java.net.PortUnreachableException
+import java.nio.Buffer
 import java.nio.ByteBuffer
 import java.nio.channels.ClosedChannelException
 import java.nio.channels.DatagramChannel
@@ -40,7 +41,8 @@ internal class NioOneByOne(
         val sendView = sendViews[batch.lane]
         for (n in 0 until count) {
             val offset = batch.offsetOf(n)
-            sendView.limit(offset + batch.lengthOf(n)).position(offset)
+            // Buffer's own methods: ByteBuffer's covariant overrides are absent from Android before API 33.
+            (sendView as Buffer).limit(offset + batch.lengthOf(n)).position(offset)
             val written =
                 try {
                     when (val target = batch.targetOf(n)) {
@@ -66,7 +68,7 @@ internal class NioOneByOne(
             val buffer = into.take()
             if (buffer !is ReceiveBuffer) break
             val bytes = byteBufferOf(buffer.buffer)
-            bytes.clear()
+            (bytes as Buffer).clear()
             val from =
                 try {
                     channel.receive(bytes)

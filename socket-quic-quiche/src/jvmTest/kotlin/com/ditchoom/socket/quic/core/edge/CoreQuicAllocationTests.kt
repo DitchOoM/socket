@@ -7,6 +7,7 @@ import com.ditchoom.buffer.flow.HalfCloseable
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.ScopedRead
 import com.ditchoom.socket.quic.read
@@ -172,7 +173,13 @@ class CoreQuicAllocationTests {
                             while (true) {
                                 val stream = acceptStream()
                                 launch {
-                                    while (stream.read(10.seconds) { stream.writeFully(it, 10.seconds) } is ScopedRead.Data<*>) Unit
+                                    // The client closing the connection ends the read with a QuicCloseException; uncaught here it would end the
+                                    // whole process on Android.
+                                    try {
+                                        while (stream.read(10.seconds) { stream.writeFully(it, 10.seconds) } is ScopedRead.Data<*>) Unit
+                                    } catch (closed: QuicCloseException) {
+                                        // The peer is gone: the echo is over.
+                                    }
                                     stream.close()
                                 }
                             }
