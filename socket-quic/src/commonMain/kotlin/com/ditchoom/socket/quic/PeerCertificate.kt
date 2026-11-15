@@ -6,6 +6,7 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.crypto.secure
 import kotlin.concurrent.atomics.AtomicReference
 import kotlin.time.Clock
 import kotlin.time.Duration
@@ -198,7 +199,7 @@ class PeerCertificate internal constructor(
     }
 
     private fun wipe() {
-        privateKeyPem.zeroAndFree()
+        privateKeyPem.freeNativeMemory()
         certificatePem.freeNativeMemory()
     }
 
@@ -239,6 +240,9 @@ private const val UNCOMPRESSED_POINT = 0x04
 private const val DER_SEQUENCE = 0x30
 private const val SERIAL_TOP_BITS_CLEAR = 0x3F
 private const val SERIAL_POSITIVE_BIT = 0x40
+
+/** Upper bound for any secret buffer here: the PKCS#8 DER and its PEM armor are each well under this. */
+private const val PRIVATE_KEY_PEM_MAX_BYTES = 1024
 
 /**
  * Mint the certificate. Key material and every intermediate that holds it are native buffers freed (and,
@@ -351,7 +355,9 @@ private fun privateKeyPem(
     p256: Der,
     native: BufferFactory,
 ): PlatformBuffer {
-    val scalar = native.allocate(P256_PRIVATE_KEY_BYTES)
+    // A secure buffer wipes its whole backing on free, so no copy of the key lingers in a pooled buffer.
+    val secret = native.secure(maxAllocationBytes = PRIVATE_KEY_PEM_MAX_BYTES)
+    val scalar = secret.allocate(P256_PRIVATE_KEY_BYTES)
     try {
         keyPair.writePrivateKey(scalar)
         scalar.resetForRead()
@@ -370,14 +376,14 @@ private fun privateKeyPem(
                             Der.explicit(EC_PRIVATE_KEY_PUBLIC_KEY_TAG, Der.bitString(publicKey)),
                         ),
                     ),
-                ).encode(native)
+                ).encode(secret)
         try {
-            return pem("PRIVATE KEY", pkcs8, native)
+            return pem("PRIVATE KEY", pkcs8, secret)
         } finally {
-            pkcs8.zeroAndFree()
+            pkcs8.freeNativeMemory()
         }
     } finally {
-        scalar.zeroAndFree()
+        scalar.freeNativeMemory()
     }
 }
 
@@ -387,10 +393,4 @@ private fun ReadBuffer.managedCopy(): ReadBuffer {
     for (i in position() until limit()) copy.writeByte(this[i])
     copy.resetForRead()
     return copy
-}
-
-private fun PlatformBuffer.zeroAndFree() {
-    resetForWrite()
-    fill(0)
-    freeNativeMemory()
 }

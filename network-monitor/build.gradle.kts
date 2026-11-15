@@ -169,7 +169,7 @@ kotlin {
         iosSimulatorArm64 { configureNetworkHelpersCinterop() }
         tvosArm64 { configureNetworkHelpersCinterop() }
         tvosSimulatorArm64 { configureNetworkHelpersCinterop() }
-        watchosArm64 { configureNetworkHelpersCinterop() }
+        watchosDeviceArm64 { configureNetworkHelpersCinterop() }
         watchosSimulatorArm64 { configureNetworkHelpersCinterop() }
     }
 
@@ -248,7 +248,7 @@ kotlin {
                 "iosSimulatorArm64Main",
                 "tvosArm64Main",
                 "tvosSimulatorArm64Main",
-                "watchosArm64Main",
+                "watchosDeviceArm64Main",
                 "watchosSimulatorArm64Main",
             ).forEach { sourceSetName ->
                 findByName(sourceSetName)?.kotlin?.srcDir(appleNativeImplDir)
@@ -271,7 +271,7 @@ kotlin {
                 "iosSimulatorArm64Main",
                 "tvosArm64Main",
                 "tvosSimulatorArm64Main",
-                "watchosArm64Main",
+                "watchosDeviceArm64Main",
                 "watchosSimulatorArm64Main",
             ).forEach { sourceSetName ->
                 findByName(sourceSetName)?.kotlin?.srcDir(appleRssiDefaultDir)

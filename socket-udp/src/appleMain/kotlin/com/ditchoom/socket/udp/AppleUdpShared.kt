@@ -10,17 +10,14 @@ import platform.posix.AF_INET6
 // `appleMain`.
 //
 // Everything else Apple-specific lives in `src/appleNativeImpl/kotlin`, added per-target via `srcDir`
-// (see this module's build.gradle.kts). The reason is watchosArm64: it is arm64_32, so `size_t`,
-// `ssize_t` and `NSUInteger` are 32-bit there and 64-bit on every other Apple target. A shared
-// `appleMain` forces a `compileAppleMainKotlinMetadata` compilation that must type-check one source
-// against all of them at once, and the datagram channels' `memcpy` lengths, `sizeOf<…>().convert()` and
-// `content.length` are exactly the "numbers with different bit widths" that compilation rejects — even
-// though each individual target compiles fine.
+// (see this module's build.gradle.kts). A shared `appleMain` forces a
+// `compileAppleMainKotlinMetadata` compilation that must type-check one source against every Apple
+// target at once.
 //
 // These two declarations survive here because they carry no platform-width types, and because
 // `:socket-quic-quiche`'s OWN `appleMain` consumes them: that module's shared Apple source needs them
 // resolvable from metadata, which per-target `srcDir` output is not. Keep this file free of
-// `size_t`/`ssize_t`/`NSUInteger`-derived types, or the metadata compilation breaks again.
+// `size_t`/`ssize_t`/`NSUInteger`-derived types.
 
 /**
  * The BSD/Darwin C `sockaddr` layout for [SocketAddressCodec]: a length byte, a single-byte

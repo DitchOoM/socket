@@ -51,9 +51,7 @@ import platform.posix.timeval
  *    by-reference length argument is a [UIntVar].
  *
  * Every `ssize_t`-returning call is narrowed with `convert<Int>()` rather than `toInt()`: K/N maps
- * `ssize_t` to Long on all 64-bit Apple targets but to Int on arm64_32 (watchOS device), and `convert`
- * compiles on both. This module registers no watchOS target today, but the idiom costs nothing and is
- * the one that survives someone adding it.
+ * `ssize_t` to Long on every Apple target, and `convert` states the narrowing explicitly.
  */
 internal object ApplePosixUdp {
     const val MAX_DATAGRAM = 2048

@@ -58,7 +58,7 @@ kotlin {
         iosSimulatorArm64()
         tvosArm64()
         tvosSimulatorArm64()
-        watchosArm64()
+        watchosDeviceArm64()
         watchosSimulatorArm64()
     }
 
@@ -76,6 +76,8 @@ kotlin {
             // QuicTraceCapture's public surface exposes TraceSink, so re-export it via api.
             api(project(":socket-trace"))
             implementation(libs.kotlinx.coroutines.core)
+            // secure(): buffers that wipe their whole backing on free, for the minted private key.
+            implementation(libs.buffer.crypto)
         }
         commonTest {
             dependencies {

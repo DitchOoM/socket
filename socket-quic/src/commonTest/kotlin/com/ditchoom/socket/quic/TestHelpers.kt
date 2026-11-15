@@ -104,7 +104,7 @@ suspend fun awaitUntil(
 /**
  * True when the current runtime is a Kotlin/Native Apple target
  * (macosArm64, iosArm64, iosSimulatorArm64,
- * tvosArm64, tvosSimulatorArm64, watchosArm64,
+ * tvosArm64, tvosSimulatorArm64, watchosDeviceArm64,
  * watchosSimulatorArm64).
  *
  * Used by `QuicHarnessIntegrationTests` to select the Apple pinned-trust

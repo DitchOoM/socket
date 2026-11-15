@@ -34,7 +34,7 @@ kotlin {
     tvosSimulatorArm64()
 
     // Apple – watchOS
-    watchosArm64()
+    watchosDeviceArm64()
     watchosSimulatorArm64()
 
     sourceSets {

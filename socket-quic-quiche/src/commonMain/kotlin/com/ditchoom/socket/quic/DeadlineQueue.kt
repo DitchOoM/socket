@@ -145,8 +145,7 @@ private object NoAction : Runnable {
  *
  * Shared by the JVM's [DeadlineTimer] and Kotlin/Native's `NativeDeadlineTimer`; the thread, the clock and the
  * waiting are theirs, the queue is the same code. Only `kotlin.concurrent.atomics`, `Int` and `Long` are used
- * outside [StateCell], so it compiles for every target of the module (no pointer-width-dependent type, as
- * watchosArm64 needs).
+ * outside [StateCell], so it compiles for every target of the module (no pointer-width-dependent type).
  *
  * Arming allocates the [DeadlineNode] and nothing else; disarming allocates nothing. The timer thread's own
  * bookkeeping (the heap's growth) is off that path.

@@ -319,7 +319,7 @@ jobs:
             macosArm64 \
             iosArm64 iosSimulatorArm64 \
             tvosArm64 tvosSimulatorArm64 \
-            watchosArm64 watchosSimulatorArm64; do
+            watchosDeviceArm64 watchosSimulatorArm64; do
             if echo "$VARIANTS" | grep -q "^${v}ApiElements-published$"; then
               echo "ApiElements OK: $v"
             else
@@ -333,7 +333,7 @@ jobs:
           for v in macosArm64 \
             iosArm64 iosSimulatorArm64 \
             tvosArm64 tvosSimulatorArm64 \
-            watchosArm64 watchosSimulatorArm64; do
+            watchosDeviceArm64 watchosSimulatorArm64; do
             if echo "$VARIANTS" | grep -q "^${v}MetadataElements-published$"; then
               echo "MetadataElements OK: $v"
             else

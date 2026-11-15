@@ -359,14 +359,9 @@ jobs:
           - name: "ABI (binary compatibility)"
             tasks: "checkKotlinAbi"
           # Compile (can't run — no device) the test sources for the Apple *device* targets that
-          # nothing else covers. The simulator lanes above are all 64-bit, so they cannot catch an
-          # ILP32 regression: watchosArm64 is arm64_32, where K/N maps `ssize_t` to Int while every
-          # other Apple target maps it to Long. A width-dependent comparison therefore compiles
-          # clean on macOS/iOS/tvOS and on the watchOS *simulator*, and fails only here — exactly
-          # how socket-udp's HostLoopback.apple.kt was broken for watchosArm64 while looking fine
-          # everywhere (#280). Cheap: compile only, no link, no run.
+          # nothing else covers. Cheap: compile only, no link, no run.
           - name: "device-target compile (ILP32 guard)"
-            tasks: "compileTestKotlinWatchosArm64 compileTestKotlinTvosArm64 compileTestKotlinIosArm64"
+            tasks: "compileTestKotlinWatchosDeviceArm64 compileTestKotlinTvosArm64 compileTestKotlinIosArm64"
     steps:
       - uses: actions/checkout@v7
       # The marker every failure-capture window starts from, and a hang watchdog: at 52 minutes (the
@@ -769,7 +764,7 @@ jobs:
           publishMacosArm64PublicationToMavenLocal
           publishTvosArm64PublicationToMavenLocal
           publishTvosSimulatorArm64PublicationToMavenLocal
-          publishWatchosArm64PublicationToMavenLocal
+          publishWatchosDeviceArm64PublicationToMavenLocal
           publishWatchosSimulatorArm64PublicationToMavenLocal
 
       - name: Upload Maven local artifacts

@@ -520,7 +520,7 @@ kotlin {
         tvosSimulatorArm64 { configureNWHelpersCinterop() }
 
         // watchOS (watchosArm32 not supported by buffer library)
-        watchosArm64 { configureNWHelpersCinterop() }
+        watchosDeviceArm64 { configureNWHelpersCinterop() }
         watchosSimulatorArm64 { configureNWHelpersCinterop() }
     }
 
@@ -617,7 +617,7 @@ kotlin {
         // Cannot use appleMain directly because compileAppleMainKotlinMetadata
         // can't resolve Apple-specific types (NSDataBuffer, NSData, etc.) from dependencies.
         // POSIX code every native target shares (getaddrinfo), added per leaf for the same reason
-        // appleNativeImpl is: a shared appleMain cannot compile metadata with watchosArm64 in it.
+        // appleNativeImpl is.
         val posixNativeImplDir = file("src/posixNativeImpl/kotlin")
         if (appleTargets) {
             val appleNativeImplDir = file("src/appleNativeImpl/kotlin")
@@ -627,7 +627,7 @@ kotlin {
                 "iosSimulatorArm64Main",
                 "tvosArm64Main",
                 "tvosSimulatorArm64Main",
-                "watchosArm64Main",
+                "watchosDeviceArm64Main",
                 "watchosSimulatorArm64Main",
             ).forEach { sourceSetName ->
                 findByName(sourceSetName)?.kotlin?.srcDir(appleNativeImplDir)
@@ -920,7 +920,7 @@ dokka {
             "iosSimulatorArm64",
             "tvosArm64",
             "tvosSimulatorArm64",
-            "watchosArm64",
+            "watchosDeviceArm64",
             "watchosSimulatorArm64",
         )
     dokkaSourceSets {
