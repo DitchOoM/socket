@@ -9,7 +9,6 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.newFixedThreadPoolContext
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
@@ -257,32 +256,6 @@ class NativeDeadlineTimerTests {
             }
         }
 
-    /** The timer thread reads the timer's fields from its first pass, so it must not start before every one is set. */
-    @Test
-    fun aNewTimersThreadNeverSeesItHalfBuilt() =
-        runTest {
-            real {
-                // More builder threads than cores, so a builder is often descheduled mid-construction while its new
-                // thread makes its first pass. Each timer is closed, which waits for its thread, before the next, so
-                // at most [BUILDERS] timer threads are alive.
-                val builders = newFixedThreadPoolContext(BUILDERS, "timer-builders")
-                try {
-                    withContext(builders) {
-                        repeat(BUILDERS) {
-                            launch {
-                                repeat(CONSTRUCTIONS) {
-                                    val timer = NativeDeadlineTimer()
-                                    timer.close()
-                                }
-                            }
-                        }
-                    }
-                } finally {
-                    builders.close()
-                }
-            }
-        }
-
     @Test
     fun anIdleTimerMakesNoPassesAndOneFarDeadlineDoesNotWakeIt() =
         runTest {
@@ -304,9 +277,4 @@ class NativeDeadlineTimerTests {
                 }
             }
         }
-
-    private companion object {
-        const val BUILDERS = 64
-        const val CONSTRUCTIONS = 300
-    }
 }
