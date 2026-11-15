@@ -2,7 +2,7 @@ name: "Build & Test (Apple)"
 
 # FAN-OUT SHAPE (was one ~32-43 minute serial job):
 #
-#   natives ──┬── kn-tests (matrix: macos-x64 | ios-sim | other-sims | device-compile)
+#   natives ──┬── kn-tests (matrix: ios-sim | other-sims | device-compile)
 #             ├── jvm-tests (matrix: JNI | FFM | JDK 25 / FFM)
 #             ├── link ── integration-macos-arm64
 #             └── publish
@@ -144,12 +144,13 @@ jobs:
       - name: Show pinned version
         run: echo "Building version ${ORG_GRADLE_PROJECT_version} (pinned for the whole run)"
 
-      # All five Apple Rust targets the quiche static libs are built for (macOS x2 + iOS device/sim-arm64/
-      # sim-x64). Pre-installing them here means the Gradle build step doesn't have to.
+      # The Rust targets the quiche libs are built for: macOS arm64 (K/N + JVM), macOS x86_64 (the JVM
+      # native only), iOS device and iOS simulator arm64. Pre-installing them here means the Gradle build
+      # step doesn't have to.
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin,aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
+          targets: aarch64-apple-darwin,x86_64-apple-darwin,aarch64-apple-ios,aarch64-apple-ios-sim
 
       - name: Cache Cargo registry
         uses: actions/cache@v6
@@ -179,11 +180,10 @@ jobs:
             socket-quic-quiche/libs/quiche/macos-x64/lib
             socket-quic-quiche/libs/quiche/ios-arm64/lib
             socket-quic-quiche/libs/quiche/ios-simulator-arm64/lib
-            socket-quic-quiche/libs/quiche/ios-x64/lib
           key: quiche-apple-v3-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/build.gradle.kts', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
 
-      # Build every Apple quiche native lib. buildQuicheAppleStaticLibs makes the macOS dylib+.a (both
-      # arches) + the three iOS static libs (vendored BoringSSL, build.rs patched for the arm64 iOS
+      # Build every Apple quiche native lib. buildQuicheAppleStaticLibs makes the macOS dylib+.a (arm64)
+      # + the two iOS static libs (vendored BoringSSL, build.rs patched for the arm64 iOS
       # simulator); buildPublishedMacosQuicheNatives makes the JNI shim for BOTH macOS arches — the
       # release injects these macos-*/lib dirs into the JVM jar, so a host-arch-only shim shipped
       # macos-x64 without libquiche_jni.dylib (4.19.0-4.21.0). All skip cargo on a marker/cache hit.
@@ -200,7 +200,7 @@ jobs:
         run: |
           set -euo pipefail
           missing=0
-          for d in macos-arm64 macos-x64 ios-arm64 ios-simulator-arm64 ios-x64; do
+          for d in macos-arm64 ios-arm64 ios-simulator-arm64; do
             f="socket-quic-quiche/libs/quiche/$d/lib/libquiche.a"
             if [ ! -f "$f" ]; then echo "::error::missing $f"; missing=1; else echo "ok: $f"; fi
           done
@@ -281,7 +281,7 @@ jobs:
 
   # ── Stage 2a: Kotlin/Native test shards ──────────────────────────────────────────────────────
   # Task names are UNQUALIFIED (no leading colon) so Gradle runs them in every subproject that has
-  # them — a leading-colon `:macosX64Test` would run only the ROOT project's test and silently skip
+  # them — a leading-colon `:macosArm64Test` would run only the ROOT project's test and silently skip
   # socket-quic-quiche / socket-http3 / socket-webtransport (a false green). The full QUIC suites are:
   #   - socket-quic-quiche AppleQuicheEngineLoopbackTest (quiche client over NW-UDP <-> dual-stack
   #     IPv6 POSIX server)
@@ -312,17 +312,6 @@ jobs:
       fail-fast: false
       matrix:
         shard:
-          # ⚠️ The macOS x64 suite is split with `-x`, NOT with a hand-kept list of qualified
-          # `:module:macosX64Test` task paths, and that choice is load-bearing. An explicit list is
-          # exactly the false-green this file already warns about above: add a module (or an Apple
-          # target to an existing one) and its tests silently stop running, with everything green.
-          # `-x` inverts the failure mode — the unqualified task still means "every subproject that
-          # has one", so a new module automatically lands in the `rest` shard. The only thing the
-          # split can get wrong is running something twice, which is loud and cheap.
-          #
-          # socket-quic-quiche is peeled off because it carries the real QUIC loopback suites and
-          # dominates the lane; the two together were 827s of a 864s job before this split.
-          #
           # `requireAllTests` turns a skipped test into a hard failure on the lanes whose first
           # inventory came back empty (see the skip-inventory step). It is deliberately absent from
           # the three simulator shards, which still legitimately skip.
@@ -343,12 +332,6 @@ jobs:
           # So setting requireAllTests: "1" here today would convert 22 correct, documented skips into
           # a permanently red lane — the SkipGate docs' exact "a gate that cannot be satisfied is not
           # a gate". It goes on when #81 lands and the inventory reads zero, and not before.
-          - name: "macOS x64 (quiche)"
-            tasks: ":socket-quic-quiche:macosX64Test"
-            requireAllTests: "1"
-          - name: "macOS x64 (all other modules)"
-            tasks: "macosX64Test -x :socket-quic-quiche:macosX64Test"
-            requireAllTests: "1"
           # Booted, not standalone: the shard boots an iPhone simulator and the tests spawn into it,
           # so the network daemons the WebTransport and QUIC-harness suites need are reachable.
           # requireAllTests stays off until this shard's skip inventory reads zero.
@@ -365,8 +348,7 @@ jobs:
             tasks: "tvosSimulatorArm64Test"
           - name: "watchOS simulator"
             tasks: "watchosSimulatorArm64Test"
-          # ktlint gets its OWN lane. It rode the macOS x64 lane, then moved to the compile lane
-          # when that was split — and took the bottleneck with it both times, because it is ~400s
+          # ktlint gets its OWN lane. It is ~400s
           # of work in its own right (measured: the ILP32 lane went 414s -> 813s the moment ktlint
           # landed on it). It depends on no native artifact and no test, so it parallelises freely.
           - name: "ktlint"
@@ -398,7 +380,7 @@ jobs:
           hang-budget-minutes: "52"
           kill-after-dump: "true"
           # Timeline ring of the test binary: `sample` snapshots on the iOS simulator shard only (its
-          # test.kexe runs as a host process), none on the macOS x64 / tvOS / watchOS / ktlint / ABI
+          # test.kexe runs as a host process), none on the tvOS / watchOS / ktlint / ABI
           # shards, which stay uninstrumented.
           trace-ring: ${{ matrix.shard.ring }}
       - uses: ./.github/actions/apple-quiche-env
@@ -784,15 +766,11 @@ jobs:
           publishKotlinMultiplatformPublicationToMavenLocal
           publishIosArm64PublicationToMavenLocal
           publishIosSimulatorArm64PublicationToMavenLocal
-          publishIosX64PublicationToMavenLocal
           publishMacosArm64PublicationToMavenLocal
-          publishMacosX64PublicationToMavenLocal
           publishTvosArm64PublicationToMavenLocal
           publishTvosSimulatorArm64PublicationToMavenLocal
-          publishTvosX64PublicationToMavenLocal
           publishWatchosArm64PublicationToMavenLocal
           publishWatchosSimulatorArm64PublicationToMavenLocal
-          publishWatchosX64PublicationToMavenLocal
 
       - name: Upload Maven local artifacts
         id: upload_maven_local
@@ -830,7 +808,7 @@ jobs:
     # The shared QUIC suites keep the last events of every connection they open in a ring and attach
     # them to a failing test's report (socket-testsuite TraceRing.kt). Off by default because turning
     # the trace on wraps the connection's UDP channels, i.e. changes the code under test: on in THIS
-    # K/N lane (macOS arm64), off in the macOS x64, simulator, Linux native and JVM-FFM lanes.
+    # K/N lane (macOS arm64), off in the simulator, Linux native and JVM-FFM lanes.
     env:
       QUIC_TEST_TRACE_RING: "1"
     steps:
@@ -847,7 +825,7 @@ jobs:
           kill-after-dump: "true"
           # Time Profiler recording of the K/N test binary (last ~60 s), uploaded only on failure.
           # The only lane that records with xctrace: a sampling profiler perturbs timing, so the
-          # macOS x64 shards and the JVM lanes stay untraced.
+          # simulator shards and the JVM lanes stay untraced.
           trace-ring: xctrace
 
       # Restores each module's test.kexe to its <module>/build/bin/macosArm64/debugTest/ path
