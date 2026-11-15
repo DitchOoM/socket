@@ -6,6 +6,8 @@ import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.socket.quic.QuicCloseException
+import com.ditchoom.socket.quic.QuicheApi
+import com.ditchoom.socket.quic.core.edge.CoreConnection
 import com.ditchoom.socket.quic.ScopedRead
 import com.ditchoom.socket.quic.core.edge.CoreServer
 import com.ditchoom.socket.quic.core.edge.coreServe
@@ -29,6 +31,8 @@ import kotlin.time.Duration.Companion.seconds
 internal suspend fun withCoreEchoServer(
     config: ServerConfig = ServerConfig(),
     wrapIo: (DatagramBatchIo) -> DatagramBatchIo = { it },
+    api: QuicheApi = loadQuicheApi(),
+    onAccepted: (CoreConnection) -> Unit = {},
     body: suspend CoroutineScope.(CoreServer) -> Unit,
 ) {
     val server =
@@ -37,7 +41,7 @@ internal suspend fun withCoreEchoServer(
             tls = coreTlsConfig(),
             options = coreTestOptions,
             factory = BufferFactory.Default,
-            api = loadQuicheApi(),
+            api = api,
             readPolicy = ReadPolicy.Bounded(10.seconds),
             writePolicy = WritePolicy.Bounded(10.seconds),
             config = config,
@@ -49,6 +53,7 @@ internal suspend fun withCoreEchoServer(
                 launch(Dispatchers.IO) {
                     try {
                         server.connections().collect { connection ->
+                            onAccepted(connection)
                             launch {
                                 try {
                                     connection.streams().collect { stream ->
@@ -85,3 +90,6 @@ internal suspend fun withCoreEchoServer(
         server.close()
     }
 }
+
+/** What the server's own loop thread is called. */
+internal const val SERVER_LOOP_THREAD = com.ditchoom.socket.quic.core.edge.SERVER_THREAD
