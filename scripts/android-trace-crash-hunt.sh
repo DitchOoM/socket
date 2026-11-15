@@ -30,6 +30,15 @@ trap 'status=$?; bash scripts/emulator-shutdown.sh "$API_LEVEL" "$status"; exit 
 
 capture() { # <label>
   local label="$1" trace
+  # The process is gone before its tombstone is written: wait for debuggerd to finish the backtrace
+  # and for DropBox to file it, or the capture holds the first log line and nothing else.
+  for _ in $(seq 1 30); do
+    if adb logcat -d -b crash 2>/dev/null | grep -q 'backtrace:' &&
+      ! adb shell dumpsys dropbox --print SYSTEM_TOMBSTONE 2>/dev/null | grep -q 'No entries found'; then
+      break
+    fi
+    sleep 1
+  done
   adb logcat -d -b crash >"$OUT/logcat-crash-$label.txt" 2>&1 || true
   adb logcat -d -v threadtime -b main,system >"$OUT/logcat-$label.txt" 2>&1 || true
   adb shell dumpsys dropbox --print SYSTEM_TOMBSTONE >"$OUT/tombstone-$label.txt" 2>&1 || true
