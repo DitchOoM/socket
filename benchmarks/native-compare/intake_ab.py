@@ -102,7 +102,10 @@ def main():
     a.add_argument("--seconds", type=int, default=8)
     a.add_argument("--conns", default="64,1024")
     a.add_argument("--profile", default="base,rendezvous,yield-32,never")
+    a.add_argument("--variants", default="", help="comma-separated subset of the variants (default: all)")
     args = a.parse_args()
+    if args.variants:
+        VARIANTS[:] = [v for v in VARIANTS if v[0] in args.variants.split(",")]
     os.makedirs(args.out, exist_ok=True)
     jars = {"base": args.base_jar, "new": args.jar}
     runs = []

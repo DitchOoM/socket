@@ -159,6 +159,15 @@ jobs:
           sysctl net.core.rmem_default net.core.rmem_max
           python3 -I benchmarks/native-compare/intake_ab.py --base-jar "$RUNNER_TEMP/base.jar" --jar "$RUNNER_TEMP/new.jar" \
             --java "$JAVA_HOME_25_X64/bin/java" --certs socket-quic-quiche/testcerts --out results-ab --rounds 3
+      - name: Run again with the host's receive-buffer limit raised to 4 MiB
+        run: |
+          set -euo pipefail
+          sudo sysctl -w net.core.rmem_max=4194304
+          python3 -I benchmarks/native-compare/intake_ab.py --base-jar "$RUNNER_TEMP/base.jar" --jar "$RUNNER_TEMP/new.jar" \
+            --java "$JAVA_HOME_25_X64/bin/java" --certs socket-quic-quiche/testcerts --out results-ab-rmem --rounds 3 \
+            --variants base,rendezvous,yield-1,yield-8,yield-32 --profile none
+          cp results-ab-rmem/intake-ab.md results-ab/intake-ab-rmem-4MiB.md
+          cp results-ab-rmem/intake-ab.json results-ab/intake-ab-rmem-4MiB.json
       - name: Summarise
         if: ${{ !cancelled() }}
         env:
@@ -167,6 +176,9 @@ jobs:
           {
             echo "## JVM intake A/B (hosted Linux x64, one machine)"
             cat results-ab/intake-ab.md 2>/dev/null || echo "(no table)"
+            echo
+            echo "## The same with net.core.rmem_max = 4 MiB"
+            cat results-ab/intake-ab-rmem-4MiB.md 2>/dev/null || echo "(no table)"
             echo
             for t in results-ab/*.jfr; do python3 -I benchmarks/native-compare/trace_buckets.py "$t"; done
           } | tee results-ab/summary.md >> "$GITHUB_STEP_SUMMARY"
