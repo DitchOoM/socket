@@ -91,6 +91,62 @@ abstract class MigrationSimTestSuite {
         }
 
     /**
+     * A bulk upload on a path with delay grows its congestion window every round trip.
+     *
+     * quiche counts an ACK towards the window only when the last packet it built left the window full.
+     * A sender that tops quiche up after the packets an ACK allowed have been built leaves it part-used,
+     * and the rest of that flight's ACKs are discounted: the window then grows by a few packets per round
+     * trip, and what the connection carries per round trip barely moves, whatever the path could take.
+     *
+     * Measured in round trips on the virtual clock, with no loss: [UPLOAD_ROUND_TRIPS] of them deliver
+     * about 430 kB when the window creeps and over 2 MB when it opens.
+     */
+    @Test
+    fun aBulkUploadOpensItsCongestionWindowEveryRoundTrip() =
+        runTest {
+            val test = this
+            wrapTestBody {
+                withMigrationSim(
+                    simEnv(),
+                    seed = 931_001L,
+                    primaryImpairment = PathImpairment(latency = UPLOAD_ONE_WAY_DELAY),
+                ) {
+                    val chunk = BufferFactory.network().allocate(UPLOAD_CHUNK)
+                    repeat(UPLOAD_CHUNK) { chunk.writeByte(1) }
+                    val writer =
+                        test.launch {
+                            val stream = client.openStream()
+                            repeat(UPLOAD_BYTES / UPLOAD_CHUNK) {
+                                chunk.position(0)
+                                chunk.setLimit(UPLOAD_CHUNK)
+                                stream.writeFully(chunk, 60.seconds)
+                            }
+                            stream.shutdownSend()
+                        }
+                    val accepted = server.acceptStream()
+                    val started = currentTime
+                    var delivered = 0L
+                    var deliveredInTime = 0L
+                    while (delivered < UPLOAD_BYTES) {
+                        val read = assertIs<ReadResult.Data>(accepted.read(60.seconds), "the upload ended early at $delivered bytes")
+                        delivered += read.buffer.remaining()
+                        read.buffer.freeIfNeeded()
+                        if (currentTime - started <= UPLOAD_ROUND_TRIPS * 2 * UPLOAD_ONE_WAY_DELAY.inWholeMilliseconds) {
+                            deliveredInTime = delivered
+                        }
+                    }
+                    writer.join()
+                    chunk.freeIfNeeded()
+                    assertTrue(
+                        deliveredInTime >= UPLOAD_BYTES_EXPECTED,
+                        "$UPLOAD_ROUND_TRIPS round trips of ${UPLOAD_ONE_WAY_DELAY * 2} delivered $deliveredInTime bytes; " +
+                            "the whole $UPLOAD_BYTES took ${currentTime - started} ms",
+                    )
+                }
+            }
+        }
+
+    /**
      * A write handed to the driver just before the connection's close still leaves before the close.
      *
      * RFC 9000 §10.2 lets an endpoint that has sent CONNECTION_CLOSE send nothing else, and quiche stops
@@ -389,10 +445,10 @@ abstract class MigrationSimTestSuite {
      * and loses half its datagrams from the moment the server has read it. The client sees the loss only as
      * gaps in the packet numbers it receives (`quiche_conn_recv_gaps`, [EvidenceSource.ReceiveGap]).
      *
-     * Over seeds 0..299 on an 800 ms path: 110 runs short of the whole reply with an ACK every second
-     * datagram, 98 with the sent-packet evidence alone, 75 with the gap evidence added, 55 with an ACK per
-     * datagram. These seeds are short of it without the gap evidence and whole with it; a seed fixes the
-     * pipe's loss draws, not which datagrams they land on, so the list belongs to the cadence.
+     * Over seeds 0..299 on an 800 ms path: 69 runs short of the whole reply with the sent-packet evidence
+     * alone, 65 with the gap evidence added. These seeds are short of it without the gap evidence and whole
+     * with it; a seed fixes the pipe's loss draws, not which datagrams they land on, so the list belongs to
+     * the cadence and to how the server packs the reply.
      */
     @Test
     fun aReceiverWithNothingInFlightAcksEveryDatagramOnceItSeesAGapInThePacketNumbers() =
@@ -5563,8 +5619,8 @@ abstract class MigrationSimTestSuite {
         /** What [aWriteQueuedJustBeforeTheConnectionsCloseIsStillSent] writes as the connection closes. */
         const val LAST_WORDS = "last words"
 
-        /** Measured: see [aReceiverWithNothingInFlightAcksEveryDatagramOnceItSeesAGapInThePacketNumbers]. First five of 46. */
-        val SEEDS_SHORT_WITHOUT_THE_GAP_EVIDENCE = listOf(4L, 17L, 22L, 24L, 28L)
+        /** Measured: see [aReceiverWithNothingInFlightAcksEveryDatagramOnceItSeesAGapInThePacketNumbers]. First five of 25. */
+        val SEEDS_SHORT_WITHOUT_THE_GAP_EVIDENCE = listOf(4L, 26L, 36L, 41L, 54L)
 
         /** Replies [aBurstyLinkLosesInRunsAtTheRateItWasGiven] draws from. */
         const val BURSTY_CHECK_SEEDS = 40L
@@ -5678,6 +5734,12 @@ abstract class MigrationSimTestSuite {
          * `AutoMigrationReactorTests.idleTimeoutInTheField`.
          */
         val IDLE_TIMEOUT_IN_THE_FIELD = 30.seconds
+
+        const val UPLOAD_BYTES = 4 * 1024 * 1024
+        const val UPLOAD_CHUNK = 64 * 1024
+        val UPLOAD_ONE_WAY_DELAY = 10.milliseconds
+        const val UPLOAD_ROUND_TRIPS = 12
+        const val UPLOAD_BYTES_EXPECTED = 1024 * 1024
 
         /**
          * How long the 71h Android walk's `ConnectivityManager` kept calling a dead Wi-Fi link

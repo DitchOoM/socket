@@ -814,6 +814,19 @@ class QuicheDriver(
      * [signalWritableStreams] asks about. Driver-loop only, like [streams].
      */
     private val awaitingWritable = mutableSetOf<Long>()
+
+    /**
+     * Stream writes quiche has not yet taken whole, oldest first, each offered again before every
+     * flush ([offerUnfinishedSends]).
+     *
+     * quiche takes a write only up to the congestion window's free space, and counts an ACK towards the
+     * window's growth only if the last packet it built left that space full. Bytes that reach quiche
+     * after the packets an ACK allowed were built (a writer woken and scheduled in between) leave the
+     * window part-used, so every other ACK of the same flight is discounted and the window grows by a
+     * few packets per round trip instead of doubling. Held here, the rest of a write goes in on the turn
+     * the window opens. Driver-loop only.
+     */
+    private val unfinishedSends = ArrayDeque<QuicheCmd.StreamSend>()
     private var nextStreamId = if (role is QuicRole.Server) 1L else 0L
 
     // Locally-initiated unidirectional stream IDs (RFC 9000 §2.1): low 2 bits 0b10 (client → 2)
@@ -2410,7 +2423,7 @@ class QuicheDriver(
     private fun QuicheCmd.sharesAFlush(): Boolean =
         when (this) {
             is QuicheCmd.RecvPacket, is QuicheCmd.OpenStream, is QuicheCmd.StreamRecv, is QuicheCmd.StreamSend,
-            is QuicheCmd.DgramRecv, is QuicheCmd.DgramSend,
+            is QuicheCmd.WithdrawStreamSend, is QuicheCmd.DgramRecv, is QuicheCmd.DgramSend,
             -> true
             is QuicheCmd.AbandonOpen, is QuicheCmd.StreamShutdown, is QuicheCmd.PeerCert, is QuicheCmd.Stats,
             is QuicheCmd.PeerTransportParamsRead, is QuicheCmd.SourceIdsRead, is InspectConnection<*>,
@@ -2583,29 +2596,18 @@ class QuicheDriver(
                 cmd.result.complete(result)
             }
 
-            is QuicheCmd.StreamSend -> {
-                // The caller-fed write buffer: quiche copies from this address, and the writer that
-                // enqueued the command stopped naming its buffer the moment it handed the address
-                // over. See [QuicheMemory] for why the borrow matters.
-                val sent =
-                    try {
-                        api.connStreamSend(conn, QuicStreamId(cmd.streamId), cmd.buf.address, cmd.bufLen, cmd.fin)
-                    } finally {
-                        cmd.buf.endBorrow()
-                    }
-                if (sent.result > 0) activePathOwesAnAnswer()
-                // The writer is about to park on writableSignal; recorded before it is told, so the
-                // next afterCommand already looks for its window to reopen.
-                if (sent.result == QUICHE_ERR_DONE || sent.result == 0) awaitingWritable += cmd.streamId
-                // quiche takes the FIN only with a write it accepts whole; a stream the peer stopped or reset
-                // takes no more writes. Either way this stream's send side is over.
-                val sendOver =
-                    (cmd.fin && sent.result == cmd.bufLen) ||
-                        sent.result == QUICHE_ERR_STREAM_STOPPED ||
-                        sent.result == QUICHE_ERR_STREAM_RESET
-                if (sendOver) streams[cmd.streamId]?.let { directionOver(it, StreamDirection.Send) }
-                cmd.result.complete(sent)
-            }
+            is QuicheCmd.StreamSend ->
+                when {
+                    cmd.bufLen == 0 -> sendWithoutBytes(cmd)
+                    // Behind an earlier write on the same stream, or not taken whole: held for the next turn.
+                    unfinishedSends.any { it.streamId == cmd.streamId } || !offer(cmd) -> unfinishedSends.addLast(cmd)
+                }
+
+            is QuicheCmd.WithdrawStreamSend ->
+                if (unfinishedSends.remove(cmd.send)) {
+                    val taken = cmd.send.accepted
+                    settle(cmd.send, StreamSendResult(if (taken > 0) taken else QUICHE_ERR_DONE))
+                }
 
             is QuicheCmd.StreamShutdown -> {
                 val result = api.connStreamShutdown(conn, QuicStreamId(cmd.streamId), cmd.direction, cmd.errorCode)
@@ -2706,6 +2708,89 @@ class QuicheDriver(
     }
 
     /**
+     * A send with no bytes: a FIN, or an empty write. quiche answers it at once, and a refusal leaves the
+     * writer to wait on [StreamSlot.writableSignal].
+     */
+    private fun sendWithoutBytes(cmd: QuicheCmd.StreamSend) {
+        val sent =
+            try {
+                api.connStreamSend(conn, QuicStreamId(cmd.streamId), cmd.buf.address, 0, cmd.fin)
+            } finally {
+                cmd.buf.endBorrow()
+            }
+        // The writer is about to park on writableSignal; recorded before it is told, so the
+        // next afterCommand already looks for its window to reopen.
+        if (sent.result == QUICHE_ERR_DONE || sent.result == 0) awaitingWritable += cmd.streamId
+        // quiche takes the FIN only with a write it accepts whole; a stream the peer stopped or reset
+        // takes no more writes. Either way this stream's send side is over.
+        val sendOver =
+            (cmd.fin && sent.result == 0) ||
+                sent.result == QUICHE_ERR_STREAM_STOPPED ||
+                sent.result == QUICHE_ERR_STREAM_RESET
+        if (sendOver) streams[cmd.streamId]?.let { directionOver(it, StreamDirection.Send) }
+        cmd.result.complete(sent)
+    }
+
+    /**
+     * Offer quiche what it has not yet taken of [cmd]; whether that settled it. quiche copies from the
+     * caller-fed buffer, which stays borrowed until the send settles (see [QuicheMemory]).
+     */
+    private fun offer(cmd: QuicheCmd.StreamSend): Boolean {
+        val sent =
+            api.connStreamSend(
+                conn,
+                QuicStreamId(cmd.streamId),
+                cmd.buf.address + cmd.accepted,
+                cmd.bufLen - cmd.accepted,
+                cmd.fin,
+            )
+        if (sent.result > 0) {
+            cmd.accepted += sent.result
+            activePathOwesAnAnswer()
+        }
+        return when {
+            cmd.accepted == cmd.bufLen -> {
+                // quiche takes the FIN only with a write it accepts whole.
+                if (cmd.fin) streams[cmd.streamId]?.let { directionOver(it, StreamDirection.Send) }
+                settle(cmd, StreamSendResult(cmd.accepted))
+                true
+            }
+            // The window is full: the rest waits for it to open.
+            sent.result > 0 || sent.result == QUICHE_ERR_DONE || sent.result == 0 -> false
+            else -> {
+                // A stream the peer stopped or reset takes no more writes: its send side is over.
+                if (sent.result == QUICHE_ERR_STREAM_STOPPED || sent.result == QUICHE_ERR_STREAM_RESET) {
+                    streams[cmd.streamId]?.let { directionOver(it, StreamDirection.Send) }
+                }
+                // Bytes already on the stream are reported; the writer's next write meets the error.
+                settle(cmd, if (cmd.accepted > 0) StreamSendResult(cmd.accepted) else sent)
+                true
+            }
+        }
+    }
+
+    private fun settle(
+        cmd: QuicheCmd.StreamSend,
+        result: StreamSendResult,
+    ) {
+        cmd.buf.endBorrow()
+        cmd.result.complete(result)
+    }
+
+    /**
+     * Offer every held write to quiche again, each stream's oldest first. Runs before a turn's flush, so
+     * whatever window the turn's packets opened is full of stream data when quiche builds from it.
+     */
+    private fun offerUnfinishedSends() {
+        var at = 0
+        while (at < unfinishedSends.size) {
+            val cmd = unfinishedSends[at]
+            val oldestOfItsStream = unfinishedSends.first { it.streamId == cmd.streamId } === cmd
+            if (oldestOfItsStream && offer(cmd)) unfinishedSends.removeAt(at) else at++
+        }
+    }
+
+    /**
      * Unreachable — [dispatch] matches [QuicheCmd.Migrate] *before* calling [execute], so this arm exists
      * only to keep [execute]'s `when` exhaustive. If it ever ran, no path would have been opened, so
      * [MigrationResult.Unmoved.Failed.PathNotValidated] is the honest report: nothing moved, and a
@@ -2740,6 +2825,7 @@ class QuicheDriver(
         // handshake, and the sweep classifies a stream as early data by whether it is complete.
         val establishedAtStart = _state.value is QuicConnectionState.Established
         if (establishedAtStart) discoverNewStreams()
+        offerUnfinishedSends()
         flushOutgoing()
         // Everything quiche owed the peer when this turn began has just been offered to the sockets; what
         // the sweeps below queue is owed again, and is flushed once they are done.
@@ -4482,6 +4568,9 @@ class QuicheDriver(
 
         // Opens still waiting for the peer's stream limit fail with the connection's close reason, as an
         // open that arrives after the close does. Their unclaimed streams go with the map below.
+        // Writes quiche had not taken whole fail like the queued ones: no more of them will be sent.
+        while (true) failCommand(unfinishedSends.removeFirstOrNull() ?: break)
+
         for (lane in listOf(bidiOpens, uniOpens)) {
             while (true) failCommand(lane.waiting.removeFirstOrNull() ?: break)
             lane.unclaimed.clear()
@@ -4577,6 +4666,8 @@ class QuicheDriver(
             is QuicheCmd.AbandonOpen -> Unit
             is QuicheCmd.StreamRecv -> cmd.result.complete(StreamRecvResult.ConnectionGone)
             is QuicheCmd.StreamSend -> cmd.result.complete(StreamSendResult(-1))
+            // The send it names is failed where it is held or queued.
+            is QuicheCmd.WithdrawStreamSend -> Unit
             // The stream/connection is gone; the shutdown frame won't go out, which is fine — the
             // peer already sees the connection closing. Complete with a benign 0 (no-op).
             is QuicheCmd.StreamShutdown -> cmd.result.complete(0)
@@ -4639,6 +4730,7 @@ class QuicheDriver(
             is QuicheCmd.AbandonOpen -> Unit
             is QuicheCmd.StreamRecv -> cmd.result.completeExceptionally(cause)
             is QuicheCmd.StreamSend -> cmd.result.completeExceptionally(cause)
+            is QuicheCmd.WithdrawStreamSend -> Unit
             is QuicheCmd.StreamShutdown -> cmd.result.completeExceptionally(cause)
             is QuicheCmd.DgramRecv -> cmd.result.completeExceptionally(cause)
             is QuicheCmd.DgramSend -> cmd.result.completeExceptionally(cause)
@@ -4765,10 +4857,21 @@ class QuicheDriver(
     }
 
     /**
+     * Take [send] back from the loop and wait for it to settle, after which its buffer is the caller's
+     * again. A send that has settled already is left as it is.
+     */
+    internal suspend fun withdraw(send: QuicheCmd.StreamSend) {
+        // Refused only by a closed channel, and then cleanup settles every send, this one included.
+        commands.trySend(QuicheCmd.WithdrawStreamSend(send))
+        send.result.join()
+    }
+
+    /**
      * Run [read] against this connection on the driver loop and hand back its answer — the way for code
      * off the loop to read anything quiche has no dedicated command for, without touching a
      * single-threaded library from a second thread.
      */
+
     internal suspend fun <T> inspect(read: (QuicheApi, QuicheConn) -> T): Inspected<T> =
         try {
             val deferred = CompletableDeferred<Inspected<T>>()
@@ -5603,7 +5706,7 @@ class DriverStreamAdapter(
         // half of that, and no join can cover it: it is [QuicheMemory] that keeps the buffer reachable.) (A read-after-free is less likely to
         // corrupt the heap than the read path's write-after-free, but it can still fault on an unmapped page,
         // and the lifetime contract must hold symmetrically.)
-        var inFlight: CompletableDeferred<StreamSendResult>? = null
+        var inFlight: QuicheCmd.StreamSend? = null
         // What quiche accepted, recorded on the line before the block returns it. The deadline can land
         // between that return and the scope completing (the same window [streamRead]'s `delivered` covers):
         // `inFlight` is already null by then, so without this the catch below would find nothing in flight
@@ -5615,18 +5718,19 @@ class DriverStreamAdapter(
                     val deferred = CompletableDeferred<StreamSendResult>()
                     // trySend, not send — see streamRead: atomic enqueue-or-throw, no
                     // buffered-yet-cancelled state that could skip the finally's join.
-                    driver.commands.trySend(QuicheCmd.StreamSend(streamId.id, memory, remaining, fin, deferred)).getOrThrow()
+                    val send = QuicheCmd.StreamSend(streamId.id, memory, remaining, fin, deferred)
+                    driver.commands.trySend(send).getOrThrow()
                     // Mark in-flight only AFTER a successful enqueue (see streamRead).
-                    inFlight = deferred
+                    inFlight = send
                     val sent = deferred.await()
                     inFlight = null
                     val written = sent.result
                     when (written) {
-                        // Flow-control blocked (QUICHE_ERR_DONE, or a defensive 0 with bytes still pending):
-                        // the stream's window is full. Park on writableSignal until the driver observes the
-                        // stream become writable again (a MAX_STREAM_DATA / MAX_DATA frame reopened it), then
-                        // retry. Reactive — no delay-poll. The CONFLATED signal makes this lost-wakeup-free:
-                        // any signal fired after this `await` returned DONE is buffered until we receive it.
+                        // Only a send with no bytes ends this way (one with bytes stays with the driver until
+                        // quiche has taken them): the stream's window is full. Park on writableSignal until the
+                        // driver observes the stream become writable again, then retry. The CONFLATED signal
+                        // makes this lost-wakeup-free: any signal fired after this `await` returned DONE is
+                        // buffered until we receive it.
                         QuicheDriver.QUICHE_ERR_DONE, 0 -> slot.writableSignal.receive()
                         // Progress: quiche accepted ≥1 byte. Return the (possibly partial) count — the buffer
                         // is untouched (zero-copy); the caller advances by it and re-enters for the remainder.
@@ -5678,9 +5782,9 @@ class DriverStreamAdapter(
             // Bytes already accepted outrank the deadline, as on the read side.
             if (acceptedBytes > 0) return acceptedBytes
             val pending = inFlight ?: throw deadline
-            withContext(NonCancellable) { pending.join() }
+            withContext(NonCancellable) { driver.withdraw(pending) }
             inFlight = null
-            val accepted = if (pending.isCancelled) 0 else pending.getCompleted().result
+            val accepted = if (pending.result.isCancelled) 0 else pending.result.getCompleted().result
             if (accepted > 0) accepted else throw deadline
         } catch (_: ClosedSendChannelException) {
             throw driver.connectionClosed()
@@ -5691,7 +5795,7 @@ class DriverStreamAdapter(
             // Wait — non-cancellably — for any in-flight StreamSend to finish reading the borrowed
             // memory before we return to the caller who will free `buffer`. The driver always completes the deferred
             // (execute() after connStreamSend, or failCommand() on teardown), so this never hangs.
-            inFlight?.let { withContext(NonCancellable) { it.join() } }
+            inFlight?.let { withContext(NonCancellable) { driver.withdraw(it) } }
         }
     }
 

@@ -158,6 +158,11 @@ sealed interface QuicheCmd {
     /**
      * Write data to a QUIC stream from [buf]. [QuicheMemory.Empty] is the FIN-only send
      * (`stream_send(len = 0, fin = true)`), which carries no payload at all.
+     *
+     * A send with bytes completes once quiche has taken all of them, with that count. Until then the
+     * driver holds it and offers quiche the rest whenever the stream's window can have opened, so the
+     * bytes are in quiche before the packets that window allows are built. It completes early, with what
+     * was taken or the error, when the stream or the connection ends or a [WithdrawStreamSend] arrives.
      */
     class StreamSend(
         val streamId: Long,
@@ -165,6 +170,18 @@ sealed interface QuicheCmd {
         val bufLen: Int,
         val fin: Boolean,
         val result: CompletableDeferred<StreamSendResult>,
+    ) : QuicheCmd {
+        /** How many bytes of [buf] quiche has taken. Driver loop only. */
+        internal var accepted = 0
+    }
+
+    /**
+     * Stop offering [send] to quiche. Its [StreamSend.result] completes with the bytes quiche took, or
+     * `QUICHE_ERR_DONE` when it took none; a send that has already completed is left as it is. What a
+     * writer whose deadline passed, or who was cancelled, sends before it lets go of the buffer.
+     */
+    class WithdrawStreamSend(
+        val send: StreamSend,
     ) : QuicheCmd
 
     /**
