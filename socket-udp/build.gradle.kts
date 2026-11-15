@@ -135,10 +135,9 @@ kotlin {
         publishLibraryVariants("release")
     }
     jvm {
-        // Java 8 bytecode to match the base :socket module — the production surface is pure java.nio
-        // (DatagramChannel/Selector), no post-8 java.* API on the shipped path (JDK-version-specific
-        // socket options are resolved reflectively via DatagramChannel.supportedOptions()).
-        compilerOptions.jvmTarget.set(JvmTarget.JVM_1_8)
+        // Java 17 bytecode, the JVM floor shared by every module. JDK-version-specific socket options are
+        // resolved reflectively via DatagramChannel.supportedOptions().
+        compilerOptions.jvmTarget.set(JvmTarget.JVM_17)
     }
 
     // Node.js `dgram` UDP (RFC Phase 4). The single JS target compiles for both runtimes; the

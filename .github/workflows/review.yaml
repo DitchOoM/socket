@@ -62,7 +62,7 @@ jobs:
   #   • JVM behavioural smoke  — a real withHttp3Server↔withHttp3Connection loopback over QUIC
   #     (gating): proves the published JVM artifacts load their native lib + round-trip HTTP/3,
   #     the native-load / FFM-packaging class of bug source-built lanes never see.
-  #   • Bytecode-version guard — asserts the base jvm jars are Java 8 (v52) (gating): the toolchain
+  #   • Bytecode-version guard — asserts the base jvm jars are Java 17 (v61) (gating): the toolchain
   #     is JDK 21 on every lane, so without this a silent re-regression to v65 (which actually
   #     shipped once) is invisible to CI.
   #   • Linux Kotlin/Native LINK — `linuxX64TestBinaries` links a consumer test binary that reaches the
@@ -198,14 +198,12 @@ jobs:
       - name: Tear down harness
         if: always()
         run: docker compose -f test-harness/docker-compose.yml down -v || true
-      - name: Bytecode-version guard (base jvm jars must be Java 8 / v52)
+      - name: Bytecode-version guard (base jvm jars must be Java 17 / v61)
         run: |
           version="${RESOLVED_VERSION}"
           MERGED="/tmp/maven-local-merged/com/ditchoom"
           FAIL=0
-          # socket-http3 / socket-webtransport are NOT listed yet: they ship v65 until their Java-8
-          # target lands (PR #183). Add them here once that merges so a future re-regression is caught.
-          assert_v52() {
+          assert_v61() {
             local mod="$1"
             local jar="$MERGED/${mod}-jvm/${version}/${mod}-jvm-${version}.jar"
             if [ ! -f "$jar" ]; then
@@ -214,16 +212,16 @@ jobs:
             local tmp; tmp=$(mktemp -d); unzip -qo "$jar" -d "$tmp"
             local bad=0
             # Exclude META-INF/versions/* — multi-release overlays (socket-quic-quiche's FFM bindings)
-            # are deliberately higher; only the BASE classes must be v52.
+            # are deliberately higher; only the BASE classes must be v61.
             while IFS= read -r c; do
               local major; major=$(od -An -tu1 -j7 -N1 "$c" | tr -d ' ')
-              if [ "$major" != "52" ]; then echo "  non-v52 ($major): ${c#"$tmp"/}"; bad=1; fi
+              if [ "$major" != "61" ]; then echo "  non-v61 ($major): ${c#"$tmp"/}"; bad=1; fi
             done < <(find "$tmp" -name '*.class' -not -path '*/META-INF/versions/*')
-            if [ "$bad" = 1 ]; then echo "::error::${mod} has non-Java-8 base classes"; FAIL=1; else echo "  OK v52: ${mod}"; fi
+            if [ "$bad" = 1 ]; then echo "::error::${mod} has non-Java-17 base classes"; FAIL=1; else echo "  OK v61: ${mod}"; fi
             rm -rf "$tmp"
           }
-          for mod in socket socket-quic socket-quic-quiche socket-quic-default; do
-            assert_v52 "$mod"
+          for mod in socket socket-quic socket-quic-quiche socket-quic-default socket-http3 socket-webtransport socket-udp; do
+            assert_v61 "$mod"
           done
           [ "$FAIL" = 0 ] || { echo "=== BYTECODE GUARD FAILED ==="; exit 1; }
           echo "=== bytecode guard passed ==="

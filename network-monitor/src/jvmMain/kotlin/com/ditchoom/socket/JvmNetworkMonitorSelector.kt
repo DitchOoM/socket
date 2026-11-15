@@ -5,7 +5,7 @@ package com.ditchoom.socket
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Base (JDK 8–20) network-monitor selector for the JVM.
+ * Base (JDK 17–20) network-monitor selector for the JVM.
  *
  * This is the *shadowed* half of a multi-release JAR: the `jvm21Main` source set
  * ships a same-named class under `META-INF/versions/21` that the JVM loads instead

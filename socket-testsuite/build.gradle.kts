@@ -47,7 +47,7 @@ kotlin {
         publishLibraryVariants("release")
     }
     jvm {
-        compilerOptions.jvmTarget.set(JvmTarget.JVM_1_8)
+        compilerOptions.jvmTarget.set(JvmTarget.JVM_17)
     }
 
     // Linux quiche-backend consumers (host-gated like :socket-quic-quiche).

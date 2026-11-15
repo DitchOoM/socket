@@ -440,7 +440,7 @@ kotlin {
         compilerOptions.jvmTarget.set(JvmTarget.JVM_17)
     }
     jvm {
-        compilerOptions.jvmTarget.set(JvmTarget.JVM_1_8)
+        compilerOptions.jvmTarget.set(JvmTarget.JVM_17)
         // The JDK 21 FFM reactive network monitor (multi-release JAR under META-INF/versions/21) moved
         // to the com.ditchoom:network-monitor module along with the rest of the NetworkMonitor
         // implementation — including, since issue #269, the native Linux (netlink) and Apple

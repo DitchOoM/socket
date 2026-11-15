@@ -121,7 +121,7 @@ kotlin {
         compilerOptions.jvmTarget.set(JvmTarget.JVM_17)
     }
     jvm {
-        compilerOptions.jvmTarget.set(JvmTarget.JVM_1_8)
+        compilerOptions.jvmTarget.set(JvmTarget.JVM_17)
         // Java 21 compilation for the FFM-based reactive network monitor (routing sockets).
         // Shipped under META-INF/versions/21 (multi-release JAR) so it only loads on JDK 21+;
         // the Java-8 base compilation keeps the polling fallback (see JvmNetworkMonitorSelector.kt).

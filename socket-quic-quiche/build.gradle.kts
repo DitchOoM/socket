@@ -4156,7 +4156,7 @@ if (isMacOS) {
 // sibling self-contained libquiche.{dylib,so} (via -lquiche) rather than re-bundling quiche +
 // BoringSSL a second time — so those ship exactly once. NativeLibLoader extracts libquiche.* next to
 // the shim so its DT_NEEDED / @rpath resolves via $ORIGIN / @loader_path. FFM on JDK 21+ loads
-// libquiche.{dylib,so} directly; this shim is only the JDK 8–20 JNI fallback path.
+// libquiche.{dylib,so} directly; this shim is only the JDK 17–20 JNI fallback path.
 
 fun createBuildJvmJniShimTask(
     os: String,
@@ -4171,7 +4171,7 @@ fun createBuildJvmJniShimTask(
 
     return tasks.register(taskName) {
         group = "build"
-        description = "Build quiche JNI shim for $os-$arch (JDK 8–20 fallback path)"
+        description = "Build quiche JNI shim for $os-$arch (JDK 17–20 fallback path)"
         dependsOn(buildShared)
         inputs.property("quicheVersion", quicheVersion)
         val jniSourceFile = projectDir.resolve("src/jni/quiche_jni.c")
@@ -4333,7 +4333,7 @@ val jvmJniShimLinuxArm64 =
 
 // Every macOS native the JVM jar publishes — libquiche + JNI shim for BOTH arches, whatever the host.
 // The release injects build-apple's macos-*/lib dirs into the jar, so building only the host arch's
-// shim there shipped macos-x64 without libquiche_jni.dylib (4.19.0-4.21.0), and JDK 8-20 on an Intel
+// shim there shipped macos-x64 without libquiche_jni.dylib (4.19.0-4.21.0), and JDK 17-20 on an Intel
 // Mac could not load quiche. .github/scripts/verify-quiche-jvm-natives.sh gates the result.
 if (isMacOS) {
     tasks.register("buildPublishedMacosQuicheNatives") {
@@ -5758,7 +5758,7 @@ kotlin {
         compilerOptions.jvmTarget.set(JvmTarget.JVM_17)
     }
     jvm {
-        compilerOptions.jvmTarget.set(JvmTarget.JVM_1_8)
+        compilerOptions.jvmTarget.set(JvmTarget.JVM_17)
         // Java 21 compilation for FFM (Foreign Function & Memory) quiche bindings
         compilations.create("java21") {
             compilerOptions.configure {

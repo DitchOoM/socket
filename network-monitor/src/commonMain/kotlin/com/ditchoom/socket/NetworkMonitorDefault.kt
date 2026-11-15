@@ -11,7 +11,7 @@ import kotlinx.coroutines.withContext
  * | Apple (iOS/macOS/tvOS/watchOS) | `NWPathMonitor` (reactive) |
  * | Linux native | netlink socket (reactive) |
  * | Desktop JVM, JDK 21+ | FFM routing socket — netlink (Linux) / `PF_ROUTE` (macOS), reactive; polling on Windows |
- * | Desktop JVM, JDK 8–20 | interface polling |
+ * | Desktop JVM, JDK 17–20 | interface polling |
  * | Node.js | interface polling — **browser JS**: `online`/`offline` (reactive) |
  * | Android | `ConnectivityManager.NetworkCallback` (reactive) — the `Context` comes from `NetworkMonitorInitializer` (androidx.startup) |
  * | Wasm (browser) | [NetworkMonitor.AlwaysAvailable] |

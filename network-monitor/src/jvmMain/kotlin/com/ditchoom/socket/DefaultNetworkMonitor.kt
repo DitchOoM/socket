@@ -4,7 +4,7 @@ package com.ditchoom.socket
  * JVM actual for [platformNetworkMonitor].
  *
  * Delegates to [defaultJvmNetworkMonitor], which is multi-release-JAR split:
- * - **JDK 8–20**: [PollingNetworkMonitor] (no event-driven network API in the JDK).
+ * - **JDK 17–20**: [PollingNetworkMonitor] (no event-driven network API in the JDK).
  * - **JDK 21+**: a reactive FFM routing-socket monitor on Linux/macOS, polling on
  *   Windows (see the `jvm21Main` override under `META-INF/versions/21`).
  *
