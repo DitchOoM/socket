@@ -138,6 +138,9 @@ private fun byStrerrorPhrase(
         // (libcore Net.c:823-853 has no EACCES case), a bare IOException on write0 — one member for
         // all three.
         message.contains("Permission denied") -> DatagramSendError.NotPermitted(ERRNO_NOT_SURFACED)
+        // EPERM: a packet filter dropped the datagram on its way out — an owner-matching firewall rule,
+        // or Android's local-network protection for an app without ACCESS_LOCAL_NETWORK.
+        message.contains("Operation not permitted") -> DatagramSendError.NotPermitted(ERRNO_NOT_SURFACED)
         else -> DatagramSendError.Transport(e)
     }
 }

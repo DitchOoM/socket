@@ -1,5 +1,7 @@
 package com.ditchoom.socket.quic
 
+import com.ditchoom.socket.NetworkAccess
+
 /** Whether a server connection accepted the client's 0-RTT before its handshake completed. */
 internal sealed interface EarlyDataAcceptance {
     /** Not accepted: none offered, declined, not decided yet, or a client connection. */
@@ -24,6 +26,12 @@ internal sealed interface HandshakeSettled {
 
     /** The connection closed, or its driver was torn down, before the handshake completed. */
     data object Failed : HandshakeSettled
+
+    /** The system refused to send the handshake because this app lacks [access]; [remedy] says how it gets it. */
+    data class Denied(
+        val access: NetworkAccess,
+        val remedy: String,
+    ) : HandshakeSettled
 }
 
 /** When a server connection's handler starts — see [SharedQuicheServer.connections]. */
