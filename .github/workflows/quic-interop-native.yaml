@@ -18,6 +18,11 @@ name: QUIC interop, native lanes
 on:
   workflow_call:
     inputs:
+      await-natives:
+        description: "Wait for this run's natives artifacts instead of expecting them to exist (a caller that runs beside the natives jobs, not after them)."
+        required: false
+        default: false
+        type: boolean
       version:
         required: true
         type: string
@@ -55,6 +60,12 @@ jobs:
       LANE: macos-arm64
     steps:
       - uses: actions/checkout@v7
+      - uses: ./.github/actions/await-artifact
+        if: ${{ inputs.await-natives }}
+        with:
+          name: quiche-apple-natives
+          producer: "Apple quiche natives"
+          github-token: ${{ github.token }}
       - uses: ./.github/actions/apple-quiche-env
         with:
           konan: "false"
@@ -86,6 +97,12 @@ jobs:
     timeout-minutes: 75
     steps:
       - uses: actions/checkout@v7
+      - uses: ./.github/actions/await-artifact
+        if: ${{ inputs.await-natives }}
+        with:
+          name: quiche-apple-natives
+          producer: "Apple quiche natives"
+          github-token: ${{ github.token }}
       - uses: ./.github/actions/apple-quiche-env
         with:
           natives-run-id: ${{ inputs.apple-natives-run-id }}
@@ -136,6 +153,12 @@ jobs:
         with:
           distribution: 'zulu'
           java-version: '21'
+      - uses: ./.github/actions/await-artifact
+        if: ${{ inputs.await-natives }}
+        with:
+          name: quiche-windows-natives
+          producer: "quiche natives (Linux/Android/Windows)"
+          github-token: ${{ github.token }}
       - uses: actions/download-artifact@v8
         with:
           name: quiche-windows-natives
