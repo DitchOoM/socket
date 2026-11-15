@@ -118,9 +118,6 @@ internal suspend fun writeAbsorbingBackpressure(
     }
 }
 
-/** What the reported `SO_RCVBUF` is divided by for the usable size: Linux (Android included) reports twice it. */
-private val REPORTED_PER_USABLE = if (System.getProperty("os.name").orEmpty().startsWith("Linux")) 2 else 1
-
 /** Below this a kernel buffer request is not worth halving further. */
 private const val SMALLEST_BUFFER_REQUEST = 64 * 1024
 
@@ -229,9 +226,8 @@ internal abstract class NioDatagramChannelCore(
     }
 
     /**
-     * `SO_RCVBUF`, set and read back. Linux caps a request at its limit and reports twice what is usable (the
-     * rest is its own bookkeeping); macOS refuses a request over its limit, so the request is halved until one
-     * is taken.
+     * `SO_RCVBUF`, set and read back; the JDK reports the usable size on every host. Linux caps a request at its
+     * limit; macOS refuses a request over its limit, so the request is halved until one is taken.
      */
     fun requestKernelReceiveBuffer(bytes: Int): KernelBufferGrant {
         var asked = bytes
@@ -239,7 +235,7 @@ internal abstract class NioDatagramChannelCore(
             try {
                 channel.setOption(StandardSocketOptions.SO_RCVBUF, asked)
                 val reported = channel.getOption(StandardSocketOptions.SO_RCVBUF)
-                return KernelBufferGrant.of(bytes, reported / REPORTED_PER_USABLE)
+                return KernelBufferGrant.of(bytes, reported)
             } catch (_: IOException) {
                 asked /= 2
             } catch (_: UnsupportedOperationException) {
