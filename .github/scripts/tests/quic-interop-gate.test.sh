@@ -296,6 +296,12 @@ nohs='{"kind":"peer-handshake-packets-never-arrived","min_lost":5}'
 stuck="$(hconn a '"close_reason":"Failed to establish connection"' | sed 's/"rx_handshake_crypto":1/"rx_handshake_crypto":0/;s/"rx_handshake_acks":1/"rx_handshake_acks":0/;s/"tx_crypto":1/"tx_crypto":19/')"
 check_kind "no Handshake packet arrived while the simulator lost the client's" "$nohs" our-server "{\"connections\":[$stuck],\"sim_from_peer\":[{\"port\":34091,\"datagrams\":22,\"delivered\":12}]}" Matched
 check_kind "nothing lost on the way to us is not the signature" "$nohs" our-server "{\"connections\":[$stuck],\"sim_from_peer\":[{\"port\":34091,\"datagrams\":22,\"delivered\":20}]}" NotMatched
+gone='{"kind":"peer-gone-while-we-probed","min_probes":6,"silence_s":25}'
+check_kind "probes unanswered for half a minute" "$gone" our-client "{\"connections\":[$(hconn a '"last_rx_ms":270,"end_ms":30286,"tx_after_last_rx":11' | sed 's/"bytes_in_flight_at_end":0/"bytes_in_flight_at_end":1144/')]}" Matched
+check_kind "two unanswered packets are not the signature" "$gone" our-client "{\"connections\":[$(hconn a '"last_rx_ms":270,"end_ms":30286,"tx_after_last_rx":2' | sed 's/"bytes_in_flight_at_end":0/"bytes_in_flight_at_end":1144/')]}" NotMatched
+partial='{"kind":"peer-client-hello-never-completed","min_lost":5}'
+check_kind "a ClientHello that never completed" "$partial" our-server "{\"connections\":[$(hconn a | sed 's/"tx_crypto":1/"tx_crypto":0/;s/"fin_sent_streams":1/"fin_sent_streams":0/')],\"sim_from_peer\":[{\"port\":40869,\"datagrams\":9,\"delivered\":4}]}" Matched
+check_kind "a ClientHello we answered is not the signature" "$partial" our-server "{\"connections\":[$(hconn a | sed 's/"fin_sent_streams":1/"fin_sent_streams":0/')],\"sim_from_peer\":[{\"port\":40869,\"datagrams\":9,\"delivered\":4}]}" NotMatched
 nochallenge='{"kind":"peer-server-did-not-challenge-new-path-first"}'
 check_kind "the server's first packet on a new path had no challenge" "$nochallenge" our-client "{\"connections\":[$(hconn a)],\"exits\":{\"client\":0},\"runner\":{\"server_first_packets_without_path_challenge\":2}}" Matched
 check_kind "a client that failed is not the signature" "$nochallenge" our-client "{\"connections\":[$(hconn a)],\"exits\":{\"client\":1},\"runner\":{\"server_first_packets_without_path_challenge\":2}}" NotMatched
