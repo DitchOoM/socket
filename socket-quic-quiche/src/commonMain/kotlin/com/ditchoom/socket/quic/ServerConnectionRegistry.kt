@@ -510,7 +510,11 @@ internal class ConnectionPaths<K>(
     ): CachedRecvInfo {
         val held = recvInfos.size
         val cached = recvInfos.getOrPut(key, build)
-        if (recvInfos.size == held) markUsed(key, cached) else if (recvInfos.size > MAX_PATHS) freeLeastRecentlyUsedIdle()
+        if (recvInfos.size == held) {
+            markUsed(key, cached)
+        } else if (recvInfos.size > MAX_PATHS) {
+            freeLeastRecentlyUsedIdle()
+        }
         return cached
     }
 
