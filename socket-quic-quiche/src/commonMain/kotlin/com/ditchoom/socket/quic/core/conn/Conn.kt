@@ -116,6 +116,7 @@ internal class Conn(
     private val inbox = WorkInbox<ConnWork>()
     private val inside = Inside()
     private val runWork: (ConnWork) -> Unit = { it.run(inside) }
+    private val onTimer = Runnable { timerFired() }
     private val serve = ServeConn(this)
     private val serveQueued = AtomicInt(IDLE)
     private var hold: LoopHold = LoopHold.Out
@@ -269,11 +270,20 @@ internal class Conn(
         return Collected.MoreWaiting
     }
 
+    /**
+     * A deadline already armed for the same time or earlier is kept: it fires early, quiche ignores timers that
+     * have not expired, and the connection re-arms from quiche's timeout then. Only a timeout that moved earlier
+     * arms a new deadline, so a connection under traffic allocates no deadline per pass.
+     */
     private fun rearm() {
-        disarm()
         val wait = api.connTimeout(handle) ?: return
-        val node = loop.deadlines.arm(clock.nowNanos() + wait.inWholeNanoseconds, Runnable { timerFired() })
-        timer = TimerState.Armed(node)
+        val due = clock.nowNanos() + wait.inWholeNanoseconds
+        when (val armed = timer) {
+            is TimerState.Armed -> if (armed.node.dueNanos <= due) return
+            TimerState.Unarmed -> Unit
+        }
+        disarm()
+        timer = TimerState.Armed(loop.deadlines.arm(due, onTimer))
     }
 
     private fun disarm() {
