@@ -57,6 +57,8 @@ private val serverTests = setOf("handshake", "transfer", "multiconnect", "resump
  *    `REQUESTS` (space separated) into `/downloads/<path>`.
  *  - Key logs: `QUIC_KEYLOG_DIR` is set by run_endpoint.sh, which concatenates the per-connection files
  *    into the runner's `SSLKEYLOGFILE` so it can decrypt the capture.
+ *  - run_endpoint.sh sets `JFR_FILE` and `TRACE_DIR` for every test but `transfer`, where a trace would
+ *    hex-encode every datagram of a 10 MB download.
  *  - Java Flight Recorder: with `JFR_FILE` set, a ring of the last [JFR_RING_AGE] runs from the start,
  *    begun off the main thread so the first Initial is not delayed. The client writes it out only when it
  *    fails; the server when the runner stops it.

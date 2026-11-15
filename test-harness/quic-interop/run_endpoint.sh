@@ -20,10 +20,14 @@ if [ -n "${QLOGDIR:-}" ]; then
 fi
 
 # Failure evidence goes beside the runner's qlog directory, which the runner keeps with the logs: replay
-# traces and a Java Flight Recorder ring (see QuicInteropEndpoint.kt).
+# traces and a Java Flight Recorder ring (see QuicInteropEndpoint.kt). Not for `transfer`: a trace
+# hex-encodes every datagram of a 10 MB download, and the recording starts in the first second, which is
+# when the rebinding tests first move the client; the endpoint shares the runner's cores with the simulator.
 LOGDIR=$(dirname "${QLOGDIR:-/logs/qlog}")
-export TRACE_DIR="$LOGDIR/trace"
-export JFR_FILE="$LOGDIR/endpoint.jfr"
+if [ "${TESTCASE:-}" != "transfer" ]; then
+  export TRACE_DIR="$LOGDIR/trace"
+  export JFR_FILE="$LOGDIR/endpoint.jfr"
+fi
 
 JAVA=(java --enable-native-access=ALL-UNNAMED --add-opens java.base/java.nio=ALL-UNNAMED -jar /quic-interop.jar)
 
@@ -33,7 +37,7 @@ if [ "$ROLE" = "client" ]; then
   WAIT_FOR=sim:57832 "${JAVA[@]}"
   rc=$?
   collect_keys
-  rmdir "$TRACE_DIR" 2>/dev/null
+  [ -n "${TRACE_DIR:-}" ] && rmdir "$TRACE_DIR" 2>/dev/null
   exit $rc
 elif [ "$ROLE" = "server" ]; then
   # The runner stops the server with SIGTERM; flush the key logs on the way out, and periodically in
