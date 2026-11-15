@@ -597,6 +597,13 @@ jobs:
           mkdir -p apks
           .github/scripts/gradle-retry.sh :benchmark-android:assembleReleaseAndroidTest -PbenchMinify=true --no-configuration-cache
           cp "$(find benchmarks/android-micro/build/outputs/apk/androidTest -name '*.apk' | head -1)" apks/R8.apk
+          # R8's name mapping for that APK, kept with the crash evidence: a tombstone of the R8 build
+          # names methods by their minified names.
+          mkdir -p trace-crash-hunt
+          find benchmarks/android-micro/build/outputs/mapping -name 'mapping.txt' | while read -r m; do
+            gzip -c "$m" > "trace-crash-hunt/r8-mapping-$(basename "$(dirname "$m")").txt.gz"
+          done
+          ls -la trace-crash-hunt
           .github/scripts/gradle-retry.sh :benchmark-android:assembleReleaseAndroidTest -PbenchMinify=false --no-configuration-cache
           cp "$(find benchmarks/android-micro/build/outputs/apk/androidTest -name '*.apk' | head -1)" apks/noR8.apk
 
