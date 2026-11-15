@@ -4,7 +4,7 @@ name: "Build & Test (Linux)"
 #
 #   natives ──┬── checks-tests   (the big JVM/JS/Android/K-N suite + the netns + Docker-harness lanes)
 #             ├── quiche-jvm     (matrix: JNI | FFM | JDK 17 / JNI | JDK 25 / FFM)
-#             ├── jvm-jdk25      (every other module's jvmTest on a JDK 25 launcher)
+#             ├── jvm-jdk21      (every other module's jvmTest on a JDK 21 launcher; checks-tests runs them on 25)
 #             ├── link ──┬── integration-linux-x64
 #             │          └── integration-linux-arm64
 #             ├── abi-linux      (checkKotlinAbi against the api/linux/ dumps)
@@ -37,7 +37,7 @@ name: "Build & Test (Linux)"
 #     WebTransportDockerInteropTests / QpackDifferentialInteropTests run inside its gradle call.
 #   - quiche-jvm owns its OWN copy of the certs + CA trust, because :socket-quic-quiche:jvmTest
 #     dependsOn(harnessUp) (root build.gradle.kts) and brings the stack up inside that job.
-#   - jvm-jdk25 owns a THIRD copy of the certs + CA trust, plus its own aioquic server and ls-qpack
+#   - jvm-jdk21 owns a THIRD copy of the certs + CA trust, plus its own aioquic server and ls-qpack
 #     oracle, for the same reason as checks-tests: it runs :socket-http3:jvmTest and the other
 #     harness-backed suites inside one gradle call.
 #   - integration-linux-{x64,arm64} already brought the harness up at the YAML level, unchanged.
@@ -754,7 +754,11 @@ jobs:
       ORG_GRADLE_PROJECT_quicCrashDiag: "1"
     steps:
       - uses: actions/checkout@v7
+      # JDK 25 runs the jvmTest suites (the JDK a multi-release-jar consumer is most likely on); 21 runs
+      # Gradle. jvm-jdk21 keeps the 21 launcher covered and quiche-jvm's JDK 17 leg the JNI base.
       - uses: ./.github/actions/linux-quiche-env
+        with:
+          test-launcher-jdk: "25"
 
       # The seven defaults on the run-to-completion core's production sources. The self-test plants one
       # violation of each kind first, so a checker that stopped catching one fails here.
@@ -764,7 +768,7 @@ jobs:
           java scripts/CoreDefaultsCheck.java --selftest
           java scripts/CoreDefaultsCheck.java .
 
-      # Flight Recorder ring on every Gradle test worker of this job (JNI backend, JDK 21): dumped
+      # Flight Recorder ring on every Gradle test worker of this job (JNI backend, JDK 25): dumped
       # only if a test fails or a worker hangs, uploaded only on failure. Traced lanes on Linux:
       # this one and the quiche-jvm FFM leg; the quiche-jvm JNI, JDK 17 and JDK 25 legs stay UNTRACED.
       - uses: ./.github/actions/jvm-flight-recorder
@@ -829,16 +833,20 @@ jobs:
           sudo cp test-harness/tls/certs/ca.crt /usr/local/share/ca-certificates/harness-root.crt
           sudo update-ca-certificates
 
-      - name: Trust harness CA in JVM keystore (Linux)
+      # BOTH JDKs: $JAVA_HOME (21) runs Gradle, JAVA_HOME_25_X64 runs the tests, and JSSE reads the
+      # trust store of the JVM it runs in.
+      - name: Trust harness CA in JVM keystores (Linux)
         run: |
-          sudo keytool -delete -alias harness-root \
-              -keystore "$JAVA_HOME/lib/security/cacerts" \
-              -storepass changeit 2>/dev/null || true
-          sudo keytool -importcert -trustcacerts \
-              -file test-harness/tls/certs/ca.crt \
-              -alias harness-root \
-              -keystore "$JAVA_HOME/lib/security/cacerts" \
-              -storepass changeit -noprompt
+          for home in "$JAVA_HOME" "$JAVA_HOME_25_X64"; do
+            sudo keytool -delete -alias harness-root \
+                -keystore "$home/lib/security/cacerts" \
+                -storepass changeit 2>/dev/null || true
+            sudo keytool -importcert -trustcacerts \
+                -file test-harness/tls/certs/ca.crt \
+                -alias harness-root \
+                -keystore "$home/lib/security/cacerts" \
+                -storepass changeit -noprompt
+          done
 
       # NOTE: :jsTest above is the ROOT project's JS suite. :socket-quic:jsNodeTest
       # is a SEPARATE task (the socket-quic module's common QUIC suite + JS gap
@@ -1027,6 +1035,7 @@ jobs:
             :socket-webtransport:jvmTest :socket-webtransport:testDebugUnitTest :socket-webtransport:jsNodeTest :socket-webtransport:wasmJsNodeTest :socket-webtransport:linuxX64Test :socket-webtransport:ktlintCheck \
             :socket-udp:jvmTest :socket-udp:lincheckTest :socket-udp:testDebugUnitTest :socket-udp:jsNodeTest :socket-udp:linuxX64Test :socket-udp:ktlintCheck \
             -PquicEchoAllArches=true \
+            -PjvmTestLauncher=25 -Porg.gradle.java.installations.fromEnv=JAVA_HOME_25_X64 \
             --no-configuration-cache ${{ inputs.gradle-args }} 2>&1 | tee -a "$LOG"
           RC=${PIPESTATUS[0]}
           kill "$WD" 2>/dev/null || true
@@ -1697,26 +1706,17 @@ jobs:
           retention-days: 90
           if-no-files-found: ignore
 
-  # ── Stage 2b'': every other module's JVM suite, on a JDK 25 launcher ─────────────────────────────
-  # checks-tests runs these same jvmTest tasks on JDK 21, and quiche-jvm's `JDK 25 / FFM` leg runs
-  # :socket-quic-quiche on 25. This job is the rest: the root module (TCP) and every other module that
-  # has a JVM suite, so a consumer of the published jars on JDK 25 is not the first thing to execute
-  # them there. Gradle and the toolchain stay on 21; `-PjvmTestLauncher=25` (root build.gradle.kts)
-  # moves only each module's forked test worker, and fails the task if the launcher it resolved is not
-  # 25, which is what keeps this job from reporting green on a launcher that silently stayed on 21.
+  # ── Stage 2b'': every other module's JVM suite, on a JDK 21 launcher ─────────────────────────────
+  # checks-tests runs these jvmTest tasks on JDK 25, the JDK a consumer of the multi-release jar is most
+  # likely on. This job keeps the JDK 21 launcher covered (quiche-jvm's JDK 17 leg covers the JNI base),
+  # so testing on 25 by default never hides a break for consumers on 21. `-PjvmTestLauncher=21` (root
+  # build.gradle.kts) fails a task whose resolved launcher is not 21, and the assert step below proves it.
   #
   # It brings up the SAME peers as checks-tests and runs under the same SOCKET_REQUIRE_ALL_TESTS=1, so
-  # nothing here may skip: the harness certs + CA trust (in the 25 launcher's keystore too, which
-  # quiche-jvm's 17/25 legs deliberately lack), the aioquic HTTP/3 + WebTransport server and the
-  # ls-qpack oracle. A test that would have self-skipped for want of one of them fails instead.
-  #
-  # NOT covered on 25 by this job, and why: :socket-quic-quiche:jvmTest (its own leg, FFM backend; its
-  # JNI backend is not run on 25 anywhere), :lincheckTest and :mainThreadSafetyTest (they need a JVM
-  # with no other agent, and are not the question), the JS, Wasm, Android and native tasks (no JVM
-  # launcher), and the netns route-resolution lanes. These modules resolve loadQuicheApi() to the JNI
-  # backend, as on 21, so the FFM tier is exercised on 25 only by the quiche-jvm leg.
-  jvm-jdk25:
-    name: "JVM tests (JDK 25)"
+  # nothing here may skip: the harness certs + CA trust, the aioquic HTTP/3 + WebTransport server and the
+  # ls-qpack oracle.
+  jvm-jdk21:
+    name: "JVM tests (JDK 21)"
     needs: natives
     if: ${{ !inputs.natives-only }}
     runs-on: ubuntu-24.04
@@ -1729,7 +1729,6 @@ jobs:
       - uses: ./.github/actions/linux-quiche-env
         with:
           konan: "false"
-          test-launcher-jdk: "25"
 
       - name: Generate harness TLS certs
         run: bash test-harness/tls/gen-certs.sh
@@ -1739,21 +1738,17 @@ jobs:
           sudo cp test-harness/tls/certs/ca.crt /usr/local/share/ca-certificates/harness-root.crt
           sudo update-ca-certificates
 
-      # BOTH JDKs: $JAVA_HOME (21) runs Gradle, JAVA_HOME_25_X64 runs the tests, and JSSE reads the
-      # trust store of the JVM it runs in, so the alias must be in the 25 one for tlsDefault() to
-      # accept the harness chain. Without it the harness TLS tests fail on 25 and not on 21.
-      - name: Trust harness CA in JVM keystores (Linux)
+      # $JAVA_HOME (21) runs both Gradle and the tests here.
+      - name: Trust harness CA in JVM keystore (Linux)
         run: |
-          for home in "$JAVA_HOME" "$JAVA_HOME_25_X64"; do
-            sudo keytool -delete -alias harness-root \
-                -keystore "$home/lib/security/cacerts" \
-                -storepass changeit 2>/dev/null || true
-            sudo keytool -importcert -trustcacerts \
-                -file test-harness/tls/certs/ca.crt \
-                -alias harness-root \
-                -keystore "$home/lib/security/cacerts" \
-                -storepass changeit -noprompt
-          done
+          sudo keytool -delete -alias harness-root \
+              -keystore "$JAVA_HOME/lib/security/cacerts" \
+              -storepass changeit 2>/dev/null || true
+          sudo keytool -importcert -trustcacerts \
+              -file test-harness/tls/certs/ca.crt \
+              -alias harness-root \
+              -keystore "$JAVA_HOME/lib/security/cacerts" \
+              -storepass changeit -noprompt
 
       # See checks-tests: the foreign-stack peers that Http3DockerInteropTests,
       # WebTransportDockerInteropTests and QpackDifferentialInteropTests (in :socket-http3:jvmTest)
@@ -1770,7 +1765,7 @@ jobs:
       #
       # A run still going at 35 of its 38 minutes is hung (a healthy one is well under that): print every
       # test worker's threads into this log before the step lid kills them without a trace.
-      - name: Run JVM tests on JDK 25
+      - name: Run JVM tests on JDK 21
         timeout-minutes: 38
         env:
           SOCKET_REQUIRE_ALL_TESTS: "1"
@@ -1784,29 +1779,29 @@ jobs:
             :jvmTest :network-monitor:jvmTest :socket-quic:jvmTest :socket-quic-default:jvmTest \
             :socket-trace:jvmTest :socket-testkit:jvmTest :socket-testsuite:jvmTest \
             :socket-http3:jvmTest :socket-webtransport:jvmTest :socket-udp:jvmTest \
-            -PjvmTestLauncher=25 -Porg.gradle.java.installations.fromEnv=JAVA_HOME_25_X64 \
+            -PjvmTestLauncher=21 \
             -PquicEchoAllArches=true -PlinuxTargets=false \
-            --continue --no-configuration-cache ${{ inputs.gradle-args }} 2>&1 | tee /tmp/gradle-jdk25.log
+            --continue --no-configuration-cache ${{ inputs.gradle-args }} 2>&1 | tee /tmp/gradle-jdk21.log
           exit "${PIPESTATUS[0]}"
 
-      # The permanent proof that this job ran on 25. The root build script logs the launcher it
+      # The permanent proof that this job ran on 21. The root build script logs the launcher it
       # resolved for every jvmTest task and fails a task whose launcher is not the requested one; here
-      # the log must name every module this job asked for, each on a 25.x runtime, and no task may
+      # the log must name every module this job asked for, each on a 21.x runtime, and no task may
       # have logged any other launcher. Keep the list below in step with the Gradle call above.
-      - name: Assert every jvmTest ran on a JDK 25 launcher
+      - name: Assert every jvmTest ran on a JDK 21 launcher
         if: ${{ !cancelled() }}
         run: |
           set -euo pipefail
           expected=":jvmTest :network-monitor:jvmTest :socket-quic:jvmTest :socket-quic-default:jvmTest :socket-trace:jvmTest :socket-testkit:jvmTest :socket-testsuite:jvmTest :socket-http3:jvmTest :socket-webtransport:jvmTest :socket-udp:jvmTest"
-          grep -E 'TEST LAUNCHER ' /tmp/gradle-jdk25.log | sed -E 's/^[0-9TZ:.-]* *//' | sort -u
+          grep -E 'TEST LAUNCHER ' /tmp/gradle-jdk21.log | sed -E 's/^[0-9TZ:.-]* *//' | sort -u
           for t in $expected; do
-            if ! grep -qE "TEST LAUNCHER ${t}: JDK 25[.0-9+]*" /tmp/gradle-jdk25.log; then
-              echo "::error title=No JDK 25 proof::$t did not log a JDK 25 test launcher, so this job cannot claim it ran on 25 (it failed before the test task started, or the launcher was not 25)."
+            if ! grep -qE "TEST LAUNCHER ${t}: JDK 21[.0-9+]*" /tmp/gradle-jdk21.log; then
+              echo "::error title=No JDK 21 proof::$t did not log a JDK 21 test launcher, so this job cannot claim it ran on 21 (it failed before the test task started, or the launcher was not 25)."
               exit 1
             fi
           done
-          if grep -E 'TEST LAUNCHER ' /tmp/gradle-jdk25.log | grep -vqE ': JDK 25[.0-9+]*'; then
-            echo "::error title=Not JDK 25::a jvmTest task logged a launcher that is not JDK 25"
+          if grep -E 'TEST LAUNCHER ' /tmp/gradle-jdk21.log | grep -vqE ': JDK 21[.0-9+]*'; then
+            echo "::error title=Not JDK 21::a jvmTest task logged a launcher that is not JDK 21"
             exit 1
           fi
 
@@ -1818,7 +1813,7 @@ jobs:
         continue-on-error: true # an upload hiccup must not mask the failure it was capturing
         uses: actions/upload-artifact@v7
         with:
-          name: test-reports-linux-jvm-jdk25
+          name: test-reports-linux-jvm-jdk21
           path: |
             **/build/reports/tests/
             **/build/test-results/

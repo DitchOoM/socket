@@ -20,16 +20,30 @@ import kotlin.time.Duration
  * scenario can probe and migrate between paths; each [Datagram] names the endpoint it crosses.
  *
  * Both connections read one virtual clock that moves only in [elapse], which also fires every quiche
- * timer falling due on the way. Loss is staged by not delivering a datagram; quiche declares it lost by
- * packet threshold (RFC 9002 §6.1.1) once three later packets are acknowledged, or by its timers.
+ * timer falling due on the way; [bringTimerForward] sets one connection's clock ahead of it. Loss is
+ * staged by not delivering a datagram; quiche declares it lost by packet threshold (RFC 9002 §6.1.1)
+ * once three later packets are acknowledged, or by its timers.
  */
 internal class QuichePairByHand private constructor(
     env: MigrationSimEnv,
     clientEndpoints: List<SocketAddress>,
     serverSocket: SocketAddress,
     options: QuicOptions,
+    serverOptions: QuicOptions,
     configureClient: (QuicheConfig) -> Unit,
 ) {
+    /** A connection's next quiche timer. */
+    sealed interface Timer {
+        data object Unarmed : Timer
+
+        data class DueIn(
+            val span: Duration,
+        ) : Timer
+    }
+
+    /** How a connection stands. */
+    enum class Ending { Open, IdleTimeout, ClosedLocally, ClosedByPeer }
+
     /** A datagram as the network carries it: its bytes, and the client endpoint it leaves or reaches. */
     class Datagram(
         val bytes: ByteArray,
@@ -116,10 +130,11 @@ internal class QuichePairByHand private constructor(
 
     init {
         listOf(serverCfg to QuicRole.Server, clientCfg to QuicRole.Client).forEach { (cfg, role) ->
-            val alpn = encodeAlpnList(options.alpnProtocols, bufferFactory)
+            val sideOptions = if (role == QuicRole.Server) serverOptions else options
+            val alpn = encodeAlpnList(sideOptions.alpnProtocols, bufferFactory)
             api.configSetApplicationProtos(cfg, alpn.nativeMemoryAccess!!.nativeAddress.toLong(), alpn.remaining())
             alpn.freeNativeMemory()
-            applyQuicOptions(options, SimQuicConfigCalls(api, cfg), role)
+            applyQuicOptions(sideOptions, SimQuicConfigCalls(api, cfg), role)
             if (role == QuicRole.Client) configureClient(cfg)
         }
         simNullTerminated(env.certChainPath, bufferFactory).let { buf ->
@@ -167,9 +182,21 @@ internal class QuichePairByHand private constructor(
         serverScid.freeNativeMemory()
     }
 
-    /** Run [block] with quiche's clock on this thread pinned to [now]. */
-    private inline fun <T> at(block: () -> T): T {
-        api.setThreadVirtualTimeNanos(now.inWholeNanoseconds)
+    /** How far each connection's clock runs ahead of [now]: see [bringTimerForward]. */
+    private val leads = mutableMapOf<QuicheConn, Duration>()
+
+    private fun lead(conn: QuicheConn): Duration = leads.getOrElse(conn) { Duration.ZERO }
+
+    /** How long the pair's clock has run. */
+    val elapsed: Duration
+        get() = now
+
+    /** Run [block] with quiche's clock on this thread pinned to [now] plus [lead]. */
+    private inline fun <T> at(
+        lead: Duration = Duration.ZERO,
+        block: () -> T,
+    ): T {
+        api.setThreadVirtualTimeNanos((now + lead).inWholeNanoseconds)
         try {
             return block()
         } finally {
@@ -177,39 +204,75 @@ internal class QuichePairByHand private constructor(
         }
     }
 
-    /** Move the clock on by [span], firing each quiche timer of either connection as it falls due. */
-    fun elapse(span: Duration) {
+    /** Move the clock on by [span], firing each quiche timer of the [firing] connections as it falls due. */
+    fun elapse(
+        span: Duration,
+        firing: List<QuicheConn> = listOf(client, server),
+    ) {
         val until = now + span
         while (true) {
             val (due, conn) =
-                listOf(client, server)
-                    .mapNotNull { conn -> at { api.connTimeout(conn) }?.let { now + it to conn } }
+                firing
+                    .mapNotNull { conn -> at(lead(conn)) { api.connTimeout(conn) }?.let { now + it to conn } }
                     .minByOrNull { it.first }
                     ?.takeIf { it.first <= until }
                     ?: break
             now = due
-            at { api.connOnTimeout(conn) }
+            at(lead(conn)) { api.connOnTimeout(conn) }
         }
         now = until
     }
 
+    /** [conn]'s next timer. */
+    fun timer(conn: QuicheConn): Timer =
+        when (val span = at(lead(conn)) { api.connTimeout(conn) }) {
+            null -> Timer.Unarmed
+            else -> Timer.DueIn(span)
+        }
+
+    /**
+     * Fire [conn]'s next timer now, without moving the pair's clock: [conn]'s own clock runs ahead of
+     * the pair's by the wait it skipped, from here on. A peer whose retransmissions a scenario times
+     * itself is driven this way.
+     */
+    fun bringTimerForward(conn: QuicheConn): Timer =
+        timer(conn).also { timer ->
+            when (timer) {
+                Timer.Unarmed -> Unit
+                is Timer.DueIn -> {
+                    leads[conn] = lead(conn) + timer.span
+                    at(lead(conn)) { api.connOnTimeout(conn) }
+                }
+            }
+        }
+
+    /** How [conn] stands: open, or which way it ended. */
+    fun ending(conn: QuicheConn): Ending =
+        when {
+            at(lead(conn)) { api.connIsTimedOut(conn) } -> Ending.IdleTimeout
+            at(lead(conn)) { api.connPeerError(conn) } != null -> Ending.ClosedByPeer
+            at(lead(conn)) { api.connLocalError(conn) } != null -> Ending.ClosedLocally
+            at(lead(conn)) { api.connIsClosed(conn) } -> Ending.ClosedLocally
+            else -> Ending.Open
+        }
+
     /** How long until [conn]'s next timer falls due, or null when none is armed. */
-    fun nextTimer(conn: QuicheConn): Duration? = at { api.connTimeout(conn) }
+    fun nextTimer(conn: QuicheConn): Duration? = at(lead(conn)) { api.connTimeout(conn) }
 
     /** Packets [conn] received after a gap in the packet numbers, as `quiche_conn_recv_gaps` counts them. */
-    fun recvGaps(conn: QuicheConn): Long = at { api.connRecvGaps(conn) }
+    fun recvGaps(conn: QuicheConn): Long = at(lead(conn)) { api.connRecvGaps(conn) }
 
     /** Whether [conn]'s handshake has completed. */
-    fun established(conn: QuicheConn): Boolean = at { api.connIsEstablished(conn) }
+    fun established(conn: QuicheConn): Boolean = at(lead(conn)) { api.connIsEstablished(conn) }
 
     /** Whether [conn]'s handshake is confirmed (RFC 9001 §4.1.2). */
-    fun confirmed(conn: QuicheConn): Boolean = at { api.connIsHandshakeConfirmed(conn) }
+    fun confirmed(conn: QuicheConn): Boolean = at(lead(conn)) { api.connIsHandshakeConfirmed(conn) }
 
     /** [conn] closes the connection with [error]; its CONNECTION_CLOSE is in its next [sends]. */
     fun closeWith(
         conn: QuicheConn,
         error: QuicError,
-    ): Int = at { api.connClose(conn, error) }
+    ): Int = at(lead(conn)) { api.connClose(conn, error) }
 
     private val sendEnds = mutableMapOf<QuicheConn, Int>()
 
@@ -223,7 +286,7 @@ internal class QuichePairByHand private constructor(
     fun sends(from: QuicheConn): List<Datagram> =
         buildList {
             while (true) {
-                val n = at { api.connSend(from, datagram.nativeMemoryAccess!!.nativeAddress.toLong(), MAX_DATAGRAM, sendInfo) }
+                val n = at(lead(from)) { api.connSend(from, datagram.nativeMemoryAccess!!.nativeAddress.toLong(), MAX_DATAGRAM, sendInfo) }
                 if (n <= 0) {
                     sendEnds[from] = n
                     break
@@ -243,7 +306,7 @@ internal class QuichePairByHand private constructor(
             val info = if (to == client) clientRecvInfos[d.clientEndpoint] else serverRecvInfos[d.clientEndpoint]
             datagram.position(0)
             datagram.writeBytes(d.bytes)
-            at { api.connRecv(to, datagram.nativeMemoryAccess!!.nativeAddress.toLong(), d.bytes.size, info) }
+            at(lead(to)) { api.connRecv(to, datagram.nativeMemoryAccess!!.nativeAddress.toLong(), d.bytes.size, info) }
         }
     }
 
@@ -298,15 +361,19 @@ internal class QuichePairByHand private constructor(
         error("the client had not completed its handshake after $MAX_SETTLE_ROUNDS rounds")
     }
 
-    /** Issue [conn]'s peer every spare connection ID it may hold. */
-    fun issueSpareCids(conn: QuicheConn) {
-        while (at { api.connScidsLeft(conn) } > 0L) {
+    /** Issue [conn]'s peer the spare connection IDs it may hold, [atMost] of them. */
+    fun issueSpareCids(
+        conn: QuicheConn,
+        atMost: Int = Int.MAX_VALUE,
+    ) {
+        var issued = 0
+        while (issued++ < atMost && at(lead(conn)) { api.connScidsLeft(conn) } > 0L) {
             val scid = generateScid(bufferFactory, cidRandom)
             val token = bufferFactory.allocate(QuicheDriver.STATELESS_RESET_TOKEN_LEN)
             repeat(QuicheDriver.STATELESS_RESET_TOKEN_LEN) { token.writeByte(cidRandom.nextInt(256).toByte()) }
             token.resetForRead()
             val rc =
-                at {
+                at(lead(conn)) {
                     api.connNewScid(
                         conn,
                         scid.nativeMemoryAccess!!.nativeAddress.toLong(),
@@ -324,29 +391,33 @@ internal class QuichePairByHand private constructor(
 
     /** The client probes the path from its [endpoint] to the server. */
     fun probe(endpoint: Int): ProbeOutcome =
-        at { api.connProbePath(client, clientAddrs[endpoint].address, clientAddrs[endpoint].length, serverAddr.address, serverAddr.length) }
+        at(lead(client)) {
+            api.connProbePath(client, clientAddrs[endpoint].address, clientAddrs[endpoint].length, serverAddr.address, serverAddr.length)
+        }
 
     /** The client moves onto the path from its [endpoint]. */
     fun migrate(endpoint: Int): MigrateOutcome =
-        at { api.connMigrate(client, clientAddrs[endpoint].address, clientAddrs[endpoint].length, serverAddr.address, serverAddr.length) }
+        at(lead(client)) {
+            api.connMigrate(client, clientAddrs[endpoint].address, clientAddrs[endpoint].length, serverAddr.address, serverAddr.length)
+        }
 
     /** [conn] (the client unless named) retires the destination connection ID with sequence number [seq]. */
     fun retireDcid(
         seq: Long,
         conn: QuicheConn = client,
-    ): Int = at { api.connRetireDcid(conn, seq) }
+    ): Int = at(lead(conn)) { api.connRetireDcid(conn, seq) }
 
     /** Spare destination connection IDs [conn] holds. */
-    fun spareDcids(conn: QuicheConn): Long = at { api.connAvailableDcids(conn) }
+    fun spareDcids(conn: QuicheConn): Long = at(lead(conn)) { api.connAvailableDcids(conn) }
 
     /**
      * How [conn] has ended: open, or the error it is closing or closed with. A connection that has sent or
      * received a CONNECTION_CLOSE is not open even while it drains, before quiche reports it closed.
      */
     fun closed(conn: QuicheConn): String {
-        val local = at { api.connLocalError(conn) }
-        val peer = at { api.connPeerError(conn) }
-        val isClosed = at { api.connIsClosed(conn) }
+        val local = at(lead(conn)) { api.connLocalError(conn) }
+        val peer = at(lead(conn)) { api.connPeerError(conn) }
+        val isClosed = at(lead(conn)) { api.connIsClosed(conn) }
         return if (!isClosed && local == null && peer == null) {
             "open"
         } else {
@@ -355,15 +426,15 @@ internal class QuichePairByHand private constructor(
     }
 
     /** Source connection IDs [conn] may still issue to its peer. */
-    fun scidsLeft(conn: QuicheConn): Long = at { api.connScidsLeft(conn) }
+    fun scidsLeft(conn: QuicheConn): Long = at(lead(conn)) { api.connScidsLeft(conn) }
 
     /** How many paths [conn]'s path table holds. */
-    fun pathCount(conn: QuicheConn): Long = at { api.connStats(conn)?.pathsCount } ?: 0L
+    fun pathCount(conn: QuicheConn): Long = at(lead(conn)) { api.connStats(conn)?.pathsCount } ?: 0L
 
     /** [conn]'s path table, one entry per path: validation state, active, packets sent / lost / retransmitted. */
     fun pathTable(conn: QuicheConn): String =
         (0 until pathCount(conn)).joinToString(" ") { idx ->
-            val st = at { api.connPathStats(conn, idx) }
+            val st = at(lead(conn)) { api.connPathStats(conn, idx) }
             "[$idx state=${st?.validationState} active=${st?.active} sent=${st?.sent} lost=${st?.lost} retrans=${st?.retrans}]"
         }
 
@@ -372,7 +443,7 @@ internal class QuichePairByHand private constructor(
         buildList {
             while (true) {
                 val type =
-                    at {
+                    at(lead(conn)) {
                         api.connPathEventNext(
                             conn,
                             eventLocal.nativeMemoryAccess!!.nativeAddress.toLong(),
@@ -396,7 +467,7 @@ internal class QuichePairByHand private constructor(
         return try {
             buf.writeString(text, Charset.UTF8)
             buf.resetForRead()
-            at { api.connStreamSend(conn, stream, buf.nativeMemoryAccess!!.nativeAddress.toLong(), text.length, fin).result }
+            at(lead(conn)) { api.connStreamSend(conn, stream, buf.nativeMemoryAccess!!.nativeAddress.toLong(), text.length, fin).result }
         } finally {
             buf.freeNativeMemory()
         }
@@ -418,7 +489,12 @@ internal class QuichePairByHand private constructor(
             val text = StringBuilder()
             while (true) {
                 buf.position(0)
-                when (val r = at { api.connStreamRecv(conn, stream, buf.nativeMemoryAccess!!.nativeAddress.toLong(), READ_CHUNK) }) {
+                when (
+                    val r =
+                        at(
+                            lead(conn),
+                        ) { api.connStreamRecv(conn, stream, buf.nativeMemoryAccess!!.nativeAddress.toLong(), READ_CHUNK) }
+                ) {
                     is StreamRecvResult.Data -> {
                         buf.position(0)
                         text.append(buf.readString(r.bytesRead, Charset.UTF8))
@@ -454,12 +530,15 @@ internal class QuichePairByHand private constructor(
             options: QuicOptions = migrationSimOptions(),
             /** Extra settings for the client's config, applied before it connects (e.g. `configLogKeys`). */
             configureClient: (QuicheConfig) -> Unit = {},
+            /** The server's options, when a scenario's two ends differ. */
+            serverOptions: QuicOptions = options,
         ): QuichePairByHand =
             QuichePairByHand(
                 env,
                 (0 until CLIENT_ENDPOINTS).map { UdpSocket.resolve("127.0.0.1", CLIENT_PORT + it) },
                 UdpSocket.resolve("127.0.0.1", SERVER_PORT),
                 options,
+                serverOptions,
                 configureClient,
             )
 

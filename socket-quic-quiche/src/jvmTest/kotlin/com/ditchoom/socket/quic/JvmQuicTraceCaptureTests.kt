@@ -371,9 +371,7 @@ class JvmQuicTraceCaptureTests {
                         // land on exactly one sink (never split, never merged). Loopback also produces
                         // a couple of short-lived PROTOCOL_VIOLATION accepts with no datagrams; those
                         // correctly get their own (traffic-free) sinks and simply don't participate in
-                        // the path-isolation check. (Server sinks record DGRAM_OUT only — inbound
-                        // datagrams reach a server driver through the central demux loop, which bypasses
-                        // the per-driver recording channel; that's orthogonal to per-connection routing.)
+                        // the path-isolation check.
                         val minted = snapshotSinks(sinks)
                         assertTrue(minted.isNotEmpty(), "server capture minted no sinks at all")
                         minted.forEachIndexed { i, s ->
@@ -420,6 +418,11 @@ class JvmQuicTraceCaptureTests {
                             "the receive loop recorded accept-time datagrams for $acceptedPaths but connections " +
                                 "exist for ${pathToSinks.keys}: the server-level record missed an Initial",
                         )
+                        // A connection's own trace holds what it received as well as what it sent: every
+                        // datagram after the Initial that created it is routed to its driver.
+                        perConn.filter { s -> s.any { ".Established" in it } }.forEachIndexed { i, s ->
+                            assertTrue(s.any { " DGRAM_IN " in it }, "connection sink #$i records no datagram it received: $s")
+                        }
                         val established = establishedSinks(perConn)
                         assertTrue(established >= 2, "expected >=2 fully-established server-side traces, got $established")
                     }

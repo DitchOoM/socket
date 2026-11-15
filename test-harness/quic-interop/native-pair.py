@@ -17,15 +17,18 @@ Weaker than the runner in two ways, stated in every summary: no packet capture, 
 network simulator, so nothing is delayed, lost or rebound.
 """
 import argparse
+import enum
 import json
 import os
 import random
 import shlex
 import shutil
+import signal
 import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 KB = 1024
@@ -38,6 +41,7 @@ FILES = {
     "resumption": [1 * KB, 1 * KB],
     "zerortt": [1 * KB] * 5,
 }
+GRACE = 5  # seconds between SIGTERM and SIGKILL
 TIMEOUT = {"handshake": 30, "transfer": 120, "resumption": 60, "zerortt": 60}
 
 
@@ -57,6 +61,93 @@ def make_certs(certs):
          "-addext", "subjectAltName=DNS:localhost,DNS:server,IP:127.0.0.1"],
         check=True, capture_output=True,
     )
+
+
+class Ended(enum.Enum):
+    """How a child process ended: on its own, after SIGTERM, or only after SIGKILL."""
+    EXITED = "exited on its own"
+    TERMINATED = "ended by SIGTERM"
+    KILLED = "ended by SIGKILL"
+
+
+class Process:
+    """A child process whose merged stdout/stderr is streamed to a timestamped file as it arrives."""
+
+    def __init__(self, name, cmd, env, cwd, out_path, t0):
+        self.name = name
+        self.t0 = t0
+        self.started_wall = time.strftime("%H:%M:%S", time.gmtime()) + "Z"
+        self.first_byte = None
+        self.ended_at = None
+        self.end = None
+        self.raw = []
+        self.out = open(out_path, "w", errors="replace")
+        self.proc = subprocess.Popen(cmd, env=env, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        self.started = time.monotonic() - t0
+        self.reader = threading.Thread(target=self._pump, daemon=True)
+        self.reader.start()
+
+    def _pump(self):
+        for line in iter(self.proc.stdout.readline, b""):
+            now = time.monotonic() - self.t0
+            if self.first_byte is None:
+                self.first_byte = now
+            text = line.decode(errors="replace")
+            self.raw.append(text)
+            self.out.write(f"+{now:8.3f}s {text}")
+            self.out.flush()
+
+    def wait(self, timeout):
+        """Wait for exit; past the timeout, SIGTERM then SIGKILL so buffered output and logs flush."""
+        try:
+            self.proc.wait(timeout)
+        except subprocess.TimeoutExpired:
+            return self.stop()
+        self.end = Ended.EXITED
+        self.ended_at = time.monotonic() - self.t0
+        return self.end
+
+    def stop(self):
+        if self.end is not None:
+            return self.end
+        self.ended_at = time.monotonic() - self.t0
+        if self.proc.poll() is not None:
+            self.end = Ended.EXITED
+            return self.end
+        self.proc.terminate()
+        try:
+            self.proc.wait(GRACE)
+            self.end = Ended.TERMINATED
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+            self.proc.wait()
+            self.end = Ended.KILLED
+        return self.end
+
+    def finish(self):
+        self.reader.join(5)
+        self.out.close()
+
+    def text(self):
+        return "".join(self.raw)
+
+    def describe(self):
+        spoke = "no output" if self.first_byte is None else f"first output at +{self.first_byte:.3f}s"
+        return (f"{self.name} started {self.started_wall} (+{self.started:.3f}s), {spoke}, "
+                f"{self.end.value} at +{self.ended_at:.3f}s, exit {describe_exit(self.proc.returncode)}")
+
+
+def describe_exit(code):
+    return f"signal {signal.Signals(-code).name}" if code < 0 else f"code {code}"
+
+
+def timeline(server, client, total):
+    """Facts a failed cell needs when its output is empty: when each process started, spoke and ended."""
+    lines = ["--- timeline (UTC wall clock; seconds since the server started) ---", server.describe()]
+    if client is not None:
+        lines.append(client.describe())
+    lines.append(f"cell ran {total:.3f}s")
+    return "\n".join(lines)
 
 
 def run_test(args, test, workdir):
@@ -84,47 +175,51 @@ def run_test(args, test, workdir):
         client_env.pop("CLIENT_PARAMS", None)
 
     log = []
-    server = subprocess.Popen(shlex.split(args.server, posix=os.name != "nt"), env=server_env, cwd=workdir,
-                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    t0 = time.monotonic()
+    server = Process("server", shlex.split(args.server, posix=os.name != "nt"), server_env, workdir,
+                     os.path.join(logs, "server.out"), t0)
+    client = None
     try:
         time.sleep(args.server_start)
-        if server.poll() is not None:
-            out = server.stdout.read().decode(errors="replace")
-            log.append(out)
-            return ("unsupported" if server.returncode == UNSUPPORTED else "failed"), log
+        if server.proc.poll() is not None:
+            server.finish()
+            log.append(server.text())
+            return ("unsupported" if server.proc.returncode == UNSUPPORTED else "failed"), log, logs
         client_cmd = shlex.split(args.client, posix=os.name != "nt") + (urls if args.client_urls_as_args else [])
-        try:
-            client = subprocess.run(client_cmd, env=client_env, cwd=workdir, capture_output=True,
-                                    timeout=TIMEOUT[test])
-            out = (client.stdout + client.stderr).decode(errors="replace")
-            log.append(out)
-            code = client.returncode
-        except subprocess.TimeoutExpired as e:
-            log.append(((e.stdout or b"") + (e.stderr or b"")).decode(errors="replace"))
+        client = Process("client", client_cmd, client_env, workdir, os.path.join(logs, "client.out"), t0)
+        end = client.wait(TIMEOUT[test])
+        client.finish()
+        log.append(client.text())
+        code = client.proc.returncode
+        if end is not Ended.EXITED:
             log.append(f"client took longer than {TIMEOUT[test]} s")
-            return "failed", log
     finally:
-        server.terminate()
-        try:
-            server.wait(10)
-        except subprocess.TimeoutExpired:
-            server.kill()
-        log.append("--- server ---\n" + server.stdout.read().decode(errors="replace")[-4000:])
+        server.stop()
+        server.finish()
+        log.append("--- server ---\n" + server.text()[-4000:])
+        log.append(timeline(server, client, time.monotonic() - t0))
+    if end is not Ended.EXITED:
+        return "failed", log, logs
     if code == UNSUPPORTED:
-        return "unsupported", log
+        return "unsupported", log, logs
     if code != 0:
-        log.append(f"client exited with code {code}")
-        return "failed", log
+        log.append(f"client exited with {describe_exit(code)}")
+        return "failed", log, logs
     for n in names:
         got = os.path.join(downloads, n)
         if not os.path.exists(got):
             log.append(f"Missing download {n}")
-            return "failed", log
+            return "failed", log, logs
         with open(got, "rb") as a, open(os.path.join(www, n), "rb") as b:
             if a.read() != b.read():
                 log.append(f"Wrong content in {n}")
-                return "failed", log
-    return "succeeded", log
+                return "failed", log, logs
+    return "succeeded", log, logs
+
+
+def keep_logs(logs, dest):
+    shutil.rmtree(dest, ignore_errors=True)
+    shutil.copytree(logs, dest)
 
 
 def main():
@@ -137,6 +232,8 @@ def main():
     p.add_argument("--client-urls-as-args", action="store_true")
     p.add_argument("--server-start", type=float, default=4.0)
     p.add_argument("--results", required=True)
+    p.add_argument("--captures", help="directory receiving each failed cell's LOGS dir (qlog, keylog, traces, "
+                                      "timestamped process output); passing cells keep nothing")
     args = p.parse_args()
 
     os.makedirs(args.results, exist_ok=True)
@@ -147,7 +244,9 @@ def main():
     for test in tests:
         workdir = tempfile.mkdtemp(prefix=f"interop-{test}-")
         try:
-            result, log = run_test(args, test, workdir)
+            result, log, logs = run_test(args, test, workdir)
+            if result == "failed" and args.captures:
+                keep_logs(logs, os.path.join(args.captures, f"{args.direction}__{args.peer}__{test}"))
         finally:
             shutil.rmtree(workdir, ignore_errors=True)
         print(f"{args.direction} {args.peer} {test}: {result}", flush=True)
@@ -159,7 +258,7 @@ def main():
                 if line.startswith("MIGRATION-SUMMARY"):
                     summary = line
         if result != "succeeded":
-            reasons.append(f"== {test}: {result}\n" + "\n".join(text.splitlines()[-40:]))
+            reasons.append(f"== {test}: {result}\n" + "\n".join(text.splitlines()[-60:]))
     out = {
         "servers": [args.peer], "clients": ["ditchoom"],
         "tests": {t: {"name": t} for t in tests},

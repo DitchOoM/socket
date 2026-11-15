@@ -543,7 +543,7 @@ class ServerConnectionRegistryTests {
         val cached =
             recvInfoFor(key) {
                 built = true
-                CachedRecvInfo(info, releaseSource)
+                CachedRecvInfo(info, PathKey(4, key, 0L, 0L), releaseSource)
             }
         assertTrue(built, "path $key was already held")
         return cached
@@ -557,7 +557,7 @@ class ServerConnectionRegistryTests {
         var built = false
         recvInfoFor(key) {
             built = true
-            CachedRecvInfo(QuicheRecvInfo(1L)) { }
+            CachedRecvInfo(QuicheRecvInfo(1L), PathKey(4, key, 0L, 0L)) { }
         }
         return built
     }
