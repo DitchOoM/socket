@@ -71,6 +71,7 @@ def connection_facts(path, side):
         "rx_handshake_crypto": 0,
         "rx_handshake_acks": 0,
         "tx_crypto": 0,
+        "tx_after_last_rx": 0,
         "bytes_in_flight_at_end": 0,
         "longest_wait_in_flight_ms": 0.0,
         "fin_sent_streams": 0,
@@ -93,6 +94,7 @@ def connection_facts(path, side):
         if name.endswith("packet_received"):
             facts["rx_packets"] += 1
             facts["last_rx_ms"] = at
+            facts["tx_after_last_rx"] = 0
             space = (data.get("header") or {}).get("packet_type", "")
             frames = {f.get("frame_type") for f in data.get("frames") or []}
             if space in ("initial", "handshake"):
@@ -106,6 +108,7 @@ def connection_facts(path, side):
                         {"stream_id": int(frame.get("stream_id", 0)), "final_size": int(frame.get("final_size", 0))}
                     )
         elif name.endswith("packet_sent"):
+            facts["tx_after_last_rx"] += 1
             facts["tx_crypto"] += any(f.get("frame_type") == "crypto" for f in data.get("frames") or [])
             # How long we waited to send again while data was in flight: our own retransmission timer's gaps.
             if last_tx >= 0 and facts["bytes_in_flight_at_end"] > 0:
