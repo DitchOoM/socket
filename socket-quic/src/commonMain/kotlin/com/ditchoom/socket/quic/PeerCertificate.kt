@@ -390,6 +390,7 @@ private fun ReadBuffer.managedCopy(): ReadBuffer {
 }
 
 private fun PlatformBuffer.zeroAndFree() {
-    for (i in 0 until capacity) set(i, 0.toByte())
+    resetForWrite()
+    fill(0)
     freeNativeMemory()
 }

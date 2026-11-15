@@ -91,6 +91,7 @@ private class BoringSslP256KeyPair(
 private fun PlatformBuffer.pointer(): CPointer<UByteVar> = nativeMemoryAccess!!.nativeAddress.toCPointer()!!
 
 private fun PlatformBuffer.zeroAndFree() {
-    for (i in 0 until capacity) set(i, 0.toByte())
+    resetForWrite()
+    fill(0)
     freeNativeMemory()
 }

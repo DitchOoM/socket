@@ -249,6 +249,9 @@ internal fun QuicheApi.applySessionTicketKeys(
                 val rc = configSetTicketKey(config, native.driverOwnedNativeAddress(), native.remaining())
                 if (rc < 0) throw SessionTicketKeyRefused(rc)
             } finally {
+                // The key must not linger in a pooled buffer the next allocation reuses.
+                native.resetForWrite()
+                native.fill(0)
                 native.freeNativeMemory()
             }
         }
