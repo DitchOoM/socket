@@ -51,6 +51,8 @@ abstract class NativeDeadlineTimerConstructionTests {
                 } finally {
                     builders.close()
                 }
+                // The number a reader of the log needs when the bound is ever in question.
+                println("peak resident set grew by ${(peakResidentBytes() - peakAtStart) / (1024 * 1024)} MiB during the test")
                 // Every builder stops at the first reading over the bound, so a regression fails here and not by
                 // exhausting the machine.
                 assertEquals(
