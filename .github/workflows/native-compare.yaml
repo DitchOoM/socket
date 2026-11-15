@@ -99,6 +99,7 @@ jobs:
         run: |
           sudo apt-get install -y -q "linux-tools-$(uname -r)" linux-tools-common >/dev/null
           sudo sysctl -w kernel.perf_event_paranoid=-1 kernel.kptr_restrict=0
+          sudo sysctl -w net.core.rmem_max=4194304
           sysctl net.core.rmem_default net.core.rmem_max net.core.wmem_default net.core.wmem_max
       - name: Run
         run: |
@@ -139,6 +140,7 @@ jobs:
         run: |
           sudo apt-get install -y -q "linux-tools-$(uname -r)" linux-tools-common >/dev/null
           sudo sysctl -w kernel.perf_event_paranoid=-1 kernel.kptr_restrict=0
+          sudo sysctl -w net.core.rmem_max=4194304
           sysctl net.core.rmem_default net.core.rmem_max net.core.wmem_default net.core.wmem_max
       - name: Run
         run: |
