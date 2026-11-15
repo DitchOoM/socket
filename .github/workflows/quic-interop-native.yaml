@@ -87,6 +87,13 @@ jobs:
           name: interop-results-native-macos-arm64
           path: interop-results
           retention-days: 14
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() && hashFiles('interop-failures/**') != '' }}
+        with:
+          name: interop-failures-native-macos-arm64
+          path: interop-failures
+          retention-days: 7
+          compression-level: 9
 
   # Our client as Kotlin/Native: on macOS arm64, and inside a booted iOS simulator, the only place the
   # Apple client's Network.framework datapath meets a foreign QUIC stack. The client is the K/N test binary
@@ -137,6 +144,13 @@ jobs:
           name: interop-results-native-kn
           path: interop-results
           retention-days: 14
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() && hashFiles('interop-failures/**') != '' }}
+        with:
+          name: interop-failures-native-kn
+          path: interop-failures
+          retention-days: 7
+          compression-level: 9
 
   windows-x64:
     name: "Windows x64 (JVM)"
@@ -181,6 +195,13 @@ jobs:
           name: interop-results-native-windows-x64
           path: interop-results
           retention-days: 14
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() && hashFiles('interop-failures/**') != '' }}
+        with:
+          name: interop-failures-native-windows-x64
+          path: interop-failures
+          retention-days: 7
+          compression-level: 9
 
   gate:
     name: "native gate"

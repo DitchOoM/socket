@@ -22,11 +22,11 @@ ours="java --enable-native-access=ALL-UNNAMED --add-opens java.base/java.nio=ALL
 pair="$root/test-harness/quic-interop/native-pair.py"
 
 "$py" "$pair" --direction "$LANE-our-client" --peer quic-go --tests "$TESTS" \
-  --server "$peers/qgo-server$exe" --client "$ours" --results "$results"
+  --server "$peers/qgo-server$exe" --client "$ours" --results "$results" --captures "$root/interop-failures"
 "$py" "$pair" --direction "$LANE-our-client-migrating" --peer quic-go --tests transfer \
-  --server "$peers/qgo-server$exe" --client "$ours" --results "$results"
+  --server "$peers/qgo-server$exe" --client "$ours" --results "$results" --captures "$root/interop-failures"
 "$py" "$pair" --direction "$LANE-our-server" --peer quic-go --tests "$TESTS" \
-  --server "$ours" --client "$peers/qgo-client$exe" --client-urls-as-args --results "$results"
+  --server "$ours" --client "$peers/qgo-client$exe" --client-urls-as-args --results "$results" --captures "$root/interop-failures"
 
 {
   echo "### $LANE"

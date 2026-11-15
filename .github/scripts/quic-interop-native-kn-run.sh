@@ -18,9 +18,9 @@ for lane in macos-arm64-kn ios-simulator-arm64-kn; do
     ios-simulator-arm64-kn) cmd="$client $sim $IOS_SIMULATOR_BOOTED_UDID" ;;
   esac
   python3 "$pair" --direction "$lane-our-client" --peer quic-go --tests "$TESTS" \
-    --server "$peers/qgo-server" --client "$cmd" --results "$results"
+    --server "$peers/qgo-server" --client "$cmd" --results "$results" --captures "$root/interop-failures"
   python3 "$pair" --direction "$lane-our-client-migrating" --peer quic-go --tests transfer \
-    --server "$peers/qgo-server" --client "$cmd" --results "$results"
+    --server "$peers/qgo-server" --client "$cmd" --results "$results" --captures "$root/interop-failures"
 done
 
 {
