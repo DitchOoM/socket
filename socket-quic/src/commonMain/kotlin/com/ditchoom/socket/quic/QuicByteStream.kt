@@ -30,7 +30,7 @@ import kotlin.time.Duration
  * delegate to the underlying QUIC engine (quiche).
  *
  * State guards prevent use-after-close — calling [read] or [write] after [close]
- * throws [IllegalStateException] immediately rather than returning garbage. [write]
+ * throws [QuicStreamClosedException] immediately rather than returning garbage. [write]
  * (but not [read]) also throws after [shutdownSend], which finishes only the send side.
  *
  * The constructor is public so layers built on top of this module (e.g. the HTTP/3
@@ -121,10 +121,10 @@ class QuicByteStream(
      * @throws QuicCloseException when the connection ends without the peer's FIN or reset for this
      *   stream — an idle timeout, a CONNECTION_CLOSE from either side — after any bytes the transport
      *   already accepted have been delivered. [QuicCloseException.closeReason] says why.
-     * @throws IllegalStateException after [close].
+     * @throws QuicStreamClosedException after [close].
      */
     override suspend fun read(deadline: Duration): ReadResult {
-        check(!closed) { "QuicByteStream($streamId) is closed" }
+        if (closed) throw QuicStreamClosedException(streamId.id, QuicStreamSide.Read)
         when (val gate = earlyReads) {
             EarlyReads.Open -> Unit
             is EarlyReads.Gated -> if (!gate.open.isCompleted) gate.awaitOpen()
@@ -149,7 +149,7 @@ class QuicByteStream(
      * @throws QuicNativeMemoryRequiredException if the connection requires native memory and [buffer]
      *   has none — a caller-contract violation, raised before anything is enqueued; the stream is
      *   unaffected and a correctly allocated write can follow.
-     * @throws IllegalStateException after [close] or [shutdownSend].
+     * @throws QuicStreamClosedException after [close] or [shutdownSend].
      * @throws QuicStreamException if the peer aborted this stream (STOP_SENDING / RESET_STREAM).
      * @throws QuicCloseException if the connection closed.
      */
@@ -157,8 +157,8 @@ class QuicByteStream(
         buffer: ReadBuffer,
         deadline: Duration,
     ): BytesWritten {
-        check(!closed) { "QuicByteStream($streamId) is closed" }
-        check(!sendFinished) { "QuicByteStream($streamId) send side is finished" }
+        if (closed) throw QuicStreamClosedException(streamId.id, QuicStreamSide.Write)
+        if (sendFinished) throw QuicStreamClosedException(streamId.id, QuicStreamSide.Write)
         return delegate.write(buffer, deadline)
     }
 
@@ -166,8 +166,8 @@ class QuicByteStream(
         buffers: List<ReadBuffer>,
         deadline: Duration,
     ): BytesWritten {
-        check(!closed) { "QuicByteStream($streamId) is closed" }
-        check(!sendFinished) { "QuicByteStream($streamId) send side is finished" }
+        if (closed) throw QuicStreamClosedException(streamId.id, QuicStreamSide.Write)
+        if (sendFinished) throw QuicStreamClosedException(streamId.id, QuicStreamSide.Write)
         return delegate.writeGathered(buffers, deadline)
     }
 
@@ -176,7 +176,7 @@ class QuicByteStream(
      * sent after them: a reply that fits one packet leaves in one. Equivalent to `writeFully` followed by
      * [shutdownSend] otherwise, and the same zero-copy, no-ownership contract as [write].
      *
-     * @throws IllegalStateException after [close] or [shutdownSend].
+     * @throws QuicStreamClosedException after [close] or [shutdownSend].
      * @throws QuicStreamException if the peer aborted this stream (STOP_SENDING / RESET_STREAM).
      * @throws QuicCloseException if the connection closed.
      */
@@ -184,8 +184,8 @@ class QuicByteStream(
         buffer: ReadBuffer,
         deadline: Duration = writePolicy.toDeadline(),
     ) {
-        check(!closed) { "QuicByteStream($streamId) is closed" }
-        check(!sendFinished) { "QuicByteStream($streamId) send side is finished" }
+        if (closed) throw QuicStreamClosedException(streamId.id, QuicStreamSide.Write)
+        if (sendFinished) throw QuicStreamClosedException(streamId.id, QuicStreamSide.Write)
         when (val sink = delegate) {
             is FinishingWrite -> {
                 sink.writeFullyAndShutdownSend(buffer, deadline)

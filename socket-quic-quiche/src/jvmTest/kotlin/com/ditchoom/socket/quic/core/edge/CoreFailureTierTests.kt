@@ -8,8 +8,11 @@ import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.socket.quic.CommonJvmQuicConfigCalls
 import com.ditchoom.socket.quic.QUIC_ISSUED_CONN_ID_LEN
 import com.ditchoom.socket.quic.QuicByteStream
+import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicCloseException
+import com.ditchoom.socket.quic.QuicCloseReason
 import com.ditchoom.socket.quic.QuicConnectionIdentity
+import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicRole
 import com.ditchoom.socket.quic.QuicSessionId
@@ -127,6 +130,8 @@ class CoreFailureTierTests {
             assertSame(planted, end.cause)
             val read = assertIs<QuicCloseException>(parkedRead.await().exceptionOrNull())
             assertSame(planted, read.cause)
+            assertEquals(QuicCloseCircumstance.ProcessingFailed, read.circumstance)
+            assertEquals(QuicCloseReason.ByLocal(QuicError.ProcessingFailed), read.closeReason)
 
             val first = rig.runOnLoop()
             val second = rig.runOnLoop()

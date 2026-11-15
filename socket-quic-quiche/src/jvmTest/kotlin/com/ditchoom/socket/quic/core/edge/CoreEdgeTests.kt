@@ -6,10 +6,14 @@ import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.socket.quic.QuicByteStream
+import com.ditchoom.socket.quic.QuicCloseCircumstance
+import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicCloseReason
 import com.ditchoom.socket.quic.QuicConnectionState
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicOptions
+import com.ditchoom.socket.quic.QuicStreamClosedException
+import com.ditchoom.socket.quic.QuicStreamSide
 import com.ditchoom.socket.quic.QuicTlsConfig
 import com.ditchoom.socket.quic.ScopedRead
 import com.ditchoom.socket.quic.loadQuicheApi
@@ -31,6 +35,7 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
@@ -80,6 +85,58 @@ class CoreEdgeTests {
         withCoreClient(closeAtEnd = false) { connection ->
             connection.close(QuicError.NoError)
             assertEquals(QuicConnectionState.Closed(QuicCloseReason.ByLocal(QuicError.NoError)), connection.state.value)
+        }
+
+    @Test
+    fun aReadOnAClosedStreamRaisesAStreamClosedExceptionForTheReadSide() =
+        withCoreClient { connection ->
+            val stream = connection.openStream()
+            stream.close()
+            val failure = assertFailsWith<QuicStreamClosedException> { stream.read(1.seconds) { } }
+            assertEquals(QuicStreamSide.Read, failure.side)
+            assertEquals(stream.streamId.id, failure.streamId)
+        }
+
+    @Test
+    fun aWriteOnAClosedOrFinishedStreamRaisesAStreamClosedExceptionForTheWriteSide() =
+        withCoreClient { connection ->
+            val closed = connection.openStream()
+            closed.close()
+            val afterClose = assertFailsWith<QuicStreamClosedException> { closed.writeFully(bytes(byteArrayOf(1)), 1.seconds) }
+            assertEquals(QuicStreamSide.Write, afterClose.side)
+            assertEquals(closed.streamId.id, afterClose.streamId)
+
+            val finished = connection.openStream()
+            finished.shutdownSend()
+            val afterFinish = assertFailsWith<QuicStreamClosedException> { finished.writeFully(bytes(byteArrayOf(1)), 1.seconds) }
+            assertEquals(QuicStreamSide.Write, afterFinish.side)
+        }
+
+    @Test
+    fun aHandshakeTheClientRejectsRaisesTheHandshakeFailedCircumstanceWithTheCloseReason() =
+        runBlocking {
+            skipOnMissingNativeLib(CoreEdgeTests::class) {
+                withQuicServer(port = 0, tlsConfig = tlsConfig(), quicOptions = options) {
+                    val failure =
+                        assertFailsWith<QuicCloseException> {
+                            withContext(Dispatchers.IO) {
+                                coreConnect(
+                                    host = "127.0.0.1",
+                                    port = port,
+                                    serverName = "localhost",
+                                    options = options.copy(verifyPeer = true),
+                                    factory = BufferFactory.Default,
+                                    api = loadQuicheApi(),
+                                    timeout = 10.seconds,
+                                    readPolicy = ReadPolicy.Bounded(10.seconds),
+                                    writePolicy = WritePolicy.Bounded(10.seconds),
+                                )
+                            }
+                        }
+                    assertEquals(QuicCloseCircumstance.HandshakeFailed, failure.circumstance)
+                    assertTrue(failure.closeReason !is QuicCloseReason.Graceful, "the reason says why: ${failure.closeReason}")
+                }
+            }
         }
 
     private suspend fun echo(

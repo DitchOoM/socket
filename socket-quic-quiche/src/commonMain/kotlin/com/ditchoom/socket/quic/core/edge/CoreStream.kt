@@ -11,7 +11,9 @@ import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.socket.quic.QuicNativeMemoryRequiredException
+import com.ditchoom.socket.quic.QuicStreamClosedException
 import com.ditchoom.socket.quic.QuicStreamId
+import com.ditchoom.socket.quic.QuicStreamSide
 import com.ditchoom.socket.quic.QuicWriteTarget
 import com.ditchoom.socket.quic.QuicheDriver
 import com.ditchoom.socket.quic.core.conn.WriteEnd
@@ -42,7 +44,7 @@ internal class CoreStream(
     override val isOpen: Boolean get() = use.load() !== Use.Closed
 
     override suspend fun read(deadline: Duration): ReadResult {
-        if (use.load() === Use.Closed) throw IllegalStateException("stream ${id.id} is closed")
+        if (use.load() === Use.Closed) throw QuicStreamClosedException(id.id, QuicStreamSide.Read)
         return connection.read(id, deadline)
     }
 
@@ -50,7 +52,7 @@ internal class CoreStream(
         buffer: ReadBuffer,
         deadline: Duration,
     ): BytesWritten {
-        if (use.load() !== Use.Open) throw IllegalStateException("stream ${id.id} can no longer be written")
+        if (use.load() !== Use.Open) throw QuicStreamClosedException(id.id, QuicStreamSide.Write)
         val native =
             buffer.nativeMemoryAccess
                 ?: throw QuicNativeMemoryRequiredException.forBuffer(QuicWriteTarget.Stream(id.id), buffer, QuicheDriver.capabilities)

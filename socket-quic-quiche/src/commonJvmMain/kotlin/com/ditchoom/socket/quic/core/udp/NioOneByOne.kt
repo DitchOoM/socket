@@ -143,23 +143,13 @@ private fun bigEndian(
     return value
 }
 
-/** NIO carries no errno: the type names some errors, the strerror phrase the rest. */
+/** NIO carries no errno: the exception's type names the errors it can, and any other is [UdpError.Other] with the exception. */
 internal fun udpErrorOf(e: IOException): UdpError =
     when (e) {
         is PortUnreachableException -> UdpError.PortUnreachable
         is NoRouteToHostException -> UdpError.HostUnreachable
         is ClosedChannelException -> UdpError.SocketClosed
-        else -> {
-            val message = e.message.orEmpty()
-            when {
-                message.contains("No route to host") -> UdpError.HostUnreachable
-                message.contains("Network is unreachable") -> UdpError.NetworkUnreachable
-                message.contains("Message too long") -> UdpError.MessageTooLarge
-                message.contains("No buffer space available") -> UdpError.NoBufferSpace
-                message.contains("Permission denied") || message.contains("Operation not permitted") -> UdpError.PermissionDenied
-                else -> UdpError.Other(e::class.simpleName.orEmpty())
-            }
-        }
+        else -> UdpError.Other(e)
     }
 
 private const val MAX_CACHED_TARGETS = 4096

@@ -21,6 +21,11 @@ sealed interface QuicError : DatagramCloseReason {
         override val code: Long = 0x0
     }
 
+    /** Processing the connection threw locally; the connection was closed with INTERNAL_ERROR (code 0x1). */
+    data object ProcessingFailed : QuicError {
+        override val code: Long = 0x1
+    }
+
     data class InternalError(
         val detail: String,
     ) : QuicError {

@@ -124,7 +124,51 @@ public class CoreDefaultsCheck {
                 findings.add(new Finding(name, line, "thread-in-initializer", raw[line - 1]));
             }
         }
+        findings.addAll(literalExceptions(name, raw, all));
         return findings;
+    }
+
+    static final Pattern EXCEPTION_CALL = Pattern.compile("\\b\\w*(Exception|Error)\\s*\\(");
+    static final Pattern MESSAGE_ASSIGN = Pattern.compile("\\bmessage\\s*=(?!=)|\\boverride\\s+val\\s+message\\b");
+    static final Pattern MESSAGE_READ = Pattern.compile("\\.message\\b");
+
+    /**
+     * An exception's meaning lives in its type. Strings are stripped to `""`, so a literal or template argument
+     * of an exception or error constructor, a message assigned from one, and any `.message` read are visible here.
+     */
+    static List<Finding> literalExceptions(String name, String[] raw, String all) {
+        List<Finding> findings = new ArrayList<>();
+        Matcher call = EXCEPTION_CALL.matcher(all);
+        while (call.find()) {
+            int open = call.end() - 1;
+            int close = matchingParen(all, open);
+            if (all.substring(open, close).contains("\"\"")) {
+                int line = lineOf(all, call.start());
+                findings.add(new Finding(name, line, "message-exception-literal", raw[line - 1]));
+            }
+        }
+        String[] lines = all.split("\n", -1);
+        for (int i = 0; i < lines.length; i++) {
+            Matcher assign = MESSAGE_ASSIGN.matcher(lines[i]);
+            if (assign.find()) {
+                String tail = lines[i].substring(assign.start()) + (i + 1 < lines.length ? lines[i + 1] : "");
+                if (tail.contains("\"\"")) findings.add(new Finding(name, i + 1, "message-exception-literal", raw[i]));
+            }
+            if (MESSAGE_READ.matcher(lines[i]).find()) {
+                findings.add(new Finding(name, i + 1, "message-exception-literal", raw[i]));
+            }
+        }
+        return findings;
+    }
+
+    static int matchingParen(String text, int open) {
+        int depth = 0;
+        for (int i = open; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c == '(') depth++;
+            if (c == ')' && --depth == 0) return i;
+        }
+        return text.length();
     }
 
     static boolean boundaryAbove(String[] raw, int index) {
@@ -202,6 +246,7 @@ public class CoreDefaultsCheck {
             Map.entry("suspend-outside-edge", "suspend fun f() = Unit"),
             Map.entry("thread-in-initializer", "class A { init { worker.start() } }"),
             Map.entry("byte-array", "fun f(b: ByteArray) = Unit"),
+            Map.entry("message-exception-literal", "fun f() = IllegalStateException(\"stream closed\")"),
             Map.entry("own-buffer-factory", "val b = BufferFactory.Default.allocate(1500)"));
         int failures = 0;
         for (var entry : planted.entrySet()) {
@@ -211,6 +256,33 @@ public class CoreDefaultsCheck {
                 System.err.println("SELFTEST: a planted " + entry.getKey() + " violation was not caught: " + found);
                 failures++;
             }
+        }
+        List<String> literalPlants = List.of(
+            "fun f() = QuicError.InternalError(\"boom\")",
+            "fun f() = StreamFailureException(\n    id,\n    \"stream $id closed\",\n)",
+            "class E : Exception(\"x\")",
+            "class E(val id: Long) : Exception() { override val message: String = \"stream\" }",
+            "val e = X(message = \"sentence\")",
+            "fun f(e: Exception) = e.message.orEmpty().contains(x)",
+            "fun f(e: Exception) = e?.message");
+        for (String plant : literalPlants) {
+            List<Finding> found = check("planted-literal.kt", "loop", plant + "\n");
+            if (found.stream().noneMatch(f -> f.rule().equals("message-exception-literal"))) {
+                System.err.println("SELFTEST: a planted message-exception-literal was not caught: " + plant);
+                failures++;
+            }
+        }
+        List<Finding> typedOnly = check("typed.kt", "loop", String.join("\n",
+            "fun f() = QuicStreamClosedException(id, QuicStreamSide.Read)",
+            "fun g(e: Exception) = Wrapped(e)",
+            "fun h(): Exception = lastFailure",
+            "fun i() = QuicCloseException(reason, QuicCloseCircumstance.Released)",
+            "val text = \"the word Exception( and .message in a string\"",
+            "// IllegalStateException(\"in a comment\") e.message",
+            ""));
+        if (!typedOnly.isEmpty()) {
+            System.err.println("SELFTEST: typed exceptions were flagged: " + typedOnly);
+            failures++;
         }
         String clean = String.join("\n",
             "/** synchronized, null, error(\"x\"), ByteArray and suspend in a comment are not code. */",
@@ -237,6 +309,6 @@ public class CoreDefaultsCheck {
             failures++;
         }
         if (failures > 0) System.exit(1);
-        System.out.println("CoreDefaultsCheck selftest: " + planted.size() + " planted violations caught, clean code passes");
+        System.out.println("CoreDefaultsCheck selftest: " + (planted.size() + literalPlants.size()) + " planted violations caught, clean code passes");
     }
 }

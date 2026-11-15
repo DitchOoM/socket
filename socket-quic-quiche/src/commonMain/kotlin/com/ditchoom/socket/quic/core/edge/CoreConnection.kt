@@ -12,6 +12,7 @@ import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.socket.quic.OnCancel
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicCapabilities
+import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicCloseReason
 import com.ditchoom.socket.quic.QuicConnection
@@ -131,7 +132,7 @@ internal class CoreConnection(
                 is QuicConnectionState.Closed -> reached.reason
                 else -> return
             }
-        throw QuicCloseException(end, "QUIC handshake failed")
+        throw QuicCloseException(end, QuicCloseCircumstance.HandshakeFailed)
     }
 
     override suspend fun openStream(): QuicByteStream {
@@ -220,15 +221,15 @@ internal class CoreConnection(
                 ConnEnd.TimedOut -> QuicCloseReason.ByLocal(QuicError.IdleTimeout)
                 is ConnEnd.ByPeer -> QuicCloseReason.ByPeer(end.error)
                 is ConnEnd.Locally -> QuicCloseReason.ByLocal(end.error)
-                is ConnEnd.Failed -> QuicCloseReason.ByLocal(QuicError.InternalError("processing the connection failed"))
+                is ConnEnd.Failed -> QuicCloseReason.ByLocal(QuicError.ProcessingFailed)
                 ConnEnd.Quietly, is ConnEnd.LoopFailed, is ConnEnd.CallerFailed -> QuicCloseReason.Unspecified
             }
         val failure =
             when (end) {
-                is ConnEnd.Failed -> QuicCloseException(reason, "processing the connection failed", end.cause)
-                is ConnEnd.LoopFailed -> QuicCloseException(reason, "the connection's loop thread failed", end.cause)
-                is ConnEnd.CallerFailed -> QuicCloseException(reason, "a caller's thread failed inside the connection", end.cause)
-                else -> QuicCloseException(reason, "connection closed")
+                is ConnEnd.Failed -> QuicCloseException(reason, QuicCloseCircumstance.ProcessingFailed, end.cause)
+                is ConnEnd.LoopFailed -> QuicCloseException(reason, QuicCloseCircumstance.LoopThreadFailed, end.cause)
+                is ConnEnd.CallerFailed -> QuicCloseException(reason, QuicCloseCircumstance.CallerThreadFailed, end.cause)
+                else -> QuicCloseException(reason, QuicCloseCircumstance.Ended)
             }
         streams.forEach { it.endWaiters(failure) }
         opens.forEach { it.fail(failure) }
@@ -351,7 +352,7 @@ internal class CoreConnection(
 
 /** What a caller gets when the connection was released before its work ran. */
 internal object ConnectionReleased {
-    fun failure(): QuicCloseException = QuicCloseException(QuicCloseReason.Unspecified, "connection released")
+    fun failure(): QuicCloseException = QuicCloseException(QuicCloseReason.Unspecified, QuicCloseCircumstance.Released)
 }
 
 /** The same exception a 4.x stream deadline raises, so callers see one type for both cores. */

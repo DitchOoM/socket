@@ -401,7 +401,6 @@ internal object StreamFailure {
                 } else {
                     QuicStreamReadError.Quiche(code)
                 },
-            message = "QUIC stream ${stream.id} read failed (quiche code $code)",
         )
 
     private fun ofWrite(
@@ -415,8 +414,8 @@ internal object StreamFailure {
         peer: QuicAppErrorCode,
     ): Throwable =
         when (code) {
-            QUICHE_ERR_STREAM_STOPPED -> QuicStreamException(stream.id, QuicStreamAbort.StopSending(peer), "peer stopped the stream")
-            QUICHE_ERR_STREAM_RESET -> QuicStreamException(stream.id, QuicStreamAbort.ResetStream(peer), "peer reset the stream")
+            QUICHE_ERR_STREAM_STOPPED -> QuicStreamException(stream.id, QuicStreamAbort.StopSending(peer))
+            QUICHE_ERR_STREAM_RESET -> QuicStreamException(stream.id, QuicStreamAbort.ResetStream(peer))
             else -> ofWrite(stream, code)
         }
 
@@ -430,7 +429,7 @@ internal fun addressOf(buffer: ReadBuffer): Long = buffer.nativeMemoryAccess!!.n
 internal class QuicStreamWriteFailed(
     val streamId: Long,
     val quicheCode: Int,
-) : IllegalStateException()
+) : Exception()
 
 private const val QUICHE_ERR_DONE = -1
 private const val QUICHE_ERR_INVALID_STREAM_STATE = -7

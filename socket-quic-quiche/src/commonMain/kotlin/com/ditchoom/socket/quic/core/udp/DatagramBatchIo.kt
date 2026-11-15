@@ -88,8 +88,8 @@ internal sealed interface UdpError {
 
     object SocketClosed : UdpError
 
-    /** An error this mapping does not name yet, by its platform class or errno name. */
+    /** An error this mapping does not name, as the platform's own exception. */
     class Other(
-        val kind: String,
+        val cause: Throwable,
     ) : UdpError
 }

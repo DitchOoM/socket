@@ -1235,6 +1235,50 @@ sealed interface com.ditchoom.socket.quic/QuicCloseAttribution { // com.ditchoom
     }
 }
 
+sealed interface com.ditchoom.socket.quic/QuicCloseCircumstance { // com.ditchoom.socket.quic/QuicCloseCircumstance|null[0]
+    final object CallerThreadFailed : com.ditchoom.socket.quic/QuicCloseCircumstance { // com.ditchoom.socket.quic/QuicCloseCircumstance.CallerThreadFailed|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicCloseCircumstance.CallerThreadFailed.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicCloseCircumstance.CallerThreadFailed.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicCloseCircumstance.CallerThreadFailed.toString|toString(){}[0]
+    }
+
+    final object Ended : com.ditchoom.socket.quic/QuicCloseCircumstance { // com.ditchoom.socket.quic/QuicCloseCircumstance.Ended|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicCloseCircumstance.Ended.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicCloseCircumstance.Ended.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicCloseCircumstance.Ended.toString|toString(){}[0]
+    }
+
+    final object HandshakeFailed : com.ditchoom.socket.quic/QuicCloseCircumstance { // com.ditchoom.socket.quic/QuicCloseCircumstance.HandshakeFailed|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicCloseCircumstance.HandshakeFailed.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicCloseCircumstance.HandshakeFailed.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicCloseCircumstance.HandshakeFailed.toString|toString(){}[0]
+    }
+
+    final object LoopThreadFailed : com.ditchoom.socket.quic/QuicCloseCircumstance { // com.ditchoom.socket.quic/QuicCloseCircumstance.LoopThreadFailed|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicCloseCircumstance.LoopThreadFailed.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicCloseCircumstance.LoopThreadFailed.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicCloseCircumstance.LoopThreadFailed.toString|toString(){}[0]
+    }
+
+    final object ProcessingFailed : com.ditchoom.socket.quic/QuicCloseCircumstance { // com.ditchoom.socket.quic/QuicCloseCircumstance.ProcessingFailed|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicCloseCircumstance.ProcessingFailed.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicCloseCircumstance.ProcessingFailed.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicCloseCircumstance.ProcessingFailed.toString|toString(){}[0]
+    }
+
+    final object Released : com.ditchoom.socket.quic/QuicCloseCircumstance { // com.ditchoom.socket.quic/QuicCloseCircumstance.Released|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicCloseCircumstance.Released.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicCloseCircumstance.Released.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicCloseCircumstance.Released.toString|toString(){}[0]
+    }
+
+    final object Unstated : com.ditchoom.socket.quic/QuicCloseCircumstance { // com.ditchoom.socket.quic/QuicCloseCircumstance.Unstated|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicCloseCircumstance.Unstated.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicCloseCircumstance.Unstated.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicCloseCircumstance.Unstated.toString|toString(){}[0]
+    }
+}
+
 sealed interface com.ditchoom.socket.quic/QuicCloseLinger { // com.ditchoom.socket.quic/QuicCloseLinger|null[0]
     final class UntilPeerDone : com.ditchoom.socket.quic/QuicCloseLinger { // com.ditchoom.socket.quic/QuicCloseLinger.UntilPeerDone|null[0]
         constructor <init>(kotlin.time/Duration) // com.ditchoom.socket.quic/QuicCloseLinger.UntilPeerDone.<init>|<init>(kotlin.time.Duration){}[0]
@@ -1696,6 +1740,15 @@ sealed interface com.ditchoom.socket.quic/QuicError : com.ditchoom.buffer.flow/D
         final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicError.NoViablePath.toString|toString(){}[0]
     }
 
+    final object ProcessingFailed : com.ditchoom.socket.quic/QuicError { // com.ditchoom.socket.quic/QuicError.ProcessingFailed|null[0]
+        final val code // com.ditchoom.socket.quic/QuicError.ProcessingFailed.code|{}code[0]
+            final fun <get-code>(): kotlin/Long // com.ditchoom.socket.quic/QuicError.ProcessingFailed.code.<get-code>|<get-code>(){}[0]
+
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicError.ProcessingFailed.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicError.ProcessingFailed.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicError.ProcessingFailed.toString|toString(){}[0]
+    }
+
     final object ProtocolViolation : com.ditchoom.socket.quic/QuicError { // com.ditchoom.socket.quic/QuicError.ProtocolViolation|null[0]
         final val code // com.ditchoom.socket.quic/QuicError.ProtocolViolation.code|{}code[0]
             final fun <get-code>(): kotlin/Long // com.ditchoom.socket.quic/QuicError.ProtocolViolation.code.<get-code>|<get-code>(){}[0]
@@ -2051,6 +2104,20 @@ sealed interface com.ditchoom.socket.quic/QuicStreamReadError { // com.ditchoom.
         final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicStreamReadError.InvalidStreamState.equals|equals(kotlin.Any?){}[0]
         final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicStreamReadError.InvalidStreamState.hashCode|hashCode(){}[0]
         final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicStreamReadError.InvalidStreamState.toString|toString(){}[0]
+    }
+}
+
+sealed interface com.ditchoom.socket.quic/QuicStreamSide { // com.ditchoom.socket.quic/QuicStreamSide|null[0]
+    final object Read : com.ditchoom.socket.quic/QuicStreamSide { // com.ditchoom.socket.quic/QuicStreamSide.Read|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicStreamSide.Read.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicStreamSide.Read.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicStreamSide.Read.toString|toString(){}[0]
+    }
+
+    final object Write : com.ditchoom.socket.quic/QuicStreamSide { // com.ditchoom.socket.quic/QuicStreamSide.Write|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicStreamSide.Write.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicStreamSide.Write.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicStreamSide.Write.toString|toString(){}[0]
     }
 }
 
@@ -2642,11 +2709,14 @@ final class com.ditchoom.socket.quic/QuicCloseContext { // com.ditchoom.socket.q
 }
 
 final class com.ditchoom.socket.quic/QuicCloseException : com.ditchoom.socket/SocketClosedException { // com.ditchoom.socket.quic/QuicCloseException|null[0]
+    constructor <init>(com.ditchoom.socket.quic/QuicCloseReason, com.ditchoom.socket.quic/QuicCloseCircumstance, kotlin/Throwable? = ..., com.ditchoom.socket.quic/QuicCloseAttribution = ...) // com.ditchoom.socket.quic/QuicCloseException.<init>|<init>(com.ditchoom.socket.quic.QuicCloseReason;com.ditchoom.socket.quic.QuicCloseCircumstance;kotlin.Throwable?;com.ditchoom.socket.quic.QuicCloseAttribution){}[0]
     constructor <init>(com.ditchoom.socket.quic/QuicCloseReason, kotlin/String, kotlin/Throwable? = ..., com.ditchoom.socket.quic/QuicCloseAttribution = ...) // com.ditchoom.socket.quic/QuicCloseException.<init>|<init>(com.ditchoom.socket.quic.QuicCloseReason;kotlin.String;kotlin.Throwable?;com.ditchoom.socket.quic.QuicCloseAttribution){}[0]
     constructor <init>(com.ditchoom.socket.quic/QuicError, kotlin/String, kotlin/Throwable? = ..., com.ditchoom.socket.quic/QuicCloseAttribution = ...) // com.ditchoom.socket.quic/QuicCloseException.<init>|<init>(com.ditchoom.socket.quic.QuicError;kotlin.String;kotlin.Throwable?;com.ditchoom.socket.quic.QuicCloseAttribution){}[0]
 
     final val attribution // com.ditchoom.socket.quic/QuicCloseException.attribution|{}attribution[0]
         final fun <get-attribution>(): com.ditchoom.socket.quic/QuicCloseAttribution // com.ditchoom.socket.quic/QuicCloseException.attribution.<get-attribution>|<get-attribution>(){}[0]
+    final val circumstance // com.ditchoom.socket.quic/QuicCloseException.circumstance|{}circumstance[0]
+        final fun <get-circumstance>(): com.ditchoom.socket.quic/QuicCloseCircumstance // com.ditchoom.socket.quic/QuicCloseException.circumstance.<get-circumstance>|<get-circumstance>(){}[0]
     final val closeReason // com.ditchoom.socket.quic/QuicCloseException.closeReason|{}closeReason[0]
         final fun <get-closeReason>(): com.ditchoom.socket.quic/QuicCloseReason // com.ditchoom.socket.quic/QuicCloseException.closeReason.<get-closeReason>|<get-closeReason>(){}[0]
     final val quicError // com.ditchoom.socket.quic/QuicCloseException.quicError|{}quicError[0]
@@ -2847,7 +2917,17 @@ final class com.ditchoom.socket.quic/QuicSessionTicket { // com.ditchoom.socket.
     }
 }
 
+final class com.ditchoom.socket.quic/QuicStreamClosedException : kotlin/IllegalStateException { // com.ditchoom.socket.quic/QuicStreamClosedException|null[0]
+    constructor <init>(kotlin/Long, com.ditchoom.socket.quic/QuicStreamSide) // com.ditchoom.socket.quic/QuicStreamClosedException.<init>|<init>(kotlin.Long;com.ditchoom.socket.quic.QuicStreamSide){}[0]
+
+    final val side // com.ditchoom.socket.quic/QuicStreamClosedException.side|{}side[0]
+        final fun <get-side>(): com.ditchoom.socket.quic/QuicStreamSide // com.ditchoom.socket.quic/QuicStreamClosedException.side.<get-side>|<get-side>(){}[0]
+    final val streamId // com.ditchoom.socket.quic/QuicStreamClosedException.streamId|{}streamId[0]
+        final fun <get-streamId>(): kotlin/Long // com.ditchoom.socket.quic/QuicStreamClosedException.streamId.<get-streamId>|<get-streamId>(){}[0]
+}
+
 final class com.ditchoom.socket.quic/QuicStreamException : kotlin/Exception { // com.ditchoom.socket.quic/QuicStreamException|null[0]
+    constructor <init>(kotlin/Long, com.ditchoom.socket.quic/QuicStreamAbort) // com.ditchoom.socket.quic/QuicStreamException.<init>|<init>(kotlin.Long;com.ditchoom.socket.quic.QuicStreamAbort){}[0]
     constructor <init>(kotlin/Long, com.ditchoom.socket.quic/QuicStreamAbort, kotlin/String, kotlin/Throwable? = ...) // com.ditchoom.socket.quic/QuicStreamException.<init>|<init>(kotlin.Long;com.ditchoom.socket.quic.QuicStreamAbort;kotlin.String;kotlin.Throwable?){}[0]
 
     final val abort // com.ditchoom.socket.quic/QuicStreamException.abort|{}abort[0]
@@ -2866,6 +2946,7 @@ final class com.ditchoom.socket.quic/QuicStreamOpenException : kotlin/Exception 
 }
 
 final class com.ditchoom.socket.quic/QuicStreamReadException : kotlin/Exception { // com.ditchoom.socket.quic/QuicStreamReadException|null[0]
+    constructor <init>(kotlin/Long, com.ditchoom.socket.quic/QuicStreamReadError) // com.ditchoom.socket.quic/QuicStreamReadException.<init>|<init>(kotlin.Long;com.ditchoom.socket.quic.QuicStreamReadError){}[0]
     constructor <init>(kotlin/Long, com.ditchoom.socket.quic/QuicStreamReadError, kotlin/String) // com.ditchoom.socket.quic/QuicStreamReadException.<init>|<init>(kotlin.Long;com.ditchoom.socket.quic.QuicStreamReadError;kotlin.String){}[0]
 
     final val error // com.ditchoom.socket.quic/QuicStreamReadException.error|{}error[0]

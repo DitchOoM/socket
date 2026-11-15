@@ -27,22 +27,23 @@ import com.ditchoom.socket.SocketClosedException
  * connections — the gap that left reconnect-cycle incidents unattributable when only a reason was
  * recorded.
  */
-class QuicCloseException(
+class QuicCloseException private constructor(
     /**
      * Why the connection ended, exhaustively — including **which side** closed it and whether the
      * protocol explained the close at all. Match on it; do not infer the side from [quicError], which
      * cannot express it.
      */
     val closeReason: QuicCloseReason,
+    /** What the local endpoint was doing when it ended; see [QuicCloseCircumstance]. */
+    val circumstance: QuicCloseCircumstance,
     message: String,
-    cause: Throwable? = null,
+    cause: Throwable?,
     /**
      * Which connection this came from, as a value snapshot — see [QuicCloseAttribution].
      *
-     * Defaults to [QuicCloseAttribution.Unattributed] so a throw site with no connection in hand stays
-     * honest rather than inventing one; every driver-backed site supplies it.
+     * [QuicCloseAttribution.Unattributed] when the throw site has no connection in hand.
      */
-    val attribution: QuicCloseAttribution = QuicCloseAttribution.Unattributed,
+    val attribution: QuicCloseAttribution,
 ) : SocketClosedException(withReason(message, closeReason, attribution), cause) {
     /**
      * The protocol error code this close carries, for callers that want the *why* without the *who* —
@@ -55,6 +56,22 @@ class QuicCloseException(
      * the thing to branch on: `Graceful` and `Unspecified` are indistinguishable here.
      */
     val quicError: QuicError get() = closeReason.errorOrNoError()
+
+    /** A close described by type: the message is derived from [circumstance] and [closeReason]. */
+    constructor(
+        closeReason: QuicCloseReason,
+        circumstance: QuicCloseCircumstance,
+        cause: Throwable? = null,
+        attribution: QuicCloseAttribution = QuicCloseAttribution.Unattributed,
+    ) : this(closeReason, circumstance, circumstance.summary(), cause, attribution)
+
+    /** A close the thrower describes in its own [message]; [circumstance] is [QuicCloseCircumstance.Unstated]. */
+    constructor(
+        closeReason: QuicCloseReason,
+        message: String,
+        cause: Throwable? = null,
+        attribution: QuicCloseAttribution = QuicCloseAttribution.Unattributed,
+    ) : this(closeReason, QuicCloseCircumstance.Unstated, message, cause, attribution)
 
     /**
      * Compatibility constructor for the `QuicCloseException(error, …)` shape, for throw sites that

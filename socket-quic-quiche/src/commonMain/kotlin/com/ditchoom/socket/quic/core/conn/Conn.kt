@@ -553,7 +553,7 @@ internal class Conn(
         val end = ConnEnd.Failed(cause)
         lifecycle = ConnLifecycle.Closed(end)
         try {
-            api.connClose(handle, QuicError.InternalError(FAILED_DETAIL))
+            api.connClose(handle, QuicError.ProcessingFailed)
         } catch (late: Exception) {
             // quiche failed too: the connection still ends locally.
             cause.addSuppressed(late)
@@ -858,7 +858,6 @@ private class Cause(
     val cause: Exception,
 ) : FailureCause
 
-private const val FAILED_DETAIL = "processing the connection failed"
 private const val IDLE = 0
 private const val QUEUED = 1
 private const val CALLER_TOKEN = 1L
