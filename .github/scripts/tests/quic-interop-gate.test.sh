@@ -302,6 +302,9 @@ check_kind "two unanswered packets are not the signature" "$gone" our-client "{\
 partial='{"kind":"peer-client-hello-never-completed","min_lost":5}'
 check_kind "a ClientHello that never completed" "$partial" our-server "{\"connections\":[$(hconn a | sed 's/"tx_crypto":1/"tx_crypto":0/;s/"fin_sent_streams":1/"fin_sent_streams":0/')],\"sim_from_peer\":[{\"port\":40869,\"datagrams\":9,\"delivered\":4}]}" Matched
 check_kind "a ClientHello we answered is not the signature" "$partial" our-server "{\"connections\":[$(hconn a | sed 's/"fin_sent_streams":1/"fin_sent_streams":0/')],\"sim_from_peer\":[{\"port\":40869,\"datagrams\":9,\"delivered\":4}]}" NotMatched
+undelivered='{"kind":"unanswered-path-challenge-never-reached-us"}'
+check_kind "a challenge the runner counts never reached us" "$undelivered" our-client "{\"connections\":[$(hconn a '"rx_path_challenges":2,"tx_path_responses":2')],\"exits\":{\"client\":0},\"runner\":{\"unanswered_path_challenges\":1}}" Matched
+check_kind "a challenge we received and did not answer is not the signature" "$undelivered" our-client "{\"connections\":[$(hconn a '"rx_path_challenges":3,"tx_path_responses":2')],\"exits\":{\"client\":0},\"runner\":{\"unanswered_path_challenges\":1}}" NotMatched
 nochallenge='{"kind":"peer-server-did-not-challenge-new-path-first"}'
 check_kind "the server's first packet on a new path had no challenge" "$nochallenge" our-client "{\"connections\":[$(hconn a)],\"exits\":{\"client\":0},\"runner\":{\"server_first_packets_without_path_challenge\":2}}" Matched
 check_kind "a client that failed is not the signature" "$nochallenge" our-client "{\"connections\":[$(hconn a)],\"exits\":{\"client\":1},\"runner\":{\"server_first_packets_without_path_challenge\":2}}" NotMatched

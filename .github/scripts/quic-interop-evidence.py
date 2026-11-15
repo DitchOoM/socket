@@ -28,6 +28,7 @@ EXIT_LINE = re.compile(r"\b(client|server|sim) exited with code (\d+)")
 HANDSHAKES = re.compile(r"Expected (\d+) handshakes\. Got: (\d+)")
 TIME_LIMIT = re.compile(r"took longer than (\d+)s")
 NO_PATH_CHALLENGE = re.compile(r"First server packet on new path .* did not contain a PATH_CHALLENGE frame")
+UNANSWERED_CHALLENGE = re.compile(r"PATH_CHALLENGE without a PATH_RESPONSE: \[(.*)\]")
 EMPTY_DOWNLOAD = re.compile(r"doesn't match\. Original: \d+ bytes, downloaded: 0 bytes")
 SIM_DATAGRAM = re.compile(r"\b(Forwarding|Corrupting|Dropping) \d+ bytes [\d.]+:(\d+) -> ([\d.]+):(\d+)")
 OUR_ADDRESS = {"client": "193.167.0.100", "server": "193.167.100.100"}
@@ -72,6 +73,8 @@ def connection_facts(path, side):
         "rx_handshake_acks": 0,
         "tx_crypto": 0,
         "tx_after_last_rx": 0,
+        "rx_path_challenges": 0,
+        "tx_path_responses": 0,
         "bytes_in_flight_at_end": 0,
         "longest_wait_in_flight_ms": 0.0,
         "fin_sent_streams": 0,
@@ -93,6 +96,7 @@ def connection_facts(path, side):
             facts["close_reason"] = data["reason"]
         if name.endswith("packet_received"):
             facts["rx_packets"] += 1
+            facts["rx_path_challenges"] += sum(f.get("frame_type") == "path_challenge" for f in data.get("frames") or [])
             facts["last_rx_ms"] = at
             facts["tx_after_last_rx"] = 0
             space = (data.get("header") or {}).get("packet_type", "")
@@ -109,6 +113,7 @@ def connection_facts(path, side):
                     )
         elif name.endswith("packet_sent"):
             facts["tx_after_last_rx"] += 1
+            facts["tx_path_responses"] += sum(f.get("frame_type") == "path_response" for f in data.get("frames") or [])
             facts["tx_crypto"] += any(f.get("frame_type") == "crypto" for f in data.get("frames") or [])
             # How long we waited to send again while data was in flight: our own retransmission timer's gaps.
             if last_tx >= 0 and facts["bytes_in_flight_at_end"] > 0:
@@ -177,6 +182,9 @@ def runner_output(output_txt, side):
                     runner["server_first_packets_without_path_challenge"] = (
                         runner.get("server_first_packets_without_path_challenge", 0) + 1
                     )
+                m = UNANSWERED_CHALLENGE.search(line)
+                if m:
+                    runner["unanswered_path_challenges"] = len(m.group(1).split(","))
                 if EMPTY_DOWNLOAD.search(line):
                     runner["empty_downloads"] = runner.get("empty_downloads", 0) + 1
                 for action, source, address, port in SIM_DATAGRAM.findall(line):

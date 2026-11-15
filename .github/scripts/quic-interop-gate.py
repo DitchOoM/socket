@@ -431,6 +431,27 @@ class PeerServerDidNotChallengeNewPathFirst:
         return NotMatched()
 
 
+class UnansweredPathChallengeNeverReachedUs:
+    """The runner failed a rebinding test for a PATH_CHALLENGE of the peer's with no PATH_RESPONSE, while our
+    endpoint sent a PATH_RESPONSE for every PATH_CHALLENGE it received (at least one) and exited 0: the
+    challenge the runner counts was sent by the peer and never delivered to us."""
+
+    kind = "unanswered-path-challenge-never-reached-us"
+
+    def __init__(self, fields):
+        no_fields(self.kind, fields)
+
+    def match(self, test_evidence, peer_role):
+        unanswered = test_evidence.get("runner", {}).get("unanswered_path_challenges", 0)
+        ours = "client" if peer_role == "server" else "server"
+        connections = test_evidence.get("connections", [])
+        received = sum(c["rx_path_challenges"] for c in connections)
+        answered = sum(c["tx_path_responses"] for c in connections)
+        if unanswered and received > 0 and answered >= received and test_evidence.get("exits", {}).get(ours, 0) == 0:
+            return Matched(f"runner: {unanswered} challenge(s) unanswered; we received {received} and answered {answered}")
+        return NotMatched()
+
+
 class AnyOf:
     """The cell has more than one proven failure; a failure must match one of the listed signatures (each a
     {"kind": ..., ...fields} of another kind)."""
@@ -498,6 +519,7 @@ SIGNATURES = {
         PeerHandshakePacketsNeverArrived,
         PeerGoneWhileWeProbed,
         PeerClientHelloNeverCompleted,
+        UnansweredPathChallengeNeverReachedUs,
         AnyOf,
     )
 }
