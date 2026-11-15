@@ -54,16 +54,12 @@ kotlin {
 
     if (appleTargets) {
         macosArm64()
-        macosX64()
         iosArm64()
         iosSimulatorArm64()
-        iosX64()
         tvosArm64()
         tvosSimulatorArm64()
-        tvosX64()
         watchosArm64()
         watchosSimulatorArm64()
-        watchosX64()
     }
 
     if (linuxTargets) {

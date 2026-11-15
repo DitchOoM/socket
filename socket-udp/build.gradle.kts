@@ -181,16 +181,12 @@ kotlin {
     // fails to compile.
     if (appleTargets) {
         macosArm64 { configureNwUdpCinterop() }
-        macosX64 { configureNwUdpCinterop() }
         iosArm64 { configureNwUdpCinterop() }
         iosSimulatorArm64 { configureNwUdpCinterop() }
-        iosX64 { configureNwUdpCinterop() }
         tvosArm64 { configureNwUdpCinterop() }
         tvosSimulatorArm64 { configureNwUdpCinterop() }
-        tvosX64 { configureNwUdpCinterop() }
         watchosArm64 { configureNwUdpCinterop() }
         watchosSimulatorArm64 { configureNwUdpCinterop() }
-        watchosX64 { configureNwUdpCinterop() }
     }
 
     applyDefaultHierarchyTemplate()
@@ -241,16 +237,12 @@ kotlin {
             val appleNativeImplDir = file("src/appleNativeImpl/kotlin")
             listOf(
                 "macosArm64Main",
-                "macosX64Main",
                 "iosArm64Main",
                 "iosSimulatorArm64Main",
-                "iosX64Main",
                 "tvosArm64Main",
                 "tvosSimulatorArm64Main",
-                "tvosX64Main",
                 "watchosArm64Main",
                 "watchosSimulatorArm64Main",
-                "watchosX64Main",
             ).forEach { sourceSetName ->
                 findByName(sourceSetName)?.kotlin?.srcDir(appleNativeImplDir)
             }

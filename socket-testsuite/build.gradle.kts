@@ -59,16 +59,12 @@ kotlin {
     // Apple targets — host-gated, since they only build on macOS.
     if (appleTargets) {
         macosArm64()
-        macosX64()
         iosArm64()
         iosSimulatorArm64()
-        iosX64()
         tvosArm64()
         tvosSimulatorArm64()
-        tvosX64()
         watchosArm64()
         watchosSimulatorArm64()
-        watchosX64()
     }
 
     applyDefaultHierarchyTemplate()

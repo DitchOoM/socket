@@ -192,7 +192,7 @@ runs:
       run: |
         set -euo pipefail
         missing=0
-        for d in macos-arm64 macos-x64 ios-arm64 ios-simulator-arm64 ios-x64; do
+        for d in macos-arm64 ios-arm64 ios-simulator-arm64; do
           f="socket-quic-quiche/libs/quiche/$d/lib/libquiche.a"
           if [ ! -f "$f" ]; then echo "::error::missing $f"; missing=1; else echo "ok: $f"; fi
         done
