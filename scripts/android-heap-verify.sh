@@ -12,7 +12,7 @@
 #                    BoringSSL, the JNI shim), so a native overflow or use-after-free stops at the access
 #
 # A release APK runs none of these checks, and only release APKs have shown the benchmark lane's
-# corrupted-class-pointer SIGSEGV. On a failed round: the crash buffer, the full DropBox tombstones
+# corrupted-class-pointer SIGSEGV. On a failed round: the crash buffer, debuggerd's tombstone files
 # and the logcat.
 #
 # Called from nightly-deep-checks.yaml's emulator step as ONE line.
@@ -75,9 +75,12 @@ capture() { # <label>
   adb logcat -d -b crash >"$OUT/logcat-crash-$label.txt" 2>&1 || true
   adb logcat -d -b main,system >"$OUT/logcat-$label.txt" 2>&1 || true
   adb shell dumpsys dropbox --print SYSTEM_TOMBSTONE >"$OUT/tombstone-$label.txt" 2>&1 || true
+  # DropBox prints the crashing thread only; debuggerd's files hold every thread (adb is root here).
+  adb pull /data/tombstones "$OUT/tombstones-$label" >/dev/null 2>&1 || true
+  gzip -rf "$OUT/tombstones-$label" 2>/dev/null || true
   adb shell dumpsys dropbox --print data_app_crash >"$OUT/app-crash-$label.txt" 2>&1 || true
   gzip -f "$OUT/logcat-$label.txt" || true
-  echo "::error title=Memory check failed ($label)::logcat, crash buffer and full tombstones are in the android-heap-verify artifact"
+  echo "::error title=Memory check failed ($label)::logcat, crash buffer and tombstones are in the android-heap-verify artifact"
   grep -h -E 'GWP-ASan|Heap corruption|[Vv]erification failed|JNI DETECTED ERROR|Fatal signal|Abort message|signal [0-9]+ \(SIG' \
     "$OUT/logcat-crash-$label.txt" "$OUT/tombstone-$label.txt" | head -40 || true
 }

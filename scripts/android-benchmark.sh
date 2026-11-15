@@ -42,8 +42,9 @@ run() { # <label> <gradle property args...>
     # kept. The crash buffer and the app's log say what crashed and where.
     adb logcat -d -b crash > "$OUT/logcat-crash-$label.txt" 2>&1 || true
     adb logcat -d -b main,system > "$OUT/logcat-$label.txt" 2>&1 || true
-    # The crash buffer's tombstone stops at the first JIT frame; the full one (every thread, registers,
-    # memory around the fault, maps) is in DropBox, readable without root.
+    # DropBox's print of the tombstone, readable without root: the crashing thread, its registers and
+    # the memory around them. It is cut off inside the memory map and holds no other thread; the
+    # nightly crash hunt keeps debuggerd's own files for that.
     adb shell dumpsys dropbox --print SYSTEM_TOMBSTONE > "$OUT/tombstone-$label.txt" 2>&1 || true
     echo "::error::$label: the benchmark run failed; logcat and tombstone are in the android-benchmark artifact (bench-android/logcat-*$label.txt, tombstone-$label.txt)"
     grep -E "FATAL|AndroidRuntime|Abort message|signal [0-9]+ \\(SIG" "$OUT/logcat-crash-$label.txt" "$OUT/logcat-$label.txt" | head -40 || true
