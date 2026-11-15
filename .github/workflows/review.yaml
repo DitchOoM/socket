@@ -540,19 +540,20 @@ jobs:
   # This pull request's QUIC client and server against every quic-interop-runner peer, both directions,
   # plus our client's active migration and the native macOS, Kotlin/Native and Windows lanes, judged
   # against test-harness/quic-interop/expectations.json. Built from this run's own quiche natives, so a
-  # quiche patch is tested by the pull request that changes it.
+  # quiche patch is tested by the pull request that changes it. They start with the run and wait only for
+  # the natives artifacts (await-natives), not for the rest of build-linux and build-apple.
   quic-interop:
-    needs: [build-linux]
     uses: ./.github/workflows/quic-interop-gate.yaml
     with:
       version: "0.0.0-interop"
+      await-natives: true
       stale: fail
 
   quic-interop-native:
-    needs: [build-linux, build-apple]
     uses: ./.github/workflows/quic-interop-native.yaml
     with:
       version: "0.0.0-interop"
+      await-natives: true
       apple-natives-run-id: ${{ github.run_id }}
       windows-natives-run-id: ${{ github.run_id }}
       stale: fail

@@ -21,6 +21,11 @@ name: QUIC interop gate
 on:
   workflow_call:
     inputs:
+      await-natives:
+        description: "Wait for this run's natives artifacts instead of expecting them to exist (a caller that runs beside the natives jobs, not after them)."
+        required: false
+        default: false
+        type: boolean
       version:
         description: "The version to build the endpoint jar with."
         required: true
@@ -81,6 +86,12 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
+      - uses: ./.github/actions/await-artifact
+        if: ${{ inputs.await-natives }}
+        with:
+          name: quiche-linux-natives-full
+          producer: "quiche natives (Linux/Android/Windows)"
+          github-token: ${{ github.token }}
       - uses: ./.github/actions/linux-quiche-env
         with:
           natives-run-id: ${{ inputs.natives-run-id }}
@@ -151,6 +162,8 @@ jobs:
           retry sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tshark
           git clone --depth 1 https://github.com/quic-interop/quic-interop-runner.git /tmp/runner
           pip install -r /tmp/runner/requirements.txt
+          # Without this the runner dies about once in ten runs on a tshark that exited normally.
+          python3 "$GITHUB_WORKSPACE/.github/scripts/patch-pyshark-reap.py"
           cd /tmp/runner
           FILE=implementations_quic.json
           [ -f "$FILE" ] || FILE=implementations.json
@@ -169,10 +182,36 @@ jobs:
           [ -f "$exp" ] || echo '{}' > "$exp"
           gate="$GITHUB_WORKSPACE/.github/scripts/quic-interop-gate.py"
           tests=$(jq -r .tests "$GITHUB_WORKSPACE/test-harness/quic-interop/peers.json")
+          # The runner's whole output is kept beside its results. A run that wrote no results is the runner
+          # failing, not a test: what it was doing and what the machine looked like are recorded for it.
+          runner_crash() { # <logs> <json> <exit status> <runner log>
+            local logs=$1 json=$2 rc=$3 log=$4 report="${2%.json}.runner-crash.txt"
+            {
+              echo "runner exit status: $rc (no results in $json)"
+              echo "python: $(python3 --version 2>&1)"
+              echo "pyshark: $(pip show pyshark 2>/dev/null | grep -m1 '^Version' || echo unknown)"
+              echo "tshark: $(tshark --version 2>&1 | head -1)"
+              echo "== memory"; free -m
+              echo "== disk"; df -h /tmp
+              echo "== kernel: out-of-memory and killed processes"
+              sudo dmesg -T 2>/dev/null | grep -i -E 'oom|killed process|out of memory|segfault' | tail -40 || true
+              echo "== captures (bytes, newest test last)"
+              find "$logs" -name '*.pcap*' -printf '%TT %s %p\n' 2>/dev/null | sort | tail -20
+              echo "== tshark processes still running"
+              pgrep -a tshark || echo none
+              echo "== the runner's last 120 lines"
+              tail -120 "$log"
+            } > "$report" 2>&1
+            echo "::error::the interop runner wrote no results for $(basename "$json") (exit $rc); see $(basename "$report") in the results artifact"
+            sed -n '1,40p' "$report"
+          }
           run_pair() { # <tests> <logs> <json> [runner role flags...]
-            local t=$1 logs=$2 json=$3
+            local t=$1 logs=$2 json=$3 log="${3%.json}.runner.log" rc
             shift 3
-            python3 run.py "$@" -t "$t" -l "$logs" -j "$json" -d || true
+            # run.py exits non-zero when a test fails, and this step runs under `bash -e`.
+            rc=0
+            python3 run.py "$@" -t "$t" -l "$logs" -j "$json" -d 2>&1 | tee "$log" || rc=$?
+            [ -s "$json" ] || runner_crash "$logs" "$json" "$rc" "$log"
           }
           case "$DIRECTION" in
             our-client) roles=(-c ditchoom -s "$PEER") ;;
