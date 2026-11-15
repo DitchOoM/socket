@@ -79,7 +79,8 @@ class CoreServerStatelessTests {
     fun anInitialWithAForgedTokenIsDroppedAndCreatesNoConnection() =
         runBlocking {
             withCoreEchoServer(ServerConfig(addressValidation = AddressValidation.Retry())) { server ->
-                val forged = initial(version = 1, dcid = Random(1).nextBytes(16), scid = Random(2).nextBytes(8), token = Random(3).nextBytes(45))
+                val forged =
+                    initial(version = 1, dcid = Random(1).nextBytes(16), scid = Random(2).nextBytes(8), token = Random(3).nextBytes(45))
                 DatagramChannel.open().use { socket ->
                     socket.send(ByteBuffer.wrap(forged), InetSocketAddress("127.0.0.1", server.port))
                 }

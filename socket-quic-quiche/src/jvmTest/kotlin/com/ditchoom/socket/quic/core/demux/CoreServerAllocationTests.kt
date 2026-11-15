@@ -1,0 +1,105 @@
+package com.ditchoom.socket.quic.core.demux
+
+import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.Default
+import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.socket.quic.QuicError
+import com.ditchoom.socket.quic.core.edge.connectCore
+import kotlinx.coroutines.runBlocking
+import java.lang.management.ManagementFactory
+import kotlin.test.Test
+import kotlin.test.assertTrue
+import kotlin.test.fail
+import kotlin.time.Duration.Companion.seconds
+
+/**
+ * What the server's loop thread allocates per 64-byte echo from one connection, measured with the JVM's per-thread
+ * allocation counter after warm-up. The echo handler runs on the application's threads and enters the connection in
+ * place, so what is counted is the loop's own work for one datagram in and one datagram out. That work allocates nothing:
+ * one peer keeps sending, so the JDK hands back the same sender object and the seam reuses its path key, the connection
+ * is found in the route table by its id without a key object, and quiche reads the datagram where the socket wrote it.
+ * About 104 bytes per echo remain, and both are what a suspended read forces on whoever resumes it: the task kotlinx
+ * makes to dispatch the resumed read to the application's dispatcher, and the completed-continuation state it keeps so a
+ * cancelled read can free its buffer. The gate sits just above the measurement.
+ */
+class CoreServerAllocationTests {
+    @Test
+    fun theServerLoopAllocatesLittlePerEcho() =
+        runBlocking {
+            withCoreEchoServer { server ->
+                val client = connectCore(server.port)
+                val stream = client.connection.openStream()
+                val payload =
+                    BufferFactory.Default.allocate(PAYLOAD).apply {
+                        repeat(PAYLOAD) { writeByte(it.toByte()) }
+                        resetForRead()
+                    }
+                repeat(WARM_UP) { roundTrip(stream, payload) }
+                val threads = ManagementFactory.getThreadMXBean() as com.sun.management.ThreadMXBean
+                val loop =
+                    Thread
+                        .getAllStackTraces()
+                        .keys
+                        .first { it.name == SERVER_LOOP_THREAD }
+                        .id
+                val recording = jdk.jfr.Recording()
+                recording.enable("jdk.ObjectAllocationSample").with("throttle", "1000000/s").withStackTrace()
+                recording.start()
+                val before = threads.getThreadAllocatedBytes(loop)
+                repeat(MEASURED) { roundTrip(stream, payload) }
+                val perEcho = (threads.getThreadAllocatedBytes(loop) - before).toDouble() / MEASURED
+                recording.stop()
+                println("[core server allocation] loop %.1f B/echo\n%s".format(perEcho, breakdown(recording)))
+                client.connection.close(QuicError.NoError)
+                assertTrue(perEcho <= LOOP_GATE, "the server loop allocated %.1f B/echo (gate %d)".format(perEcho, LOOP_GATE))
+            }
+        }
+
+    /** The top allocation sites on the server's loop thread, in bytes per echo. */
+    private fun breakdown(recording: jdk.jfr.Recording): String {
+        val dump =
+            java.nio.file.Files
+                .createTempFile("core-server", ".jfr")
+        recording.dump(dump)
+        val sites = HashMap<String, Long>()
+        jdk.jfr.consumer.RecordingFile
+            .readAllEvents(dump)
+            .filter { it.thread?.javaName == SERVER_LOOP_THREAD }
+            .forEach { e ->
+                val frames =
+                    e.stackTrace?.frames.orEmpty().take(6).joinToString(" < ") {
+                        "${it.method.type.name.substringAfterLast('.')}.${it.method.name}"
+                    }
+                sites.merge("${e.getClass("objectClass").name} @ $frames", e.getLong("weight"), Long::plus)
+            }
+        java.nio.file.Files
+            .delete(dump)
+        return sites.entries
+            .sortedByDescending { it.value }
+            .take(12)
+            .joinToString("\n") { "  ${it.value / MEASURED} B/echo ${it.key}" }
+    }
+
+    private suspend fun roundTrip(
+        stream: com.ditchoom.socket.quic.QuicByteStream,
+        payload: com.ditchoom.buffer.PlatformBuffer,
+    ) {
+        payload.position(0)
+        stream.write(payload, 10.seconds)
+        var received = 0
+        while (received < payload.limit()) {
+            val result = stream.read(10.seconds)
+            if (result !is ReadResult.Data) fail("the echo ended early: $result")
+            received += result.buffer.remaining()
+            result.buffer.freeIfNeeded()
+        }
+    }
+
+    private companion object {
+        const val PAYLOAD = 64
+        const val WARM_UP = 5_000
+        const val MEASURED = 20_000
+        const val LOOP_GATE = 150
+    }
+}

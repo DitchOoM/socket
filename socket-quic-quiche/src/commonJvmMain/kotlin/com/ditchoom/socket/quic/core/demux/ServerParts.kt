@@ -375,6 +375,7 @@ internal class ServerParts(
     /** The loop is over: what only it used is freed, and the memory connections share is released from its hold. */
     private fun loopEnded(cause: Throwable) {
         if (cause is ServerStopped) s.accepted.close() else s.accepted.close(cause)
+        peers.clear()
         stateless.free()
         headerScratch.free()
         newScid.freeNativeMemory()

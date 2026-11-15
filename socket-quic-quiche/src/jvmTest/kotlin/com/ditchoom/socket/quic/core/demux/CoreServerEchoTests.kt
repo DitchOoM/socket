@@ -2,18 +2,18 @@ package com.ditchoom.socket.quic.core.demux
 
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.core.edge.connectCore
-import com.ditchoom.socket.quic.core.edge.echoOver
 import com.ditchoom.socket.quic.core.edge.coreTestOptions
+import com.ditchoom.socket.quic.core.edge.echoOver
 import com.ditchoom.socket.quic.withQuicConnection
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
-import kotlin.time.Duration.Companion.seconds
 import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.time.Duration.Companion.seconds
 
 /** The run-to-completion client against the run-to-completion server over a real loopback socket. */
 class CoreServerEchoTests {
