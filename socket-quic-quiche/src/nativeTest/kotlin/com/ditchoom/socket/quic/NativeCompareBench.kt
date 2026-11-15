@@ -26,6 +26,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import platform.posix.CLOCK_PROCESS_CPUTIME_ID
 import platform.posix.clock_gettime
 import platform.posix.getenv
@@ -78,7 +79,10 @@ abstract class NativeCompareBench {
             runQuicTest(timeout = 10.minutes) { tcp(warmup.inWholeSeconds, window.inWholeSeconds) }
         } else if (workload == "qconns") {
             val conns = getenv("NATIVE_BENCH_CONNS")?.toKString()?.toIntOrNull() ?: 64
-            runQuicTest(timeout = 30.minutes) { manyConnections(conns, warmup, window) }
+            val servers = getenv("NATIVE_BENCH_SERVERS")?.toKString()?.toIntOrNull() ?: 1
+            runQuicTest(
+                timeout = 30.minutes,
+            ) { withServers(servers, emptyList()) { ports -> manyConnections(conns, ports, warmup, window) } }
         } else {
             runQuicTest(timeout = 10.minutes) {
                 withQuicServer(port = 0, host = "127.0.0.1", tlsConfig = testTlsConfig(), quicOptions = options) {
@@ -168,68 +172,132 @@ abstract class NativeCompareBench {
         chunk.freeIfNeeded()
     }
 
+    /** Runs [block] with [count] echo servers listening, each on its own port (NATIVE_BENCH_SERVERS, default 1). */
+    private suspend fun withServers(
+        count: Int,
+        ports: List<Int>,
+        block: suspend (List<Int>) -> Unit,
+    ): Unit =
+        coroutineScope {
+            if (count == 0) {
+                block(ports)
+            } else {
+                withQuicServer(port = 0, host = "127.0.0.1", tlsConfig = testTlsConfig(), quicOptions = options) {
+                    val serverJob = launch { connections { coroutineScope { streams().collect { launch { serve(it) } } } } }
+                    try {
+                        withServers(count - 1, ports + port, block)
+                    } finally {
+                        serverJob.cancel()
+                    }
+                }
+            }
+        }
+
     /**
-     * [conns] connections to one in-process server, each echoing 64 B on its own long-lived stream from its own
+     * [conns] connections spread over the servers on [ports], each echoing 64 B on its own long-lived stream from its own
      * coroutine on [Dispatchers.Default]. As in the JVM tool, the warm-up starts once every connection has its
      * stream (`connect_s` is how long that took), and the result is the aggregate operations per second and the
      * median over connections of each connection's p50 and p99.
      */
+
     private suspend fun manyConnections(
         conns: Int,
+        ports: List<Int>,
         warmup: Duration,
         window: Duration,
     ): Unit =
         coroutineScope {
-            withQuicServer(port = 0, host = "127.0.0.1", tlsConfig = testTlsConfig(), quicOptions = options) {
-                val serverJob = launch { connections { coroutineScope { streams().collect { launch { serve(it) } } } } }
-                val samples = Array(conns) { LongArray(1 shl 12) }
-                val counts = IntArray(conns)
-                val ready = List(conns) { CompletableDeferred<Unit>() }
-                val go = CompletableDeferred<TimeSource.Monotonic.ValueTimeMark>()
-                val connectStart = TimeSource.Monotonic.markNow()
-                try {
-                    coroutineScope {
-                        repeat(conns) { i ->
-                            launch(Dispatchers.Default) {
-                                withQuicConnection("127.0.0.1", port, options, timeout = 30.minutes) {
-                                    val stream = openStream()
-                                    val request = request(bufferFactory.allocate(SIZE))
-                                    ready[i].complete(Unit)
-                                    val measureFrom = go.await() + warmup
-                                    val end = measureFrom + window
-                                    while (!end.hasPassedNow()) {
-                                        val t = TimeSource.Monotonic.markNow()
-                                        request.position(0)
-                                        stream.writeFully(request, 30.seconds)
-                                        stream.readExactly(SIZE)
-                                        if (t > measureFrom && !end.hasPassedNow()) {
-                                            if (counts[i] == samples[i].size) samples[i] = samples[i].copyOf(counts[i] * 2)
-                                            samples[i][counts[i]++] = t.elapsedNow().inWholeNanoseconds
-                                        }
-                                    }
-                                    stream.shutdownSend()
-                                    stream.close()
-                                    request.freeIfNeeded()
+            val samples = Array(conns) { LongArray(1 shl 12) }
+            val counts = IntArray(conns)
+            // Diagnostics, written by each connection's coroutine and read once at the end: when its first
+            // echo completed, and when its echo in progress started (both in ns since the start signal).
+            val firstDone = LongArray(conns) { NOT_YET }
+            val opStarted = LongArray(conns) { NOT_YET }
+            val scopes = arrayOfNulls<QuicScope>(conns)
+            val ready = List(conns) { CompletableDeferred<Unit>() }
+            val go = CompletableDeferred<TimeSource.Monotonic.ValueTimeMark>()
+            val connectStart = TimeSource.Monotonic.markNow()
+            coroutineScope {
+                repeat(conns) { i ->
+                    launch(Dispatchers.Default) {
+                        withQuicConnection("127.0.0.1", ports[i % ports.size], options, timeout = 30.minutes) {
+                            scopes[i] = this
+                            val stream = openStream()
+                            val request = request(bufferFactory.allocate(SIZE))
+                            ready[i].complete(Unit)
+                            val started = go.await()
+                            val measureFrom = started + warmup
+                            val end = measureFrom + window
+                            while (!end.hasPassedNow()) {
+                                val t = TimeSource.Monotonic.markNow()
+                                opStarted[i] = started.elapsedNow().inWholeNanoseconds
+                                request.position(0)
+                                stream.writeFully(request, 30.seconds)
+                                stream.readExactly(SIZE)
+                                if (firstDone[i] == NOT_YET) firstDone[i] = started.elapsedNow().inWholeNanoseconds
+                                if (t > measureFrom && !end.hasPassedNow()) {
+                                    if (counts[i] == samples[i].size) samples[i] = samples[i].copyOf(counts[i] * 2)
+                                    samples[i][counts[i]++] = t.elapsedNow().inWholeNanoseconds
                                 }
                             }
+                            stream.shutdownSend()
+                            stream.close()
+                            request.freeIfNeeded()
                         }
-                        ready.awaitAll()
-                        val connectSeconds = connectStart.elapsedNow().inWholeNanoseconds / 1e9
-                        println("CONNECTED conns=$conns connect_s=$connectSeconds")
-                        val started = TimeSource.Monotonic.markNow()
-                        go.complete(started)
-                        delay(warmup)
-                        println("MEASURING")
-                        val cpu0 = cpuMicros()
-                        delay(window)
-                        val cpuUs = cpuMicros() - cpu0
-                        report(conns, samples, counts, window, cpuUs, connectSeconds)
                     }
-                } finally {
-                    serverJob.cancel()
                 }
+                ready.awaitAll()
+                val connectSeconds = connectStart.elapsedNow().inWholeNanoseconds / 1e9
+                println("CONNECTED conns=$conns connect_s=$connectSeconds")
+                val started = TimeSource.Monotonic.markNow()
+                go.complete(started)
+                delay(warmup)
+                println("MEASURING")
+                val cpu0 = cpuMicros()
+                delay(window)
+                val cpuUs = cpuMicros() - cpu0
+                reportProgress(firstDone, opStarted, started.elapsedNow().inWholeNanoseconds)
+                reportDrivers(scopes, counts)
+                report(conns, samples, counts, window, cpuUs, connectSeconds)
             }
         }
+
+    /** How the connections got going: when each one's first echo completed, and what the rest are waiting in. */
+    private fun reportProgress(
+        firstDone: LongArray,
+        opStarted: LongArray,
+        nowNs: Long,
+    ) {
+        val done = firstDone.filter { it != NOT_YET }.sorted()
+
+        fun at(p: Double) = if (done.isEmpty()) Double.NaN else done[minOf(done.size - 1, (done.size * p).toInt())] / 1e9
+        val neverStarted = firstDone.indices.count { firstDone[it] == NOT_YET && opStarted[it] == NOT_YET }
+        val waiting =
+            firstDone.indices
+                .filter {
+                    firstDone[it] == NOT_YET && opStarted[it] != NOT_YET
+                }.map { (nowNs - opStarted[it]) / 1e9 }
+                .sorted()
+        println(
+            "PROGRESS first_echo_done=${done.size} first_echo_s_p10=${at(0.1)} p50=${at(0.5)} p90=${at(0.9)} max=${at(1.0)} " +
+                "coroutine_never_ran=$neverStarted first_echo_outstanding=${waiting.size} " +
+                "outstanding_for_s_min=${waiting.firstOrNull() ?: 0.0} max=${waiting.lastOrNull() ?: 0.0}",
+        )
+    }
+
+    /** The driver's own view of up to three connections that completed no echo in the window, and of one that did. */
+    private suspend fun reportDrivers(
+        scopes: Array<QuicScope?>,
+        counts: IntArray,
+    ) {
+        val stuck = counts.indices.filter { counts[it] == 0 }.take(3)
+        val working = counts.indices.filter { counts[it] > 0 }.take(1)
+        for (i in stuck + working) {
+            val driver = (scopes[i] as QuicheBackedConnection).quicheDriver
+            val snapshot = withTimeoutOrNull(3.seconds) { driver.stallSnapshot().toString() } ?: "the driver loop did not answer in 3 s"
+            println("DRIVER conn=$i echoes_in_window=${counts[i]} $snapshot")
+        }
+    }
 
     private fun report(
         conns: Int,
@@ -420,6 +488,7 @@ abstract class NativeCompareBench {
     private companion object {
         val WORKLOADS = setOf("qrr", "qspr", "qbulk", "qconns", "tcp")
         const val SIZE = 64
+        const val NOT_YET = -1L
         const val CHUNK = 64 * 1024
         const val BULK_MIB = 16
     }
