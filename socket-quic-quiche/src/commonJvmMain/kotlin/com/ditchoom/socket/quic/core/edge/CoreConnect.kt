@@ -220,12 +220,28 @@ private fun openConnectedChannel(peer: InetSocketAddress): DatagramChannel {
 
 /**
  * The source address the routing table picks for [peer], read from a connected probe that sends nothing. The probe
- * names a port other than [peer]'s so it never holds a four-tuple the connection could need.
+ * names a port other than [peer]'s so it never holds a four-tuple the connection could need. Every probe to one peer
+ * has the same destination, so two probes that run at once and are given the same ephemeral port clash on their
+ * four-tuple and the second connect fails with "address in use"; a fresh probe is given another port.
  */
 private fun routeSource(peer: InetSocketAddress): java.net.InetAddress {
     val probePort = if (peer.port == PROBE_PORT) PROBE_PORT + 1 else PROBE_PORT
+    var clashes = 0
+    while (true) {
+        try {
+            return probeSource(InetSocketAddress(peer.address, probePort), peer)
+        } catch (clash: java.net.BindException) {
+            if (++clashes == MAX_PROBE_CLASHES) throw clash
+        }
+    }
+}
+
+private fun probeSource(
+    probed: InetSocketAddress,
+    peer: InetSocketAddress,
+): java.net.InetAddress {
     DatagramChannel.open().use { probe ->
-        probe.connect(InetSocketAddress(peer.address, probePort))
+        probe.connect(probed)
         val local = probe.localAddress
         if (local !is InetSocketAddress || local.address.isAnyLocalAddress) throw RouteSourceUnknown(peer.address)
         return local.address
@@ -260,6 +276,7 @@ private const val HEX = "0123456789abcdef"
 private const val QUIC_V1 = 1
 private const val MAX_BATCH = 64
 private const val PROBE_PORT = 9
+private const val MAX_PROBE_CLASHES = 16
 
 /** Lanes callers send from in place, datagrams each holds, and slots for datagrams that arrive while a caller is inside. */
 private const val CALLER_LANES = 4
