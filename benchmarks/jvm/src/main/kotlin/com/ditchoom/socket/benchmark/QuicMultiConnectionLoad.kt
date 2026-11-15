@@ -151,7 +151,7 @@ private fun latencyPhase(
     setup: suspend (QuicScope) -> LatencyOp,
 ) {
     val phase = Phase(warmupS, measureS)
-    val lat = Array(m) { LongArray(2_000_000) }
+    val lat = Array(m) { LongArray(MAX_LATENCY_SAMPLES / m) }
     val counts = IntArray(m)
     val workers =
         clients.mapIndexed { i, scope ->
@@ -238,6 +238,9 @@ private fun bulkPhase(
     workers.forEach { it.join() }
     println("BULK M=%3d  agg %8.1f MiB/s  cpu %5.2f cores".format(m, bytes.sum() / 1048576.0 / phase.seconds(), phase.cores()))
 }
+
+/** Latency samples kept across all connections of one phase: 256 MB, whatever the connection count. */
+private const val MAX_LATENCY_SAMPLES = 32_000_000
 
 private const val CHUNK = 64 * 1024
 private const val BULK_BYTES = 4 * 1024 * 1024

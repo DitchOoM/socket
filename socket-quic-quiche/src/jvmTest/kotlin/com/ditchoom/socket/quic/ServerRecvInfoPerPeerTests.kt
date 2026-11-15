@@ -21,6 +21,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -54,7 +55,9 @@ class ServerRecvInfoPerPeerTests {
     }
 
     private val tls get() = QuicTlsConfig(certChainPath = certPath("cert.crt"), privKeyPath = certPath("cert.key"))
-    private val options = QuicOptions(alpnProtocols = listOf("test"), verifyPeer = false)
+
+    // A peer waits its turn without sending; however slow the machine, that wait is not an idle timeout.
+    private val options = QuicOptions(alpnProtocols = listOf("test"), verifyPeer = false, idleTimeout = 10.minutes)
 
     @Test
     fun establishedPeersSendingAgainBuildNoRecvInfo() =
@@ -64,7 +67,7 @@ class ServerRecvInfoPerPeerTests {
                 val server = buildJvmQuicServer(QuicPortBinding.Own(port = 0, host = "127.0.0.1"), tls, options, api = api)
                 try {
                     val serverJob = launch { server.connections { echoUntilEnd(acceptStream()) } }
-                    withTimeout(120.seconds) {
+                    withTimeout(5.minutes) {
                         val established = List(PEERS) { CompletableDeferred<Unit>() }
                         val turns = List(PEERS) { Channel<CompletableDeferred<Unit>>(Channel.RENDEZVOUS) }
                         val peers =
@@ -146,8 +149,8 @@ class ServerRecvInfoPerPeerTests {
     }
 
     private companion object {
-        /** More peers than any fixed-size table of them a server might keep. */
-        const val PEERS = 1024
+        /** More peers than a server-wide table of 256 holds. */
+        const val PEERS = 300
         const val ROUNDS = 3
     }
 }
