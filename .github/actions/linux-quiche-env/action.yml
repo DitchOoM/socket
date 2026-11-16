@@ -52,6 +52,15 @@ inputs:
     required: false
     default: ""
 
+  await-natives-producer:
+    description: >-
+      When set, wait here (after the JDK and cache restores, before the natives download) until this run
+      holds the natives artifact, naming the producing job as await-artifact's `producer` does. A job that
+      starts beside `natives` uses this so its toolchain and cache restores overlap the natives build
+      instead of queueing behind the wait. Needs `github-token`. Empty (the default) waits for nothing.
+    required: false
+    default: ""
+
 runs:
   using: composite
   steps:
@@ -231,6 +240,15 @@ runs:
     - name: Add Rust aarch64 target
       shell: bash
       run: rustup target add aarch64-unknown-linux-gnu
+
+    # Only a job that starts beside the producer sets this; everything above is independent of the artifact.
+    - name: Wait for the natives of this run
+      if: inputs.await-natives-producer != ''
+      uses: ./.github/actions/await-artifact
+      with:
+        name: quiche-linux-natives-full
+        producer: ${{ inputs.await-natives-producer }}
+        github-token: ${{ inputs.github-token }}
 
     # The linux-x64 / linux-arm64 / windows-x64 quiche lib dirs built once by `natives`. Restored to
     # the exact paths the Gradle build, the K/N `-force_load` link, and NativeLibLoader's staging all
