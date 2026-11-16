@@ -426,6 +426,16 @@ class EngineAndLifecycleTests(unittest.TestCase):
         self.assertIn("lane v4 [4.x]: deaths=1 by reason: ended: QuicCloseException=1", self.comparison)
         self.assertIn("lane core-v4 [core]: deaths=3 by reason: local: IdleTimeout (0x-1)=2,ended: QuicCloseException=1", self.comparison)
 
+    def test_a_core_death_is_counted_under_the_core_end_the_probe_named(self):
+        log = engines_and_lifecycle_log().replace(
+            "reason=local: IdleTimeout (0x-1) \u2014 leaving scope",
+            "reason=[end=NetworkLost] local: IdleTimeout (0x-1) \u2014 leaving scope",
+            1,
+        )
+        out = analyze(log)
+        comparison = out[out.index("engine comparison"):out.index("lifecycle steps")]
+        self.assertIn("[end=NetworkLost] local: IdleTimeout (0x-1)=1", comparison)
+
     def test_reconnect_time_is_death_to_first_answered_echo(self):
         core = self.comparison[self.comparison.index("lane core-v4"):]
         # 120.1s -> 127.0s, 310.0s -> 330.0s, and the force-stop one never recovers.

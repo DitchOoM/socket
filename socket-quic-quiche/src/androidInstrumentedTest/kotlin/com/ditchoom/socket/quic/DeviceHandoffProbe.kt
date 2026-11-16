@@ -417,7 +417,12 @@ class DeviceHandoffProbe {
                         // `TimeoutCancellationException: Timed out waiting for 15000 ms` while echoes were
                         // flowing fine. So it has to cover the whole walk, not the handshake.
                         val established =
-                            lane.engine.probeEngine().connect(target.host, target.port, options, timeout = (minutes + 2).minutes) {
+                            lane.engine.probeEngine().connect(
+                                target.host,
+                                target.port,
+                                options,
+                                timeout = (minutes + 2).minutes,
+                            ) { endNote ->
                                 laneEmit("CONNECTED session=${identity.session} wire=${identity.wire} alpn=$negotiatedAlpn")
                                 // What is still owed when it ends is what failed on it, and how long it went
                                 // without an answered echo is its own verdict.
@@ -449,7 +454,18 @@ class DeviceHandoffProbe {
                                         session = session,
                                         pace = pace,
                                         clock = ::now,
-                                        emit = laneEmit,
+                                        // The core names how it ended (a ConnEnd) beside the typed close reason; analyze.py
+                                        // counts deaths by the line's reason, so the name goes inside it.
+                                        emit = { line ->
+                                            val end = endNote.now()
+                                            laneEmit(
+                                                if (end.isNotEmpty() && line.startsWith("CONNECTION-DEAD ")) {
+                                                    line.replaceFirst(" reason=", " reason=[end=$end] ")
+                                                } else {
+                                                    line
+                                                },
+                                            )
+                                        },
                                         // The typed reason, side included: "we sent a frame the peer rejected" and
                                         // "the peer sent us one" are opposite bugs, and a device log is all we get
                                         // from a real handoff (#437).
