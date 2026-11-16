@@ -12,6 +12,7 @@ import com.ditchoom.socket.quic.core.path.RecvFrom
 import com.ditchoom.socket.quic.core.path.Sorting
 import com.ditchoom.socket.quic.core.path.Window
 import com.ditchoom.socket.quic.core.time.Nanos
+import com.ditchoom.socket.quic.core.time.WakeSink
 
 // What every role's paths answer, asked the same way: each is one `when` over the slot.
 
@@ -64,7 +65,7 @@ internal fun Paths.established() =
 internal fun ConnParts.stepPaths(now: Nanos) =
     when (val paths = slots.paths) {
         is Paths.Client ->
-            when (paths.paths.step()) {
+            when (paths.paths.step(now)) {
                 PathStep.Steady -> Unit
                 PathStep.Migrated -> {
                     flight.path(now, PathMark.Migrated)
@@ -98,7 +99,7 @@ internal fun ConnParts.follow(
     val answer =
         when (handshake.confirmation()) {
             Confirmation.Pending -> MoveAnswer.Refused
-            Confirmation.Confirmed -> client.move(local)
+            Confirmation.Confirmed -> client.move(now, local)
         }
     flight.path(
         now,
@@ -129,4 +130,11 @@ internal fun Paths.issue(spare: List<SpareId>) =
     when (this) {
         is Paths.Client -> Unit
         is Paths.Server -> paths.issue(spare)
+    }
+
+/** Offers the wake times of the paths: a client whose move found no path is probed again when its retry falls due. */
+internal fun Paths.offerWake(sink: WakeSink) =
+    when (this) {
+        is Paths.Client -> paths.offerWake(sink)
+        is Paths.Server -> Unit
     }
