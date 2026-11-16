@@ -635,8 +635,6 @@ internal fun migrationSimOptions(
         migration = migration,
         networkMonitor = networkMonitor,
         trace = trace,
-        // The sims count datagrams per path: a discovery probe on a fresh path is one the scenarios do not expect.
-        enablePmtuDiscovery = false,
     )
 
 /**

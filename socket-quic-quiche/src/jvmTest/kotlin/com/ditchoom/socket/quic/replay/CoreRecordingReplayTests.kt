@@ -11,6 +11,7 @@ import com.ditchoom.socket.quic.QuicRole
 import com.ditchoom.socket.quic.ScopedRead
 import com.ditchoom.socket.quic.core.conn.FlightSize
 import com.ditchoom.socket.quic.core.demux.ServerConfig
+import com.ditchoom.socket.quic.core.edge.DatagramSize
 import com.ditchoom.socket.quic.core.edge.TestCertificate
 import com.ditchoom.socket.quic.core.edge.coreConnect
 import com.ditchoom.socket.quic.core.edge.coreServe
@@ -113,12 +114,14 @@ class CoreRecordingReplayTests {
                 bind = InetSocketAddress("127.0.0.1", 0).toPathKey(),
                 // The replay's modelled server serves the RSA certificate: the recorded flight must have its shape.
                 tls = coreTlsConfig(TestCertificate.Rsa2048),
-                options = recordedOptions.copy(trace = QuicTraceCapture(TraceSink { serverRecording += it })),
+                options = coreTestOptions.copy(trace = QuicTraceCapture(TraceSink { serverRecording += it })),
                 factory = BufferFactory.Default,
                 api = loadQuicheApi(),
                 readPolicy = ReadPolicy.Bounded(10.seconds),
                 writePolicy = WritePolicy.Bounded(10.seconds),
                 config = ServerConfig(flight = BIG, flightArenaBytes = 1 shl 20),
+                // The replay's modelled ends do not probe: a recording made with probes leaves the capture.
+                datagramSize = DatagramSize.Configured,
             )
         val echo =
             CoroutineScope(Dispatchers.IO).launch {
@@ -138,7 +141,7 @@ class CoreRecordingReplayTests {
                     host = "127.0.0.1",
                     port = server.port,
                     serverName = "localhost",
-                    options = recordedOptions.copy(trace = QuicTraceCapture(TraceSink { clientRecording += it })),
+                    options = coreTestOptions.copy(trace = QuicTraceCapture(TraceSink { clientRecording += it })),
                     factory = BufferFactory.Default,
                     api = loadQuicheApi(),
                     timeout = 10.seconds,
@@ -146,6 +149,7 @@ class CoreRecordingReplayTests {
                     writePolicy = WritePolicy.Bounded(10.seconds),
                     wrapIo = { real -> LossyLink(real).also { link[0] = it } },
                     flight = BIG,
+                    datagramSize = DatagramSize.Configured,
                 )
             val payload = Random(3).nextBytes(PAYLOAD)
             assertContentEquals(payload, echoOver(client.connection.openStream(), payload))
@@ -275,8 +279,6 @@ class CoreRecordingReplayTests {
     private fun isShortHeader(hex: String): Boolean = hex.take(2).toInt(HEX) and LONG_HEADER_BIT == 0
 
     private companion object {
-        /** What the replay runs with ([replayOptions] pins discovery off): a recording made with probes would leave the capture. */
-        val recordedOptions = coreTestOptions.copy(enablePmtuDiscovery = false)
         const val HEX = 16
         const val LONG_HEADER_BIT = 0x80
 
