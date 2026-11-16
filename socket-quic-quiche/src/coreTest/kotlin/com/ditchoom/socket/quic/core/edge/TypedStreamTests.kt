@@ -7,12 +7,12 @@ import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.ScopedRead
 import com.ditchoom.socket.quic.core.loop.LoopSet
+import com.ditchoom.socket.quic.core.testing.coreTest
 import com.ditchoom.socket.quic.network
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlin.test.AfterTest
 import kotlin.test.Test
@@ -36,7 +36,7 @@ class TypedStreamTests {
 
     @Test
     fun valuesRoundTripByteExactThroughATypedEchoServer() =
-        runBlocking {
+        coreTest("TypedStreamTests.valuesRoundTripByteExactThroughATypedEchoServer") {
             withCoreServer(onConnection = { connection ->
                 val stream = connection.acceptTypedStream(NoteCodec)
                 while (true) {
@@ -63,7 +63,7 @@ class TypedStreamTests {
 
     @Test
     fun tenThousandEchoesOnOneStreamNeverResumeACallWithTheNextOnesWakeup() =
-        runBlocking {
+        coreTest("TypedStreamTests.tenThousandEchoesOnOneStreamNeverResumeACallWithTheNextOnesWakeup") {
             withCoreServer(onConnection = { connection ->
                 val stream = connection.acceptTypedStream(NoteCodec)
                 while (true) {
@@ -88,7 +88,7 @@ class TypedStreamTests {
 
     @Test
     fun framesSplitAcrossReadsAreFoundOneByteAtATimeManyInOneReadAndSpanningManyReads() =
-        runBlocking {
+        coreTest("TypedStreamTests.framesSplitAcrossReadsAreFoundOneByteAtATimeManyInOneReadAndSpanningManyReads") {
             val bytewise = Note(1, "one byte at a time")
             val several = notes(40)
             val spanning = Note(3, "s".repeat(300_000))
@@ -121,7 +121,7 @@ class TypedStreamTests {
 
     @Test
     fun aWriterBlockedOnTheFlowWindowWaitsAndFinishesOnceThePeerReads() =
-        runBlocking {
+        coreTest("TypedStreamTests.aWriterBlockedOnTheFlowWindowWaitsAndFinishesOnceThePeerReads") {
             val reading = kotlinx.coroutines.CompletableDeferred<Unit>()
             val received = kotlinx.coroutines.CompletableDeferred<Int>()
             withCoreServer(onConnection = { connection ->
@@ -151,7 +151,7 @@ class TypedStreamTests {
 
     @Test
     fun anOversizedFrameFailsTheReadWithATypedErrorAndResetsTheStream() =
-        runBlocking {
+        coreTest("TypedStreamTests.anOversizedFrameFailsTheReadWithATypedErrorAndResetsTheStream") {
             val sawReset = kotlinx.coroutines.CompletableDeferred<ReadResult>()
             withCoreServer(onConnection = { connection ->
                 val stream = connection.acceptStream()
@@ -176,7 +176,7 @@ class TypedStreamTests {
 
     @Test
     fun aFrameTheCodecRejectsFailsTheReadWithATypedErrorAndResetsTheStream() =
-        runBlocking {
+        coreTest("TypedStreamTests.aFrameTheCodecRejectsFailsTheReadWithATypedErrorAndResetsTheStream") {
             val sawReset = kotlinx.coroutines.CompletableDeferred<ReadResult>()
             withCoreServer(onConnection = { connection ->
                 val stream = connection.acceptStream()
@@ -196,7 +196,7 @@ class TypedStreamTests {
 
     @Test
     fun aPeerThatFinishesInsideAFrameFailsTheReadWithoutResettingTheStream() =
-        runBlocking {
+        coreTest("TypedStreamTests.aPeerThatFinishesInsideAFrameFailsTheReadWithoutResettingTheStream") {
             withCoreServer(onConnection = { connection ->
                 val stream = connection.acceptStream()
                 stream.read(10.seconds)
@@ -219,7 +219,7 @@ class TypedStreamTests {
 
     @Test
     fun aReadCancelledInsideAFrameKeepsTheBytesAndTheNextReadFinishesTheFrame() =
-        runBlocking {
+        coreTest("TypedStreamTests.aReadCancelledInsideAFrameKeepsTheBytesAndTheNextReadFinishesTheFrame") {
             val rest = kotlinx.coroutines.CompletableDeferred<Unit>()
             val note = Note(11, "split frame ".repeat(50))
             withCoreServer(onConnection = { connection ->
@@ -248,7 +248,7 @@ class TypedStreamTests {
 
     @Test
     fun cancellingReadsAndWritesAndClosingLeavesNoBufferOutstanding() =
-        runBlocking {
+        coreTest("TypedStreamTests.cancellingReadsAndWritesAndClosingLeavesNoBufferOutstanding") {
             val tracked = TrackedFactory()
             withCoreServer(onConnection = { connection ->
                 val stream = connection.acceptTypedStream(NoteCodec)
@@ -278,7 +278,7 @@ class TypedStreamTests {
 
     @Test
     fun aSecondReadOnTheSameStreamAtTheSameTimeFailsAsBusy() =
-        runBlocking {
+        coreTest("TypedStreamTests.aSecondReadOnTheSameStreamAtTheSameTimeFailsAsBusy") {
             withCoreServer(onConnection = { connection ->
                 connection.acceptStream().read(10.seconds)
                 delay(1.seconds)

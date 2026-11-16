@@ -11,6 +11,7 @@ import com.ditchoom.buffer.codec.WireSize
 import com.ditchoom.buffer.stream.StreamProcessor
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.core.testing.FlightEvidenceRule
 import com.ditchoom.socket.quic.core.testing.allocationSamples
 import com.ditchoom.socket.quic.core.testing.withDescriptorsAbove127
 import com.ditchoom.socket.quic.network
@@ -18,6 +19,7 @@ import com.ditchoom.socket.quic.skipOnMissingNativeLib
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.runBlocking
+import org.junit.Rule
 import java.lang.management.ManagementFactory
 import java.time.Instant
 import java.util.concurrent.ArrayBlockingQueue
@@ -76,6 +78,9 @@ private object TickCodec : Codec<Tick> {
  * A send that quiche takes at once and a receive of a frame already buffered allocate no continuation.
  */
 class CoreTypedAllocationTests {
+    @get:Rule
+    val flightEvidence = FlightEvidenceRule()
+
     @Test
     fun aPingPongEchoAllocatesTheCodecsAndTheWaitsContinuations() = measure("ping-pong", batch = 1, callerGate = PING_PONG_GATE)
 
