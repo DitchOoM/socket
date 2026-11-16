@@ -24,7 +24,6 @@ import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.CellularStandby
 import com.ditchoom.socket.NetworkMonitor
-import com.ditchoom.socket.NetworkState
 import com.ditchoom.socket.installAndroidApplicationContext
 import com.ditchoom.socket.quic.trace.QlogBudget
 import com.ditchoom.socket.quic.trace.QlogDirectory
@@ -402,7 +401,7 @@ class DeviceHandoffProbe {
             while (System.currentTimeMillis() < deadline) {
                 val attempt = probe.watch.nextAttempt()
                 val attemptStarted = System.currentTimeMillis()
-                val networkAtAttempt = monitor.state.value
+                val reachAtAttempt = osNet.reach.value
                 laneEmit("CONNECT-ATTEMPT n=$attempt ${target.line}")
                 if (attempt > 1) status.onEnded(lane, "reconnecting (attempt $attempt)")
                 // Per CONNECTION, not per run: a reconnect negotiates a brand-new CID pool, so a pool
@@ -512,15 +511,16 @@ class DeviceHandoffProbe {
                     retryDelayMs = if (lived < SHORT_LIVED_MS) minOf(retryDelayMs * 2, RECONNECT_MAX_MS) else RECONNECT_MIN_MS
                     laneEmit("RECONNECTING in ${retryDelayMs / 1000}s (last attempt lived ${lived}ms)")
                     probe.watch.backingOff(retryDelayMs.milliseconds)
-                    // The backoff is for a network that stays the same. When the OS reports a route where it had
-                    // none, that is new information: reconnect now rather than at the end of a delay that was sized
-                    // for the outage, and start the next backoff from the floor again.
-                    // Compared with the network the attempt STARTED on, so a route that came back during the attempt
-                    // itself still wakes it.
-                    val before = networkAtAttempt
-                    val woken = withTimeoutOrNull(retryDelayMs) { monitor.state.first { it != before && it is NetworkState.Routable } }
+                    // The backoff is for a network that stays the same. When the OS reports a route and an address of
+                    // THIS lane's family where it had none, that is new information: reconnect now rather than at the
+                    // end of a delay sized for the outage, and start the next backoff from the floor again. Compared
+                    // with what the OS said when the attempt STARTED, so a route that came back during the attempt
+                    // itself still wakes it. A v6 lane is not woken by Wi-Fi returning with only a link-local v6
+                    // address: its route arrives with the router advertisement, and that is its own change.
+                    val before = reachAtAttempt
+                    val woken = withTimeoutOrNull(retryDelayMs) { osNet.reach.first { it != before && it.carries(target.family) } }
                     if (woken != null) {
-                        laneEmit("NETWORK-WAKE reconnecting now: ${before::class.simpleName} -> ${woken::class.simpleName}")
+                        laneEmit("NETWORK-WAKE reconnecting now: v4=${woken.v4} v6=${woken.v6}")
                         retryDelayMs = RECONNECT_MIN_MS
                     }
                 }

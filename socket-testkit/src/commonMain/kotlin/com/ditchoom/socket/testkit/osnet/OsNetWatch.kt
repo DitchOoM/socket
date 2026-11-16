@@ -8,7 +8,9 @@ import com.ditchoom.socket.ReachResolution
 import com.ditchoom.socket.testkit.echo.DeviceSignals
 import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.testkit.trace.TraceSink
+import com.ditchoom.socket.testkit.walk.AddressFamily
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlin.time.Duration
 
 /**
@@ -63,6 +65,15 @@ public class OsNetWatch(
 
     private val recorded = MutableStateFlow<Recorded>(Recorded.Nothing)
 
+    private val reachFlow = MutableStateFlow(OsReach(NetworkState.Unknown, AddressScope.Absent, AddressScope.Absent))
+
+    /**
+     * How far the device reaches right now — the ladder rung plus each family's address scope — as a flow, so a
+     * caller waiting for a route to come back wakes on the change itself instead of on a timer. Updated by
+     * [sample], so it moves exactly when an `OS-NET` line is written for a change in any of the three.
+     */
+    public val reach: StateFlow<OsReach> get() = reachFlow
+
     /**
      * The run's one-line statement of what this device can be asked — the monitor's declared ceiling
      * and how the cellular half learns of a change. Emitted once, before any `OS-NET` line.
@@ -82,6 +93,7 @@ public class OsNetWatch(
             val previous = recorded.value
             if (previous is Recorded.Last && previous.facts == facts) return
             if (recorded.compareAndSet(previous, Recorded.Last(facts))) {
+                reachFlow.value = OsReach(facts.state, facts.v4, facts.v6)
                 emit("OS-NET ${facts.line}")
                 sink.emit(TraceEvent.OsNet(clock(), facts))
                 // Pace reacts to the device's network itself changing — the active link, its
@@ -147,3 +159,19 @@ private fun resolutionToken(resolution: ReachResolution): String =
         ReachResolution.LinkOnly -> "LinkOnly"
         ReachResolution.Asserted -> "Asserted"
     }
+
+/** What a device reaches: the ladder rung and the widest address scope of each family. */
+public data class OsReach(
+    val state: NetworkState,
+    val v4: AddressScope,
+    val v6: AddressScope,
+) {
+    /** True when the device has a route off-link and an address of [family] that can use it. */
+    public fun carries(family: AddressFamily): Boolean =
+        state is NetworkState.Routable &&
+            when (family) {
+                AddressFamily.V4 -> v4 >= AddressScope.SiteLocal
+                AddressFamily.V6 -> v6 >= AddressScope.SiteLocal
+                AddressFamily.ResolverChoice -> v4 >= AddressScope.SiteLocal || v6 >= AddressScope.SiteLocal
+            }
+}
