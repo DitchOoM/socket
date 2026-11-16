@@ -441,11 +441,25 @@ jobs:
       # UNQUALIFIED, like the test task, so a new module's binary is linked here without a list.
       # tvOS/watchOS have not shown these stalls and were not measured, so they keep one invocation.
       - name: Compile and link the ${{ matrix.shard.name }} test binaries
+        id: link_first
         if: ${{ matrix.shard.linkFirst != '' }}
         run: >-
           .github/scripts/gradle-retry.sh
           ${{ matrix.shard.linkFirst }}
           --no-configuration-cache ${{ inputs.gradle-args }}
+
+      # The single Apple writer of the PR-scoped build cache, and only when its exact key missed.
+      # It runs right after the compile, not after the tests: a push to the PR cancels the run in
+      # flight (concurrency), and a save placed behind the ~10 min test run never executed whenever
+      # a push landed during the tests, so every run stayed cold.
+      - name: Save the PR's Gradle build cache
+        if: ${{ steps.link_first.outcome == 'success' && matrix.shard.prCacheSave == '1' }}
+        uses: ./.github/actions/pr-build-cache
+        with:
+          mode: save
+          os: macos
+          lane: ${{ matrix.shard.prCache }}
+          restored-exact: ${{ steps.pr_bc.outputs.exact-hit }}
 
       # `testArgs` is the iOS shard's `--max-workers=1 --continue`: one module's simulator tests at a
       # time. With the default workers, Gradle runs several modules' test binaries in the one booted
@@ -470,16 +484,6 @@ jobs:
       # green while running none of the HTTP/3 or WebTransport suites. Reports only — never fails.
       - uses: ./.github/actions/skip-inventory
         if: ${{ !cancelled() }}
-
-      # The single Apple writer of the PR-scoped build cache, and only when its exact key missed.
-      - name: Save the PR's Gradle build cache
-        if: ${{ !cancelled() && matrix.shard.prCacheSave == '1' }}
-        uses: ./.github/actions/pr-build-cache
-        with:
-          mode: save
-          os: macos
-          lane: ${{ matrix.shard.prCache }}
-          restored-exact: ${{ steps.pr_bc.outputs.exact-hit }}
 
       # No other cache saves here. The klib entry (`gradle-macos-kn-*`) and the Kotlin/Native toolchain
       # (`konan-macos-*`) are both written by native-deps-freshness.yaml's `cache-warm-apple`, a

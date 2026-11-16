@@ -951,6 +951,26 @@ jobs:
           grep -E '^(MemTotal|MemAvailable|Mlocked|Committed_AS)' /proc/meminfo || true
           echo "nproc: $(nproc)"
 
+      # Compile and link everything the next step runs, then save the PR's build cache before the
+      # tests: a push to the PR cancels the run in flight (concurrency), and a save placed after the
+      # test run never executed whenever a push landed during the tests, so every run stayed cold.
+      - name: Compile and link the Linux checks test binaries
+        id: compile_checks
+        timeout-minutes: 45
+        run: >-
+          .github/scripts/gradle-retry.sh testClasses linuxX64TestBinaries
+          --no-configuration-cache ${{ inputs.gradle-args }}
+
+      # The single Linux writer of the PR-scoped build cache, and only when its exact key missed.
+      - name: Save the PR's Gradle build cache
+        if: ${{ steps.compile_checks.outcome == 'success' }}
+        uses: ./.github/actions/pr-build-cache
+        with:
+          mode: save
+          os: linux
+          lane: linux-checks
+          restored-exact: ${{ steps.pr_bc.outputs.exact-hit }}
+
       - name: Run checks and tests
         timeout-minutes: 45
         env:
@@ -1251,15 +1271,6 @@ jobs:
       # gdb backtraces + the symbol-bearing JNI shim let us reconstruct the crash fully offline.
       # (The :socket-quic-quiche:jvmTest half of that story now uploads from the `quiche-jvm` job,
       # under test-reports-linux-quiche-jvm-<leg>; this artifact keeps its exact name.)
-      - name: Save the PR's Gradle build cache
-        uses: ./.github/actions/pr-build-cache
-        if: ${{ !cancelled() }}
-        with:
-          mode: save
-          os: linux
-          lane: linux-checks
-          restored-exact: ${{ steps.pr_bc.outputs.exact-hit }}
-
       - name: Upload test reports (on failure)
         if: ${{ failure() || cancelled() }}
         continue-on-error: true # an upload hiccup must not mask the failure it was capturing
