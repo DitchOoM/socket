@@ -431,7 +431,7 @@ public class CoreDefaultsCheck {
             + "|configSetInitialMaxStreamDataUni|configSetInitialMaxStreamsBidi|configSetInitialMaxStreamsUni"
             + "|configSetMaxConnectionWindow|configSetMaxStreamWindow", List.of("stream/FlowWindows"));
         QUICHE_OWNERS.put("connStreamSend|connStreamRecvStep|connStreamShutdown|connStreamCapacity", List.of("stream/StreamIo"));
-        QUICHE_OWNERS.put("connProbePath|connMigrate|connMigrateSource|connNewScid|connRetireDcid|connPathEventNext|connPathStats"
+        QUICHE_OWNERS.put("connProbePath|connMigrate|connMigrateSource|connNewScid|connRetireDcid|connRequeuePath|connPathEventNext|connPathStats"
             + "|recvInfoNew|sendInfoNew", List.of("path/Paths"));
         QUICHE_OWNERS.put("connSetSession|connSession|connIsResumed|connIsInEarlyData|connEarlyDataReason", List.of("conn/Resumption"));
         QUICHE_OWNERS.put("connDgramSend|connDgramRecv|connDgramMaxWritableLen|hasReadableDgram", List.of("conn/Datagrams"));

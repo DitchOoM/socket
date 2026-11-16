@@ -3,6 +3,7 @@
 package com.ditchoom.socket.quic.core.loop
 
 import com.ditchoom.socket.quic.NextDue
+import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.Tier
 import com.ditchoom.socket.quic.core.life.Tiers
@@ -81,6 +82,12 @@ internal class Loop(
     /** Any thread: [endpoint]'s socket is reopened on the network that carries its address now (see [Endpoint.rehome]). */
     fun rehome(endpoint: Endpoint) = port.submit(RehomeWork(this, endpoint))
 
+    /** Any thread: [endpoint]'s socket is moved to [bind]'s address, a new local endpoint (see [Endpoint.move]). */
+    fun move(
+        endpoint: Endpoint,
+        bind: PathKey,
+    ) = port.submit(MoveWork(this, endpoint, bind))
+
     /** Any thread: the loop stops, ends every connection on it, and then runs [then]. */
     fun close(then: Runnable) = port.submit(StopWork(this, then))
 
@@ -141,6 +148,11 @@ internal class Loop(
     }
 
     internal fun reopen(endpoint: Endpoint) = endpoint.rehome(poller)
+
+    internal fun moveTo(
+        endpoint: Endpoint,
+        bind: PathKey,
+    ) = endpoint.move(poller, bind)
 
     internal fun beginClosing(then: Runnable) {
         run = Run.Closing(then)
@@ -215,6 +227,17 @@ private class RehomeWork(
     private val endpoint: Endpoint,
 ) : LoopWork() {
     override fun run(port: LoopPort) = loop.reopen(endpoint)
+
+    override fun gone(end: ConnEnd) = Unit
+}
+
+/** Loop work: a socket is moved to a new local address. */
+private class MoveWork(
+    private val loop: Loop,
+    private val endpoint: Endpoint,
+    private val bind: PathKey,
+) : LoopWork() {
+    override fun run(port: LoopPort) = loop.moveTo(endpoint, bind)
 
     override fun gone(end: ConnEnd) = Unit
 }

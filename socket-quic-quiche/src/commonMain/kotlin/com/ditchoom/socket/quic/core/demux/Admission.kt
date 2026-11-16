@@ -7,6 +7,7 @@ import com.ditchoom.socket.quic.ReplySource
 import com.ditchoom.socket.quic.SendTarget
 import com.ditchoom.socket.quic.core.conn.ConnAddress
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
+import com.ditchoom.socket.quic.core.life.SpareId
 import com.ditchoom.socket.quic.core.observe.Counter
 import com.ditchoom.socket.quic.core.observe.LoopOnly
 import com.ditchoom.socket.quic.core.observe.ServerCounts
@@ -69,6 +70,9 @@ internal class Admission(
     }
 
     fun handshakesInProgress(): Long = inProgress.value()
+
+    /** A fresh random id and reset token for an accepted connection to hand its peer. */
+    fun spareId(): SpareId = SpareId(random.nextLong(), random.nextLong(), random.nextLong(), random.nextLong())
 
     /** Holds the Initial at [datagram] for the next admission chunk, or drops it when a bound is reached. */
     fun hold(
@@ -176,6 +180,7 @@ internal class Admission(
                 SockAddr(peerAddress.address, peerAddress.length),
                 SockAddr(parts.local.address, parts.local.length),
                 from,
+                parts.localKey,
                 SendTarget.ServerReply(to = from, from = ReplySource.Recorded(parts.localKey)),
             )
         val build = ConnBuild(parts, QuicheConnRef(api, handle), address, memory, inProgress)

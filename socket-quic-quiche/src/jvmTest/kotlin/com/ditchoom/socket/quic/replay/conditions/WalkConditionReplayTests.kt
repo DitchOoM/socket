@@ -1,6 +1,5 @@
 package com.ditchoom.socket.quic.replay.conditions
 
-import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.replay.conditions.fixtures.iphoneWifiCellularFlap
 import com.ditchoom.socket.quic.replay.conditions.fixtures.pixelWifiFlapCoreV4
 import com.ditchoom.socket.quic.replay.conditions.fixtures.pixelWifiFlapCoreV6
@@ -8,9 +7,8 @@ import com.ditchoom.socket.quic.replay.conditions.fixtures.samsungCellularToWifi
 import com.ditchoom.socket.quic.replay.conditions.fixtures.samsungWifiToCellular
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 import kotlin.time.Duration
-import kotlin.time.Duration.Companion.milliseconds
-import kotlin.time.Duration.Companion.seconds
 
 /**
  * Walk failures as permanent tests: the network conditions and OS events of real recordings, replayed against the core
@@ -29,11 +27,7 @@ class WalkConditionReplayTests {
         val conditions = pixelWifiFlapCoreV4
         val rtt = conditions.roundTrip()
         val outage = conditions.link.filterIsInstance<LinkWindow.Outage>().single()
-        val usable =
-            when (val again = conditions.usableAgain()) {
-                is Usable.At -> again.at
-                Usable.Never, Usable.Undisturbed -> throw AssertionError("the script comes back from its outage: $again")
-            }
+        val usable = usableAt(conditions)
         val replayed =
             replayTwice(
                 conditions,
@@ -44,51 +38,70 @@ class WalkConditionReplayTests {
 
     /**
      * Pixel, core-v6, the same flap: the new network comes up without a global address, then validated with a new
-     * privacy address. The connection ends as LocalAddressGone when the new address appears, not as NetworkLost at the
-     * idle timeout as the pre-fix core did.
+     * privacy address. The socket moves to that address and the connection migrates: the first echo is answered within
+     * two round trips of the address appearing, one to validate the new path and one for the echo.
      */
     @Test
-    fun aWifiFlapBackWithANewPrivacyAddressEndsPromptlyAsLocalAddressGone() {
-        val conditions = pixelWifiFlapCoreV6
-        replayTwice(conditions, Expect.Ends(ConnEnd.LocalAddressGone::class, notAfter = firstUpAfterAnOutage(conditions) + 1.seconds))
+    fun aWifiFlapBackWithANewPrivacyAddressMigratesToIt() {
+        survivesTheMoves(pixelWifiFlapCoreV6, moves = 1)
     }
 
-    // The 4.x walk's handoffs: the core does not migrate yet, so each ends when the route leaves from another address.
-    // Migration must turn these into Survived.
-
+    /** Samsung, Wi-Fi fading for 12 s until cellular takes the route from another address: the connection moves there. */
     @Test
-    fun wifiFadingToCellularEndsAsLocalAddressGoneWhenCellularTakesTheRoute() {
-        val conditions = samsungWifiToCellular
-        replayTwice(conditions, Expect.Ends(ConnEnd.LocalAddressGone::class, notAfter = routeMoved(conditions) + PROMPT))
+    fun wifiFadingToCellularMigratesWhenCellularTakesTheRoute() {
+        survivesTheMoves(samsungWifiToCellular, moves = 1)
     }
 
+    /** Samsung, cellular to Wi-Fi with no outage: the connection moves to Wi-Fi's address at once. */
     @Test
-    fun cellularToWifiEndsAsLocalAddressGoneWhenWifiTakesTheRoute() {
-        val conditions = samsungCellularToWifi
-        replayTwice(conditions, Expect.Ends(ConnEnd.LocalAddressGone::class, notAfter = routeMoved(conditions) + PROMPT))
+    fun cellularToWifiMigratesWhenWifiTakesTheRoute() {
+        survivesTheMoves(samsungCellularToWifi, moves = 1)
     }
 
+    /**
+     * iPhone, Wi-Fi to cellular and back to the same Wi-Fi within 3 s: the connection migrates each way, and no echo
+     * waits longer than one echo interval and the two round trips a migration costs.
+     */
     @Test
-    fun aThreeSecondFlapToCellularAndBackEndsAsLocalAddressGoneAtTheFlap() {
+    fun aThreeSecondFlapToCellularAndBackMigratesEachWay() {
         val conditions = iphoneWifiCellularFlap
-        replayTwice(conditions, Expect.Ends(ConnEnd.LocalAddressGone::class, notAfter = routeMoved(conditions) + PROMPT))
+        val replayed = survivesTheMoves(conditions, moves = 2)
+        val gap = (replayed.outcome as Outcome.Survived).longestGap
+        val bound = conditions.echoEvery + conditions.roundTrip() * 2
+        assertTrue(gap <= bound, "an echo waited $gap, over $bound: ${replayed.describe()}")
     }
 
-    private fun firstUpAfterAnOutage(conditions: Conditions): Duration {
-        val outage = conditions.link.filterIsInstance<LinkWindow.Outage>().first()
-        return conditions.os
-            .filterIsInstance<OsEvent.Up>()
-            .first { it.at >= outage.from }
-            .at
+    /**
+     * Replays [conditions] and holds it to surviving [moves] moves of its socket: the first echo after the last
+     * disruption is answered within two round trips, and no echo waits longer than the disruption and that.
+     */
+    private fun survivesTheMoves(
+        conditions: Conditions,
+        moves: Int,
+    ): Replayed {
+        val twoRoundTrips = conditions.roundTrip() * 2
+        val replayed =
+            replayTwice(
+                conditions,
+                Expect.Survives(
+                    firstEchoWithin = twoRoundTrips,
+                    longestGapAtMost = usableAt(conditions) - disrupted(conditions) + conditions.echoEvery + twoRoundTrips,
+                ),
+            )
+        assertEquals(moves, replayed.moves, "the socket moved to each new address once: ${replayed.describe()}")
+        return replayed
     }
 
-    private fun routeMoved(conditions: Conditions): Duration =
-        conditions.os
-            .filterIsInstance<OsEvent.Route>()
-            .first { it.route is RouteFrom.Other }
-            .at
+    private fun usableAt(conditions: Conditions): Duration =
+        when (val again = conditions.usableAgain()) {
+            is Usable.At -> again.at
+            Usable.Never, Usable.Undisturbed -> throw AssertionError("the script comes back from its disruption: $again")
+        }
 
-    private companion object {
-        val PROMPT = 500.milliseconds
-    }
+    /** When the script first disrupts the connection: an outage, or the OS's first news. */
+    private fun disrupted(conditions: Conditions): Duration =
+        minOf(
+            conditions.link.filterIsInstance<LinkWindow.Outage>().minOfOrNull { it.from } ?: conditions.runFor,
+            conditions.os.minOfOrNull { it.at } ?: conditions.runFor,
+        )
 }

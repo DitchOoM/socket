@@ -137,14 +137,15 @@ internal sealed interface Usable {
     /** The script has no disruption: nothing to come back from. */
     data object Undisturbed : Usable
 
-    /** The network never came back with the bound address and a flowing link. */
+    /** The network never came back with a route to the peer and a flowing link. */
     data object Never : Usable
 }
 
 /**
  * The instant the connection could carry traffic again after the script's last disruption: the OS has a network up,
- * the route leaves from the bound address, and the link flows. A new network counts as a disruption even with the
- * route kept, as Android ties a socket to the network it was opened on.
+ * a route to the peer leaves from some address (the bound one, or another the client migrates to), and the link
+ * flows. A new network or a route from another address counts as a disruption, as Android ties a socket to the
+ * network it was opened on and a new address is a new path.
  */
 internal fun Conditions.usableAgain(): Usable {
     val outages = link.filterIsInstance<LinkWindow.Outage>()
@@ -153,7 +154,7 @@ internal fun Conditions.usableAgain(): Usable {
     var since = Duration.ZERO
     for (event in os.sortedBy { it.at }) {
         val next = state.after(event)
-        if (next.usable() && (!state.usable() || next.network != state.network)) since = event.at
+        if (next.usable() && (!state.usable() || next.network != state.network || next.route != state.route)) since = event.at
         state = next
     }
     if (!state.usable()) return Usable.Never
@@ -167,7 +168,7 @@ private data class OsState(
     val network: NetHandle,
     val route: RouteFrom,
 ) {
-    fun usable(): Boolean = reach == Reach.Up && route == RouteFrom.Bound
+    fun usable(): Boolean = reach == Reach.Up && route != RouteFrom.NoRoute
 
     fun after(event: OsEvent): OsState =
         when (event) {

@@ -1,11 +1,12 @@
 package com.ditchoom.socket.quic.core.conn
 
 import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.socket.quic.PathKey
+import com.ditchoom.socket.quic.QuicheRecvInfo
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.observe.Confined
 import com.ditchoom.socket.quic.core.observe.ConnCounts
-import com.ditchoom.socket.quic.core.path.SinglePath
 import com.ditchoom.socket.quic.core.pool.FixedPool
 import com.ditchoom.socket.quic.core.pool.Pooled
 import com.ditchoom.socket.quic.core.pool.Taken
@@ -13,7 +14,7 @@ import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.udp.Addressed
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 
-/** Memory a datagram that arrives while a caller is inside is copied into, with the length it holds. */
+/** Memory a datagram that arrives while a caller is inside is copied into, with its length and where it came from. */
 @Confined
 internal class CopySlot(
     index: Int,
@@ -21,9 +22,15 @@ internal class CopySlot(
 ) : Pooled(index) {
     var length = 0
         private set
+    var from = NO_SOURCE
+        private set
 
-    fun filled(length: Int) {
+    fun filled(
+        length: Int,
+        from: PathKey,
+    ) {
         this.length = length
+        this.from = from
     }
 }
 
@@ -48,37 +55,41 @@ internal class Ingress(
     private val factory: BufferFactory,
     private val counts: ConnCounts,
 ) {
-    /** Inside: quiche reads the datagram of [length] bytes at the start of [bytes] now. */
+    /** Inside: quiche reads the datagram of [length] bytes at the start of [bytes] now, as [info] describes it. */
     fun direct(
         bytes: NativeBytes,
         length: Int,
-        path: SinglePath,
+        info: QuicheRecvInfo,
         now: Nanos,
         flight: ConnFlight,
     ) {
         flight.datagramIn(now, bytes, 0, length)
-        q.api.connRecv(q.handle, bytes.address, length, path.recvInfo)
+        q.api.connRecv(q.handle, bytes.address, length, info)
     }
 
-    /** Loop thread, with a caller inside: copies the datagram into work for the thread inside. */
+    /** Inside: a datagram from an address the connection does not follow is dropped. */
+    fun refused() = counts.datagramDropped()
+
+    /** Loop thread, with a caller inside: copies the datagram that came [from] into work for the thread inside. */
     fun copy(
-        from: NativeBytes,
+        bytes: NativeBytes,
         length: Int,
+        from: PathKey,
     ): Copy {
         when (val slot = shared.slots.tryTake()) {
             is Pooled -> {
                 val held = shared.slots[slot.index]
-                held.bytes.copyFrom(from, 0, 0, length)
-                held.filled(length)
+                held.bytes.copyFrom(bytes, 0, 0, length)
+                held.filled(length, from)
                 counts.datagramCopied()
                 return shared.workFor(slot.index)
             }
             is Taken.Empty ->
                 when (val fresh = NativeBytes.of(factory.allocate(length))) {
                     is Addressed.Native -> {
-                        fresh.bytes.copyFrom(from, 0, 0, length)
+                        fresh.bytes.copyFrom(bytes, 0, 0, length)
                         counts.datagramCopied()
-                        return FreshRecv(fresh.bytes, length)
+                        return FreshRecv(fresh.bytes, length, from)
                     }
                     is Addressed.NotAddressable -> {
                         counts.datagramDropped()
@@ -92,10 +103,11 @@ internal class Ingress(
     private inner class FreshRecv(
         private val bytes: NativeBytes,
         private val length: Int,
+        private val from: PathKey,
     ) : CopiedWork() {
         override fun run(inside: Inside) {
             try {
-                inside.receiveCopy(bytes, length)
+                inside.receiveCopy(bytes, length, from)
             } finally {
                 bytes.free()
             }
@@ -112,7 +124,7 @@ internal class SlotRecv(
 ) : CopiedWork() {
     override fun run(inside: Inside) {
         try {
-            inside.receiveCopy(slot.bytes, slot.length)
+            inside.receiveCopy(slot.bytes, slot.length, slot.from)
         } finally {
             slots.give(slot)
         }
@@ -120,3 +132,6 @@ internal class SlotRecv(
 
     override fun gone(end: ConnEnd) = slots.give(slot)
 }
+
+/** What a copy slot says it came from before it holds a datagram: no address. */
+private val NO_SOURCE = PathKey(family = 0, port = 0, hi = 0L, lo = 0L)

@@ -109,6 +109,27 @@ internal class NativeSocket private constructor(
         return answer
     }
 
+    /**
+     * Loop thread: opens a socket on [bind]'s address and a port of its own, to the same peer, and closes this one once
+     * the new one is open. A socket that cannot be opened there leaves this one in place.
+     */
+    fun moveTo(bind: PathKey): Moved {
+        putRecord(spec, BIND, PathKey(bind.family, 0, bind.hi, bind.lo))
+        var answer: Moved = Moved.Unsupported
+        cell.replace { old ->
+            val fd = shim.udpOpen(spec.address)
+            if (fd >= 0) {
+                shim.close(old)
+                answer = Moved.To(recordAt(spec, LOCAL))
+                Swapped.To(fd)
+            } else {
+                answer = Moved.Refused(Thrown(NativeSocketRefusal(SocketRefusal.of(-fd))))
+                Swapped.To(old)
+            }
+        }
+        return answer
+    }
+
     companion object {
         /** The spec block's size in bytes, as `qnet.h` lays it out. */
         const val SPEC_BYTES = 104

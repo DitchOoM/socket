@@ -510,6 +510,20 @@ internal class StubQuicheApi : QuicheApi {
         return 0
     }
 
+    /** How many times [connRequeuePath] was called. */
+    @Volatile var requeuePathCount = 0
+
+    override fun connRequeuePath(
+        conn: QuicheConn,
+        localAddr: Long,
+        localLen: Int,
+        peerAddr: Long,
+        peerLen: Int,
+    ): Int {
+        requeuePathCount++
+        return 0
+    }
+
     /**
      * Every [QuicError] the driver handed to [connClose], in order — i.e. what would have gone onto the
      * wire. A test that closes with a reason quiche cannot carry (no transport code) asserts here that the

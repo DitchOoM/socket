@@ -1,5 +1,7 @@
 package com.ditchoom.socket.quic.core.udp
 
+import com.ditchoom.socket.quic.PathKey
+
 /**
  * One socket, owned by one loop. Never blocks.
  *
@@ -24,7 +26,29 @@ internal interface DatagramBatchIo {
      */
     fun reopen(): Reopened
 
+    /**
+     * Loop thread, with the socket out of the poller: opens a socket bound to [bind]'s address on a port of its own,
+     * connected to the same peer, and closes this one once the new one is open. The peer sees a new path.
+     */
+    fun moveTo(bind: PathKey): Moved
+
     fun close(): SocketClosed
+}
+
+/** What a [DatagramBatchIo.moveTo] did. */
+internal sealed interface Moved {
+    /** A new socket is bound to [local]; the old one is closed. */
+    class To(
+        val local: PathKey,
+    ) : Moved
+
+    /** No socket could be opened at the address: the old one is kept. */
+    class Refused(
+        val thrown: Thrown,
+    ) : Moved
+
+    /** This kind of socket follows the device's paths by itself and cannot be moved. */
+    data object Unsupported : Moved
 }
 
 /** What a [DatagramBatchIo.reopen] did. */

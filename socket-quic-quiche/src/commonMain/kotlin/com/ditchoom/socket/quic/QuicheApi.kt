@@ -438,6 +438,20 @@ interface QuicheApi {
     fun connProbeNow(conn: QuicheConn): Int
 
     /**
+     * The path between the sockaddrs at [localAddr] and [peerAddr] will carry nothing more (a client's socket moved
+     * away from it): every frame it still owes the peer is queued for retransmission on the active path, at the next
+     * [connSend] (`quiche_conn_requeue_path`, a patched-in export). Returns the number of frames moved, or a negative
+     * quiche error code (`QUICHE_ERR_INVALID_STATE` for the active path or no path at the 4-tuple).
+     */
+    fun connRequeuePath(
+        conn: QuicheConn,
+        localAddr: Long,
+        localLen: Int,
+        peerAddr: Long,
+        peerLen: Int,
+    ): Int
+
+    /**
      * Close the connection with the given [error].
      * Implementations decompose [QuicError] into the C API's `app` flag and error code.
      */

@@ -3,6 +3,7 @@ package com.ditchoom.socket.quic.core.testing
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.UnsafeMemory
 import com.ditchoom.socket.quic.NextDue
+import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.SendTarget
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.ready.Poller
@@ -18,6 +19,7 @@ import com.ditchoom.socket.quic.core.udp.Addressed
 import com.ditchoom.socket.quic.core.udp.BatchCapability
 import com.ditchoom.socket.quic.core.udp.BatchLimits
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
+import com.ditchoom.socket.quic.core.udp.Moved
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.ReceiveBatchResult
@@ -90,6 +92,15 @@ internal class FakeIo : DatagramBatchIo {
     override fun reopen(): Reopened {
         reopens++
         return reopenAnswer
+    }
+
+    /** What [moveTo] answers; the test may change it. */
+    var moveAnswer: Moved = Moved.Unsupported
+    val movedTo = ArrayList<PathKey>()
+
+    override fun moveTo(bind: PathKey): Moved {
+        movedTo += bind
+        return moveAnswer
     }
 
     override fun close(): SocketClosed = SocketClosed

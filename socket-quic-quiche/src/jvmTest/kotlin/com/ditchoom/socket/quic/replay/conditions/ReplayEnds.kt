@@ -192,6 +192,8 @@ internal fun replayClient(
             handshake,
             clock,
             Readiness.EveryPass,
+            // Not the stream the client's first id came from: the ids it hands out must differ from it.
+            Random(seed.inv()),
         )
     val parts = ClientParts(wiring, peer, localAddress)
     val connection =

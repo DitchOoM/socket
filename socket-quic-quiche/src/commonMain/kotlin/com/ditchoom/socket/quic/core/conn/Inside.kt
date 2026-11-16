@@ -1,10 +1,12 @@
 package com.ditchoom.socket.quic.core.conn
 
 import com.ditchoom.socket.quic.DeadlineNode
+import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.ConnLife
 import com.ditchoom.socket.quic.core.life.Life
+import com.ditchoom.socket.quic.core.life.SpareId
 import com.ditchoom.socket.quic.core.sched.LoopPort
 import com.ditchoom.socket.quic.core.stream.StreamTable
 import com.ditchoom.socket.quic.core.time.LoopClock
@@ -39,11 +41,18 @@ internal class Inside(
 
     fun network(change: NetworkChange) = turn.network(clock.now(), change)
 
-    /** A datagram that was copied because it arrived while a caller was inside. */
+    /** The client's socket now leaves from [local]. */
+    fun moved(local: PathKey) = turn.moved(clock.now(), local)
+
+    /** The ids the loop routed to this server connection. */
+    fun issue(spare: List<SpareId>) = turn.issue(spare)
+
+    /** A datagram that was copied because it arrived, from [from], while a caller was inside. */
     fun receiveCopy(
         bytes: NativeBytes,
         length: Int,
-    ) = turn.receive(bytes, length, clock.now())
+        from: PathKey,
+    ) = turn.receive(bytes, length, from, clock.now())
 
     /** Writes the connection's flight recording into [sink], in the trace grammar. */
     fun dump(sink: TraceSink) = turn.dump(sink)

@@ -7,6 +7,7 @@ import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.socket.InternetAccess
 import com.ditchoom.socket.NetworkMonitor
 import com.ditchoom.socket.NetworkState
+import com.ditchoom.socket.quic.MigrationPolicy
 import com.ditchoom.socket.quic.NetworkMonitorSource
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.RouteProbeFailure
@@ -85,13 +86,14 @@ class CoreNetworkFeedTests {
         monitor: NetworkMonitor,
         wrapIo: (DatagramBatchIo) -> DatagramBatchIo = { it },
         routeSource: suspend (com.ditchoom.socket.quic.UdpSocketChannelFactory) -> RouteSource = { it.routeSourceAddress() },
+        migration: MigrationPolicy = MigrationPolicy.Automatic,
     ): CoreClient =
         onIo {
             coreConnect(
                 host = "127.0.0.1",
                 port = port,
                 serverName = "localhost",
-                options = coreTestOptions.copy(networkMonitor = NetworkMonitorSource.Supplied(monitor)),
+                options = coreTestOptions.copy(networkMonitor = NetworkMonitorSource.Supplied(monitor), migration = migration),
                 factory = BufferFactory.Default,
                 api = loadQuicheApi(),
                 timeout = 10.seconds,
@@ -141,15 +143,57 @@ class CoreNetworkFeedTests {
             }
         }
 
+    /**
+     * On real sockets: the route to the peer leaves from another address, so the client's socket moves there, on a port
+     * of its own, the path from it is validated, and the connection migrates and echoes over it. The wildcard stands
+     * in for a second interface address, which loopback alone does not have on every platform.
+     */
     @Test
-    fun aNetworkBackWithoutTheAddressAndThenWithANewOneEndsTheConnectionAtOnceAsLocalAddressGone() =
+    fun aRouteFromAnotherAddressMovesTheSocketAndTheConnectionEchoesFromIt() =
         runBlocking {
             skipOnMissingNativeLib(CoreNetworkFeedTests::class) {
                 withEchoServer { port ->
                     val monitor = FakeMonitor()
                     monitor.state.value = WIFI_BEFORE
                     var source: RouteSource = RouteSource.Resolved("127.0.0.1")
-                    val client = connectWatched(port, monitor, routeSource = { source })
+                    var io = DeadAfterOutage(FakeIo())
+                    val client =
+                        connectWatched(
+                            port,
+                            monitor,
+                            wrapIo = { DeadAfterOutage(it).also { wrapped -> io = wrapped } },
+                            routeSource = { source },
+                        )
+                    val socket = SocketView.of(io.real)
+                    val bound = socket.local()
+                    val warm = Random(1).nextBytes(500)
+                    assertContentEquals(warm, echoOver(client.connection.openStream(), warm))
+
+                    source = RouteSource.Resolved("0.0.0.0")
+                    monitor.state.value = WIFI_AFTER
+                    val payload = Random(7).nextBytes(2_000)
+                    val echoed = withTimeout(5.seconds) { echoOver(client.connection.openStream(), payload) }
+
+                    assertContentEquals(payload, echoed)
+                    assertTrue(socket.local() != bound, "the socket moved to a new local endpoint: ${socket.local()}")
+                    val recorded = ArrayList<TraceEvent>()
+                    client.connection.dumpFlight(TraceSink { recorded += it })
+                    val marks = recorded.filterIsInstance<TraceEvent.PathState>().map { it.phase }
+                    assertTrue("Moved" in marks && "Migrated" in marks, "the flight recording shows the move: $marks")
+                    client.connection.close(QuicError.NoError)
+                }
+            }
+        }
+
+    @Test
+    fun aClientThatDoesNotMoveOnItsOwnEndsAtOnceAsLocalAddressGoneWhenANewAddressTakesTheRoute() =
+        runBlocking {
+            skipOnMissingNativeLib(CoreNetworkFeedTests::class) {
+                withEchoServer { port ->
+                    val monitor = FakeMonitor()
+                    monitor.state.value = WIFI_BEFORE
+                    var source: RouteSource = RouteSource.Resolved("127.0.0.1")
+                    val client = connectWatched(port, monitor, routeSource = { source }, migration = MigrationPolicy.Manual)
 
                     monitor.state.value = NetworkState.Offline
                     delay(200)

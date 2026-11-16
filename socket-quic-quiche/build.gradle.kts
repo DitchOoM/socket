@@ -383,6 +383,10 @@ fun downloadQuicheSource(
     // closes with NO_VIABLE_PATH instead of no error. Applied after patchQuicheRetireDcidNoRelink, whose edit of
     // the same branch it guards. Idempotent, fails loudly on drift. See the KDoc.
     patchQuicheValidatedPathSurvivesProbeLoss(sourceDir)
+    // Export quiche_conn_requeue_path: a client that migrated away from a path whose socket is gone resends what that
+    // path had in flight now, from the active path. Applied after patchQuicheEvictedPathFramesRequeued, whose recovery
+    // methods it uses. Idempotent, fails loudly on drift. See the KDoc.
+    patchQuicheRequeuePathFfi(sourceDir)
 
     // Name the patch set this tree now carries. The tree outlives the run (CI caches it with a
     // prefix fallback), so a reader that compiles it outside these tasks checks this stamp rather
@@ -2026,6 +2030,112 @@ fun patchQuicheHandshakePtoCeiling(sourceDir: File) {
             """.trimMargin() + "\n",
     )
     logger.lifecycle("Patched quiche source: quiche_config_set_initial_rtt and quiche_conn_set_handshake_pto_ceiling FFI exports")
+}
+
+/**
+ * Export `quiche_conn_requeue_path`: every frame a path still owes the peer (in packets neither acknowledged nor
+ * declared lost, and lost frames not yet resent) is queued for retransmission on the active path, now.
+ *
+ * A client that migrates because its local address went away has nothing left on the old path: its socket is closed.
+ * quiche declares the old path's packets lost only by its own rules, by time against the largest acknowledged packet
+ * when the active path changes, and by the first acknowledgement of a later packet afterwards: what the old path sent
+ * after its last acknowledgement waits a round trip on the new path before it is resent. This hands it to the new path
+ * at once. PING, PATH_CHALLENGE and PATH_RESPONSE stay behind, as in [patchQuicheEvictedPathFramesRequeued], whose
+ * recovery methods this uses; the old path's packets stay counted in its own recovery, which no longer sends.
+ *
+ * Returns the number of frames moved, or a negative quiche error: `InvalidState` for the active path or no path at
+ * the 4-tuple. Marker-guarded and loud in both directions: a re-run returns, a moved anchor throws, and an upstream
+ * that exports the same throws.
+ */
+fun patchQuicheRequeuePathFfi(sourceDir: File) {
+    val marker = "socket-requeue-path"
+    val src = sourceDir.resolve("quiche/src")
+    val ffiRs = src.resolve("ffi.rs")
+    val libRs = src.resolve("lib.rs")
+    if (!ffiRs.exists() || !libRs.exists()) return
+    if (ffiRs.readText().contains(marker)) return
+    if (ffiRs.readText().contains("quiche_conn_requeue_path")) {
+        throw GradleException(
+            "$marker: quiche's ffi.rs already exports quiche_conn_requeue_path. DELETE patchQuicheRequeuePathFfi and " +
+                "its call site, and check the upstream signature against libs/quiche/include/quiche.h.",
+        )
+    }
+    val anchor = "    pub fn send_ack_eliciting(&mut self) -> Result<()> {\n"
+    val text = libRs.readText()
+    if (text.split(anchor).size != 2) {
+        throw GradleException(
+            "$marker: `${anchor.trim()}` not found exactly once in lib.rs: a quiche bump moved it. Re-fit " +
+                "patchQuicheRequeuePathFfi and re-verify with MigrationConditionTests.",
+        )
+    }
+    libRs.writeText(
+        text.replace(
+            anchor,
+            """
+            |    /// $marker: the path at `local`/`peer` will carry nothing more; what it still owes
+            |    /// the peer is resent from the active path. Returns how many frames moved.
+            |    pub fn socket_requeue_path(
+            |        &mut self, local: SocketAddr, peer: SocketAddr,
+            |    ) -> Result<usize> {
+            |        let pid = self
+            |            .paths
+            |            .path_id_from_addrs(&(local, peer))
+            |            .ok_or(Error::InvalidState)?;
+            |        let active = self.paths.get_active_path_id()?;
+            |        if pid == active {
+            |            return Err(Error::InvalidState);
+            |        }
+            |        let mut moved = 0;
+            |        for &epoch in packet::Epoch::epochs(
+            |            packet::Epoch::Initial..=packet::Epoch::Application,
+            |        ) {
+            |            let frames: Vec<frame::Frame> = self
+            |                .paths
+            |                .get_mut(pid)?
+            |                .recovery
+            |                .socket_take_outstanding_frames(epoch)
+            |                .into_iter()
+            |                .filter(|f| {
+            |                    !matches!(
+            |                        f,
+            |                        frame::Frame::Ping { .. } |
+            |                            frame::Frame::PathChallenge { .. } |
+            |                            frame::Frame::PathResponse { .. }
+            |                    )
+            |                })
+            |                .collect();
+            |            moved += frames.len();
+            |            self.paths
+            |                .get_mut(active)?
+            |                .recovery
+            |                .socket_requeue_lost_frames(epoch, frames);
+            |        }
+            |        Ok(moved)
+            |    }
+            |
+            |
+            """.trimMargin() + anchor,
+        ),
+    )
+    ffiRs.appendText(
+        "\n" +
+            """
+            |// $marker: the path at local/peer carries nothing more; resend what it owes from the active path.
+            |#[no_mangle]
+            |pub extern "C" fn quiche_conn_requeue_path(
+            |    conn: &mut Connection, local: &sockaddr, local_len: socklen_t,
+            |    peer: &sockaddr, peer_len: socklen_t,
+            |) -> ssize_t {
+            |    let local = std_addr_from_c(local, local_len);
+            |    let peer = std_addr_from_c(peer, peer_len);
+            |    match conn.socket_requeue_path(local, peer) {
+            |        Ok(moved) => moved as ssize_t,
+            |        Err(e) => e.to_c(),
+            |    }
+            |}
+            """.trimMargin() + "\n",
+    )
+    logger.lifecycle("Patched quiche source: quiche_conn_requeue_path FFI export")
 }
 
 /**

@@ -216,6 +216,17 @@ internal class GuardedQuicheApi(
         return delegate.connProbeNow(conn)
     }
 
+    override fun connRequeuePath(
+        conn: QuicheConn,
+        localAddr: Long,
+        localLen: Int,
+        peerAddr: Long,
+        peerLen: Int,
+    ): Int {
+        guard.assertOnLoop(LoopSite.Quiche)
+        return delegate.connRequeuePath(conn, localAddr, localLen, peerAddr, peerLen)
+    }
+
     override fun connClose(
         conn: QuicheConn,
         error: QuicError,

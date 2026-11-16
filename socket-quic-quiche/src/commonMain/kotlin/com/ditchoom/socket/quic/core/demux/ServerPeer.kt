@@ -4,11 +4,11 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.socket.quic.EncodedSockAddr
 import com.ditchoom.socket.quic.PathKey
-import com.ditchoom.socket.quic.QuicRole
 import com.ditchoom.socket.quic.QuicheConfig
 import com.ditchoom.socket.quic.core.conn.Conn
 import com.ditchoom.socket.quic.core.conn.ConnAddress
 import com.ditchoom.socket.quic.core.conn.ConnMemory
+import com.ditchoom.socket.quic.core.conn.ConnSide
 import com.ditchoom.socket.quic.core.conn.ConnSink
 import com.ditchoom.socket.quic.core.conn.FlightSize
 import com.ditchoom.socket.quic.core.conn.LoopMemory
@@ -96,7 +96,7 @@ internal class ConnBuild(
         buildConn(
             rules = parts.rules,
             q = q,
-            role = QuicRole.Server,
+            side = ConnSide.Server,
             address = address,
             memory = ConnMemory(parts.shared, parts.factory, memory.alpn),
             flight = parts.flight,
@@ -129,6 +129,7 @@ internal class ServerPeer(
         private set
     var originalRoute: RouteLink<ServerPeer> = RouteLink.End
         private set
+    private val spares = ArrayList<Route<ServerPeer>>(0)
     var listing = Listing.Unlisted
         private set
 
@@ -151,6 +152,17 @@ internal class ServerPeer(
     ) {
         scidRoute = scid
         originalRoute = original
+    }
+
+    /** A spare id handed to this peer's connection routes here until it ends. */
+    fun routedSpare(route: Route<ServerPeer>) {
+        spares.add(route)
+    }
+
+    /** Hands [each] every spare id's route, once: they go with the connection. */
+    fun spareRoutes(each: (Route<ServerPeer>) -> Unit) {
+        spares.forEach(each)
+        spares.clear()
     }
 
     fun listedAt(at: Int) {

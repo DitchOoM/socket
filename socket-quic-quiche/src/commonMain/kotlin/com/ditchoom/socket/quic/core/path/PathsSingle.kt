@@ -11,13 +11,13 @@ import com.ditchoom.socket.quic.core.udp.SockAddr
 import kotlin.time.Duration
 
 /**
- * The one path a connection has until migration arrives: what quiche is told about each datagram that arrives, and
- * where each one it writes goes. Both sockaddrs must outlive the infos, which keep pointers to them.
+ * The path a connection was opened on: what quiche is told about each datagram that arrives on it, and where each
+ * one it writes goes. Both sockaddrs must outlive the infos, which keep pointers to them.
  */
 internal class SinglePath(
     private val q: QuicheConnRef,
-    peer: SockAddr,
-    local: SockAddr,
+    val peer: SockAddr,
+    val local: SockAddr,
     val target: SendTarget,
 ) {
     val recvInfo: QuicheRecvInfo = q.api.recvInfoNew(peer.address, peer.length, local.address, local.length)

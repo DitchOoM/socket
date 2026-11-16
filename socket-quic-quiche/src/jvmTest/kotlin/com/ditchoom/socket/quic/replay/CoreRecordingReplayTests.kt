@@ -182,6 +182,7 @@ class CoreRecordingReplayTests {
                 actions = listOf(writeOf(client)),
                 peerApp = PeerApp.Echoes,
                 ourApp = OurApp.Reads,
+                idsAtEstablishment = SPARE_IDS,
             )
         val schedule = assertIs<RecordingToSchedule.Converted.Schedule>(converted).schedule
         assertEquals(
@@ -283,6 +284,9 @@ class CoreRecordingReplayTests {
         /** A datagram this long carries the payload; acknowledgements are far shorter, and the handshake's come first. */
         const val DATA = 500
         const val PAYLOAD = 600
+
+        /** The spare ids a core client hands its peer as its handshake completes, with the default limit of 8. */
+        const val SPARE_IDS = 7
         const val MOVED_PORT = 40_000
         const val MOVED_ADDRESS = 0x7f000002L
         val BIG = FlightSize(records = 4096)

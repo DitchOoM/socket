@@ -1,7 +1,8 @@
 package com.ditchoom.socket.quic.core.loop
 
+import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.core.conn.Collected
-import com.ditchoom.socket.quic.core.conn.Conn
+import com.ditchoom.socket.quic.core.conn.MovedWork
 import com.ditchoom.socket.quic.core.conn.NetworkChange
 import com.ditchoom.socket.quic.core.conn.NetworkWork
 import com.ditchoom.socket.quic.core.demux.Admitted
@@ -19,6 +20,7 @@ import com.ditchoom.socket.quic.core.sched.Shutdown
 import com.ditchoom.socket.quic.core.sched.SocketHealth
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
+import com.ditchoom.socket.quic.core.udp.Moved
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.ReceiveBatchResult
 import com.ditchoom.socket.quic.core.udp.Reopened
@@ -27,44 +29,10 @@ import com.ditchoom.socket.quic.core.udp.SocketFault
 import com.ditchoom.socket.quic.core.udp.Thrown
 import kotlinx.coroutines.Runnable
 
-/** A place in a loop's socket table: an endpoint, or empty. */
-internal sealed interface LoopSlot {
-    data object Empty : LoopSlot
-
-    class Taken(
-        val endpoint: Endpoint,
-    ) : LoopSlot
-}
-
-/** Where an endpoint's datagrams go. */
-internal sealed interface Route {
-    /** A client's own connected socket carries exactly one connection. */
-    class Fixed(
-        val conn: Conn,
-    ) : Route
-
-    /** A server's unconnected socket carries every connection it accepted. */
-    class Demux(
-        val demux: com.ditchoom.socket.quic.core.demux.Demux,
-    ) : Route
-}
-
-/** When an endpoint reads its socket. */
-internal enum class Readiness {
-    /** When the poller reported it readable, and until a read finds nothing. */
-    Polled,
-
-    /** Every pass: a socket whose readiness no poller sees, such as one driven by a test on virtual time. */
-    EveryPass,
-}
-
 /** Whether a socket may hold datagrams: set by readiness, cleared by a receive that found none. */
 private enum class Input { Maybe, Drained }
 
 private enum class Phase { Live, Dead, Gone }
-
-/** Whether an endpoint is still on its loop after a serve. */
-internal enum class Stay { Stays, Left }
 
 /** A socket on a loop and where its datagrams go. The loop thread only. */
 @LoopOnly
@@ -202,6 +170,33 @@ internal class Endpoint(
         }
     }
 
+    /**
+     * A client's socket moves to [bind]'s address on a port of its own, and its connection is told in this pass: it probes
+     * the path from there and migrates. One that cannot be opened there ends the connection; one that cannot move ends
+     * it as its address went away.
+     */
+    fun move(
+        poller: Poller,
+        bind: PathKey,
+    ) {
+        val conn =
+            when (route) {
+                is Route.Fixed -> route.conn
+                is Route.Demux -> return
+            }
+        if (phase != Phase.Live) return
+        poller.remove(token)
+        val moved = io.moveTo(bind)
+        poller.add(socketRef, token)
+        interest = WriteInterest.None
+        input = Input.Maybe
+        when (moved) {
+            is Moved.To -> conn.submitFromLoop(MovedWork(moved.local))
+            is Moved.Refused -> endConn(ConnEnd.SocketFailed(SocketFault.MoveRefused(moved.thrown)))
+            is Moved.Unsupported -> conn.submitFromLoop(NetworkWork(NetworkChange.Moved))
+        }
+    }
+
     /** The io threw: this socket's connection ends with it, and no other. */
     fun ioThrew(thrown: Thrown) {
         if (phase != Phase.Live) return
@@ -259,7 +254,14 @@ internal class Endpoint(
         at: Nanos,
     ) {
         when (route) {
-            is Route.Fixed -> for (i in 0 until batch.count) route.conn.received(batch.bufferAt(i).bytes, batch.lengthAt(i), at)
+            is Route.Fixed -> for (i in 0 until batch.count) {
+                route.conn.received(
+                    batch.bufferAt(i).bytes,
+                    batch.lengthAt(i),
+                    batch.fromAt(i),
+                    at,
+                )
+            }
             is Route.Demux -> route.demux.route(batch, send, at)
         }
         batch.release()

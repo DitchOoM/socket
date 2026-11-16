@@ -59,6 +59,9 @@ internal sealed interface ConnEnd {
     /** The idle timeout passed while the network monitor reported no usable network. */
     data object NetworkLost : ConnEnd
 
-    /** The network came back without the local address the connection's socket is bound to: that is migration. */
+    /** The local address the connection's socket is bound to went away, and the connection could not move with it. */
     data object LocalAddressGone : ConnEnd
+
+    /** No path the connection could send on was left: every one it had failed, or none it moved to was validated. */
+    data object NoUsablePath : ConnEnd
 }

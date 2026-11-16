@@ -543,6 +543,14 @@ object JniQuicheApi : QuicheApi {
 
     override fun connProbeNow(conn: QuicheConn): Int = nConnProbeNow(conn.handle).toInt()
 
+    override fun connRequeuePath(
+        conn: QuicheConn,
+        localAddr: Long,
+        localLen: Int,
+        peerAddr: Long,
+        peerLen: Int,
+    ): Int = nConnRequeuePath(conn.handle, localAddr, localLen, peerAddr, peerLen).toInt()
+
     override fun configSetInitialRtt(
         config: QuicheConfig,
         nanos: Long,
@@ -1159,6 +1167,14 @@ object JniQuicheApi : QuicheApi {
     @JvmStatic private external fun nConnSendAckEliciting(conn: Long): Long
 
     @JvmStatic private external fun nConnProbeNow(conn: Long): Long
+
+    @JvmStatic private external fun nConnRequeuePath(
+        conn: Long,
+        localAddr: Long,
+        localLen: Int,
+        peerAddr: Long,
+        peerLen: Int,
+    ): Long
 
     @JvmStatic private external fun nConfigSetInitialRtt(
         config: Long,

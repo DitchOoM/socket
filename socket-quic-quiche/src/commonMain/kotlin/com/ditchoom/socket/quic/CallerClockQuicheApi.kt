@@ -162,6 +162,14 @@ internal class CallerClockQuicheApi(
 
     override fun connProbeNow(conn: QuicheConn): Int = synced { delegate.connProbeNow(conn) }
 
+    override fun connRequeuePath(
+        conn: QuicheConn,
+        localAddr: Long,
+        localLen: Int,
+        peerAddr: Long,
+        peerLen: Int,
+    ): Int = synced { delegate.connRequeuePath(conn, localAddr, localLen, peerAddr, peerLen) }
+
     override fun connSetHandshakePtoCeiling(
         conn: QuicheConn,
         ceiling: PtoCeiling,

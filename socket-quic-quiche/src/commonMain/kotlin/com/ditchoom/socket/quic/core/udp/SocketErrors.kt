@@ -47,6 +47,11 @@ internal sealed interface SocketFault {
         val thrown: Thrown,
     ) : SocketFault
 
+    /** The local address changed and no socket could be opened at the new one. */
+    class MoveRefused(
+        val thrown: Thrown,
+    ) : SocketFault
+
     /** [count] unnamed errors in a row with no datagram taken in between. */
     class Repeated(
         val count: Int,

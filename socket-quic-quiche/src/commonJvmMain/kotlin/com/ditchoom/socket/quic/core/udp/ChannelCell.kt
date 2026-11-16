@@ -74,6 +74,46 @@ internal class ChannelCell(
         }
     }
 
+    /**
+     * Loop thread, with the channel out of its selector: opens a channel bound to [bind] on a port of its own,
+     * connected to the same peer, with the same buffer sizes, and closes the old one once the new one is open. A new
+     * channel that cannot be opened there leaves the old one in place.
+     */
+    fun moveTo(bind: InetSocketAddress): Moved {
+        val old = current.load().channel()
+        current.store(Held.Replacing(old))
+        val fresh =
+            try {
+                DatagramChannel.open()
+            } catch (refused: IOException) {
+                current.store(Held.Live(old))
+                return Moved.Refused(Thrown(refused))
+            }
+        return try {
+            fresh.setOption(StandardSocketOptions.SO_RCVBUF, old.getOption(StandardSocketOptions.SO_RCVBUF))
+            fresh.setOption(StandardSocketOptions.SO_SNDBUF, old.getOption(StandardSocketOptions.SO_SNDBUF))
+            fresh.bind(bind)
+            val peer = old.remoteAddress
+            if (peer is InetSocketAddress) fresh.connect(peer)
+            fresh.configureBlocking(false)
+            val local = fresh.localAddress
+            if (local is InetSocketAddress) {
+                old.close()
+                current.store(Held.Live(fresh))
+                Moved.To(local.toPathKey())
+            } else {
+                // A channel bound to an internet address reports one; one that does not cannot carry the path.
+                fresh.close()
+                current.store(Held.Live(old))
+                Moved.Unsupported
+            }
+        } catch (refused: IOException) {
+            fresh.close()
+            current.store(Held.Live(old))
+            Moved.Refused(Thrown(refused))
+        }
+    }
+
     private fun refuse(
         old: DatagramChannel,
         refused: IOException,

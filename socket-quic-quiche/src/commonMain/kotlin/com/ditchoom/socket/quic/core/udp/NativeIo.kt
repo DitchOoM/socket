@@ -123,6 +123,8 @@ internal class NativeIo(
 
     override fun reopen(): Reopened = socket.reopen()
 
+    override fun moveTo(bind: PathKey): Moved = socket.moveTo(bind)
+
     override fun close(): SocketClosed {
         socket.cell.close { fd -> shim.close(fd) }
         return SocketClosed

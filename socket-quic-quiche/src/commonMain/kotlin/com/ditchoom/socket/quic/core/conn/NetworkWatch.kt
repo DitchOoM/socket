@@ -14,7 +14,7 @@ internal enum class NetworkChange {
     /** No usable network at all. */
     Gone,
 
-    /** A usable network, without the local address the connection's socket is bound to. */
+    /** A usable network without the local address the connection's socket is bound to, which it does not follow. */
     Moved,
 }
 
@@ -36,7 +36,8 @@ private enum class Watch { Usable, Unusable }
 /**
  * Whether the connection has a usable network. No usable network does not end it: a flap is ridden out, and a usable
  * network nudges it to send at once. Only an idle timeout that passes with no usable network ends it, and then as
- * [ConnEnd.NetworkLost], which says why the peer went silent. Migration will act on [NetworkChange.Moved].
+ * [ConnEnd.NetworkLost], which says why the peer went silent. A socket moved to a new local address is on a usable
+ * network ([moved]).
  */
 @Confined
 internal class NetworkWatch {
@@ -54,6 +55,11 @@ internal class NetworkWatch {
             }
             NetworkChange.Moved -> NetworkStep.End
         }
+
+    /** The socket moved to a new local address: there is a usable network. */
+    fun moved() {
+        watch = Watch.Usable
+    }
 
     /** The end quiche reported, named [ConnEnd.NetworkLost] when it is an idle timeout with no usable network. */
     fun endOf(quiche: ConnEnd): ConnEnd =

@@ -283,6 +283,9 @@ class CoreServerStartupHerdTests {
 
         override fun reopen(): Reopened = Reopened.SameEndpoint
 
+        override fun moveTo(bind: com.ditchoom.socket.quic.PathKey): com.ditchoom.socket.quic.core.udp.Moved =
+            com.ditchoom.socket.quic.core.udp.Moved.Unsupported
+
         override fun close(): SocketClosed = SocketClosed
     }
 

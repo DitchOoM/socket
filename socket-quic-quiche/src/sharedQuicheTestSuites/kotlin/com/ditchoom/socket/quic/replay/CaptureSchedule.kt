@@ -37,6 +37,8 @@ internal class CaptureSchedule(
     /** The capture's length. */
     val runsFor: Duration,
     val tolerance: SendTimeTolerance,
+    /** Spare connection ids our endpoint hands its peer in the pass its handshake completes, before it writes again. */
+    val idsAtEstablishment: Int = 0,
 ) {
     /**
      * This schedule up to [at], with the connection still open there: what a peer that had not gone
@@ -57,6 +59,7 @@ internal class CaptureSchedule(
             end = ConnectionEnd.Open,
             runsFor = at,
             tolerance = tolerance,
+            idsAtEstablishment = idsAtEstablishment,
         )
 
     /**
@@ -81,6 +84,7 @@ internal class CaptureSchedule(
             end = end,
             runsFor = runsFor,
             tolerance = tolerance,
+            idsAtEstablishment = idsAtEstablishment,
         )
     }
 }

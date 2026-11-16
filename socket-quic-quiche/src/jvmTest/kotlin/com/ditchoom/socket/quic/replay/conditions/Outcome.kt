@@ -51,8 +51,16 @@ internal class Replayed(
     val echoes: List<Echo>,
     /** How many times the client's socket was reopened on a new network. */
     val reopens: Int,
+    /** How many times the client's socket moved to a new local address. */
+    val moves: Int,
     /** When the client sent each datagram, on the script's clock. */
     val clientSends: List<Duration>,
+    /** The size of each datagram the client sent, in the order of [clientSends]. */
+    val clientSizes: List<Int>,
+    /** When the server sent each datagram, on the script's clock. */
+    val serverSends: List<Duration>,
+    /** The size of each datagram the server sent, in the order of [serverSends]. */
+    val serverSizes: List<Int>,
     /** When the client's handshake completed, if it did. */
     val established: List<Duration>,
 ) {
@@ -63,7 +71,7 @@ internal class Replayed(
     }
 
     fun describe(): String =
-        "${conditions.name}: $outcome, reopens=$reopens, usable again ${conditions.usableAgain()}, " +
+        "${conditions.name}: $outcome, reopens=$reopens, moves=$moves, usable again ${conditions.usableAgain()}, " +
             "last echoes ${echoes.takeLast(LAST_ECHOES)}"
 }
 
