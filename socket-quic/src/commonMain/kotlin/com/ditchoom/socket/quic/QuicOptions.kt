@@ -272,7 +272,7 @@ data class QuicOptions(
      * [QuicConnection.close] and nothing closes the connection behind its back.
      */
     val closeLinger: QuicCloseLinger = QuicCloseLinger.Default,
-    /** Largest UDP payload (bytes) a datagram may carry; discovery raises the size from 1200 up to it. Must be >= 1200 per RFC 9000. */
+    /** Maximum UDP payload size (bytes). Must be >= 1200 per RFC 9000. */
     val maxUdpPayloadSize: Int = 1350,
     /** Initial congestion window in packets. Null uses quiche default. */
     val initialCongestionWindowPackets: Long? = null,
@@ -389,12 +389,8 @@ data class QuicOptions(
      * additionally require the chain to validate (native-only, defense in depth for CA-issued leaves).
      */
     val certificateHashVerification: CertificateHashVerification = CertificateHashVerification.HashOnly,
-    /**
-     * Path MTU discovery (RFC 9000 §14.3): datagrams start at the 1200-byte minimum every path must carry and grow
-     * toward [maxUdpPayloadSize] as probes are acknowledged. On by default, because the sockets set DF: a path whose
-     * MTU is below [maxUdpPayloadSize] refuses the larger datagrams instead of fragmenting them.
-     */
-    val enablePmtuDiscovery: Boolean = true,
+    /** Enable Path MTU Discovery. */
+    val enablePmtuDiscovery: Boolean = false,
     /**
      * **Server-side**: accept 0-RTT from resuming clients, and issue session tickets that permit it
      * (RFC 9001 §4.6.1). 0-RTT data can be replayed (RFC 8446 §8, RFC 9001 §9.2): a stream the client

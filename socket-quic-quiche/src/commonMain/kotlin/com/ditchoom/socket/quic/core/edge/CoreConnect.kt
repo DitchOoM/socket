@@ -90,6 +90,7 @@ internal suspend fun coreConnect(
     routeSource: suspend (UdpSocketChannelFactory) -> RouteSource = { it.routeSourceAddress() },
     batching: UdpBatching = options.udpBatching,
     ride: ClientRide = clientRideOfThisPlatform,
+    datagramSize: DatagramSize = DatagramSize.Probed,
 ): CoreClient =
     withContext(Dispatchers.IO) {
         val memory = EdgeMemory(factory)
@@ -99,7 +100,7 @@ internal suspend fun coreConnect(
                 host,
                 port,
                 serverName,
-                options,
+                options.sizedBy(datagramSize),
                 memory,
                 factory,
                 api,
