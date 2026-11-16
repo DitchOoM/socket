@@ -259,6 +259,11 @@ check_kind "a peer silent with nothing of ours in flight" "$silent" our-client "
 check_kind "silence while our data was in flight is not the peer's" "$silent" our-client "{\"connections\":[$(hconn a '"last_rx_ms":3400,"end_ms":33400' | sed 's/"bytes_in_flight_at_end":0/"bytes_in_flight_at_end":84/')]}" NotMatched
 check_kind "silence after our own long probe wait is not the peer's" "$silent" our-client "{\"connections\":[$(hconn a '"last_rx_ms":3400,"end_ms":33400' | sed 's/"longest_wait_in_flight_ms":2000/"longest_wait_in_flight_ms":25000/')]}" NotMatched
 check_kind "a short silence is not the signature" "$silent" our-client "{\"connections\":[$(hconn a '"last_rx_ms":30000,"end_ms":33400')]}" NotMatched
+# Run 43918562845, our client against quinn, handshakeloss: the handshake completed, our request was acknowledged, and
+# quinn's response never arrived; the client idled out 30 s after the one packet it heard at 24.2 s.
+check_kind "a completed handshake whose response never arrived" "$silent" our-client "{\"connections\":[$(hconn a '"last_rx_ms":24193.554,"end_ms":54212.759,"tx_after_last_rx":1,"longest_wait_in_flight_ms":3964.4')]}" Matched
+# The committed expectation for that cell accepts it: its signature is an any-of that includes the silent kind.
+expect "quinn handshakeloss expects the silent signature as well" "$(python3 -c 'import json,sys; s=json.load(open(sys.argv[1]))["our-client"]["quinn"]["handshakeloss"]["flaky"]["signature"]; print(sorted(x["kind"] for x in s["signatures"]))' "$here/../../../test-harness/quic-interop/expectations.json")" "['peer-never-resent-server-hello', 'peer-silent-until-our-timeout']"
 hello='{"kind":"peer-never-resent-server-hello"}'
 check_kind "Initial acks without a ServerHello" "$hello" our-client "{\"connections\":[$(hconn a '"close_reason":"Failed to establish connection"' | sed 's/"rx_initial_crypto":1/"rx_initial_crypto":0/')]}" Matched
 check_kind "a ServerHello that arrived is not the signature" "$hello" our-client "{\"connections\":[$(hconn a '"close_reason":"Failed to establish connection"')]}" NotMatched

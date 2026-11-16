@@ -468,9 +468,19 @@
       },
       "handshakeloss": {
         "flaky": {
-          "why": "peer: quinn acknowledges our Initials but never re-sends a lost ServerHello; its probes are Handshake packets we cannot decrypt (run 43609318908)",
+          "why": "peer: quinn acknowledges our Initials but never re-sends a lost ServerHello; its probes are Handshake packets we cannot decrypt (run 43609318908); or the handshake completes and our request is acknowledged, but every copy of quinn's response is lost and its recovery backs off past our 30 s idle timeout, so the client hears nothing for 30 s with nothing of ours in flight (run 43918562845: 10 of 24 datagrams from quinn delivered, one 1-RTT packet between 7.5 s and the end at 54.2 s)",
           "signature": {
-            "kind": "peer-never-resent-server-hello"
+            "kind": "any-of",
+            "signatures": [
+              {
+                "kind": "peer-never-resent-server-hello"
+              },
+              {
+                "kind": "peer-silent-until-our-timeout",
+                "silence_s": 25,
+                "our_wait_s": 8
+              }
+            ]
           }
         }
       },
