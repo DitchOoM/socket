@@ -47,6 +47,8 @@ internal class ConditionLink(
     private val conditions: Conditions,
     seed: Long,
     private val clock: LoopClock,
+    /** How many of the first datagrams the server sends to a moved client address the link loses. */
+    private var loseToMoved: Int = 0,
 ) {
     /** Where each end's datagrams come from, as the other end's socket reports them; set once both are bound. */
     var client = PathKey(family = 4, port = 0, hi = 0L, lo = 0L)
@@ -129,6 +131,10 @@ internal class ConditionLink(
             serverSizes += bytes.size
         }
         if (from == Side.Client && clientSocketDead()) return
+        if (from == Side.Server && moves > 0 && clientAddress == client && loseToMoved > 0) {
+            loseToMoved--
+            return
+        }
         val window = windowAt(now)
         val draw = random.nextInt(PER_MILLE)
         val delay =

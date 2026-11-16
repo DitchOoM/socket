@@ -19,6 +19,8 @@ import com.ditchoom.socket.quic.core.udp.toPathKey
 import com.ditchoom.socket.quic.loadQuicheApi
 import com.ditchoom.socket.quic.loadQuicheRandomPin
 import com.ditchoom.socket.quic.read
+import com.ditchoom.socket.testkit.trace.TraceEvent
+import com.ditchoom.socket.testkit.trace.TraceSink
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -30,6 +32,7 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.yield
 import java.net.InetSocketAddress
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.nanoseconds
 import kotlin.time.Duration.Companion.seconds
 
@@ -44,11 +47,14 @@ import kotlin.time.Duration.Companion.seconds
 internal class ConditionReplay(
     private val conditions: Conditions,
     private val seed: Long = 1L,
+    /** How many of the first datagrams the server sends to the client's moved address are lost. */
+    private val loseToMoved: Int = 0,
 ) {
     private val clock = VirtualClock(Nanos(ORIGIN))
     private val factory = BufferFactory.Default
     private val echoes = ArrayList<Echo>()
     private val sleep = Sleeper()
+    private val marks = LinkedHashSet<PathMarkAt>()
     private var steps = 0L
 
     /** When the client saw its handshake complete, once. */
@@ -70,7 +76,7 @@ internal class ConditionReplay(
 
     private suspend fun CoroutineScope.drive(api: com.ditchoom.socket.quic.QuicheApi): Replayed {
         val options = replayOptions(conditions)
-        val link = ConditionLink(conditions, seed, clock)
+        val link = ConditionLink(conditions, seed, clock, loseToMoved)
         val server = replayServer(api, options, factory, link.serverIo, clock)
         link.server = InetSocketAddress(LOCALHOST, server.port).toPathKey()
         val monitor = ScriptMonitor(conditions.start)
@@ -97,6 +103,7 @@ internal class ConditionReplay(
         val end = ORIGIN + conditions.runFor.inWholeNanoseconds
         var now = ORIGIN
         var finish: Finish = Finish.Lived
+        var nextDump = ORIGIN
         while (true) {
             advanceTo(api, now)
             while (nextEvent < events.size && ORIGIN + events[nextEvent].at.inWholeNanoseconds <= now) {
@@ -113,13 +120,21 @@ internal class ConditionReplay(
                 }
                 EdgeEnd.Open -> Unit
             }
+            if (link.moves > 0 && now >= nextDump) {
+                launch { dumpMarks(client) }
+                nextDump = now + DUMP_EVERY.inWholeNanoseconds
+            }
             if (now >= end) break
             val eventDue = if (nextEvent < events.size) ORIGIN + events[nextEvent].at.inWholeNanoseconds else Long.MAX_VALUE
-            val due = minOf(loopsDue, link.nextArrival(), eventDue, sleep.due(), clientApp.due(), end)
+            val dumpDue = if (link.moves > 0) nextDump else Long.MAX_VALUE
+            val due = minOf(loopsDue, link.nextArrival(), eventDue, sleep.due(), clientApp.due(), dumpDue, end)
             now = maxOf(now + MIN_STEP, due)
         }
         clientApp.cancel()
         serverApp.cancel()
+        val dump = launch { dumpMarks(client) }
+        settle(now, link, server.loop, client.loop, monitor)
+        dump.cancel()
         client.connection.closeNow(QuicError.NoError)
         settle(now, link, server.loop, client.loop, monitor)
         stop(client.loop)
@@ -136,7 +151,16 @@ internal class ConditionReplay(
             link.serverSends.map { it.nanoseconds },
             link.serverSizes.toList(),
             established.map { (it - ORIGIN).nanoseconds },
+            marks.sortedBy { it.at },
         )
+    }
+
+    /**
+     * Reads the client's path marks out of its flight recording into [marks]: read every [DUMP_EVERY] once the socket
+     * moved, as the recording's ring keeps only its latest records.
+     */
+    private suspend fun dumpMarks(client: ReplayClient) {
+        client.connection.dumpFlight(TraceSink { event -> if (event is TraceEvent.PathState) marks += PathMarkAt(event.phase, event.at) })
     }
 
     private fun advanceTo(
@@ -283,5 +307,6 @@ internal class ConditionReplay(
         const val YIELDS = 4
         val WARM_UP = 1.seconds
         val ACCEPT_WITHIN = 10.seconds
+        val DUMP_EVERY = 100.milliseconds
     }
 }
