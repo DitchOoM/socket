@@ -63,7 +63,11 @@ class SharedClientLoopTests {
                                     }.awaitAll()
                             }
                         }
-                        clients.forEach { it.connection.close(QuicError.NoError) }
+                        // Together: each close waits out its closing period (three PTOs), which one after another
+                        // took 4 s of the test on an API 29 emulator.
+                        withContext(Dispatchers.Default) {
+                            clients.map { async { it.connection.close(QuicError.NoError) } }.awaitAll()
+                        }
                     } finally {
                         loops.close()
                     }
