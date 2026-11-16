@@ -152,6 +152,14 @@ jobs:
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin,aarch64-apple-ios,aarch64-apple-ios-sim
 
+      # One digest of the inputs of a quiche native binary (the quiche pins, the native-input regions of
+      # socket-quic-quiche/build.gradle.kts, the JNI shim source, the header). The same action keys every
+      # writer and reader of these caches (see .github/scripts/quiche-native-inputs.sh), so a commit that
+      # touches none of those inputs reuses the natives instead of recompiling quiche.
+      - name: Compute quiche native cache key
+        id: qkey
+        uses: ./.github/actions/quiche-native-key
+
       - name: Cache Cargo registry
         uses: actions/cache@v6
         with:
@@ -180,7 +188,7 @@ jobs:
             socket-quic-quiche/libs/quiche/macos-x64/lib
             socket-quic-quiche/libs/quiche/ios-arm64/lib
             socket-quic-quiche/libs/quiche/ios-simulator-arm64/lib
-          key: quiche-apple-v3-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/build.gradle.kts', 'socket-quic-quiche/src/jni/*.c', 'socket-quic-quiche/src/jni/*.h') }}
+          key: quiche-apple-v4-${{ steps.qkey.outputs.digest }}
 
       # Build every Apple quiche native lib. buildQuicheAppleStaticLibs makes the macOS dylib+.a (arm64)
       # + the two iOS static libs (vendored BoringSSL, build.rs patched for the arm64 iOS

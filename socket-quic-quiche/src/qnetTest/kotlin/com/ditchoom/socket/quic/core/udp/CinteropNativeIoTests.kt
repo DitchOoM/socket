@@ -45,19 +45,18 @@ class CinteropNativeIoTests {
         bind: PathKey,
         peer: SocketPeer,
     ): Pair<NativeIo, PathKey> {
-        val socket =
-            assertIs<NativeOpened.Opened>(
-                NativeSocket.open(
-                    CinteropNetShim,
-                    native(NativeSocket.SPEC_BYTES),
-                    bind,
-                    peer,
-                    1 shl 20,
-                    1 shl 20,
-                    UdpBatching.Newest,
-                    BATCH,
-                ),
-            ).socket
+        val opened =
+            NativeSocket.open(
+                CinteropNetShim,
+                native(NativeSocket.SPEC_BYTES),
+                bind,
+                peer,
+                1 shl 20,
+                1 shl 20,
+                UdpBatching.Newest,
+                BATCH,
+            )
+        val socket = assertIs<NativeOpened.Opened>(opened).socket
         val io =
             NativeIo(
                 CinteropNetShim,

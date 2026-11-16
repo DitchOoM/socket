@@ -256,17 +256,25 @@ jobs:
           path: libs/liburing/linux-arm64
           key: liburing-linux-arm64-v1-${{ hashFiles('gradle/libs.versions.toml') }}
 
+      # One digest of the inputs of a quiche native binary (the quiche pins, the native-input regions of
+      # socket-quic-quiche/build.gradle.kts, the JNI shim source, the header). The same action keys every
+      # writer and reader of these caches (see .github/scripts/quiche-native-inputs.sh), so a commit that
+      # touches none of those inputs reuses the natives instead of recompiling quiche.
+      - name: Compute quiche native cache key
+        id: qkey
+        uses: ./.github/actions/quiche-native-key
+
       - name: Cache quiche Linux x64
         uses: actions/cache@v6
         with:
           path: socket-quic-quiche/libs/quiche/linux-x64
-          key: quiche-linux-x64-v8-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/build.gradle.kts', 'socket-quic-quiche/src/jni/*.c', 'socket-quic-quiche/src/jni/*.h') }}
+          key: quiche-linux-x64-v9-${{ steps.qkey.outputs.digest }}
 
       - name: Cache quiche Linux ARM64
         uses: actions/cache@v6
         with:
           path: socket-quic-quiche/libs/quiche/linux-arm64
-          key: quiche-linux-arm64-v8-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/build.gradle.kts', 'socket-quic-quiche/src/jni/*.c', 'socket-quic-quiche/src/jni/*.h') }}
+          key: quiche-linux-arm64-v9-${{ steps.qkey.outputs.digest }}
 
       # Intermediate cargo target/ tree + cloned quiche source — the same entry
       # build-linux.yaml keeps so a quiche rebuild is incremental, not from zero.
@@ -274,8 +282,8 @@ jobs:
         uses: actions/cache@v6
         with:
           path: socket-quic-quiche/build/quiche
-          key: quiche-cargo-target-v3-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/build.gradle.kts', 'socket-quic-quiche/src/jni/*.c', 'socket-quic-quiche/src/jni/*.h') }}
-          restore-keys: quiche-cargo-target-v3-
+          key: quiche-cargo-target-v4-${{ steps.qkey.outputs.digest }}
+          restore-keys: quiche-cargo-target-v4-
 
       - name: Cache Cargo registry
         uses: actions/cache@v6
@@ -448,7 +456,7 @@ jobs:
   #
   #    Same job as `cache-warm` above, for the five Apple targets — and the
   #    reason it exists is measured, not theoretical. This workflow warmed only
-  #    the Linux triples, so `refs/heads/main` carried NO `quiche-apple-v3-*`
+  #    the Linux triples, so `refs/heads/main` carried NO `quiche-apple-v4-*`
   #    entry at all. GitHub scopes cache writes to the ref that made them: a PR
   #    can read its base branch's caches, but one PR cannot read another's. With
   #    main cold, EVERY Apple PR run paid a full from-source cargo + BoringSSL
@@ -529,6 +537,14 @@ jobs:
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin,aarch64-apple-ios,aarch64-apple-ios-sim
 
+      # One digest of the inputs of a quiche native binary (the quiche pins, the native-input regions of
+      # socket-quic-quiche/build.gradle.kts, the JNI shim source, the header). The same action keys every
+      # writer and reader of these caches (see .github/scripts/quiche-native-inputs.sh), so a commit that
+      # touches none of those inputs reuses the natives instead of recompiling quiche.
+      - name: Compute quiche native cache key
+        id: qkey
+        uses: ./.github/actions/quiche-native-key
+
       - name: Cache Cargo registry
         uses: actions/cache@v6
         with:
@@ -547,7 +563,7 @@ jobs:
             socket-quic-quiche/libs/quiche/ios-arm64/lib
             socket-quic-quiche/libs/quiche/ios-simulator-arm64/lib
             socket-quic-quiche/libs/quiche/ios-x64/lib
-          key: quiche-apple-v3-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/build.gradle.kts', 'socket-quic-quiche/src/jni/*.c', 'socket-quic-quiche/src/jni/*.h') }}
+          key: quiche-apple-v4-${{ steps.qkey.outputs.digest }}
 
       # continue-on-error, like the Linux warm steps: this job is best-effort priming, never a
       # freshness gate. A partial warm still gets SAVED at post-job, and any entry that already hit
@@ -647,8 +663,8 @@ jobs:
         run: |
           set -euo pipefail
           families="gradle-linux gradle-macos-kn gradle-macos gradle-wrapper-linux gradle-wrapper-macos
-            quiche-cargo-target-v3 konan-linux konan-macos cargo-Linux cargo-macOS
-            quiche-linux-x64-v8 quiche-linux-arm64-v8 quiche-apple-v3 npm-docs-Linux npm-docs-macOS"
+            quiche-cargo-target-v4 konan-linux konan-macos cargo-Linux cargo-macOS
+            quiche-linux-x64-v9 quiche-linux-arm64-v9 quiche-apple-v4 npm-docs-Linux npm-docs-macOS"
           entries=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/caches?per_page=100&ref=refs/heads/main" \
             --jq '.actions_caches[] | [.id, .key, .created_at, .size_in_bytes] | @tsv')
           freed=0
