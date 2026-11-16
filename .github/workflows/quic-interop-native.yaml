@@ -61,12 +61,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       # Setup that needs no artifact of this run goes before the wait, so it overlaps the natives build.
-      - uses: actions/setup-go@v6
-        with:
-          go-version: stable
-          cache: false
-      - name: Build quic-go's interop endpoints
-        run: .github/scripts/build-quic-go-interop.sh "$RUNNER_TEMP/peers"
+      - name: quic-go's interop endpoints
+        uses: ./.github/actions/quic-go-endpoints
       - uses: ./.github/actions/await-artifact
         if: ${{ inputs.await-natives }}
         with:
@@ -120,12 +116,8 @@ jobs:
           xcrun simctl boot "$UDID" || true # already booted is fine
           echo "IOS_SIMULATOR_BOOTED_UDID=$UDID" >> "$GITHUB_ENV"
       # Setup that needs no artifact of this run goes before the wait, so it overlaps the natives build.
-      - uses: actions/setup-go@v6
-        with:
-          go-version: stable
-          cache: false
-      - name: Build quic-go's interop endpoints
-        run: .github/scripts/build-quic-go-interop.sh "$RUNNER_TEMP/peers"
+      - name: quic-go's interop endpoints
+        uses: ./.github/actions/quic-go-endpoints
       - uses: ./.github/actions/await-artifact
         if: ${{ inputs.await-natives }}
         with:
@@ -181,12 +173,8 @@ jobs:
           distribution: 'zulu'
           java-version: '21'
       # Setup that needs no artifact of this run goes before the wait, so it overlaps the natives build.
-      - uses: actions/setup-go@v6
-        with:
-          go-version: stable
-          cache: false
-      - name: Build quic-go's interop endpoints
-        run: .github/scripts/build-quic-go-interop.sh "$RUNNER_TEMP/peers"
+      - name: quic-go's interop endpoints
+        uses: ./.github/actions/quic-go-endpoints
       - uses: ./.github/actions/await-artifact
         if: ${{ inputs.await-natives }}
         with:
