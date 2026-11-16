@@ -5543,6 +5543,7 @@ val stageCoreAndroidTests =
                 "conn/CoreClientAgainstServerTests.kt",
                 "conn/NetworkWatchTests.kt",
                 "udp/SocketBuffersEchoTests.kt",
+                "udp/SocketReportReading.kt",
                 "demux/ServerTestSupport.kt",
                 "demux/ServerRig.kt",
                 "demux/DemuxTests.kt",
