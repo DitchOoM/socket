@@ -6,6 +6,7 @@ import com.ditchoom.buffer.flow.HalfCloseable
 import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.flow.writeFully
+import com.ditchoom.socket.quic.QuicCloseLinger
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicTlsConfig
@@ -21,6 +22,7 @@ import com.ditchoom.socket.quic.withQuicServer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
@@ -38,11 +40,18 @@ import kotlin.time.Duration.Companion.seconds
 class CoreClientAgainstServerTests {
     private val options = QuicOptions(alpnProtocols = listOf("test"), verifyPeer = false, idleTimeout = 10.seconds)
 
+    /**
+     * The server keeps each connection open after its handler returns until the client closes it. With the default
+     * linger it closed once its echo was acknowledged, racing the client's close: a host slow to call close() (the
+     * Windows JFR-ring lane) saw the server's close first, and ByPeer was the right answer to a test asking ByLocal.
+     */
+    private val serverOptions = options.copy(closeLinger = QuicCloseLinger.UntilPeerDone(10.seconds))
+
     @Test
     fun aCoreClientEchoesOneMebibyteByteExactAndClosesItsConnection() =
         runBlocking {
             skipOnMissingNativeLib(CoreClientAgainstServerTests::class) {
-                withQuicServer(port = 0, tlsConfig = tlsConfig(), quicOptions = options) {
+                withQuicServer(port = 0, tlsConfig = tlsConfig(), quicOptions = serverOptions) {
                     val server =
                         launch(Dispatchers.IO) {
                             connections {
@@ -124,6 +133,8 @@ class CoreClientAgainstServerTests {
             (stream as HalfCloseable).shutdownSend()
             reader.await()
         }
+        // A client slow to close, as on a loaded host: the server must still leave the close to it.
+        delay(SLOW_CLOSE)
         client.connection.close(QuicError.NoError)
         // quiche reports the connection closed once its draining period after our close has run out.
         assertIs<ConnEnd.ByLocal>((client.connection.end() as EdgeEnd.Ended).end, "the connection ended by our close")
@@ -134,5 +145,6 @@ class CoreClientAgainstServerTests {
 
     private companion object {
         const val PAYLOAD = 1 shl 20
+        val SLOW_CLOSE = 1.seconds
     }
 }
