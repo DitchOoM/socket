@@ -6,6 +6,7 @@ import com.ditchoom.socket.quic.ReplySource
 import com.ditchoom.socket.quic.SendTarget
 import com.ditchoom.socket.quic.UdpBatching
 import com.ditchoom.socket.quic.core.pool.FixedPool
+import com.ditchoom.socket.quic.core.testing.assumeNativeStack
 import com.ditchoom.socket.quic.loadNetShim
 import com.ditchoom.socket.quic.network
 import java.net.InetSocketAddress
@@ -20,7 +21,7 @@ import kotlin.test.assertIs
  * the rest unsent, which is what a send lane's [SendBatch.took] relies on.
  */
 class NativeIoTests {
-    private val shim = loadNetShim()
+    private val shim by lazy { loadNetShim() }
     private val owned = ArrayList<NativeBytes>()
     private val opened = ArrayList<NativeIo>()
 
@@ -107,6 +108,7 @@ class NativeIoTests {
         peer: SocketPeer,
         ceiling: UdpBatching,
     ): Opened {
+        assumeNativeStack()
         val socket =
             assertIs<NativeOpened.Opened>(
                 NativeSocket.open(

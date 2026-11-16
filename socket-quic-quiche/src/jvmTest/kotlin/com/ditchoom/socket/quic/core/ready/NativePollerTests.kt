@@ -5,6 +5,7 @@ import com.ditchoom.socket.quic.NetBinding
 import com.ditchoom.socket.quic.NextDue
 import com.ditchoom.socket.quic.SendTarget
 import com.ditchoom.socket.quic.UdpBatching
+import com.ditchoom.socket.quic.core.testing.assumeNativeStack
 import com.ditchoom.socket.quic.core.time.MonotonicClock
 import com.ditchoom.socket.quic.core.udp.Addressed
 import com.ditchoom.socket.quic.core.udp.BatchLimits
@@ -26,7 +27,7 @@ import kotlin.test.assertTrue
 
 /** The native poller against the kernel: it wakes when woken, times out no earlier than asked, and reports a socket. */
 class NativePollerTests {
-    private val shim = loadNetShim()
+    private val shim by lazy { loadNetShim() }
 
     @Test
     fun theBindingIsTheOneThisRuntimeLoadsQuicheThrough() {
@@ -97,7 +98,10 @@ class NativePollerTests {
         poller.close()
     }
 
-    private fun open(): NativePoller = assertIs<PollerOpened.Opened>(NativePoller.open(shim, MonotonicClock, 16)).poller
+    private fun open(): NativePoller {
+        assumeNativeStack()
+        return assertIs<PollerOpened.Opened>(NativePoller.open(shim, MonotonicClock, 16)).poller
+    }
 
     private fun socket(peer: SocketPeer): NativeSocket =
         assertIs<NativeOpened.Opened>(
