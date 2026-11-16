@@ -63,7 +63,15 @@ internal class Replayed(
     val serverSizes: List<Int>,
     /** When the client's handshake completed, if it did. */
     val established: List<Duration>,
+    /** The path marks of the client's flight recording, on the recording's own clock. */
+    val pathMarks: List<PathMarkAt>,
 ) {
+    /** How long the first move took from its socket moving to its migration, or nothing if it never migrated. */
+    fun moveToMigrated(): Duration? {
+        val moved = pathMarks.firstOrNull { it.phase == "Moved" } ?: return null
+        return pathMarks.firstOrNull { it.phase == "Migrated" && it.at >= moved.at }?.let { it.at - moved.at }
+    }
+
     /** The longest wait between two datagrams the client sent before its handshake completed. */
     fun longestHandshakeSilence(): Duration {
         val until = established.firstOrNull() ?: conditions.runFor
@@ -74,6 +82,12 @@ internal class Replayed(
         "${conditions.name}: $outcome, reopens=$reopens, moves=$moves, usable again ${conditions.usableAgain()}, " +
             "last echoes ${echoes.takeLast(LAST_ECHOES)}"
 }
+
+/** A path mark of the client's flight recording: its [phase] and when, on the recording's clock. */
+internal data class PathMarkAt(
+    val phase: String,
+    val at: Duration,
+)
 
 /** What a test expects of a replay. */
 internal sealed interface Expect {
