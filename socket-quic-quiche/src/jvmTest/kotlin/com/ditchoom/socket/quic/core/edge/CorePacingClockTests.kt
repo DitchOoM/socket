@@ -7,6 +7,7 @@ import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicheApi
+import com.ditchoom.socket.quic.QuicheConn
 import com.ditchoom.socket.quic.QuicheSendInfo
 import com.ditchoom.socket.quic.loadQuicheApi
 import com.ditchoom.socket.quic.skipOnMissingNativeLib
@@ -57,17 +58,34 @@ class CorePacingClockTests {
                 )
                 assertTrue(api.reads.get() > 1_000, "a transfer of ${TOTAL / 1_048_576} MiB writes more datagrams than that")
                 assertTrue(api.earliest.get() > -5_000_000_000L, "a due time is not in the far past: ${api.earliest.get()} ns")
-                assertTrue(api.latest.get() < 1_000_000_000L, "a due time is within a second of now: ${api.latest.get()} ns")
+                // A pacer schedules a flight at the pace of one round trip, so how far ahead a datagram may be due scales with the
+                // largest round trip the connection measured; a clock of another origin or unit is off by hours or by a thousand-fold.
+                val bound = 1_000_000_000L + 2 * api.largestRttNanos.get()
+                assertTrue(
+                    api.latest.get() < bound,
+                    "a due time is within a second plus two round trips of now: ${api.latest.get()} ns, largest round trip ${api.largestRttNanos.get()} ns",
+                )
             }
         }
 
-    /** Remembers the earliest and the latest due time seen, relative to the clock at the moment it was read. */
+    /** Remembers the earliest and the latest due time seen, relative to the clock at the moment it was read, and the largest round trip. */
     private class RecordingApi(
         private val real: QuicheApi,
     ) : QuicheApi by real {
         val reads = AtomicLong()
         val earliest = AtomicLong(Long.MAX_VALUE)
         val latest = AtomicLong(Long.MIN_VALUE)
+        val largestRttNanos = AtomicLong()
+
+        override fun connSend(
+            conn: QuicheConn,
+            buf: Long,
+            bufLen: Int,
+            sendInfo: QuicheSendInfo,
+        ): Int {
+            real.connPathStats(conn, 0)?.let { largestRttNanos.accumulateAndGet(it.rtt.inWholeNanoseconds, ::maxOf) }
+            return real.connSend(conn, buf, bufLen, sendInfo)
+        }
 
         override fun sendInfoAtNanos(info: QuicheSendInfo): Long {
             val due = real.sendInfoAtNanos(info)

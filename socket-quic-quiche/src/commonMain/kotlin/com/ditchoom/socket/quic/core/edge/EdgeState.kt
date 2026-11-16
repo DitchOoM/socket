@@ -61,8 +61,9 @@ internal class EdgeState(
     override fun ended(end: ConnEnd) {
         endCell.store(EdgeEnd.Ended(end))
         val reason = closeReasonOf(end)
-        incoming.close(endedWith(end, QuicCloseCircumstance.Ended))
+        // Published before any waiter is resumed: a caller woken by the close reads the state as already Closed.
         publish(QuicConnectionState.Closed(reason))
+        incoming.close(endedWith(end, QuicCloseCircumstance.Ended))
         closed.complete(reason)
     }
 
