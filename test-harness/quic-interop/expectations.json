@@ -146,11 +146,20 @@
       "handshake": "pass",
       "handshakecorruption": {
         "flaky": {
-          "why": "peer: kwik re-sends a lost response 10 s and then 21 s later; our client, nothing in flight, idles out first (run 43569919260)",
+          "why": "peer: kwik re-sends a lost response 10 s and then 21 s later; our client, nothing in flight, idles out first (run 43569919260); or it acknowledges our Initials for the whole 300 s time limit (2578 acknowledgements, answered by our probes) but never re-sends the lost ServerHello (run 43769452583)",
           "signature": {
-            "kind": "peer-silent-until-our-timeout",
-            "silence_s": 25,
-            "our_wait_s": 8
+            "kind": "any-of",
+            "signatures": [
+              {
+                "kind": "peer-silent-until-our-timeout",
+                "silence_s": 25,
+                "our_wait_s": 8
+              },
+              {
+                "kind": "peer-acked-initials-without-server-hello",
+                "min_acks": 1000
+              }
+            ]
           }
         }
       },
