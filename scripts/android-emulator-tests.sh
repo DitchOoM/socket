@@ -33,6 +33,24 @@ gh_escape() {
   printf '%s' "$s"
 }
 
+# One "  class.method: message" line per failed test in the result XML under $1.
+failed_test_names() {
+  local dir="$1" f
+  for f in "$dir"/TEST-*.xml; do
+    [ -f "$f" ] || continue
+    awk '
+      /<testcase / {
+        name = $0; sub(/.* name="/, "", name); sub(/".*/, "", name)
+        cls = $0; sub(/.* classname="/, "", cls); sub(/".*/, "", cls)
+      }
+      /<failure[ >]/ {
+        msg = $0
+        if (msg ~ /<failure message="/) { sub(/.*<failure message="/, "", msg); sub(/".*/, "", msg) } else { sub(/.*<failure>/, "", msg) }
+        printf "  %s.%s: %s\n", cls, name, substr(msg, 1, 200)
+      }' "$f"
+  done
+}
+
 adb root || true
 adb wait-for-device
 
@@ -417,7 +435,11 @@ if [ "$NETWORK_READY" = "1" ]; then
       outcome=$(module_outcome "$module" "$GRADLE_OUT_FILE" "$TEST_EXIT")
       case "$outcome" in
         PASSED*) ;;
-        FAILED*) TESTS_FAILED="${TESTS_FAILED}${module} (${outcome#FAILED } tests failed; report: ${module}/build/reports/androidTests/connected/debug/index.html)"$'\n' ;;
+        FAILED*)
+          TESTS_FAILED="${TESTS_FAILED}${module} (${outcome#FAILED } tests failed; report: ${module}/build/reports/androidTests/connected/debug/index.html)"$'\n'
+          # Name each failing test: the report is an artifact, the annotation is what a reader sees first.
+          TESTS_FAILED="${TESTS_FAILED}$(failed_test_names "${module}/build/outputs/androidTest-results/connected/debug")"
+          ;;
         NOT_STARTED) NOT_STARTED="${NOT_STARTED}${module}"$'\n' ;;
         RAN_NONE*) RAN_NOTHING="${RAN_NOTHING}${module} (tests=${outcome#RAN_NONE })"$'\n' ;;
       esac

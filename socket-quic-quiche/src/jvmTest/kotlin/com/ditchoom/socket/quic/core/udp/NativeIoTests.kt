@@ -122,9 +122,15 @@ class NativeIoTests {
             assertEquals(Receiving.PerDatagram, server.socket.receiving)
             return
         }
-        assertIs<GroSetup.Enabled>(server.socket.gro)
-        assertEquals(Receiving.Coalesced, server.socket.receiving)
-        assertEquals(Gro.On, assertIs<BatchCapability.Segmented>(server.io.capability).receive)
+        // UDP_GRO is Linux 5.0: an older kernel (Android 9 and 10 images run 4.x) refuses it and the socket says so.
+        val coalescing = server.socket.gro is GroSetup.Enabled
+        if (coalescing) {
+            assertEquals(Receiving.Coalesced, server.socket.receiving)
+            assertEquals(Gro.On, assertIs<BatchCapability.Segmented>(server.io.capability).receive)
+        } else {
+            assertIs<GroSetup.Refused>(server.socket.gro)
+            assertEquals(Receiving.PerDatagram, server.socket.receiving)
+        }
         // Two segmented groups of sixteen 1,200-byte datagrams each ending in a short one, then a lone datagram.
         val sizes = List(2) { List(16) { 1200 } + 500 }.flatten() + 1200
         val batch = sendBatch(GRO_SLOTS)
@@ -134,7 +140,7 @@ class NativeIoTests {
         assertEquals(sizes, got.map { it.first }, "lengths in order")
         assertEquals(List(sizes.size) { it }, got.map { it.second }, "each datagram's own bytes")
         assertEquals(client.local, got.first().third, "the source is the client")
-        assert(widestRead > 1) { "no read held more than one datagram: the kernel did not coalesce" }
+        if (coalescing) assert(widestRead > 1) { "no read held more than one datagram: the kernel did not coalesce" }
     }
 
     private fun roundTrip(
