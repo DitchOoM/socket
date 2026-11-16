@@ -6,6 +6,7 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.socket.quic.SocketRefusal
 import com.ditchoom.socket.quic.core.conn.FlightArena
 import com.ditchoom.socket.quic.core.conn.LoopMemory
+import com.ditchoom.socket.quic.core.observe.LoopCounts
 import com.ditchoom.socket.quic.core.observe.Published
 import com.ditchoom.socket.quic.core.pool.FixedPool
 import com.ditchoom.socket.quic.core.pool.MemoryHold
@@ -121,6 +122,15 @@ internal class LoopSet(
                 }
         }
     }
+
+    /** Any thread: what each started loop has done so far, for a test or a report to read. */
+    fun countsOfStarted(): List<LoopCounts> =
+        (0 until size).mapNotNull { i ->
+            when (val slot = slots.loadAt(i)) {
+                is Slot.Running -> slot.running.loop.counts
+                is Slot.Unstarted, is Slot.Closed -> null
+            }
+        }
 
     /** Any thread: stops every loop; their connections end, and the set places no more. */
     fun close() {
