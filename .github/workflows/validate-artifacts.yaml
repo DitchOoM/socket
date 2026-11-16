@@ -374,7 +374,7 @@ jobs:
           for target in macosarm64 \
             iosarm64 iossimulatorarm64 \
             tvosarm64 tvossimulatorarm64 \
-            watchosarm64 watchossimulatorarm64; do
+            watchosdevicearm64 watchossimulatorarm64; do
             KLIB="$MERGED/socket-${target}/${version}/socket-${target}-${version}.klib"
             if [ -f "$KLIB" ]; then
               echo "klib OK: $target"
