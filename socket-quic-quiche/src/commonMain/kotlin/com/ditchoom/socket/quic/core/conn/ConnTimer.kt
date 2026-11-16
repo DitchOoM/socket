@@ -1,7 +1,7 @@
 package com.ditchoom.socket.quic.core.conn
 
-import com.ditchoom.socket.quic.DeadlineNode
 import com.ditchoom.socket.quic.NO_TIMEOUT_NANOS
+import com.ditchoom.socket.quic.Rearmable
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.observe.Confined
 import com.ditchoom.socket.quic.core.sched.LoopPort
@@ -10,19 +10,20 @@ import com.ditchoom.socket.quic.core.time.WakeSink
 import com.ditchoom.socket.quic.core.time.WakeState
 import kotlinx.coroutines.Runnable
 
-private sealed interface Armed {
-    data object Not : Armed
+/** The connection's deadline: made by the first arming, with the action every arming runs, and re-armed in place after. */
+private sealed interface TimerDeadline {
+    data object Unmade : TimerDeadline
 
-    class At(
-        val node: DeadlineNode,
-    ) : Armed
+    class Made(
+        val deadline: Rearmable,
+    ) : TimerDeadline
 }
 
 /**
  * The one deadline of a connection: the earliest of quiche's timeout and every time the connection's owners offered
  * into [sink]. A deadline still armed for the same time or earlier is kept (it fires early, quiche ignores a timer
  * that has not expired, and the connection re-arms then), so a connection under traffic arms a new deadline only when
- * its time moved earlier.
+ * its time moved earlier. The deadline is one [Rearmable], so re-arming it allocates nothing.
  */
 @Confined
 internal class ConnTimer(
@@ -30,7 +31,7 @@ internal class ConnTimer(
     private val port: LoopPort,
     val sink: WakeSink,
 ) {
-    private var armed: Armed = Armed.Not
+    private var deadline: TimerDeadline = TimerDeadline.Unmade
 
     /** Re-arms after a turn at [now]; [fire] runs on the loop when the deadline falls due. */
     fun rearm(
@@ -46,12 +47,9 @@ internal class ConnTimer(
                 WakeState.Asked -> if (wait == NO_TIMEOUT_NANOS || offered.value < now.value + wait) offered else now + wait
                 WakeState.NotAsked -> if (wait == NO_TIMEOUT_NANOS) return else now + wait
             }
-        when (val a = armed) {
-            is Armed.At -> if (a.node.isArmed() && a.node.dueNanos <= due.value) return
-            is Armed.Not -> Unit
-        }
-        disarm()
-        armed = Armed.At(port.arm(due, fire))
+        val made = made(fire)
+        if (made.wanted().fold(none = { false }, at = { it <= due.value })) return
+        port.arm(made, due)
     }
 
     /** Arms for the earliest time offered into [sink] alone, or not at all: an ended connection drives no quiche timer. */
@@ -63,13 +61,17 @@ internal class ConnTimer(
             WakeState.NotAsked -> return disarm()
             WakeState.Asked -> Unit
         }
-        when (val a = armed) {
-            is Armed.At -> if (a.node.isArmed() && a.node.dueNanos == due.value) return
-            is Armed.Not -> Unit
-        }
-        disarm()
-        armed = Armed.At(port.arm(due, fire))
+        val made = made(fire)
+        if (made.wanted().fold(none = { false }, at = { it == due.value })) return
+        port.arm(made, due)
     }
+
+    /** The deadline, made on the first arming with [fire]: a connection's every arming passes the same action. */
+    private fun made(fire: Runnable): Rearmable =
+        when (val d = deadline) {
+            is TimerDeadline.Made -> d.deadline
+            is TimerDeadline.Unmade -> port.rearmable(fire).also { deadline = TimerDeadline.Made(it) }
+        }
 
     /** When quiche's draining ends, seen at [now]: its timer once it sent a close, or [now] when it has none. */
     fun drainEnds(now: Nanos): Nanos {
@@ -79,10 +81,6 @@ internal class ConnTimer(
 
     /** The deadline fell due: quiche's timeout runs. */
     fun expire() {
-        when (val a = armed) {
-            is Armed.At -> if (!a.node.isArmed()) armed = Armed.Not
-            is Armed.Not -> Unit
-        }
         q.api.connOnTimeout(q.handle)
     }
 
@@ -95,10 +93,9 @@ internal class ConnTimer(
     }
 
     fun disarm() {
-        when (val a = armed) {
-            is Armed.At -> a.node.disarm()
-            is Armed.Not -> Unit
+        when (val d = deadline) {
+            is TimerDeadline.Made -> d.deadline.disarm()
+            is TimerDeadline.Unmade -> Unit
         }
-        armed = Armed.Not
     }
 }

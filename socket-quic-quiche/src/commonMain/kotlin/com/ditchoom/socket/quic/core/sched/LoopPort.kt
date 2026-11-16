@@ -5,6 +5,8 @@ package com.ditchoom.socket.quic.core.sched
 import com.ditchoom.socket.quic.DeadlineNode
 import com.ditchoom.socket.quic.DeadlineQueue
 import com.ditchoom.socket.quic.NextDue
+import com.ditchoom.socket.quic.Rearmable
+import com.ditchoom.socket.quic.Rearmables
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.observe.CallerCounts
 import com.ditchoom.socket.quic.core.observe.Queue
@@ -39,6 +41,7 @@ internal class LoopPort(
     private val callers: CallerCounts = CallerCounts(),
 ) {
     private val deadlines = DeadlineQueue()
+    private val rearmables = Rearmables()
     private val inbox = WorkInbox<LoopWork>()
     private val sleep = AtomicInt(AWAKE)
     private val poked = AtomicInt(NOT_POKED)
@@ -75,10 +78,27 @@ internal class LoopPort(
     /** Any thread. Arms [node], made by [node]. */
     fun arm(node: DeadlineNode) {
         deadlines.arm(node)
+        wakeFor(node.dueNanos)
+    }
+
+    /** Wakes a loop that sleeps past [dueNanos]. */
+    private fun wakeFor(dueNanos: Long) {
         when (sleep.load()) {
             ASLEEP_FOR_EVER -> wakeIfAsleep()
-            ASLEEP_UNTIL -> if (node.dueNanos < sleepsUntil.load()) wakeIfAsleep()
+            ASLEEP_UNTIL -> if (dueNanos < sleepsUntil.load()) wakeIfAsleep()
         }
+    }
+
+    /** Any thread. A deadline that runs [action] on the loop, made once and re-armed in place; not armed. */
+    fun rearmable(action: Runnable): Rearmable = rearmables.make(action)
+
+    /** Any thread. Arms [deadline] for [due], in place of what it was armed for; allocates nothing. */
+    fun arm(
+        deadline: Rearmable,
+        due: Nanos,
+    ) {
+        deadline.arm(due.value)
+        wakeFor(due.value)
     }
 
     /** Any thread. A node for [arm], not yet armed. */
@@ -88,13 +108,20 @@ internal class LoopPort(
     ): DeadlineNode = deadlines.node(due.value, action)
 
     /** Loop thread. */
-    fun fireDue(now: Nanos) = deadlines.fireDue(now.value)
+    fun fireDue(now: Nanos) {
+        deadlines.fireDue(now.value)
+        rearmables.fireDue(now.value)
+    }
 
     /** Loop thread. Runs every item submitted before this call, oldest first; returns how many. */
     fun runWork(): Int = inbox.drain(runner)
 
     /** Loop thread. When the loop next needs to run without input. */
-    fun nextDue(now: Nanos): NextDue = deadlines.nextDue(now.value)
+    fun nextDue(now: Nanos): NextDue {
+        val nodes = deadlines.nextDue(now.value)
+        val rearmed = rearmables.nextDue()
+        return nodes.fold(none = { rearmed }, due = { node -> rearmed.fold(none = { nodes }, due = { if (it < node) rearmed else nodes }) })
+    }
 
     /**
      * Loop thread. Publishes the time the loop sleeps until, then checks once more for work, deadlines and pokes that
@@ -109,7 +136,7 @@ internal class LoopPort(
             },
         )
         val news = poked.exchange(NOT_POKED) == POKED
-        return if (inbox.looksEmpty() && !deadlines.hasInbox() && !news) SleepPlan.Await else SleepPlan.Skip
+        return if (inbox.looksEmpty() && !deadlines.hasInbox() && !rearmables.hasInbox() && !news) SleepPlan.Await else SleepPlan.Skip
     }
 
     /** Loop thread, after the poller returned or the sleep was skipped. */
