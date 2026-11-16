@@ -203,6 +203,14 @@ internal class GuardedQuicheApi(
         return delegate.connSendAckEliciting(conn)
     }
 
+    override fun connSetHandshakePtoCeiling(
+        conn: QuicheConn,
+        ceiling: PtoCeiling,
+    ) {
+        guard.assertOnLoop(LoopSite.Quiche)
+        delegate.connSetHandshakePtoCeiling(conn, ceiling)
+    }
+
     override fun connProbeNow(conn: QuicheConn): Int {
         guard.assertOnLoop(LoopSite.Quiche)
         return delegate.connProbeNow(conn)

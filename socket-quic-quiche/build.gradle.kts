@@ -376,6 +376,9 @@ fun downloadQuicheSource(
     // Export quiche_conn_probe_now: a network that came back has the PTO's probes sent at once, past a congestion
     // window the outage's own probes filled (RFC 9002 §6.2.4). Idempotent, fails loudly on drift. See the KDoc.
     patchQuicheProbeNowFfi(sourceDir)
+    // Export quiche_config_set_initial_rtt and a ceiling on the handshake's PTO interval, so the handshake's
+    // retransmit gaps follow the caller's prior and growth rule. Idempotent, fails loudly on drift. See the KDoc.
+    patchQuicheHandshakePtoCeiling(sourceDir)
 
     // Name the patch set this tree now carries. The tree outlives the run (CI caches it with a
     // prefix fallback), so a reader that compiles it outside these tasks checks this stamp rather
@@ -1888,6 +1891,137 @@ fun patchQuicheProbeNowFfi(sourceDir: File) {
             """.trimMargin() + "\n",
     )
     logger.lifecycle("Patched quiche source: quiche_conn_probe_now FFI export")
+}
+
+/**
+ * Export `quiche_config_set_initial_rtt` and `quiche_conn_set_handshake_pto_ceiling`: the RTT quiche assumes before
+ * its first sample, and a ceiling on the PTO interval while the handshake is unconfirmed.
+ *
+ * `Config::set_initial_rtt` exists in Rust and has no C function. The ceiling is new: recovery takes the smaller of
+ * its own backed-off PTO and the ceiling in every packet number space while the handshake is unconfirmed (the
+ * `completed` flag of `HandshakeStatus`, which [patchQuichePtoWaitsForConfirmation] makes mean confirmed), so a
+ * handshake whose first RTT sample was inflated by the peer's handshake computation is not held to multi-second
+ * retransmit gaps. Setting it re-arms each path's loss-detection timer, so a ceiling set right after a PTO expiry
+ * bounds the wait that expiry armed. Zero across the C seam means no ceiling. The policy (the ceiling's sequence) is
+ * the caller's; quiche only applies it.
+ *
+ * Marker-guarded and loud in both directions: a re-run returns, a moved anchor throws, and an upstream that exports
+ * either function throws, telling you to delete this patch.
+ */
+fun patchQuicheHandshakePtoCeiling(sourceDir: File) {
+    val marker = "socket-handshake-pto-ceiling"
+    val src = sourceDir.resolve("quiche/src")
+    val ffiRs = src.resolve("ffi.rs")
+    if (!ffiRs.exists()) return
+    if (ffiRs.readText().contains(marker)) return
+    if (ffiRs.readText().contains("quiche_config_set_initial_rtt") || ffiRs.readText().contains("pto_ceiling")) {
+        throw GradleException(
+            "$marker: quiche's ffi.rs already exports quiche_config_set_initial_rtt or a PTO ceiling — upstream added " +
+                "it. DELETE patchQuicheHandshakePtoCeiling and its call site, and check the upstream signature against " +
+                "libs/quiche/include/quiche.h.",
+        )
+    }
+
+    fun replaceOnce(
+        file: File,
+        anchor: String,
+        replacement: String,
+    ) {
+        val text = file.readText()
+        if (text.split(anchor).size != 2) {
+            throw GradleException(
+                "$marker: `${anchor.trim().lines().first()}` not found exactly once in ${file.relativeTo(src)} — a " +
+                    "quiche bump moved it. Re-fit patchQuicheHandshakePtoCeiling and re-verify with " +
+                    "HandshakePtoCeilingQuicheTests.",
+            )
+        }
+        file.writeText(text.replace(anchor, replacement))
+    }
+
+    val timeoutDecl = "    fn on_loss_detection_timeout(\n"
+    replaceOnce(
+        src.resolve("recovery/mod.rs"),
+        timeoutDecl,
+        """
+        |    // $marker: bounds the PTO interval while the handshake is unconfirmed; re-arms the timer.
+        |    fn socket_set_pto_ceiling(
+        |        &mut self, ceiling: Option<Duration>, handshake_status: HandshakeStatus,
+        |        now: Instant,
+        |    );
+        |
+        |
+        """.trimMargin() + timeoutDecl,
+    )
+    val backoff = "        let mut duration = self.pto() * 2_u32.saturating_pow(self.pto_count);\n"
+    val clamp =
+        """
+        |        // $marker: never wait longer than the ceiling while the handshake is unconfirmed.
+        |        if !handshake_status.completed {
+        |            if let Some(ceiling) = self.socket_pto_ceiling {
+        |                duration = std::cmp::min(duration, ceiling);
+        |            }
+        |        }
+        |
+        """.trimMargin()
+    val setter =
+        """
+        |    // $marker
+        |    fn socket_set_pto_ceiling(
+        |        &mut self, ceiling: Option<Duration>, handshake_status: HandshakeStatus,
+        |        now: Instant,
+        |    ) {
+        |        self.socket_pto_ceiling = ceiling;
+        |        self.set_loss_detection_timer(handshake_status, now);
+        |    }
+        |
+        |
+        """.trimMargin()
+    for (impl in listOf("recovery/congestion/recovery.rs", "recovery/gcongestion/recovery.rs")) {
+        val file = src.resolve(impl)
+        replaceOnce(file, "    pto_count: u32,\n", "    pto_count: u32,\n\n    // $marker\n    socket_pto_ceiling: Option<Duration>,\n")
+        replaceOnce(file, "            pto_count: 0,\n", "            pto_count: 0,\n\n            socket_pto_ceiling: None,\n")
+        replaceOnce(file, backoff, backoff + "\n" + clamp)
+        replaceOnce(file, timeoutDecl, setter + timeoutDecl)
+    }
+    replaceOnce(
+        src.resolve("lib.rs"),
+        "    pub fn send_ack_eliciting(&mut self) -> Result<()> {\n",
+        """
+        |    /// $marker: a ceiling on the PTO interval of every path while the handshake is unconfirmed, or none.
+        |    pub fn socket_set_handshake_pto_ceiling(&mut self, ceiling: Option<Duration>) {
+        |        let handshake_status = self.handshake_status();
+        |        let now = crate::now();
+        |        for (_, p) in self.paths.iter_mut() {
+        |            p.recovery.socket_set_pto_ceiling(ceiling, handshake_status, now);
+        |        }
+        |    }
+        |
+        |    pub fn send_ack_eliciting(&mut self) -> Result<()> {
+        |
+        """.trimMargin(),
+    )
+    ffiRs.appendText(
+        "\n" +
+            """
+            |// $marker: the RTT assumed before the first sample, in nanoseconds.
+            |#[no_mangle]
+            |pub extern "C" fn quiche_config_set_initial_rtt(config: &mut Config, v: u64) {
+            |    config.set_initial_rtt(std::time::Duration::from_nanos(v));
+            |}
+            |
+            |// $marker: the longest PTO interval while the handshake is unconfirmed, in nanoseconds; 0 removes it.
+            |#[no_mangle]
+            |pub extern "C" fn quiche_conn_set_handshake_pto_ceiling(conn: &mut Connection, v: u64) {
+            |    let ceiling = if v == 0 {
+            |        None
+            |    } else {
+            |        Some(std::time::Duration::from_nanos(v))
+            |    };
+            |    conn.socket_set_handshake_pto_ceiling(ceiling);
+            |}
+            """.trimMargin() + "\n",
+    )
+    logger.lifecycle("Patched quiche source: quiche_config_set_initial_rtt and quiche_conn_set_handshake_pto_ceiling FFI exports")
 }
 
 /**
@@ -4505,8 +4639,9 @@ fun createBuildJvmJniShimTask(
         description = "Build quiche JNI shim for $os-$arch (JDK 17–20 fallback path)"
         dependsOn(buildShared)
         inputs.property("quicheVersion", quicheVersion)
-        val jniSourceFile = projectDir.resolve("src/jni/quiche_jni.c")
-        inputs.file(jniSourceFile)
+        // quiche_jni.c includes the native stack's sources (qnet*.c, qnet.h) from the same directory.
+        val jniSources = fileTree(projectDir.resolve("src/jni")) { exclude("test/**") }
+        inputs.files(jniSources)
         outputs.files(outputLib, markerFile)
         // The shim dynamically links the sibling self-contained libquiche.$libExt (built by the
         // shared task we dependsOn) rather than static-bundling libquiche.a — so quiche + BoringSSL
@@ -4519,7 +4654,7 @@ fun createBuildJvmJniShimTask(
         onlyIf {
             !markerFile.exists() ||
                 !outputLib.exists() ||
-                jniSourceFile.lastModified() > markerFile.lastModified() ||
+                jniSources.files.any { it.lastModified() > markerFile.lastModified() } ||
                 quicheShared.lastModified() > markerFile.lastModified()
         }
 
@@ -4661,6 +4796,33 @@ val jvmJniShimLinuxX64 =
     if (isLinux) createBuildJvmJniShimTask("linux", "x64", buildQuicheSharedLinuxX64!!) else null
 val jvmJniShimLinuxArm64 =
     if (isLinux) createBuildJvmJniShimTask("linux", "arm64", buildQuicheSharedLinuxArm64!!) else null
+
+// qnet's own red tests (src/jni/test/qnet_selftest.c), below every binding, on this host's kernel: every batching it
+// offers, a batch refused part way, segmented groups arriving as their datagrams, the poller. The JVM suites depend on
+// it, so each Linux and macOS lane proves its kernel's batching before any Kotlin runs on it.
+val qnetSelftest =
+    tasks.register("qnetSelftest") {
+        group = "verification"
+        description = "Compile and run qnet's C selftest on this host's kernel"
+        onlyIf { isMacOS || isLinux }
+        val jniDir = projectDir.resolve("src/jni")
+        val binary = layout.buildDirectory.file("qnet/qnet_selftest")
+        inputs.files(fileTree(jniDir))
+        outputs.file(binary)
+        doLast {
+            val out = binary.get().asFile
+            out.parentFile.mkdirs()
+
+            fun run(vararg command: String) {
+                val process = ProcessBuilder(*command).redirectErrorStream(true).start()
+                process.inputStream.bufferedReader().forEachLine { logger.lifecycle(it) }
+                if (process.waitFor() != 0) throw GradleException("qnet selftest failed: ${command.joinToString(" ")}")
+            }
+            run("cc", "-O1", "-Wall", "-o", out.absolutePath, jniDir.resolve("test/qnet_selftest.c").absolutePath)
+            run(out.absolutePath)
+        }
+    }
+tasks.matching { it.name == "jvmTest" }.configureEach { dependsOn(qnetSelftest) }
 
 // Every macOS native the JVM jar publishes — libquiche + JNI shim for BOTH arches, whatever the host.
 // The release injects build-apple's macos-*/lib dirs into the jar, so building only the host arch's
@@ -5193,7 +5355,8 @@ fun createBuildAndroidJniTask(abi: AndroidAbi): TaskProvider<Task>? {
         // the host JNI-shim task. Do NOT reintroduce a marker + onlyIf gate.
         inputs.property("quicheVersion", quicheVersion)
         inputs.property("quichePatchDigest", quichePatchDigest)
-        inputs.file("src/jni/quiche_jni.c")
+        // quiche_jni.c and the native stack's sources it includes (qnet*.c, qnet.h).
+        inputs.files(fileTree(projectDir.resolve("src/jni")) { exclude("test/**") })
         // Both natives are outputs: the thin JNI shim AND the self-contained cdylib it DT_NEEDEDs.
         outputs.files(outputLib, outputDir.resolve("libquiche.so"))
 
@@ -5353,12 +5516,15 @@ val stageCoreAndroidTests =
     tasks.register<Sync>("stageCoreAndroidTests") {
         group = "verification"
         description = "Copy the JVM-tool-free core test sources into the Android instrumented test source set"
-        // Re-admitted suites that need no JVM-only tool (suites still parked live in src/parkedCoreTest).
+        // Core suites that need no JVM-only tool.
         from("src/jvmTest/kotlin/com/ditchoom/socket/quic/core") {
             include(
                 "testing/ConnRig.kt",
                 "testing/EchoQuiche.kt",
                 "testing/NioEcho.kt",
+                "testing/SocketView.kt",
+                "udp/NativeIoTests.kt",
+                "ready/NativePollerTests.kt",
                 "edge/CoreTestSupport.kt",
                 "edge/CoreEdgeTests.kt",
                 "edge/CallerInPlaceTests.kt",
@@ -6261,6 +6427,22 @@ kotlin {
         }
     }
 
+    // The native stack (`qnet`, src/jni) on Kotlin/Native: the same C the JVM's libquiche_jni carries, compiled into a
+    // QNet cinterop klib, with its binding (src/qnetMain) on the targets that have a native stack: macOS and Linux.
+    // iOS does not: its client datagrams ride Network.framework, and it must not carry qnet's dlsym of sendmsg_x.
+    val configureQNet: org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget.() -> Unit = {
+        compilations["main"].cinterops {
+            create("QNet") {
+                defFile("src/nativeInterop/cinterop/QNet.def")
+                includeDirs("src/jni")
+                // The def includes qnet.c, which includes the rest: every source is an input of the klib.
+                tasks.named(interopProcessingTaskName) { inputs.files(fileTree("src/jni") { exclude("test/**") }) }
+            }
+        }
+        compilations["main"].defaultSourceSet.kotlin.srcDir("src/qnetMain/kotlin")
+        compilations["test"].defaultSourceSet.kotlin.srcDir("src/qnetTest/kotlin")
+    }
+
     if (linuxTargets) {
         // Embed libquiche.a into the Quiche cinterop klib so a downstream K/N consumer that links the
         // published klib gets the archive (Gap A's fix), exactly like the base :socket: module's
@@ -6308,6 +6490,7 @@ kotlin {
             }
         }
         linuxX64 {
+            configureQNet()
             val quicheLibDir = projectDir.resolve("libs/quiche/linux-x64/lib")
             val quicheStatic = quicheLibDir.resolve("libquiche.a")
             val generatedDef = projectDir.resolve("build/generated/cinterop/Quiche-linux-x64.def")
@@ -6380,6 +6563,7 @@ kotlin {
             }
         }
         linuxArm64 {
+            configureQNet()
             val quicheLibDir = projectDir.resolve("libs/quiche/linux-arm64/lib")
             val quicheStatic = quicheLibDir.resolve("libquiche.a")
             val generatedDef = projectDir.resolve("build/generated/cinterop/Quiche-linux-arm64.def")
@@ -6547,6 +6731,7 @@ kotlin {
         }
         macosArm64 {
             configureQuicheApple("macos-arm64")
+            configureQNet()
             // An optimized (-opt) test binary for profiling the native data path: a debug K/N binary is not
             // representative. scripts/native-perf/ records it. (-g cannot combine with -opt; the dSYM still symbolicates.)
             binaries { test(listOf(org.jetbrains.kotlin.gradle.plugin.mpp.NativeBuildType.RELEASE)) }

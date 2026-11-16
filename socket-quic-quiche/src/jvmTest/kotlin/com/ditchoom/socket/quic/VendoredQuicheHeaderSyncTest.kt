@@ -172,5 +172,7 @@ private val OURS =
         "quiche_conn_peer_cert_chain_at",
         "quiche_conn_is_handshake_confirmed",
         "quiche_conn_probe_now",
+        "quiche_config_set_initial_rtt",
+        "quiche_conn_set_handshake_pto_ceiling",
         "quiche_conn_recv_gaps",
     )

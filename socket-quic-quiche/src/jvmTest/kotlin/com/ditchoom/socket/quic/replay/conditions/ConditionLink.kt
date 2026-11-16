@@ -69,6 +69,9 @@ internal class ConditionLink(
     var reopens = 0
         private set
 
+    /** When the client sent each datagram, in nanoseconds from the script's start. */
+    val clientSends = ArrayList<Long>()
+
     val clientIo: DatagramBatchIo = End(Side.Client)
     val serverIo: DatagramBatchIo = End(Side.Server)
 
@@ -92,6 +95,7 @@ internal class ConditionLink(
         now: Long,
     ) {
         moved++
+        if (from == Side.Client) clientSends += now - origin
         if (from == Side.Client && clientSocketDead()) return
         val window = windowAt(now)
         val draw = random.nextInt(PER_MILLE)

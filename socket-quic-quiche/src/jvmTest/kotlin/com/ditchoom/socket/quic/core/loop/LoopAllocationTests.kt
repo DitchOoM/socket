@@ -1,7 +1,9 @@
 package com.ditchoom.socket.quic.core.loop
 
+import com.ditchoom.socket.quic.core.testing.NativeEcho
 import com.ditchoom.socket.quic.core.testing.NioEcho
 import com.ditchoom.socket.quic.core.testing.allocationSamples
+import com.ditchoom.socket.quic.core.testing.withDescriptorsAbove127
 import java.lang.management.ManagementFactory
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
@@ -16,7 +18,7 @@ import kotlin.test.assertTrue
  * counter after warm-up. The connection's quiche echoes from preallocated memory, so anything counted is the loop's,
  * the connection's and the socket implementation's own.
  *
- * The test first holds [HELD_DESCRIPTORS] descriptors, so its sockets sit above 127 as a server's do (design 9.3):
+ * The test first holds 160 descriptors, so its sockets sit above 127 as a server's do (design 9.3):
  * the JDK selector's `fdToKey.get(fd)` boxes every descriptor above 127, one `Integer` per ready key. A worker that
  * happened to have fewer open passed, one with more failed (Apple FFM: 16 B per echo). On the JDK stack the gate is
  * that boxing and nothing else: the native stack of design 9.1 takes its place and the gate returns to zero.
@@ -24,19 +26,40 @@ import kotlin.test.assertTrue
 class LoopAllocationTests {
     @Test
     fun theLoopAllocatesNothingPerEchoedDatagramButTheJdkSelectorsBoxing() {
-        val held = List(HELD_DESCRIPTORS) { DatagramChannel.open() }
-        try {
-            measure()
-        } finally {
-            held.forEach { it.close() }
-        }
+        withDescriptorsAbove127 { measure(Stack.Jdk) }
     }
 
-    private fun measure() {
-        val server = DatagramChannel.open().bind(InetSocketAddress("127.0.0.1", 0))
-        server.configureBlocking(false)
-        val client = DatagramChannel.open().connect(server.localAddress)
-        val echo = NioEcho(server, client.localAddress as InetSocketAddress, "core-loop-alloc")
+    @Test
+    fun onTheNativeStackTheLoopAllocatesNothingPerEchoedDatagram() {
+        withDescriptorsAbove127 { measure(Stack.Native) }
+    }
+
+    private enum class Stack { Jdk, Native }
+
+    private class Running(
+        val loop: Loop,
+        val thread: Thread,
+    )
+
+    private fun measure(stack: Stack) {
+        val client = DatagramChannel.open()
+        val echo =
+            when (stack) {
+                Stack.Jdk -> {
+                    val server = DatagramChannel.open().bind(InetSocketAddress("127.0.0.1", 0))
+                    server.configureBlocking(false)
+                    client.connect(server.localAddress)
+                    val nio = NioEcho(server, client.localAddress as InetSocketAddress, "core-loop-alloc")
+                    Running(nio.loop, nio.thread)
+                }
+                Stack.Native -> {
+                    val native = NativeEcho("core-loop-alloc")
+                    assertTrue(native.descriptor > 127, "the echo socket's descriptor ${native.descriptor} sits above 127")
+                    client.connect(native.address)
+                    native.start(client.localAddress as InetSocketAddress)
+                    Running(native.loop, native.thread)
+                }
+            }
         val threads = ManagementFactory.getThreadMXBean() as com.sun.management.ThreadMXBean
         val out = ByteBuffer.allocateDirect(1200)
         val back = ByteBuffer.allocateDirect(1500)
@@ -85,12 +108,21 @@ class LoopAllocationTests {
         closed.get(5, TimeUnit.SECONDS)
         client.close()
         println(
-            "[core-loop] loop thread allocates %.1f bytes per echo, %.2f selector wakes; round trip %.1f µs".format(
+            "[core-loop] %s stack: loop thread allocates %.1f bytes per echo, %.2f wakes; round trip %.1f µs".format(
+                stack,
                 perEcho,
                 wakesPerEcho,
                 nanos / 1_000.0 / MEASURED,
             ),
         )
+        when (stack) {
+            Stack.Native -> {
+                assertTrue(sites.isEmpty(), "the loop thread allocated on the native stack:\n%s".format(whereFrom))
+                assertTrue(perEcho < 1.0, "the loop thread allocated %.1f bytes per echoed datagram:\n%s".format(perEcho, whereFrom))
+                return
+            }
+            Stack.Jdk -> Unit
+        }
         val notTheSelectorsBoxing = sites.keys.filterNot { it.startsWith(BOXED_KEY) && it.contains(SELECTOR_FRAME) }
         assertTrue(
             notTheSelectorsBoxing.isEmpty(),
@@ -104,8 +136,6 @@ class LoopAllocationTests {
     }
 
     private companion object {
-        /** Descriptors held open first, so the test's own sit above the JDK's `Integer` cache (-128..127). */
-        const val HELD_DESCRIPTORS = 160
         const val BOXED_INTEGER_BYTES = 16
         const val BOXED_KEY = "java.lang.Integer @ Integer.valueOf"
         const val SELECTOR_FRAME = "SelectorImpl.process"

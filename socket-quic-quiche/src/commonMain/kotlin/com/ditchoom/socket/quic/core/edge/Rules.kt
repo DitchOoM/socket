@@ -1,0 +1,61 @@
+package com.ditchoom.socket.quic.core.edge
+
+import com.ditchoom.socket.quic.HandshakePacing
+import com.ditchoom.socket.quic.HandshakePolicy
+import com.ditchoom.socket.quic.LinkClass
+import com.ditchoom.socket.quic.QuicOptions
+import com.ditchoom.socket.quic.RttPrior
+import com.ditchoom.socket.quic.core.conn.HandshakeBound
+import com.ditchoom.socket.quic.core.conn.HandshakeRule
+import com.ditchoom.socket.quic.core.conn.PtoRule
+import com.ditchoom.socket.transport.NetworkId
+import com.ditchoom.socket.transport.NetworkKind
+
+/** The handshake rule of a client whose default network's first hop is [observed]. */
+internal fun clientHandshakeRule(
+    options: QuicOptions,
+    observed: LinkClass,
+): HandshakeRule = handshakeRule(options, observed, HandshakeRule.priorOf(observed))
+
+/** The handshake rule of a server: it cannot know a client's link, so its prior is RFC 9002's unless one is known. */
+internal fun serverHandshakeRule(options: QuicOptions): HandshakeRule =
+    handshakeRule(options, LinkClass.Unknown, HandshakeRule.RFC9002_PRIOR_NANOS)
+
+/** The link class of a network the monitor identified; a VPN, another kind or no identity is [LinkClass.Unknown]. */
+internal fun linkClassOf(id: NetworkId): LinkClass =
+    when (id) {
+        is NetworkId.Unidentified -> LinkClass.Unknown
+        is NetworkId.KindOnly -> linkClassOf(id.kind)
+        is NetworkId.Link -> linkClassOf(id.kind)
+    }
+
+private fun linkClassOf(kind: NetworkKind): LinkClass =
+    when (kind) {
+        is NetworkKind.Ethernet -> LinkClass.Ethernet
+        is NetworkKind.Wifi -> LinkClass.Wifi
+        is NetworkKind.Cellular -> LinkClass.Cellular
+        is NetworkKind.Vpn, is NetworkKind.Other -> LinkClass.Unknown
+    }
+
+private fun handshakeRule(
+    options: QuicOptions,
+    observed: LinkClass,
+    observedPriorNanos: Long,
+): HandshakeRule {
+    val bound =
+        when (val policy = options.handshakePolicy) {
+            is HandshakePolicy.Bounded -> HandshakeBound.Bounded(policy.bound.inWholeNanoseconds)
+            is HandshakePolicy.UntilClosed -> HandshakeBound.UntilClosed
+        }
+    return when (val pacing = options.handshakePacing) {
+        is HandshakePacing.Rfc9002 -> HandshakeRule(PtoRule.Rfc9002, bound, observed)
+        is HandshakePacing.Adaptive -> {
+            val floor = pacing.floor.inWholeNanoseconds
+            when (val prior = pacing.prior) {
+                is RttPrior.FromLink -> HandshakeRule.adaptive(observedPriorNanos, floor, bound, observed)
+                is RttPrior.OfLink -> HandshakeRule.adaptive(HandshakeRule.priorOf(prior.link), floor, bound, prior.link)
+                is RttPrior.Known -> HandshakeRule.adaptive(prior.rtt.inWholeNanoseconds, floor, bound, observed)
+            }
+        }
+    }
+}

@@ -162,6 +162,11 @@ internal class CallerClockQuicheApi(
 
     override fun connProbeNow(conn: QuicheConn): Int = synced { delegate.connProbeNow(conn) }
 
+    override fun connSetHandshakePtoCeiling(
+        conn: QuicheConn,
+        ceiling: PtoCeiling,
+    ) = synced { delegate.connSetHandshakePtoCeiling(conn, ceiling) }
+
     override fun connClose(
         conn: QuicheConn,
         error: QuicError,

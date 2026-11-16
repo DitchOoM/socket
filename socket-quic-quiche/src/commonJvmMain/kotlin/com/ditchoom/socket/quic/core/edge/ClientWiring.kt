@@ -1,0 +1,39 @@
+package com.ditchoom.socket.quic.core.edge
+
+import com.ditchoom.buffer.flow.ReadPolicy
+import com.ditchoom.buffer.flow.WritePolicy
+import com.ditchoom.socket.quic.QuicOptions
+import com.ditchoom.socket.quic.QuicheApi
+import com.ditchoom.socket.quic.QuicheConfig
+import com.ditchoom.socket.quic.QuicheConn
+import com.ditchoom.socket.quic.core.conn.FlightSize
+import com.ditchoom.socket.quic.core.conn.HandshakeRule
+import com.ditchoom.socket.quic.core.loop.Readiness
+import com.ditchoom.socket.quic.core.loop.RunningLoop
+import com.ditchoom.socket.quic.core.time.LoopClock
+import com.ditchoom.socket.quic.core.time.MonotonicClock
+import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
+import kotlinx.coroutines.CoroutineScope
+import java.net.InetSocketAddress
+
+/** The quiche handle a connect made, kept with what it needs to be built on the loop. */
+internal class ClientWiring(
+    val api: QuicheApi,
+    val handle: QuicheConn,
+    val config: QuicheConfig,
+    val options: QuicOptions,
+    val memory: EdgeMemory,
+    val running: RunningLoop,
+    val socket: StackSocket,
+    val wrapIo: (DatagramBatchIo) -> DatagramBatchIo,
+    val peer: InetSocketAddress,
+    val readPolicy: ReadPolicy,
+    val writePolicy: WritePolicy,
+    val scope: CoroutineScope,
+    val flight: FlightSize,
+    val handshake: HandshakeRule,
+    /** What the connection reads the time from: the loop's own clock. */
+    val clock: LoopClock = MonotonicClock,
+    /** When the loop reads the socket: polled on a loop thread, every pass on a loop a test drives on virtual time. */
+    val readiness: Readiness = Readiness.Polled,
+)

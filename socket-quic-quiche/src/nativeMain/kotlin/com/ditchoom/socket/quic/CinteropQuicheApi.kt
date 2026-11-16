@@ -24,6 +24,7 @@ import com.ditchoom.socket.quic.quiche.quiche_config_set_cc_algorithm
 import com.ditchoom.socket.quic.quiche.quiche_config_set_disable_active_migration
 import com.ditchoom.socket.quic.quiche.quiche_config_set_initial_congestion_window_packets
 import com.ditchoom.socket.quic.quiche.quiche_config_set_initial_max_data
+import com.ditchoom.socket.quic.quiche.quiche_config_set_initial_rtt
 import com.ditchoom.socket.quic.quiche.quiche_config_set_initial_max_stream_data_bidi_local
 import com.ditchoom.socket.quic.quiche.quiche_config_set_initial_max_stream_data_bidi_remote
 import com.ditchoom.socket.quic.quiche.quiche_config_set_initial_max_stream_data_uni
@@ -68,6 +69,7 @@ import com.ditchoom.socket.quic.quiche.quiche_conn_peer_streams_left_uni
 import com.ditchoom.socket.quic.quiche.quiche_conn_peer_transport_params
 import com.ditchoom.socket.quic.quiche.quiche_conn_probe_now
 import com.ditchoom.socket.quic.quiche.quiche_conn_probe_path
+import com.ditchoom.socket.quic.quiche.quiche_conn_set_handshake_pto_ceiling
 import com.ditchoom.socket.quic.quiche.quiche_conn_readable
 import com.ditchoom.socket.quic.quiche.quiche_conn_recv
 import com.ditchoom.socket.quic.quiche.quiche_conn_recv_gaps
@@ -763,6 +765,16 @@ internal object CinteropQuicheApi : QuicheApi, QuicheRandomPin {
     override fun connSendAckEliciting(conn: QuicheConn): Int = quiche_conn_send_ack_eliciting(conn.handle.toCPointer()!!).toInt()
 
     override fun connProbeNow(conn: QuicheConn): Int = quiche_conn_probe_now(conn.handle.toCPointer()!!).toInt()
+
+    override fun configSetInitialRtt(
+        config: QuicheConfig,
+        nanos: Long,
+    ) = quiche_config_set_initial_rtt(config.handle.toCPointer()!!, nanos.convert())
+
+    override fun connSetHandshakePtoCeiling(
+        conn: QuicheConn,
+        ceiling: PtoCeiling,
+    ) = quiche_conn_set_handshake_pto_ceiling(conn.handle.toCPointer()!!, ptoCeilingNanos(ceiling).convert())
 
     override fun connClose(
         conn: QuicheConn,

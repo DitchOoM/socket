@@ -6,13 +6,14 @@ import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.use
 import com.ditchoom.socket.quic.CommonJvmQuicConfigCalls
 import com.ditchoom.socket.quic.EncodedSockAddr
+import com.ditchoom.socket.quic.NativeSocketRefusal
 import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicRole
 import com.ditchoom.socket.quic.QuicTlsConfig
 import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.QuicheConfig
-import com.ditchoom.socket.quic.RouteProbeFailure
+import com.ditchoom.socket.quic.UdpBatching
 import com.ditchoom.socket.quic.applyQuicOptions
 import com.ditchoom.socket.quic.applySessionTicketKeys
 import com.ditchoom.socket.quic.connectionIdRandom
@@ -32,16 +33,20 @@ import com.ditchoom.socket.quic.core.demux.Tokens
 import com.ditchoom.socket.quic.core.loop.Endpoint
 import com.ditchoom.socket.quic.core.loop.Loop
 import com.ditchoom.socket.quic.core.loop.LoopIds
+import com.ditchoom.socket.quic.core.loop.LoopIo
 import com.ditchoom.socket.quic.core.loop.Readiness
 import com.ditchoom.socket.quic.core.loop.Route
 import com.ditchoom.socket.quic.core.loop.SocketDiedNotice
 import com.ditchoom.socket.quic.core.loop.startLoopThread
+import com.ditchoom.socket.quic.core.loop.waitsOf
 import com.ditchoom.socket.quic.core.observe.ServerCounts
 import com.ditchoom.socket.quic.core.pool.FixedPool
 import com.ditchoom.socket.quic.core.pool.MemoryHold
+import com.ditchoom.socket.quic.core.ready.NativePoller
+import com.ditchoom.socket.quic.core.ready.NetStack
+import com.ditchoom.socket.quic.core.ready.Poller
+import com.ditchoom.socket.quic.core.ready.PollerOpened
 import com.ditchoom.socket.quic.core.ready.SelectorPoller
-import com.ditchoom.socket.quic.core.ready.SocketRef
-import com.ditchoom.socket.quic.core.ready.jdkStackOfThisRuntime
 import com.ditchoom.socket.quic.core.sched.CallerLanes
 import com.ditchoom.socket.quic.core.sched.CallerSend
 import com.ditchoom.socket.quic.core.sched.Entrant
@@ -49,11 +54,12 @@ import com.ditchoom.socket.quic.core.sched.SendPort
 import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.udp.BatchLimits
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
-import com.ditchoom.socket.quic.core.udp.NioOneByOne
+import com.ditchoom.socket.quic.core.udp.NativeIo
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.ReceiveBuffer
 import com.ditchoom.socket.quic.core.udp.SendBatch
 import com.ditchoom.socket.quic.core.udp.SocketBuffers
+import com.ditchoom.socket.quic.core.udp.SocketPeer
 import com.ditchoom.socket.quic.core.udp.SocketReport
 import com.ditchoom.socket.quic.core.udp.toPathKey
 import com.ditchoom.socket.quic.encodeAlpnList
@@ -63,7 +69,6 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.channels.Channel
 import java.net.InetSocketAddress
-import java.nio.channels.DatagramChannel
 
 /** Everything [coreServe] builds, in order: memory first (so a factory without native memory fails before any socket), then the socket and the loop. */
 internal class ServerSetup(
@@ -80,6 +85,8 @@ internal class ServerSetup(
     private val clock: LoopClock,
     private val driver: LoopDriver,
     private val memory: EdgeMemory,
+    private val stack: NetStack,
+    private val batching: UdpBatching,
 ) {
     fun start(): CoreServer {
         val limits = BatchLimits(maxDatagrams = MAX_BATCH, maxDatagramSize = MAX_DATAGRAM)
@@ -98,24 +105,50 @@ internal class ServerSetup(
                 memory.native(DemuxScratch.TOKEN_CAPACITY),
                 memory.native(SCID_BYTES),
             )
-        val sendViews = listOf(memory.jdk(send.storage)) + List(CALLER_LANES) { memory.jdk(lanes[it].batch.storage) }
-        val receiveViews = receiveBuffers.map { memory.jdk(it.bytes) }
+        val loopIo =
+            when (stack) {
+                is NetStack.Jdk -> LoopIo.Jdk(receiveBuffers.map { memory.jdk(it.bytes) })
+                is NetStack.Native -> LoopIo.Native(stack.shim, memory.native(NativeIo.RECV_RECORD * NativeIo.MAX_RECEIVE))
+            }
+        val poller =
+            when (stack) {
+                is NetStack.Jdk -> SelectorPoller(clock, stack.scan)
+                is NetStack.Native ->
+                    when (val opened = NativePoller.open(stack.shim, clock, READY_EVENTS)) {
+                        is PollerOpened.Opened -> opened.poller
+                        is PollerOpened.Refused ->
+                            raise(Raised.SocketRefused(NativeSocketRefusal(opened.refusal)), QuicCloseCircumstance.HandshakeFailed)
+                    }
+            }
         val quicheConfig = configured()
-        val channel = DatagramChannel.open()
         var bound = false
         try {
-            return serve(channel, quicheConfig, limits, send, lanes, receiveBuffers, backlog, scratch, sendViews, receiveViews)
-                .also { bound = true }
+            val socket = openStackSocket(loopIo, memory, bind, SocketPeer.Unconnected, buffers, batching, limits.maxDatagrams)
+            val sends = listOf(send.storage) + List(CALLER_LANES) { lanes[it].batch.storage }
+            return serve(
+                socket,
+                socket.ioOf(memory, sends, limits.maxDatagrams, MAX_PEERS_CACHED),
+                poller,
+                quicheConfig,
+                limits,
+                send,
+                lanes,
+                receiveBuffers,
+                backlog,
+                scratch,
+            ).also { bound = true }
         } finally {
             if (!bound) {
-                channel.close()
+                poller.close()
                 api.configFree(quicheConfig)
             }
         }
     }
 
     private fun serve(
-        channel: DatagramChannel,
+        socket: StackSocket,
+        socketIo: SocketIo,
+        poller: Poller,
         quicheConfig: QuicheConfig,
         limits: BatchLimits,
         send: SendBatch,
@@ -123,17 +156,9 @@ internal class ServerSetup(
         receiveBuffers: List<ReceiveBuffer>,
         backlog: InitialBacklog,
         scratch: DemuxScratch,
-        sendViews: List<com.ditchoom.socket.quic.core.udp.JdkBytes>,
-        receiveViews: List<com.ditchoom.socket.quic.core.udp.JdkBytes>,
     ): CoreServer {
-        val granted = buffers.applyTo(channel)
-        val stack = jdkStackOfThisRuntime()
-        channel.bind(bind)
-        channel.configureBlocking(false)
-        val boundAddress = channel.localAddress
-        if (boundAddress !is InetSocketAddress) {
-            raise(Raised.RouteUnresolved(RouteProbeFailure.SourceAddressUnknown), QuicCloseCircumstance.HandshakeFailed)
-        }
+        val boundAddress = socket.bound().local
+        val granted = socket.bound().granted
         val nativeLocal = boundAddress.toNativeSockAddr(factory)
         val local = EncodedSockAddr(nativeLocal.buffer, nativeLocal.address, nativeLocal.length)
         val localKey = boundAddress.toPathKey()
@@ -155,23 +180,23 @@ internal class ServerSetup(
                     memory.freeAll()
                 },
             )
-        val io = wrapIo(NioOneByOne(channel, sendViews, receiveViews, MAX_PEERS_CACHED))
+        val io = wrapIo(socketIo.io)
         val loop =
             Loop(
                 id = LoopIds.next(),
                 name = SERVER_THREAD,
-                poller = SelectorPoller(clock, stack.scan),
+                poller = poller,
                 clock = clock,
                 receive = ReceiveBatch(FixedPool(limits.maxDatagrams) { receiveBuffers[it] }, limits),
                 freeOnStop = Runnable { hold.release() },
             )
-        val socket = SendPort(io, loop.port, CallerLanes.Of(lanes), SocketDiedNotice(), loop.counts, loop.callerCounts)
+        val sendPort = SendPort(io, loop.port, CallerLanes.Of(lanes), SocketDiedNotice(), loop.counts, loop.callerCounts)
         val counts = ServerCounts()
         val accepted = Channel<CoreConnection>(Channel.UNLIMITED)
         val edge = ServerEdge(options, factory, readPolicy, writePolicy, accepted)
         val parts =
             ServerParts(
-                SlotRules.forWaits(stack.waits),
+                SlotRules.forWaits(waitsOf(stack), handshake),
                 factory,
                 config.flight,
                 LoopMemory(
@@ -179,7 +204,7 @@ internal class ServerSetup(
                     FlightArena(memory.native(config.flightArenaBytes)),
                 ),
                 loop.port,
-                socket,
+                sendPort,
                 clock,
                 Entrant.loopTurn(loop.id, 1),
                 quicheConfig,
@@ -199,7 +224,7 @@ internal class ServerSetup(
                 LoopDriver.OwnThread -> Readiness.Polled
                 LoopDriver.Caller -> Readiness.EveryPass
             }
-        loop.place(Endpoint(SocketRef(channel), io, socket, send, Route.Demux(demux), Runnable { loop.close(finished) }, readiness))
+        loop.place(Endpoint(socketIo.ref, io, sendPort, send, Route.Demux(demux), Runnable { loop.close(finished) }, readiness))
         when (driver) {
             LoopDriver.OwnThread -> startLoopThread(loop, SERVER_THREAD)
             // The caller's first pass would place the socket only after that pass's receive: place it now.
@@ -208,13 +233,17 @@ internal class ServerSetup(
         return CoreServer(boundAddress.port, loop, demux, counts, accepted, SocketReport(granted, boundAddress.port), stopped)
     }
 
-    /** A server config with the certificate, ALPN, options and session ticket keys applied. */
+    /** The handshake rule every connection of this server is built with. */
+    private val handshake = serverHandshakeRule(options)
+
+    /** A server config with the certificate, ALPN, options, handshake rule and session ticket keys applied. */
     private fun configured(): QuicheConfig {
         val quicheConfig = api.configNew(QUIC_V1)
         writeNullTerminatedString(tls.certChainPath, factory).use { api.configLoadCertChainFromPemFile(quicheConfig, addressOf(it)) }
         writeNullTerminatedString(tls.privKeyPath, factory).use { api.configLoadPrivKeyFromPemFile(quicheConfig, addressOf(it)) }
         encodeAlpnList(options.alpnProtocols, factory).use { api.configSetApplicationProtos(quicheConfig, addressOf(it), it.remaining()) }
         applyQuicOptions(options, CommonJvmQuicConfigCalls(api, quicheConfig), QuicRole.Server)
+        handshake.applyTo(api, quicheConfig)
         api.applySessionTicketKeys(quicheConfig, tls.sessionTicketKeys, factory)
         return quicheConfig
     }
@@ -226,5 +255,8 @@ internal class ServerSetup(
         const val CALLER_BATCH = 16
         const val SCID_BYTES = 16
         const val MAX_PEERS_CACHED = 1 shl 16
+
+        /** The ready sockets one native wait reports. */
+        const val READY_EVENTS = 64
     }
 }

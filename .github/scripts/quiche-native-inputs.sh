@@ -10,7 +10,8 @@
 #     hit always carries a marker that matches.
 #   * EVERY file under the native source directories, found by glob, sorted by path, path included in the
 #     hash: socket-quic-quiche/src/jni (JNI / FFM shim C sources and headers),
-#     socket-quic-quiche/src/nativeInterop (cinterop .def files and headers) and
+#     socket-quic-quiche/src/nativeInterop (cinterop .def files incl. QNet.def, and headers),
+#     socket-quic-quiche/src/qnetMain (the qnet Kotlin/Native binding) and
 #     socket-quic-quiche/libs/quiche/include (the quiche C header the shims compile against). A new
 #     source file moves the key without anyone listing it here. Add a directory to NATIVE_DIRS when a
 #     native build starts reading from a new one.
@@ -36,7 +37,7 @@ for arg in "$@"; do
 done
 
 build=socket-quic-quiche/build.gradle.kts
-NATIVE_DIRS=(socket-quic-quiche/src/jni socket-quic-quiche/src/nativeInterop socket-quic-quiche/libs/quiche/include)
+NATIVE_DIRS=(socket-quic-quiche/src/jni socket-quic-quiche/src/nativeInterop socket-quic-quiche/src/qnetMain socket-quic-quiche/libs/quiche/include)
 for f in gradle/libs.versions.toml "$build" settings.gradle.kts; do
   [ -f "$f" ] || { echo "quiche-native-inputs: missing input $f" >&2; exit 1; }
 done

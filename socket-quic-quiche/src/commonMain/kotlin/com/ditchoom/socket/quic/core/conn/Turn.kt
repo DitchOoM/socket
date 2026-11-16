@@ -120,9 +120,14 @@ internal class Turn(
         length: Int,
     ): Copy = c.ingress.copy(bytes, length)
 
-    /** Inside: the connection's deadline fell due. */
+    /** Inside: the connection's deadline fell due. While unconfirmed, the handshake follows quiche's PTO expiries. */
     fun expire() {
-        if (c.life.view() is Life.Open) c.timer.expire()
+        if (c.life.view() !is Life.Open) return
+        c.timer.expire()
+        when (c.handshake.confirmation()) {
+            Confirmation.Pending -> c.handshake.expired(path.read())
+            Confirmation.Confirmed -> Unit
+        }
     }
 
     fun network(
@@ -166,13 +171,18 @@ internal class Turn(
         now: Nanos,
         out: SendBatch,
     ): Collected {
-        when (c.handshake.step()) {
+        when (c.handshake.step(now)) {
             HandshakeStep.Handshaking -> Unit
             HandshakeStep.JustEstablished -> {
-                c.sink.established(c.handshake.report(now))
+                c.sink.established(c.handshake.report(now, path.read()))
                 streams()
             }
             HandshakeStep.Established -> streams()
+            HandshakeStep.DeadlinePassed -> {
+                c.life.close(QuicError.NoError)
+                finish(now, ConnEnd.HandshakeTimedOut(c.handshake.progress(now, path.read())))
+                return last(now, out)
+            }
         }
         when (c.life.observe()) {
             LifeStep.Open -> Unit
@@ -205,6 +215,7 @@ internal class Turn(
             is Pacing.Unpaced -> Unit
             is Pacing.ByQuiche -> pacing.pacer.offerWake(c.timer.sink)
         }
+        c.handshake.offerWake(c.timer.sink)
         c.timer.rearm(now, fire)
     }
 

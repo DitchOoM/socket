@@ -3,12 +3,14 @@ package com.ditchoom.socket.quic.replay.conditions
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.flow.writeFully
+import com.ditchoom.socket.networkId
 import com.ditchoom.socket.quic.QuicConnectionState
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.ScopedRead
 import com.ditchoom.socket.quic.core.edge.CoreServer
 import com.ditchoom.socket.quic.core.edge.EdgeEnd
 import com.ditchoom.socket.quic.core.edge.feedNetwork
+import com.ditchoom.socket.quic.core.edge.linkClassOf
 import com.ditchoom.socket.quic.core.loop.Loop
 import com.ditchoom.socket.quic.core.testing.VirtualClock
 import com.ditchoom.socket.quic.core.time.Nanos
@@ -48,6 +50,9 @@ internal class ConditionReplay(
     private val sleep = Sleeper()
     private var steps = 0L
 
+    /** When the client saw its handshake complete, once. */
+    private val established = ArrayList<Long>(1)
+
     fun run(): Replayed =
         runBlocking {
             val api = loadQuicheApi()
@@ -67,9 +72,10 @@ internal class ConditionReplay(
         val link = ConditionLink(conditions, seed, clock)
         val server = replayServer(api, options, factory, link.serverIo, clock)
         link.server = InetSocketAddress(LOCALHOST, server.port).toPathKey()
-        val client = replayClient(api, options, factory, link.clientIo, clock, server.port, seed)
-        link.client = client.local
         val monitor = ScriptMonitor(conditions.start)
+        val client =
+            replayClient(api, options, factory, link.clientIo, clock, server.port, seed, linkClassOf(monitor.state.value.networkId))
+        link.client = client.local
         client.parts.start()
         client.scope.feedNetwork(
             monitor,
@@ -94,6 +100,7 @@ internal class ConditionReplay(
             }
             sleep.wake(now)
             clientApp = clientApp.next(now, client.connection.state.value, accepted) { launch { echo(client) } }
+            if (established.isEmpty() && client.connection.state.value is QuicConnectionState.Established) established += now
             val loopsDue = settle(now, link, server.loop, client.loop, monitor)
             when (val ended = client.connection.end()) {
                 is EdgeEnd.Ended -> {
@@ -114,7 +121,14 @@ internal class ConditionReplay(
         stop(client.loop)
         stop(server.loop)
         client.scope.cancel()
-        return Replayed(conditions, outcomeOf(conditions, echoes, finish), echoes.toList(), link.reopens)
+        return Replayed(
+            conditions,
+            outcomeOf(conditions, echoes, finish),
+            echoes.toList(),
+            link.reopens,
+            link.clientSends.map { it.nanoseconds },
+            established.map { (it - ORIGIN).nanoseconds },
+        )
     }
 
     private fun advanceTo(

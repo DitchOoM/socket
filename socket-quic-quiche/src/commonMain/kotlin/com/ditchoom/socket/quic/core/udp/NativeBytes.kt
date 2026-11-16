@@ -34,6 +34,15 @@ internal class NativeBytes private constructor(
     /** The eight bytes at [offset], in native order: a tag, never a number to compute with. */
     fun longAt(offset: Int): Long = UnsafeMemory.getLong(address + offset)
 
+    /** The four bytes at [offset], in native order: a C `int32_t` of a record the native stack shares with `qnet`. */
+    fun intAt(offset: Int): Int = UnsafeMemory.getInt(address + offset)
+
+    /** Writes [value] at [offset] in native order, as [intAt] reads it back. */
+    fun putInt(
+        offset: Int,
+        value: Int,
+    ) = UnsafeMemory.putInt(address + offset, value)
+
     /** Writes [value] at [offset] in native order: a native `size_t` or a tag, as [longAt] reads it back. */
     fun putLong(
         offset: Int,

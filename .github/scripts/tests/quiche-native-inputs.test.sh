@@ -24,7 +24,8 @@ fresh() { # a copy of the inputs under $work/tree
   cp "$repo/settings.gradle.kts" "$work/tree/"
   cp "$repo/socket-quic-quiche/build.gradle.kts" "$work/tree/socket-quic-quiche/"
   cp -R "$repo/socket-quic-quiche/src/jni/." "$work/tree/socket-quic-quiche/src/jni/"
-  mkdir -p "$work/tree/socket-quic-quiche/src/nativeInterop"
+  mkdir -p "$work/tree/socket-quic-quiche/src/nativeInterop" "$work/tree/socket-quic-quiche/src/qnetMain"
+  cp -R "$repo/socket-quic-quiche/src/qnetMain/." "$work/tree/socket-quic-quiche/src/qnetMain/"
   cp -R "$repo/socket-quic-quiche/src/nativeInterop/." "$work/tree/socket-quic-quiche/src/nativeInterop/"
   cp -R "$repo/socket-quic-quiche/libs/quiche/include/." "$work/tree/socket-quic-quiche/libs/quiche/include/"
 }
@@ -70,6 +71,16 @@ fresh
 mkdir -p "$work/tree/socket-quic-quiche/src/nativeInterop/cinterop"
 echo 'headers = qnet.h' > "$work/tree/socket-quic-quiche/src/nativeInterop/cinterop/Qnet.def"
 differs "a new file under src/nativeInterop moves it"
+fresh
+mkdir -p "$work/tree/socket-quic-quiche/src/qnetMain/kotlin"
+echo '// binding' > "$work/tree/socket-quic-quiche/src/qnetMain/kotlin/NewBinding.kt"
+differs "a new file under src/qnetMain moves it"
+fresh
+echo '/* qnet edit */' >> "$work/tree/socket-quic-quiche/src/jni/qnet.c"
+differs "an edit to qnet.c moves it"
+fresh
+echo '# edit' >> "$work/tree/socket-quic-quiche/src/nativeInterop/cinterop/QNet.def"
+differs "an edit to QNet.def moves it"
 fresh
 mv "$work/tree/socket-quic-quiche/src/jni/quiche_jni.c" "$work/tree/socket-quic-quiche/src/jni/renamed.c"
 differs "renaming a source file moves it (the path is hashed)"

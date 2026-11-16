@@ -9,7 +9,10 @@ import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.core.ready.NetStack
+import com.ditchoom.socket.quic.core.ready.netStackOfThisRuntime
 import com.ditchoom.socket.quic.core.testing.allocationSamples
+import com.ditchoom.socket.quic.core.testing.withDescriptorsAbove127
 import com.ditchoom.socket.quic.network
 import com.ditchoom.socket.quic.read
 import com.ditchoom.socket.quic.skipOnMissingNativeLib
@@ -46,7 +49,8 @@ import kotlin.time.Duration.Companion.seconds
  * stream, its handle objects and the open's continuation. The counters repeat to within one percent across runs, so
  * both threads are gated. Run alone the loop thread measures about 48 and 105 bytes and the caller 740 and 1,930; after the
  * server tests in one JVM the shared call sites stop inlining and the same echoes measure about 80 and 170, and 760 and 2,000.
- * The gates leave a margin above that for JIT inlining that differs by JDK and host.
+ * The gates leave a margin above that for JIT inlining that differs by JDK and host. The test holds 160 descriptors
+ * first, so the JDK selector's boxed descriptor per wake (16 B, design 9.3) is in every run and the gates include it.
  *
  * The bytes of objects whose class is in `com.ditchoom.socket.quic.core` are reported from a JFR allocation sample as
  * what the core itself allocates on the caller's thread. A sample is an estimate that swings by a factor of two between
@@ -55,11 +59,24 @@ import kotlin.time.Duration.Companion.seconds
 class CoreQuicAllocationTests {
     @Test
     fun anEchoOnOneStreamAllocatesOnlyWhatTheCallersApiForces() =
-        measure("one stream", OneStream, loopGate = LOOP_GATE_ONE, callerGate = CALLER_GATE_ONE)
+        measure("one stream", OneStream, loopGate = loopGate(LOOP_GATE_ONE, JDK_LOOP_GATE_ONE), callerGate = CALLER_GATE_ONE)
 
     @Test
     fun anEchoOnANewStreamAllocatesOnlyWhatTheCallersApiForces() =
-        measure("new stream per echo", NewStream, loopGate = LOOP_GATE_NEW, callerGate = CALLER_GATE_NEW)
+        measure("new stream per echo", NewStream, loopGate = loopGate(LOOP_GATE_NEW, JDK_LOOP_GATE_NEW), callerGate = CALLER_GATE_NEW)
+
+    /**
+     * The loop's gate on this process's stack. The native stack boxes nothing (48 and 105 B/echo measured on macOS); the
+     * JDK stack, left on Windows only, adds the selector's boxed descriptor per wake (80 and 168 B/echo measured).
+     */
+    private fun loopGate(
+        native: Int,
+        jdk: Int,
+    ): Int =
+        when (netStackOfThisRuntime) {
+            is NetStack.Native -> native
+            is NetStack.Jdk -> jdk
+        }
 
     /** One echo from the caller's side. */
     private sealed interface Shape {
@@ -98,41 +115,44 @@ class CoreQuicAllocationTests {
         loopGate: Int,
         callerGate: Int,
     ) = runBlocking {
-        skipOnMissingNativeLib(CoreQuicAllocationTests::class) {
-            withClosingEchoServer { port ->
-                val client = connectCore(port, factory = BufferFactory.network())
-                val dispatcher = ArrayQueueDispatcher(CALLER_THREAD)
-                val payload =
-                    BufferFactory.network().allocate(PAYLOAD).apply {
-                        repeat(PAYLOAD) { writeByte(it.toByte()) }
-                        resetForRead()
-                    }
-                val done = CompletableFuture<kotlin.Result<Report>>()
-                suspend { run(client, shape, payload) }
-                    .startCoroutine(Continuation(dispatcher + Job()) { done.complete(it) })
-                val report = done.get(120, TimeUnit.SECONDS).getOrThrow()
-                println(
-                    "[core quic allocation: $name] loop %.1f B/echo, caller core-owned %.1f B/echo, caller total %.1f B/echo\n%s".format(
-                        report.loop,
-                        report.callerCore,
-                        report.caller,
-                        report.where,
-                    ),
-                )
-                client.connection.close(QuicError.NoError)
-                dispatcher.close()
-                assertTrue(
-                    report.loop <= loopGate && report.caller <= callerGate,
-                    "$name: loop %.1f B/echo (gate %d), caller total %.1f (gate %d), caller core-owned %.1f (not gated), sampled from:\n%s"
-                        .format(
-                            report.loop,
-                            loopGate,
-                            report.caller,
-                            callerGate,
-                            report.callerCore,
-                            report.where,
-                        ),
-                )
+        withDescriptorsAbove127 {
+            skipOnMissingNativeLib(CoreQuicAllocationTests::class) {
+                withClosingEchoServer { port ->
+                    val client = connectCore(port, factory = BufferFactory.network())
+                    val dispatcher = ArrayQueueDispatcher(CALLER_THREAD)
+                    val payload =
+                        BufferFactory.network().allocate(PAYLOAD).apply {
+                            repeat(PAYLOAD) { writeByte(it.toByte()) }
+                            resetForRead()
+                        }
+                    val done = CompletableFuture<kotlin.Result<Report>>()
+                    suspend { run(client, shape, payload) }
+                        .startCoroutine(Continuation(dispatcher + Job()) { done.complete(it) })
+                    val report = done.get(120, TimeUnit.SECONDS).getOrThrow()
+                    println(
+                        "[core quic allocation: $name] loop %.1f B/echo, caller core-owned %.1f B/echo, caller total %.1f B/echo\n%s"
+                            .format(
+                                report.loop,
+                                report.callerCore,
+                                report.caller,
+                                report.where,
+                            ),
+                    )
+                    client.connection.close(QuicError.NoError)
+                    dispatcher.close()
+                    assertTrue(
+                        report.loop <= loopGate && report.caller <= callerGate,
+                        "$name: loop %.1f B/echo (gate %d), caller total %.1f (gate %d), caller core-owned %.1f (not gated), sampled from:\n%s"
+                            .format(
+                                report.loop,
+                                loopGate,
+                                report.caller,
+                                callerGate,
+                                report.callerCore,
+                                report.where,
+                            ),
+                    )
+                }
             }
         }
     }
@@ -245,9 +265,11 @@ class CoreQuicAllocationTests {
     private companion object {
         const val CALLER_THREAD = "core-alloc-caller"
         const val TEST_CLASS = "com.ditchoom.socket.quic.core.edge.CoreQuicAllocationTests"
-        const val LOOP_GATE_ONE = 130
+        const val LOOP_GATE_ONE = 80
+        const val JDK_LOOP_GATE_ONE = 130
         const val CALLER_GATE_ONE = 950
-        const val LOOP_GATE_NEW = 260
+        const val LOOP_GATE_NEW = 170
+        const val JDK_LOOP_GATE_NEW = 260
         const val CALLER_GATE_NEW = 2_400
         const val PAYLOAD = 64
         const val WARM_UP = 5_000

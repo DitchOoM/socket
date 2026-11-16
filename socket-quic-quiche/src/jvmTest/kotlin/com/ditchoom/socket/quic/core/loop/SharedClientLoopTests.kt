@@ -14,7 +14,6 @@ import com.ditchoom.socket.quic.core.edge.coreTestOptions
 import com.ditchoom.socket.quic.core.edge.echoOver
 import com.ditchoom.socket.quic.core.edge.withEchoServer
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
-import com.ditchoom.socket.quic.core.udp.NioOneByOne
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.ReceiveBatchResult
 import com.ditchoom.socket.quic.loadQuicheApi
@@ -122,7 +121,8 @@ class SharedClientLoopTests {
                         val brokenStream = broken.connection.openStream()
                         assertContentEquals(payload, echoOver(brokenStream, payload))
 
-                        (doomed[0] as NioOneByOne).channel.close()
+                        // The socket closes under its connection, on either stack.
+                        doomed[0]!!.close()
                         try {
                             val failure =
                                 assertFailsWith<QuicCloseException> { withTimeout(10.seconds) { echoOver(brokenStream, payload) } }

@@ -1,8 +1,17 @@
 package com.ditchoom.socket.quic.core.ready
 
 import com.ditchoom.socket.quic.core.time.WaitResolution
+import com.ditchoom.socket.quic.loadNetShim
 import java.nio.channels.Selector
 import java.util.function.Consumer
+
+/**
+ * The stack of this process: [NetStack.Native] wherever `qnet` has a poller (macOS, Linux, Android), [NetStack.Jdk]
+ * on Windows. Chosen once; a stack that cannot open a socket fails that connect, it never switches.
+ */
+internal val netStackOfThisRuntime: NetStack by lazy {
+    if (isWindows()) jdkStackOfThisRuntime() else NetStack.Native(loadNetShim(), MILLISECOND)
+}
 
 /**
  * The JDK stack with the key scan this runtime supports (`Selector.select(Consumer)` where it exists, Android from API
@@ -15,10 +24,17 @@ internal fun jdkStackOfThisRuntime(): NetStack.Jdk {
                 it.parameterTypes.size == 1 &&
                 it.parameterTypes[0] == Consumer::class.java
         }
-    val waits = if (System.getProperty("os.name").lowercase().contains("win")) WINDOWS_TIMER_TICK else MILLISECOND
+    val waits = if (isWindows()) WINDOWS_TIMER_TICK else MILLISECOND
     return NetStack.Jdk(if (consumerForm) SelectedKeys.ByConsumer else SelectedKeys.BySet, waits)
 }
 
+private fun isWindows(): Boolean = System.getProperty("os.name").lowercase().contains("win")
+
 /** Windows wakes a timed wait on its 64 Hz timer tick (15.625 ms) unless something raised the timer resolution. */
 private val WINDOWS_TIMER_TICK = WaitResolution(16_000_000L)
+
+/**
+ * A millisecond: the selector's unit, and what the native poller is held to as well, so pacing releases the same on
+ * either stack (kqueue and epoll_pwait2 time in nanoseconds; plain epoll_wait in milliseconds).
+ */
 private val MILLISECOND = WaitResolution(1_000_000L)

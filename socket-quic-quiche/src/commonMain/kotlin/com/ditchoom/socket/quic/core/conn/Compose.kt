@@ -70,7 +70,7 @@ internal fun buildConn(
     val parts =
         ConnParts(
             life = ConnLife(q),
-            handshake = Handshake(q, clock.now().value, memory.alpn),
+            handshake = Handshake(q, rules.handshake, clock.now().value, memory.alpn),
             streams = StreamTable(q, StreamIo(q), role),
             timer = ConnTimer(q, port, WakeSink()),
             ingress = Ingress(q, memory.shared, memory.factory, counts),

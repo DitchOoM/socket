@@ -484,6 +484,26 @@ internal class StubQuicheApi : QuicheApi {
     /** Invoked on every [connProbeNow]: a test queues the probe it would send. */
     @Volatile var onProbeNow: (() -> Unit)? = null
 
+    /** Every initial RTT a config was given, in nanoseconds, oldest first. */
+    val initialRtts = ArrayList<Long>()
+
+    override fun configSetInitialRtt(
+        config: QuicheConfig,
+        nanos: Long,
+    ) {
+        initialRtts += nanos
+    }
+
+    /** Every PTO ceiling the connection was given, oldest first. */
+    val ptoCeilings = ArrayList<PtoCeiling>()
+
+    override fun connSetHandshakePtoCeiling(
+        conn: QuicheConn,
+        ceiling: PtoCeiling,
+    ) {
+        ptoCeilings += ceiling
+    }
+
     override fun connProbeNow(conn: QuicheConn): Int {
         probeNowCount++
         onProbeNow?.invoke()

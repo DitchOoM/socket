@@ -8,12 +8,15 @@ import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicTlsConfig
 import com.ditchoom.socket.quic.QuicheApi
+import com.ditchoom.socket.quic.UdpBatching
 import com.ditchoom.socket.quic.core.demux.Demux
 import com.ditchoom.socket.quic.core.demux.ServerConfig
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.loop.Loop
 import com.ditchoom.socket.quic.core.observe.Published
 import com.ditchoom.socket.quic.core.observe.ServerCounts
+import com.ditchoom.socket.quic.core.ready.NetStack
+import com.ditchoom.socket.quic.core.ready.netStackOfThisRuntime
 import com.ditchoom.socket.quic.core.sched.LoopPort
 import com.ditchoom.socket.quic.core.sched.LoopWork
 import com.ditchoom.socket.quic.core.time.LoopClock
@@ -118,13 +121,30 @@ internal suspend fun coreServe(
     buffers: SocketBuffers = SocketBuffers.Default,
     clock: LoopClock = MonotonicClock,
     driver: LoopDriver = LoopDriver.OwnThread,
+    stack: NetStack = netStackOfThisRuntime,
+    batching: UdpBatching = options.udpBatching,
 ): CoreServer =
     withContext(Dispatchers.IO) {
         val memory = EdgeMemory(factory)
         var built = false
         try {
-            ServerSetup(bind, tls, options, factory, api, readPolicy, writePolicy, config, wrapIo, buffers, clock, driver, memory)
-                .start()
+            ServerSetup(
+                bind,
+                tls,
+                options,
+                factory,
+                api,
+                readPolicy,
+                writePolicy,
+                config,
+                wrapIo,
+                buffers,
+                clock,
+                driver,
+                memory,
+                stack,
+                batching,
+            ).start()
                 .also { built = true }
         } finally {
             if (!built) memory.freeAll()

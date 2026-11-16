@@ -51,7 +51,17 @@ internal class Replayed(
     val echoes: List<Echo>,
     /** How many times the client's socket was reopened on a new network. */
     val reopens: Int,
+    /** When the client sent each datagram, on the script's clock. */
+    val clientSends: List<Duration>,
+    /** When the client's handshake completed, if it did. */
+    val established: List<Duration>,
 ) {
+    /** The longest wait between two datagrams the client sent before its handshake completed. */
+    fun longestHandshakeSilence(): Duration {
+        val until = established.firstOrNull() ?: conditions.runFor
+        return (listOf(Duration.ZERO) + clientSends.filter { it < until } + until).zipWithNext { a, b -> b - a }.max()
+    }
+
     fun describe(): String =
         "${conditions.name}: $outcome, reopens=$reopens, usable again ${conditions.usableAgain()}, " +
             "last echoes ${echoes.takeLast(LAST_ECHOES)}"

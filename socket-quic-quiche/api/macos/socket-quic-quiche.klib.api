@@ -61,6 +61,7 @@ abstract interface com.ditchoom.socket.quic/QuicheApi { // com.ditchoom.socket.q
     abstract fun configSetInitialMaxStreamDataUni(com.ditchoom.socket.quic/QuicheConfig, kotlin/Long) // com.ditchoom.socket.quic/QuicheApi.configSetInitialMaxStreamDataUni|configSetInitialMaxStreamDataUni(com.ditchoom.socket.quic.QuicheConfig;kotlin.Long){}[0]
     abstract fun configSetInitialMaxStreamsBidi(com.ditchoom.socket.quic/QuicheConfig, kotlin/Long) // com.ditchoom.socket.quic/QuicheApi.configSetInitialMaxStreamsBidi|configSetInitialMaxStreamsBidi(com.ditchoom.socket.quic.QuicheConfig;kotlin.Long){}[0]
     abstract fun configSetInitialMaxStreamsUni(com.ditchoom.socket.quic/QuicheConfig, kotlin/Long) // com.ditchoom.socket.quic/QuicheApi.configSetInitialMaxStreamsUni|configSetInitialMaxStreamsUni(com.ditchoom.socket.quic.QuicheConfig;kotlin.Long){}[0]
+    abstract fun configSetInitialRtt(com.ditchoom.socket.quic/QuicheConfig, kotlin/Long) // com.ditchoom.socket.quic/QuicheApi.configSetInitialRtt|configSetInitialRtt(com.ditchoom.socket.quic.QuicheConfig;kotlin.Long){}[0]
     abstract fun configSetMaxConnectionWindow(com.ditchoom.socket.quic/QuicheConfig, kotlin/Long) // com.ditchoom.socket.quic/QuicheApi.configSetMaxConnectionWindow|configSetMaxConnectionWindow(com.ditchoom.socket.quic.QuicheConfig;kotlin.Long){}[0]
     abstract fun configSetMaxIdleTimeout(com.ditchoom.socket.quic/QuicheConfig, kotlin/Long) // com.ditchoom.socket.quic/QuicheApi.configSetMaxIdleTimeout|configSetMaxIdleTimeout(com.ditchoom.socket.quic.QuicheConfig;kotlin.Long){}[0]
     abstract fun configSetMaxPacingRate(com.ditchoom.socket.quic/QuicheConfig, kotlin/Long) // com.ditchoom.socket.quic/QuicheApi.configSetMaxPacingRate|configSetMaxPacingRate(com.ditchoom.socket.quic.QuicheConfig;kotlin.Long){}[0]
@@ -103,6 +104,7 @@ abstract interface com.ditchoom.socket.quic/QuicheApi { // com.ditchoom.socket.q
     abstract fun connSend(com.ditchoom.socket.quic/QuicheConn, kotlin/Long, kotlin/Int, com.ditchoom.socket.quic/QuicheSendInfo): kotlin/Int // com.ditchoom.socket.quic/QuicheApi.connSend|connSend(com.ditchoom.socket.quic.QuicheConn;kotlin.Long;kotlin.Int;com.ditchoom.socket.quic.QuicheSendInfo){}[0]
     abstract fun connSendAckEliciting(com.ditchoom.socket.quic/QuicheConn): kotlin/Int // com.ditchoom.socket.quic/QuicheApi.connSendAckEliciting|connSendAckEliciting(com.ditchoom.socket.quic.QuicheConn){}[0]
     abstract fun connSession(com.ditchoom.socket.quic/QuicheConn, kotlin/Long, kotlin/Int): kotlin/Int // com.ditchoom.socket.quic/QuicheApi.connSession|connSession(com.ditchoom.socket.quic.QuicheConn;kotlin.Long;kotlin.Int){}[0]
+    abstract fun connSetHandshakePtoCeiling(com.ditchoom.socket.quic/QuicheConn, com.ditchoom.socket.quic/PtoCeiling) // com.ditchoom.socket.quic/QuicheApi.connSetHandshakePtoCeiling|connSetHandshakePtoCeiling(com.ditchoom.socket.quic.QuicheConn;com.ditchoom.socket.quic.PtoCeiling){}[0]
     abstract fun connSetSession(com.ditchoom.socket.quic/QuicheConn, kotlin/Long, kotlin/Int): kotlin/Int // com.ditchoom.socket.quic/QuicheApi.connSetSession|connSetSession(com.ditchoom.socket.quic.QuicheConn;kotlin.Long;kotlin.Int){}[0]
     abstract fun connStreamCapacity(com.ditchoom.socket.quic/QuicheConn, com.ditchoom.socket.quic/QuicStreamId): kotlin/Long // com.ditchoom.socket.quic/QuicheApi.connStreamCapacity|connStreamCapacity(com.ditchoom.socket.quic.QuicheConn;com.ditchoom.socket.quic.QuicStreamId){}[0]
     abstract fun connStreamDataUnacknowledged(com.ditchoom.socket.quic/QuicheConn): kotlin/Boolean // com.ditchoom.socket.quic/QuicheApi.connStreamDataUnacknowledged|connStreamDataUnacknowledged(com.ditchoom.socket.quic.QuicheConn){}[0]
@@ -495,6 +497,21 @@ sealed interface com.ditchoom.socket.quic/ProbeOutcome { // com.ditchoom.socket.
 
         final val code // com.ditchoom.socket.quic/ProbeOutcome.Rejected.code|{}code[0]
             final fun <get-code>(): kotlin/Int // com.ditchoom.socket.quic/ProbeOutcome.Rejected.code.<get-code>|<get-code>(){}[0]
+    }
+}
+
+sealed interface com.ditchoom.socket.quic/PtoCeiling { // com.ditchoom.socket.quic/PtoCeiling|null[0]
+    final class At : com.ditchoom.socket.quic/PtoCeiling { // com.ditchoom.socket.quic/PtoCeiling.At|null[0]
+        constructor <init>(kotlin/Long) // com.ditchoom.socket.quic/PtoCeiling.At.<init>|<init>(kotlin.Long){}[0]
+
+        final val nanos // com.ditchoom.socket.quic/PtoCeiling.At.nanos|{}nanos[0]
+            final fun <get-nanos>(): kotlin/Long // com.ditchoom.socket.quic/PtoCeiling.At.nanos.<get-nanos>|<get-nanos>(){}[0]
+    }
+
+    final object None : com.ditchoom.socket.quic/PtoCeiling { // com.ditchoom.socket.quic/PtoCeiling.None|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/PtoCeiling.None.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/PtoCeiling.None.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/PtoCeiling.None.toString|toString(){}[0]
     }
 }
 

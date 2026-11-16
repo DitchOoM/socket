@@ -1,0 +1,9 @@
+package = com.ditchoom.socket.quic.qnet
+headers = qnet.h
+headerFilter = qnet.h
+# glibc declares sendmmsg/recvmmsg only under _GNU_SOURCE, which must precede the first system header.
+compilerOpts.linux = -D_GNU_SOURCE
+---
+/* The native stack's poller and UDP calls, compiled into this klib from the same sources the JVM's libquiche_jni
+ * carries (src/jni/qnet*.c). */
+#include "qnet.c"

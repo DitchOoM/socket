@@ -7,6 +7,7 @@ import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.socket.quic.CommonJvmQuicConfigCalls
 import com.ditchoom.socket.quic.EncodedSockAddr
+import com.ditchoom.socket.quic.LinkClass
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QUIC_ISSUED_CONN_ID_LEN
 import com.ditchoom.socket.quic.QuicConnectionIdentity
@@ -24,12 +25,16 @@ import com.ditchoom.socket.quic.core.edge.CoreConnection
 import com.ditchoom.socket.quic.core.edge.CoreServer
 import com.ditchoom.socket.quic.core.edge.EdgeMemory
 import com.ditchoom.socket.quic.core.edge.LoopDriver
+import com.ditchoom.socket.quic.core.edge.SocketBound
+import com.ditchoom.socket.quic.core.edge.StackSocket
 import com.ditchoom.socket.quic.core.edge.TEST_FLIGHT
 import com.ditchoom.socket.quic.core.edge.addressOf
+import com.ditchoom.socket.quic.core.edge.clientHandshakeRule
 import com.ditchoom.socket.quic.core.edge.coreServe
 import com.ditchoom.socket.quic.core.edge.coreTlsConfig
 import com.ditchoom.socket.quic.core.loop.Loop
 import com.ditchoom.socket.quic.core.loop.LoopIds
+import com.ditchoom.socket.quic.core.loop.LoopIo
 import com.ditchoom.socket.quic.core.loop.Readiness
 import com.ditchoom.socket.quic.core.loop.RunningLoop
 import com.ditchoom.socket.quic.core.pool.FixedPool
@@ -39,8 +44,10 @@ import com.ditchoom.socket.quic.core.testing.VirtualClock
 import com.ditchoom.socket.quic.core.time.WaitResolution
 import com.ditchoom.socket.quic.core.udp.BatchLimits
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
+import com.ditchoom.socket.quic.core.udp.GrantedBuffers
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.ReceiveBuffer
+import com.ditchoom.socket.quic.core.udp.SocketBuffers
 import com.ditchoom.socket.quic.core.udp.toPathKey
 import com.ditchoom.socket.quic.encodeAlpnList
 import com.ditchoom.socket.quic.generateScid
@@ -67,7 +74,12 @@ internal class ReplayClient(
 internal val REPLAY_DEADLINE = 1.hours
 
 internal fun replayOptions(conditions: Conditions): QuicOptions =
-    QuicOptions(alpnProtocols = listOf(ALPN), verifyPeer = false, idleTimeout = conditions.idleTimeout)
+    QuicOptions(
+        alpnProtocols = listOf(ALPN),
+        verifyPeer = false,
+        idleTimeout = conditions.idleTimeout,
+        handshakePacing = conditions.handshakePacing,
+    )
 
 /** A core server on 127.0.0.1 whose loop the replay drives, over [io]. */
 internal suspend fun replayServer(
@@ -102,6 +114,7 @@ internal fun replayClient(
     clock: VirtualClock,
     serverPort: Int,
     seed: Long,
+    link: LinkClass,
 ): ReplayClient {
     val memory = EdgeMemory(factory)
     val limits = BatchLimits(maxDatagrams = BATCH, maxDatagramSize = DATAGRAM)
@@ -123,6 +136,8 @@ internal fun replayClient(
     val config = api.configNew(QUIC_V1)
     encodeAlpnList(options.alpnProtocols, factory).let { api.configSetApplicationProtos(config, addressOf(it), it.remaining()) }
     applyQuicOptions(options, CommonJvmQuicConfigCalls(api, config), QuicRole.Client)
+    val handshake = clientHandshakeRule(options, link)
+    handshake.applyTo(api, config)
     val peer = encoded(peerInet, factory)
     val localAddress = encoded(local, factory)
     val name =
@@ -148,6 +163,7 @@ internal fun replayClient(
     name.freeNativeMemory()
     scid.freeNativeMemory()
     val scope = CoroutineScope(SupervisorJob())
+    val loopIo = LoopIo.Jdk(buffers.map { memory.jdk(it.bytes) })
     val wiring =
         ClientWiring(
             api,
@@ -157,18 +173,19 @@ internal fun replayClient(
             memory,
             RunningLoop(
                 loop,
-                buffers.map { memory.jdk(it.bytes) },
+                loopIo,
                 replayLoopMemory(memory),
                 MemoryHold(Runnable { }),
                 WaitResolution(1_000_000L),
             ),
-            channel,
+            StackSocket.Jdk(channel, loopIo, SocketBound(local, GrantedBuffers(SocketBuffers.Default, 0, 0))),
             { io },
             peerInet,
             ReadPolicy.Bounded(REPLAY_DEADLINE),
             WritePolicy.Bounded(REPLAY_DEADLINE),
             scope,
             TEST_FLIGHT,
+            handshake,
             clock,
             Readiness.EveryPass,
         )

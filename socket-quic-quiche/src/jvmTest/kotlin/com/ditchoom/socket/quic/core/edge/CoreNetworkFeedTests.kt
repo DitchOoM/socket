@@ -13,8 +13,8 @@ import com.ditchoom.socket.quic.RouteProbeFailure
 import com.ditchoom.socket.quic.RouteSource
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.testing.FakeIo
+import com.ditchoom.socket.quic.core.testing.SocketView
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
-import com.ditchoom.socket.quic.core.udp.NioOneByOne
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.ReceiveBatchResult
 import com.ditchoom.socket.quic.core.udp.Reopened
@@ -36,7 +36,6 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
-import kotlin.test.assertNotSame
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
@@ -112,9 +111,9 @@ class CoreNetworkFeedTests {
                     monitor.state.value = WIFI_BEFORE
                     var io = DeadAfterOutage(FakeIo())
                     val client = connectWatched(port, monitor, wrapIo = { DeadAfterOutage(it).also { wrapped -> io = wrapped } })
-                    val nio = io.real as NioOneByOne
-                    val before = nio.channel
-                    val bound = before.localAddress
+                    val socket = SocketView.of(io.real)
+                    val before = socket.identity()
+                    val bound = socket.local()
                     val warm = Random(1).nextBytes(500)
                     assertContentEquals(warm, echoOver(client.connection.openStream(), warm))
 
@@ -131,8 +130,8 @@ class CoreNetworkFeedTests {
                     val took = back.elapsedNow()
 
                     assertEquals(1, io.reopens, "the socket was reopened once")
-                    assertNotSame(before, nio.channel, "a new socket carries the connection")
-                    assertEquals(bound, nio.channel.localAddress, "on the same address and port: the path is unchanged")
+                    socket.assertReplaced(before)
+                    assertEquals(bound, socket.local(), "on the same address and port: the path is unchanged")
                     assertTrue(took < 1.seconds, "the echo finished $took after the network came back, not a backed-off timer later")
                     val recorded = ArrayList<TraceEvent>()
                     client.connection.dumpFlight(TraceSink { recorded += it })
