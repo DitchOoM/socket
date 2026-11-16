@@ -40,6 +40,17 @@ val linuxTargets =
 val isRunningOnGithub = System.getenv("GITHUB_REPOSITORY")?.isNotBlank() == true
 val isMainBranchGithub = System.getenv("GITHUB_REF") == "refs/heads/main"
 
+// ⚠️ NATIVE-INPUT REGIONS. Every line between a `region quiche-native-inputs` marker and its
+// `endregion` is an input of a quiche native binary: the source patches, the cargo / NDK / clang
+// invocations, the JNI shim build, the BoringSSL bundle pin. Two things hash exactly those lines, so a
+// change here rebuilds the natives and nothing else does:
+//   * quichePatchDigest below, embedded in the `.built-…` markers of the cached natives, and
+//   * .github/scripts/quiche-native-inputs.sh, which keys every CI native cache (with the quiche
+//     version, the boring-crate pin, quiche_jni.c and quiche.h).
+// Code that decides what a native binary contains goes INSIDE a region. Test, fuzz, packaging and
+// publishing config goes OUTSIDE, so editing it does not recompile quiche. Both consumers fail loudly if
+// the markers are not exactly two balanced regions.
+// region quiche-native-inputs
 // quiche version — centralized in gradle/libs.versions.toml
 val quicheVersion = libs.versions.quiche.get()
 
@@ -53,21 +64,46 @@ val quicheSha256 = libs.versions.quicheSha256.get()
 val quicheBoringCrateVersion = libs.versions.quicheBoringCrate.get()
 val quicheBuildDir = layout.buildDirectory.dir("quiche")
 
-// Digest of THIS build script — the single source of truth for every quiche source patch
-// (patchQuicheForCallerClock + the build.rs patches). Embedded in the .built marker so ANY change to how
-// quiche source is patched changes the marker and forces a rebuild from the newly-patched clone. Fixes the
-// caller-clock cache-coherence bug (#260/#263): the marker used to be version-only, so #260's source patch
-// left it byte-identical and a cached pre-patch libquiche.dylib (missing quiche_set_virtual_time_nanos /
-// quiche_clear_virtual_time) satisfied it → JNI shim link failure. A content digest can't be forgotten the
-// way a hand-bumped version token can — which is exactly the failure mode that caused the incident.
+// Digest of the native-input regions of THIS build script — the single source of truth for every quiche
+// source patch (patchQuicheForCallerClock + the build.rs patches). Embedded in the .built marker so ANY
+// change to how quiche source is patched changes the marker and forces a rebuild from the newly-patched
+// clone. Fixes the caller-clock cache-coherence bug (#260/#263): the marker used to be version-only, so
+// #260's source patch left it byte-identical and a cached pre-patch libquiche.dylib (missing
+// quiche_set_virtual_time_nanos / quiche_clear_virtual_time) satisfied it → JNI shim link failure. A
+// content digest can't be forgotten the way a hand-bumped version token can — which is exactly the
+// failure mode that caused the incident. It covers the regions, not the whole file: this script is 7,000
+// lines and most of them configure tests, so a digest of all of it invalidated the natives on nearly
+// every commit.
 // The boring-crate pin is folded in because it changes the source build too, and lives in the version
 // catalog rather than this script.
 val quichePatchDigest: String =
-    MessageDigest
-        .getInstance("SHA-256")
-        .digest(buildFile.readBytes() + quicheBoringCrateVersion.toByteArray())
-        .joinToString("") { "%02x".format(it) }
-        .take(12)
+    run {
+        val regionMarker = "// region quiche-native-inputs"
+        val endMarker = "// endregion quiche-native-inputs"
+        val inputs = StringBuilder()
+        var inRegion = false
+        var regions = 0
+        for (line in buildFile.readLines()) {
+            when (line.trim()) {
+                regionMarker -> {
+                    check(!inRegion) { "nested `$regionMarker` in $buildFile" }
+                    inRegion = true
+                    regions++
+                }
+                endMarker -> {
+                    check(inRegion) { "`$endMarker` without a region in $buildFile" }
+                    inRegion = false
+                }
+                else -> if (inRegion) inputs.append(line).append('\n')
+            }
+        }
+        check(!inRegion && regions == 2) { "expected exactly 2 `$regionMarker` regions in $buildFile, found $regions" }
+        MessageDigest
+            .getInstance("SHA-256")
+            .digest(inputs.toString().toByteArray() + quicheBoringCrateVersion.toByteArray())
+            .joinToString("") { "%02x".format(it) }
+            .take(12)
+    }
 
 repositories {
     // Scoped mavenLocal: resolves the canonical :boringssl-canonical OWNER klib from ~/.m2, filtered to
@@ -4676,6 +4712,8 @@ tasks.register("prepareQuicheSource") {
     }
 }
 
+// endregion quiche-native-inputs
+
 // Stage built native libs into a directory added to the jvmTest runtime
 // classpath (not to main resources — we don't want them in the base jvmJar).
 // NativeLibLoader.getResourceAsStream("META-INF/native/...") picks them up
@@ -5082,6 +5120,7 @@ fun registerNativeFuzz(
 registerNativeFuzz("quicHeaderFuzzNative", "header_info", "header-info-corpus")
 registerNativeFuzz("quicConnRecvFuzzNative", "conn_recv", "conn-recv-corpus")
 
+// region quiche-native-inputs
 // --- Android JNI native library build ---
 // Builds quiche via cargo-ndk and compiles the JNI shim with NDK clang.
 // Requires: rustup, cargo-ndk, Android NDK, Rust Android targets
@@ -5108,12 +5147,34 @@ data class AndroidAbi(
     val ndkClangPrefix: String,
 )
 
-val androidAbis =
+val allAndroidAbis =
     listOf(
         AndroidAbi("arm64-v8a", "aarch64-linux-android", "aarch64-linux-android24"),
         AndroidAbi("armeabi-v7a", "armv7-linux-androideabi", "armv7a-linux-androideabi24"),
         AndroidAbi("x86_64", "x86_64-linux-android", "x86_64-linux-android24"),
     )
+
+// `-PquicheAndroidAbis=x86_64` (comma-separated) builds, and so packages, only the named ABIs. An emulator
+// lane runs one ABI, but every connected* and merge*JniLibFolders task depends on every ABI task, so it
+// used to compile the other two through cargo-ndk as well (~2.5 minutes). Unset builds all of them, which
+// is what a release and the default local build want.
+val androidAbis =
+    providers
+        .gradleProperty("quicheAndroidAbis")
+        .map { requested ->
+            val names = requested.split(',').map { it.trim() }.filter { it.isNotEmpty() }
+            val unknown = names - allAndroidAbis.map { it.abi }.toSet()
+            require(names.isNotEmpty() && unknown.isEmpty()) {
+                "quicheAndroidAbis=$requested: unknown ABI $unknown; choose from ${allAndroidAbis.map { it.abi }}"
+            }
+            allAndroidAbis.filter { it.abi in names }
+        }.getOrElse(allAndroidAbis)
+
+// `-PquicheAndroidNativesPrebuilt=true`: CI restored the Android natives from a cache keyed on exactly the
+// inputs of this region, so the tasks only check that their outputs are there. A fresh runner has no Gradle
+// history, so without this every restored library would be compiled again. Unset, the tasks build.
+val androidNativesPrebuilt =
+    providers.gradleProperty("quicheAndroidNativesPrebuilt").map(String::toBooleanStrict).getOrElse(false)
 
 fun createBuildAndroidJniTask(abi: AndroidAbi): TaskProvider<Task>? {
     val ndk = androidNdkDir ?: return null
@@ -5131,11 +5192,23 @@ fun createBuildAndroidJniTask(abi: AndroidAbi): TaskProvider<Task>? {
         // nConnDgramMaxWritableLen) → UnsatisfiedLinkError at runtime. This mirrors
         // the host JNI-shim task. Do NOT reintroduce a marker + onlyIf gate.
         inputs.property("quicheVersion", quicheVersion)
+        inputs.property("quichePatchDigest", quichePatchDigest)
         inputs.file("src/jni/quiche_jni.c")
         // Both natives are outputs: the thin JNI shim AND the self-contained cdylib it DT_NEEDEDs.
         outputs.files(outputLib, outputDir.resolve("libquiche.so"))
 
         doLast {
+            if (androidNativesPrebuilt) {
+                val missing = listOf(outputLib, outputDir.resolve("libquiche.so")).filterNot { it.isFile && it.length() > 0 }
+                if (missing.isNotEmpty()) {
+                    throw GradleException(
+                        "quicheAndroidNativesPrebuilt=true but ${abi.abi} natives are missing: $missing. " +
+                            "The cache restore did not produce them; build without the property.",
+                    )
+                }
+                logger.lifecycle("Android ${abi.abi} natives restored from cache: ${outputLib.absolutePath}")
+                return@doLast
+            }
             // 1. Get quiche source (reuses shared clone)
             val buildDir = quicheBuildDir.get().asFile
             val sourceDir = downloadQuicheSource(buildDir, quicheVersion, quicheSha256)
@@ -5244,6 +5317,7 @@ fun createBuildAndroidJniTask(abi: AndroidAbi): TaskProvider<Task>? {
 }
 
 val androidJniTasks = androidAbis.mapNotNull { createBuildAndroidJniTask(it) }
+// endregion quiche-native-inputs
 
 if (androidJniTasks.isNotEmpty()) {
     tasks.register("buildAndroidNativeLibs") {

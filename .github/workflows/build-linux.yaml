@@ -265,6 +265,14 @@ jobs:
               aarch64-linux-android armv7-linux-androideabi \
               x86_64-linux-android i686-linux-android
 
+      # One digest of the inputs of a quiche native binary (the quiche pins, the native-input regions of
+      # socket-quic-quiche/build.gradle.kts, the JNI shim source, the header). The same action keys every
+      # writer and reader of these caches (see .github/scripts/quiche-native-inputs.sh), so a commit that
+      # touches none of those inputs reuses the natives instead of recompiling quiche.
+      - name: Compute quiche native cache key
+        id: qkey
+        uses: ./.github/actions/quiche-native-key
+
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --quiet
 
@@ -277,13 +285,13 @@ jobs:
         uses: actions/cache@v6
         with:
           path: socket-quic-quiche/libs/quiche/linux-x64
-          key: quiche-linux-x64-v8-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/build.gradle.kts', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
+          key: quiche-linux-x64-v9-${{ steps.qkey.outputs.digest }}
 
       - name: Cache quiche Linux ARM64
         uses: actions/cache@v6
         with:
           path: socket-quic-quiche/libs/quiche/linux-arm64
-          key: quiche-linux-arm64-v8-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/build.gradle.kts', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
+          key: quiche-linux-arm64-v9-${{ steps.qkey.outputs.digest }}
 
       # Cache the cargo target/ trees for all four quiche cross-compile
       # targets (Linux x64, Linux arm64, Windows x64, Android arm64). The
@@ -305,8 +313,8 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: socket-quic-quiche/build/quiche
-          key: quiche-cargo-target-v3-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/build.gradle.kts', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
-          restore-keys: quiche-cargo-target-v3-
+          key: quiche-cargo-target-v4-${{ steps.qkey.outputs.digest }}
+          restore-keys: quiche-cargo-target-v4-
 
       - name: Cache Cargo registry
         uses: actions/cache@v6
