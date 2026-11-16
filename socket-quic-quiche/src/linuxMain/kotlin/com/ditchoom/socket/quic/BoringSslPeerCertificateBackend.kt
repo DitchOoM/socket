@@ -64,14 +64,32 @@ private class BoringSslP256KeyPair(
         message: ReadBuffer,
         dest: WriteBuffer,
     ) {
+        val access = message.nativeMemoryAccess
+        if (access != null) {
+            signAt((access.nativeAddress + message.position()).toCPointer<UByteVar>(), message.remaining(), dest)
+            return
+        }
+        // Not native memory: staged into some, because the certificate body is small and signed once.
+        val staged = stageNative(message)
+        try {
+            signAt(staged.nativeMemoryAccess?.nativeAddress?.toCPointer<UByteVar>(), staged.remaining(), dest)
+        } finally {
+            staged.freeNativeMemory()
+        }
+    }
+
+    private fun signAt(
+        messageStart: CPointer<UByteVar>?,
+        messageLength: Int,
+        dest: WriteBuffer,
+    ) {
         val signature = BufferFactory.network().allocate(P256_MAX_SIGNATURE_BYTES)
         try {
-            val messageStart = message.nativeMemoryAccess!!.nativeAddress + message.position()
             val length =
                 ditchoom_p256_sign(
                     scalar.pointer(),
-                    messageStart.toCPointer<UByteVar>(),
-                    message.remaining().convert(),
+                    messageStart,
+                    messageLength.convert(),
                     signature.pointer(),
                     P256_MAX_SIGNATURE_BYTES.convert(),
                 ).toInt()
@@ -89,3 +107,13 @@ private class BoringSslP256KeyPair(
 }
 
 private fun PlatformBuffer.pointer(): CPointer<UByteVar> = nativeMemoryAccess!!.nativeAddress.toCPointer()!!
+
+/** A native-memory copy of [message]'s remaining bytes, read-ready; [message]'s position is unchanged. */
+private fun stageNative(message: ReadBuffer): PlatformBuffer {
+    val start = message.position()
+    val staged = BufferFactory.network().allocate(message.remaining())
+    staged.write(message)
+    message.position(start)
+    staged.resetForRead()
+    return staged
+}
