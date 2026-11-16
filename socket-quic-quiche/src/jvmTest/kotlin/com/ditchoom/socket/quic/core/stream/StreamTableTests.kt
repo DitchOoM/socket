@@ -56,8 +56,9 @@ class StreamTableTests {
         api.readableStreams.addAll(listOf(1L, 4L))
         table.wake()
         table.wake()
-        assertEquals(QuicStreamId(1L), table.takeIncoming())
-        assertEquals(false, table.hasIncoming())
+        val incoming = ArrayList<QuicStreamId>()
+        table.takeIncoming { incoming += it }
+        assertEquals(listOf(QuicStreamId(1L)), incoming)
         assertEquals(2, reader.retries)
     }
 

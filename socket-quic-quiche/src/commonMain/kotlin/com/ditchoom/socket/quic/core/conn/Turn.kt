@@ -194,7 +194,7 @@ internal class Turn(
 
     private fun streams() {
         c.streams.wake()
-        while (c.streams.hasIncoming()) c.sink.incoming(c.streams.takeIncoming())
+        c.streams.takeIncoming { c.sink.incoming(it) }
     }
 
     private fun rearm(

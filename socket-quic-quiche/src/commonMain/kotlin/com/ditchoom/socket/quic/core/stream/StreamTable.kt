@@ -1,14 +1,14 @@
 package com.ditchoom.socket.quic.core.stream
 
-import androidx.collection.MutableLongList
-import androidx.collection.MutableLongObjectMap
-import androidx.collection.MutableLongSet
 import com.ditchoom.socket.quic.QuicRole
 import com.ditchoom.socket.quic.QuicStreamId
 import com.ditchoom.socket.quic.QuicheStreamIter
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.observe.Confined
+import com.ditchoom.socket.quic.core.pool.LongObjectMap
+import com.ditchoom.socket.quic.core.pool.LongQueue
+import com.ditchoom.socket.quic.core.pool.LongSet
 
 /** Whether the table's connection has ended, and how: an operation that starts after the end fails with it. */
 internal sealed interface Streams {
@@ -32,17 +32,20 @@ internal class StreamTable(
     val io: StreamIo,
     private val role: QuicRole,
 ) {
-    private val entries = MutableLongObjectMap<StreamEntry>()
-    private val writeWaiters = MutableLongSet()
+    private val entries = LongObjectMap<StreamEntry>()
+
+    /** Made once: it captures nothing, so a lookup of a stream that exists allocates nothing. */
+    private val newEntry: (Long) -> StreamEntry = { id -> StreamEntry(QuicStreamId(id)) }
+    private val writeWaiters = LongSet()
     private val opens = ArrayDeque<Waiter>()
-    private val incoming = MutableLongList()
+    private val incoming = LongQueue()
     private var nextBidi: Long = if (role == QuicRole.Client) 0L else 1L
     private var opened: Long = 0L
 
     var state: Streams = Streams.Open
         private set
 
-    fun entry(id: QuicStreamId): StreamEntry = entries.getOrPut(id.id) { StreamEntry(id) }
+    fun entry(id: QuicStreamId): StreamEntry = entries.getOrPut(id.id, newEntry)
 
     /** Asks for [stream]'s writer to be retried once quiche says it can take bytes. */
     fun wantWritable(stream: QuicStreamId) {
@@ -96,10 +99,11 @@ internal class StreamTable(
         }
     }
 
-    fun hasIncoming(): Boolean = incoming.isNotEmpty()
-
     /** The oldest stream the peer opened that has not been handed up yet. */
-    fun takeIncoming(): QuicStreamId = QuicStreamId(incoming.removeAt(0))
+    inline fun takeIncoming(each: (QuicStreamId) -> Unit) = incomingIds().drain { each(QuicStreamId(it)) }
+
+    @PublishedApi
+    internal fun incomingIds(): LongQueue = incoming
 
     /** The connection ended with [end]: every waiting operation fails with it, and so does every later one. */
     fun endAll(end: ConnEnd) {
@@ -112,7 +116,7 @@ internal class StreamTable(
     private fun readable(id: QuicStreamId): Boolean {
         if (!entries.containsKey(id.id) && initiatedByPeer(id)) {
             entry(id)
-            incoming.add(id.id)
+            incoming.addLast(id.id)
         }
         entry(id).wakeReader(this)
         return true

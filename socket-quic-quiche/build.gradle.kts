@@ -6504,7 +6504,6 @@ kotlin {
             // @ExperimentalDatagramApi, opted into at the adapter call sites.
             implementation(project(":socket-udp"))
             implementation(libs.kotlinx.coroutines.core)
-            implementation(libs.androidx.collection)
             // SecureBuffer: the session ticket key and the Linux P-256 scalar are wiped when freed.
             implementation(libs.buffer.crypto)
         }

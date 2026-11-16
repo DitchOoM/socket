@@ -361,7 +361,7 @@ public class CoreDefaultsCheck {
         ADJACENCY.put("ready", Set.of("time"));
         ADJACENCY.put("life", Set.of("udp", "time"));
         ADJACENCY.put("sched", Set.of("life", "udp", "ready", "pool", "time"));
-        ADJACENCY.put("stream", Set.of("life"));
+        ADJACENCY.put("stream", Set.of("life", "pool"));
         ADJACENCY.put("path", Set.of("life", "udp", "time"));
         ADJACENCY.put("conn", Set.of("stream", "path", "life", "sched", "udp", "pool", "time"));
         ADJACENCY.put("demux", Set.of("conn", "life", "sched", "udp", "pool", "time"));
