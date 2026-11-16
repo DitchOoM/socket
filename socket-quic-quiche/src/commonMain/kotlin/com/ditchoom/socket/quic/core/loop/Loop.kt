@@ -126,6 +126,7 @@ internal class Loop(
 
     private fun passInside(now: Nanos): NextDue {
         counts.passed()
+        val began = clock.now().value
         port.fireDue(now)
         for (i in 0 until ready.count) {
             when (val slot = slots[ready.tokenAt(i)]) {
@@ -134,24 +135,33 @@ internal class Loop(
             }
         }
         ready.clear()
+        val fired = clock.now().value
         for (i in slots.indices) {
             when (val slot = slots[i]) {
                 is LoopSlot.Taken -> receiveOn(slot.endpoint)
                 is LoopSlot.Empty -> Unit
             }
         }
+        val received = clock.now().value
         counts.ran(port.runWork())
+        val worked = clock.now().value
         var backlog = false
+        var slowest = 0L
         for (i in slots.indices) {
             when (val slot = slots[i]) {
-                is LoopSlot.Taken ->
+                is LoopSlot.Taken -> {
+                    val serveBegan = clock.now().value
                     when (slot.endpoint.serve(poller, now, port)) {
                         Stay.Left -> vacate(slot.endpoint)
                         Stay.Stays -> if (slot.endpoint.hasBacklog()) backlog = true
                     }
+                    slowest = maxOf(slowest, clock.now().value - serveBegan)
+                }
                 is LoopSlot.Empty -> Unit
             }
         }
+        val served = clock.now().value
+        counts.phased(fired - began, received - fired, worked - received, served - worked, slowest)
         val due = port.nextDue(now)
         // Datagrams the io holds are invisible to the poller: with any, the next pass is due now (a poll of zero), whatever
         // cut this one short (the per-pass bound included).

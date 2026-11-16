@@ -31,6 +31,33 @@ internal class LoopCounts {
         if (nanos > longestPassNanos) longestPassNanos = nanos
     }
 
+    /** How the longest pass so far split: deadlines and readiness, receiving, handed-over work, serving; and the longest single serve. */
+    var longestFire = 0L
+        private set
+    var longestReceive = 0L
+        private set
+    var longestWork = 0L
+        private set
+    var longestServe = 0L
+        private set
+    var longestSingleServe = 0L
+        private set
+
+    fun phased(
+        fire: Long,
+        receive: Long,
+        work: Long,
+        serve: Long,
+        slowestServe: Long,
+    ) {
+        if (fire + receive + work + serve <= longestFire + longestReceive + longestWork + longestServe) return
+        longestFire = fire
+        longestReceive = receive
+        longestWork = work
+        longestServe = serve
+        longestSingleServe = slowestServe
+    }
+
     fun timedWait(nanos: Long) {
         waitNanos += nanos
     }
