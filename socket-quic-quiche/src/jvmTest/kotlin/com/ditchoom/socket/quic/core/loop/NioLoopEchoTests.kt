@@ -1,6 +1,8 @@
 package com.ditchoom.socket.quic.core.loop
 
+import com.ditchoom.socket.quic.core.testing.FlightEvidenceRule
 import com.ditchoom.socket.quic.core.testing.NioEcho
+import org.junit.Rule
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.nio.channels.DatagramChannel
@@ -12,6 +14,9 @@ import kotlin.test.assertTrue
 
 /** A [Loop] on its own thread over a real non-blocking socket: datagrams in, the same bytes out, then a clean close. */
 class NioLoopEchoTests {
+    @get:Rule
+    val flightEvidence = FlightEvidenceRule()
+
     @Test
     fun aLoopThreadEchoesEveryDatagramByteExactAndClosesItsSocket() {
         val server = DatagramChannel.open().bind(InetSocketAddress("127.0.0.1", 0))

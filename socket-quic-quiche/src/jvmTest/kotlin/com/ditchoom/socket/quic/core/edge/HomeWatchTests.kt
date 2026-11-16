@@ -2,8 +2,10 @@ package com.ditchoom.socket.quic.core.edge
 
 import com.ditchoom.socket.quic.RouteProbeFailure
 import com.ditchoom.socket.quic.RouteSource
+import com.ditchoom.socket.quic.core.testing.FlightEvidenceRule
 import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.transport.NetworkKind
+import org.junit.Rule
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
@@ -13,6 +15,9 @@ import kotlin.test.assertEquals
  * address. Addresses are documentation ranges.
  */
 class HomeWatchTests {
+    @get:Rule
+    val flightEvidence = FlightEvidenceRule()
+
     private val before = NetworkId.Link(NetworkKind.Wifi, 518_801_772_557L)
     private val after = NetworkId.Link(NetworkKind.Wifi, 523_096_739_853L)
     private val noRoute = RouteSource.Unresolved(RouteProbeFailure.SourceAddressUnknown)

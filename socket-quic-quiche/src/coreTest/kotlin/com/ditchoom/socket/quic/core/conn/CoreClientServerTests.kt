@@ -12,11 +12,11 @@ import com.ditchoom.socket.quic.core.edge.ReceivedBytes
 import com.ditchoom.socket.quic.core.edge.connectCore
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.loop.LoopSet
+import com.ditchoom.socket.quic.core.testing.coreTest
 import com.ditchoom.socket.quic.network
 import com.ditchoom.socket.quic.read
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlin.random.Random
 import kotlin.test.AfterTest
@@ -39,7 +39,7 @@ class CoreClientServerTests {
 
     @Test
     fun aCoreClientEchoesOneMebibyteThroughACoreServerAndClosesItsConnection() =
-        runBlocking {
+        coreTest("CoreClientServerTests.aCoreClientEchoesOneMebibyteThroughACoreServerAndClosesItsConnection") {
             withCoreEchoServer { server ->
                 val client = connectCore(server.port, loops = loops)
                 val payload = Random(7).nextBytes(PAYLOAD)

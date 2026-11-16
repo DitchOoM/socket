@@ -7,12 +7,17 @@ import com.ditchoom.socket.quic.SendTarget
 import com.ditchoom.socket.quic.StubQuicheApi
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.path.SinglePath
+import com.ditchoom.socket.quic.core.testing.FlightEvidenceRule
 import com.ditchoom.socket.quic.core.udp.SockAddr
+import org.junit.Rule
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /** [Release]: quiche's memory is freed once, and only after it was asked. */
 class ReleaseTests {
+    @get:Rule
+    val flightEvidence = FlightEvidenceRule()
+
     @Test
     fun aReleaseFreesQuichesMemoryOnceAndOnlyAfterItWasAsked() {
         val freed = ArrayList<String>()

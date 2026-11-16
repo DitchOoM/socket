@@ -11,6 +11,8 @@ import com.ditchoom.socket.quic.core.observe.Counter
 import com.ditchoom.socket.quic.core.observe.LoopCounts
 import com.ditchoom.socket.quic.core.observe.LoopOnly
 import com.ditchoom.socket.quic.core.observe.Published
+import com.ditchoom.socket.quic.core.observe.TraceSection
+import com.ditchoom.socket.quic.core.observe.traced
 import com.ditchoom.socket.quic.core.pool.IntStack
 import com.ditchoom.socket.quic.core.ready.Poller
 import com.ditchoom.socket.quic.core.ready.ReadyTokens
@@ -107,7 +109,9 @@ internal class Loop(
     }
 
     /** One pass at [now]. Returns when the loop next needs to run without input. */
-    fun pass(now: Nanos): NextDue {
+    fun pass(now: Nanos): NextDue = traced(TraceSection.LoopPass) { passInside(now) }
+
+    private fun passInside(now: Nanos): NextDue {
         counts.passed()
         port.fireDue(now)
         for (i in 0 until ready.count) {
@@ -165,7 +169,7 @@ internal class Loop(
         when (port.beginSleep(next)) {
             SleepPlan.Await -> {
                 counts.waited()
-                poller.await(next, ready)
+                traced(TraceSection.PollWait) { poller.await(next, ready) }
             }
             SleepPlan.Skip -> Unit
         }

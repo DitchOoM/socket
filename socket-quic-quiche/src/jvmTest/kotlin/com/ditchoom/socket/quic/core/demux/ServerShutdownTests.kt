@@ -11,6 +11,8 @@ import com.ditchoom.socket.quic.core.demux.ServerRig.Companion.initial
 import com.ditchoom.socket.quic.core.demux.ServerRig.Companion.peer
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.sched.SleepPlan
+import com.ditchoom.socket.quic.core.testing.FlightEvidenceRule
+import org.junit.Rule
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlin.random.Random
@@ -24,6 +26,9 @@ import kotlin.test.assertTrue
  * closes, only after that connection's CONNECTION_CLOSE went out. The test thread is the loop; virtual time.
  */
 class ServerShutdownTests {
+    @get:Rule
+    val flightEvidence = FlightEvidenceRule()
+
     @Test
     fun theSocketClosesOnlyAfterTheCloseOfAConnectionACallerHeldWentOut() {
         val (rig, conn) = serverWithOnePeer()

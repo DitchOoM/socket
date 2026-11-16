@@ -8,7 +8,9 @@ import com.ditchoom.socket.quic.StubQuicheApi
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.HandshakeReached
 import com.ditchoom.socket.quic.core.testing.ConnRig
+import com.ditchoom.socket.quic.core.testing.FlightEvidenceRule
 import com.ditchoom.socket.quic.core.time.WaitResolution
+import org.junit.Rule
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -18,6 +20,9 @@ import kotlin.time.Duration.Companion.seconds
 
 /** The handshake's deadline and ceiling as a connection served by its loop applies them: virtual time, no socket. */
 class HandshakeDeadlineConnTests {
+    @get:Rule
+    val flightEvidence = FlightEvidenceRule()
+
     private val ms = 1_000_000L
     private val api = StubQuicheApi().apply { established = false }
 

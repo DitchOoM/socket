@@ -6942,7 +6942,15 @@ afterEvaluate {
 
 // Enable FFM native access for JVM tests (quiche uses Panama on JDK 21+)
 // --add-opens needed for JNI fallback path (direct ByteBuffer address access)
+// A failed core test writes the flight recording of each connection it touched here (CI uploads it on failure).
+val coreFlightDir = layout.buildDirectory.dir("core-flight")
+
+tasks.withType<org.jetbrains.kotlin.gradle.targets.native.tasks.KotlinNativeTest>().configureEach {
+    environment("CORE_FLIGHT_DIR", coreFlightDir.get().asFile.path)
+}
+
 tasks.withType<Test> {
+    systemProperty("core.flight.dir", coreFlightDir.get().asFile.path)
     jvmArgs("--enable-native-access=ALL-UNNAMED")
     jvmArgs("--add-opens", "java.base/java.nio=ALL-UNNAMED")
 }

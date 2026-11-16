@@ -40,7 +40,7 @@ import kotlin.time.Duration.Companion.seconds
 class CoreFailureTierTests {
     @Test
     fun anOperationThatThrowsFailsItsCallerAndLeavesTheOtherStreamsWorking() =
-        withFailureRig { rig ->
+        withFailureRig("CoreFailureTierTests.anOperationThatThrowsFailsItsCallerAndLeavesTheOtherStreamsWorking") { rig ->
             val connection = rig.connection
             val broken = connection.openStream()
             val healthy = connection.openStream()
@@ -61,7 +61,7 @@ class CoreFailureTierTests {
 
     @Test
     fun aConnectionWorkThatThrowsEndsThatConnectionAndTheLoopKeepsRunning() =
-        withFailureRig { rig ->
+        withFailureRig("CoreFailureTierTests.aConnectionWorkThatThrowsEndsThatConnectionAndTheLoopKeepsRunning") { rig ->
             val stream = rig.connection.openStream()
             val planted = IllegalStateException("planted in connection work")
             val parkedRead = async { runCatching { stream.read(10.seconds) { } } }
@@ -86,7 +86,7 @@ class CoreFailureTierTests {
 
     @Test
     fun anOperationQueuedBehindTheWorkThatEndedTheConnectionFailsWithThatCause() =
-        withFailureRig { rig ->
+        withFailureRig("CoreFailureTierTests.anOperationQueuedBehindTheWorkThatEndedTheConnectionFailsWithThatCause") { rig ->
             val stream = rig.connection.openStream()
             val planted = IllegalStateException("planted in connection work")
             val hold = HoldThenThrow(planted)
@@ -105,7 +105,7 @@ class CoreFailureTierTests {
 
     @Test
     fun aLoopThatFailsEndsEveryConnectionWithTheLoopFailure() =
-        withFailureRig { rig ->
+        withFailureRig("CoreFailureTierTests.aLoopThatFailsEndsEveryConnectionWithTheLoopFailure") { rig ->
             val planted = IllegalStateException("planted in the loop")
             rig.loop.port.submit(ThrowingLoopWork(planted))
 
@@ -115,7 +115,7 @@ class CoreFailureTierTests {
 
     @Test
     fun anOperationStartedAfterTheConnectionEndedFailsInsteadOfWaiting() =
-        withFailureRig { rig ->
+        withFailureRig("CoreFailureTierTests.anOperationStartedAfterTheConnectionEndedFailsInsteadOfWaiting") { rig ->
             val stream = rig.connection.openStream()
             rig.loop.port.submit(ThrowingLoopWork(IllegalStateException("planted in the loop")))
             assertIs<ConnEnd.LoopFailed>(rig.ended())
@@ -126,7 +126,7 @@ class CoreFailureTierTests {
 
     @Test
     fun aConnectionWorkThatThrowsInsideACallerEndsThatConnectionAndTheCallerLeaves() =
-        withFailureRig { rig ->
+        withFailureRig("CoreFailureTierTests.aConnectionWorkThatThrowsInsideACallerEndsThatConnectionAndTheCallerLeaves") { rig ->
             val planted = IllegalStateException("planted in connection work, run by a caller")
             runOnACaller(rig) { OnACaller(planted) }
 
@@ -141,7 +141,7 @@ class CoreFailureTierTests {
 
     @Test
     fun aFullSocketHandsTheCallersDatagramsToTheLoopWhichSendsThem() =
-        withFailureRig { rig ->
+        withFailureRig("CoreFailureTierTests.aFullSocketHandsTheCallersDatagramsToTheLoopWhichSendsThem") { rig ->
             val stream = rig.connection.openStream()
             val payload = Random(9).nextBytes(20_000)
             val head = BufferFactory.network().allocate(HEAD_BYTES)

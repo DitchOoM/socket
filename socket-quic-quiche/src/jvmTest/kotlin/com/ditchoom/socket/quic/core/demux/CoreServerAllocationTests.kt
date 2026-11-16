@@ -6,10 +6,12 @@ import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.core.edge.connectCore
 import com.ditchoom.socket.quic.core.loop.LoopSet
+import com.ditchoom.socket.quic.core.testing.FlightEvidenceRule
 import com.ditchoom.socket.quic.core.testing.allocationSamples
 import com.ditchoom.socket.quic.core.testing.withDescriptorsAbove127
 import com.ditchoom.socket.quic.network
 import kotlinx.coroutines.runBlocking
+import org.junit.Rule
 import java.lang.management.ManagementFactory
 import kotlin.test.AfterTest
 import kotlin.test.Test
@@ -28,6 +30,9 @@ import kotlin.time.Duration.Companion.seconds
  * cancelled read can free its buffer. Buffers come from the pooled `BufferFactory.network()`, so the count does not depend on how the JDK frees a native segment. The gate is twice the measurement, for JIT inlining that differs by JDK and host.
  */
 class CoreServerAllocationTests {
+    @get:Rule
+    val flightEvidence = FlightEvidenceRule()
+
     @get:org.junit.Rule
     val noLeak: org.junit.rules.TestRule = NoServerLoopLeft()
 

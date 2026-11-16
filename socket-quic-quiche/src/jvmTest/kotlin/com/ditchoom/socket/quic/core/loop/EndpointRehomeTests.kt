@@ -4,6 +4,7 @@ import com.ditchoom.socket.quic.StubQuicheApi
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.testing.ConnRig
 import com.ditchoom.socket.quic.core.testing.FakeIo
+import com.ditchoom.socket.quic.core.testing.FlightEvidenceRule
 import com.ditchoom.socket.quic.core.udp.Reopened
 import com.ditchoom.socket.quic.core.udp.SendBatchResult
 import com.ditchoom.socket.quic.core.udp.SocketFault
@@ -12,6 +13,7 @@ import com.ditchoom.socket.quic.trace.QuicTraceRecorder
 import com.ditchoom.socket.quic.trace.TraceCapture
 import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.testkit.trace.TraceSink
+import org.junit.Rule
 import java.net.BindException
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -24,6 +26,9 @@ import kotlin.time.Duration.Companion.seconds
  * the same pass instead of waiting out a backed-off timer. Over a scripted quiche, a fake socket and virtual time.
  */
 class EndpointRehomeTests {
+    @get:Rule
+    val flightEvidence = FlightEvidenceRule()
+
     private val ms = 1_000_000L
 
     @Test

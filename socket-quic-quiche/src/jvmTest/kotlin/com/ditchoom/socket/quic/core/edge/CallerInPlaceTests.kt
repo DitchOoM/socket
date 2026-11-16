@@ -10,6 +10,7 @@ import com.ditchoom.socket.quic.core.conn.Conn
 import com.ditchoom.socket.quic.core.conn.ConnWork
 import com.ditchoom.socket.quic.core.conn.Inside
 import com.ditchoom.socket.quic.core.life.ConnEnd
+import com.ditchoom.socket.quic.core.testing.FlightEvidenceRule
 import com.ditchoom.socket.quic.read
 import com.ditchoom.socket.quic.skipOnMissingNativeLib
 import kotlinx.coroutines.Dispatchers
@@ -17,6 +18,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import org.junit.Rule
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -30,6 +32,9 @@ import kotlin.time.Duration.Companion.seconds
 
 /** Callers that are not on a main dispatcher enter the connection and send in place; the loop is woken far less. */
 class CallerInPlaceTests {
+    @get:Rule
+    val flightEvidence = FlightEvidenceRule()
+
     @Test
     fun callersOnDefaultSendInPlaceAndRarelyWakeTheLoop() =
         runBlocking {

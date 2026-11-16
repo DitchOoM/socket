@@ -6,8 +6,10 @@ import com.ditchoom.socket.quic.ReplySource
 import com.ditchoom.socket.quic.SendTarget
 import com.ditchoom.socket.quic.UdpBatching
 import com.ditchoom.socket.quic.core.pool.FixedPool
+import com.ditchoom.socket.quic.core.testing.FlightEvidenceRule
 import com.ditchoom.socket.quic.loadNetShim
 import com.ditchoom.socket.quic.network
+import org.junit.Rule
 import java.net.InetSocketAddress
 import kotlin.test.AfterTest
 import kotlin.test.Test
@@ -20,6 +22,9 @@ import kotlin.test.assertIs
  * the rest unsent, which is what a send lane's [SendBatch.took] relies on.
  */
 class NativeIoTests {
+    @get:Rule
+    val flightEvidence = FlightEvidenceRule()
+
     private val shim = loadNetShim()
     private val owned = ArrayList<NativeBytes>()
     private val opened = ArrayList<NativeIo>()

@@ -5,6 +5,7 @@ import com.ditchoom.socket.quic.NetBinding
 import com.ditchoom.socket.quic.NextDue
 import com.ditchoom.socket.quic.SendTarget
 import com.ditchoom.socket.quic.UdpBatching
+import com.ditchoom.socket.quic.core.testing.FlightEvidenceRule
 import com.ditchoom.socket.quic.core.time.MonotonicClock
 import com.ditchoom.socket.quic.core.udp.Addressed
 import com.ditchoom.socket.quic.core.udp.BatchLimits
@@ -17,6 +18,7 @@ import com.ditchoom.socket.quic.core.udp.SocketPeer
 import com.ditchoom.socket.quic.core.udp.toPathKey
 import com.ditchoom.socket.quic.loadNetShim
 import com.ditchoom.socket.quic.network
+import org.junit.Rule
 import java.net.InetSocketAddress
 import java.util.function.IntSupplier
 import kotlin.test.Test
@@ -26,6 +28,9 @@ import kotlin.test.assertTrue
 
 /** The native poller against the kernel: it wakes when woken, times out no earlier than asked, and reports a socket. */
 class NativePollerTests {
+    @get:Rule
+    val flightEvidence = FlightEvidenceRule()
+
     private val shim = loadNetShim()
 
     @Test

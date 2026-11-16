@@ -9,6 +9,8 @@ import com.ditchoom.socket.quic.core.life.Tier
 import com.ditchoom.socket.quic.core.life.Tiers
 import com.ditchoom.socket.quic.core.life.errorCode
 import com.ditchoom.socket.quic.core.life.flightCode
+import com.ditchoom.socket.quic.core.observe.TraceSection
+import com.ditchoom.socket.quic.core.observe.traced
 import com.ditchoom.socket.quic.core.path.SinglePath
 import com.ditchoom.socket.quic.core.sched.LoopPort
 import com.ditchoom.socket.quic.core.sched.Pushed
@@ -52,6 +54,12 @@ internal class Turn(
 
     /** Inside: runs queued work, serves the connection and writes its output into [out]. An `Error` propagates. */
     fun serve(
+        now: Nanos,
+        out: SendBatch,
+        fire: Runnable,
+    ): Collected = traced(TraceSection.ConnWork) { serveInside(now, out, fire) }
+
+    private fun serveInside(
         now: Nanos,
         out: SendBatch,
         fire: Runnable,
@@ -107,10 +115,12 @@ internal class Turn(
         now: Nanos,
     ) {
         if (c.life.view() is Life.Ended) return
-        try {
-            c.ingress.direct(bytes, length, path, now, c.flight)
-        } catch (failure: Exception) {
-            fail(now, failure)
+        traced(TraceSection.ConnReceive) {
+            try {
+                c.ingress.direct(bytes, length, path, now, c.flight)
+            } catch (failure: Exception) {
+                fail(now, failure)
+            }
         }
     }
 
@@ -155,6 +165,7 @@ internal class Turn(
         if (c.life.end(end) == Ending.Already) return
         c.timer.disarm()
         c.flight.ended(now, end.flightCode(), end.errorCode())
+        c.flight.keepEnded(c.role)
         c.sink.ended(end)
         c.inbox.shut(end) { it.gone(end) }
         c.streams.endAll(end)

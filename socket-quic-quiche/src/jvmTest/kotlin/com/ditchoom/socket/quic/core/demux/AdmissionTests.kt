@@ -3,12 +3,17 @@ package com.ditchoom.socket.quic.core.demux
 import com.ditchoom.socket.quic.core.demux.ServerRig.Companion.initial
 import com.ditchoom.socket.quic.core.demux.ServerRig.Companion.peer
 import com.ditchoom.socket.quic.core.life.ConnEnd
+import com.ditchoom.socket.quic.core.testing.FlightEvidenceRule
+import org.junit.Rule
 import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /** [Admission] against a socket whose kernel buffer is bounded: what is started, held and dropped, pass by pass. */
 class AdmissionTests {
+    @get:Rule
+    val flightEvidence = FlightEvidenceRule()
+
     private fun burst(
         rig: ServerRig,
         count: Int,

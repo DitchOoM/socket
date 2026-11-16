@@ -11,12 +11,17 @@ import com.ditchoom.socket.quic.core.demux.ServerRig.Companion.initial
 import com.ditchoom.socket.quic.core.demux.ServerRig.Companion.peer
 import com.ditchoom.socket.quic.core.demux.ServerRig.Companion.short
 import com.ditchoom.socket.quic.core.life.ConnEnd
+import com.ditchoom.socket.quic.core.testing.FlightEvidenceRule
+import org.junit.Rule
 import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /** [Demux] routing over a scripted quiche and a fake socket: no socket, no thread, no handshake. */
 class DemuxTests {
+    @get:Rule
+    val flightEvidence = FlightEvidenceRule()
+
     /** quiche that answers each datagram a connection reads with one datagram of its own. */
     private class AnsweringApi(
         private val real: StubQuicheApi = StubQuicheApi(),
