@@ -194,6 +194,7 @@ public final class com/ditchoom/socket/quic/JniQuicheApi : com/ditchoom/socket/q
 	public fun connPeerStreamsLeftBidi-ObL0uzk (J)J
 	public fun connPeerStreamsLeftUni-ObL0uzk (J)J
 	public fun connPeerTransportParams-ObL0uzk (J)Lcom/ditchoom/socket/quic/PeerTransportParams;
+	public fun connProbeNow-ObL0uzk (J)I
 	public fun connProbePath-oJNOU9g (JJIJI)Lcom/ditchoom/socket/quic/ProbeOutcome;
 	public fun connReadSourceIds-RTtnfzo (JJI)I
 	public fun connReadable-pauv0Lc (J)J
@@ -677,6 +678,7 @@ public abstract interface class com/ditchoom/socket/quic/QuicheApi {
 	public abstract fun connPeerStreamsLeftBidi-ObL0uzk (J)J
 	public abstract fun connPeerStreamsLeftUni-ObL0uzk (J)J
 	public abstract fun connPeerTransportParams-ObL0uzk (J)Lcom/ditchoom/socket/quic/PeerTransportParams;
+	public abstract fun connProbeNow-ObL0uzk (J)I
 	public abstract fun connProbePath-oJNOU9g (JJIJI)Lcom/ditchoom/socket/quic/ProbeOutcome;
 	public fun connReadSourceIds-RTtnfzo (JJI)I
 	public abstract fun connReadable-pauv0Lc (J)J

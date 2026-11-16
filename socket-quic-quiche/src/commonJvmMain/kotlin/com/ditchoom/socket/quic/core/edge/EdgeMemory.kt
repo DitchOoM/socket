@@ -2,6 +2,7 @@ package com.ditchoom.socket.quic.core.edge
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.socket.quic.QuicCloseCircumstance
+import com.ditchoom.socket.quic.core.pool.MemoryHold
 import com.ditchoom.socket.quic.core.udp.Addressed
 import com.ditchoom.socket.quic.core.udp.JdkBacked
 import com.ditchoom.socket.quic.core.udp.JdkBytes
@@ -16,6 +17,12 @@ internal class EdgeMemory(
     private val factory: BufferFactory,
 ) {
     private val owned = ArrayList<NativeBytes>()
+    private val holds = ArrayList<MemoryHold>()
+
+    /** Releases [hold], taken by the caller, with the rest of this memory. */
+    fun releasing(hold: MemoryHold) {
+        holds.add(hold)
+    }
 
     fun native(size: Int): NativeBytes {
         val buffer = factory.allocate(size)
@@ -37,5 +44,7 @@ internal class EdgeMemory(
     fun freeAll() {
         for (bytes in owned) bytes.free()
         owned.clear()
+        for (hold in holds) hold.release()
+        holds.clear()
     }
 }

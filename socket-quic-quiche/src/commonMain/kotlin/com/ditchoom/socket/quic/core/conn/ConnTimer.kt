@@ -63,9 +63,12 @@ internal class ConnTimer(
         q.api.connOnTimeout(q.handle)
     }
 
-    /** Has quiche send an ack-eliciting packet at its next write, instead of waiting out a backed-off timer. */
+    /**
+     * The network is usable again: quiche sends what its next PTO would at its next write, past a congestion window
+     * the outage's own probes filled, so the data lost in the outage leaves now and not a backed-off timer later.
+     */
     fun nudge() {
-        q.api.connSendAckEliciting(q.handle)
+        q.api.connProbeNow(q.handle)
     }
 
     fun disarm() {

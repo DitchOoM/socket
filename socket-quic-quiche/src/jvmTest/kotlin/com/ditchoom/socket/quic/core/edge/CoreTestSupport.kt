@@ -111,13 +111,10 @@ internal suspend fun connectCore(
         flight = TEST_FLIGHT,
     )
 
-/**
- * The flight recording of a test's client connection: a server's size, so a thousand connections in one test JVM fit
- * its direct-memory limit (the default 256 KiB arena each would take 256 MiB on its own).
- */
+/** The flight recording of a test's client connection: a server connection's size. */
 internal val TEST_FLIGHT =
     com.ditchoom.socket.quic.core.conn
-        .FlightSize(records = 256, payloadBytes = 32 * 1024)
+        .FlightSize(records = 256)
 
 /** Writes [payload] on [stream] while reading the echo; returns what came back. */
 internal suspend fun echoOver(
@@ -144,8 +141,24 @@ internal suspend fun echoOver(
     return received.toByteArray()
 }
 
-internal fun coreTlsConfig(): QuicTlsConfig =
-    QuicTlsConfig(certChainPath = coreCertPath("cert.crt"), privKeyPath = coreCertPath("cert.key"))
+/**
+ * The core suites' server certificate: ECDSA P-256 for localhost. The RSA-2048 one they used made each handshake an RSA
+ * signature, the most of what a test of a thousand handshakes cost (4.0 s of it against 0.7 s on a JVM, 6.2 s against
+ * 2.6 s on an emulator) and minutes of the API 29 lane's budget.
+ */
+internal fun coreTlsConfig(certificate: TestCertificate = TestCertificate.EcdsaP256): QuicTlsConfig =
+    QuicTlsConfig(certChainPath = coreCertPath(certificate.chain), privKeyPath = coreCertPath(certificate.key))
+
+/** A server certificate the test resources hold. */
+internal enum class TestCertificate(
+    val chain: String,
+    val key: String,
+) {
+    EcdsaP256("pinned.crt", "pinned.key"),
+
+    /** The one the simulation environment's modelled peer serves, so a recording replayed against it matches. */
+    Rsa2048("cert.crt", "cert.key"),
+}
 
 /**
  * A path quiche can open. On a JVM the resource is a file on the classpath; on Android it lives inside

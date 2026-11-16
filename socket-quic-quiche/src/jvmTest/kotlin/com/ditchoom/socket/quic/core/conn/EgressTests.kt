@@ -22,7 +22,7 @@ class EgressTests {
     private val api = StubQuicheApi()
     private val q = QuicheConnRef(api, QuicheConn(1L))
     private val path = SinglePath(q, SockAddr(0L, 0), SockAddr(0L, 0), SendTarget.ConnectedPeer)
-    private val flight = ConnFlight(FlightSize(16, 8192), nativeBytes(8192), PathKey(4, 1, 0L, 1L), TraceCapture.Off, 0L)
+    private val flight = ConnFlight(FlightSize(16), FlightArena(nativeBytes(8192)), PathKey(4, 1, 0L, 1L), TraceCapture.Off, 0L)
 
     @Test
     fun aWriteTakesWhatQuicheHasAndRecordsEachDatagram() {

@@ -9,7 +9,16 @@ import kotlin.concurrent.atomics.ExperimentalAtomicApi
 
 /** A connection's life, as any thread may read it. */
 internal sealed interface Life {
-    data object Open : Life
+    /** Not ended yet. */
+    sealed interface Open : Life
+
+    /** Open, and nobody closed it, or quiche declined our close because it was already closing. */
+    data object Running : Open
+
+    /** Open, draining a close quiche accepted from us before it had read any close from the peer: it ends by us. */
+    class ClosingByUs(
+        val error: QuicError,
+    ) : Open
 
     class Ended(
         val end: ConnEnd,
@@ -30,14 +39,21 @@ internal enum class Ending { First, Already }
 internal class ConnLife(
     private val q: QuicheConnRef,
 ) {
-    private val life = AtomicReference<Life>(Life.Open)
+    private val life = AtomicReference<Life>(Life.Running)
 
     fun view(): Life = life.load()
 
     fun observe(): LifeStep = if (q.api.connIsClosed(q.handle)) LifeStep.Closed else LifeStep.Open
 
-    /** How quiche's closed connection ended: timed out, closed by the peer, by us, or with nothing recorded. */
+    /**
+     * How quiche's closed connection ended: by our close if quiche accepted it first (a peer's close that crosses ours
+     * records a peer error too), else timed out, closed by the peer, by us, or with nothing recorded.
+     */
     fun quicheEnd(): ConnEnd {
+        when (val now = life.load()) {
+            is Life.ClosingByUs -> return ConnEnd.ByLocal(now.error)
+            is Life.Running, is Life.Ended -> Unit
+        }
         if (q.api.connIsTimedOut(q.handle)) return ConnEnd.IdleTimeout
         val peer = q.api.connPeerError(q.handle)
         if (peer != null) return ConnEnd.ByPeer(peer)
@@ -48,9 +64,18 @@ internal class ConnLife(
 
     /** Starts quiche's close with [error]; the end is recorded when quiche reports the connection closed. */
     fun close(error: QuicError) {
-        q.api.connClose(q.handle, error)
+        if (q.api.connClose(q.handle, error) == QUICHE_OK) life.compareAndSet(Life.Running, Life.ClosingByUs(error))
     }
 
     /** Records [end], once. */
-    fun end(end: ConnEnd): Ending = if (life.compareAndSet(Life.Open, Life.Ended(end))) Ending.First else Ending.Already
+    fun end(end: ConnEnd): Ending {
+        while (true) {
+            when (val seen = life.load()) {
+                is Life.Ended -> return Ending.Already
+                is Life.Open -> if (life.compareAndSet(seen, Life.Ended(end))) return Ending.First
+            }
+        }
+    }
 }
+
+private const val QUICHE_OK = 0

@@ -1,6 +1,7 @@
 package com.ditchoom.socket.quic.core.demux
 
 import com.ditchoom.socket.quic.core.conn.FlightSize
+import com.ditchoom.socket.quic.core.conn.LoopMemory
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
@@ -42,5 +43,7 @@ internal class ServerConfig(
     val addressValidation: AddressValidation = AddressValidation.Off,
     val admission: AdmissionBounds = AdmissionBounds.Default,
     /** Each accepted connection's flight recording: small by default, a server holds many. */
-    val flight: FlightSize = FlightSize(records = 256, payloadBytes = 32 * 1024),
+    val flight: FlightSize = FlightSize(records = 256),
+    /** The payload arena every connection's flight recording on the server's loop shares. */
+    val flightArenaBytes: Int = LoopMemory.ARENA_BYTES,
 )

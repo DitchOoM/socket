@@ -171,5 +171,6 @@ private val OURS =
         "quiche_conn_stream_data_unacknowledged",
         "quiche_conn_peer_cert_chain_at",
         "quiche_conn_is_handshake_confirmed",
+        "quiche_conn_probe_now",
         "quiche_conn_recv_gaps",
     )

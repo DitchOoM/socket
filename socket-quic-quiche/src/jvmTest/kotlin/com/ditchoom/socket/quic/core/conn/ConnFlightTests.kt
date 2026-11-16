@@ -23,7 +23,7 @@ class ConnFlightTests {
 
     @Test
     fun aDumpIsTheV1GrammarAndParsesBack() {
-        val flight = ConnFlight(FlightSize(8, 64), nativeBytes(64), peer, TraceCapture.Off, originNanos = 100L)
+        val flight = ConnFlight(FlightSize(8), FlightArena(nativeBytes(64)), peer, TraceCapture.Off, originNanos = 100L)
         flight.datagramOut(Nanos(150L), datagram(0xC0, 0x01, 0xFF), 0, 3)
         flight.datagramIn(Nanos(170L), datagram(0x40, 0x02), 0, 2)
         val events = ArrayList<TraceEvent>()
@@ -38,16 +38,35 @@ class ConnFlightTests {
     }
 
     @Test
-    fun aPayloadTheArenaOverwroteIsLeftOutAndTheTraceIsWrittenOnce() {
+    fun aDumpLeavesOutAPayloadTheArenaOverwroteAndATraceThatIsOnIsWrittenOnce() {
         val recorded = ArrayList<TraceEvent>()
         val capture = TraceCapture.On(QuicTraceRecorder(TraceSink { recorded += it }))
-        val arena = nativeBytes(4)
+        val arena = FlightArena(nativeBytes(4))
         val length = arena.capacity / 2 + 1
-        val flight = ConnFlight(FlightSize(8, arena.capacity), arena, peer, capture, originNanos = 0L)
+        val flight = ConnFlight(FlightSize(8), arena, peer, capture, originNanos = 0L)
         flight.datagramOut(Nanos(1L), datagram(*IntArray(length) { 1 }), 0, length)
         flight.datagramOut(Nanos(2L), datagram(*IntArray(length) { 2 }), 0, length)
         flight.toTrace()
         flight.toTrace()
-        assertEquals(listOf("02".repeat(length)), recorded.map { (it as TraceEvent.DgramOut).payloadHex })
+        assertEquals(listOf("01".repeat(length), "02".repeat(length)), recorded.map { (it as TraceEvent.DgramOut).payloadHex })
+        val dumped = ArrayList<TraceEvent>()
+        flight.dump(TraceSink { dumped += it })
+        assertEquals(listOf("02".repeat(length)), dumped.map { (it as TraceEvent.DgramOut).payloadHex })
+    }
+
+    /**
+     * Connections on one loop share its arena, and another connection's writes can reach a payload before this one's
+     * turn ends: a trace that is on still holds every datagram (CoreRecordingReplayTests lost one under a full suite).
+     */
+    @Test
+    fun aTraceThatIsOnHoldsADatagramWhosePayloadAnotherConnectionOverwroteBeforeTheTurnEnded() {
+        val recorded = ArrayList<TraceEvent>()
+        val arena = FlightArena(nativeBytes(4))
+        val traced = ConnFlight(FlightSize(8), arena, peer, TraceCapture.On(QuicTraceRecorder(TraceSink { recorded += it })), 0L)
+        val other = ConnFlight(FlightSize(8), arena, peer, TraceCapture.Off, 0L)
+        traced.datagramIn(Nanos(1L), datagram(0xAA, 0xBB, 0xCC), 0, 3)
+        other.datagramOut(Nanos(2L), datagram(*IntArray(arena.capacity) { 1 }), 0, arena.capacity)
+        traced.toTrace()
+        assertEquals(listOf("aabbcc"), recorded.map { (it as TraceEvent.DgramIn).payloadHex })
     }
 }

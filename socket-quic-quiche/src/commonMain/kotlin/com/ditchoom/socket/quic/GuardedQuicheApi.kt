@@ -203,6 +203,11 @@ internal class GuardedQuicheApi(
         return delegate.connSendAckEliciting(conn)
     }
 
+    override fun connProbeNow(conn: QuicheConn): Int {
+        guard.assertOnLoop(LoopSite.Quiche)
+        return delegate.connProbeNow(conn)
+    }
+
     override fun connClose(
         conn: QuicheConn,
         error: QuicError,

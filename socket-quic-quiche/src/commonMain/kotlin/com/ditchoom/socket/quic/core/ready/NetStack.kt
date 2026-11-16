@@ -1,5 +1,7 @@
 package com.ditchoom.socket.quic.core.ready
 
+import com.ditchoom.socket.quic.core.time.WaitResolution
+
 /**
  * A poller and the sockets it can watch are one choice, made once per process.
  *
@@ -9,6 +11,8 @@ package com.ditchoom.socket.quic.core.ready
 internal sealed interface NetStack {
     class Jdk(
         val scan: SelectedKeys,
+        /** How finely `Selector.select(timeout)` wakes on this runtime. */
+        val waits: WaitResolution,
     ) : NetStack
 }
 

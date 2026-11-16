@@ -1,7 +1,7 @@
 package com.ditchoom.socket.quic.core.demux
 
-import androidx.collection.MutableLongObjectMap
 import com.ditchoom.socket.quic.core.observe.LoopOnly
+import com.ditchoom.socket.quic.core.pool.LongObjectMap
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 
 /**
@@ -124,7 +124,7 @@ internal class Route<T>(
  */
 @LoopOnly
 internal class RouteTable<T> {
-    private val table = MutableLongObjectMap<RouteLink<T>>()
+    private val table = LongObjectMap<RouteLink<T>>()
 
     val size: Int get() = table.size
 

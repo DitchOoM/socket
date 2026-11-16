@@ -39,7 +39,7 @@ class EndpointRehomeTests {
         val recorded = ArrayList<TraceEvent>()
         val rig = ConnRig(api, io = io, capture = TraceCapture.On(QuicTraceRecorder(TraceSink { recorded += it })))
         rig.pass(0)
-        api.onAckEliciting = { api.connSendQueue.addLast(60) }
+        api.onProbeNow = { api.connSendQueue.addLast(60) }
 
         rig.loop.rehome(rig.endpoint)
         rig.pass(10 * ms)

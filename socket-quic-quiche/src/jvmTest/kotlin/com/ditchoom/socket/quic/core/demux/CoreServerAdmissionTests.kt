@@ -86,7 +86,10 @@ class CoreServerAdmissionTests {
                                         assertContentEquals(payload, echoOver(stream, payload))
                                     }
                                 } finally {
-                                    client.connection.close(QuicError.NoError)
+                                    // Not close(): it waits out the closing period (three PTOs, about 250 ms on a fast
+                                    // host and over a second on a CI emulator), which this test does not measure; the
+                                    // end of the test still waits for every connection to be gone.
+                                    client.connection.closeNow(QuicError.NoError)
                                 }
                             }
                         }.awaitAll()

@@ -478,6 +478,18 @@ internal class StubQuicheApi : QuicheApi {
         return 0
     }
 
+    /** How many times [connProbeNow] was called. */
+    @Volatile var probeNowCount = 0
+
+    /** Invoked on every [connProbeNow]: a test queues the probe it would send. */
+    @Volatile var onProbeNow: (() -> Unit)? = null
+
+    override fun connProbeNow(conn: QuicheConn): Int {
+        probeNowCount++
+        onProbeNow?.invoke()
+        return 0
+    }
+
     /**
      * Every [QuicError] the driver handed to [connClose], in order — i.e. what would have gone onto the
      * wire. A test that closes with a reason quiche cannot carry (no transport code) asserts here that the

@@ -140,8 +140,8 @@ internal class Turn(
     fun dump(sink: TraceSink) = c.flight.dump(sink)
 
     /**
-     * Inside: the connection ends with [end], once. Queued work is told the end, waiting operations fail with it, the
-     * sink hears it, and the deadline is disarmed.
+     * Inside: the connection ends with [end], once. The deadline is disarmed and the sink publishes the end first, so a
+     * caller resumed by it can read how the connection ended; then queued work is told, and waiting operations fail.
      */
     fun finish(
         now: Nanos,
@@ -150,9 +150,9 @@ internal class Turn(
         if (c.life.end(end) == Ending.Already) return
         c.timer.disarm()
         c.flight.ended(now, end.flightCode(), end.errorCode())
+        c.sink.ended(end)
         c.inbox.shut(end) { it.gone(end) }
         c.streams.endAll(end)
-        c.sink.ended(end)
         c.flight.toTrace()
     }
 
@@ -194,7 +194,7 @@ internal class Turn(
 
     private fun streams() {
         c.streams.wake()
-        while (c.streams.hasIncoming()) c.sink.incoming(c.streams.takeIncoming())
+        c.streams.takeIncoming { c.sink.incoming(it) }
     }
 
     private fun rearm(

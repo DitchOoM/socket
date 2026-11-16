@@ -1,4 +1,3 @@
-@file:OptIn(ExperimentalAtomicApi::class)
 
 package com.ditchoom.socket.quic.core.demux
 
@@ -11,11 +10,7 @@ import com.ditchoom.socket.quic.core.conn.ConnectReport
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.observe.Confined
 import com.ditchoom.socket.quic.core.observe.Counter
-import com.ditchoom.socket.quic.core.observe.Published
 import kotlinx.coroutines.Runnable
-import kotlin.concurrent.atomics.AtomicInt
-import kotlin.concurrent.atomics.ExperimentalAtomicApi
-import kotlin.concurrent.atomics.decrementAndFetch
 
 /** A peer's address as quiche reads it, or that it has no form quiche takes. */
 internal sealed interface PeerSockAddr {
@@ -48,22 +43,6 @@ internal class ServerHooks(
     val peerAddress: (PathKey) -> PeerSockAddr,
     val open: (AcceptedPeer, ConnBuild) -> Opened,
 )
-
-/** Memory every connection of a server shares, freed when the last holder lets go: the loop holds it, and each connection. */
-@Published
-internal class ServerHold(
-    private val freeAll: Runnable,
-) {
-    private val holders = AtomicInt(1)
-
-    fun acquire() {
-        holders.fetchAndAdd(1)
-    }
-
-    fun release() {
-        if (holders.decrementAndFetch() == 0) freeAll.run()
-    }
-}
 
 private enum class HandshakePhase { Running, Done }
 

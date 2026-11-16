@@ -12,9 +12,9 @@ import com.ditchoom.socket.quic.core.conn.ConnAddress
 import com.ditchoom.socket.quic.core.conn.ConnMemory
 import com.ditchoom.socket.quic.core.conn.ConnSink
 import com.ditchoom.socket.quic.core.conn.ConnWork
-import com.ditchoom.socket.quic.core.conn.CopySlot
 import com.ditchoom.socket.quic.core.conn.FlightSize
 import com.ditchoom.socket.quic.core.conn.Inside
+import com.ditchoom.socket.quic.core.conn.LoopMemory
 import com.ditchoom.socket.quic.core.conn.SlotRules
 import com.ditchoom.socket.quic.core.conn.buildConn
 import com.ditchoom.socket.quic.core.life.ConnEnd
@@ -22,7 +22,7 @@ import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.observe.ConnCounts
 import com.ditchoom.socket.quic.core.observe.Counter
 import com.ditchoom.socket.quic.core.observe.LoopOnly
-import com.ditchoom.socket.quic.core.pool.FixedPool
+import com.ditchoom.socket.quic.core.pool.MemoryHold
 import com.ditchoom.socket.quic.core.sched.Entrant
 import com.ditchoom.socket.quic.core.sched.LoopPort
 import com.ditchoom.socket.quic.core.sched.SendPort
@@ -42,37 +42,21 @@ internal sealed interface PeerMemoryTake {
     data object NotNative : PeerMemoryTake
 }
 
-/** The native memory one accepted connection holds, from the server's factory, freed together once it is released. */
+/**
+ * The native memory one accepted connection holds of its own, from the server's factory, freed once it is released:
+ * only its ALPN scratch. Datagram copies and flight payload live in the loop's [LoopMemory], shared by every peer.
+ */
 internal class PeerMemory private constructor(
-    val copies: FixedPool<CopySlot>,
     val alpn: NativeBytes,
-    val arena: NativeBytes,
-    private val owned: List<NativeBytes>,
 ) {
-    fun free() {
-        for (bytes in owned) bytes.free()
-    }
+    fun free() = alpn.free()
 
     companion object {
-        fun of(
-            factory: BufferFactory,
-            copySlots: Int,
-            datagramSize: Int,
-            arenaBytes: Int,
-        ): PeerMemoryTake {
-            val owned = ArrayList<NativeBytes>(copySlots + 2)
-            for (size in List(copySlots) { datagramSize } + listOf(MAX_ALPN, arenaBytes)) {
-                when (val taken = NativeBytes.of(factory.allocate(size))) {
-                    is Addressed.Native -> owned.add(taken.bytes)
-                    is Addressed.NotAddressable -> {
-                        for (bytes in owned) bytes.free()
-                        return PeerMemoryTake.NotNative
-                    }
-                }
+        fun of(factory: BufferFactory): PeerMemoryTake =
+            when (val taken = NativeBytes.of(factory.allocate(MAX_ALPN))) {
+                is Addressed.Native -> PeerMemoryTake.Taken(PeerMemory(taken.bytes))
+                is Addressed.NotAddressable -> PeerMemoryTake.NotNative
             }
-            val copies = FixedPool(copySlots) { CopySlot(it, owned[it]) }
-            return PeerMemoryTake.Taken(PeerMemory(copies, owned[copySlots], owned[copySlots + 1], owned))
-        }
 
         private const val MAX_ALPN = 255
     }
@@ -83,6 +67,8 @@ internal class ServerParts(
     val rules: SlotRules,
     val factory: BufferFactory,
     val flight: FlightSize,
+    /** The copy slots and flight arena every connection on the server's loop shares. */
+    val shared: LoopMemory,
     val port: LoopPort,
     val socket: SendPort,
     val clock: LoopClock,
@@ -116,7 +102,7 @@ internal class ConnBuild(
             q = q,
             role = QuicRole.Server,
             address = address,
-            memory = ConnMemory(memory.copies, parts.factory, memory.alpn, memory.arena),
+            memory = ConnMemory(parts.shared, parts.factory, memory.alpn),
             flight = parts.flight,
             capture = capture,
             port = parts.port,
@@ -141,7 +127,7 @@ internal class ServerPeer(
     memory: PeerMemory,
     peerAddress: EncodedSockAddr,
     opened: Opened,
-    hold: ServerHold,
+    hold: MemoryHold,
 ) {
     var scidRoute: RouteLink<ServerPeer> = RouteLink.End
         private set

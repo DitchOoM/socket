@@ -10,6 +10,8 @@ import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.observe.Counter
 import com.ditchoom.socket.quic.core.observe.LoopOnly
 import com.ditchoom.socket.quic.core.observe.ServerCounts
+import com.ditchoom.socket.quic.core.pool.Hold
+import com.ditchoom.socket.quic.core.pool.MemoryHold
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 import com.ditchoom.socket.quic.core.udp.SockAddr
 import kotlin.random.Random
@@ -50,7 +52,7 @@ internal class Admission(
     val backlog: InitialBacklog,
     private val parts: ServerParts,
     private val hooks: ServerHooks,
-    private val hold: ServerHold,
+    private val hold: MemoryHold,
     private val random: Random,
     private val counts: ServerCounts,
 ) {
@@ -133,13 +135,21 @@ internal class Admission(
                 is PeerSockAddr.Unencodable -> return refused()
             }
         val memory =
-            when (val taken = PeerMemory.of(parts.factory, COPY_SLOTS, DATAGRAM_SIZE, parts.flight.payloadBytes)) {
+            when (val taken = PeerMemory.of(parts.factory)) {
                 is PeerMemoryTake.Taken -> taken.memory
                 is PeerMemoryTake.NotNative -> {
                     peerAddress.free()
                     return refused()
                 }
             }
+        when (hold.acquire()) {
+            Hold.Held -> Unit
+            Hold.AlreadyFreed -> {
+                memory.free()
+                peerAddress.free()
+                return refused()
+            }
+        }
         val handle =
             api.accept(
                 scidAddress,
@@ -155,10 +165,10 @@ internal class Admission(
         if (handle.handle == 0L) {
             memory.free()
             peerAddress.free()
+            hold.release()
             return refused()
         }
         inProgress.increment()
-        hold.acquire()
         counts.acceptedOne()
         counts.recvInfoBuilt()
         val address =
@@ -183,7 +193,5 @@ internal class Admission(
     private companion object {
         /** Handshakes started between two reads of the socket. */
         const val CHUNK = 16
-        const val COPY_SLOTS = 16
-        const val DATAGRAM_SIZE = 1500
     }
 }

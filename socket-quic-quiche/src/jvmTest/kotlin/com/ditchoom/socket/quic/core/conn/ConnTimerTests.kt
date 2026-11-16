@@ -49,8 +49,8 @@ class ConnTimerTests {
     }
 
     @Test
-    fun aNudgeAsksQuicheForAnAckElicitingPacket() {
+    fun aNudgeAsksQuicheForThePtoProbesNow() {
         timer.nudge()
-        assertEquals(1, api.ackElicitingCount)
+        assertEquals(1, api.probeNowCount)
     }
 }

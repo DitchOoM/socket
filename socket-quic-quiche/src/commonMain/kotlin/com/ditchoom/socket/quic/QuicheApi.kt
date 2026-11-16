@@ -415,6 +415,14 @@ interface QuicheApi {
     fun connSendAckEliciting(conn: QuicheConn): Int
 
     /**
+     * The path is usable again after an outage the caller knows of: quiche sends what a PTO would, at its next
+     * [connSend] — up to two probe packets with the oldest unacknowledged data, past the congestion window, or a
+     * PING when nothing is in flight (`quiche_conn_probe_now`, a patched-in export). Counts no PTO and declares
+     * nothing lost. Returns 0 or a negative quiche error code.
+     */
+    fun connProbeNow(conn: QuicheConn): Int
+
+    /**
      * Close the connection with the given [error].
      * Implementations decompose [QuicError] into the C API's `app` flag and error code.
      */
@@ -920,8 +928,8 @@ interface QuicheApi {
      * libquiche reads (the one the loop's clock reads), from the `at` field of the send info. A time at or before
      * now means send at once. Backends read the struct without allocating; the default answers 0, which is never
      * in the future, so a backend without it does not pace. The clock is CLOCK_MONOTONIC on Linux and
-     * CLOCK_UPTIME_RAW on Apple platforms (the patched libquiche converts its instant to it); on Windows the field
-     * holds no time and reads as the distant past, so nothing is paced there.
+     * CLOCK_UPTIME_RAW on Apple platforms and QueryPerformanceCounter nanoseconds on Windows (the patched libquiche
+     * converts its instant to each).
      */
     fun sendInfoAtNanos(info: QuicheSendInfo): Long = 0L
 

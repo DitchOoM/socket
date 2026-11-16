@@ -6,6 +6,8 @@ import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.core.edge.connectCore
 import com.ditchoom.socket.quic.core.loop.LoopSet
+import com.ditchoom.socket.quic.core.testing.allocationSamples
+import com.ditchoom.socket.quic.core.testing.withDescriptorsAbove127
 import com.ditchoom.socket.quic.network
 import kotlinx.coroutines.runBlocking
 import java.lang.management.ManagementFactory
@@ -38,32 +40,34 @@ class CoreServerAllocationTests {
     @Test
     fun theServerLoopAllocatesLittlePerEcho() =
         runBlocking {
-            withCoreEchoServer(factory = BufferFactory.network()) { server ->
-                val client = connectCore(server.port, loops = loops, factory = BufferFactory.network())
-                val stream = client.connection.openStream()
-                val payload =
-                    BufferFactory.network().allocate(PAYLOAD).apply {
-                        repeat(PAYLOAD) { writeByte(it.toByte()) }
-                        resetForRead()
-                    }
-                repeat(WARM_UP) { roundTrip(stream, payload) }
-                val threads = ManagementFactory.getThreadMXBean() as com.sun.management.ThreadMXBean
-                val loop =
-                    Thread
-                        .getAllStackTraces()
-                        .keys
-                        .first { it.name == SERVER_LOOP_THREAD }
-                        .id
-                val recording = jdk.jfr.Recording()
-                recording.enable("jdk.ObjectAllocationSample").with("throttle", "1000000/s").withStackTrace()
-                recording.start()
-                val before = threads.getThreadAllocatedBytes(loop)
-                repeat(MEASURED) { roundTrip(stream, payload) }
-                val perEcho = (threads.getThreadAllocatedBytes(loop) - before).toDouble() / MEASURED
-                recording.stop()
-                println("[core server allocation] loop %.1f B/echo\n%s".format(perEcho, breakdown(recording)))
-                client.connection.close(QuicError.NoError)
-                assertTrue(perEcho <= LOOP_GATE, "the server loop allocated %.1f B/echo (gate %d)".format(perEcho, LOOP_GATE))
+            withDescriptorsAbove127 {
+                withCoreEchoServer(factory = BufferFactory.network()) { server ->
+                    val client = connectCore(server.port, loops = loops, factory = BufferFactory.network())
+                    val stream = client.connection.openStream()
+                    val payload =
+                        BufferFactory.network().allocate(PAYLOAD).apply {
+                            repeat(PAYLOAD) { writeByte(it.toByte()) }
+                            resetForRead()
+                        }
+                    repeat(WARM_UP) { roundTrip(stream, payload) }
+                    val threads = ManagementFactory.getThreadMXBean() as com.sun.management.ThreadMXBean
+                    val loop =
+                        Thread
+                            .getAllStackTraces()
+                            .keys
+                            .first { it.name == SERVER_LOOP_THREAD }
+                            .id
+                    val recording = jdk.jfr.Recording()
+                    recording.enable("jdk.ObjectAllocationSample").with("throttle", "1000000/s").withStackTrace()
+                    recording.start()
+                    val before = threads.getThreadAllocatedBytes(loop)
+                    repeat(MEASURED) { roundTrip(stream, payload) }
+                    val perEcho = (threads.getThreadAllocatedBytes(loop) - before).toDouble() / MEASURED
+                    recording.stop()
+                    println("[core server allocation] loop %.1f B/echo\n%s".format(perEcho, breakdown(recording)))
+                    client.connection.close(QuicError.NoError)
+                    assertTrue(perEcho <= LOOP_GATE, "the server loop allocated %.1f B/echo (gate %d)".format(perEcho, LOOP_GATE))
+                }
             }
         }
 
@@ -74,9 +78,7 @@ class CoreServerAllocationTests {
                 .createTempFile("core-server", ".jfr")
         recording.dump(dump)
         val sites = HashMap<String, Long>()
-        jdk.jfr.consumer.RecordingFile
-            .readAllEvents(dump)
-            .filter { it.thread?.javaName == SERVER_LOOP_THREAD }
+        allocationSamples(dump) { it == SERVER_LOOP_THREAD }
             .forEach { e ->
                 val frames =
                     e.stackTrace?.frames.orEmpty().take(6).joinToString(" < ") {

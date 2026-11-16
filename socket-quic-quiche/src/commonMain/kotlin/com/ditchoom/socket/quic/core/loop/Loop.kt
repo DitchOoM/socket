@@ -2,7 +2,6 @@
 
 package com.ditchoom.socket.quic.core.loop
 
-import androidx.collection.MutableIntList
 import com.ditchoom.socket.quic.NextDue
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.Tier
@@ -12,6 +11,7 @@ import com.ditchoom.socket.quic.core.observe.Counter
 import com.ditchoom.socket.quic.core.observe.LoopCounts
 import com.ditchoom.socket.quic.core.observe.LoopOnly
 import com.ditchoom.socket.quic.core.observe.Published
+import com.ditchoom.socket.quic.core.pool.IntStack
 import com.ditchoom.socket.quic.core.ready.Poller
 import com.ditchoom.socket.quic.core.ready.ReadyTokens
 import com.ditchoom.socket.quic.core.sched.LoopPort
@@ -71,7 +71,7 @@ internal class Loop(
     /** Connections placed here, counted when placed and not when they end: what placement balances. */
     val connections = Counter()
     private val slots = ArrayList<LoopSlot>()
-    private val free = MutableIntList()
+    private val free = IntStack()
     private val ready = ReadyTokens(READY_TOKENS)
     private var run: Run = Run.Running
 
@@ -134,7 +134,7 @@ internal class Loop(
     }
 
     internal fun attach(endpoint: Endpoint) {
-        val token = if (free.isEmpty()) slots.size.also { slots.add(LoopSlot.Empty) } else free.removeAt(free.lastIndex)
+        val token = free.popOr { slots.size.also { slots.add(LoopSlot.Empty) } }
         slots[token] = LoopSlot.Taken(endpoint)
         endpoint.placed(token)
         poller.add(endpoint.socketRef, token)
@@ -148,7 +148,7 @@ internal class Loop(
 
     private fun receiveOn(endpoint: Endpoint) {
         try {
-            endpoint.receive(receive, counts)
+            endpoint.receive(receive, counts, clock.now())
         } catch (failure: Exception) {
             receive.release()
             endpoint.ioThrew(Thrown(failure))
@@ -157,7 +157,7 @@ internal class Loop(
 
     private fun vacate(endpoint: Endpoint) {
         slots[endpoint.token] = LoopSlot.Empty
-        free.add(endpoint.token)
+        free.push(endpoint.token)
         connections.decrement()
     }
 

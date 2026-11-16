@@ -3,13 +3,13 @@ package com.ditchoom.socket.quic.core.edge
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.socket.quic.EncodedSockAddr
+import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicConnectionIdentity
 import com.ditchoom.socket.quic.QuicRole
 import com.ditchoom.socket.quic.SendTarget
 import com.ditchoom.socket.quic.core.conn.Conn
 import com.ditchoom.socket.quic.core.conn.ConnAddress
 import com.ditchoom.socket.quic.core.conn.ConnMemory
-import com.ditchoom.socket.quic.core.conn.CopySlot
 import com.ditchoom.socket.quic.core.conn.SlotRules
 import com.ditchoom.socket.quic.core.conn.buildConn
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
@@ -18,12 +18,12 @@ import com.ditchoom.socket.quic.core.loop.Route
 import com.ditchoom.socket.quic.core.loop.SocketDiedNotice
 import com.ditchoom.socket.quic.core.observe.ConnCounts
 import com.ditchoom.socket.quic.core.pool.FixedPool
+import com.ditchoom.socket.quic.core.pool.Hold
 import com.ditchoom.socket.quic.core.ready.SocketRef
 import com.ditchoom.socket.quic.core.sched.CallerLanes
 import com.ditchoom.socket.quic.core.sched.CallerSend
 import com.ditchoom.socket.quic.core.sched.Entrant
 import com.ditchoom.socket.quic.core.sched.SendPort
-import com.ditchoom.socket.quic.core.time.MonotonicClock
 import com.ditchoom.socket.quic.core.udp.BatchLimits
 import com.ditchoom.socket.quic.core.udp.NioOneByOne
 import com.ditchoom.socket.quic.core.udp.SendBatch
@@ -44,6 +44,14 @@ internal class ClientParts(
     private val peerSockAddr: EncodedSockAddr,
     private val localSockAddr: EncodedSockAddr,
 ) {
+    init {
+        // The loop's shared memory is held until this connection's memory is freed.
+        when (w.running.hold.acquire()) {
+            Hold.Held -> w.memory.releasing(w.running.hold)
+            Hold.AlreadyFreed -> raise(Raised.LoopsClosed, QuicCloseCircumstance.HandshakeFailed)
+        }
+    }
+
     private val limits = BatchLimits(maxDatagrams = MAX_BATCH, maxDatagramSize = MAX_DATAGRAM)
     private val callerLimits = BatchLimits(maxDatagrams = CALLER_BATCH, maxDatagramSize = MAX_DATAGRAM)
     private val send = SendBatch(w.memory.native(limits.maxDatagrams * limits.maxDatagramSize), limits)
@@ -65,7 +73,7 @@ internal class ClientParts(
     private val edge = EdgeState(alpn.owner, capture)
     val conn: Conn =
         buildConn(
-            rules = SlotRules.Default,
+            rules = SlotRules.forWaits(w.running.waits),
             q = QuicheConnRef(w.api, w.handle),
             role = QuicRole.Client,
             address =
@@ -75,18 +83,12 @@ internal class ClientParts(
                     w.peer.toPathKey(),
                     SendTarget.ConnectedPeer,
                 ),
-            memory =
-                ConnMemory(
-                    FixedPool(COPY_SLOTS) { CopySlot(it, w.memory.native(MAX_DATAGRAM)) },
-                    w.memory.factory(),
-                    alpn,
-                    w.memory.native(w.flight.payloadBytes),
-                ),
+            memory = ConnMemory(w.running.shared, w.memory.factory(), alpn),
             flight = w.flight,
             capture = capture,
             port = loop.port,
             socket = socket,
-            clock = MonotonicClock,
+            clock = w.clock,
             sink = edge,
             loopEntrant = Entrant.loopTurn(loop.id, 1),
             counts = ConnCounts(),
@@ -112,7 +114,7 @@ internal class ClientParts(
         identity: QuicConnectionIdentity,
     ): CoreConnection = CoreConnection(conn, edge, factory, remote, identity, w.readPolicy, w.writePolicy, w.scope)
 
-    private val endpoint = Endpoint(SocketRef(Supplier { nio.channel }), io, socket, send, Route.Fixed(conn), released)
+    private val endpoint = Endpoint(SocketRef(Supplier { nio.channel }), io, socket, send, Route.Fixed(conn), released, w.readiness)
 
     /** The endpoint joins its loop and the connection's first flight goes out in the loop's next pass. */
     fun start() {
@@ -127,7 +129,6 @@ internal class ClientParts(
         const val MAX_BATCH = 64
         const val CALLER_LANES = 4
         const val CALLER_BATCH = 16
-        const val COPY_SLOTS = 16
         const val MAX_ALPN = 255
     }
 }

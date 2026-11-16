@@ -24,6 +24,24 @@ class ConnLifeTests {
     }
 
     @Test
+    fun aCloseWeIssuedEndsByLocalEvenWhenThePeersCloseArrivesBeforeQuicheReportsClosed() {
+        life.close(QuicError.NoError)
+        // The peer's CONNECTION_CLOSE crossed ours: quiche, closing, read it and recorded both errors.
+        api.localError = QuicError.NoError
+        api.peerError = QuicError.NoError
+        api.closed = true
+        assertEquals(QuicError.NoError, assertIs<ConnEnd.ByLocal>(life.quicheEnd()).error)
+    }
+
+    @Test
+    fun aCloseQuicheDeclinedBecauseThePeerClosedFirstEndsByPeer() {
+        api.peerError = QuicError.ProtocolViolation
+        api.connCloseResult = QUICHE_ERR_DONE
+        life.close(QuicError.NoError)
+        assertEquals(QuicError.ProtocolViolation, assertIs<ConnEnd.ByPeer>(life.quicheEnd()).error)
+    }
+
+    @Test
     fun theEndIsRecordedOnceAndPublished() {
         assertEquals(Ending.First, life.end(ConnEnd.LoopStopped))
         assertEquals(Ending.Already, life.end(ConnEnd.IdleTimeout))
@@ -35,5 +53,9 @@ class ConnLifeTests {
         assertEquals(LifeStep.Open, life.observe())
         api.closed = true
         assertEquals(LifeStep.Closed, life.observe())
+    }
+
+    private companion object {
+        const val QUICHE_ERR_DONE = -1
     }
 }

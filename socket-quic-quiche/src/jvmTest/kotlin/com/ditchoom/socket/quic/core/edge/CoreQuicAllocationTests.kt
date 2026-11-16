@@ -9,6 +9,8 @@ import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.core.testing.allocationSamples
+import com.ditchoom.socket.quic.core.testing.withDescriptorsAbove127
 import com.ditchoom.socket.quic.network
 import com.ditchoom.socket.quic.read
 import com.ditchoom.socket.quic.skipOnMissingNativeLib
@@ -45,7 +47,8 @@ import kotlin.time.Duration.Companion.seconds
  * stream, its handle objects and the open's continuation. The counters repeat to within one percent across runs, so
  * both threads are gated. Run alone the loop thread measures about 48 and 105 bytes and the caller 740 and 1,930; after the
  * server tests in one JVM the shared call sites stop inlining and the same echoes measure about 80 and 170, and 760 and 2,000.
- * The gates leave a margin above that for JIT inlining that differs by JDK and host.
+ * The gates leave a margin above that for JIT inlining that differs by JDK and host. The test holds 160 descriptors
+ * first, so the JDK selector's boxed descriptor per wake (16 B, design 9.3) is in every run and the gates include it.
  *
  * The bytes of objects whose class is in `com.ditchoom.socket.quic.core` are reported from a JFR allocation sample as
  * what the core itself allocates on the caller's thread. A sample is an estimate that swings by a factor of two between
@@ -97,41 +100,44 @@ class CoreQuicAllocationTests {
         loopGate: Int,
         callerGate: Int,
     ) = runBlocking {
-        skipOnMissingNativeLib(CoreQuicAllocationTests::class) {
-            withClosingEchoServer { port ->
-                val client = connectCore(port, factory = BufferFactory.network())
-                val dispatcher = ArrayQueueDispatcher(CALLER_THREAD)
-                val payload =
-                    BufferFactory.network().allocate(PAYLOAD).apply {
-                        repeat(PAYLOAD) { writeByte(it.toByte()) }
-                        resetForRead()
-                    }
-                val done = CompletableFuture<kotlin.Result<Report>>()
-                suspend { run(client, shape, payload) }
-                    .startCoroutine(Continuation(dispatcher + Job()) { done.complete(it) })
-                val report = done.get(120, TimeUnit.SECONDS).getOrThrow()
-                println(
-                    "[core quic allocation: $name] loop %.1f B/echo, caller core-owned %.1f B/echo, caller total %.1f B/echo\n%s".format(
-                        report.loop,
-                        report.callerCore,
-                        report.caller,
-                        report.where,
-                    ),
-                )
-                client.connection.close(QuicError.NoError)
-                dispatcher.close()
-                assertTrue(
-                    report.loop <= loopGate && report.caller <= callerGate,
-                    "$name: loop %.1f B/echo (gate %d), caller total %.1f (gate %d), caller core-owned %.1f (not gated), sampled from:\n%s"
-                        .format(
-                            report.loop,
-                            loopGate,
-                            report.caller,
-                            callerGate,
-                            report.callerCore,
-                            report.where,
-                        ),
-                )
+        withDescriptorsAbove127 {
+            skipOnMissingNativeLib(CoreQuicAllocationTests::class) {
+                withClosingEchoServer { port ->
+                    val client = connectCore(port, factory = BufferFactory.network())
+                    val dispatcher = ArrayQueueDispatcher(CALLER_THREAD)
+                    val payload =
+                        BufferFactory.network().allocate(PAYLOAD).apply {
+                            repeat(PAYLOAD) { writeByte(it.toByte()) }
+                            resetForRead()
+                        }
+                    val done = CompletableFuture<kotlin.Result<Report>>()
+                    suspend { run(client, shape, payload) }
+                        .startCoroutine(Continuation(dispatcher + Job()) { done.complete(it) })
+                    val report = done.get(120, TimeUnit.SECONDS).getOrThrow()
+                    println(
+                        "[core quic allocation: $name] loop %.1f B/echo, caller core-owned %.1f B/echo, caller total %.1f B/echo\n%s"
+                            .format(
+                                report.loop,
+                                report.callerCore,
+                                report.caller,
+                                report.where,
+                            ),
+                    )
+                    client.connection.close(QuicError.NoError)
+                    dispatcher.close()
+                    assertTrue(
+                        report.loop <= loopGate && report.caller <= callerGate,
+                        "$name: loop %.1f B/echo (gate %d), caller total %.1f (gate %d), caller core-owned %.1f (not gated), sampled from:\n%s"
+                            .format(
+                                report.loop,
+                                loopGate,
+                                report.caller,
+                                callerGate,
+                                report.callerCore,
+                                report.where,
+                            ),
+                    )
+                }
             }
         }
     }
@@ -218,12 +224,9 @@ class CoreQuicAllocationTests {
         recording.dump(dump)
         val sites = HashMap<String, Long>()
         var callerCore = 0L
-        jdk.jfr.consumer.RecordingFile
-            .readAllEvents(dump)
-            .filter {
-                it.startTime >= from &&
-                    (it.thread?.javaName?.startsWith(LOOP_THREAD) == true || it.thread?.javaName == CALLER_THREAD)
-            }.forEach { e ->
+        allocationSamples(dump) { it.startsWith(LOOP_THREAD) || it == CALLER_THREAD }
+            .filter { it.startTime >= from }
+            .forEach { e ->
                 val all = e.stackTrace?.frames.orEmpty()
                 val frames =
                     all.take(7).joinToString(" < ") {
