@@ -1,7 +1,6 @@
 package com.ditchoom.socket.quic.core.conn
 
 import com.ditchoom.socket.quic.PathKey
-import com.ditchoom.socket.quic.core.testing.FlightEvidenceRule
 import com.ditchoom.socket.quic.core.testing.nativeBytes
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.trace.QuicTraceRecorder
@@ -9,16 +8,12 @@ import com.ditchoom.socket.quic.trace.TraceCapture
 import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.testkit.trace.TracePath
 import com.ditchoom.socket.testkit.trace.TraceSink
-import org.junit.Rule
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.time.Duration.Companion.nanoseconds
 
 /** The flight recorder writes the trace grammar the existing tools read, from records taken without allocating. */
 class ConnFlightTests {
-    @get:Rule
-    val flightEvidence = FlightEvidenceRule()
-
     private val peer = PathKey(4, 443, 0L, 0x7F000001L)
 
     private fun datagram(vararg bytes: Int) =

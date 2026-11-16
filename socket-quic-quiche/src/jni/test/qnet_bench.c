@@ -41,7 +41,7 @@ static int bench_send(const char *ip, int port, int mode, int mib) {
     put_record(spec + QN_SPEC_BIND, 4, 0, 0, 0);
     put_record(spec + QN_SPEC_PEER, 4, port, 0, ntohl(a.s_addr));
     qn_spec_put((int64_t)(uintptr_t)spec, QN_SPEC_SNDBUF, 4 << 20);
-    int fd = qn_udp_open((int64_t)(uintptr_t)spec);
+    int fd = qn_udp_open_socket((int64_t)(uintptr_t)spec);
     if (fd < 0) return printf("open refused %d\n", -fd), 1;
     static uint8_t base[BATCH * 1500];
     static uint8_t records[BATCH * QN_SEND_RECORD];
@@ -81,7 +81,7 @@ static int bench_recv(int port, int mode, int gro) {
     uint8_t spec[QN_SPEC_BYTES] = {0};
     put_record(spec + QN_SPEC_BIND, 4, port, 0, 0);
     qn_spec_put((int64_t)(uintptr_t)spec, QN_SPEC_RCVBUF, 8 << 20);
-    int fd = qn_udp_open((int64_t)(uintptr_t)spec);
+    int fd = qn_udp_open_socket((int64_t)(uintptr_t)spec);
     if (fd < 0) return printf("open refused %d\n", -fd), 1;
     int64_t poller = qn_poller_open(4);
     qn_poller_add(poller, fd, 1);

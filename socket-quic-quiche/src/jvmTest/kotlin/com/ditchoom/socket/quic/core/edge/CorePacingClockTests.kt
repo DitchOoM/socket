@@ -8,13 +8,11 @@ import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.QuicheSendInfo
-import com.ditchoom.socket.quic.core.testing.FlightEvidenceRule
 import com.ditchoom.socket.quic.loadQuicheApi
 import com.ditchoom.socket.quic.skipOnMissingNativeLib
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
-import org.junit.Rule
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.test.Test
 import kotlin.test.assertTrue
@@ -26,9 +24,6 @@ import kotlin.time.Duration.Companion.seconds
  * never a different clock's reading, which the connection would wait on or ignore.
  */
 class CorePacingClockTests {
-    @get:Rule
-    val flightEvidence = FlightEvidenceRule()
-
     @Test
     fun pacerTimesOfARealTransferAreOnTheLoopsClock() =
         runBlocking {

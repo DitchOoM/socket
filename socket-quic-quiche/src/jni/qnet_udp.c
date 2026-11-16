@@ -12,9 +12,11 @@ static void qn_spec_put(int64_t spec, int offset, int32_t v) { memcpy(qn_at(spec
 static int qn_msg_x_available(void);
 #endif
 
+QN_EXPORT int32_t qn_spec_layout(void) { return QN_SPEC_LAYOUT; }
+
 /* What this socket can batch, asked of the kernel without changing the socket. A refusal of any kind
  * (ENOPROTOOPT on an old kernel, EPERM or EINVAL from a filter) is "not available". */
-QN_EXPORT int32_t qn_udp_capability(int32_t fd, int64_t spec) {
+QN_EXPORT int32_t qn_udp_capabilities(int32_t fd) {
     int32_t caps = 0, segments = 0;
 #if QN_EPOLL
     caps |= QN_CAP_MULTI;
@@ -30,11 +32,7 @@ QN_EXPORT int32_t qn_udp_capability(int32_t fd, int64_t spec) {
     (void)fd;
     if (qn_msg_x_available()) caps |= QN_CAP_MULTI | QN_CAP_PRIVATE;
 #endif
-    if (spec != 0) {
-        qn_spec_put(spec, QN_SPEC_CAPS, caps);
-        qn_spec_put(spec, QN_SPEC_GSO_SEGMENTS, segments);
-    }
-    return caps;
+    return caps | segments << QN_CAP_SEGMENTS_SHIFT;
 }
 
 #if QN_EPOLL
@@ -57,10 +55,8 @@ static void qn_gro_release(int fd) {
 static void qn_gro_release(int fd) { (void)fd; }
 #endif
 
-/* UDP_GRO on when asked: 1 on, 0 not asked or this platform has none, -QN_E* when the kernel refused. */
-static int32_t qn_gro_enable(int fd, int32_t want) {
+QN_EXPORT int32_t qn_udp_set_gro(int32_t fd) {
 #if QN_EPOLL
-    if (want == 0) return 0;
     if (fd >= QN_GRO_TABLE) return -QN_ENOMEM;
     void *p = mmap(NULL, QN_GRO_SCRATCH_BYTES, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
     if (p == MAP_FAILED) return -qn_code(errno);
@@ -74,7 +70,6 @@ static int32_t qn_gro_enable(int fd, int32_t want) {
     return 1;
 #else
     (void)fd;
-    (void)want;
     return 0;
 #endif
 }
@@ -114,9 +109,10 @@ static int32_t qn_gro_split(const uint8_t *data, int32_t total, int32_t gso, uin
 
 /* RFC 9000 §14: a datagram is never fragmented by the sender's IP layer; one over the link's MTU is refused with
  * EMSGSIZE, which is what path MTU discovery needs. Linux/Android: PROBE sets DF and ignores the kernel's cached
- * PMTU, so only quiche's own discovery moves the size. Darwin: DONTFRAG. 0 when set, else the QN_E* code. */
-static int qn_set_dont_fragment(int fd, int family) {
+ * PMTU, so only quiche's own discovery moves the size. Darwin: DONTFRAG. 0 when set, else the negated QN_E* code. */
+QN_EXPORT int32_t qn_udp_set_dont_fragment(int32_t fd, int32_t family_of_socket) {
     int first = 0;
+    int family = family_of_socket == 6 ? AF_INET6 : AF_INET;
 #if QN_EPOLL
     int probe = IP_PMTUDISC_PROBE;
     if (setsockopt(fd, IPPROTO_IP, IP_MTU_DISCOVER, &probe, sizeof probe) < 0) first = qn_code(errno);
@@ -134,7 +130,7 @@ static int qn_set_dont_fragment(int fd, int family) {
         first = qn_code(errno);
     }
 #endif
-    return first;
+    return -first;
 }
 
 /* Reads the option back: 1 = DF is set on this socket's datagrams, 0 = not, negated QN_E* on error. */
@@ -160,7 +156,7 @@ QN_EXPORT int32_t qn_udp_dont_fragment(int32_t fd, int32_t family_of_socket) {
 #endif
 }
 
-QN_EXPORT int32_t qn_udp_open(int64_t spec) {
+QN_EXPORT int32_t qn_udp_open_socket(int64_t spec) {
     uint8_t *s = qn_at(spec);
     int32_t bind_family = qn_spec_int(spec, QN_SPEC_BIND);
     int family = bind_family == 6 ? AF_INET6 : AF_INET;
@@ -178,7 +174,6 @@ QN_EXPORT int32_t qn_udp_open(int64_t spec) {
     int rcv = qn_spec_int(spec, QN_SPEC_RCVBUF), snd = qn_spec_int(spec, QN_SPEC_SNDBUF);
     if (rcv > 0) setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcv, sizeof rcv);
     if (snd > 0) setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &snd, sizeof snd);
-    qn_spec_put(spec, QN_SPEC_DF, qn_set_dont_fragment(fd, family));
     if (bind(fd, (struct sockaddr *)&bind_addr, bind_len) < 0) goto failed;
     if (qn_spec_int(spec, QN_SPEC_PEER) != 0) {
         socklen_t peer_len = qn_to_sockaddr(s + QN_SPEC_PEER, family, &peer_addr);
@@ -198,8 +193,6 @@ QN_EXPORT int32_t qn_udp_open(int64_t spec) {
     memset(&local, 0, sizeof local);
     if (getsockname(fd, (struct sockaddr *)&local, &local_len) < 0) goto failed;
     qn_from_sockaddr(&local, s + QN_SPEC_LOCAL);
-    qn_spec_put(spec, QN_SPEC_GRO_STATE, qn_gro_enable(fd, qn_spec_int(spec, QN_SPEC_GRO_WANT)));
-    qn_udp_capability(fd, spec);
     return fd;
 failed:
     e = errno;

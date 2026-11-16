@@ -8,7 +8,6 @@ import com.ditchoom.socket.quic.core.sched.LoopPort
 import com.ditchoom.socket.quic.core.sched.LoopWork
 import com.ditchoom.socket.quic.core.testing.ConnRig
 import com.ditchoom.socket.quic.core.testing.EchoQuiche
-import com.ditchoom.socket.quic.core.testing.FlightEvidenceRule
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.udp.ArrivedOn
 import com.ditchoom.socket.quic.core.udp.BatchCapability
@@ -23,7 +22,6 @@ import com.ditchoom.socket.quic.core.udp.SocketClosed
 import com.ditchoom.socket.quic.core.udp.SocketProbe
 import com.ditchoom.socket.quic.core.udp.UdpError
 import kotlinx.coroutines.Runnable
-import org.junit.Rule
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -34,9 +32,6 @@ import kotlin.test.assertSame
  * datagram, a clock that is a number.
  */
 class LoopPassTests {
-    @get:Rule
-    val flightEvidence = FlightEvidenceRule()
-
     @Test
     fun aPassEchoesEveryWaitingDatagramWithOneSend() {
         val rig = Rig()

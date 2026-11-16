@@ -2,12 +2,10 @@ package com.ditchoom.socket.quic.core.loop
 
 import com.ditchoom.socket.quic.core.ready.SelectorPoller
 import com.ditchoom.socket.quic.core.ready.jdkStackOfThisRuntime
-import com.ditchoom.socket.quic.core.testing.FlightEvidenceRule
 import com.ditchoom.socket.quic.core.testing.loopOver
 import com.ditchoom.socket.quic.core.time.MonotonicClock
 import com.ditchoom.socket.quic.core.time.Nanos
 import kotlinx.coroutines.Runnable
-import org.junit.Rule
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -21,9 +19,6 @@ import kotlin.test.assertTrue
  * late. A lost wake shows as a deadline that never fires, because the loop sleeps without a deadline of its own.
  */
 class LoopDeadlineWakeTests {
-    @get:Rule
-    val flightEvidence = FlightEvidenceRule()
-
     @Test
     fun deadlinesArmedFromOtherThreadsAllFireOnTime() {
         val clock = MonotonicClock

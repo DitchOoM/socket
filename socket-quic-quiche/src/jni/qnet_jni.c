@@ -37,10 +37,16 @@ JNIEXPORT jint JNICALL QN_JNI(nPollerWake)(JNIEnv *env, jclass cls, jlong poller
 
 JNIEXPORT void JNICALL QN_JNI(nPollerClose)(JNIEnv *env, jclass cls, jlong poller) { qn_poller_close(poller); }
 
-JNIEXPORT jint JNICALL QN_JNI(nUdpOpen)(JNIEnv *env, jclass cls, jlong spec) { return qn_udp_open(spec); }
+JNIEXPORT jint JNICALL QN_JNI(nSpecLayout)(JNIEnv *env, jclass cls) { return qn_spec_layout(); }
 
-JNIEXPORT jint JNICALL QN_JNI(nUdpCapability)(JNIEnv *env, jclass cls, jint fd, jlong spec) {
-    return qn_udp_capability(fd, spec);
+JNIEXPORT jint JNICALL QN_JNI(nUdpOpenSocket)(JNIEnv *env, jclass cls, jlong spec) { return qn_udp_open_socket(spec); }
+
+JNIEXPORT jint JNICALL QN_JNI(nUdpCapabilities)(JNIEnv *env, jclass cls, jint fd) { return qn_udp_capabilities(fd); }
+
+JNIEXPORT jint JNICALL QN_JNI(nUdpSetGro)(JNIEnv *env, jclass cls, jint fd) { return qn_udp_set_gro(fd); }
+
+JNIEXPORT jint JNICALL QN_JNI(nUdpSetDontFragment)(JNIEnv *env, jclass cls, jint fd, jint family) {
+    return qn_udp_set_dont_fragment(fd, family);
 }
 
 JNIEXPORT jlong JNICALL QN_JNI(nUdpSend)(JNIEnv *env, jclass cls, jint fd, jint family, jint mode, jlong base,

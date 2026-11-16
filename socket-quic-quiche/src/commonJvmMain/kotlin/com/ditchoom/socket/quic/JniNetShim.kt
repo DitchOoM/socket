@@ -43,12 +43,18 @@ internal object JniNetShim : NetShim {
 
     override fun pollerClose(poller: Long) = nPollerClose(poller)
 
-    override fun udpOpen(spec: Long): Int = nUdpOpen(spec)
+    override fun specLayout(): Int = nSpecLayout()
 
-    override fun udpCapability(
+    override fun udpOpenSocket(spec: Long): Int = nUdpOpenSocket(spec)
+
+    override fun udpCapabilities(fd: Int): Int = nUdpCapabilities(fd)
+
+    override fun udpSetGro(fd: Int): Int = nUdpSetGro(fd)
+
+    override fun udpSetDontFragment(
         fd: Int,
-        spec: Long,
-    ): Int = nUdpCapability(fd, spec)
+        family: Int,
+    ): Int = nUdpSetDontFragment(fd, family)
 
     override fun udpSend(
         fd: Int,
@@ -115,11 +121,17 @@ internal object JniNetShim : NetShim {
 
     @JvmStatic private external fun nPollerClose(poller: Long)
 
-    @JvmStatic private external fun nUdpOpen(spec: Long): Int
+    @JvmStatic private external fun nSpecLayout(): Int
 
-    @JvmStatic private external fun nUdpCapability(
+    @JvmStatic private external fun nUdpOpenSocket(spec: Long): Int
+
+    @JvmStatic private external fun nUdpCapabilities(fd: Int): Int
+
+    @JvmStatic private external fun nUdpSetGro(fd: Int): Int
+
+    @JvmStatic private external fun nUdpSetDontFragment(
         fd: Int,
-        spec: Long,
+        family: Int,
     ): Int
 
     @JvmStatic private external fun nUdpSend(

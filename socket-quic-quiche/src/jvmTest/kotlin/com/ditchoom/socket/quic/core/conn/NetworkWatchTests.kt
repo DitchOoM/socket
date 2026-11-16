@@ -2,17 +2,12 @@ package com.ditchoom.socket.quic.core.conn
 
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.core.life.ConnEnd
-import com.ditchoom.socket.quic.core.testing.FlightEvidenceRule
-import org.junit.Rule
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertSame
 
 class NetworkWatchTests {
-    @get:Rule
-    val flightEvidence = FlightEvidenceRule()
-
     private val watch = NetworkWatch()
 
     @Test

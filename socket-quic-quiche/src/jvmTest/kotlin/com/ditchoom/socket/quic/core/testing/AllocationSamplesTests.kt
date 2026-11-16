@@ -1,7 +1,6 @@
 package com.ditchoom.socket.quic.core.testing
 
 import jdk.jfr.Recording
-import org.junit.Rule
 import java.nio.file.Files
 import kotlin.concurrent.thread
 import kotlin.test.Test
@@ -12,9 +11,6 @@ import kotlin.test.assertTrue
  * CoreQuicAllocationTests failed on Apple FFM with "unknown field objectClass" reading the ring's other events.
  */
 class AllocationSamplesTests {
-    @get:Rule
-    val flightEvidence = FlightEvidenceRule()
-
     @Test
     fun aDumpTakenWhileAnotherRecordingRunsYieldsOnlyAllocationSamples() {
         val ring = Recording().apply { enable("jdk.ThreadSleep").withThreshold(java.time.Duration.ZERO) }

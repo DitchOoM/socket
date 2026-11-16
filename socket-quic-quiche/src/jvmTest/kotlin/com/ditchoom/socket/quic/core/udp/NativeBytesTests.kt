@@ -2,9 +2,7 @@ package com.ditchoom.socket.quic.core.udp
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.managed
-import com.ditchoom.socket.quic.core.testing.FlightEvidenceRule
 import com.ditchoom.socket.quic.network
-import org.junit.Rule
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -17,9 +15,6 @@ import kotlin.test.assertTrue
  * answer into the typed connect failure (step 3); nothing below it can be handed such a buffer.
  */
 class NativeBytesTests {
-    @get:Rule
-    val flightEvidence = FlightEvidenceRule()
-
     @Test
     fun aHeapBufferHasNoAddressAndIsTold() {
         assertEquals(Addressed.NotAddressable, NativeBytes.of(BufferFactory.managed().allocate(64)))

@@ -7,7 +7,6 @@ import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.core.edge.connectCore
 import com.ditchoom.socket.quic.core.edge.echoOver
 import com.ditchoom.socket.quic.core.loop.LoopSet
-import com.ditchoom.socket.quic.core.testing.FlightEvidenceRule
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.Rule
@@ -26,9 +25,6 @@ import kotlin.time.Duration.Companion.milliseconds
 
 /** Version Negotiation and Retry: the packets a server answers with before it has a connection. */
 class CoreServerStatelessTests {
-    @get:Rule
-    val flightEvidence = FlightEvidenceRule()
-
     @get:org.junit.Rule
     val noLeak: org.junit.rules.TestRule = NoServerLoopLeft()
 

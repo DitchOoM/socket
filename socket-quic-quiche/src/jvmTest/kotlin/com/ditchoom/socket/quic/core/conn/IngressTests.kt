@@ -8,10 +8,8 @@ import com.ditchoom.socket.quic.StubQuicheApi
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.observe.ConnCounts
-import com.ditchoom.socket.quic.core.testing.FlightEvidenceRule
 import com.ditchoom.socket.quic.core.testing.nativeBytes
 import com.ditchoom.socket.quic.core.testing.testLoopMemory
-import org.junit.Rule
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -19,9 +17,6 @@ import kotlin.test.assertSame
 
 /** A datagram that reaches the loop while a caller is inside is copied, never dropped while memory can be had. */
 class IngressTests {
-    @get:Rule
-    val flightEvidence = FlightEvidenceRule()
-
     private val q = QuicheConnRef(StubQuicheApi(), QuicheConn(1L))
     private val counts = ConnCounts()
     private val datagram = nativeBytes(16).also { for (i in 0 until 16) it.owner.set(i, i.toByte()) }

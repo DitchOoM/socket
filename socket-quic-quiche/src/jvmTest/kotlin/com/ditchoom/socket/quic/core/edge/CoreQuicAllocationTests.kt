@@ -11,7 +11,6 @@ import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.ScopedRead
 import com.ditchoom.socket.quic.core.ready.NetStack
 import com.ditchoom.socket.quic.core.ready.netStackOfThisRuntime
-import com.ditchoom.socket.quic.core.testing.FlightEvidenceRule
 import com.ditchoom.socket.quic.core.testing.allocationSamples
 import com.ditchoom.socket.quic.core.testing.withDescriptorsAbove127
 import com.ditchoom.socket.quic.network
@@ -25,7 +24,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
-import org.junit.Rule
 import java.lang.management.ManagementFactory
 import java.time.Instant
 import java.util.concurrent.ArrayBlockingQueue
@@ -59,9 +57,6 @@ import kotlin.time.Duration.Companion.seconds
  * runs, so it is printed and listed in a failure message, never gated.
  */
 class CoreQuicAllocationTests {
-    @get:Rule
-    val flightEvidence = FlightEvidenceRule()
-
     @Test
     fun anEchoOnOneStreamAllocatesOnlyWhatTheCallersApiForces() =
         measure("one stream", OneStream, loopGate = loopGate(LOOP_GATE_ONE, JDK_LOOP_GATE_ONE), callerGate = CALLER_GATE_ONE)

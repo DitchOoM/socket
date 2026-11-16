@@ -8,7 +8,6 @@ import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.core.demux.withCoreEchoServer
-import com.ditchoom.socket.quic.core.testing.FlightEvidenceRule
 import com.ditchoom.socket.quic.core.udp.Addressed
 import com.ditchoom.socket.quic.core.udp.BatchLimits
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
@@ -19,7 +18,6 @@ import com.ditchoom.socket.quic.loadQuicheApi
 import com.ditchoom.socket.quic.skipOnMissingNativeLib
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
-import org.junit.Rule
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.random.Random
 import kotlin.test.Test
@@ -30,9 +28,6 @@ import kotlin.time.Duration.Companion.seconds
 
 /** A core endpoint's datagrams start at the 1200 bytes every path carries, and grow only as probes are acknowledged. */
 class CoreDatagramSizeTests {
-    @get:Rule
-    val flightEvidence = FlightEvidenceRule()
-
     /** A link of 1280 bytes: a datagram over it is lost, as the path refuses it with DF set; the others go on. */
     private class SmallLink(
         private val real: DatagramBatchIo,

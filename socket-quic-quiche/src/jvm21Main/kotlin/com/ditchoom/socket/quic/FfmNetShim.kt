@@ -33,8 +33,12 @@ internal class FfmNetShim private constructor(
     private val hPollerReadyAt = downcall("qn_poller_ready_at", FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT))
     private val hPollerWake = downcall("qn_poller_wake", FunctionDescriptor.of(JAVA_INT, JAVA_LONG))
     private val hPollerClose = downcall("qn_poller_close", FunctionDescriptor.ofVoid(JAVA_LONG))
-    private val hUdpOpen = downcall("qn_udp_open", FunctionDescriptor.of(JAVA_INT, JAVA_LONG))
-    private val hUdpCapability = downcall("qn_udp_capability", FunctionDescriptor.of(JAVA_INT, JAVA_INT, JAVA_LONG))
+    private val hSpecLayout = downcall("qn_spec_layout", FunctionDescriptor.of(JAVA_INT))
+    private val hUdpOpenSocket = downcall("qn_udp_open_socket", FunctionDescriptor.of(JAVA_INT, JAVA_LONG))
+    private val hUdpCapabilities = downcall("qn_udp_capabilities", FunctionDescriptor.of(JAVA_INT, JAVA_INT))
+    private val hUdpSetGro = downcall("qn_udp_set_gro", FunctionDescriptor.of(JAVA_INT, JAVA_INT))
+    private val hUdpSetDontFragment =
+        downcall("qn_udp_set_dont_fragment", FunctionDescriptor.of(JAVA_INT, JAVA_INT, JAVA_INT))
     private val hUdpSend =
         downcall(
             "qn_udp_send",
@@ -86,12 +90,18 @@ internal class FfmNetShim private constructor(
         hPollerClose.invokeExact(poller)
     }
 
-    override fun udpOpen(spec: Long): Int = hUdpOpen.invokeExact(spec) as Int
+    override fun specLayout(): Int = hSpecLayout.invokeExact() as Int
 
-    override fun udpCapability(
+    override fun udpOpenSocket(spec: Long): Int = hUdpOpenSocket.invokeExact(spec) as Int
+
+    override fun udpCapabilities(fd: Int): Int = hUdpCapabilities.invokeExact(fd) as Int
+
+    override fun udpSetGro(fd: Int): Int = hUdpSetGro.invokeExact(fd) as Int
+
+    override fun udpSetDontFragment(
         fd: Int,
-        spec: Long,
-    ): Int = hUdpCapability.invokeExact(fd, spec) as Int
+        family: Int,
+    ): Int = hUdpSetDontFragment.invokeExact(fd, family) as Int
 
     override fun udpSend(
         fd: Int,
