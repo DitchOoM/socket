@@ -204,8 +204,12 @@ data class QuicOptions(
     val alpnProtocols: List<String>,
     /** Flow control limits. */
     val flowControl: FlowControl = FlowControl(),
-    /** Congestion control algorithm and per-algorithm options. */
-    val congestionControl: CongestionControl = CongestionControl.Cubic(),
+    /**
+     * Congestion control algorithm and per-algorithm options. [CongestionControl.Bbr2] by default: it holds
+     * its rate through the occasional loss of a delayed path, where CUBIC can stay at a few megabytes of
+     * window for seconds. [CongestionControl.Cubic] costs fewer retransmits on a shallow bottleneck queue.
+     */
+    val congestionControl: CongestionControl = CongestionControl.Bbr2,
     /** Send pacing configuration. */
     val pacing: Pacing = Pacing.Unlimited,
     /** Connection idle timeout. Zero means no timeout. */
