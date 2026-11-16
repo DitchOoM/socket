@@ -9,12 +9,14 @@ import com.ditchoom.socket.quic.QuicheRecvInfo
 import com.ditchoom.socket.quic.ReplySource
 import com.ditchoom.socket.quic.SendTarget
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
+import com.ditchoom.socket.quic.core.life.RetiredId
 import com.ditchoom.socket.quic.core.life.SpareId
 import com.ditchoom.socket.quic.core.observe.Confined
 import com.ditchoom.socket.quic.core.observe.Published
 import com.ditchoom.socket.quic.decodePathKey
 import com.ditchoom.socket.quic.encodeToNative
 import kotlin.concurrent.atomics.AtomicInt
+import kotlin.concurrent.atomics.AtomicReference
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 
 /** Whether quiche is validating a peer address the server has seen. */
@@ -63,6 +65,22 @@ internal class IdsWanted {
     fun take(): Int = if (wanted.load() == 0) 0 else wanted.exchange(0)
 }
 
+/** The ids a peer retired and the loop has not yet unrouted: the thread inside adds them, the loop takes them. */
+@Published
+internal class IdsRetired {
+    private val held = AtomicReference<List<RetiredId>>(emptyList())
+
+    fun add(ids: List<RetiredId>) {
+        while (true) {
+            val seen = held.load()
+            if (held.compareAndSet(seen, seen + ids)) return
+        }
+    }
+
+    /** The loop takes what is held, once. */
+    fun take(): List<RetiredId> = if (held.load().isEmpty()) emptyList() else held.exchange(emptyList())
+}
+
 /**
  * A server connection's paths: quiche follows a peer that moves (RFC 9000 §9), and this tells it where each datagram
  * came from and sends each reply where quiche addresses it, always from the server's own address. While quiche
@@ -78,11 +96,17 @@ internal class ServerPaths(
     private val factory: BufferFactory,
     private val ids: IdIssuer,
     val wanted: IdsWanted,
+    val retired: IdsRetired,
+    private val free: (QuicheRecvInfo, Made) -> Unit,
 ) {
     private val firstTo = Outgoing.To(first.target)
     private val fixed = Sorting.Fixed(firstTo)
     private val peers = ArrayList<PeerAddr>(1)
     private var events: EventMemory = EventMemory.None
+    private val retiredIds = RetiredReader(factory)
+
+    /** The index of the peer address the last datagram came from. */
+    private var latest = 0
 
     init {
         peers.add(PeerAddr(peerKey, q.api.decodePathKey(first.peer.address), first.recvInfo, firstTo, Made.ByEdge))
@@ -94,14 +118,20 @@ internal class ServerPaths(
 
     /** What quiche is told about a datagram that came from [from]: a peer address not seen before is followed. */
     fun recvInfo(from: PathKey): RecvFrom {
-        for (i in peers.indices) if (peers[i].from == from) return peers[i].info
-        if (peers.size == MAX_PEERS) return RecvFrom.TooManyAddresses
+        for (i in peers.indices) {
+            if (peers[i].from == from) {
+                latest = i
+                return peers[i].info
+            }
+        }
+        if (peers.size == MAX_PEERS && !evictOne()) return RecvFrom.TooManyAddresses
         val sockAddr = from.encodeToNative(factory)
         val recvInfo = q.api.recvInfoNew(sockAddr.address, sockAddr.length, first.local.address, first.local.length)
         val target = Outgoing.To(SendTarget.ServerReply(to = from, from = ReplySource.Recorded(localKey)))
         val peer = PeerAddr(from, q.api.decodePathKey(sockAddr.address), recvInfo, target, Made.Here(sockAddr))
         peer.checking(PeerCheck.Validating)
         peers.add(peer)
+        latest = peers.size - 1
         wanted.want(q.api.connScidsLeft(q.handle).toInt())
         return peer.info
     }
@@ -124,8 +154,14 @@ internal class ServerPaths(
         for (id in spare) ids.issue(q, id)
     }
 
-    /** Reads quiche's path events while a peer address is being validated. */
+    /** Reads the ids the peer retired, for the loop to stop routing, and quiche's path events while a peer address is validated. */
     fun step() {
+        val gone = if (peers.size == 1) emptyList() else retiredIds.read(q)
+        if (gone.isNotEmpty()) {
+            retired.add(gone)
+            // What the peer let go quiche may issue again: the loop routes new ids before they are handed over.
+            wanted.want(q.api.connScidsLeft(q.handle).toInt())
+        }
         if (!validating()) return
         val scratch =
             when (val taken = scratch()) {
@@ -153,6 +189,19 @@ internal class ServerPaths(
             is EventMemory.None -> Unit
         }
         ids.free()
+        retiredIds.free()
+    }
+
+    /** Frees the oldest address that is neither the latest nor being validated; false when there is none. */
+    private fun evictOne(): Boolean {
+        for (i in peers.indices) {
+            if (i == latest || peers[i].check == PeerCheck.Validating) continue
+            free(peers[i].recvInfo, peers[i].sockAddr)
+            peers.removeAt(i)
+            if (i < latest) latest--
+            return true
+        }
+        return false
     }
 
     private fun validating(): Boolean {
@@ -173,7 +222,7 @@ internal class ServerPaths(
         }
 
     private companion object {
-        /** Peer addresses one connection follows; a peer behind a NAT that rebinds often still fits. */
+        /** Peer addresses one connection holds at once; the oldest that is settled makes room for a new one. */
         const val MAX_PEERS = 8
     }
 }

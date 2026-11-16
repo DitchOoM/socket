@@ -9,6 +9,7 @@ import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.observe.ConnCounts
 import com.ditchoom.socket.quic.core.path.ClientPaths
 import com.ditchoom.socket.quic.core.path.IdIssuer
+import com.ditchoom.socket.quic.core.path.IdsRetired
 import com.ditchoom.socket.quic.core.path.IdsWanted
 import com.ditchoom.socket.quic.core.path.ServerPaths
 import com.ditchoom.socket.quic.core.path.SinglePath
@@ -90,6 +91,7 @@ internal fun buildConn(
                                 memory.factory,
                                 IdIssuer(memory.factory),
                                 side.ids,
+                                { info, made -> q.freeInfo(info, made) },
                             ),
                         )
                     is ConnSide.Server ->
@@ -102,6 +104,8 @@ internal fun buildConn(
                                 memory.factory,
                                 IdIssuer(memory.factory),
                                 IdsWanted(),
+                                IdsRetired(),
+                                { info, made -> q.freeInfo(info, made) },
                             ),
                         )
                 },

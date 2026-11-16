@@ -1,13 +1,10 @@
 package com.ditchoom.socket.quic.core.demux
 
 import com.ditchoom.socket.quic.PathKey
-import com.ditchoom.socket.quic.QUIC_ISSUED_CONN_ID_LEN
 import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.core.conn.Collected
-import com.ditchoom.socket.quic.core.conn.IssueIdsWork
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.Life
-import com.ditchoom.socket.quic.core.life.SpareId
 import com.ditchoom.socket.quic.core.observe.LoopOnly
 import com.ditchoom.socket.quic.core.observe.ServerCounts
 import com.ditchoom.socket.quic.core.sched.LoopPort
@@ -45,8 +42,8 @@ internal class Demux(
     private val counts: ServerCounts,
 ) {
     private val header = PacketHeader()
-    private val spareCid = CidRead()
     private val table = RouteTable<ServerPeer>()
+    private val spares = SpareRoutes(table, admission)
     private val peers = ArrayList<ServerPeer>()
     private val life = ServerLife()
     private val tick = PassTick()
@@ -54,6 +51,9 @@ internal class Demux(
 
     /** The connections routed to: read it on the loop, or once the server is quiet. */
     val connections: Int get() = peers.size
+
+    /** The connection ids routed, spare ids included: read it on the loop, or once the server is quiet. */
+    val routes: Int get() = table.size
 
     fun phase(): ServerPhase = life.view()
 
@@ -96,7 +96,8 @@ internal class Demux(
             if (peer.conn.life() is Life.Ended) {
                 unroute(peer)
             } else {
-                issueIds(peer)
+                spares.retire(peer)
+                spares.issue(peer)
                 i++
             }
         }
@@ -247,23 +248,6 @@ internal class Demux(
         peer.listedAt(peers.size)
         peers.add(peer)
         peer.conn.received(datagram, length, from, at)
-    }
-
-    /**
-     * The ids [peer] may hand its own peer for a new path are routed here first, then handed to quiche inside the
-     * connection, so a datagram that carries one always finds its connection.
-     */
-    private fun issueIds(peer: ServerPeer) {
-        val wanted = peer.conn.idsWanted()
-        if (wanted == 0) return
-        val spare = ArrayList<SpareId>(wanted)
-        repeat(wanted) {
-            val id = admission.spareId()
-            spareCid.set(id.c0, id.c1, 0L, QUIC_ISSUED_CONN_ID_LEN)
-            peer.routedSpare(table.add(spareCid, peer))
-            spare.add(id)
-        }
-        peer.conn.submitFromLoop(IssueIdsWork(spare))
     }
 
     /** [peer] ended: its routes go, and its memory is released once nobody is inside it. */

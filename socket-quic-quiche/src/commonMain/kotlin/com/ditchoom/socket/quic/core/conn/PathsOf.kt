@@ -3,6 +3,7 @@ package com.ditchoom.socket.quic.core.conn
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicheSendInfo
 import com.ditchoom.socket.quic.core.life.ConnEnd
+import com.ditchoom.socket.quic.core.life.RetiredId
 import com.ditchoom.socket.quic.core.life.SpareId
 import com.ditchoom.socket.quic.core.path.MoveAnswer
 import com.ditchoom.socket.quic.core.path.PathRead
@@ -114,6 +115,13 @@ internal fun Paths.idsWanted(): Int =
     when (this) {
         is Paths.Client -> 0
         is Paths.Server -> paths.wanted.take()
+    }
+
+/** Any thread: the ids a server connection's peer retired, taken once; a client's peer retires none that are routed. */
+internal fun Paths.idsRetired(): List<RetiredId> =
+    when (this) {
+        is Paths.Client -> emptyList()
+        is Paths.Server -> paths.retired.take()
     }
 
 /** Inside: the ids the loop routed to a server connection go to quiche. */

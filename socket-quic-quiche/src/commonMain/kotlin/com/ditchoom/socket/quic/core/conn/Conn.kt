@@ -5,6 +5,7 @@ package com.ditchoom.socket.quic.core.conn
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.Life
+import com.ditchoom.socket.quic.core.life.RetiredId
 import com.ditchoom.socket.quic.core.observe.ConnCounts
 import com.ditchoom.socket.quic.core.observe.LoopOnly
 import com.ditchoom.socket.quic.core.sched.CallerSend
@@ -117,6 +118,9 @@ internal class Conn(
 
     /** Any thread: how many new connection ids the loop should route to this connection, taken once. */
     fun idsWanted(): Int = turn.idsWanted()
+
+    /** Any thread: the ids this connection's peer retired since the last call, taken once. */
+    fun idsRetired(): List<RetiredId> = turn.idsRetired()
 
     /** Loop thread, once or more per pass: serves the connection if the loop is inside, and leaves when done. */
     fun turn(out: SendBatch): Collected {

@@ -159,6 +159,9 @@ internal class ServerPeer(
         spares.add(route)
     }
 
+    /** [route] was one of this peer's spare ids: it is forgotten, and true; false for any other route. */
+    fun unroutedSpare(route: Route<ServerPeer>): Boolean = spares.remove(route)
+
     /** Hands [each] every spare id's route, once: they go with the connection. */
     fun spareRoutes(each: (Route<ServerPeer>) -> Unit) {
         spares.forEach(each)

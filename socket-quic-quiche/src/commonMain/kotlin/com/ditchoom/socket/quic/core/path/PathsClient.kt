@@ -93,12 +93,14 @@ internal class ClientPaths(
     private val factory: BufferFactory,
     private val ids: IdIssuer,
     private val random: Random,
+    private val free: (QuicheRecvInfo, Made) -> Unit,
 ) {
     private val toPeer = Outgoing.To(first.target)
     private val fixed = Sorting.Fixed(toPeer)
     private var move: Move = Move.Settled(Linked(LocalAddr(q.api.decodePathKey(first.local.address), first.recvInfo, Made.ByEdge), 0L))
     private var events: EventMemory = EventMemory.None
-    private val spent = ArrayList<LocalAddr>(SPENT)
+    private var previous: Previous = Previous.None
+    private val retiredIds = RetiredReader(factory)
 
     val sendInfo get() = first.sendInfo
 
@@ -131,6 +133,7 @@ internal class ClientPaths(
             is PeerMigrationPermission.Permitted -> Unit
             is PeerMigrationPermission.Forbidden, is PeerMigrationPermission.NotYetNegotiated -> return MoveAnswer.Refused
         }
+        topUp()
         val sockAddr = local.encodeToNative(factory)
         val at = LocalAddr(q.api.decodePathKey(sockAddr.address), recvInfoAt(sockAddr), Made.Here(sockAddr))
         val from = abandon()
@@ -154,7 +157,10 @@ internal class ClientPaths(
 
     /** Hands [each] every endpoint this connection made, for its release, and frees the paths' own memory. */
     fun made(each: (LocalAddr) -> Unit) {
-        spent.forEach(each)
+        when (val held = previous) {
+            is Previous.Held -> each(held.local)
+            is Previous.None -> Unit
+        }
         when (val now = move) {
             is Move.Settled -> each(now.on.local)
             is Move.Probing -> {
@@ -171,6 +177,7 @@ internal class ClientPaths(
             is EventMemory.None -> Unit
         }
         ids.free()
+        retiredIds.free()
     }
 
     private fun follow(probing: Move.Probing): PathStep {
@@ -203,7 +210,7 @@ internal class ClientPaths(
                 val left = sockAddrOf(probing.from.local)
                 q.api.connRequeuePath(q.handle, left.address, left.length, first.peer.address, first.peer.length)
                 retire(probing.from.dcidSeq)
-                spent.add(probing.from.local)
+                spend(probing.from.local)
                 move = Move.Settled(Linked(to, migrated.dcidSeq))
                 PathStep.Migrated
             }
@@ -213,6 +220,15 @@ internal class ClientPaths(
                 PathStep.Steady
             }
         }
+    }
+
+    /**
+     * Hands the peer the ids it may use for the paths of moves to come: each path uses one, and the peer retires those of
+     * the paths it left. What it retired is read out of quiche, which keeps it until it is.
+     */
+    private fun topUp() {
+        retiredIds.read(q)
+        ids.issueAll(q, random)
     }
 
     private fun connMigrate(to: LocalAddr): MigrateOutcome {
@@ -232,14 +248,23 @@ internal class ClientPaths(
             is Move.Settled -> now.on
             is Move.Probing -> {
                 retire(now.to.dcidSeq)
-                spent.add(now.to.local)
+                spend(now.to.local)
                 now.from
             }
             is Move.Stranded -> {
-                spent.add(now.at)
+                spend(now.at)
                 now.from
             }
         }
+
+    /** [local] is left behind: it is kept as the previous endpoint, and the one kept before it is freed. */
+    private fun spend(local: LocalAddr) {
+        when (val held = previous) {
+            is Previous.Held -> free(held.local.recvInfo, held.local.made)
+            is Previous.None -> Unit
+        }
+        previous = Previous.Held(local)
+    }
 
     private fun socket(): LocalAddr =
         when (val now = move) {
@@ -266,9 +291,5 @@ internal class ClientPaths(
     private fun retire(seq: Long) {
         // A refusal leaves the id with quiche until the connection ends; no path uses it.
         q.api.connRetireDcid(q.handle, seq)
-    }
-
-    private companion object {
-        const val SPENT = 4
     }
 }

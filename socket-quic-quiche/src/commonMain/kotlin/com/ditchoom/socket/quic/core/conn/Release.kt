@@ -2,9 +2,9 @@
 
 package com.ditchoom.socket.quic.core.conn
 
+import com.ditchoom.socket.quic.QuicheRecvInfo
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.observe.Published
-import com.ditchoom.socket.quic.core.path.LocalAddr
 import com.ditchoom.socket.quic.core.path.Made
 import kotlinx.coroutines.Runnable
 import kotlin.concurrent.atomics.AtomicReference
@@ -46,25 +46,22 @@ internal class Release(
         if (was !is Freeing.Requested || !state.compareAndSet(was, Freeing.Freed)) return
         q.api.connFree(q.handle)
         when (paths) {
-            is Paths.Client -> paths.paths.made { local -> freeLocal(local) }
-            is Paths.Server ->
-                paths.paths.made { info, made ->
-                    q.api.recvInfoFree(info)
-                    when (made) {
-                        is Made.Here -> made.sockAddr.free()
-                        is Made.ByEdge -> Unit
-                    }
-                }
+            is Paths.Client -> paths.paths.made { local -> q.freeInfo(local.recvInfo, local.made) }
+            is Paths.Server -> paths.paths.made { info, made -> q.freeInfo(info, made) }
         }
         q.api.sendInfoFree(paths.sendInfo())
         was.then.run()
     }
+}
 
-    private fun freeLocal(local: LocalAddr) {
-        q.api.recvInfoFree(local.recvInfo)
-        when (val made = local.made) {
-            is Made.Here -> made.sockAddr.free()
-            is Made.ByEdge -> Unit
-        }
+/** Frees a receive info and, when the connection made it, its sockaddr: the edge frees the ones it handed in. */
+internal fun QuicheConnRef.freeInfo(
+    info: QuicheRecvInfo,
+    made: Made,
+) {
+    api.recvInfoFree(info)
+    when (made) {
+        is Made.Here -> made.sockAddr.free()
+        is Made.ByEdge -> Unit
     }
 }
