@@ -206,7 +206,32 @@ EOF
 chmod +x "$tmp/gradlew"
 OUT="$(cd "$tmp" && RUNNER_TEMP="$tmp" GRADLE_RETRY_BACKOFF_SECONDS=0 GRADLE_RETRY_PROBE=true bash "$script" help 2>&1)"
 RC=$?; N="$(cat "$tmp/n")"; rm -rf "$tmp"
-check "the retry after an unresolved plugin runs with --stacktrace" 0 2 "$RC" "$N" "$OUT" "ARGS: help --stacktrace"
+check "the retry after an unresolved plugin refreshes dependencies and runs with --stacktrace" 0 2 "$RC" "$N" "$OUT" "ARGS: help --refresh-dependencies --stacktrace"
+
+# The retry after a plugin failure must re-ask the repositories (--refresh-dependencies); the first
+# attempt must not carry it.
+run_args() { # <failure-text-file> -> OUT/RC/N; the fake gradle prints its arguments each run
+  local text="$1" tmp; tmp="$(mktemp -d)"
+  cat >"$tmp/gradlew" <<EOF2
+#!/usr/bin/env bash
+n=\$(cat "$tmp/n" 2>/dev/null || echo 0); n=\$((n + 1)); echo "\$n" >"$tmp/n"
+echo "GRADLE-ARGS[\$n]: \$*"
+if [ "\$n" -le 1 ]; then cat "$text"; exit 1; fi
+echo "BUILD SUCCESSFUL"
+EOF2
+  chmod +x "$tmp/gradlew"
+  OUT="$(cd "$tmp" && RUNNER_TEMP="$tmp" GRADLE_RETRY_BACKOFF_SECONDS=0 GRADLE_RETRY_PROBE=true bash "$script" help 2>&1)"
+  RC=$?; N="$(cat "$tmp/n")"; rm -rf "$tmp"
+}
+run_args "$fixtures/plugin-unresolved"
+check "the retry after a plugin failure refreshes dependencies" 0 2 "$RC" "$N" "$OUT" "GRADLE-ARGS[2]: help --refresh-dependencies --stacktrace"
+if grep -qF "GRADLE-ARGS[1]: help" <<<"$OUT"; then echo "ok: the first attempt does not refresh"; pass=$((pass + 1)); else echo "FAIL: first attempt args"; indent "$OUT"; fail=$((fail + 1)); fi
+
+# A transient failure whose log is far larger than a pipe buffer still classifies as transient: the
+# match sits on the first line, so a reader that stops there must not turn the rest into a failure.
+{ cat "$fixtures/central-429"; yes 'filler line that only makes the log big' | head -n 20000; } >"$fixtures/big-429"
+run "$fixtures/big-429" 1
+check "a transient failure in a large log is retried" 0 2 "$RC" "$N" "$OUT" "transient repository failure"
 
 echo "---"
 echo "$pass passed, $fail failed"

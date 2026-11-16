@@ -77,21 +77,44 @@ fold_status_lines() {
        END { if (NR > 0) print line }' "$1"
 }
 
-# A retry after an unresolved plugin runs with --stacktrace: Gradle words that failure on two lines and puts the
-# cause (the HTTP status, the timeout) only in the stack trace. `${extra[@]+...}` keeps bash 3.2 (macOS) happy
-# under `set -u` while the array is empty.
+# Gradle caches a repository's "not found" answer for 24 hours, and a plugin that no repository could
+# serve is such an answer. A retry that reuses the cache re-reads the first attempt's failure instead
+# of asking the repositories again, and fails in seconds however healthy they are (job 133587218454:
+# the portal probe answered 200 while three attempts failed identically in 13 s, 4 s and 4 s). The
+# retry after a plugin failure therefore re-asks every repository.
+# `${extra[@]+...}` keeps bash 3.2 (macOS) happy under `set -u` while the array is empty. The retry also
+# runs with --stacktrace: Gradle puts the cause (the HTTP status, the timeout) only in the stack trace.
 extra=()
+# Lists what the Gradle cache holds for each plugin the failed build could not resolve, so a cached
+# answer is visible in the log instead of inferred. Failure path only.
+show_cached_plugin_entries() {
+  local group name version dir
+  sed -n "s/.*could not resolve plugin artifact '\([^']*\)'.*/\1/p" "$log" | sort -u |
+    while IFS=: read -r group name version; do
+      for dir in "${GRADLE_USER_HOME:-$HOME/.gradle}"/caches/modules-2/metadata-*/descriptors/"$group"/"$name"/"$version"; do
+        [ -d "$dir" ] || continue
+        echo "::warning::cached resolution of ${group}:${name}:${version}: $(find "$dir" -type f -exec ls -l {} + 2>&1 | tr '\n' ';')"
+      done
+    done
+}
+
 for i in $(seq 1 "$attempts"); do
   if ./gradlew "$@" ${extra[@]+"${extra[@]}"} 2>&1 | tee "$log"; then
     exit 0
   fi
-  if ! fold_status_lines "$log" | grep -qE "$transient"; then
+  # Folded once into a variable. Piping fold_status_lines into `grep -q` under pipefail let awk's
+  # write to the closed pipe (grep exits at its first match) fail the pipeline, so a transient failure
+  # read as non-transient whenever awk lost that race (job 133587218454: "awk: i/o error occurred
+  # while closing /dev/stdout", then "not retrying").
+  folded="$(fold_status_lines "$log")"
+  if ! grep -qE "$transient" <<<"$folded"; then
     echo "::error::gradle failed for a non-transient reason — not retrying. See the output above."
     exit 1
   fi
-  if fold_status_lines "$log" | grep -qE "$plugin_failure"; then
+  if grep -qE "$plugin_failure" <<<"$folded"; then
     probe_plugin_portal
-    extra=(--stacktrace)
+    show_cached_plugin_entries
+    extra=(--refresh-dependencies --stacktrace)
   fi
   if [ "$i" -lt "$attempts" ]; then
     backoff=$((i * backoff_unit))
