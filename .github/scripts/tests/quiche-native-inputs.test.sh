@@ -23,8 +23,10 @@ fresh() { # a copy of the inputs under $work/tree
   cp "$repo/gradle/libs.versions.toml" "$work/tree/gradle/"
   cp "$repo/settings.gradle.kts" "$work/tree/"
   cp "$repo/socket-quic-quiche/build.gradle.kts" "$work/tree/socket-quic-quiche/"
-  cp "$repo/socket-quic-quiche/src/jni/quiche_jni.c" "$work/tree/socket-quic-quiche/src/jni/"
-  cp "$repo/socket-quic-quiche/libs/quiche/include/quiche.h" "$work/tree/socket-quic-quiche/libs/quiche/include/"
+  cp -R "$repo/socket-quic-quiche/src/jni/." "$work/tree/socket-quic-quiche/src/jni/"
+  mkdir -p "$work/tree/socket-quic-quiche/src/nativeInterop"
+  cp -R "$repo/socket-quic-quiche/src/nativeInterop/." "$work/tree/socket-quic-quiche/src/nativeInterop/"
+  cp -R "$repo/socket-quic-quiche/libs/quiche/include/." "$work/tree/socket-quic-quiche/libs/quiche/include/"
 }
 digest() { QUICHE_NATIVE_INPUTS_ROOT="$work/tree" bash "$script"; }
 
@@ -61,13 +63,52 @@ fresh
 sed -i.bak -E 's/^(val androidNativesPrebuilt =)/val androidEdited = 1\n\1/' "$work/tree/socket-quic-quiche/build.gradle.kts"
 differs "a line inside the Android region moves it"
 
+fresh
+echo 'int qnet_probe(void) { return 0; }' > "$work/tree/socket-quic-quiche/src/jni/qnet_new.c"
+differs "a NEW .c file under src/jni moves it"
+fresh
+mkdir -p "$work/tree/socket-quic-quiche/src/nativeInterop/cinterop"
+echo 'headers = qnet.h' > "$work/tree/socket-quic-quiche/src/nativeInterop/cinterop/Qnet.def"
+differs "a new file under src/nativeInterop moves it"
+fresh
+mv "$work/tree/socket-quic-quiche/src/jni/quiche_jni.c" "$work/tree/socket-quic-quiche/src/jni/renamed.c"
+differs "renaming a source file moves it (the path is hashed)"
+
 # Broken markers must fail, never hash less.
 fresh
 awk '/^\/\/ endregion quiche-native-inputs$/ && !done { done = 1; next } { print }' \
   "$work/tree/socket-quic-quiche/build.gradle.kts" > "$work/edited" && mv "$work/edited" "$work/tree/socket-quic-quiche/build.gradle.kts"
 fails "an unbalanced region fails"
 fresh
-rm "$work/tree/socket-quic-quiche/src/jni/quiche_jni.c"
-fails "a missing input fails"
+rm -rf "$work/tree/socket-quic-quiche/src/jni"
+fails "a missing native source directory fails"
+
+# Guard: native build code must sit inside the regions, or editing it would not move the key. Outside the
+# regions, no executable line may use the native build's own identifiers, call a compiler or cargo, or
+# register an Exec task. The one exception is the cargo-fuzz task, which builds a sanitizer binary that is
+# never cached or shipped.
+guard_offenders() { # guard_offenders <build.gradle.kts>
+  awk '
+    { t = $0; gsub(/^[ \t]+|[ \t]+$/, "", t) }
+    t == "// region quiche-native-inputs"    { r = 1; next }
+    t == "// endregion quiche-native-inputs" { r = 0; next }
+    !r && t !~ /^(\/\/|\*|\/\*)/ { print NR ": " t }
+  ' "$1" | grep -E 'rustToolchain|ndkClang|llvmStrip|ndkToolchain|androidNdkDir|requireTarget|downloadQuicheSource|patchQuiche|createBuild[A-Za-z]*Task|<Exec>|"(cargo|clang|clang\+\+|gcc|cc|cmake|make|rustc|rustup|llvm-strip)"' |
+    grep -vE '^[0-9]+: (\) = tasks\.register<Exec>\(taskName\) \{|environment\("CC", "clang"\)|environment\("CXX", "clang\+\+"\)|"cargo",)' || true
+}
+offenders="$(guard_offenders "$repo/socket-quic-quiche/build.gradle.kts")"
+if [ -z "$offenders" ]; then
+  report "no native build code outside the quiche-native-inputs regions" 0
+else
+  printf '%s\n' "$offenders" >&2
+  report "no native build code outside the quiche-native-inputs regions" 1
+fi
+fresh
+printf 'tasks.register<Exec>("buildQnet") {\n    commandLine("clang", "-shared")\n}\n' >> "$work/tree/socket-quic-quiche/build.gradle.kts"
+if [ -n "$(guard_offenders "$work/tree/socket-quic-quiche/build.gradle.kts")" ]; then
+  report "the guard catches a native Exec task added outside the regions" 0
+else
+  report "the guard catches a native Exec task added outside the regions" 1
+fi
 
 exit "$fail"

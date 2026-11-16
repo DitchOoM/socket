@@ -8,8 +8,12 @@
 #     patches and their wiring, the cargo / NDK / clang invocations, the JNI shim build, the BoringSSL
 #     bundle pin. The Gradle build embeds a digest of the same regions in each `.built-` marker, so a key
 #     hit always carries a marker that matches.
-#   * socket-quic-quiche/src/jni/quiche_jni.c and libs/quiche/include/quiche.h (the shim's source and the
-#     header it compiles against)
+#   * EVERY file under the native source directories, found by glob, sorted by path, path included in the
+#     hash: socket-quic-quiche/src/jni (JNI / FFM shim C sources and headers),
+#     socket-quic-quiche/src/nativeInterop (cinterop .def files and headers) and
+#     socket-quic-quiche/libs/quiche/include (the quiche C header the shims compile against). A new
+#     source file moves the key without anyone listing it here. Add a directory to NATIVE_DIRS when a
+#     native build starts reading from a new one.
 #   * the boringssl provision plugin version in settings.gradle.kts
 #   * with --rust, the rustc version: the repository does not pin a Rust toolchain (the workflows take
 #     `stable`), so a compiler update produces new bytes from the same sources.
@@ -32,10 +36,15 @@ for arg in "$@"; do
 done
 
 build=socket-quic-quiche/build.gradle.kts
-for f in gradle/libs.versions.toml "$build" socket-quic-quiche/src/jni/quiche_jni.c \
-  socket-quic-quiche/libs/quiche/include/quiche.h settings.gradle.kts; do
+NATIVE_DIRS=(socket-quic-quiche/src/jni socket-quic-quiche/src/nativeInterop socket-quic-quiche/libs/quiche/include)
+for f in gradle/libs.versions.toml "$build" settings.gradle.kts; do
   [ -f "$f" ] || { echo "quiche-native-inputs: missing input $f" >&2; exit 1; }
 done
+for d in "${NATIVE_DIRS[@]}"; do
+  [ -d "$d" ] || { echo "quiche-native-inputs: missing input directory $d" >&2; exit 1; }
+done
+native_files="$(find "${NATIVE_DIRS[@]}" -type f | LC_ALL=C sort)"
+[ -n "$native_files" ] || { echo "quiche-native-inputs: no native source files found" >&2; exit 1; }
 
 regions="$(awk '
   { t = $0; gsub(/^[ \t]+|[ \t]+$/, "", t) }
@@ -61,10 +70,9 @@ digest="$(
     printf 'plugin\n%s\n' "$plugin"
     printf 'regions\n%s\n' "$regions"
     printf 'rust\n%s\n' "$rust"
-    for f in socket-quic-quiche/src/jni/quiche_jni.c socket-quic-quiche/libs/quiche/include/quiche.h; do
-      printf 'file %s\n' "$f"
-      cat "$f"
-    done
+    while IFS= read -r f; do
+      printf 'file %s %s\n' "$f" "$(sha <"$f" | cut -d' ' -f1)"
+    done <<<"$native_files"
   } | sha | cut -c1-16
 )"
 echo "$digest"
