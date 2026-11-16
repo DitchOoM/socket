@@ -77,12 +77,14 @@ internal class ReplayClient(
 /** Reads and writes wait at most this long: on virtual time, as long as any replay runs. */
 internal val REPLAY_DEADLINE = 1.hours
 
+/** Without PMTU discovery: its probe on a freshly moved path delays the first echo by a serialization time the walks' bounds do not allow. */
 internal fun replayOptions(conditions: Conditions): QuicOptions =
     QuicOptions(
         alpnProtocols = listOf(ALPN),
         verifyPeer = false,
         idleTimeout = conditions.idleTimeout,
         handshakePacing = conditions.handshakePacing,
+        enablePmtuDiscovery = false,
     )
 
 /** A core server on 127.0.0.1 whose loop the replay drives, over [io]. */
