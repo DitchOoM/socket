@@ -53,7 +53,7 @@ internal sealed interface ConnEnd {
     /** Freed before any end was recorded. */
     data object Released : ConnEnd
 
-    /** The network monitor reported no usable network for longer than the grace a flap is given. */
+    /** The idle timeout passed while the network monitor reported no usable network. */
     data object NetworkLost : ConnEnd
 
     /** The network came back without the local address the connection's socket is bound to: that is migration. */

@@ -1,6 +1,7 @@
 package com.ditchoom.socket.quic.core.testing
 
 import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.UnsafeMemory
 import com.ditchoom.socket.quic.NextDue
 import com.ditchoom.socket.quic.SendTarget
 import com.ditchoom.socket.quic.core.life.ConnEnd
@@ -100,10 +101,10 @@ internal class RecordingWork : LoopWork() {
 
 internal val Limits = BatchLimits(maxDatagrams = 8, maxDatagramSize = 1200)
 
-/** Native memory for [bytes] bytes. */
+/** Native memory for [bytes] bytes, zeroed: the network factory pools, so a buffer can hold an earlier test's bytes. */
 internal fun nativeBytes(bytes: Int): NativeBytes =
     when (val a = NativeBytes.of(BufferFactory.network().allocate(bytes))) {
-        is Addressed.Native -> a.bytes
+        is Addressed.Native -> a.bytes.also { UnsafeMemory.setMemory(it.address, bytes.toLong(), 0) }
         is Addressed.NotAddressable -> error("the network factory makes native memory")
     }
 

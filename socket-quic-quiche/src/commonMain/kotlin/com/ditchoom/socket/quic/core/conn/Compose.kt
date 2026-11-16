@@ -8,7 +8,6 @@ import com.ditchoom.socket.quic.core.life.ConnLife
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.observe.ConnCounts
 import com.ditchoom.socket.quic.core.path.SinglePath
-import com.ditchoom.socket.quic.core.path.SockAddr
 import com.ditchoom.socket.quic.core.pool.FixedPool
 import com.ditchoom.socket.quic.core.sched.Entrant
 import com.ditchoom.socket.quic.core.sched.LoopPort
@@ -19,6 +18,7 @@ import com.ditchoom.socket.quic.core.stream.StreamTable
 import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.WakeSink
 import com.ditchoom.socket.quic.core.udp.NativeBytes
+import com.ditchoom.socket.quic.core.udp.SockAddr
 import com.ditchoom.socket.quic.trace.TraceCapture
 
 /** The memory one connection is built with, all from the caller's factory. */
@@ -79,7 +79,7 @@ internal fun buildConn(
             ingress = Ingress(q, memory.copies, memory.factory, counts),
             egress = Egress(q),
             release = Release(q),
-            network = NetworkWatch(rules.network),
+            network = NetworkWatch(),
             flight = ConnFlight(flight, memory.arena, address.peerKey, capture, clock.now().value),
             inbox = WorkInbox(),
             slots = chosen,

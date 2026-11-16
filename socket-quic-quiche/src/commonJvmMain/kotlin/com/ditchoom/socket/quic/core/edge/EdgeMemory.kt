@@ -8,11 +8,11 @@ import com.ditchoom.socket.quic.core.udp.JdkBytes
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 
 /**
- * Every piece of native memory one client connection holds, from the caller's factory, freed together once the
- * connection is released. A factory whose memory the connection cannot carry datagrams in fails the connect, typed,
- * before any socket exists.
+ * Every piece of native memory one client connection, or one server, holds from the caller's factory, freed together
+ * once it is released. A factory whose memory cannot carry datagrams fails the connect or the serve, typed, before any
+ * socket exists.
  */
-internal class ClientMemory(
+internal class EdgeMemory(
     private val factory: BufferFactory,
 ) {
     private val owned = ArrayList<NativeBytes>()

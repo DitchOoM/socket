@@ -1,15 +1,12 @@
+@file:Suppress("ktlint:standard:filename") // rule Q names the deciding file path/Paths*: every Paths variant lives in one.
+
 package com.ditchoom.socket.quic.core.path
 
 import com.ditchoom.socket.quic.QuicheRecvInfo
 import com.ditchoom.socket.quic.QuicheSendInfo
 import com.ditchoom.socket.quic.SendTarget
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
-
-/** A socket address in native memory, as quiche reads it. */
-internal class SockAddr(
-    val address: Long,
-    val length: Int,
-)
+import com.ditchoom.socket.quic.core.udp.SockAddr
 
 /**
  * The one path a connection has until migration arrives: what quiche is told about each datagram that arrives, and

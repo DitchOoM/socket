@@ -130,7 +130,7 @@ internal class Turn(
         change: NetworkChange,
     ) {
         c.flight.network(now, change.ordinal)
-        when (c.network.changed(change, now)) {
+        when (c.network.changed(change)) {
             NetworkStep.Nudge -> c.timer.nudge()
             NetworkStep.Wait -> Unit
             NetworkStep.End -> finish(now, ConnEnd.LocalAddressGone)
@@ -174,17 +174,10 @@ internal class Turn(
             }
             HandshakeStep.Established -> streams()
         }
-        when (c.network.verdict(now)) {
-            NetworkVerdict.Usable -> Unit
-            NetworkVerdict.Lost -> {
-                finish(now, ConnEnd.NetworkLost)
-                return Collected.Everything
-            }
-        }
         when (c.life.observe()) {
             LifeStep.Open -> Unit
             LifeStep.Closed -> {
-                finish(now, c.life.quicheEnd())
+                finish(now, c.network.endOf(c.life.quicheEnd()))
                 return last(now, out)
             }
         }
@@ -212,7 +205,6 @@ internal class Turn(
             is Pacing.Unpaced -> Unit
             is Pacing.ByQuiche -> pacing.pacer.offerWake(c.timer.sink)
         }
-        c.network.offerWake(c.timer.sink)
         c.timer.rearm(now, fire)
     }
 

@@ -5,7 +5,7 @@ import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.core.edge.connectCore
-import com.ditchoom.socket.quic.core.loop.ClientLoopSet
+import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.network
 import kotlinx.coroutines.runBlocking
 import java.lang.management.ManagementFactory
@@ -30,7 +30,7 @@ class CoreServerAllocationTests {
     val noLeak: org.junit.rules.TestRule = NoServerLoopLeft()
 
     /** Client loops of this class's own, so connections it leaves ending never share a thread with another test's. */
-    private val loops = ClientLoopSet(2)
+    private val loops = LoopSet(2)
 
     @AfterTest
     fun closeLoops() = loops.close()

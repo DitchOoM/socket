@@ -127,33 +127,72 @@ class ConnTests {
     }
 
     @Test
-    fun noUsableNetworkEndsTheConnectionAfterTheGraceWithATypedEndNotTheIdleTimeout() {
+    fun aTenSecondOutageKeepsTheConnectionAndTheSameAddressBackSendsInThatPass() {
         val api = StubQuicheApi().apply { connTimeout = 30.seconds }
-        val rig = ConnRig(api)
+        val out = Counted()
+        val rig = ConnRig(api, io = out.io)
         rig.pass(0)
 
         rig.conn.submit(NetworkWork(NetworkChange.Gone))
-        val next = rig.pass(1 * ms)
-        assertEquals(NextDue.at(3_001 * ms), next, "the loop wakes at the grace's end, not at the idle timeout")
-        rig.pass(3_001 * ms)
+        rig.pass(1 * ms)
+        val next = rig.pass(2 * ms)
+        assertEquals(NextDue.at(30_000 * ms), next, "no usable network arms nothing of its own: the idle timeout bounds it")
+        for (at in 1..10) {
+            rig.conn.submit(Nothing())
+            rig.pass(at * 1_000 * ms)
+        }
+        assertEquals(emptyList(), rig.sink.ended, "a ten-second outage does not end the connection")
 
-        assertSame(ConnEnd.NetworkLost, rig.sink.ended.single())
+        api.onAckEliciting = { api.connSendQueue.addLast(60) }
+        rig.conn.submit(NetworkWork(NetworkChange.Usable))
+        rig.pass(10_001 * ms)
+        assertEquals(1, out.sent, "the datagram left in the pass that heard the network is back")
     }
 
     @Test
-    fun aFlapWithinTheGraceDoesNotEndTheConnection() {
-        val api = StubQuicheApi().apply { connTimeout = 30.seconds }
+    fun anOutageLongerThanTheIdleTimeoutEndsWithNetworkLost() {
+        val api = StubQuicheApi().apply { connTimeout = 5.seconds }
         val rig = ConnRig(api)
         rig.pass(0)
 
         rig.conn.submit(NetworkWork(NetworkChange.Gone))
         rig.pass(1 * ms)
-        rig.conn.submit(NetworkWork(NetworkChange.Usable))
-        rig.pass(500 * ms)
-        rig.conn.submit(Nothing())
-        rig.pass(4_000 * ms)
-
         assertEquals(emptyList(), rig.sink.ended)
+        api.timedOut = true
+        api.closed = true
+        rig.pass(5_000 * ms)
+
+        assertSame(ConnEnd.NetworkLost, rig.sink.ended.single(), "the idle timeout passed with no usable network")
+    }
+
+    @Test
+    fun anIdleTimeoutWithAUsableNetworkIsAnIdleTimeout() {
+        val api = StubQuicheApi().apply { connTimeout = 5.seconds }
+        val rig = ConnRig(api)
+        rig.pass(0)
+        rig.conn.submit(NetworkWork(NetworkChange.Gone))
+        rig.pass(1 * ms)
+        rig.conn.submit(NetworkWork(NetworkChange.Usable))
+        rig.pass(2 * ms)
+        api.timedOut = true
+        api.closed = true
+        rig.pass(5_000 * ms)
+
+        assertSame(ConnEnd.IdleTimeout, rig.sink.ended.single())
+    }
+
+    @Test
+    fun aNetworkThatReturnsWithoutTheBoundAddressEndsTheConnectionAtOnce() {
+        val api = StubQuicheApi().apply { connTimeout = 30.seconds }
+        val rig = ConnRig(api)
+        rig.pass(0)
+        rig.conn.submit(NetworkWork(NetworkChange.Gone))
+        rig.pass(1 * ms)
+
+        rig.conn.submit(NetworkWork(NetworkChange.Moved))
+        rig.pass(2 * ms)
+
+        assertSame(ConnEnd.LocalAddressGone, rig.sink.ended.single())
     }
 
     @Test

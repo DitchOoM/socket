@@ -20,7 +20,8 @@ private enum class Transition { Unchanged, Usable, Changed, Gone }
 /**
  * Feeds the network monitor's news into [connection] as connection work, off the loop: a usable network that appears
  * or changes has the connection send at once, but only from the address its socket is bound to (a usable network
- * without that address is migration, and ends the connection now); no usable network starts the connection's grace.
+ * without that address is migration, and ends the connection now); no usable network is ridden out, bounded by the
+ * idle timeout.
  */
 internal fun CoroutineScope.feedNetwork(
     monitor: NetworkMonitor,

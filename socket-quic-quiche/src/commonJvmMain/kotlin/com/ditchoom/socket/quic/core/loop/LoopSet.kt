@@ -176,7 +176,7 @@ internal class LoopSet(
 
 /** Numbers loops, so each loop's turns are its own in a connection's owner word. */
 @Published
-private object LoopIds {
+internal object LoopIds {
     private val sequence = AtomicInt(1)
 
     fun next(): Int = sequence.fetchAndIncrement()

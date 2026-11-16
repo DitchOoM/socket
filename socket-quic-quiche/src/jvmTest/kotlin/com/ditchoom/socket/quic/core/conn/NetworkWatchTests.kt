@@ -1,34 +1,37 @@
 package com.ditchoom.socket.quic.core.conn
 
-import com.ditchoom.socket.quic.core.time.Nanos
-import com.ditchoom.socket.quic.core.time.WakeSink
+import com.ditchoom.socket.quic.QuicError
+import com.ditchoom.socket.quic.core.life.ConnEnd
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
+import kotlin.test.assertSame
 
 class NetworkWatchTests {
-    private val watch = NetworkWatch(NetworkRule(graceNanos = 100))
+    private val watch = NetworkWatch()
 
     @Test
     fun aUsableOrChangedNetworkNudges() {
-        assertEquals(NetworkStep.Nudge, watch.changed(NetworkChange.Usable, Nanos(0)))
-        assertEquals(NetworkStep.Nudge, watch.changed(NetworkChange.Changed, Nanos(0)))
+        assertEquals(NetworkStep.Nudge, watch.changed(NetworkChange.Usable))
+        assertEquals(NetworkStep.Nudge, watch.changed(NetworkChange.Changed))
     }
 
     @Test
-    fun noNetworkIsLostOnlyOnceTheGracePassesAndTheGraceStartsAtTheFirstReport() {
-        assertEquals(NetworkStep.Wait, watch.changed(NetworkChange.Gone, Nanos(10)))
-        watch.changed(NetworkChange.Gone, Nanos(50))
-        assertEquals(NetworkVerdict.Usable, watch.verdict(Nanos(109)))
-        assertEquals(NetworkVerdict.Lost, watch.verdict(Nanos(110)))
-        val sink = WakeSink()
-        watch.offerWake(sink)
-        assertEquals(Nanos(110), sink.earliest())
+    fun noUsableNetworkWaitsAndAnIdleTimeoutDuringItIsNetworkLost() {
+        assertEquals(NetworkStep.Wait, watch.changed(NetworkChange.Gone))
+        assertSame(ConnEnd.NetworkLost, watch.endOf(ConnEnd.IdleTimeout))
+        assertIs<ConnEnd.ByPeer>(watch.endOf(ConnEnd.ByPeer(QuicError.NoError)), "a peer's close says itself")
     }
 
     @Test
-    fun aUsableNetworkWithinTheGraceCancelsIt() {
-        watch.changed(NetworkChange.Gone, Nanos(0))
-        watch.changed(NetworkChange.Usable, Nanos(50))
-        assertEquals(NetworkVerdict.Usable, watch.verdict(Nanos(1_000)))
+    fun aUsableNetworkBackLeavesAnIdleTimeoutAsItIs() {
+        watch.changed(NetworkChange.Gone)
+        watch.changed(NetworkChange.Usable)
+        assertSame(ConnEnd.IdleTimeout, watch.endOf(ConnEnd.IdleTimeout))
+    }
+
+    @Test
+    fun aNetworkWithoutTheBoundAddressEnds() {
+        assertEquals(NetworkStep.End, watch.changed(NetworkChange.Moved))
     }
 }
