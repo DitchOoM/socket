@@ -15,6 +15,18 @@ stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 out="$(dirname "$0")/logs/$stamp-$TAG.log"
 xcrun devicectl device copy from --device "$DEVICE" --domain-type appDataContainer --domain-identifier "$BUNDLE" --source Documents/quic-handoff-probe.log --destination "$out" >/dev/null
 echo "pulled $(wc -l < "$out") lines -> $out"
+# The log is bounded: past 32 MB it moves to quic-handoff-probe.log.1 (older ones .2 .. .4). Oldest line first when read back as .4 .3 .2 .1 then the current file.
+for n in 1 2 3 4; do
+  xcrun devicectl device copy from --device "$DEVICE" --domain-type appDataContainer --domain-identifier "$BUNDLE" --source "Documents/quic-handoff-probe.log.$n" --destination "$out.$n" >/dev/null 2>&1 \
+    && echo "pulled rotated log -> $out.$n"
+done
+# The core lanes' flight recordings (written when a core connection ends other than by our own close, and on app background / terminate / memory warning).
+flight="$(dirname "$0")/logs/$stamp-$TAG-flight"
+if xcrun devicectl device copy from --device "$DEVICE" --domain-type appDataContainer --domain-identifier "$BUNDLE" --source Documents/flight --destination "$flight" >/dev/null 2>&1; then
+  echo "pulled $(find "$flight" -name '*.trace' | wc -l | tr -d ' ') core flight recording(s) -> $flight"
+else
+  echo "no core flight recordings on the device (none were written: every core connection ended by our own clean close, or a build without core lanes)"
+fi
 
 # The whole directory in one copy: devicectl has no globbing, and a per-file loop would need a
 # listing it cannot give us. A run that never connected has no directory at all, which is a
