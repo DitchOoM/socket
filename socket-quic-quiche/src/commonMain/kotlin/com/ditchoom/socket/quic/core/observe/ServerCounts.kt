@@ -14,6 +14,7 @@ internal class ServerCounts {
     private val retries = Counter()
     private val negotiations = Counter()
     private val recvInfos = Counter()
+    private val unsettled = Counter()
 
     /** Datagrams handed to a connection. */
     val routed: Long get() = routedCount.value()
@@ -71,4 +72,9 @@ internal class ServerCounts {
     fun negotiationSent() = negotiations.increment()
 
     fun recvInfoBuilt() = recvInfos.increment()
+
+    /** Connections a server stopped at its drain bound with their CONNECTION_CLOSE not out. */
+    val closesUnsettled: Long get() = unsettled.value()
+
+    fun closeUnsettled() = unsettled.increment()
 }

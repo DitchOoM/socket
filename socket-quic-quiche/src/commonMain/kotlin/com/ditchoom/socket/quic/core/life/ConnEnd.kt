@@ -47,6 +47,9 @@ internal sealed interface ConnEnd {
 
     data object ServerClosed : ConnEnd
 
+    /** Its server stopped at the drain bound with this connection's CONNECTION_CLOSE not yet out of the thread inside. */
+    data object ServerClosedUnsettled : ConnEnd
+
     /** quiche closed and named neither side. */
     data object NoErrorRecorded : ConnEnd
 

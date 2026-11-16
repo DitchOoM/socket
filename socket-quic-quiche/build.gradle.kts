@@ -5552,6 +5552,7 @@ val stageCoreAndroidTests =
                 "demux/CoreServerMemoryTests.kt",
                 "demux/CoreServerStatelessTests.kt",
                 "demux/CoreServerCloseTests.kt",
+                "demux/ServerShutdownTests.kt",
                 "demux/CoreServerAdmissionTests.kt",
                 "demux/CoreServerStartupHerdTests.kt",
             )

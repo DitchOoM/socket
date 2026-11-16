@@ -132,7 +132,8 @@ internal class ServerRig(
 ) {
     val clock = VirtualClock()
     val io = BoundedIo(kernelBuffer)
-    val loop = loopOver(FakePoller(), clock)
+    val poller = FakePoller()
+    val loop = loopOver(poller, clock)
     val counts = ServerCounts()
     val sinks = ArrayList<RecordingSink>()
 
@@ -215,9 +216,9 @@ internal class ServerRig(
         loop.attach(endpoint)
     }
 
-    fun pass(at: Long = clock.at.value) {
+    fun pass(at: Long = clock.at.value): com.ditchoom.socket.quic.NextDue {
         clock.at = Nanos(at)
-        loop.pass(Nanos(at))
+        return loop.pass(Nanos(at))
     }
 
     private fun sockAddr(): EncodedSockAddr {

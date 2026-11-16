@@ -13,7 +13,6 @@ import com.ditchoom.socket.quic.core.sched.LaneSent
 import com.ditchoom.socket.quic.core.sched.LaneTake
 import com.ditchoom.socket.quic.core.sched.Leave
 import com.ditchoom.socket.quic.core.sched.LoopPort
-import com.ditchoom.socket.quic.core.sched.LoopWork
 import com.ditchoom.socket.quic.core.sched.OwnerWord
 import com.ditchoom.socket.quic.core.sched.Pushed
 import com.ditchoom.socket.quic.core.sched.SendPort
@@ -52,10 +51,23 @@ internal class Conn(
     private val serve = ServeConn(this)
     private val timerWork = TimerWork(this)
     private val onTimer = Runnable { timerFired() }
+    private val serverClose = ServerCloseCell()
     private var hold = LoopHold.Out
 
     /** Any thread: whether the connection has ended, and how. */
     fun life(): Life = turn.life()
+
+    /**
+     * Loop thread: the server closes this connection with NO_ERROR. Whoever is inside runs the close, and the thread
+     * that leaves after collecting its CONNECTION_CLOSE marks it out; a caller that does wakes the loop.
+     */
+    fun closeForServer() {
+        serverClose.ask()
+        submit(ServerCloseWork(serverClose), CallerPlace.HandToLoop)
+    }
+
+    /** Any thread: the connection ended, or the close its server asked for is out of whoever was inside. */
+    fun closeSettled(): Boolean = life() is Life.Ended || serverClose.stage() == ServerCloseStage.Out
 
     /** Any thread. Puts the connection in the loop's next pass: a new client's first flight goes out there. */
     fun start() = scheduleServe()
@@ -108,6 +120,8 @@ internal class Conn(
         return when (owner.tryLeave(loopEntrant)) {
             Leave.Left -> {
                 hold = LoopHold.Out
+                // The loop is in its pass: its server sees the close out after this turn, with no wake.
+                serverClose.out()
                 freeWhenNobodyInside()
                 Collected.Everything
             }
@@ -235,7 +249,10 @@ internal class Conn(
                 // A failure can leave datagrams collected for a connection that has ended: they are not sent.
                 last.batch.took(last.batch.pending)
                 socket.returnLane(last)
+                // Every pass of this entry served and sent in place, so a close that ran in it is out.
+                if (serverClose.out() == Moved.Yes) port.poke()
             }
+            // The last passes only ran work: the loop collects and sends what they left, a close among it.
             is LaneTake.None -> handToLoop()
         }
     }
@@ -262,33 +279,6 @@ internal class Conn(
     private fun timerFired() {
         if (timerQueued.compareAndSet(IDLE, QUEUED)) submit(timerWork)
     }
-}
-
-/** Puts a connection in the loop's next pass. One per connection, queued at most once at a time. */
-private class ServeConn(
-    private val conn: Conn,
-) : LoopWork() {
-    override fun run(port: LoopPort) = conn.touchedByLoop()
-
-    override fun gone(end: ConnEnd) = Unit
-}
-
-/** Inside: the connection's deadline fell due. One per connection. */
-private class TimerWork(
-    private val conn: Conn,
-) : ConnWork() {
-    override fun run(inside: Inside) = conn.timerFiredInside()
-
-    override fun gone(end: ConnEnd) = Unit
-}
-
-/** Inside, once: the loop or the socket ends the connection with [end]. */
-private class EndWork(
-    private val end: ConnEnd,
-) : ConnWork() {
-    override fun run(inside: Inside) = inside.end(end)
-
-    override fun gone(end: ConnEnd) = Unit
 }
 
 private const val IDLE = 0
