@@ -85,6 +85,8 @@
  * stopped it (0 = none); bit 48 = UDP_SEGMENT refused by the device, the batch was sent without it. */
 #define QN_RESULT_SEGMENT_REFUSED (1LL << 48)
 
+/* The poller's address, or a negated QN_E* code (always in -4095..-1: an address may read as negative, since Android
+ * tags the top byte of its heap pointers). */
 QN_EXPORT int64_t qn_poller_open(int32_t capacity);
 QN_EXPORT int32_t qn_poller_add(int64_t poller, int32_t fd, int32_t token);
 QN_EXPORT int32_t qn_poller_modify(int64_t poller, int32_t fd, int32_t token, int32_t writable);

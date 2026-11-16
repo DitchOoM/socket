@@ -35,6 +35,24 @@ class NativePollerTests {
     }
 
     @Test
+    fun aPollerAtATaggedAddressIsOpenedAndOnlyASmallNegatedCodeIsARefusal() {
+        // Android tags the top byte of heap pointers: as a signed number the address is negative.
+        val tagged =
+            object : com.ditchoom.socket.quic.NetShim by shim {
+                override fun pollerOpen(capacity: Int): Long = -0x4BFF_FF8E_DCBA_9880L
+            }
+        assertIs<PollerOpened.Opened>(NativePoller.open(tagged, MonotonicClock, 16))
+        val refused =
+            object : com.ditchoom.socket.quic.NetShim by shim {
+                override fun pollerOpen(capacity: Int): Long = -13L
+            }
+        assertEquals(
+            com.ditchoom.socket.quic.SocketRefusal.ENoMem,
+            assertIs<PollerOpened.Refused>(NativePoller.open(refused, MonotonicClock, 16)).refusal,
+        )
+    }
+
+    @Test
     fun aWakeEndsAWaitThatHasNoDeadline() {
         val poller = open()
         val ready = ReadyTokens(8)

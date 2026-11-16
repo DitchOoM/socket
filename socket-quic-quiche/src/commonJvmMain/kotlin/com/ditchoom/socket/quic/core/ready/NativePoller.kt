@@ -117,7 +117,9 @@ internal class NativePoller private constructor(
             capacity: Int,
         ): PollerOpened {
             val handle = shim.pollerOpen(capacity)
-            return if (handle < 0) {
+            // A refusal is a small negated code; an address may be negative as a number (Android tags the top byte of
+            // its heap pointers), so only the codes' range means refused.
+            return if (handle < 0 && -handle <= MAX_CODE) {
                 PollerOpened.Refused(SocketRefusal.of((-handle).toInt()))
             } else {
                 PollerOpened.Opened(NativePoller(shim, clock, handle))
@@ -125,6 +127,7 @@ internal class NativePoller private constructor(
         }
 
         private const val INITIAL_SOCKETS = 8
+        private const val MAX_CODE = 4095L
         private const val UNWATCHED = 0
         private const val WATCHED = 1
         private const val WAIT_FOREVER = 0
