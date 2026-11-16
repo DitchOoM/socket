@@ -7,6 +7,7 @@ import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.ScopedRead
 import com.ditchoom.socket.quic.core.loop.LoopSet
+import com.ditchoom.socket.quic.core.path.IdIssuer
 import com.ditchoom.socket.quic.core.testing.coreTest
 import com.ditchoom.socket.quic.network
 import kotlinx.coroutines.TimeoutCancellationException
@@ -270,6 +271,8 @@ class TypedStreamTests {
                     assertTrue(parked.await().isFailure, "the parked read must fail when the stream closes")
                 }
                 cycle(WARM_UP_ID)
+                // A close hands the stream's buffers to the connection to free: they are freed once it ran that work.
+                drained(client.conn)
                 // Each stream holds two buffers of its own; once it is closed they are freed, so a cycle changes nothing.
                 val settled = tracked.live()
                 repeat(20) { round -> cycle(round) }
@@ -325,6 +328,22 @@ class TypedStreamTests {
                 assertIs<TypedFailure.Busy>(assertFailsWith<QuicTypedStreamException> { stream.receive() }.failure)
                 first.cancel()
                 stream.close()
+                client.connection.close(QuicError.NoError)
+            }
+        }
+
+    @Test
+    fun aConnectionReportsItselfEstablishedHoldingEveryBufferItKeeps() =
+        coreTest("TypedStreamTests.aConnectionReportsItselfEstablishedHoldingEveryBufferItKeeps") {
+            withCoreServer(onConnection = { delay(5.seconds) }) { server ->
+                // The issuer's scratch is the last buffer the handshake's end makes: holding its allocation holds the loop there.
+                val hold = AllocationHold.OfSize(IdIssuer.BYTES)
+                val tracked = TrackedFactory(hold)
+                val client = connectCore(server.port, loops = loops, factory = tracked)
+                val atConnect = tracked.live()
+                hold.release()
+                drained(client.conn)
+                assertEquals(atConnect, tracked.live(), "the connection took buffers after it reported itself established")
                 client.connection.close(QuicError.NoError)
             }
         }

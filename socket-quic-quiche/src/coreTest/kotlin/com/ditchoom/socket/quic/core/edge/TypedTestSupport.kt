@@ -114,7 +114,9 @@ private const val HEADER_AND_ID = NoteCodec.HEADER + Int.SIZE_BYTES
  * statistics cannot say this, since a buffer too big to pool is never counted back in.
  */
 @OptIn(ExperimentalAtomicApi::class)
-internal class TrackedFactory : BufferFactory {
+internal class TrackedFactory(
+    private val hold: AllocationHold = AllocationHold.None,
+) : BufferFactory {
     private val made = AtomicInt(0)
     private val freed = AtomicInt(0)
 
@@ -124,6 +126,7 @@ internal class TrackedFactory : BufferFactory {
         size: Int,
         byteOrder: ByteOrder,
     ): PlatformBuffer {
+        hold.before(size)
         made.fetchAndAdd(1)
         return CountedBuffer(BufferFactory.network().allocate(size, byteOrder)) { freed.fetchAndAdd(1) }
     }
@@ -133,6 +136,39 @@ internal class TrackedFactory : BufferFactory {
         byteOrder: ByteOrder,
     ): PlatformBuffer = BufferFactory.network().wrap(array, byteOrder)
 }
+
+/** What a [TrackedFactory] does on the thread that allocates, before it counts the buffer. */
+@OptIn(ExperimentalAtomicApi::class)
+internal sealed interface AllocationHold {
+    fun before(size: Int)
+
+    data object None : AllocationHold {
+        override fun before(size: Int) = Unit
+    }
+
+    /**
+     * Holds the thread allocating a buffer of [size] bytes until [release], at most [HELD_AT_MOST]: the allocation is
+     * counted after whatever the test does meanwhile. Holding the loop thread is the point; it spins, as tests on every
+     * platform must, and lets go on its own if the test never releases it.
+     */
+    class OfSize(
+        private val size: Int,
+    ) : AllocationHold {
+        private val released = AtomicInt(0)
+
+        override fun before(size: Int) {
+            if (size != this.size) return
+            val since =
+                kotlin.time.TimeSource.Monotonic
+                    .markNow()
+            while (released.load() == 0 && since.elapsedNow() < HELD_AT_MOST) Unit
+        }
+
+        fun release() = released.store(1)
+    }
+}
+
+private val HELD_AT_MOST = 5.seconds
 
 /** A buffer that reports its first free to [onFree] and hands its memory address on, so quiche can use it in place. */
 @OptIn(ExperimentalAtomicApi::class)
@@ -211,6 +247,24 @@ internal suspend fun eventually(
         waited += 10.milliseconds
     }
     return true
+}
+
+/** Suspends until [conn] has run every work handed to it before this call, so what that work frees is freed. */
+internal suspend fun drained(conn: com.ditchoom.socket.quic.core.conn.Conn) {
+    val ran = kotlinx.coroutines.CompletableDeferred<Unit>()
+    conn.submit(
+        object : com.ditchoom.socket.quic.core.conn.ConnWork() {
+            override fun run(inside: com.ditchoom.socket.quic.core.conn.Inside) {
+                ran.complete(Unit)
+            }
+
+            override fun gone(end: com.ditchoom.socket.quic.core.life.ConnEnd) {
+                ran.complete(Unit)
+            }
+        },
+        com.ditchoom.socket.quic.core.conn.CallerPlace.HandToLoop,
+    )
+    ran.await()
 }
 
 /** Writes every byte of [buffer] in pieces of [piece] bytes on [stream]. */

@@ -205,8 +205,8 @@ internal class Turn(
         when (c.handshake.step(now)) {
             HandshakeStep.Handshaking -> Unit
             HandshakeStep.JustEstablished -> {
-                c.sink.established(c.handshake.report(now, paths.read()))
                 paths.established()
+                c.sink.established(c.handshake.report(now, paths.read()))
                 c.wakeStreams()
             }
             HandshakeStep.Established -> c.wakeStreams()

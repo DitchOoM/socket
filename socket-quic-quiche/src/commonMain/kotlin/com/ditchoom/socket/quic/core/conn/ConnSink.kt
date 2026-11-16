@@ -35,6 +35,7 @@ internal enum class SlowConnect { RttAbovePrior, ProbesNeeded, PeerSlowToAnswer 
 
 /** The one upward notification of a connection. Called inside it, on the thread inside. */
 internal interface ConnSink {
+    /** The handshake completed; the connection already holds everything it keeps, its spare ids handed out. */
     fun established(report: ConnectReport)
 
     /** The peer opened [stream]. */

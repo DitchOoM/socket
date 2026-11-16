@@ -79,10 +79,12 @@ internal class IdIssuer(
         return made
     }
 
-    private companion object {
-        const val CID = 0
-        const val TOKEN = 16
-        const val SEQ = 32
+    companion object {
+        private const val CID = 0
+        private const val TOKEN = 16
+        private const val SEQ = 32
+
+        /** The size of the scratch an issuer writes ids through. */
         const val BYTES = 40
     }
 }
