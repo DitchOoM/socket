@@ -7,6 +7,7 @@ import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.unwrapFully
+import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicRole
 import com.ditchoom.socket.quic.ScopedRead
@@ -27,7 +28,9 @@ import com.ditchoom.socket.quic.read
 import com.ditchoom.socket.quic.skipOnMissingNativeLib
 import com.ditchoom.socket.quic.trace.QuicTraceCapture
 import com.ditchoom.socket.testkit.trace.TraceEvent
+import com.ditchoom.socket.testkit.trace.TracePath
 import com.ditchoom.socket.testkit.trace.TraceSink
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -37,22 +40,24 @@ import java.nio.Buffer
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.random.Random
 import kotlin.test.Test
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * A core client and a core server, each recording through its trace capture, echo over a link that loses some of the
- * client's datagrams. The two recordings become one network schedule ([RecordingToSchedule]), and a fresh quiche pair
- * put through that schedule twice behaves the same both times: the schedule, not the run, decides what happens.
+ * A core client and a core server, each recording through its trace capture, echo over a link that loses the client's
+ * first data datagram. The two recordings become one network schedule ([RecordingToSchedule]); a fresh quiche pair put
+ * through it follows the recording whole, every datagram of ours in its place with its recorded fate and the
+ * connection ending as recorded, and does so the same way twice: the schedule, not the run, decides what happens.
  */
 class CoreRecordingReplayTests {
-    /** Loses the client's datagrams whose ordinals are in [lost]; sends the rest itself, one by one. */
+    /** Loses the client's first datagram after the handshake's that is at least [DATA] bytes; sends the rest itself. */
     private class LossyLink(
         private val real: DatagramBatchIo,
-        private val lost: Set<Int>,
     ) : DatagramBatchIo by real {
         private var ordinal = 0
         val dropped = CopyOnWriteArrayList<Int>()
@@ -62,7 +67,7 @@ class CoreRecordingReplayTests {
             val view = (batch.storage.owner.unwrapFully() as BaseJvmBuffer).byteBuffer.duplicate()
             for (n in 0 until batch.pending) {
                 val this0 = ordinal++
-                if (this0 in lost) {
+                if (dropped.isEmpty() && this0 >= HANDSHAKE_DATAGRAMS && batch.lengthOf(n) >= DATA) {
                     dropped += this0
                     continue
                 }
@@ -73,91 +78,187 @@ class CoreRecordingReplayTests {
         }
     }
 
+    private class Recorded(
+        val client: List<TraceEvent>,
+        val server: List<TraceEvent>,
+        val lost: Int,
+    )
+
+    /** An echo of [PAYLOAD] bytes between a core client and a core server, as the two of them recorded it. */
+    private suspend fun recordAnEcho(): Recorded {
+        val clientRecording = CopyOnWriteArrayList<TraceEvent>()
+        val serverRecording = CopyOnWriteArrayList<TraceEvent>()
+        val server =
+            coreServe(
+                bind = InetSocketAddress("127.0.0.1", 0),
+                tls = coreTlsConfig(),
+                options = coreTestOptions.copy(trace = QuicTraceCapture(TraceSink { serverRecording += it })),
+                factory = BufferFactory.Default,
+                api = loadQuicheApi(),
+                readPolicy = ReadPolicy.Bounded(10.seconds),
+                writePolicy = WritePolicy.Bounded(10.seconds),
+                config = ServerConfig(flight = BIG),
+            )
+        val echo =
+            CoroutineScope(Dispatchers.IO).launch {
+                val connection = server.accept()
+                val stream = connection.acceptStream()
+                // The client closing the connection ends the echo; it is not a failure.
+                try {
+                    while (stream.read(10.seconds) { stream.writeFully(it, 10.seconds) } is ScopedRead.Data<*>) Unit
+                } catch (closed: QuicCloseException) {
+                    Unit
+                }
+            }
+        val link = arrayOfNulls<LossyLink>(1)
+        try {
+            val client =
+                coreConnect(
+                    host = "127.0.0.1",
+                    port = server.port,
+                    serverName = "localhost",
+                    options = coreTestOptions.copy(trace = QuicTraceCapture(TraceSink { clientRecording += it })),
+                    factory = BufferFactory.Default,
+                    api = loadQuicheApi(),
+                    timeout = 10.seconds,
+                    readPolicy = ReadPolicy.Bounded(10.seconds),
+                    writePolicy = WritePolicy.Bounded(10.seconds),
+                    wrapIo = { real -> LossyLink(real).also { link[0] = it } },
+                    flight = BIG,
+                )
+            val payload = Random(3).nextBytes(PAYLOAD)
+            assertContentEquals(payload, echoOver(client.connection.openStream(), payload))
+            // Recordings reach their sinks off the loop: give them a moment to arrive.
+            delay(500.milliseconds)
+            client.connection.close(QuicError.NoError)
+        } finally {
+            echo.cancel()
+            server.close()
+        }
+        assertEquals(1, link[0]!!.dropped.size, "the link lost the client's data datagram")
+        return Recorded(clientRecording.toList(), serverRecording.toList(), link[0]!!.dropped.size)
+    }
+
+    private fun scheduleOf(
+        recorded: Recorded,
+        client: List<TraceEvent> = recorded.client,
+        server: List<TraceEvent> = recorded.server,
+    ): CaptureSchedule {
+        val converted =
+            RecordingToSchedule.convert(
+                name = "core client and core server over a lossy link",
+                ours = QuicRole.Client,
+                alpn = coreTestOptions.alpnProtocols.single(),
+                ourRecording = client,
+                peerRecording = server,
+                ourTransport = TransportSetup(idleTimeout = coreTestOptions.idleTimeout),
+                peerTransport = TransportSetup(idleTimeout = coreTestOptions.idleTimeout),
+                actions = listOf(writeOf(client)),
+                peerApp = PeerApp.Echoes,
+                ourApp = OurApp.Reads,
+            )
+        val schedule = assertIs<RecordingToSchedule.Converted.Schedule>(converted).schedule
+        assertEquals(
+            recorded.lost,
+            schedule.steps.filterIsInstance<Step.OursSent>().count { it.fate == Fate.Lost },
+            "every datagram the link lost, and no other, is lost in the schedule",
+        )
+        assertTrue(schedule.steps.any { it is Step.PeerSent && it.fate is Fate.Delivered }, "the server's datagrams arrived")
+        return schedule
+    }
+
+    /** Replays [schedule] twice and holds the replay to the recording: followed whole, ended as recorded, identical. */
+    private suspend fun assertFollowedWholeTwice(schedule: CaptureSchedule) {
+        val first = replayCapture(jvmMigrationSimEnv(), schedule)
+        val second = replayCapture(jvmMigrationSimEnv(), schedule)
+        assertEquals(
+            Course.FollowedCapture,
+            first.course,
+            "the replay follows the recording to its end\n${first.describe()}\n${schedule.steps.joinToString("\n")}",
+        )
+        assertIs<ConnectionEnd.ClosedByUs>(first.end, "the connection ends as recorded, closed by us\n${first.describe()}")
+        assertEquals(PAYLOAD, first.peerRead.single().bytes, "the server read the whole payload\n${first.describe()}")
+        assertEquals(first.describe(), second.describe(), "the same schedule replays the same way")
+    }
+
     @Test
-    fun aLossyCoreToCoreRunReplaysTheSameWayTwiceThroughAFreshQuichePair() =
+    fun aLossyCoreToCoreRunIsFollowedWholeByItsReplayTwice() =
         runBlocking {
             skipOnMissingNativeLib(CoreRecordingReplayTests::class) {
-                val clientRecording = CopyOnWriteArrayList<TraceEvent>()
-                val serverRecording = CopyOnWriteArrayList<TraceEvent>()
-                val server =
-                    coreServe(
-                        bind = InetSocketAddress("127.0.0.1", 0),
-                        tls = coreTlsConfig(),
-                        options = coreTestOptions.copy(trace = QuicTraceCapture(TraceSink { serverRecording += it })),
-                        factory = BufferFactory.Default,
-                        api = loadQuicheApi(),
-                        readPolicy = ReadPolicy.Bounded(10.seconds),
-                        writePolicy = WritePolicy.Bounded(10.seconds),
-                        config = ServerConfig(flight = BIG),
-                    )
-                val echo =
-                    launch(Dispatchers.IO) {
-                        val connection = server.accept()
-                        val stream = connection.acceptStream()
-                        // The client closing the connection ends the echo; it is not a failure.
-                        try {
-                            while (stream.read(10.seconds) { stream.writeFully(it, 10.seconds) } is ScopedRead.Data<*>) Unit
-                        } catch (closed: com.ditchoom.socket.quic.QuicCloseException) {
-                            Unit
-                        }
-                    }
-                val link = arrayOfNulls<LossyLink>(1)
-                try {
-                    val client =
-                        coreConnect(
-                            host = "127.0.0.1",
-                            port = server.port,
-                            serverName = "localhost",
-                            options = coreTestOptions.copy(trace = QuicTraceCapture(TraceSink { clientRecording += it })),
-                            factory = BufferFactory.Default,
-                            api = loadQuicheApi(),
-                            timeout = 10.seconds,
-                            readPolicy = ReadPolicy.Bounded(10.seconds),
-                            writePolicy = WritePolicy.Bounded(10.seconds),
-                            wrapIo = { real -> LossyLink(real, LOST).also { link[0] = it } },
-                            flight = BIG,
-                        )
-                    val payload = Random(3).nextBytes(PAYLOAD)
-                    kotlin.test.assertContentEquals(payload, echoOver(client.connection.openStream(), payload))
-                    // Recordings reach their sinks off the loop: give them a moment to arrive.
-                    delay(500.milliseconds)
-                    client.connection.close(QuicError.NoError)
-                } finally {
-                    echo.cancel()
-                    server.close()
-                }
-                assertTrue(link[0]!!.dropped.isNotEmpty(), "the link lost some of the client's datagrams")
-
-                val converted =
-                    RecordingToSchedule.convert(
-                        name = "core client and core server over a lossy link",
-                        ours = QuicRole.Client,
-                        alpn = coreTestOptions.alpnProtocols.single(),
-                        ourRecording = clientRecording.toList(),
-                        peerRecording = serverRecording.toList(),
-                        ourTransport = TransportSetup(idleTimeout = coreTestOptions.idleTimeout),
-                        peerTransport = TransportSetup(idleTimeout = coreTestOptions.idleTimeout),
-                    )
-                val schedule = assertIs<RecordingToSchedule.Converted.Schedule>(converted).schedule
-                val ours = schedule.steps.filterIsInstance<Step.OursSent>()
-                assertEquals(
-                    link[0]!!.dropped.size,
-                    ours.count { it.fate == Fate.Lost },
-                    "every datagram the link lost, and no other, is lost in the schedule",
-                )
-                assertTrue(schedule.steps.any { it is Step.PeerSent && it.fate is Fate.Delivered }, "the server's datagrams arrived")
-
-                val first = replayCapture(jvmMigrationSimEnv(), schedule)
-                val second = replayCapture(jvmMigrationSimEnv(), schedule)
-                println(first.describe())
-                assertEquals(first.describe(), second.describe(), "the same schedule replays the same way")
+                assertFollowedWholeTwice(scheduleOf(recordAnEcho()))
             }
         }
 
+    /**
+     * The walk failure class: the client's four-tuple changes mid-connection. Both recordings say so (the client's
+     * address is another one from its first data datagram on), and the replay follows them end to end.
+     */
+    @Test
+    fun aRunWhoseClientChangedFourTupleMidConnectionIsFollowedWholeByItsReplayTwice() =
+        runBlocking {
+            skipOnMissingNativeLib(CoreRecordingReplayTests::class) {
+                val recorded = recordAnEcho()
+                val changedAt = writeOf(recorded.client).at
+                val moved = TracePath(family = 4, port = MOVED_PORT, hi = 0, lo = MOVED_ADDRESS)
+
+                fun List<TraceEvent>.movedAfter(at: Duration): List<TraceEvent> =
+                    map {
+                        when {
+                            it is TraceEvent.DgramOut && it.at >= at -> it.copy(path = moved)
+                            it is TraceEvent.DgramIn && it.at >= at -> it.copy(path = moved)
+                            else -> it
+                        }
+                    }
+                val client = recorded.client.movedAfter(changedAt)
+                // The two recordings keep clocks of their own: the server sees the move once it is established.
+                val server =
+                    recorded.server.movedAfter(
+                        recorded.server
+                            .filterIsInstance<TraceEvent.State>()
+                            .first { it.name.endsWith(".Established") }
+                            .at,
+                    )
+                assertTrue(
+                    client
+                        .filterIsInstance<TraceEvent.DgramOut>()
+                        .map { it.path }
+                        .distinct()
+                        .size > 1,
+                    "the client's path changed",
+                )
+                assertFollowedWholeTwice(scheduleOf(recorded, client, server))
+            }
+        }
+
+    /** The client's application wrote the payload on its first stream when its first datagram carrying data left. */
+    private fun writeOf(recording: List<TraceEvent>): RecordingToSchedule.RecordedAction {
+        val first =
+            recording
+                .filterIsInstance<TraceEvent.DgramOut>()
+                .filter {
+                    isShortHeader(
+                        it.payloadHex,
+                    ) &&
+                        it.len >= DATA
+                }.minBy { it.at }
+        return RecordingToSchedule.RecordedAction(first.at, OurAction.Write(stream = 0, bytes = PAYLOAD, end = StreamEnd.Open))
+    }
+
+    /** Whether a datagram, in hex, starts with a short header (RFC 9000 §17.3): a packet of the connection's 1-RTT space. */
+    private fun isShortHeader(hex: String): Boolean = hex.take(2).toInt(HEX) and LONG_HEADER_BIT == 0
+
     private companion object {
-        /** The client's second and fourth datagrams are lost: one in the handshake, one after it. */
-        val LOST = setOf(1, 3)
-        const val PAYLOAD = 3_000
+        const val HEX = 16
+        const val LONG_HEADER_BIT = 0x80
+
+        /** The handshake's datagrams of the client: its Initial, then its Initial and Handshake coalesced. */
+        const val HANDSHAKE_DATAGRAMS = 2
+
+        /** A datagram this long carries the payload; acknowledgements are far shorter, and the handshake's come first. */
+        const val DATA = 500
+        const val PAYLOAD = 600
+        const val MOVED_PORT = 40_000
+        const val MOVED_ADDRESS = 0x7f000002L
         val BIG = FlightSize(records = 4096, payloadBytes = 1 shl 20)
     }
 }

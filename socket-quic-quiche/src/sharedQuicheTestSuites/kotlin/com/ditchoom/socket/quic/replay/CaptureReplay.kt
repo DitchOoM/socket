@@ -11,6 +11,7 @@ import com.ditchoom.socket.quic.QuicheConn
 import com.ditchoom.socket.quic.QuichePairByHand
 import com.ditchoom.socket.quic.migrationSimOptions
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.microseconds
 
 /**
  * What happens once the replay has no capture left to follow: the capture ran out, or the fresh
@@ -143,6 +144,8 @@ internal class ReplayReport(
     val standInGaps: List<StandInGap>,
     /** The captured datagrams of ours, by number, that held only acknowledgements and that the replay did not send. */
     val acksNotSent: List<Int>,
+    /** How many acknowledgements the replay sent that the capture holds no datagram for, and that were set aside. */
+    val acksUncaptured: Int,
     val ranFor: Duration,
 ) {
     /**
@@ -181,6 +184,7 @@ internal class ReplayReport(
             standInGaps.forEach { appendLine("  peer datagram ${it.ordinal}: the modelled peer had no ${it.absent} packet") }
             val captured = schedule.steps.filterIsInstance<Step.OursSent>()
             if (acksNotSent.isNotEmpty()) appendLine("  captured acknowledgements not sent: our datagrams $acksNotSent")
+            if (acksUncaptured > 0) appendLine("  replayed acknowledgements the capture holds no datagram for: $acksUncaptured")
             appendLine("  our datagrams, replayed:")
             sent.forEachIndexed { i, it -> appendLine("    $i: ${it.at.inWholeMicroseconds} us ${it.shape}") }
             appendLine("  our datagrams, captured:")
@@ -277,6 +281,8 @@ private class CaptureReplay(
 
     private class InFlight(
         val arrives: Duration,
+        /** When the capture has it arrive: the replay's own time of arrival is never earlier. */
+        val captured: Duration,
         val order: Int,
         val to: Side,
         val bytes: ByteArray,
@@ -288,6 +294,8 @@ private class CaptureReplay(
         val bytes: ByteArray,
         val shape: List<PacketKind>,
     )
+
+    private fun Written.isAcknowledgement(): Boolean = isAcksOnly(shape, bytes.size)
 
     /**
      * What the modelled peer holds for one packet of a captured peer datagram: every packet of that type
@@ -336,6 +344,7 @@ private class CaptureReplay(
     private val emissions = mutableMapOf<Step.PeerSent, Emission>()
     private val standInGaps = mutableListOf<StandInGap>()
     private val acksNotSent = mutableListOf<Int>()
+    private var acksUncaptured = 0
     private val sent = mutableListOf<SentDatagram>()
     private val receipts = mutableMapOf<Long, StreamReceipt>()
 
@@ -379,18 +388,45 @@ private class CaptureReplay(
             peerRead = receipts.values.sortedBy { it.stream },
             standInGaps = standInGaps.toList(),
             acksNotSent = acksNotSent.toList(),
+            acksUncaptured = acksUncaptured,
             ranFor = now,
         )
     }
 
+    /** When the capture has the step after the next one happen: our endpoint's, or the arrival of the peer's. */
+    private fun nextStepAt(): Duration =
+        when (val following = schedule.steps.getOrNull(stepNext + 1)) {
+            null -> Duration.INFINITE
+            is Step.PeerSent ->
+                when (val fate = following.fate) {
+                    Fate.Lost -> following.at
+                    is Fate.Delivered -> fate.at
+                    is Fate.Unread -> fate.at
+                }
+            else -> following.at
+        }
+
     /**
      * The capture's next step is a datagram of ours: it is the next one written, or the one our timers
-     * write in time. A captured datagram of acknowledgements alone may go unsent.
+     * write in time. A captured datagram of acknowledgements alone may go unsent, and is not waited for past the
+     * capture's next step: our timers must not run on to produce what the capture has our endpoint doing later.
      */
     private fun expect(step: Step.OursSent) {
         val tolerance = schedule.tolerance.after(step.at - anchor)
-        if (written.isEmpty()) background(until = step.at + tolerance)
-        if (phase != Phase.OnCapture) return
+        val waitsUntil =
+            when (step.carries) {
+                Carries.Data -> step.at + tolerance
+                Carries.AcksOnly -> minOf(step.at + tolerance, nextStepAt())
+            }
+        while (true) {
+            if (written.isEmpty()) background(until = waitsUntil)
+            if (phase != Phase.OnCapture) return
+            val head = written.firstOrNull() ?: break
+            if (step.carries != Carries.Data || !head.isAcknowledgement()) break
+            // An acknowledgement where the capture has data is one the capture does not hold.
+            written.removeFirst()
+            acksUncaptured++
+        }
         val divergence =
             when {
                 written.isEmpty() -> Divergence.OurDatagramMissing(now, oursNext, step)
@@ -420,26 +456,80 @@ private class CaptureReplay(
         }
     }
 
-    /** The capture's next step is a peer datagram: one our endpoint never saw, or one it receives now. */
+    /**
+     * The capture's next step is a peer datagram: one our endpoint never saw, or the first of a receive pass. Our
+     * endpoint sends only after a pass has taken everything already queued, so the datagrams of one pass, those
+     * that follow each other within [RECEIVE_PASS] with nothing of ours sent between, are delivered together.
+     */
     private fun receive(step: Step.PeerSent) {
-        val arrives =
-            when (val fate = step.fate) {
-                Fate.Lost -> return skip()
-                is Fate.Delivered -> fate.at
-                is Fate.Unread -> fate.at
-            }
+        if (step.fate == Fate.Lost) return skip()
         if (!nothingUncaptured()) return
-        background(until = arrives)
-        if (phase != Phase.OnCapture || !nothingUncaptured()) return
-        stepNext++
-        anchor = arrives
-        when (val emission = emissions.getOrElse(step) { Emission.Nothing }) {
-            Emission.Nothing -> Unit
-            is Emission.Datagrams -> {
-                pair.deliver(emission.datagrams.map { QuichePairByHand.Datagram(it, PRIMARY_ENDPOINT) }, ours)
-                noteOurState()
-                collectOurs()
+        val pass = receivePass()
+        if (!runUntil(pass.members.last().arrives)) return
+        // The peer answers what our endpoint sent however late it was, so its datagrams exist before they are delivered.
+        if (!runUntil(maxOf(schedule.runsFor, now)) { pass.members.all { it.step in emissions } }) return
+        stepNext += pass.length
+        anchor = pass.members.last().arrives
+        val datagrams =
+            pass.members.flatMap { member ->
+                when (val emission = emissions.getOrElse(member.step) { Emission.Nothing }) {
+                    Emission.Nothing -> emptyList()
+                    is Emission.Datagrams -> emission.datagrams
+                }
             }
+        if (datagrams.isNotEmpty()) {
+            pair.deliver(datagrams.map { QuichePairByHand.Datagram(it, PRIMARY_ENDPOINT) }, ours)
+            if (schedule.ourApp == OurApp.Reads) receipts.keys.forEach { pair.readText(ours, QuicStreamId(it)) }
+            noteOurState()
+            collectOurs()
+        }
+    }
+
+    private class Arrival(
+        val step: Step.PeerSent,
+        val arrives: Duration,
+    )
+
+    /** The delivered peer datagrams of one receive pass, and the steps they and the lost ones among them take. */
+    private class Pass(
+        val members: List<Arrival>,
+        val length: Int,
+    )
+
+    /** The peer datagrams, from the next step on, that one receive pass of our endpoint takes. */
+    private fun receivePass(): Pass {
+        val pass = mutableListOf<Arrival>()
+        var length = 0
+        for (step in schedule.steps.drop(stepNext)) {
+            if (step !is Step.PeerSent) break
+            val arrives =
+                when (val fate = step.fate) {
+                    Fate.Lost -> {
+                        length++
+                        continue
+                    }
+                    is Fate.Delivered -> fate.at
+                    is Fate.Unread -> fate.at
+                }
+            if (pass.isNotEmpty() && arrives - pass.last().arrives > RECEIVE_PASS) break
+            pass += Arrival(step, arrives)
+            length++
+        }
+        return Pass(pass, length)
+    }
+
+    /**
+     * Run our endpoint up to [until], setting aside the acknowledgements it writes on the way. False when the replay
+     * left the capture, or our endpoint ended, before it got there.
+     */
+    private fun runUntil(
+        until: Duration,
+        ready: () -> Boolean = { false },
+    ): Boolean {
+        while (true) {
+            background(until, ready)
+            if (phase != Phase.OnCapture || !nothingUncaptured()) return false
+            if (now >= until || ready() || end != ConnectionEnd.Open) return true
         }
     }
 
@@ -449,8 +539,7 @@ private class CaptureReplay(
 
     private fun perform(step: Step.OursDid) {
         if (!nothingUncaptured()) return
-        background(until = step.at)
-        if (phase != Phase.OnCapture || !nothingUncaptured()) return
+        if (!runUntil(step.at)) return
         stepNext++
         act(step.action)
         collectOurs()
@@ -461,6 +550,11 @@ private class CaptureReplay(
      * leaves the capture at one that is not.
      */
     private fun nothingUncaptured(): Boolean {
+        // An acknowledgement the capture does not hold, where it holds no datagram of ours, is not the capture's to account for.
+        while (written.firstOrNull()?.isAcknowledgement() == true && schedule.steps.getOrNull(stepNext) !is Step.OursSent) {
+            written.removeFirst()
+            acksUncaptured++
+        }
         written.take(1).forEach { leave(Divergence.OurDatagramUncaptured(it.at, oursNext, it.shape)) }
         return written.isEmpty()
     }
@@ -499,11 +593,14 @@ private class CaptureReplay(
      * captured arrivals at the peer, and the peer's captured sends. Returns early once our endpoint has
      * written a datagram, or has ended.
      */
-    private fun background(until: Duration) {
-        while (phase == Phase.OnCapture && end == ConnectionEnd.Open) {
+    private fun background(
+        until: Duration,
+        ready: () -> Boolean = { false },
+    ) {
+        while (phase == Phase.OnCapture && end == ConnectionEnd.Open && !ready()) {
             if (++events > REPLAY_EVENT_LIMIT) return leave(Divergence.NeverSettles(now))
             val arrival = nextArrival()
-            val peerSend = peerSends.drop(peerNext).take(1)
+            val peerSend = peerSends.drop(peerNext).take(1).filterNot { awaitsOurs(it) }
             val arrivalAt = arrival.fold(Duration.INFINITE) { _, flight -> flight.arrives }
             val peerSendAt = peerSend.fold(Duration.INFINITE) { _, step -> step.at }
             val next = minOf(arrivalAt, peerSendAt, timerAt(ours))
@@ -555,6 +652,26 @@ private class CaptureReplay(
         }
     }
 
+    /**
+     * Whether a datagram of ours that the capture has reach the peer before it sent [send] has yet to reach the modelled
+     * peer: the peer's datagram answers it, so the modelled peer has it first, however late the replay sent it.
+     */
+    private fun awaitsOurs(send: Step.PeerSent): Boolean {
+        val unsent =
+            schedule.steps.drop(stepNext).filterIsInstance<Step.OursSent>().any {
+                capturedArrival(it.fate)?.let { at -> at <= send.at } ==
+                    true
+            }
+        return unsent || inFlight.any { it.to == Side.Peer && it.captured <= send.at }
+    }
+
+    private fun capturedArrival(fate: Fate): Duration? =
+        when (fate) {
+            Fate.Lost -> null
+            is Fate.Delivered -> fate.at
+            is Fate.Unread -> fate.at
+        }
+
     /** The datagram in flight that arrives first, if any is in flight. */
     private fun nextArrival(): List<InFlight> = inFlight.sortedWith(compareBy<InFlight> { it.arrives }.thenBy { it.order }).take(1)
 
@@ -596,6 +713,7 @@ private class CaptureReplay(
                     pair.deliver(listOf(datagram), peer)
                     collectPeer()
                     readAtPeer()
+                    collectPeer()
                 }
         }
     }
@@ -648,6 +766,9 @@ private class CaptureReplay(
             val (text, finished) = pair.readText(peer, QuicStreamId(receipt.stream))
             receipts[receipt.stream] =
                 receipt.copy(bytes = receipt.bytes + text.length, finished = if (finished) Moment.At(now) else Moment.Never)
+            if (schedule.peerApp == PeerApp.Echoes && (text.isNotEmpty() || finished)) {
+                pair.streamSend(peer, QuicStreamId(receipt.stream), text, finished)
+            }
         }
     }
 
@@ -667,8 +788,8 @@ private class CaptureReplay(
     ) {
         when (fate) {
             Fate.Lost -> Unit
-            is Fate.Delivered -> inFlight += InFlight(maxOf(fate.at, now), flightOrder++, to, bytes)
-            is Fate.Unread -> inFlight += InFlight(maxOf(fate.at, now), flightOrder++, to, damage(bytes, fate.packets))
+            is Fate.Delivered -> inFlight += InFlight(maxOf(fate.at, now), fate.at, flightOrder++, to, bytes)
+            is Fate.Unread -> inFlight += InFlight(maxOf(fate.at, now), fate.at, flightOrder++, to, damage(bytes, fate.packets))
         }
     }
 
@@ -678,7 +799,7 @@ private class CaptureReplay(
     ) {
         when (beyond) {
             Beyond.Stop -> Unit
-            is Beyond.HealthyPath -> inFlight += InFlight(now + beyond.oneWay, flightOrder++, to, bytes)
+            is Beyond.HealthyPath -> inFlight += InFlight(now + beyond.oneWay, now + beyond.oneWay, flightOrder++, to, bytes)
         }
     }
 
@@ -776,6 +897,9 @@ private class CaptureReplay(
 
     private companion object {
         const val PRIMARY_ENDPOINT = 0
+
+        /** Datagrams that reach our endpoint this close together are one receive pass: it takes what is queued. */
+        val RECEIVE_PASS = 250.microseconds
 
         /** Two probes is a full PTO flight; a third firing covers a peer whose first two were its other spaces'. */
         const val PEER_RETRANSMISSIONS = 3
