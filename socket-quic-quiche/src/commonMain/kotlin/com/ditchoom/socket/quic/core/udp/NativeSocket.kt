@@ -26,18 +26,55 @@ internal sealed interface NativeOpened {
     ) : NativeOpened
 }
 
+/** Whether a socket asks for `UDP_GRO`. */
+internal sealed interface GroRequest {
+    /** The socket does not ask for `UDP_GRO`. */
+    data object Declined : GroRequest
+
+    /** The socket asks for it; `qnet` keeps the receive scratch of one that got it. */
+    data object Requested : GroRequest
+}
+
+/** What a socket's `UDP_GRO` came to, decided at open and again at every reopen. */
+internal sealed interface GroSetup {
+    /** Not asked for: the socket's batching ceiling does not use it. */
+    data object NotRequested : GroSetup
+
+    /** Asked for, and this platform offers none. */
+    data object Unavailable : GroSetup
+
+    /** Asked for, and the kernel refused it: the socket receives one datagram per message. */
+    class Refused(
+        val refusal: SocketRefusal,
+    ) : GroSetup
+
+    data object Enabled : GroSetup
+}
+
+/** How a socket's reads reach the loop: one datagram per message, or split from coalesced messages. */
+internal sealed interface Receiving {
+    data object PerDatagram : Receiving
+
+    /** `UDP_GRO` is on: each read is one `recvmmsg`, split into datagrams per message. */
+    data object Coalesced : Receiving
+}
+
 /**
  * A UDP socket `qnet` opened: non-blocking, close-on-exec, its buffers asked for and read back, bound and, for a
  * client, connected. [spec] is the native block the socket was opened from; [reopen] opens it again from the same
- * block on the same local address and port. Its batching is probed once, here.
+ * block on the same local address and port. Its batching is probed once, here, and [gro] says how `UDP_GRO` went.
  */
 internal class NativeSocket private constructor(
     private val shim: NetShim,
     private val spec: NativeBytes,
     first: Int,
     val capability: BatchCapability,
+    val receiving: Receiving,
 ) {
     val cell = DescriptorCell(first)
+
+    /** What the socket's last open did about `UDP_GRO`. */
+    val gro: GroSetup get() = groSetupOf(spec.intAt(GRO_WANT), spec.intAt(GRO_STATE))
 
     /** 4 or 6: the family of the socket, which an IPv4 target on an IPv6 socket is mapped into. */
     val family: Int = spec.intAt(BIND)
@@ -70,7 +107,10 @@ internal class NativeSocket private constructor(
 
     companion object {
         /** The spec block's size in bytes, as `qnet.h` lays it out. */
-        const val SPEC_BYTES = 96
+        const val SPEC_BYTES = 104
+
+        /** The most datagrams one coalesced read holds: a socket asks for `UDP_GRO` only when its batch can take them all. */
+        const val GRO_MAX_DATAGRAMS = 64
 
         fun open(
             shim: NetShim,
@@ -81,7 +121,10 @@ internal class NativeSocket private constructor(
             sendBytes: Int,
             ceiling: UdpBatching,
             maxDatagrams: Int,
+            gro: GroRequest = GroRequest.Declined,
         ): NativeOpened {
+            val wantsGro = gro is GroRequest.Requested && ceiling.usesSegments() && maxDatagrams >= GRO_MAX_DATAGRAMS
+            spec.putInt(GRO_WANT, if (wantsGro) 1 else 0)
             putRecord(spec, BIND, bind)
             when (peer) {
                 is SocketPeer.Connected -> putRecord(spec, PEER, peer.peer)
@@ -91,8 +134,18 @@ internal class NativeSocket private constructor(
             spec.putInt(SNDBUF, sendBytes)
             val fd = shim.udpOpen(spec.address)
             if (fd < 0) return NativeOpened.Refused(SocketRefusal.of(-fd))
-            val capability = capabilityOf(spec.intAt(CAPS), spec.intAt(GSO_SEGMENTS), ceiling, maxDatagrams)
-            return NativeOpened.Opened(NativeSocket(shim, spec, fd, capability))
+            val receiving =
+                when (groSetupOf(spec.intAt(GRO_WANT), spec.intAt(GRO_STATE))) {
+                    is GroSetup.Enabled -> Receiving.Coalesced
+                    is GroSetup.NotRequested, is GroSetup.Unavailable, is GroSetup.Refused -> Receiving.PerDatagram
+                }
+            val coalescing =
+                when (receiving) {
+                    is Receiving.Coalesced -> Gro.On
+                    is Receiving.PerDatagram -> Gro.Off
+                }
+            val capability = capabilityOf(spec.intAt(CAPS), spec.intAt(GSO_SEGMENTS), ceiling, maxDatagrams, coalescing)
+            return NativeOpened.Opened(NativeSocket(shim, spec, fd, capability, receiving))
         }
 
         /** The newest batching both the kernel and [batching] allow, chosen once per socket. */
@@ -101,13 +154,14 @@ internal class NativeSocket private constructor(
             segments: Int,
             batching: UdpBatching,
             maxDatagrams: Int,
+            gro: Gro = Gro.Off,
         ): BatchCapability {
             val multi = caps and CAP_MULTI != 0
             val publicMulti = multi && caps and CAP_PRIVATE == 0
             val gso = caps and CAP_GSO != 0
             return when (batching) {
-                UdpBatching.Newest -> newest(gso, multi, segments, maxDatagrams)
-                UdpBatching.PublicCallsOnly -> newest(gso, publicMulti, segments, maxDatagrams)
+                UdpBatching.Newest -> newest(gso, gro, multi, segments, maxDatagrams)
+                UdpBatching.PublicCallsOnly -> newest(gso, gro, publicMulti, segments, maxDatagrams)
                 UdpBatching.WithoutSegments -> if (multi) BatchCapability.Multi(maxDatagrams) else BatchCapability.OneByOne
                 UdpBatching.OneDatagramPerCall -> BatchCapability.OneByOne
             }
@@ -115,14 +169,35 @@ internal class NativeSocket private constructor(
 
         private fun newest(
             gso: Boolean,
+            gro: Gro,
             multi: Boolean,
             segments: Int,
             maxDatagrams: Int,
         ): BatchCapability =
             when {
-                gso -> BatchCapability.Segmented(maxDatagrams, Gso.On(segments), Gro.Off)
+                gso -> BatchCapability.Segmented(maxDatagrams, Gso.On(segments), gro)
+                gro == Gro.On -> BatchCapability.Segmented(maxDatagrams, Gso.Off, gro)
                 multi -> BatchCapability.Multi(maxDatagrams)
                 else -> BatchCapability.OneByOne
+            }
+
+        /** The `UDP_GRO` outcome `qnet` wrote: [wanted] is what was asked, [state] what came of it. */
+        private fun groSetupOf(
+            wanted: Int,
+            state: Int,
+        ): GroSetup =
+            when {
+                wanted == 0 -> GroSetup.NotRequested
+                state > 0 -> GroSetup.Enabled
+                state == 0 -> GroSetup.Unavailable
+                else -> GroSetup.Refused(SocketRefusal.of(-state))
+            }
+
+        /** Only the batchings that segment ask for `UDP_GRO`: it is the receive half of `UDP_SEGMENT`. */
+        private fun UdpBatching.usesSegments(): Boolean =
+            when (this) {
+                UdpBatching.Newest, UdpBatching.PublicCallsOnly -> true
+                UdpBatching.WithoutSegments, UdpBatching.OneDatagramPerCall -> false
             }
 
         private const val BIND = 0
@@ -134,6 +209,8 @@ internal class NativeSocket private constructor(
         private const val LOCAL = 64
         private const val CAPS = 88
         private const val GSO_SEGMENTS = 92
+        private const val GRO_WANT = 96
+        private const val GRO_STATE = 100
         private const val CAP_MULTI = 1
         private const val CAP_GSO = 2
         private const val CAP_PRIVATE = 8

@@ -37,6 +37,76 @@ QN_EXPORT int32_t qn_udp_capability(int32_t fd, int64_t spec) {
     return caps;
 }
 
+#if QN_EPOLL
+/* A GRO socket's receive scratch (QN_GRO_SCRATCH_BYTES), by descriptor, owned here: an anonymous private mapping, never
+ * zeroed or touched beyond what the kernel writes, so a page is resident only where a datagram landed (about one per
+ * lone datagram) and a socket that never receives costs nothing. qn_close unmaps it. */
+#define QN_GRO_TABLE 65536
+static void *qn_gro_scratch[QN_GRO_TABLE];
+
+static void *qn_gro_scratch_of(int fd) {
+    return fd >= 0 && fd < QN_GRO_TABLE ? __atomic_load_n(&qn_gro_scratch[fd], __ATOMIC_ACQUIRE) : NULL;
+}
+
+static void qn_gro_release(int fd) {
+    if (fd < 0 || fd >= QN_GRO_TABLE) return;
+    void *p = __atomic_exchange_n(&qn_gro_scratch[fd], NULL, __ATOMIC_ACQ_REL);
+    if (p != NULL) munmap(p, QN_GRO_SCRATCH_BYTES);
+}
+#else
+static void qn_gro_release(int fd) { (void)fd; }
+#endif
+
+/* UDP_GRO on when asked: 1 on, 0 not asked or this platform has none, -QN_E* when the kernel refused. */
+static int32_t qn_gro_enable(int fd, int32_t want) {
+#if QN_EPOLL
+    if (want == 0) return 0;
+    if (fd >= QN_GRO_TABLE) return -QN_ENOMEM;
+    void *p = mmap(NULL, QN_GRO_SCRATCH_BYTES, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    if (p == MAP_FAILED) return -qn_code(errno);
+    int on = 1;
+    if (setsockopt(fd, SOL_UDP, UDP_GRO, &on, sizeof on) < 0) {
+        int e = errno;
+        munmap(p, QN_GRO_SCRATCH_BYTES);
+        return -qn_code(e);
+    }
+    __atomic_store_n(&qn_gro_scratch[fd], p, __ATOMIC_RELEASE);
+    return 1;
+#else
+    (void)fd;
+    (void)want;
+    return 0;
+#endif
+}
+
+/* How many datagrams a coalesced read of `total` bytes holds when the kernel cut it every `gso` bytes (the last may be
+ * shorter). A read with no segment size, or one no longer than it, is one datagram; so is an empty one. */
+static int32_t qn_gro_count(int32_t total, int32_t gso) {
+    if (gso <= 0 || total <= gso) return 1;
+    return (int32_t)(((int64_t)total + gso - 1) / gso);
+}
+
+/* Splits one coalesced read into the slots of `recs` (QN_RECV_RECORD each: slot address in, length and source out), as
+ * many datagrams as fit `count`, each copied up to `size` bytes. Returns the datagrams written. */
+static int32_t qn_gro_split(const uint8_t *data, int32_t total, int32_t gso, uint8_t *recs, int32_t count,
+                            int32_t size, const struct sockaddr_storage *from) {
+    int32_t n = qn_gro_count(total, gso);
+    if (n > count) n = count;
+    for (int32_t i = 0; i < n; i++) {
+        uint8_t *rec = recs + (size_t)i * QN_RECV_RECORD;
+        int64_t address;
+        memcpy(&address, rec, 8);
+        int64_t start = (int64_t)i * (gso > 0 ? gso : total);
+        int32_t length = total - (int32_t)start;
+        if (gso > 0 && length > gso) length = gso;
+        if (length > size) length = size;
+        memcpy(qn_at(address), data + start, (size_t)length);
+        memcpy(rec + 8, &length, 4);
+        qn_from_sockaddr(from, rec + 16);
+    }
+    return n;
+}
+
 QN_EXPORT int32_t qn_udp_open(int64_t spec) {
     uint8_t *s = qn_at(spec);
     int32_t bind_family = qn_spec_int(spec, QN_SPEC_BIND);
@@ -74,6 +144,7 @@ QN_EXPORT int32_t qn_udp_open(int64_t spec) {
     memset(&local, 0, sizeof local);
     if (getsockname(fd, (struct sockaddr *)&local, &local_len) < 0) goto failed;
     qn_from_sockaddr(&local, s + QN_SPEC_LOCAL);
+    qn_spec_put(spec, QN_SPEC_GRO_STATE, qn_gro_enable(fd, qn_spec_int(spec, QN_SPEC_GRO_WANT)));
     qn_udp_capability(fd, spec);
     return fd;
 failed:
@@ -208,6 +279,15 @@ QN_EXPORT int64_t qn_udp_send(int32_t fd, int32_t family_of_socket, int32_t mode
     return qn_send_one(fd, family, qn_at(base), stride, qn_at(records), count);
 }
 
+#if QN_EPOLL
+/* Counts the receive syscalls the batched UDP paths make on Linux, so a test can compare them. */
+static int64_t qn_recv_syscalls;
+
+QN_EXPORT int64_t qn_udp_recv_syscalls(void) { return __atomic_load_n(&qn_recv_syscalls, __ATOMIC_RELAXED); }
+#else
+QN_EXPORT int64_t qn_udp_recv_syscalls(void) { return 0; }
+#endif
+
 QN_EXPORT int64_t qn_udp_recv(int32_t fd, int32_t mode, int64_t records, int32_t count, int32_t size) {
     uint8_t *recs = qn_at(records);
     if (count > QN_MAX_BATCH) count = QN_MAX_BATCH;
@@ -229,6 +309,7 @@ QN_EXPORT int64_t qn_udp_recv(int32_t fd, int32_t mode, int64_t records, int32_t
         }
         int r;
         do {
+            __atomic_fetch_add(&qn_recv_syscalls, 1, __ATOMIC_RELAXED);
             r = recvmmsg(fd, msgs, (unsigned)count, MSG_DONTWAIT, NULL);
         } while (r < 0 && errno == EINTR);
         if (r < 0) return errno == EAGAIN || errno == EWOULDBLOCK ? 0 : qn_result(0, qn_code(errno), 0);
@@ -265,6 +346,123 @@ QN_EXPORT int64_t qn_udp_recv(int32_t fd, int32_t mode, int64_t records, int32_t
     return qn_result(count, 0, 0);
 }
 
+#if QN_EPOLL
+/* The UDP_GRO segment size of a received message: 0 when the kernel did not coalesce it. The kernel writes an int; an
+ * older one wrote the 16 bits it had. */
+static int32_t qn_gro_segment_size(struct msghdr *h) {
+    for (struct cmsghdr *c = CMSG_FIRSTHDR(h); c != NULL; c = CMSG_NXTHDR(h, c)) {
+        if (c->cmsg_level != SOL_UDP || c->cmsg_type != UDP_GRO) continue;
+        size_t bytes = c->cmsg_len - CMSG_LEN(0);
+        if (bytes >= sizeof(int32_t)) {
+            int32_t v;
+            memcpy(&v, CMSG_DATA(c), sizeof v);
+            return v;
+        }
+        uint16_t v;
+        memcpy(&v, CMSG_DATA(c), sizeof v);
+        return v;
+    }
+    return 0;
+}
+#endif
+
+#if QN_EPOLL
+
+
+/* What a coalescing socket keeps between reads, at the start of its scratch block: the whole messages one recvmmsg took
+ * that did not all fit the caller's slots. A message is never split across reads, so what did not fit waits here, whole,
+ * and the next read delivers it first. The caller zeroes the header once. Message i's bytes are at
+ * QN_GRO_HEADER_BYTES + i * QN_GRO_MESSAGE_BYTES. */
+struct qn_gro_state {
+    int32_t first;
+    int32_t count;
+    int32_t length[QN_GRO_MAX_DATAGRAMS];
+    int32_t segment[QN_GRO_MAX_DATAGRAMS];
+    struct sockaddr_storage from[QN_GRO_MAX_DATAGRAMS];
+};
+
+/* Delivers the waiting messages, whole and in order, while their datagrams fit the slots left. Returns the filled total. */
+static int32_t qn_gro_deliver(struct qn_gro_state *st, uint8_t *messages, uint8_t *recs, int32_t filled, int32_t count,
+                              int32_t size) {
+    while (st->count > 0) {
+        int32_t j = st->first;
+        int32_t n = qn_gro_count(st->length[j], st->segment[j]);
+        if (filled + n > count) break;
+        filled += qn_gro_split(messages + (size_t)j * QN_GRO_MESSAGE_BYTES, st->length[j], st->segment[j],
+                               recs + (size_t)filled * QN_RECV_RECORD, count - filled, size, &st->from[j]);
+        /* A message that took many pages gives them back once its datagrams are copied out: the buffer is free again. */
+        if (st->length[j] > QN_GRO_RELEASE_ABOVE)
+            madvise(messages + (size_t)j * QN_GRO_MESSAGE_BYTES, ((size_t)st->length[j] + 4095) & ~(size_t)4095, MADV_DONTNEED);
+        st->first++;
+        st->count--;
+    }
+    return filled;
+}
+#endif
+
+QN_EXPORT int64_t qn_udp_gro_scratch(int32_t fd) {
+#if QN_EPOLL
+    return (int64_t)(uintptr_t)qn_gro_scratch_of(fd);
+#else
+    (void)fd;
+    return 0;
+#endif
+}
+
+QN_EXPORT int64_t qn_udp_recv_coalesced(int32_t fd, int64_t records, int32_t count, int32_t size) {
+#if QN_EPOLL
+    if (count > QN_MAX_BATCH) count = QN_MAX_BATCH;
+    uint8_t *scratch = qn_gro_scratch_of(fd);
+    if (scratch == NULL) return qn_result(0, QN_EBADF, 0);
+    struct qn_gro_state *st = (struct qn_gro_state *)scratch;
+    uint8_t *messages = scratch + QN_GRO_HEADER_BYTES;
+    uint8_t *recs = qn_at(records);
+    int32_t filled = qn_gro_deliver(st, messages, recs, 0, count, size);
+    /* Waiting messages hold the buffers: read no more until they are all delivered. */
+    if (st->count > 0 || filled >= count) return qn_result(filled, 0, st->count > 0 ? QN_RESULT_BACKLOG : 0);
+    /* One recvmmsg takes up to a message per free slot, so lone datagrams cost what the per-datagram path costs, and
+     * every coalesced message adds its segments on top. */
+    int32_t vlen = count - filled;
+    struct mmsghdr msgs[QN_MAX_BATCH];
+    struct iovec iov[QN_MAX_BATCH];
+    union {
+        char buf[CMSG_SPACE(sizeof(int32_t))];
+        struct cmsghdr align;
+    } control[QN_MAX_BATCH];
+    memset(msgs, 0, sizeof(struct mmsghdr) * (size_t)vlen);
+    for (int32_t i = 0; i < vlen; i++) {
+        iov[i].iov_base = messages + (size_t)i * QN_GRO_MESSAGE_BYTES;
+        iov[i].iov_len = QN_GRO_MESSAGE_BYTES;
+        msgs[i].msg_hdr.msg_iov = &iov[i];
+        msgs[i].msg_hdr.msg_iovlen = 1;
+        msgs[i].msg_hdr.msg_name = &st->from[i];
+        msgs[i].msg_hdr.msg_namelen = sizeof st->from[i];
+        msgs[i].msg_hdr.msg_control = control[i].buf;
+        msgs[i].msg_hdr.msg_controllen = sizeof control[i].buf;
+    }
+    int r;
+    do {
+        __atomic_fetch_add(&qn_recv_syscalls, 1, __ATOMIC_RELAXED);
+        r = recvmmsg(fd, msgs, (unsigned)vlen, MSG_DONTWAIT, NULL);
+    } while (r < 0 && errno == EINTR);
+    if (r < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) return qn_result(filled, 0, 0);
+        return qn_result(filled, qn_code(errno), 0);
+    }
+    for (int i = 0; i < r; i++) {
+        st->length[i] = (int32_t)msgs[i].msg_len;
+        st->segment[i] = qn_gro_segment_size(&msgs[i].msg_hdr);
+    }
+    st->first = 0;
+    st->count = r;
+    filled = qn_gro_deliver(st, messages, recs, filled, count, size);
+    return qn_result(filled, 0, st->count > 0 ? QN_RESULT_BACKLOG : 0);
+#else
+    (void)fd, (void)records, (void)count, (void)size;
+    return qn_result(0, QN_ENOSYS, 0);
+#endif
+}
+
 /* The socket's pending error, cleared by reading it: 0 when it has none, a QN code otherwise; -QN_EBADF when the
  * descriptor is no longer a socket. */
 QN_EXPORT int32_t qn_udp_error(int32_t fd) {
@@ -274,4 +472,7 @@ QN_EXPORT int32_t qn_udp_error(int32_t fd) {
     return value == 0 ? 0 : qn_code(value);
 }
 
-QN_EXPORT int32_t qn_close(int32_t fd) { return close(fd) < 0 ? -qn_code(errno) : 0; }
+QN_EXPORT int32_t qn_close(int32_t fd) {
+    qn_gro_release(fd);
+    return close(fd) < 0 ? -qn_code(errno) : 0;
+}

@@ -12,8 +12,10 @@ import com.ditchoom.socket.quic.core.observe.LoopOnly
  * hands `qnet` the batch's own memory; a receive hands `qnet` the addresses of the pool buffers it took. `qnet`
  * answers how many datagrams went or came, exactly, and what stopped it.
  *
- * Receiving is the loop's alone; sending is safe from any thread, one thread per lane. A refused segmented send
- * steps the socket down to [BatchCapability.Multi] for good.
+ * Receiving is the loop's alone; sending is safe from any thread, one thread per lane. A socket with `UDP_GRO` on
+ * ([Receiving.Coalesced]) reads one `recvmmsg` per call and `qnet` splits each message into the batch's slots, so what is handed on
+ * is the datagrams as the sender sent them. A refused segmented send steps the socket down to [BatchCapability.Multi]
+ * for good.
  */
 @LoopOnly
 internal class NativeIo(
@@ -82,7 +84,7 @@ internal class NativeIo(
         val count = held.size
         val result =
             socket.cell.use(
-                call = { fd -> shim.udpRecv(fd, modeOf(mode.load()), receiveRecords.address, count, into.limits.maxDatagramSize) },
+                call = { fd -> readInto(fd, count, into.limits.maxDatagramSize) },
                 replacing = { 0L },
                 closed = { CLOSED },
             )
@@ -96,10 +98,22 @@ internal class NativeIo(
         val code = ((result ushr CODE_SHIFT) and CODE_MASK).toInt()
         return when {
             code != 0 -> ReceiveBatchResult.Failed(errorOf(code))
+            got > 0 && result and BACKLOG != 0L -> ReceiveBatchResult.GotWithBacklog
             got > 0 -> ReceiveBatchResult.Got
             else -> ReceiveBatchResult.Nothing
         }
     }
+
+    /** One `qnet` receive into the first [count] records: a coalescing socket's read is split into datagrams there. */
+    private fun readInto(
+        fd: Int,
+        count: Int,
+        size: Int,
+    ): Long =
+        when (socket.receiving) {
+            is Receiving.Coalesced -> shim.udpRecvCoalesced(fd, receiveRecords.address, count, size)
+            is Receiving.PerDatagram -> shim.udpRecv(fd, modeOf(mode.load()), receiveRecords.address, count, size)
+        }
 
     override fun probe(): SocketProbe =
         socket.cell.use(
@@ -165,6 +179,9 @@ internal class NativeIo(
         private const val COUNT_MASK = 0xFFFF_FFFFL
         private const val CODE_SHIFT = 32
         private const val CODE_MASK = 0xFFFFL
+
+        /** `QN_RESULT_BACKLOG`: whole coalesced messages wait inside `qnet` after this read. */
+        private const val BACKLOG = 1L shl 49
         private const val SEGMENT_REFUSED = 1L shl 48
         private const val REPLACED_CODE = 0xFFFE
         private const val CLOSED_CODE = 0xFFFD

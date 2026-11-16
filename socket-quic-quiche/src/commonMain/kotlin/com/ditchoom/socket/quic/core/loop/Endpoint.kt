@@ -51,18 +51,6 @@ internal sealed interface Route {
     ) : Route
 }
 
-/** When an endpoint reads its socket. */
-internal enum class Readiness {
-    /** When the poller reported it readable, and until a read finds nothing. */
-    Polled,
-
-    /** Every pass: a socket whose readiness no poller sees, such as one driven by a test on virtual time. */
-    EveryPass,
-}
-
-/** Whether a socket may hold datagrams: set by readiness, cleared by a receive that found none. */
-private enum class Input { Maybe, Drained }
-
 private enum class Phase { Live, Dead, Gone }
 
 /** Whether an endpoint is still on its loop after a serve. */
@@ -82,7 +70,7 @@ internal class Endpoint(
 ) {
     var token = 0
         private set
-    private var input = Input.Maybe
+    private var input = ReceiveInput.Maybe
     private var phase = Phase.Live
     private var interest = WriteInterest.None
     private val closing = SocketClose(io, socket)
@@ -92,8 +80,11 @@ internal class Endpoint(
     }
 
     fun readable() {
-        input = Input.Maybe
+        if (input != ReceiveInput.Backlog) input = ReceiveInput.Maybe
     }
+
+    /** Whether the io holds datagrams the poller will never signal: the loop's next pass must not wait. */
+    fun hasBacklog(): Boolean = phase == Phase.Live && input == ReceiveInput.Backlog
 
     /**
      * Receives up to [MAX_PER_PASS] datagrams and hands them to the route. A server then starts held handshakes a
@@ -111,7 +102,7 @@ internal class Endpoint(
                 route.demux.passBegins()
                 receiveWaiting(batch, counts, at)
                 while (route.demux.admitSome(send) == Admitted.More) {
-                    input = Input.Maybe
+                    input = ReceiveInput.Maybe
                     receiveWaiting(batch, counts, at)
                 }
             }
@@ -124,21 +115,22 @@ internal class Endpoint(
         counts: LoopCounts,
         at: Nanos,
     ) {
-        if (input == Input.Drained && readiness == Readiness.Polled) return
+        if (input == ReceiveInput.Drained && readiness == Readiness.Polled) return
         var taken = 0
         while (taken < MAX_PER_PASS) {
             when (val got = traced(TraceSection.ReceiveBatch) { io.receive(batch) }) {
-                is ReceiveBatchResult.Got -> {
+                is ReceiveBatchResult.Got, is ReceiveBatchResult.GotWithBacklog -> {
+                    input = if (got is ReceiveBatchResult.GotWithBacklog) ReceiveInput.Backlog else ReceiveInput.Maybe
                     taken += batch.count
                     deliver(batch, at)
                 }
                 is ReceiveBatchResult.Nothing -> {
-                    input = Input.Drained
+                    input = ReceiveInput.Drained
                     break
                 }
                 is ReceiveBatchResult.Failed -> {
                     deliver(batch, at)
-                    input = Input.Drained
+                    input = ReceiveInput.Drained
                     socket.receiveFailed(got.error)
                     break
                 }
@@ -204,7 +196,7 @@ internal class Endpoint(
             is Reopened.SameEndpoint -> {
                 poller.add(socketRef, token)
                 interest = WriteInterest.None
-                input = Input.Maybe
+                input = ReceiveInput.Maybe
                 when (route) {
                     is Route.Fixed -> route.conn.submitFromLoop(NetworkWork(NetworkChange.Rehomed))
                     is Route.Demux -> Unit

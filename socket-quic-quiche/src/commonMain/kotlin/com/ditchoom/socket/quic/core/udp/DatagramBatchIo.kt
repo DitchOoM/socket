@@ -78,6 +78,12 @@ internal sealed interface ReceiveBatchResult {
     /** The batch holds what was received; [ReceiveBatch.count] says how many. */
     data object Got : ReceiveBatchResult
 
+    /**
+     * Like [Got], and whole messages still wait inside the io, where the poller cannot see them: the loop must read
+     * again before it sleeps, with no new datagram needed.
+     */
+    data object GotWithBacklog : ReceiveBatchResult
+
     /** Nothing waiting, or no buffer free to receive into. */
     data object Nothing : ReceiveBatchResult
 

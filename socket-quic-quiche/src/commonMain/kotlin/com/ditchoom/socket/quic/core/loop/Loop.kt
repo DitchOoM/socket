@@ -128,13 +128,21 @@ internal class Loop(
             }
         }
         counts.ran(port.runWork())
+        var backlog = false
         for (i in slots.indices) {
             when (val slot = slots[i]) {
-                is LoopSlot.Taken -> if (slot.endpoint.serve(poller, now, port) == Stay.Left) vacate(slot.endpoint)
+                is LoopSlot.Taken ->
+                    when (slot.endpoint.serve(poller, now, port)) {
+                        Stay.Left -> vacate(slot.endpoint)
+                        Stay.Stays -> if (slot.endpoint.hasBacklog()) backlog = true
+                    }
                 is LoopSlot.Empty -> Unit
             }
         }
-        return port.nextDue(now)
+        val due = port.nextDue(now)
+        // Datagrams the io holds are invisible to the poller: with any, the next pass is due now (a poll of zero), whatever
+        // cut this one short (the per-pass bound included).
+        return if (backlog) NextDue.at(now.value) else due
     }
 
     internal fun attach(endpoint: Endpoint) {

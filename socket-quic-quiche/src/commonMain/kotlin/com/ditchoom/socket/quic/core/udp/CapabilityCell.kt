@@ -8,7 +8,8 @@ import kotlin.concurrent.atomics.ExperimentalAtomicApi
 
 /**
  * A native socket's batching now. It starts at what the socket's probe found and only steps down: a device that
- * refuses segmented sends (no checksum offload) leaves the socket on [BatchCapability.Multi].
+ * refuses segmented sends (no checksum offload) leaves the socket on [BatchCapability.Multi], or, when it also
+ * receives coalesced, on segmented receives alone.
  */
 @Published
 internal class CapabilityCell(
@@ -21,7 +22,14 @@ internal class CapabilityCell(
     /** Any thread: [seen] was refused its segments; later sends go one message per datagram. */
     fun stepDown(seen: BatchCapability) {
         when (seen) {
-            is BatchCapability.Segmented -> current.compareAndSet(seen, BatchCapability.Multi(seen.maxDatagrams))
+            is BatchCapability.Segmented ->
+                current.compareAndSet(
+                    seen,
+                    when (seen.receive) {
+                        Gro.On -> BatchCapability.Segmented(seen.maxDatagrams, Gso.Off, Gro.On)
+                        Gro.Off -> BatchCapability.Multi(seen.maxDatagrams)
+                    },
+                )
             is BatchCapability.Multi, is BatchCapability.OneByOne -> Unit
         }
     }

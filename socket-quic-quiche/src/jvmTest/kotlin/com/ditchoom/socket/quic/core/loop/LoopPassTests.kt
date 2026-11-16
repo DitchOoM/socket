@@ -133,6 +133,23 @@ class LoopPassTests {
     }
 
     @Test
+    fun datagramsTheIoHoldsAreReadWithoutWaitingForAnotherOne() {
+        // Whole messages waiting inside the io are invisible to the poller: a pass cut short by the per-pass bound must
+        // leave the loop's next pass due at once, and that pass must finish the backlog with nothing new arriving.
+        val rig = Rig()
+        rig.io.holdsBacklog = true
+        repeat(1500) { rig.io.arrive(byteArrayOf(1), peer(it)) }
+
+        val next = rig.loop.pass(Nanos(0))
+        assertEquals(1024L, rig.loop.counts.datagramsIn)
+        assertEquals(NextDue.at(0L), next, "with datagrams held inside the io the loop must not sleep")
+
+        val last = rig.loop.pass(Nanos(1))
+        assertEquals(1500L, rig.loop.counts.datagramsIn, "the backlog is delivered with no new datagram")
+        assertEquals(NextDue.None, last, "and once it is empty the loop may sleep")
+    }
+
+    @Test
     fun aLoopThatFailsEndsItsConnectionsAndAnswersLaterWorkAsGone() {
         val failure = IllegalStateException("planted")
         val rig = Rig()
@@ -186,6 +203,9 @@ private class ScriptedIo : DatagramBatchIo {
     val sent = ArrayList<Sent>()
     var sendCalls = 0
 
+    /** Answers [ReceiveBatchResult.GotWithBacklog] while arrivals remain, as an io holding whole messages does. */
+    var holdsBacklog = false
+
     fun arrive(
         bytes: ByteArray,
         from: PathKey,
@@ -217,7 +237,11 @@ private class ScriptedIo : DatagramBatchIo {
             into.received(buffer, arrival.bytes.size, arrival.from, ArrivedOn.Unreported)
             got++
         }
-        return if (got > 0) ReceiveBatchResult.Got else ReceiveBatchResult.Nothing
+        return when {
+            got == 0 -> ReceiveBatchResult.Nothing
+            holdsBacklog && arrivals.isNotEmpty() -> ReceiveBatchResult.GotWithBacklog
+            else -> ReceiveBatchResult.Got
+        }
     }
 
     override fun probe(): SocketProbe = SocketProbe.Open

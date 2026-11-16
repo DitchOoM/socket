@@ -75,6 +75,17 @@ internal interface NetShim {
         size: Int,
     ): Long
 
+    /**
+     * [udpRecv] for a socket that coalesces (`UDP_GRO` on): one `recvmmsg`, each message split by its own segment size
+     * into [count] slots exactly as separate datagrams. The socket's scratch is `qnet`'s own, made when `UDP_GRO` was turned on.
+     */
+    fun udpRecvCoalesced(
+        fd: Int,
+        records: Long,
+        count: Int,
+        size: Int,
+    ): Long
+
     /** The socket's pending error (0 for none), or a negated code when the descriptor is no longer a socket. */
     fun udpError(fd: Int): Int
 

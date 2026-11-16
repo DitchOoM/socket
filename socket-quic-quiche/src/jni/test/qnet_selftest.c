@@ -20,7 +20,7 @@ static int failures = 0;
     } while (0)
 
 #define STRIDE 70016
-#define SLOTS 16
+#define SLOTS 32
 
 static uint8_t spec_a[QN_SPEC_BYTES], spec_b[QN_SPEC_BYTES];
 static uint8_t send_records[QN_SEND_RECORD * SLOTS];
@@ -145,6 +145,288 @@ static void batch_round_trip(int family, int mode, int segments) {
     qn_close(server);
 }
 
+
+/* A coalesced receive of `total` bytes (value i in segment i) with `gso` as the segment size: how many datagrams, and
+ * the exact length and bytes of each, copied into the slots without touching anything but the slots. */
+static void split_case(int32_t total, int32_t gso, int32_t want_count, int32_t want_last) {
+    static uint8_t data[70000];
+    for (int32_t i = 0; i < total; i++) data[i] = (uint8_t)(gso > 0 ? i / gso : 0);
+    struct sockaddr_storage from;
+    memset(&from, 0, sizeof from);
+    struct sockaddr_in *a = (struct sockaddr_in *)&from;
+    a->sin_family = AF_INET;
+    a->sin_port = htons(4433);
+    a->sin_addr.s_addr = htonl(0x7f000001);
+    memset(recv_records, 0, sizeof recv_records);
+    for (int i = 0; i < 64; i++) {
+        memset(recv_bufs[i], 0xEE, 2048);
+        int64_t addr = (int64_t)(uintptr_t)recv_bufs[i];
+        memcpy(recv_records + i * QN_RECV_RECORD, &addr, 8);
+    }
+    int32_t n = qn_gro_count(total, gso);
+    CHECK(n == want_count, "total %d gso %d: %d datagrams, want %d", total, gso, n, want_count);
+    int32_t written = qn_gro_split(data, total, gso, recv_records, 64, 2048, &from);
+    CHECK(written == want_count, "total %d gso %d: wrote %d, want %d", total, gso, written, want_count);
+    for (int32_t i = 0; i < written; i++) {
+        int32_t length = rec_int(recv_records + i * QN_RECV_RECORD, 8);
+        int32_t want = i == want_count - 1 ? want_last : gso;
+        CHECK(length == want, "total %d gso %d: datagram %d has length %d, want %d", total, gso, i, length, want);
+        for (int32_t b = 0; b < length; b++) {
+            if (recv_bufs[i][b] != (uint8_t)i) {
+                CHECK(0, "total %d gso %d: datagram %d byte %d is %d", total, gso, i, b, recv_bufs[i][b]);
+                break;
+            }
+        }
+        CHECK(length >= 2048 || recv_bufs[i][length] == 0xEE, "total %d gso %d: datagram %d overran its length", total,
+              gso, i);
+        CHECK(rec_int(recv_records + i * QN_RECV_RECORD, 16) == 4 && rec_int(recv_records + i * QN_RECV_RECORD, 20) == 4433,
+              "datagram %d lost its source", i);
+    }
+    CHECK(written >= want_count || written == 64, "total %d gso %d: slots", total, gso);
+}
+
+static void gro_split(void) {
+    split_case(1200 * 5, 1200, 5, 1200);   /* all full */
+    split_case(1200 * 4 + 700, 1200, 5, 700); /* short last segment */
+    split_case(1200, 1200, 1, 1200);       /* gso == length: no split */
+    split_case(700, 1200, 1, 700);         /* shorter than gso: one datagram */
+    split_case(900, 0, 1, 900);            /* no gso reported: one datagram */
+    split_case(0, 0, 1, 0);                /* an empty datagram is a datagram */
+    split_case(64 * 1000, 1000, 64, 1000); /* the kernel's most segments */
+    split_case(64, 1, 64, 1);              /* one byte each */
+}
+
+/* Reads what `socket` has with the coalescing receive into the 64 slots; appends each datagram's length and tag to
+ * `lengths`. Returns the datagrams read, and the most one call returned in `*widest`. */
+static int32_t coalesced_all(int fd, int32_t slots, int32_t expected, int32_t *lengths, int32_t got,
+                             int32_t *widest) {
+    for (int attempt = 0; attempt < 200 && got < expected; attempt++) {
+        for (int i = 0; i < 64; i++) {
+            int64_t a = (int64_t)(uintptr_t)recv_bufs[i];
+            memcpy(recv_records + i * QN_RECV_RECORD, &a, 8);
+        }
+        int64_t r = qn_udp_recv_coalesced(fd, (int64_t)(uintptr_t)recv_records, slots, 2048);
+        CHECK(((r >> 32) & 0xffff) == 0, "coalesced receive refused with %lld", (long long)((r >> 32) & 0xffff));
+        int32_t n = (int32_t)(r & 0xffffffff);
+        if (n > *widest) *widest = n;
+        for (int i = 0; i < n; i++) {
+            int32_t length = rec_int(recv_records + i * QN_RECV_RECORD, 8);
+            CHECK(recv_bufs[i][0] == recv_bufs[i][length - 1], "coalesced datagram %d is torn", got);
+            lengths[got++] = length | ((int32_t)recv_bufs[i][0] << 24);
+        }
+        if (n == 0) usleep(1000);
+    }
+    return got;
+}
+
+/* The sender's UDP_SEGMENT groups reach a UDP_GRO receiver coalesced, and come out of the split as the datagrams that
+ * were sent: every one byte-exact and in order, from the sender's address; a message that does not fit the free slots
+ * stays queued. */
+static void gro_round_trip(int family) {
+    memset(spec_b, 0, QN_SPEC_BYTES);
+    if (family == 4) put_record(spec_b + QN_SPEC_BIND, 4, 0, 0, 0x7f000001);
+    else put_record(spec_b + QN_SPEC_BIND, 6, 0, 0, 1);
+    qn_spec_put((int64_t)(uintptr_t)spec_b, QN_SPEC_RCVBUF, 4 << 20);
+    qn_spec_put((int64_t)(uintptr_t)spec_b, QN_SPEC_GRO_WANT, 1);
+    int server = qn_udp_open((int64_t)(uintptr_t)spec_b);
+    CHECK(server >= 0, "gro server open %d", server);
+    CHECK(qn_spec_int((int64_t)(uintptr_t)spec_b, QN_SPEC_GRO_STATE) == 1, "family %d: UDP_GRO state %d, want on", family,
+          qn_spec_int((int64_t)(uintptr_t)spec_b, QN_SPEC_GRO_STATE));
+    int client = open_socket(spec_a, family, spec_b + QN_SPEC_LOCAL);
+    /* 16 datagrams of 1200 plus a short last one, twice, as UDP_SEGMENT groups, then one lone datagram. */
+    int32_t sent_total = 0, lengths[256], got = 0, widest = 0;
+    int32_t want_lengths[256];
+    for (int round = 0; round < 3; round++) {
+        int32_t k = round == 2 ? 1 : 17;
+        /* each datagram its own tag so a misplaced one shows */
+        for (int32_t i = 0; i < k; i++) {
+            int32_t length = (round < 2 && i == 16) ? 500 : 1200;
+            fill(i, length);
+            memset(send_base + (size_t)i * STRIDE, 'a' + ((sent_total + i) % 26), (size_t)length);
+            want_lengths[sent_total + i] = length | ((int32_t)('a' + ((sent_total + i) % 26)) << 24);
+        }
+        int64_t r = qn_udp_send(client, family, QN_IO_SEGMENT, (int64_t)(uintptr_t)send_base, STRIDE,
+                                (int64_t)(uintptr_t)send_records, k, QN_GSO_MAX_SEGMENTS);
+        CHECK((r & 0xffffffff) == k && ((r >> 32) & 0xffff) == 0, "gro: sent %lld of %d", (long long)(r & 0xffffffff), k);
+        sent_total += k;
+        if (round == 0) {
+            /* Too few free slots for the 17 the message holds: nothing is taken, the message stays. */
+            usleep(20000);
+            int32_t w = 0;
+            int32_t before = got;
+            got = coalesced_all(server, 8, 1, lengths, got, &w);
+            CHECK(got == before, "gro: 8 free slots took %d datagrams of a 17-datagram message", got - before);
+        }
+    }
+    got = coalesced_all(server, 64, sent_total, lengths, got, &widest);
+    CHECK(got == sent_total, "family %d: received %d of %d", family, got, sent_total);
+    for (int32_t i = 0; i < got && i < sent_total; i++)
+        CHECK(lengths[i] == want_lengths[i], "family %d: datagram %d is length %d tag %c, want length %d tag %c", family,
+              i, lengths[i] & 0xffffff, lengths[i] >> 24, want_lengths[i] & 0xffffff, want_lengths[i] >> 24);
+    CHECK(memcmp(recv_records + 16, spec_a + QN_SPEC_LOCAL, 24) == 0, "family %d: source differs from the sender", family);
+    CHECK(widest > 1, "family %d: no read held more than one datagram: UDP_GRO did not coalesce", family);
+    printf("family %d: %d datagrams, widest single read %d\n", family, got, widest);
+    qn_close(client);
+    qn_close(server);
+}
+
+/* Sends `k` datagrams numbered from `seq` (tag = seq + i, 1200 bytes, the last `last` bytes) and records what must arrive. */
+static int32_t send_run(int client, int family, int mode, int32_t k, int32_t seq, int32_t last, int32_t *want,
+                        int32_t at) {
+    for (int32_t i = 0; i < k; i++) {
+        int32_t length = i == k - 1 ? last : 1200;
+        fill(i, length);
+        memset(send_base + (size_t)i * STRIDE, 'a' + ((seq + i) % 26), (size_t)length);
+        want[at + i] = length | ((int32_t)('a' + ((seq + i) % 26)) << 24);
+    }
+    int64_t r = qn_udp_send(client, family, mode, (int64_t)(uintptr_t)send_base, STRIDE, (int64_t)(uintptr_t)send_records,
+                            k, QN_GSO_MAX_SEGMENTS);
+    CHECK((r & 0xffffffff) == k && ((r >> 32) & 0xffff) == 0, "run: sent %lld of %d", (long long)(r & 0xffffffff), k);
+    return at + k;
+}
+
+static int open_gro_server(int family, int want) {
+    memset(spec_b, 0, QN_SPEC_BYTES);
+    if (family == 4) put_record(spec_b + QN_SPEC_BIND, 4, 0, 0, 0x7f000001);
+    else put_record(spec_b + QN_SPEC_BIND, 6, 0, 0, 1);
+    qn_spec_put((int64_t)(uintptr_t)spec_b, QN_SPEC_RCVBUF, 4 << 20);
+    qn_spec_put((int64_t)(uintptr_t)spec_b, QN_SPEC_GRO_WANT, want);
+    return qn_udp_open((int64_t)(uintptr_t)spec_b);
+}
+
+/* One recvmmsg batch that holds lone datagrams and coalesced messages together: everything arrives in order, byte-exact,
+ * with the lone ones neither merged nor lost. */
+static void gro_mixed(int family) {
+    int server = open_gro_server(family, 1);
+    CHECK(server >= 0, "mixed server open %d", server);
+    int client = open_socket(spec_a, family, spec_b + QN_SPEC_LOCAL);
+    int32_t want[256], lengths[256], at = 0, widest = 0, got = 0;
+    int32_t plan[][3] = {{3, QN_IO_ONE, 700}, {10, QN_IO_SEGMENT, 400}, {2, QN_IO_ONE, 1200}, {5, QN_IO_SEGMENT, 900},
+                         {1, QN_IO_ONE, 64},  {12, QN_IO_SEGMENT, 1200}, {4, QN_IO_ONE, 333}};
+    for (unsigned p = 0; p < sizeof plan / sizeof plan[0]; p++) {
+        at = send_run(client, family, plan[p][1], plan[p][0], at, plan[p][2], want, at);
+    }
+    usleep(30000);
+    got = coalesced_all(server, 64, at, lengths, got, &widest);
+    CHECK(got == at, "family %d mixed: received %d of %d", family, got, at);
+    for (int32_t i = 0; i < got && i < at; i++)
+        CHECK(lengths[i] == want[i], "family %d mixed: datagram %d is length %d tag %c, want length %d tag %c", family, i,
+              lengths[i] & 0xffffff, lengths[i] >> 24, want[i] & 0xffffff, want[i] >> 24);
+    printf("family %d mixed: %d datagrams, widest single read %d\n", family, got, widest);
+    qn_close(client);
+    qn_close(server);
+}
+
+/* Reads until a call returns nothing; returns the receive syscalls that took. */
+static int64_t drain_calls(int fd, int coalesced, int32_t *datagrams) {
+    int64_t before = qn_udp_recv_syscalls();
+    *datagrams = 0;
+    for (;;) {
+        for (int i = 0; i < 64; i++) {
+            int64_t a = (int64_t)(uintptr_t)recv_bufs[i];
+            memcpy(recv_records + i * QN_RECV_RECORD, &a, 8);
+        }
+        int64_t r = coalesced ? qn_udp_recv_coalesced(fd, (int64_t)(uintptr_t)recv_records, 64, 2048)
+                              : qn_udp_recv(fd, QN_IO_MULTI, (int64_t)(uintptr_t)recv_records, 64, 2048);
+        int32_t n = (int32_t)(r & 0xffffffff);
+        if (n == 0) break;
+        *datagrams += n;
+    }
+    return qn_udp_recv_syscalls() - before;
+}
+
+/* Lone datagrams (no GSO from the sender) must cost a GRO socket no more receive syscalls than the per-datagram path. */
+static void gro_lone_syscalls(int family) {
+    int64_t calls[2];
+    for (int coalesced = 0; coalesced <= 1; coalesced++) {
+        int server = open_gro_server(family, coalesced);
+        int client = open_socket(spec_a, family, spec_b + QN_SPEC_LOCAL);
+        int32_t want[256];
+        for (int round = 0; round < 4; round++) send_run(client, family, QN_IO_ONE, 16, round * 16, 1200, want, 0);
+        usleep(30000);
+        int32_t datagrams;
+        calls[coalesced] = drain_calls(server, coalesced, &datagrams);
+        CHECK(datagrams == 64, "family %d lone (%s): received %d of 64", family, coalesced ? "gro" : "plain", datagrams);
+        qn_close(client);
+        qn_close(server);
+    }
+    printf("family %d: 64 lone datagrams cost %lld receive syscalls per-datagram, %lld with GRO on\n", family,
+           (long long)calls[0], (long long)calls[1]);
+    CHECK(calls[1] <= calls[0], "family %d: GRO on made %lld receive syscalls for lone datagrams, per-datagram %lld", family,
+          (long long)calls[1], (long long)calls[0]);
+}
+
+#ifdef __linux__
+/* Pages of [addr, addr + bytes) the kernel holds in memory (mincore), and the process's resident set in KiB. */
+static int64_t resident_pages(int64_t addr, size_t bytes) {
+    size_t pages = bytes / 4096;
+    unsigned char *vec = malloc(pages);
+    int64_t n = 0;
+    if (mincore((void *)(uintptr_t)addr, bytes, vec) != 0) {
+        free(vec);
+        return -1;
+    }
+    for (size_t i = 0; i < pages; i++) n += vec[i] & 1;
+    free(vec);
+    return n;
+}
+
+static long process_rss_kb(void) {
+    long size = 0, rss = 0;
+    FILE *f = fopen("/proc/self/statm", "r");
+    if (f == NULL) return -1;
+    if (fscanf(f, "%ld %ld", &size, &rss) != 2) rss = -1;
+    fclose(f);
+    return rss * 4;
+}
+
+/* The receive scratch costs what the kernel writes into it: a page or so per lone datagram's buffer, not its 4 MiB. */
+static void gro_resident(void) {
+    int server = open_gro_server(4, 1);
+    int client = open_socket(spec_a, 4, spec_b + QN_SPEC_LOCAL);
+    int64_t scratch = qn_udp_gro_scratch(server);
+    CHECK(scratch != 0, "a GRO socket has a scratch");
+    int64_t total = QN_GRO_SCRATCH_BYTES / 4096;
+    int64_t a = resident_pages(scratch, QN_GRO_SCRATCH_BYTES);
+    long rss_a = process_rss_kb();
+    int32_t want[256], datagrams, widest = 0, lengths[256];
+    for (int round = 0; round < 313; round++) {
+        send_run(client, 4, QN_IO_ONE, 32, 0, 1200, want, 0);
+        drain_calls(server, 1, &datagrams);
+        CHECK(datagrams == 32, "lone round %d: %d of 32", round, datagrams);
+    }
+    int64_t b = resident_pages(scratch, QN_GRO_SCRATCH_BYTES);
+    long rss_b = process_rss_kb();
+    for (int g = 0; g < 4; g++) send_run(client, 4, QN_IO_SEGMENT, 17, 0, 500, want, 0);
+    usleep(30000);
+    int32_t got = coalesced_all(server, 64, 1, lengths, 0, &widest);
+    int32_t more;
+    drain_calls(server, 1, &more);
+    int64_t c = resident_pages(scratch, QN_GRO_SCRATCH_BYTES);
+    long rss_c = process_rss_kb();
+    printf("scratch %lld pages virtual: resident %lld after open, %lld after 10016 lone datagrams, %lld after a coalesced burst\n",
+           (long long)total, (long long)a, (long long)b, (long long)c);
+    printf("process RSS KiB: %ld after open, %ld after 10016 lone datagrams, %ld after a coalesced burst\n", rss_a, rss_b,
+           rss_c);
+    CHECK(a >= 0 && a <= 4, "open touched %lld scratch pages", (long long)a);
+    CHECK(b > 0 && b <= total / 8, "10016 lone datagrams left %lld of %lld scratch pages resident", (long long)b,
+          (long long)total);
+    /* A message of 32 x 1200 bytes passes the release bound: once delivered, its pages (and the lone datagram's page
+     * before it) are given back. */
+    send_run(client, 4, QN_IO_SEGMENT, 32, 0, 1200, want, 0);
+    usleep(30000);
+    drain_calls(server, 1, &datagrams);
+    CHECK(datagrams == 32, "big message delivered %d of 32 datagrams", datagrams);
+    int64_t first = resident_pages(scratch + QN_GRO_HEADER_BYTES, QN_GRO_MESSAGE_BYTES);
+    printf("a delivered 38400-byte message left %lld of its 16 pages resident\n", (long long)first);
+    CHECK(first == 0, "a delivered big message kept %lld pages", (long long)first);
+    (void)got;
+    qn_close(client);
+    qn_close(server);
+    CHECK(qn_udp_gro_scratch(server) == 0, "closing the socket unmaps its scratch");
+}
+#endif
+
 static void poller(void) {
     int64_t p = qn_poller_open(8);
     CHECK(p > 0, "poller open %lld", (long long)p);
@@ -188,6 +470,7 @@ static void poller(void) {
 int main(void) {
     send_base = calloc(SLOTS, STRIDE);
     for (int i = 0; i < 64; i++) recv_bufs[i] = calloc(1, 2048);
+    gro_split();
     poller();
     int caps = 0;
     int probe = open_socket(spec_a, 6, NULL);
@@ -199,6 +482,14 @@ int main(void) {
         batch_round_trip(family, QN_IO_ONE, 1);
         if (caps & QN_CAP_MULTI) batch_round_trip(family, QN_IO_MULTI, 1);
         if (caps & QN_CAP_GSO) batch_round_trip(family, QN_IO_SEGMENT, QN_GSO_MAX_SEGMENTS);
+        if ((caps & QN_CAP_GSO) && (caps & QN_CAP_GRO)) {
+            gro_round_trip(family);
+            gro_mixed(family);
+            gro_lone_syscalls(family);
+#ifdef __linux__
+            if (family == 4) gro_resident();
+#endif
+        }
     }
     printf(failures == 0 ? "qnet selftest: all passed\n" : "qnet selftest: %d failed\n", failures);
     return failures == 0 ? 0 : 1;

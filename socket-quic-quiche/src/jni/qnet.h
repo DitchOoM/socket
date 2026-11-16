@@ -72,7 +72,9 @@
 #define QN_SPEC_LOCAL 64    /* record out */
 #define QN_SPEC_CAPS 88     /* int32 out: QN_CAP_* */
 #define QN_SPEC_GSO_SEGMENTS 92 /* int32 out */
-#define QN_SPEC_BYTES 96
+#define QN_SPEC_GRO_WANT 96   /* int32 in: 1 = turn UDP_GRO on at open, and again at every reopen from this block */
+#define QN_SPEC_GRO_STATE 100 /* int32 out: 1 = on; 0 = off (not asked, or this platform has none); -QN_E* = refused */
+#define QN_SPEC_BYTES 104
 
 /* Send record, one per datagram (QN_SEND_RECORD bytes): int32 length, then the target record at +8 (family 0 =
  * the connected peer). */
@@ -81,9 +83,22 @@
  * then the source record at +16. */
 #define QN_RECV_RECORD 40
 
+/* qn_udp_recv_coalesced's scratch block, which qnet owns (an anonymous mapping made when UDP_GRO is turned on, resident
+ * only where the kernel wrote, unmapped by qn_close): a header holding the whole messages that did not fit the caller's
+ * slots, then one buffer per message (a UDP_GRO message is at most 64 KiB),
+ * as many messages as a batch has slots (QN_GRO_MAX_DATAGRAMS; the kernel's UDP_MAX_SEGMENTS is 64 too). */
+#define QN_GRO_HEADER_BYTES 16384
+#define QN_GRO_MESSAGE_BYTES 65536
+#define QN_GRO_MAX_DATAGRAMS 64
+/* Messages longer than this return their pages to the kernel once delivered (madvise DONTNEED). */
+#define QN_GRO_RELEASE_ABOVE 32768
+#define QN_GRO_SCRATCH_BYTES (QN_GRO_HEADER_BYTES + QN_GRO_MAX_DATAGRAMS * QN_GRO_MESSAGE_BYTES)
+
 /* Send/receive result: low 32 bits = datagrams taken or received; bits 32..47 = QN_E* code of the refusal that
  * stopped it (0 = none); bit 48 = UDP_SEGMENT refused by the device, the batch was sent without it. */
 #define QN_RESULT_SEGMENT_REFUSED (1LL << 48)
+/* qn_udp_recv_coalesced: whole messages wait inside qnet, where the poller cannot see them: read again before sleeping. */
+#define QN_RESULT_BACKLOG (1LL << 49)
 
 /* The poller's address, or a negated QN_E* code (always in -4095..-1: an address may read as negative, since Android
  * tags the top byte of its heap pointers). */
@@ -101,6 +116,18 @@ QN_EXPORT int32_t qn_udp_capability(int32_t fd, int64_t spec);
 QN_EXPORT int64_t qn_udp_send(int32_t fd, int32_t family, int32_t mode, int64_t base, int32_t stride, int64_t records,
                               int32_t count, int32_t segments);
 QN_EXPORT int64_t qn_udp_recv(int32_t fd, int32_t mode, int64_t records, int32_t count, int32_t size);
+/* Receive on a socket opened with QN_SPEC_GRO_WANT: one recvmmsg of up to a message per free slot, each message split by
+ * its own UDP_GRO segment size (none: a single datagram) into the receive records' slots exactly as separately received
+ * datagrams would be, each record carrying its message's source. Lone datagrams therefore cost what qn_udp_recv's
+ * QN_IO_MULTI costs. A message is never split across reads: one that does not fit the slots left waits whole in the
+ * scratch and is delivered first by the next call (which reads nothing new until the waiting ones are out). Each slot gets
+ * at most `size` bytes. The result has QN_RESULT_BACKLOG set while whole messages still wait inside. The result is qn_udp_recv's. Only Linux and
+ * Android coalesce; elsewhere this refuses with QN_ENOSYS. */
+QN_EXPORT int64_t qn_udp_recv_coalesced(int32_t fd, int64_t records, int32_t count, int32_t size);
+/* The address of the socket's receive scratch (0 if it has none): a diagnostic, for measuring what is resident. */
+QN_EXPORT int64_t qn_udp_gro_scratch(int32_t fd);
+/* Receive syscalls made so far by the batched qn_udp_recv and qn_udp_recv_coalesced on Linux (0 elsewhere): a diagnostic. */
+QN_EXPORT int64_t qn_udp_recv_syscalls(void);
 QN_EXPORT int32_t qn_udp_error(int32_t fd);
 QN_EXPORT int32_t qn_close(int32_t fd);
 
