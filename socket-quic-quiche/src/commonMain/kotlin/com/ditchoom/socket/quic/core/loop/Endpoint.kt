@@ -2,7 +2,6 @@ package com.ditchoom.socket.quic.core.loop
 
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.core.conn.Collected
-import com.ditchoom.socket.quic.core.conn.MovedWork
 import com.ditchoom.socket.quic.core.conn.NetworkChange
 import com.ditchoom.socket.quic.core.conn.NetworkWork
 import com.ditchoom.socket.quic.core.demux.Admitted
@@ -20,7 +19,6 @@ import com.ditchoom.socket.quic.core.sched.Shutdown
 import com.ditchoom.socket.quic.core.sched.SocketHealth
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
-import com.ditchoom.socket.quic.core.udp.Moved
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.ReceiveBatchResult
 import com.ditchoom.socket.quic.core.udp.Reopened
@@ -48,6 +46,7 @@ internal class Endpoint(
     private var input = ReceiveInput.Maybe
     private var phase = Phase.Live
     private var interest = WriteInterest.None
+    private var relocating = Relocating.No
     private val closing = SocketClose(io, socket)
 
     fun placed(token: Int) {
@@ -72,7 +71,10 @@ internal class Endpoint(
     ) {
         if (phase != Phase.Live) return
         when (route) {
-            is Route.Fixed -> receiveWaiting(batch, counts, at)
+            is Route.Fixed -> {
+                if (relocating == Relocating.Yes) relocating = route.answered(io.settleMove())
+                receiveWaiting(batch, counts, at)
+            }
             is Route.Demux -> {
                 route.demux.passBegins()
                 receiveWaiting(batch, counts, at)
@@ -186,16 +188,16 @@ internal class Endpoint(
 
     /**
      * A client's socket moves to [bind]'s address on a port of its own, and its connection is told in this pass: it probes
-     * the path from there and migrates. One that cannot be opened there ends the connection; one that cannot move ends
-     * it as its address went away.
+     * the path from there and migrates. A socket made without waiting tells it in the pass that finds it ready. One that
+     * cannot be opened there ends the connection; one that cannot move ends it as its address went away.
      */
     fun move(
         poller: Poller,
         bind: PathKey,
     ) {
-        val conn =
+        val fixed =
             when (route) {
-                is Route.Fixed -> route.conn
+                is Route.Fixed -> route
                 is Route.Demux -> return
             }
         if (phase != Phase.Live) return
@@ -204,11 +206,7 @@ internal class Endpoint(
         poller.add(socketRef, token)
         interest = WriteInterest.None
         input = ReceiveInput.Maybe
-        when (moved) {
-            is Moved.To -> conn.submitFromLoop(MovedWork(moved.local))
-            is Moved.Refused -> endConn(ConnEnd.SocketFailed(SocketFault.MoveRefused(moved.thrown)))
-            is Moved.Unsupported -> conn.submitFromLoop(NetworkWork(NetworkChange.Moved))
-        }
+        relocating = fixed.answered(moved)
     }
 
     /** The io threw: this socket's connection ends with it, and no other. */

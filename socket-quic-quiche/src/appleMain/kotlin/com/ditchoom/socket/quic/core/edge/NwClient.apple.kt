@@ -25,6 +25,9 @@ internal actual class NwSocket(
     val connection: NwConnection,
     val life: NwLife,
     val peer: PathKey,
+    /** What a connection to the same peer is made from, for a move. */
+    val host: String,
+    val port: Int,
 )
 
 /**
@@ -59,7 +62,7 @@ internal actual suspend fun NwConnector.connect(
         is NwVerdict.Ready -> {
             val wildcard = PathKey(4, 0, 0L, 0L)
             val peer = connection.remote(wildcard)
-            StackSocket.Network(NwSocket(connection, life, peer), connection.local(peer))
+            StackSocket.Network(NwSocket(connection, life, peer, host, port), connection.local(peer))
         }
         is NwVerdict.Refused -> {
             connection.cancel()
@@ -72,7 +75,7 @@ internal actual fun nwSocketIo(
     socket: StackSocket.Network,
     wake: () -> Unit,
 ): SocketIo {
-    val io = NwIo(socket.socket.connection, socket.socket.life, socket.socket.peer, wake)
+    val io = with(socket.socket) { NwIo(connection, life, peer, host, port, wake) }
     io.start()
     return SocketIo(io, SocketRef { PollHandle.NotPolled })
 }
