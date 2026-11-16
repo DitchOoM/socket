@@ -866,6 +866,18 @@ project(":socket-quic-quiche") {
             showStandardStreams = true
         }
     }
+    // The core's allocation gates measure the production path: they run in their own JVM without the CI-only
+    // recv_info lifecycle guard (QUIC_RECVINFO_GUARD), whose map lookup boxes a Long per received datagram.
+    tasks.register<Test>("coreAllocationTest") {
+        description = "Runs the core allocation gates on the production QuicheApi, without diagnostic wrappers"
+        group = "verification"
+        dependsOn("compileTestKotlinJvm", "prepareQuicheNativeLib", "stageQuicheNativeResources")
+        testLogging {
+            events("passed", "skipped", "failed")
+            exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+            showStandardStreams = true
+        }
+    }
     afterEvaluate {
         dependencies.add("jvmTestImplementation", libs.lincheck)
         dependencies.add(
@@ -888,12 +900,22 @@ project(":socket-quic-quiche") {
                 includeTestsMatching("*MainThreadSafety*")
             }
         }
+        tasks.named<Test>("coreAllocationTest") {
+            testClassesDirs = jvmTestTask.testClassesDirs
+            classpath = files(Callable { jvmTestTask.classpath })
+            javaLauncher.set(jvmTestTask.javaLauncher)
+            jvmArgumentProviders.add(CommandLineArgumentProvider { jvmTestTask.jvmArgs.orEmpty() })
+            doFirst { environment(jvmTestTask.environment - "QUIC_RECVINFO_GUARD") }
+            filter { includeTestsMatching("com.ditchoom.socket.quic.core.*AllocationTests") }
+        }
         tasks.named<Test>("jvmTest") {
             filter {
                 excludeTestsMatching("*Lincheck*")
                 excludeTestsMatching("*MainThreadSafety*")
+                excludeTestsMatching("com.ditchoom.socket.quic.core.*AllocationTests")
                 isFailOnNoMatchingTests = false
             }
+            finalizedBy("coreAllocationTest")
         }
     }
 }
