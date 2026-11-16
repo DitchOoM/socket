@@ -171,7 +171,7 @@ internal class ServerSetup(
         val edge = ServerEdge(options, factory, readPolicy, writePolicy, accepted)
         val parts =
             ServerParts(
-                SlotRules.forWaits(stack.waits),
+                SlotRules.forWaits(stack.waits, handshake),
                 factory,
                 config.flight,
                 LoopMemory(
@@ -208,13 +208,17 @@ internal class ServerSetup(
         return CoreServer(boundAddress.port, loop, demux, counts, accepted, SocketReport(granted, boundAddress.port), stopped)
     }
 
-    /** A server config with the certificate, ALPN, options and session ticket keys applied. */
+    /** The handshake rule every connection of this server is built with. */
+    private val handshake = serverHandshakeRule(options)
+
+    /** A server config with the certificate, ALPN, options, handshake rule and session ticket keys applied. */
     private fun configured(): QuicheConfig {
         val quicheConfig = api.configNew(QUIC_V1)
         writeNullTerminatedString(tls.certChainPath, factory).use { api.configLoadCertChainFromPemFile(quicheConfig, addressOf(it)) }
         writeNullTerminatedString(tls.privKeyPath, factory).use { api.configLoadPrivKeyFromPemFile(quicheConfig, addressOf(it)) }
         encodeAlpnList(options.alpnProtocols, factory).use { api.configSetApplicationProtos(quicheConfig, addressOf(it), it.remaining()) }
         applyQuicOptions(options, CommonJvmQuicConfigCalls(api, quicheConfig), QuicRole.Server)
+        handshake.applyTo(api, quicheConfig)
         api.applySessionTicketKeys(quicheConfig, tls.sessionTicketKeys, factory)
         return quicheConfig
     }

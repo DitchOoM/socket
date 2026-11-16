@@ -6,6 +6,7 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.WritePolicy
+import com.ditchoom.socket.networkId
 import com.ditchoom.socket.quic.CommonJvmQuicConfigCalls
 import com.ditchoom.socket.quic.LocalEndpointSupport
 import com.ditchoom.socket.quic.QUIC_ISSUED_CONN_ID_LEN
@@ -25,6 +26,7 @@ import com.ditchoom.socket.quic.UdpSocketChannelFactory
 import com.ditchoom.socket.quic.applyQuicOptions
 import com.ditchoom.socket.quic.core.conn.Conn
 import com.ditchoom.socket.quic.core.conn.FlightSize
+import com.ditchoom.socket.quic.core.conn.HandshakeRule
 import com.ditchoom.socket.quic.core.loop.Loop
 import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.loop.Placement
@@ -155,7 +157,9 @@ private suspend fun connectOnThisThread(
             is Placement.SetClosed -> raise(Raised.LoopsClosed, QuicCloseCircumstance.HandshakeFailed)
             is Placement.NotJdkMemory -> raise(Raised.FactoryNotNative(factory.allocate(1)), QuicCloseCircumstance.HandshakeFailed)
         }
-    val config = configured(api, options, factory)
+    val monitor = resolveNetworkMonitor(options.networkMonitor)
+    val handshake = clientHandshakeRule(options, linkClassOf(monitor.state.value.networkId))
+    val config = configured(api, options, factory, handshake)
     val scid = generateScid(factory)
     val scidHex = hex(scid)
     val peerSockAddr = codec.encodeToNative(peer, factory)
@@ -178,7 +182,22 @@ private suspend fun connectOnThisThread(
     val scope = CoroutineScope(SupervisorJob())
     val built =
         ClientParts(
-            ClientWiring(api, handle, config, options, memory, running, channel, wrapIo, peerInet, readPolicy, writePolicy, scope, flight),
+            ClientWiring(
+                api,
+                handle,
+                config,
+                options,
+                memory,
+                running,
+                channel,
+                wrapIo,
+                peerInet,
+                readPolicy,
+                writePolicy,
+                scope,
+                flight,
+                handshake,
+            ),
             peerSockAddr,
             localSockAddr,
         )
@@ -188,7 +207,6 @@ private suspend fun connectOnThisThread(
             peer,
             QuicConnectionIdentity(QuicSessionId(scidHex), QuicWireConnectionId.Known(scidHex)),
         )
-    val monitor = resolveNetworkMonitor(options.networkMonitor)
     wireClientConnectivityTap(options, built.capture, connection, monitor)
     built.start()
     scope.feedNetwork(monitor, connection, built, { routeSource(route) }, local.address.hostAddress)
@@ -202,17 +220,19 @@ private suspend fun connectOnThisThread(
     return CoreClient(connection, built.conn, running.loop, SocketReport(granted, local.port))
 }
 
-/** A client config with the caller's ALPN, options and trust anchors applied. */
+/** A client config with the caller's ALPN, options, handshake rule and trust anchors applied. */
 private fun configured(
     api: QuicheApi,
     options: QuicOptions,
     factory: BufferFactory,
+    handshake: HandshakeRule,
 ): QuicheConfig {
     val config = api.configNew(QUIC_V1)
     val alpn = encodeAlpnList(options.alpnProtocols, factory)
     api.configSetApplicationProtos(config, addressOf(alpn), alpn.remaining())
     alpn.freeNativeMemory()
     applyQuicOptions(options, CommonJvmQuicConfigCalls(api, config), QuicRole.Client)
+    handshake.applyTo(api, config)
     loadTrustAnchors(api, config, options, factory)
     return config
 }
@@ -261,6 +281,7 @@ internal class ClientWiring(
     val writePolicy: WritePolicy,
     val scope: CoroutineScope,
     val flight: FlightSize,
+    val handshake: HandshakeRule,
     /** What the connection reads the time from: the loop's own clock. */
     val clock: LoopClock = MonotonicClock,
     /** When the loop reads the socket: polled on a loop thread, every pass on a loop a test drives on virtual time. */

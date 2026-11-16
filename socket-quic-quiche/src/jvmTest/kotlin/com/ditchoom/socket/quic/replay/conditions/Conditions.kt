@@ -1,5 +1,6 @@
 package com.ditchoom.socket.quic.replay.conditions
 
+import com.ditchoom.socket.quic.HandshakePacing
 import kotlin.time.Duration
 
 /**
@@ -26,6 +27,8 @@ internal data class Conditions(
     val runFor: Duration,
     /** Bytes in each echo: the walk probe's 16, or more to hold data in flight across an outage. */
     val echoBytes: Int = PROBE_ECHO_BYTES,
+    /** How both ends retransmit their handshake. */
+    val handshakePacing: HandshakePacing = HandshakePacing.Adaptive(),
 )
 
 /** The walk probe's echo size. */

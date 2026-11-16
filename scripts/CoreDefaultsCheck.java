@@ -390,8 +390,8 @@ public class CoreDefaultsCheck {
     static final Set<String> QUICHE_VALUE_TYPES = Set.of("QuicheConfig", "QuicheConn", "QuicheRecvInfo",
         "QuicheSendInfo", "QuicheStreamIter", "NextDue", "NextStream", "StreamRecvStep");
 
-    /** Entries of enums declared outside core, so `when (role) { QuicRole.Client -> }` is not an object compared by equals. */
-    static final Set<String> EXTERNAL_ENUM_ENTRIES = Set.of("Client", "Server");
+    /** Entries of enums declared outside core (`QuicRole`, `LinkClass`), so `QuicRole.Client ->` is not an object compared by equals. */
+    static final Set<String> EXTERNAL_ENUM_ENTRIES = Set.of("Client", "Server", "Ethernet", "Wifi", "Cellular", "Satellite", "Unknown");
 
     /** `when` over an open platform type (Throwable, IOException) may keep its `else`. */
     static final List<String> OPEN_WHEN_FILES = List.of("udp/*Errors.kt", "edge/Failures.kt", "life/Tiers.kt");
@@ -415,7 +415,7 @@ public class CoreDefaultsCheck {
             List.of("conn/Egress"));
         QUICHE_OWNERS.put("connLossEvidence|connRecvGaps", List.of("conn/AckHold", "conn/AckCadence"));
         QUICHE_OWNERS.put("connTimeout|connOnTimeout", List.of("conn/ConnTimer"));
-        QUICHE_OWNERS.put("connIsEstablished|connIsHandshakeConfirmed|connSetHandshakePtoCeiling|connApplicationProto",
+        QUICHE_OWNERS.put("connIsEstablished|connIsHandshakeConfirmed|connSetHandshakePtoCeiling|connApplicationProto|configSetInitialRtt",
             List.of("conn/Handshake"));
         QUICHE_OWNERS.put("connClose|connIsClosed|connIsTimedOut|connPeerError|connLocalError", List.of("life/ConnLife"));
         QUICHE_OWNERS.put("connStreamDataUnacknowledged", List.of("life/Linger", "life/ConnLife"));

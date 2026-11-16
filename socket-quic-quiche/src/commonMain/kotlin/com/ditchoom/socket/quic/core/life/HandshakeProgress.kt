@@ -1,5 +1,6 @@
 package com.ditchoom.socket.quic.core.life
 
+import com.ditchoom.socket.quic.LinkClass
 import kotlin.time.Duration
 
 /** What a handshake that hit its deadline had reached. A timed-out handshake has no duration and no pace. */
@@ -22,6 +23,3 @@ internal sealed interface RttSample {
 }
 
 internal enum class HandshakeReached { NothingReceived, PeerAnswered, EstablishedUnconfirmed }
-
-/** The first hop's kind, which sets the handshake's RTT prior. */
-internal enum class LinkClass { Ethernet, Wifi, Cellular, Satellite, Unknown }

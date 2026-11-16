@@ -119,7 +119,8 @@ internal fun closeReasonOf(end: ConnEnd): QuicCloseReason =
     when (end) {
         is ConnEnd.ByPeer -> QuicCloseReason.ByPeer(end.error)
         is ConnEnd.ByLocal -> QuicCloseReason.ByLocal(end.error)
-        is ConnEnd.IdleTimeout, is ConnEnd.HandshakeTimedOut -> QuicCloseReason.ByLocal(QuicError.IdleTimeout)
+        is ConnEnd.IdleTimeout -> QuicCloseReason.ByLocal(QuicError.IdleTimeout)
+        is ConnEnd.HandshakeTimedOut -> QuicCloseReason.ByLocal(QuicError.HandshakeTimeout(end.progress.waited))
         is ConnEnd.ProcessingFailed -> QuicCloseReason.ByLocal(QuicError.ProcessingFailed)
         is ConnEnd.ServerClosed -> QuicCloseReason.ByLocal(QuicError.NoError)
         is ConnEnd.SocketFailed, is ConnEnd.CallerFailed, is ConnEnd.LoopFailed, is ConnEnd.LoopStopped,

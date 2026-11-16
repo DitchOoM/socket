@@ -7,25 +7,12 @@ import com.ditchoom.socket.quic.SendTarget
 import com.ditchoom.socket.quic.StubQuicheApi
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.path.SinglePath
-import com.ditchoom.socket.quic.core.testing.nativeBytes
-import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.udp.SockAddr
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
-/** [Handshake] and [Release]: the two components that act once per connection. */
-class HandshakeAndReleaseTests {
-    @Test
-    fun theHandshakeReportsEstablishmentOnceWithItsDuration() {
-        val api = StubQuicheApi().apply { established = false }
-        val handshake = Handshake(QuicheConnRef(api, QuicheConn(1L)), startedNanos = 100L, alpn = nativeBytes(255))
-        assertEquals(HandshakeStep.Handshaking, handshake.step())
-        api.established = true
-        assertEquals(HandshakeStep.JustEstablished, handshake.step())
-        assertEquals(HandshakeStep.Established, handshake.step())
-        assertEquals(400L, handshake.report(Nanos(500L)).handshakeNanos)
-    }
-
+/** [Release]: quiche's memory is freed once, and only after it was asked. */
+class ReleaseTests {
     @Test
     fun aReleaseFreesQuichesMemoryOnceAndOnlyAfterItWasAsked() {
         val freed = ArrayList<String>()

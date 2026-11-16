@@ -91,7 +91,7 @@ class ConnPacingTests {
             sent += pending
             SendBatchResult.AllTaken
         }
-        val rig = ConnRig(api, rules = SlotRules.forWaits(WaitResolution(tick)), io = io)
+        val rig = ConnRig(api, rules = SlotRules.forWaits(WaitResolution(tick), SlotRules.Default.handshake), io = io)
         api.clock = { rig.clock.at.value }
         repeat(datagrams) { api.stub.connSendQueue.addLast(1200) }
         var now = 0L

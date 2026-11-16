@@ -447,6 +447,10 @@ data class QuicOptions(
      * ([AppleTrustSource.SystemTrustStore], via Security.framework). Ignored on every other platform.
      */
     val appleTrustSource: AppleTrustSource = AppleTrustSource.SystemTrustStore,
+    /** How the run-to-completion core retransmits the handshake before it is confirmed. */
+    val handshakePacing: HandshakePacing = HandshakePacing.Adaptive(),
+    /** How long the run-to-completion core lets a handshake take before the connection ends. */
+    val handshakePolicy: HandshakePolicy = HandshakePolicy.Bounded(10.seconds),
 ) {
     init {
         require(alpnProtocols.isNotEmpty()) { "QUIC requires at least one ALPN protocol" }
