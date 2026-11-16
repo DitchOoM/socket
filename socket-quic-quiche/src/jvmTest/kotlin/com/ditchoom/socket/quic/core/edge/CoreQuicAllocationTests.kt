@@ -297,7 +297,7 @@ private suspend fun roundTrip(
  * Runs a caller's tasks on one thread of its own, taking them from a bounded array queue so a hand-off allocates no
  * queue node. The queue holds the few tasks one sequential caller has in flight.
  */
-private class ArrayQueueDispatcher(
+internal class ArrayQueueDispatcher(
     name: String,
 ) : CoroutineDispatcher() {
     private val queue = ArrayBlockingQueue<Runnable>(QUEUE)
