@@ -115,7 +115,7 @@ class CoreFailureTierTests {
             // The loop is inside the connection, so the read is queued behind the work that is about to end it.
             val queued = rig.conn.counts.leftForHolder
             val read = async(Dispatchers.IO) { runCatching { stream.read(10.seconds) { } } }
-            while (rig.conn.counts.leftForHolder == queued) Thread.onSpinWait()
+            while (rig.conn.counts.leftForHolder == queued) Thread.yield() // Thread.onSpinWait does not exist on Android API 28
             hold.release.countDown()
 
             val failure = assertIs<QuicCloseException>(read.await().exceptionOrNull())

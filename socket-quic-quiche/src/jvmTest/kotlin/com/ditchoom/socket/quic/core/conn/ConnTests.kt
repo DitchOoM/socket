@@ -4,6 +4,9 @@ import com.ditchoom.socket.quic.NextDue
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.StubQuicheApi
 import com.ditchoom.socket.quic.core.life.ConnEnd
+import com.ditchoom.socket.quic.core.stream.Retry
+import com.ditchoom.socket.quic.core.stream.StreamTable
+import com.ditchoom.socket.quic.core.stream.Waiter
 import com.ditchoom.socket.quic.core.testing.ConnRig
 import com.ditchoom.socket.quic.core.testing.FakeIo
 import com.ditchoom.socket.quic.core.udp.SendBatchResult
@@ -60,6 +63,36 @@ class ConnTests {
         val later = Nothing()
         rig.conn.submit(later)
         assertSame(end, later.goneWith.single())
+    }
+
+    /**
+     * An operation told the connection ended resumes its caller, which may ask the edge how it ended at once (a read
+     * that failed reports it): the sink, which publishes the end, hears it before any parked operation does.
+     */
+    @Test
+    fun theEndIsPublishedBeforeAParkedOperationIsToldIt() {
+        val rig = ConnRig(StubQuicheApi())
+        rig.pass(0)
+        val endsPublishedWhenTold = ArrayList<Int>()
+        val parked =
+            object : Waiter {
+                override fun retry(table: StreamTable): Retry = Retry.Again
+
+                override fun connectionEnded(end: ConnEnd) {
+                    endsPublishedWhenTold += rig.sink.ended.size
+                }
+            }
+        rig.conn.submit(
+            object : ConnWork() {
+                override fun run(inside: Inside) = inside.streams.waitToOpen(parked)
+
+                override fun gone(end: ConnEnd) = Unit
+            },
+        )
+        rig.pass(1)
+        rig.conn.submit(Throws(IllegalStateException("planted")))
+        rig.pass(2)
+        assertEquals(listOf(1), endsPublishedWhenTold, "the parked operation was told the end after the sink published it")
     }
 
     @Test
