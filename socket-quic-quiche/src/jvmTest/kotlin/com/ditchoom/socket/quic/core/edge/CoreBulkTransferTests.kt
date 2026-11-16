@@ -3,6 +3,7 @@ package com.ditchoom.socket.quic.core.edge
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.PlatformBuffer
+import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.freeIfNeeded
@@ -24,7 +25,8 @@ class CoreBulkTransferTests {
         runBlocking {
             skipOnMissingNativeLib(CoreBulkTransferTests::class) {
                 withEchoServer { port ->
-                    val client = connectCore(port)
+                    // An exact-size factory: a pooled one returns whatever larger buffer is idle, so its capacity says nothing of the read size.
+                    val client = connectCore(port, factory = BufferFactory.deterministic())
                     val stream = client.connection.openStream()
                     val capacities = ArrayList<Int>()
                     var received = 0L

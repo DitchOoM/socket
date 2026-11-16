@@ -96,7 +96,8 @@ internal class ReadOp(
         if (entry.received == Received.Finished) return deliver(ReadResult.End)
         val buffer =
             when (val kept = spare) {
-                is Spare.None -> factory.allocate(entry.chunk.bytes)
+                // A pooled factory may return a larger buffer than asked for; the read asks for the chunk, not the buffer.
+                is Spare.None -> factory.allocate(entry.chunk.bytes).also { it.setLimit(entry.chunk.bytes) }
                 is Spare.Held -> kept.buffer
             }
         spare = Spare.None
