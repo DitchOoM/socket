@@ -4,7 +4,6 @@ package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.WriteBuffer
-import com.ditchoom.buffer.crypto.sha256 as bufferCryptoSha256
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.socket.quic.boringssl.ditchoom_sha256
 import kotlinx.cinterop.UByteVar
@@ -13,6 +12,7 @@ import kotlinx.cinterop.convert
 import kotlinx.cinterop.get
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.toCPointer
+import com.ditchoom.buffer.crypto.sha256 as bufferCryptoSha256
 
 private const val SHA256_DIGEST_BYTES = 32
 
