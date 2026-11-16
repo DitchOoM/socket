@@ -117,11 +117,22 @@ internal interface LoopParts {
      */
     fun collect(out: SendBatch): Collected
 
-    /** Called first in every pass, before the loop takes datagrams from the socket: work the parts held back from earlier passes. */
-    fun passBegan() {}
+    /**
+     * Called after the loop has emptied the socket, and again after each time it empties it again while this answers
+     * [Admitted.More]: starts a bounded share of the work the parts held back, so the socket is never left unread for
+     * longer than that share takes.
+     */
+    fun admitSome(): Admitted = Admitted.Done
 
     /** The loop thread failed with [cause] and stops; end everything on it. Called once, on the loop thread. */
     fun loopFailed(cause: Throwable)
+}
+
+/** Whether the parts have more held-back work this pass is allowed to start. */
+internal sealed interface Admitted {
+    object Done : Admitted
+
+    object More : Admitted
 }
 
 internal sealed interface Collected {
@@ -306,8 +317,8 @@ internal class Loop(
     fun pass(now: Long): NextDue {
         counts.passes++
         deadlines.fireDue(now)
-        parts.passBegan()
         receiveWaiting()
+        while (parts.admitSome() === Admitted.More) receiveWaiting()
         counts.work += inbox.drain(runWork)
         flushLanes()
         while (true) {

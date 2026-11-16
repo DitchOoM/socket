@@ -36,7 +36,7 @@ class CoreServerAdmissionTests {
     fun closeLoops() = loops.close()
 
     @Test
-    fun aBurstOverTheBoundOfHandshakesPerPassIsLeftInTheSocketForTheNextPassesAndNothingIsDropped() =
+    fun aBurstOverTheBoundOfHandshakesPerPassIsHeldInTheBacklogForTheNextPassesAndNothingIsDropped() =
         runBlocking {
             val gate = GatedIo()
             val bound = 4
@@ -53,13 +53,13 @@ class CoreServerAdmissionTests {
                             }
                         }
                     }
-                // Every first Initial waits in the socket; the next pass takes them all at once.
+                // Every first Initial waits in the socket; the next pass takes them all at once and starts them over its passes.
                 delay(500.milliseconds)
                 gate.open()
                 val echoed = connects.awaitAll()
                 echoed.forEachIndexed { n, (sent, back) -> assertContentEquals(sent, back, "connection $n") }
                 assertEquals((4 * bound).toLong(), server.counts.accepted)
-                assertEquals(0L, server.counts.droppedAdmission, "what was over a pass's bound waited in the socket and was not dropped")
+                assertEquals(0L, server.counts.droppedAdmission, "what was over a pass's bound waited in the backlog and was not dropped")
             }
         }
 

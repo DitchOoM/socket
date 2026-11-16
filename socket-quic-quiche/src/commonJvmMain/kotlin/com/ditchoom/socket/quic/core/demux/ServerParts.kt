@@ -17,6 +17,7 @@ import com.ditchoom.socket.quic.core.conn.ConnPath
 import com.ditchoom.socket.quic.core.conn.DatagramSlots
 import com.ditchoom.socket.quic.core.edge.CoreConnection
 import com.ditchoom.socket.quic.core.edge.addressOf
+import com.ditchoom.socket.quic.core.loop.Admitted
 import com.ditchoom.socket.quic.core.loop.Collected
 import com.ditchoom.socket.quic.core.loop.Loop
 import com.ditchoom.socket.quic.core.loop.LoopClosed
@@ -66,6 +67,7 @@ internal class ServerParts(
     private val backlog = InitialBacklog(s.serverConfig.admission.backlog, s.datagramSize, s.factory)
     private val backlogTick = Tick()
     private var tickedPass = -1L
+    private var mode: Mode = Mode.Receiving
     private var admissionPass = -1L
     private var startedThisPass = 0
 
@@ -74,16 +76,25 @@ internal class ServerParts(
         attached = Attached.To(loop)
     }
 
-    /** Admits what earlier passes held, oldest first, before this pass takes anything new from the socket. */
-    override fun passBegan() {
+    /**
+     * Starts up to [ADMIT_CHUNK] handshakes from the backlog, oldest first, within the pass's bound. Between chunks the
+     * loop reads the socket again, so the kernel's receive buffer is emptied after every few handshakes and never
+     * overflows while many are being started.
+     */
+    override fun admitSome(): Admitted {
         val now = attached
-        if (now !is Attached.To) return
+        if (now !is Attached.To) return Admitted.Done
         startPassIfNew(now.loop)
         val admission = s.serverConfig.admission
-        while (!backlog.isEmpty && startedThisPass < admission.perPass && handshakes.inProgress < admission.inProgress) {
+        val stopAt = minOf(admission.perPass, startedThisPass + ADMIT_CHUNK)
+        mode = Mode.Admitting
+        while (!backlog.isEmpty && startedThisPass < stopAt && handshakes.inProgress < admission.inProgress) {
             onDatagram(backlog.oldest(), backlog.oldestLength(), backlog.oldestFrom(), ArrivedOn.Unreported)
             backlog.dropOldest()
         }
+        mode = Mode.Receiving
+        val more = !backlog.isEmpty && startedThisPass < admission.perPass && handshakes.inProgress < admission.inProgress
+        return if (more) Admitted.More else Admitted.Done
     }
 
     private fun startPassIfNew(loop: Loop) {
@@ -199,7 +210,7 @@ internal class ServerParts(
             s.counts.droppedAdmission++
             return
         }
-        if (startedThisPass >= s.serverConfig.admission.perPass) {
+        if (mode === Mode.Receiving) {
             hold(buffer, length, from)
             return
         }
@@ -236,7 +247,7 @@ internal class ServerParts(
         peer.conn.received(buffer, length)
     }
 
-    /** The pass has admitted all it may: the Initial waits for a later pass, or is dropped when the backlog is full. */
+    /** The Initial waits for the loop's next admission chunk, or is dropped when the backlog is full. */
     private fun hold(
         buffer: ReceiveBuffer,
         length: Int,
@@ -433,10 +444,20 @@ internal class ServerParts(
     val connections: Int get() = peers.size
 
     private companion object {
+        const val ADMIT_CHUNK = 16
         const val MIN_INITIAL = 1200
         const val MAX_TOKEN = 256
         const val WORD = 8
     }
+}
+
+/** Whether an Initial that starts a handshake is started now or held for the loop's next admission chunk. */
+private sealed interface Mode {
+    /** The loop is reading the socket: nothing slow is done until it is empty. */
+    object Receiving : Mode
+
+    /** The loop is starting handshakes from the backlog. */
+    object Admitting : Mode
 }
 
 /** How a server's loop ended: its owner closed it, or it failed. */

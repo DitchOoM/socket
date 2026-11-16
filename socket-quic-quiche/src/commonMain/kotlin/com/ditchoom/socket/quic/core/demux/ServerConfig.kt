@@ -61,7 +61,7 @@ internal class ServerCounts {
     @kotlin.concurrent.Volatile
     var droppedBacklog = 0L
 
-    /** Initials held in the backlog because their pass had already admitted all it may. */
+    /** Initials held in the backlog until a pass started their handshake. */
     @kotlin.concurrent.Volatile
     var backlogged = 0L
 
