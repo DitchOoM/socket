@@ -9,6 +9,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
 
 /**
  * Walk failures as permanent tests: the network conditions and OS events of real recordings, replayed against the core
@@ -84,7 +85,7 @@ class WalkConditionReplayTests {
             replayTwice(
                 conditions,
                 Expect.Survives(
-                    firstEchoWithin = twoRoundTrips,
+                    firstEchoWithin = twoRoundTrips + IDS_HANDED_OVER,
                     longestGapAtMost = usableAt(conditions) - disrupted(conditions) + conditions.echoEvery + twoRoundTrips,
                 ),
             )
@@ -104,4 +105,9 @@ class WalkConditionReplayTests {
             conditions.link.filterIsInstance<LinkWindow.Outage>().minOfOrNull { it.from } ?: conditions.runFor,
             conditions.os.minOfOrNull { it.at } ?: conditions.runFor,
         )
+
+    private companion object {
+        /** The serialization of the ids the server hands over beside the first echo once its peer retired the old ones. */
+        val IDS_HANDED_OVER = 2.milliseconds
+    }
 }

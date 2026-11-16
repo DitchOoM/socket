@@ -1,3 +1,5 @@
+@file:Suppress("ktlint:standard:filename") // rule Q names the deciding file path/Paths*: every Paths variant lives in one.
+
 package com.ditchoom.socket.quic.core.path
 
 import com.ditchoom.buffer.BufferFactory
@@ -11,74 +13,12 @@ import com.ditchoom.socket.quic.QuicheRecvInfo
 import com.ditchoom.socket.quic.connPeerMigrationPermission
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.observe.Confined
+import com.ditchoom.socket.quic.core.time.Nanos
+import com.ditchoom.socket.quic.core.time.WakeSink
 import com.ditchoom.socket.quic.core.udp.SockAddr
 import com.ditchoom.socket.quic.decodePathKey
 import com.ditchoom.socket.quic.encodeToNative
 import kotlin.random.Random
-
-/**
- * One local endpoint of a client: its address as quiche reads it ([key]), and the receive info for datagrams that
- * arrive on it. [made] says whose its sockaddr and receive info are, and so who frees them.
- */
-internal class LocalAddr(
-    val key: PathKey,
-    val recvInfo: QuicheRecvInfo,
-    val made: Made,
-) {
-    val info = RecvFrom.Info(recvInfo)
-}
-
-/** Who made a [LocalAddr]'s sockaddr and receive info. */
-internal sealed interface Made {
-    /** The connect's own, freed with the path the connection was opened on. */
-    data object ByEdge : Made
-
-    class Here(
-        val sockAddr: EncodedSockAddr,
-    ) : Made
-}
-
-/** A local endpoint and the destination connection id quiche linked to its path: the two never separate. */
-internal class Linked(
-    val local: LocalAddr,
-    val dcidSeq: Long,
-)
-
-/** Why a moved socket's endpoint has no path being validated. */
-internal enum class Unprobed { NoSpareId, ValidationFailed, MigrationRefused }
-
-/** Where a client's path stands. Every destination id it holds is in exactly one [Linked]; the step that drops one retires it. */
-internal sealed interface Move {
-    /** The connection's one path leaves from [on]. */
-    class Settled(
-        val on: Linked,
-    ) : Move
-
-    /** The socket moved to [to], whose path is being validated; quiche's active path is still [from]. */
-    class Probing(
-        val from: Linked,
-        val to: Linked,
-    ) : Move
-
-    /** The socket moved to [at], whose path is not being validated; quiche's active path is still [from]. */
-    class Stranded(
-        val from: Linked,
-        val at: LocalAddr,
-        val why: Unprobed,
-    ) : Move
-}
-
-/** What a client asked to move answers. */
-internal enum class MoveAnswer {
-    /** The new endpoint's path is being validated, or has no spare id to be. */
-    Following,
-
-    /** The peer forbade migration: the connection cannot follow its socket. */
-    Refused,
-}
-
-/** What one serve's look at the paths found. */
-internal enum class PathStep { Steady, Migrated }
 
 /**
  * A client's paths. Its socket has one local endpoint at a time; when the socket moves, the new endpoint's path is
@@ -93,12 +33,14 @@ internal class ClientPaths(
     private val factory: BufferFactory,
     private val ids: IdIssuer,
     private val random: Random,
+    private val free: (QuicheRecvInfo, Made) -> Unit,
 ) {
     private val toPeer = Outgoing.To(first.target)
     private val fixed = Sorting.Fixed(toPeer)
     private var move: Move = Move.Settled(Linked(LocalAddr(q.api.decodePathKey(first.local.address), first.recvInfo, Made.ByEdge), 0L))
     private var events: EventMemory = EventMemory.None
-    private val spent = ArrayList<LocalAddr>(SPENT)
+    private var previous: Previous = Previous.None
+    private val retiredIds = RetiredReader(factory)
 
     val sendInfo get() = first.sendInfo
 
@@ -126,35 +68,54 @@ internal class ClientPaths(
     fun established(): Issued = ids.issueAll(q, random)
 
     /** The socket now leaves from [local]: the path from it is probed, and an earlier unfinished move is dropped. */
-    fun move(local: PathKey): MoveAnswer {
+    fun move(
+        now: Nanos,
+        local: PathKey,
+    ): MoveAnswer {
         when (q.api.connPeerMigrationPermission(q.handle)) {
             is PeerMigrationPermission.Permitted -> Unit
             is PeerMigrationPermission.Forbidden, is PeerMigrationPermission.NotYetNegotiated -> return MoveAnswer.Refused
         }
+        topUp()
         val sockAddr = local.encodeToNative(factory)
         val at = LocalAddr(q.api.decodePathKey(sockAddr.address), recvInfoAt(sockAddr), Made.Here(sockAddr))
         val from = abandon()
         move =
             when (val probed = q.api.connProbePath(q.handle, sockAddr.address, sockAddr.length, first.peer.address, first.peer.length)) {
-                is ProbeOutcome.Probed -> Move.Probing(from, Linked(at, probed.dcidSeq))
-                is ProbeOutcome.Rejected -> Move.Stranded(from, at, Unprobed.NoSpareId)
+                is ProbeOutcome.Probed -> Move.Probing(from, Linked(at, probed.dcidSeq), 0)
+                is ProbeOutcome.Rejected -> Move.Stranded(from, at, Unprobed.NoSpareId, q.retryAt(now, 0), LinkedId.None)
             }
         return MoveAnswer.Following
     }
 
-    /** Reads quiche's path events while a move is being validated, and migrates once it is. */
-    fun step(): PathStep =
-        when (val now = move) {
-            is Move.Probing -> follow(now)
-            is Move.Settled, is Move.Stranded -> PathStep.Steady
+    /**
+     * Reads quiche's path events while a move is being validated, and migrates once it is; a move that found no path is
+     * probed again when its [Retry] falls due.
+     */
+    fun step(now: Nanos): PathStep =
+        when (val moving = move) {
+            is Move.Probing -> follow(now, moving)
+            is Move.Stranded -> reprobe(now, moving)
+            is Move.Settled -> PathStep.Steady
         }
+
+    /** Offers the time the next probe of a stranded endpoint falls due; offers nothing otherwise. */
+    fun offerWake(sink: WakeSink) {
+        when (val now = move) {
+            is Move.Stranded -> sink.offer(now.retry.due)
+            is Move.Settled, is Move.Probing -> Unit
+        }
+    }
 
     /** Whether the socket's endpoint has no validated path yet: an idle end then means no usable path was found. */
     fun unsettled(): Boolean = move !is Move.Settled
 
     /** Hands [each] every endpoint this connection made, for its release, and frees the paths' own memory. */
     fun made(each: (LocalAddr) -> Unit) {
-        spent.forEach(each)
+        when (val held = previous) {
+            is Previous.Held -> each(held.local)
+            is Previous.None -> Unit
+        }
         when (val now = move) {
             is Move.Settled -> each(now.on.local)
             is Move.Probing -> {
@@ -171,9 +132,43 @@ internal class ClientPaths(
             is EventMemory.None -> Unit
         }
         ids.free()
+        retiredIds.free()
     }
 
-    private fun follow(probing: Move.Probing): PathStep {
+    /**
+     * A stranded endpoint is tried again once its [Retry] falls due: a path that never had an id is probed with a fresh
+     * one, one that failed validation is probed on the id it kept, and one that validated but could not be migrated to
+     * is migrated to.
+     */
+    private fun reprobe(
+        now: Nanos,
+        stranded: Move.Stranded,
+    ): PathStep {
+        if (now.value < stranded.retry.due.value) return PathStep.Steady
+        topUp()
+        return when (stranded.why) {
+            Unprobed.MigrationRefused -> migrate(now, stranded.from, stranded.at, LinkedId.None, stranded.retry.failed)
+            Unprobed.NoSpareId, Unprobed.ValidationFailed -> {
+                val at = sockAddrOf(stranded.at)
+                move =
+                    when (val probed = q.api.connProbePath(q.handle, at.address, at.length, first.peer.address, first.peer.length)) {
+                        is ProbeOutcome.Probed -> Move.Probing(stranded.from, Linked(stranded.at, probed.dcidSeq), stranded.retry.failed)
+                        is ProbeOutcome.Rejected -> strandedAgain(now, stranded)
+                    }
+                PathStep.Steady
+            }
+        }
+    }
+
+    private fun strandedAgain(
+        now: Nanos,
+        stranded: Move.Stranded,
+    ): Move.Stranded = Move.Stranded(stranded.from, stranded.at, stranded.why, q.retryAt(now, stranded.retry.failed + 1), stranded.id)
+
+    private fun follow(
+        now: Nanos,
+        probing: Move.Probing,
+    ): PathStep {
         val scratch =
             when (val taken = scratch()) {
                 is EventsTaken.Taken -> taken.scratch
@@ -186,33 +181,51 @@ internal class ClientPaths(
                     is PathNews.Drained -> return PathStep.Steady
                 }
             if (!q.addressIs(scratch.local, probing.to.local.key)) continue
-            if (type == QuichePathEventType.Validated) return migrate(probing)
+            if (type == QuichePathEventType.Validated) {
+                return migrate(now, probing.from, probing.to.local, LinkedId.Seq(probing.to.dcidSeq), probing.failed)
+            }
             if (type == QuichePathEventType.FailedValidation || type == QuichePathEventType.Closed) {
-                retire(probing.to.dcidSeq)
-                move = Move.Stranded(probing.from, probing.to.local, Unprobed.ValidationFailed)
+                val retry = q.retryAt(now, probing.failed + 1)
+                move = Move.Stranded(probing.from, probing.to.local, Unprobed.ValidationFailed, retry, LinkedId.Seq(probing.to.dcidSeq))
                 return PathStep.Steady
             }
         }
     }
 
-    private fun migrate(probing: Move.Probing): PathStep {
-        val to = probing.to.local
-        return when (val migrated = connMigrate(to)) {
+    private fun migrate(
+        now: Nanos,
+        from: Linked,
+        to: LocalAddr,
+        id: LinkedId,
+        failed: Int,
+    ): PathStep =
+        when (val migrated = connMigrate(to)) {
             is MigrateOutcome.Migrated -> {
                 // The old path's socket is gone: what it had in flight is resent from the new one now.
-                val left = sockAddrOf(probing.from.local)
+                val left = sockAddrOf(from.local)
                 q.api.connRequeuePath(q.handle, left.address, left.length, first.peer.address, first.peer.length)
-                retire(probing.from.dcidSeq)
-                spent.add(probing.from.local)
+                retire(from.dcidSeq)
+                spend(from.local)
                 move = Move.Settled(Linked(to, migrated.dcidSeq))
                 PathStep.Migrated
             }
             is MigrateOutcome.Rejected -> {
-                retire(probing.to.dcidSeq)
-                move = Move.Stranded(probing.from, to, Unprobed.MigrationRefused)
+                when (id) {
+                    is LinkedId.Seq -> retire(id.seq)
+                    is LinkedId.None -> Unit
+                }
+                move = Move.Stranded(from, to, Unprobed.MigrationRefused, q.retryAt(now, failed + 1), LinkedId.None)
                 PathStep.Steady
             }
         }
+
+    /**
+     * Hands the peer the ids it may use for the paths of moves to come: each path uses one, and the peer retires those of
+     * the paths it left. What it retired is read out of quiche, which keeps it until it is.
+     */
+    private fun topUp() {
+        retiredIds.read(q)
+        ids.issueAll(q, random)
     }
 
     private fun connMigrate(to: LocalAddr): MigrateOutcome {
@@ -232,14 +245,27 @@ internal class ClientPaths(
             is Move.Settled -> now.on
             is Move.Probing -> {
                 retire(now.to.dcidSeq)
-                spent.add(now.to.local)
+                spend(now.to.local)
                 now.from
             }
             is Move.Stranded -> {
-                spent.add(now.at)
+                when (val held = now.id) {
+                    is LinkedId.Seq -> retire(held.seq)
+                    is LinkedId.None -> Unit
+                }
+                spend(now.at)
                 now.from
             }
         }
+
+    /** [local] is left behind: it is kept as the previous endpoint, and the one kept before it is freed. */
+    private fun spend(local: LocalAddr) {
+        when (val held = previous) {
+            is Previous.Held -> free(held.local.recvInfo, held.local.made)
+            is Previous.None -> Unit
+        }
+        previous = Previous.Held(local)
+    }
 
     private fun socket(): LocalAddr =
         when (val now = move) {
@@ -266,9 +292,5 @@ internal class ClientPaths(
     private fun retire(seq: Long) {
         // A refusal leaves the id with quiche until the connection ends; no path uses it.
         q.api.connRetireDcid(q.handle, seq)
-    }
-
-    private companion object {
-        const val SPENT = 4
     }
 }

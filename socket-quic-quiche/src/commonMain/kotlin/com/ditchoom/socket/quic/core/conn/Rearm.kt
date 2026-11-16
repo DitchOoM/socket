@@ -13,5 +13,6 @@ internal fun ConnParts.rearm(
         is Pacing.ByQuiche -> pacing.pacer.offerWake(timer.sink)
     }
     handshake.offerWake(timer.sink)
+    slots.paths.offerWake(timer.sink)
     timer.rearm(now, fire)
 }
