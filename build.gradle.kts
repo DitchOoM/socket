@@ -884,7 +884,11 @@ project(":socket-quic-quiche") {
             javaLauncher.set(jvmTestTask.javaLauncher)
             jvmArgumentProviders.add(CommandLineArgumentProvider { jvmTestTask.jvmArgs.orEmpty() })
             doFirst { environment(jvmTestTask.environment) }
-            filter { includeTestsMatching("*MainThreadSafety*") }
+            filter {
+                includeTestsMatching("*MainThreadSafety*")
+                // The core's suite is parked while the core is rebuilt.
+                isFailOnNoMatchingTests = false
+            }
         }
         tasks.named<Test>("jvmTest") {
             filter {

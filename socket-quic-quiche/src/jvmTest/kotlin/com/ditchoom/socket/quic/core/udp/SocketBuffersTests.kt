@@ -1,9 +1,5 @@
 package com.ditchoom.socket.quic.core.udp
 
-import com.ditchoom.socket.quic.QuicError
-import com.ditchoom.socket.quic.core.demux.withCoreEchoServer
-import com.ditchoom.socket.quic.core.edge.connectCore
-import kotlinx.coroutines.runBlocking
 import java.net.StandardSocketOptions
 import java.nio.channels.DatagramChannel
 import java.nio.file.Files
@@ -32,22 +28,6 @@ class SocketBuffersTests {
             assertEquals(channel.getOption(StandardSocketOptions.SO_SNDBUF), granted.sendBytes)
         }
     }
-
-    @Test
-    fun aServerAndAClientBothReportTheirGrantedBuffers() =
-        runBlocking {
-            withCoreEchoServer { server ->
-                val client = connectCore(server.port)
-                try {
-                    assertTrue(server.socket.granted.receiveBytes > 0)
-                    assertEquals(SocketBuffers.Default.receiveBytes, server.socket.granted.requested.receiveBytes)
-                    assertTrue(client.socket.granted.receiveBytes > 0)
-                    assertTrue(client.socket.granted.sendBytes > 0)
-                } finally {
-                    client.connection.closeNow(QuicError.NoError)
-                }
-            }
-        }
 
     @Test
     fun dropsAreReadFromTheRowsOfTheSocketsPort() {

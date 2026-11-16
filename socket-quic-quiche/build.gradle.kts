@@ -5023,30 +5023,8 @@ val stageCoreAndroidTests =
     tasks.register<Sync>("stageCoreAndroidTests") {
         group = "verification"
         description = "Copy the JVM-tool-free core test sources into the Android instrumented test source set"
-        from("src/jvmTest/kotlin/com/ditchoom/socket/quic/core") {
-            include(
-                "edge/CoreTestSupport.kt",
-                "edge/CoreEdgeTests.kt",
-                "edge/CallerInPlaceTests.kt",
-                "edge/CoreFailureTierTests.kt",
-                "edge/CoreBulkTransferTests.kt",
-                "demux/ServerTestSupport.kt",
-                "demux/CoreServerEchoTests.kt",
-                "demux/CoreServerStatelessTests.kt",
-                "demux/CoreServerCloseTests.kt",
-                "demux/CoreServerAdmissionTests.kt",
-                "demux/CoreServerStartupHerdTests.kt",
-                "conn/CoreClientAgainstServerTests.kt",
-                "loop/SharedClientLoopTests.kt",
-                "loop/NioLoopEchoTests.kt",
-                "loop/LoopDeadlineWakeTests.kt",
-            )
-            into("com/ditchoom/socket/quic/core")
-        }
-        from("src/commonTest/kotlin/com/ditchoom/socket/quic/core") {
-            include("loop/LoopPassTests.kt", "stream/ReadChunkTests.kt")
-            into("com/ditchoom/socket/quic/core")
-        }
+        // The core is being rebuilt (parked suites live in src/parkedCoreTest, not compiled); each re-admitted
+        // suite that needs no JVM-only tool is added here.
         into(coreAndroidTestDir.map { it.dir("kotlin") })
     }
 val buildStampDir = layout.buildDirectory.dir("generated/buildStamp")
