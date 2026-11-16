@@ -179,19 +179,22 @@ public final class com/ditchoom/socket/quic/FinishingWrite$DefaultImpls {
 }
 
 public final class com/ditchoom/socket/quic/FlowControl {
+	public static final field Companion Lcom/ditchoom/socket/quic/FlowControl$Companion;
+	public static final field DEFAULT_MAX_CONNECTION_WINDOW J
+	public static final field DEFAULT_MAX_STREAM_WINDOW J
 	public fun <init> ()V
-	public fun <init> (JJJJJJLjava/lang/Long;Ljava/lang/Long;)V
-	public synthetic fun <init> (JJJJJJLjava/lang/Long;Ljava/lang/Long;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun <init> (JJJJJJJJ)V
+	public synthetic fun <init> (JJJJJJJJILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun component1 ()J
 	public final fun component2 ()J
 	public final fun component3 ()J
 	public final fun component4 ()J
 	public final fun component5 ()J
 	public final fun component6 ()J
-	public final fun component7 ()Ljava/lang/Long;
-	public final fun component8 ()Ljava/lang/Long;
-	public final fun copy (JJJJJJLjava/lang/Long;Ljava/lang/Long;)Lcom/ditchoom/socket/quic/FlowControl;
-	public static synthetic fun copy$default (Lcom/ditchoom/socket/quic/FlowControl;JJJJJJLjava/lang/Long;Ljava/lang/Long;ILjava/lang/Object;)Lcom/ditchoom/socket/quic/FlowControl;
+	public final fun component7 ()J
+	public final fun component8 ()J
+	public final fun copy (JJJJJJJJ)Lcom/ditchoom/socket/quic/FlowControl;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/quic/FlowControl;JJJJJJJJILjava/lang/Object;)Lcom/ditchoom/socket/quic/FlowControl;
 	public fun equals (Ljava/lang/Object;)Z
 	public final fun getInitialMaxData ()J
 	public final fun getInitialMaxStreamDataBidiLocal ()J
@@ -199,10 +202,13 @@ public final class com/ditchoom/socket/quic/FlowControl {
 	public final fun getInitialMaxStreamDataUni ()J
 	public final fun getInitialMaxStreamsBidi ()J
 	public final fun getInitialMaxStreamsUni ()J
-	public final fun getMaxConnectionWindow ()Ljava/lang/Long;
-	public final fun getMaxStreamWindow ()Ljava/lang/Long;
+	public final fun getMaxConnectionWindow ()J
+	public final fun getMaxStreamWindow ()J
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/quic/FlowControl$Companion {
 }
 
 public abstract interface class com/ditchoom/socket/quic/HandshakePacing {

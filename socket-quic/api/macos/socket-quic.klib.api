@@ -2608,7 +2608,7 @@ final class com.ditchoom.socket.quic/EngineCapabilities { // com.ditchoom.socket
 }
 
 final class com.ditchoom.socket.quic/FlowControl { // com.ditchoom.socket.quic/FlowControl|null[0]
-    constructor <init>(kotlin/Long = ..., kotlin/Long = ..., kotlin/Long = ..., kotlin/Long = ..., kotlin/Long = ..., kotlin/Long = ..., kotlin/Long? = ..., kotlin/Long? = ...) // com.ditchoom.socket.quic/FlowControl.<init>|<init>(kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long?;kotlin.Long?){}[0]
+    constructor <init>(kotlin/Long = ..., kotlin/Long = ..., kotlin/Long = ..., kotlin/Long = ..., kotlin/Long = ..., kotlin/Long = ..., kotlin/Long = ..., kotlin/Long = ...) // com.ditchoom.socket.quic/FlowControl.<init>|<init>(kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long){}[0]
 
     final val initialMaxData // com.ditchoom.socket.quic/FlowControl.initialMaxData|{}initialMaxData[0]
         final fun <get-initialMaxData>(): kotlin/Long // com.ditchoom.socket.quic/FlowControl.initialMaxData.<get-initialMaxData>|<get-initialMaxData>(){}[0]
@@ -2623,9 +2623,9 @@ final class com.ditchoom.socket.quic/FlowControl { // com.ditchoom.socket.quic/F
     final val initialMaxStreamsUni // com.ditchoom.socket.quic/FlowControl.initialMaxStreamsUni|{}initialMaxStreamsUni[0]
         final fun <get-initialMaxStreamsUni>(): kotlin/Long // com.ditchoom.socket.quic/FlowControl.initialMaxStreamsUni.<get-initialMaxStreamsUni>|<get-initialMaxStreamsUni>(){}[0]
     final val maxConnectionWindow // com.ditchoom.socket.quic/FlowControl.maxConnectionWindow|{}maxConnectionWindow[0]
-        final fun <get-maxConnectionWindow>(): kotlin/Long? // com.ditchoom.socket.quic/FlowControl.maxConnectionWindow.<get-maxConnectionWindow>|<get-maxConnectionWindow>(){}[0]
+        final fun <get-maxConnectionWindow>(): kotlin/Long // com.ditchoom.socket.quic/FlowControl.maxConnectionWindow.<get-maxConnectionWindow>|<get-maxConnectionWindow>(){}[0]
     final val maxStreamWindow // com.ditchoom.socket.quic/FlowControl.maxStreamWindow|{}maxStreamWindow[0]
-        final fun <get-maxStreamWindow>(): kotlin/Long? // com.ditchoom.socket.quic/FlowControl.maxStreamWindow.<get-maxStreamWindow>|<get-maxStreamWindow>(){}[0]
+        final fun <get-maxStreamWindow>(): kotlin/Long // com.ditchoom.socket.quic/FlowControl.maxStreamWindow.<get-maxStreamWindow>|<get-maxStreamWindow>(){}[0]
 
     final fun component1(): kotlin/Long // com.ditchoom.socket.quic/FlowControl.component1|component1(){}[0]
     final fun component2(): kotlin/Long // com.ditchoom.socket.quic/FlowControl.component2|component2(){}[0]
@@ -2633,12 +2633,19 @@ final class com.ditchoom.socket.quic/FlowControl { // com.ditchoom.socket.quic/F
     final fun component4(): kotlin/Long // com.ditchoom.socket.quic/FlowControl.component4|component4(){}[0]
     final fun component5(): kotlin/Long // com.ditchoom.socket.quic/FlowControl.component5|component5(){}[0]
     final fun component6(): kotlin/Long // com.ditchoom.socket.quic/FlowControl.component6|component6(){}[0]
-    final fun component7(): kotlin/Long? // com.ditchoom.socket.quic/FlowControl.component7|component7(){}[0]
-    final fun component8(): kotlin/Long? // com.ditchoom.socket.quic/FlowControl.component8|component8(){}[0]
-    final fun copy(kotlin/Long = ..., kotlin/Long = ..., kotlin/Long = ..., kotlin/Long = ..., kotlin/Long = ..., kotlin/Long = ..., kotlin/Long? = ..., kotlin/Long? = ...): com.ditchoom.socket.quic/FlowControl // com.ditchoom.socket.quic/FlowControl.copy|copy(kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long?;kotlin.Long?){}[0]
+    final fun component7(): kotlin/Long // com.ditchoom.socket.quic/FlowControl.component7|component7(){}[0]
+    final fun component8(): kotlin/Long // com.ditchoom.socket.quic/FlowControl.component8|component8(){}[0]
+    final fun copy(kotlin/Long = ..., kotlin/Long = ..., kotlin/Long = ..., kotlin/Long = ..., kotlin/Long = ..., kotlin/Long = ..., kotlin/Long = ..., kotlin/Long = ...): com.ditchoom.socket.quic/FlowControl // com.ditchoom.socket.quic/FlowControl.copy|copy(kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long){}[0]
     final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/FlowControl.equals|equals(kotlin.Any?){}[0]
     final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/FlowControl.hashCode|hashCode(){}[0]
     final fun toString(): kotlin/String // com.ditchoom.socket.quic/FlowControl.toString|toString(){}[0]
+
+    final object Companion { // com.ditchoom.socket.quic/FlowControl.Companion|null[0]
+        final const val DEFAULT_MAX_CONNECTION_WINDOW // com.ditchoom.socket.quic/FlowControl.Companion.DEFAULT_MAX_CONNECTION_WINDOW|{}DEFAULT_MAX_CONNECTION_WINDOW[0]
+            final fun <get-DEFAULT_MAX_CONNECTION_WINDOW>(): kotlin/Long // com.ditchoom.socket.quic/FlowControl.Companion.DEFAULT_MAX_CONNECTION_WINDOW.<get-DEFAULT_MAX_CONNECTION_WINDOW>|<get-DEFAULT_MAX_CONNECTION_WINDOW>(){}[0]
+        final const val DEFAULT_MAX_STREAM_WINDOW // com.ditchoom.socket.quic/FlowControl.Companion.DEFAULT_MAX_STREAM_WINDOW|{}DEFAULT_MAX_STREAM_WINDOW[0]
+            final fun <get-DEFAULT_MAX_STREAM_WINDOW>(): kotlin/Long // com.ditchoom.socket.quic/FlowControl.Companion.DEFAULT_MAX_STREAM_WINDOW.<get-DEFAULT_MAX_STREAM_WINDOW>|<get-DEFAULT_MAX_STREAM_WINDOW>(){}[0]
+    }
 }
 
 final class com.ditchoom.socket.quic/InvalidSessionTicketKeyException : kotlin/IllegalArgumentException { // com.ditchoom.socket.quic/InvalidSessionTicketKeyException|null[0]

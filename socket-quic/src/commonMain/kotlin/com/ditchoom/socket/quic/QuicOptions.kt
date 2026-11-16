@@ -111,10 +111,19 @@ data class FlowControl(
     val initialMaxStreamsBidi: Long = 100,
     /** Maximum concurrent unidirectional streams the peer may open. */
     val initialMaxStreamsUni: Long = 100,
-    /** Maximum connection-level flow control window (bytes). Null uses quiche default. */
-    val maxConnectionWindow: Long? = null,
-    /** Maximum stream-level flow control window (bytes). Null uses quiche default. */
-    val maxStreamWindow: Long? = null,
+    /**
+     * The ceiling the connection-level receive window auto-tunes up to (bytes). The window starts at
+     * [initialMaxData] and grows only while the peer keeps it full, so this is memory a connection can
+     * commit, not memory it does commit. Credit is extended after half the window is consumed, so a path
+     * sustains at most `maxConnectionWindow / 2` per round trip.
+     */
+    val maxConnectionWindow: Long = DEFAULT_MAX_CONNECTION_WINDOW,
+    /**
+     * The ceiling a stream's receive window auto-tunes up to (bytes), starting at the stream's initial
+     * limit. A single stream sustains at most `maxStreamWindow / 2` per round trip, so the default
+     * carries a 2.5 GbE link at 50 ms.
+     */
+    val maxStreamWindow: Long = DEFAULT_MAX_STREAM_WINDOW,
 ) {
     init {
         require(initialMaxData >= 0) { "initialMaxData must be non-negative" }
@@ -123,8 +132,16 @@ data class FlowControl(
         require(initialMaxStreamDataUni >= 0) { "initialMaxStreamDataUni must be non-negative" }
         require(initialMaxStreamsBidi >= 0) { "initialMaxStreamsBidi must be non-negative" }
         require(initialMaxStreamsUni >= 0) { "initialMaxStreamsUni must be non-negative" }
-        require(maxConnectionWindow == null || maxConnectionWindow > 0) { "maxConnectionWindow must be positive" }
-        require(maxStreamWindow == null || maxStreamWindow > 0) { "maxStreamWindow must be positive" }
+        require(maxConnectionWindow > 0) { "maxConnectionWindow must be positive" }
+        require(maxStreamWindow > 0) { "maxStreamWindow must be positive" }
+    }
+
+    companion object {
+        /** 128 MiB: twice the stream ceiling, so two streams can run at their full window together. */
+        const val DEFAULT_MAX_CONNECTION_WINDOW: Long = 128L * 1024 * 1024
+
+        /** 64 MiB: half of it per round trip is 32 MiB, which fills 80 % of a 2.5 GbE link at 50 ms. */
+        const val DEFAULT_MAX_STREAM_WINDOW: Long = 64L * 1024 * 1024
     }
 }
 
