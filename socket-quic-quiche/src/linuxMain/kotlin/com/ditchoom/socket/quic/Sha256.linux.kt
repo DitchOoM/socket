@@ -4,6 +4,7 @@ package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.WriteBuffer
+import com.ditchoom.buffer.crypto.sha256 as bufferCryptoSha256
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.socket.quic.boringssl.ditchoom_sha256
 import kotlinx.cinterop.UByteVar
@@ -22,17 +23,21 @@ private const val SHA256_DIGEST_BYTES = 32
  * so one copy of BoringSSL is in the binary. JVM/Android call JCA `MessageDigest` directly; see the
  * commonJvmMain actual.
  *
- * The leaf DER read+hashed by the verifier is always a native-memory buffer (allocated to hand quiche a
- * `nativeAddress`), so the fast pointer path always applies; a non-native input fails closed via the
- * verifier's catch. Non-consuming on [input] (reads positionally; its position is unchanged).
+ * A native-memory [input] (the leaf DER the verifier hands quiche, the address-token work buffer) is hashed
+ * in place through its address. Any other buffer is hashed by buffer-crypto's SHA-256 over the same
+ * libcrypto: no copy either way. Non-consuming on [input] (its position is unchanged).
  */
 internal actual fun sha256Into(
     input: ReadBuffer,
     dest: WriteBuffer,
 ) {
-    val base =
-        input.nativeMemoryAccess?.nativeAddress?.toLong()
-            ?: error("SHA-256 on Linux requires a native-memory input buffer")
+    val base = input.nativeMemoryAccess?.nativeAddress?.toLong()
+    if (base == null) {
+        val start = input.position()
+        bufferCryptoSha256(input, dest)
+        input.position(start)
+        return
+    }
     val len = input.remaining()
     val start = base + input.position()
     memScoped {
