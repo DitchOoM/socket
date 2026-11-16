@@ -1,12 +1,10 @@
 package com.ditchoom.socket.quic.replay
 
-import com.ditchoom.buffer.BaseJvmBuffer
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.flow.writeFully
-import com.ditchoom.buffer.unwrapFully
 import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicRole
@@ -19,8 +17,10 @@ import com.ditchoom.socket.quic.core.edge.coreServe
 import com.ditchoom.socket.quic.core.edge.coreTestOptions
 import com.ditchoom.socket.quic.core.edge.coreTlsConfig
 import com.ditchoom.socket.quic.core.edge.echoOver
+import com.ditchoom.socket.quic.core.udp.Addressed
+import com.ditchoom.socket.quic.core.udp.BatchLimits
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
-import com.ditchoom.socket.quic.core.udp.NioOneByOne
+import com.ditchoom.socket.quic.core.udp.NativeBytes
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.ReceiveBatchResult
 import com.ditchoom.socket.quic.core.udp.SendBatch
@@ -39,7 +39,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import java.net.InetSocketAddress
-import java.nio.Buffer
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.random.Random
 import kotlin.test.Test
@@ -74,17 +73,25 @@ class CoreRecordingReplayTests {
         override fun receive(into: ReceiveBatch): ReceiveBatchResult =
             real.receive(into).also { if (it is ReceiveBatchResult.Got) received += into.count }
 
+        /** One single-datagram batch per lane: each datagram the link keeps goes to the real socket on its own. */
+        private val single = java.util.concurrent.ConcurrentHashMap<Int, SendBatch>()
+
         override fun send(batch: SendBatch): SendBatchResult {
-            val channel = (real as NioOneByOne).channel
-            val view = (batch.storage.owner.unwrapFully() as BaseJvmBuffer).byteBuffer.duplicate()
+            val one =
+                single.computeIfAbsent(batch.lane) { lane ->
+                    val bytes = (NativeBytes.of(BufferFactory.Default.allocate(batch.limits.maxDatagramSize)) as Addressed.Native).bytes
+                    SendBatch(bytes, BatchLimits(1, batch.limits.maxDatagramSize), lane)
+                }
             for (n in 0 until batch.pending) {
                 val this0 = ordinal++
                 if (dropped.isEmpty() && this0 >= HANDSHAKE_DATAGRAMS && batch.lengthOf(n) >= DATA) {
                     dropped += this0
                     continue
                 }
-                (view as Buffer).limit(batch.offsetOf(n) + batch.lengthOf(n)).position(batch.offsetOf(n))
-                channel.write(view)
+                one.storage.copyFrom(batch.storage, batch.offsetOf(n), 0, batch.lengthOf(n))
+                one.commit(batch.lengthOf(n), batch.targetOf(n))
+                real.send(one)
+                one.took(one.pending)
             }
             return SendBatchResult.AllTaken
         }

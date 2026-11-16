@@ -1,0 +1,167 @@
+package com.ditchoom.socket.quic.core.udp
+
+import com.ditchoom.socket.quic.NativeSocketRefusal
+import com.ditchoom.socket.quic.NetShim
+import com.ditchoom.socket.quic.PathKey
+import com.ditchoom.socket.quic.SocketRefusal
+import com.ditchoom.socket.quic.UdpBatching
+
+/** Where a native socket sends: one peer it is connected to, or any address a datagram names. */
+internal sealed interface SocketPeer {
+    class Connected(
+        val peer: PathKey,
+    ) : SocketPeer
+
+    data object Unconnected : SocketPeer
+}
+
+/** What [NativeSocket.open] did. */
+internal sealed interface NativeOpened {
+    class Opened(
+        val socket: NativeSocket,
+    ) : NativeOpened
+
+    class Refused(
+        val refusal: SocketRefusal,
+    ) : NativeOpened
+}
+
+/**
+ * A UDP socket `qnet` opened: non-blocking, close-on-exec, its buffers asked for and read back, bound and, for a
+ * client, connected. [spec] is the native block the socket was opened from; [reopen] opens it again from the same
+ * block on the same local address and port. Its batching is probed once, here.
+ */
+internal class NativeSocket private constructor(
+    private val shim: NetShim,
+    private val spec: NativeBytes,
+    first: Int,
+    val capability: BatchCapability,
+) {
+    val cell = DescriptorCell(first)
+
+    /** 4 or 6: the family of the socket, which an IPv4 target on an IPv6 socket is mapped into. */
+    val family: Int = spec.intAt(BIND)
+
+    val local: PathKey get() = recordAt(spec, LOCAL)
+
+    val grantedReceive: Int get() = spec.intAt(GRANTED_RCV)
+
+    val grantedSend: Int get() = spec.intAt(GRANTED_SND)
+
+    /**
+     * Loop thread: closes this socket and opens one on the address and port it held, to the same peer. A socket that
+     * cannot be opened there again leaves the cell closed, so no call reaches a descriptor number reused since.
+     */
+    fun reopen(): Reopened {
+        copyRecord(spec, LOCAL, BIND)
+        var answer: Reopened = Reopened.SameEndpoint
+        cell.replace { old ->
+            shim.close(old)
+            val fd = shim.udpOpen(spec.address)
+            if (fd >= 0) {
+                Swapped.To(fd)
+            } else {
+                answer = Reopened.Refused(Thrown(NativeSocketRefusal(SocketRefusal.of(-fd))))
+                Swapped.Gone
+            }
+        }
+        return answer
+    }
+
+    companion object {
+        /** The spec block's size in bytes, as `qnet.h` lays it out. */
+        const val SPEC_BYTES = 96
+
+        fun open(
+            shim: NetShim,
+            spec: NativeBytes,
+            bind: PathKey,
+            peer: SocketPeer,
+            receiveBytes: Int,
+            sendBytes: Int,
+            ceiling: UdpBatching,
+            maxDatagrams: Int,
+        ): NativeOpened {
+            putRecord(spec, BIND, bind)
+            when (peer) {
+                is SocketPeer.Connected -> putRecord(spec, PEER, peer.peer)
+                is SocketPeer.Unconnected -> spec.putInt(PEER, 0)
+            }
+            spec.putInt(RCVBUF, receiveBytes)
+            spec.putInt(SNDBUF, sendBytes)
+            val fd = shim.udpOpen(spec.address)
+            if (fd < 0) return NativeOpened.Refused(SocketRefusal.of(-fd))
+            val capability = capabilityOf(spec.intAt(CAPS), spec.intAt(GSO_SEGMENTS), ceiling, maxDatagrams)
+            return NativeOpened.Opened(NativeSocket(shim, spec, fd, capability))
+        }
+
+        /** The newest batching both the kernel and [batching] allow, chosen once per socket. */
+        fun capabilityOf(
+            caps: Int,
+            segments: Int,
+            batching: UdpBatching,
+            maxDatagrams: Int,
+        ): BatchCapability {
+            val multi = caps and CAP_MULTI != 0
+            val publicMulti = multi && caps and CAP_PRIVATE == 0
+            val gso = caps and CAP_GSO != 0
+            return when (batching) {
+                UdpBatching.Newest -> newest(gso, multi, segments, maxDatagrams)
+                UdpBatching.PublicCallsOnly -> newest(gso, publicMulti, segments, maxDatagrams)
+                UdpBatching.WithoutSegments -> if (multi) BatchCapability.Multi(maxDatagrams) else BatchCapability.OneByOne
+                UdpBatching.OneDatagramPerCall -> BatchCapability.OneByOne
+            }
+        }
+
+        private fun newest(
+            gso: Boolean,
+            multi: Boolean,
+            segments: Int,
+            maxDatagrams: Int,
+        ): BatchCapability =
+            when {
+                gso -> BatchCapability.Segmented(maxDatagrams, Gso.On(segments), Gro.Off)
+                multi -> BatchCapability.Multi(maxDatagrams)
+                else -> BatchCapability.OneByOne
+            }
+
+        private const val BIND = 0
+        private const val PEER = 24
+        private const val RCVBUF = 48
+        private const val SNDBUF = 52
+        private const val GRANTED_RCV = 56
+        private const val GRANTED_SND = 60
+        private const val LOCAL = 64
+        private const val CAPS = 88
+        private const val GSO_SEGMENTS = 92
+        private const val CAP_MULTI = 1
+        private const val CAP_GSO = 2
+        private const val CAP_PRIVATE = 8
+    }
+}
+
+/** Writes [key] as a `qnet` address record (family, port, hi, lo) at [offset]. */
+internal fun putRecord(
+    bytes: NativeBytes,
+    offset: Int,
+    key: PathKey,
+) {
+    bytes.putInt(offset, key.family)
+    bytes.putInt(offset + 4, key.port)
+    bytes.putLong(offset + 8, key.hi)
+    bytes.putLong(offset + 16, key.lo)
+}
+
+/** Reads the `qnet` address record at [offset]. */
+internal fun recordAt(
+    bytes: NativeBytes,
+    offset: Int,
+): PathKey = PathKey(bytes.intAt(offset), bytes.intAt(offset + 4), bytes.longAt(offset + 8), bytes.longAt(offset + 16))
+
+private fun copyRecord(
+    bytes: NativeBytes,
+    from: Int,
+    to: Int,
+) = bytes.copyFrom(bytes, from, to, RECORD_BYTES)
+
+private const val RECORD_BYTES = 24

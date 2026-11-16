@@ -68,14 +68,28 @@ private fun loadFfmBackend(): FfmQuicheApi {
 }
 
 private fun extractToTemp(resourcePath: String): String {
-    val stream = QuicheApi::class.java.classLoader!!.getResourceAsStream(resourcePath)!!
-    val tempDir =
-        java.nio.file.Files
-            .createTempDirectory("quiche-ffm")
-            .toFile()
-    tempDir.deleteOnExit()
     val ext = resourcePath.substringAfterLast('.')
-    val tempFile = java.io.File(tempDir, "libquiche.$ext")
+    return extractFfmNative(resourcePath, "libquiche.$ext")
+}
+
+/**
+ * The one directory this process extracts its FFM natives into: the JNI shim, which carries the native stack's
+ * `qnet` calls and links libquiche by `@rpath`/`$ORIGIN`, then resolves the libquiche already loaded from here.
+ */
+private val ffmNativeDir: java.io.File by lazy {
+    java.nio.file.Files
+        .createTempDirectory("quiche-ffm")
+        .toFile()
+        .also { it.deleteOnExit() }
+}
+
+/** Extracts [resourcePath] into [ffmNativeDir] as [fileName]; its absolute path. */
+internal fun extractFfmNative(
+    resourcePath: String,
+    fileName: String,
+): String {
+    val stream = QuicheApi::class.java.classLoader!!.getResourceAsStream(resourcePath)!!
+    val tempFile = java.io.File(ffmNativeDir, fileName)
     tempFile.deleteOnExit()
     stream.use { input -> tempFile.outputStream().use { output -> input.copyTo(output) } }
     return tempFile.absolutePath
@@ -111,4 +125,15 @@ private fun quicheFfmResourceCandidates(): List<String> {
         val ext = if (os == "macos") "dylib" else "so"
         listOf("$dir/libquiche.$ext")
     }
+}
+
+/**
+ * The JNI shim's path in [ffmNativeDir], extracted beside the libquiche the FFM backend loaded (loaded first here),
+ * so the shim's link to libquiche resolves to that same image. Not on Windows: the native stack has no poller there.
+ */
+internal fun extractedJniShim(): String {
+    loadQuicheApi()
+    val base = quicheFfmResourceCandidates().first()
+    val ext = base.substringAfterLast('.')
+    return extractFfmNative(base.substringBeforeLast('/') + "/libquiche_jni.$ext", "libquiche_jni.$ext")
 }

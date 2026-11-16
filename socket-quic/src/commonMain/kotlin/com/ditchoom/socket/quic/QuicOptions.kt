@@ -451,6 +451,8 @@ data class QuicOptions(
     val handshakePacing: HandshakePacing = HandshakePacing.Adaptive(),
     /** How long the run-to-completion core lets a handshake take before the connection ends. */
     val handshakePolicy: HandshakePolicy = HandshakePolicy.Bounded(10.seconds),
+    /** How many datagrams one system call of the run-to-completion core's sockets may carry. */
+    val udpBatching: UdpBatching = UdpBatching.Newest,
 ) {
     init {
         require(alpnProtocols.isNotEmpty()) { "QUIC requires at least one ALPN protocol" }

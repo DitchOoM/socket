@@ -4603,8 +4603,9 @@ fun createBuildJvmJniShimTask(
         description = "Build quiche JNI shim for $os-$arch (JDK 17–20 fallback path)"
         dependsOn(buildShared)
         inputs.property("quicheVersion", quicheVersion)
-        val jniSourceFile = projectDir.resolve("src/jni/quiche_jni.c")
-        inputs.file(jniSourceFile)
+        // quiche_jni.c includes the native stack's sources (qnet*.c, qnet.h) from the same directory.
+        val jniSources = fileTree(projectDir.resolve("src/jni")) { exclude("test/**") }
+        inputs.files(jniSources)
         outputs.files(outputLib, markerFile)
         // The shim dynamically links the sibling self-contained libquiche.$libExt (built by the
         // shared task we dependsOn) rather than static-bundling libquiche.a — so quiche + BoringSSL
@@ -4617,7 +4618,7 @@ fun createBuildJvmJniShimTask(
         onlyIf {
             !markerFile.exists() ||
                 !outputLib.exists() ||
-                jniSourceFile.lastModified() > markerFile.lastModified() ||
+                jniSources.files.any { it.lastModified() > markerFile.lastModified() } ||
                 quicheShared.lastModified() > markerFile.lastModified()
         }
 
@@ -4759,6 +4760,33 @@ val jvmJniShimLinuxX64 =
     if (isLinux) createBuildJvmJniShimTask("linux", "x64", buildQuicheSharedLinuxX64!!) else null
 val jvmJniShimLinuxArm64 =
     if (isLinux) createBuildJvmJniShimTask("linux", "arm64", buildQuicheSharedLinuxArm64!!) else null
+
+// qnet's own red tests (src/jni/test/qnet_selftest.c), below every binding, on this host's kernel: every batching it
+// offers, a batch refused part way, segmented groups arriving as their datagrams, the poller. The JVM suites depend on
+// it, so each Linux and macOS lane proves its kernel's batching before any Kotlin runs on it.
+val qnetSelftest =
+    tasks.register("qnetSelftest") {
+        group = "verification"
+        description = "Compile and run qnet's C selftest on this host's kernel"
+        onlyIf { isMacOS || isLinux }
+        val jniDir = projectDir.resolve("src/jni")
+        val binary = layout.buildDirectory.file("qnet/qnet_selftest")
+        inputs.files(fileTree(jniDir))
+        outputs.file(binary)
+        doLast {
+            val out = binary.get().asFile
+            out.parentFile.mkdirs()
+
+            fun run(vararg command: String) {
+                val process = ProcessBuilder(*command).redirectErrorStream(true).start()
+                process.inputStream.bufferedReader().forEachLine { logger.lifecycle(it) }
+                if (process.waitFor() != 0) throw GradleException("qnet selftest failed: ${command.joinToString(" ")}")
+            }
+            run("cc", "-O1", "-Wall", "-o", out.absolutePath, jniDir.resolve("test/qnet_selftest.c").absolutePath)
+            run(out.absolutePath)
+        }
+    }
+tasks.matching { it.name == "jvmTest" }.configureEach { dependsOn(qnetSelftest) }
 
 // Every macOS native the JVM jar publishes — libquiche + JNI shim for BOTH arches, whatever the host.
 // The release injects build-apple's macos-*/lib dirs into the jar, so building only the host arch's
@@ -5265,7 +5293,8 @@ fun createBuildAndroidJniTask(abi: AndroidAbi): TaskProvider<Task>? {
         // nConnDgramMaxWritableLen) → UnsatisfiedLinkError at runtime. This mirrors
         // the host JNI-shim task. Do NOT reintroduce a marker + onlyIf gate.
         inputs.property("quicheVersion", quicheVersion)
-        inputs.file("src/jni/quiche_jni.c")
+        // quiche_jni.c and the native stack's sources it includes (qnet*.c, qnet.h).
+        inputs.files(fileTree(projectDir.resolve("src/jni")) { exclude("test/**") })
         // Both natives are outputs: the thin JNI shim AND the self-contained cdylib it DT_NEEDEDs.
         outputs.files(outputLib, outputDir.resolve("libquiche.so"))
 
@@ -5419,6 +5448,9 @@ val stageCoreAndroidTests =
                 "testing/ConnRig.kt",
                 "testing/EchoQuiche.kt",
                 "testing/NioEcho.kt",
+                "testing/SocketView.kt",
+                "udp/NativeIoTests.kt",
+                "ready/NativePollerTests.kt",
                 "edge/CoreTestSupport.kt",
                 "edge/CoreEdgeTests.kt",
                 "edge/CallerInPlaceTests.kt",
@@ -6321,6 +6353,22 @@ kotlin {
         }
     }
 
+    // The native stack (`qnet`, src/jni) on Kotlin/Native: the same C the JVM's libquiche_jni carries, compiled into a
+    // QNet cinterop klib, with its binding (src/qnetMain) on the targets that have a native stack: macOS and Linux.
+    // iOS does not: its client datagrams ride Network.framework, and it must not carry qnet's dlsym of sendmsg_x.
+    val configureQNet: org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget.() -> Unit = {
+        compilations["main"].cinterops {
+            create("QNet") {
+                defFile("src/nativeInterop/cinterop/QNet.def")
+                includeDirs("src/jni")
+                // The def includes qnet.c, which includes the rest: every source is an input of the klib.
+                tasks.named(interopProcessingTaskName) { inputs.files(fileTree("src/jni") { exclude("test/**") }) }
+            }
+        }
+        compilations["main"].defaultSourceSet.kotlin.srcDir("src/qnetMain/kotlin")
+        compilations["test"].defaultSourceSet.kotlin.srcDir("src/qnetTest/kotlin")
+    }
+
     if (linuxTargets) {
         // Embed libquiche.a into the Quiche cinterop klib so a downstream K/N consumer that links the
         // published klib gets the archive (Gap A's fix), exactly like the base :socket: module's
@@ -6368,6 +6416,7 @@ kotlin {
             }
         }
         linuxX64 {
+            configureQNet()
             val quicheLibDir = projectDir.resolve("libs/quiche/linux-x64/lib")
             val quicheStatic = quicheLibDir.resolve("libquiche.a")
             val generatedDef = projectDir.resolve("build/generated/cinterop/Quiche-linux-x64.def")
@@ -6440,6 +6489,7 @@ kotlin {
             }
         }
         linuxArm64 {
+            configureQNet()
             val quicheLibDir = projectDir.resolve("libs/quiche/linux-arm64/lib")
             val quicheStatic = quicheLibDir.resolve("libquiche.a")
             val generatedDef = projectDir.resolve("build/generated/cinterop/Quiche-linux-arm64.def")
@@ -6607,6 +6657,7 @@ kotlin {
         }
         macosArm64 {
             configureQuicheApple("macos-arm64")
+            configureQNet()
             // An optimized (-opt) test binary for profiling the native data path: a debug K/N binary is not
             // representative. scripts/native-perf/ records it. (-g cannot combine with -opt; the dSYM still symbolicates.)
             binaries { test(listOf(org.jetbrains.kotlin.gradle.plugin.mpp.NativeBuildType.RELEASE)) }

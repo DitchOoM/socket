@@ -391,7 +391,12 @@ public class CoreDefaultsCheck {
         "QuicheSendInfo", "QuicheStreamIter", "NextDue", "NextStream", "StreamRecvStep");
 
     /** Entries of enums declared outside core (`QuicRole`, `LinkClass`), so `QuicRole.Client ->` is not an object compared by equals. */
-    static final Set<String> EXTERNAL_ENUM_ENTRIES = Set.of("Client", "Server", "Ethernet", "Wifi", "Cellular", "Satellite", "Unknown");
+    static final Set<String> EXTERNAL_ENUM_ENTRIES = Set.of("Client", "Server", "Ethernet", "Wifi", "Cellular", "Satellite", "Unknown",
+        // SocketRefusal (NetShim.kt): qnet's errno codes.
+        "EAgain", "EMsgSize", "ENetUnreach", "EHostUnreach", "EConnRefused", "ENoBufs", "EAcces", "EBadF", "EIo",
+        "EAddrInUse", "EAddrNotAvail", "EAfNoSupport", "ENoMem", "EInval", "ENoProtoOpt", "ENoSys", "EPerm", "Unmapped",
+        // UdpBatching (:socket-quic).
+        "Newest", "PublicCallsOnly", "WithoutSegments", "OneDatagramPerCall");
 
     /** `when` over an open platform type (Throwable, IOException) may keep its `else`. */
     static final List<String> OPEN_WHEN_FILES = List.of("udp/*Errors.kt", "edge/Failures.kt", "life/Tiers.kt");
