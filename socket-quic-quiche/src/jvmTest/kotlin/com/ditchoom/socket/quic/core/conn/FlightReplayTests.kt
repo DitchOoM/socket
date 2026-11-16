@@ -3,12 +3,10 @@ package com.ditchoom.socket.quic.core.conn
 import com.ditchoom.socket.quic.StubQuicheApi
 import com.ditchoom.socket.quic.core.testing.ConnRig
 import com.ditchoom.socket.quic.core.testing.FakeIo
-import com.ditchoom.socket.quic.core.testing.FlightEvidenceRule
 import com.ditchoom.socket.quic.core.udp.SendBatchResult
 import com.ditchoom.socket.quic.core.udp.UdpError
 import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.testkit.trace.TraceSink
-import org.junit.Rule
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.time.Duration.Companion.milliseconds
@@ -19,9 +17,6 @@ import kotlin.time.Duration.Companion.milliseconds
  * ordinal. Two fresh connections replayed through the same schedule record the same flight.
  */
 class FlightReplayTests {
-    @get:Rule
-    val flightEvidence = FlightEvidenceRule()
-
     private enum class Fate { Delivered, Dropped }
 
     private class Outcome(

@@ -140,6 +140,8 @@ internal fun openStackSocket(
                 }
                 is NativeOpened.Refused ->
                     raise(Raised.SocketRefused(NativeSocketRefusal(opened.refusal)), QuicCloseCircumstance.HandshakeFailed)
+                is NativeOpened.LayoutMismatch ->
+                    raise(Raised.SpecLayoutRefused(opened.mismatch), QuicCloseCircumstance.HandshakeFailed)
             }
     }
 

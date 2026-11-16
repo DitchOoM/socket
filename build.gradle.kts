@@ -884,6 +884,22 @@ project(":socket-quic-quiche") {
             "jvmTestImplementation",
             "io.projectreactor.tools:blockhound:${providers.gradleProperty("blockHoundVersion").get()}",
         )
+        // Every test of every task below reports its end to FlightEvidenceListener (a JUnit Platform listener found by
+        // ServiceLoader), which writes the test's connections' flight recordings when it fails. The vintage engine runs the
+        // JUnit 4 tests on the Platform.
+        // kotlin.test's JUnit 4 flavour is named so that Kotlin does not pick its JUnit 5 one for a Platform run: the tests keep
+        // JUnit 4's annotations and rules (NoServerLoopLeft).
+        dependencies.add("jvmTestImplementation", dependencies.kotlin("test-junit"))
+        configurations.matching { it.name.startsWith("jvmTest") }.configureEach {
+            resolutionStrategy.capabilitiesResolution.withCapability("org.jetbrains.kotlin:kotlin-test-framework-impl") {
+                candidates.firstOrNull { (it.id as? ModuleComponentIdentifier)?.module == "kotlin-test-junit" }?.let { select(it) }
+            }
+        }
+        dependencies.add("jvmTestImplementation", "org.junit.vintage:junit-vintage-engine:5.11.4")
+        dependencies.add("jvmTestImplementation", "org.junit.platform:junit-platform-launcher:1.11.4")
+        for (name in listOf("jvmTest", "lincheckTest", "mainThreadSafetyTest", "coreAllocationTest")) {
+            tasks.named<Test>(name) { useJUnitPlatform() }
+        }
         val jvmTestTask = tasks.named<Test>("jvmTest").get()
         tasks.named<Test>("lincheckTest") {
             testClassesDirs = jvmTestTask.testClassesDirs

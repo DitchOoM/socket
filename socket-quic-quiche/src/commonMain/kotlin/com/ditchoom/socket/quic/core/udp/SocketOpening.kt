@@ -7,7 +7,7 @@ import com.ditchoom.socket.quic.UdpBatching
 
 /** Opening a [NativeSocket]: the spec block, the options, the batching probe. */
 internal object SocketOpening {
-    /** Opens a socket from the spec block; throws [SpecLayoutMismatch] when the loaded `qnet` reads the block differently. */
+    /** Opens a socket from the spec block, or says the loaded `qnet` lays it out differently ([NativeOpened.LayoutMismatch]). */
     fun open(
         shim: NetShim,
         spec: NativeBytes,
@@ -20,8 +20,15 @@ internal object SocketOpening {
         gro: GroRequest,
     ): NativeOpened {
         val reported = shim.specLayout()
-        if (reported != SpecLayout.FINGERPRINT) throw SpecLayoutMismatch(SpecLayout.FINGERPRINT, reported)
-        val wantsGro = gro is GroRequest.Requested && ceiling.usesSegments() && maxDatagrams >= NativeSocket.GRO_MAX_DATAGRAMS
+        if (reported != SpecLayout.FINGERPRINT) {
+            return NativeOpened.LayoutMismatch(SpecLayoutMismatch(SpecLayout.FINGERPRINT, reported))
+        }
+        val request =
+            if (gro is GroRequest.Requested && ceiling.usesSegments() && maxDatagrams >= NativeSocket.GRO_MAX_DATAGRAMS) {
+                GroRequest.Requested
+            } else {
+                GroRequest.Declined
+            }
         putRecord(spec, SpecLayout.BIND, bind)
         when (peer) {
             is SocketPeer.Connected -> putRecord(spec, SpecLayout.PEER, peer.peer)
@@ -31,7 +38,7 @@ internal object SocketOpening {
         spec.putInt(SpecLayout.SNDBUF, sendBytes)
         val fd = shim.udpOpenSocket(spec.address)
         if (fd < 0) return NativeOpened.Refused(SocketRefusal.of(-fd))
-        val applied = applyOptions(shim, fd, spec.intAt(SpecLayout.BIND), wantsGro)
+        val applied = applyOptions(shim, fd, spec.intAt(SpecLayout.BIND), request)
         val receiving =
             when (applied.gro) {
                 is GroSetup.Enabled -> Receiving.Coalesced
@@ -44,7 +51,7 @@ internal object SocketOpening {
             }
         val capabilities = shim.udpCapabilities(fd)
         val capability = capabilityOf(capabilities and CAP_MASK, capabilities ushr SEGMENTS_SHIFT, ceiling, maxDatagrams, coalescing)
-        return NativeOpened.Opened(NativeSocket(shim, spec, fd, applied, wantsGro, capability, receiving))
+        return NativeOpened.Opened(NativeSocket(shim, spec, fd, applied, request, capability, receiving))
     }
 
     /** The newest batching both the kernel and [batching] allow, chosen once per socket. */

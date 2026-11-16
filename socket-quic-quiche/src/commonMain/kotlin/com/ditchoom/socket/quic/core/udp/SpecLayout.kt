@@ -22,13 +22,11 @@ internal object SpecLayout {
         intArrayOf(BYTES, BIND, PEER, RCVBUF, SNDBUF, GRANTED_RCV, GRANTED_SND, LOCAL).fold(0) { h, v -> h * 31 + v }
 }
 
-/** The loaded `qnet` lays the spec block out differently from this code: a stale or mismatched native library. */
+/** The loaded `qnet`'s [reported] fingerprint is not the [expected] one: a stale or mismatched native library. */
 internal class SpecLayoutMismatch(
     val expected: Int,
     val reported: Int,
-) : IllegalStateException() {
-    override val message: String get() = "qnet spec layout $reported, expected $expected"
-}
+)
 
 /** Writes [key] as a `qnet` address record (family, port, hi, lo) at [offset]. */
 internal fun putRecord(

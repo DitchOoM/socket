@@ -6,19 +6,14 @@ import com.ditchoom.socket.quic.StubQuicheApi
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.sched.LoopPort
 import com.ditchoom.socket.quic.core.testing.FakePoller
-import com.ditchoom.socket.quic.core.testing.FlightEvidenceRule
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.time.WakeSink
 import kotlinx.coroutines.Runnable
-import org.junit.Rule
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.time.Duration.Companion.milliseconds
 
 class ConnTimerTests {
-    @get:Rule
-    val flightEvidence = FlightEvidenceRule()
-
     private val ms = 1_000_000L
     private val api = StubQuicheApi()
     private val port = LoopPort(FakePoller())

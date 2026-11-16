@@ -10,7 +10,6 @@ import com.ditchoom.socket.quic.core.edge.CoreConnection
 import com.ditchoom.socket.quic.core.edge.connectCore
 import com.ditchoom.socket.quic.core.edge.echoOver
 import com.ditchoom.socket.quic.core.loop.LoopSet
-import com.ditchoom.socket.quic.core.testing.FlightEvidenceRule
 import com.ditchoom.socket.quic.loadQuicheApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -39,9 +38,6 @@ import kotlin.time.TimeSource
 
 /** Closing a server, and what one connection's failure does to the others. */
 class CoreServerCloseTests {
-    @get:Rule
-    val flightEvidence = FlightEvidenceRule()
-
     @get:org.junit.Rule
     val noLeak: org.junit.rules.TestRule = NoServerLoopLeft()
 

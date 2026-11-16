@@ -9,9 +9,7 @@ import com.ditchoom.socket.quic.core.stream.StreamTable
 import com.ditchoom.socket.quic.core.stream.Waiter
 import com.ditchoom.socket.quic.core.testing.ConnRig
 import com.ditchoom.socket.quic.core.testing.FakeIo
-import com.ditchoom.socket.quic.core.testing.FlightEvidenceRule
 import com.ditchoom.socket.quic.core.udp.SendBatchResult
-import org.junit.Rule
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -21,9 +19,6 @@ import kotlin.time.Duration.Companion.seconds
 
 /** A connection served by its loop over a scripted quiche, a fake socket and virtual time: no socket, no thread. */
 class ConnTests {
-    @get:Rule
-    val flightEvidence = FlightEvidenceRule()
-
     private val ms = 1_000_000L
 
     private class Counted {

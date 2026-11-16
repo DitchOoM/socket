@@ -1,17 +1,12 @@
 package com.ditchoom.socket.quic.core.conn
 
-import com.ditchoom.socket.quic.core.testing.FlightEvidenceRule
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.time.WakeSink
 import com.ditchoom.socket.quic.core.time.WakeState
-import org.junit.Rule
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
 class PacerTests {
-    @get:Rule
-    val flightEvidence = FlightEvidenceRule()
-
     private val ms = 1_000_000L
     private val pacer = Pacer(PacingRule.ByQuiche(allowanceNanos = ms, limitNanos = 1_000 * ms))
 

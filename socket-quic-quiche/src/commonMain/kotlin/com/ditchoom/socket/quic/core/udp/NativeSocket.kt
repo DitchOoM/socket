@@ -5,7 +5,6 @@ import com.ditchoom.socket.quic.NetShim
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.SocketRefusal
 import com.ditchoom.socket.quic.UdpBatching
-import kotlin.concurrent.Volatile
 
 /** How a socket's reads reach the loop: one datagram per message, or split from coalesced messages. */
 internal sealed interface Receiving {
@@ -25,22 +24,20 @@ internal class NativeSocket internal constructor(
     private val shim: NetShim,
     private val spec: NativeBytes,
     first: Int,
-    private val options: AppliedOptions,
-    private val wantsGro: Boolean,
+    firstOptions: AppliedOptions,
+    private val request: GroRequest,
     val capability: BatchCapability,
     val receiving: Receiving,
 ) {
     val cell = DescriptorCell(first)
 
+    private val options = OptionsCell(firstOptions)
+
     /** What the socket's last open did about `UDP_GRO`. */
-    @Volatile
-    var gro: GroSetup = options.gro
-        private set
+    val gro: GroSetup get() = options.load().gro
 
     /** Whether this socket's datagrams carry DF, as it was set at its last open. */
-    @Volatile
-    var dontFragment: DontFragment = options.dontFragment
-        private set
+    val dontFragment: DontFragment get() = options.load().dontFragment
 
     /** 4 or 6: the family of the socket, which an IPv4 target on an IPv6 socket is mapped into. */
     val family: Int = spec.intAt(SpecLayout.BIND)
@@ -62,7 +59,7 @@ internal class NativeSocket internal constructor(
             shim.close(old)
             val fd = shim.udpOpenSocket(spec.address)
             if (fd >= 0) {
-                record(applyOptions(shim, fd, spec.intAt(SpecLayout.BIND), wantsGro))
+                options.store(applyOptions(shim, fd, spec.intAt(SpecLayout.BIND), request))
                 Swapped.To(fd)
             } else {
                 answer = Reopened.Refused(Thrown(NativeSocketRefusal(SocketRefusal.of(-fd))))
@@ -82,7 +79,7 @@ internal class NativeSocket internal constructor(
         cell.replace { old ->
             val fd = shim.udpOpenSocket(spec.address)
             if (fd >= 0) {
-                record(applyOptions(shim, fd, spec.intAt(SpecLayout.BIND), wantsGro))
+                options.store(applyOptions(shim, fd, spec.intAt(SpecLayout.BIND), request))
                 shim.close(old)
                 answer = Moved.To(recordAt(spec, SpecLayout.LOCAL))
                 Swapped.To(fd)
@@ -92,11 +89,6 @@ internal class NativeSocket internal constructor(
             }
         }
         return answer
-    }
-
-    private fun record(applied: AppliedOptions) {
-        gro = applied.gro
-        dontFragment = applied.dontFragment
     }
 
     companion object {

@@ -3,17 +3,12 @@ package com.ditchoom.socket.quic.core.life
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicheConn
 import com.ditchoom.socket.quic.StubQuicheApi
-import com.ditchoom.socket.quic.core.testing.FlightEvidenceRule
-import org.junit.Rule
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertSame
 
 class ConnLifeTests {
-    @get:Rule
-    val flightEvidence = FlightEvidenceRule()
-
     private val api = StubQuicheApi()
     private val life = ConnLife(QuicheConnRef(api, QuicheConn(1L)))
 

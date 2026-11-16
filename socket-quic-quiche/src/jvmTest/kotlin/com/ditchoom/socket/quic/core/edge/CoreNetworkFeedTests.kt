@@ -14,7 +14,6 @@ import com.ditchoom.socket.quic.RouteProbeFailure
 import com.ditchoom.socket.quic.RouteSource
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.testing.FakeIo
-import com.ditchoom.socket.quic.core.testing.FlightEvidenceRule
 import com.ditchoom.socket.quic.core.testing.SocketView
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
@@ -33,7 +32,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
-import org.junit.Rule
 import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
@@ -49,9 +47,6 @@ import kotlin.time.TimeSource
  * timeout bounds an outage), and a usable network back has it send at once.
  */
 class CoreNetworkFeedTests {
-    @get:Rule
-    val flightEvidence = FlightEvidenceRule()
-
     private class FakeMonitor : NetworkMonitor {
         override val state = MutableStateFlow<NetworkState>(UP)
 

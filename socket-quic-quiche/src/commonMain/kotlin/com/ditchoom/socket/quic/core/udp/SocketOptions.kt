@@ -1,8 +1,13 @@
+@file:OptIn(ExperimentalAtomicApi::class)
+
 package com.ditchoom.socket.quic.core.udp
 
 import com.ditchoom.socket.quic.NetShim
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.SocketRefusal
+import com.ditchoom.socket.quic.core.observe.Published
+import kotlin.concurrent.atomics.AtomicReference
+import kotlin.concurrent.atomics.ExperimentalAtomicApi
 
 /** Where a native socket sends: one peer it is connected to, or any address a datagram names. */
 internal sealed interface SocketPeer {
@@ -21,6 +26,11 @@ internal sealed interface NativeOpened {
 
     class Refused(
         val refusal: SocketRefusal,
+    ) : NativeOpened
+
+    /** The loaded `qnet` lays the spec block out differently from this code: a stale or mismatched native library. */
+    class LayoutMismatch(
+        val mismatch: SpecLayoutMismatch,
     ) : NativeOpened
 }
 
@@ -72,26 +82,39 @@ internal class AppliedOptions(
     val dontFragment: DontFragment,
 )
 
+/** The options of a socket's current descriptor: set at open, and again at every reopen or move. */
+@Published
+internal class OptionsCell(
+    first: AppliedOptions,
+) {
+    private val current = AtomicReference(first)
+
+    fun load(): AppliedOptions = current.load()
+
+    fun store(applied: AppliedOptions) = current.store(applied)
+}
+
 /**
- * Sets the options of a freshly opened descriptor: DF always, `UDP_GRO` when [wantsGro]. Each is its own `qnet` call, so
+ * Sets the options of a freshly opened descriptor: DF always, `UDP_GRO` when [request] is `Requested`. Each is its own `qnet` call, so
  * a new option is a new call and a new result type here, never a new offset in the spec block.
  */
 internal fun applyOptions(
     shim: NetShim,
     fd: Int,
     family: Int,
-    wantsGro: Boolean,
+    request: GroRequest,
 ): AppliedOptions {
     val df = shim.udpSetDontFragment(fd, family)
     val gro =
-        if (!wantsGro) {
-            GroSetup.NotRequested
-        } else {
-            val result = shim.udpSetGro(fd)
-            when {
-                result > 0 -> GroSetup.Enabled
-                result == 0 -> GroSetup.Unavailable
-                else -> GroSetup.Refused(SocketRefusal.of(-result))
+        when (request) {
+            is GroRequest.Declined -> GroSetup.NotRequested
+            is GroRequest.Requested -> {
+                val result = shim.udpSetGro(fd)
+                when {
+                    result > 0 -> GroSetup.Enabled
+                    result == 0 -> GroSetup.Unavailable
+                    else -> GroSetup.Refused(SocketRefusal.of(-result))
+                }
             }
         }
     return AppliedOptions(gro, if (df == 0) DontFragment.Set else DontFragment.Refused(SocketRefusal.of(-df)))
