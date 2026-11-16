@@ -5451,10 +5451,10 @@ val stageCoreAndroidTests =
                 "testing/SocketView.kt",
                 "udp/NativeIoTests.kt",
                 "ready/NativePollerTests.kt",
-                "edge/CoreTestSupport.kt",
+                "edge/JvmCoreTestSupport.kt",
                 "edge/CoreEdgeTests.kt",
                 "edge/CallerInPlaceTests.kt",
-                "edge/CoreFailureTierTests.kt",
+                "edge/CoreErrorTierTests.kt",
                 "edge/CoreBulkTransferTests.kt",
                 "edge/CorePacingClockTests.kt",
                 "edge/CoreNetworkFeedTests.kt",
@@ -5484,6 +5484,12 @@ val stageCoreAndroidTests =
         }
         from("src/commonTest/kotlin/com/ditchoom/socket/quic/core") {
             include("testing/Fakes.kt", "stream/ReadChunkTests.kt")
+            into("com/ditchoom/socket/quic/core")
+        }
+        // The suites every platform runs, with the JVM's platform calls, which Android's are.
+        from("src/coreTest/kotlin/com/ditchoom/socket/quic/core") { into("com/ditchoom/socket/quic/core") }
+        from("src/jvmTest/kotlin/com/ditchoom/socket/quic/core") {
+            include("testing/CorePlatform.jvm.kt")
             into("com/ditchoom/socket/quic/core")
         }
         into(coreAndroidTestDir.map { it.dir("kotlin") })
@@ -6782,13 +6788,12 @@ kotlin {
             kotlin.srcDir("src/sharedJvmTestProtocol/kotlin")
         }
         jvmTest.get().dependsOn(commonJvmTest)
-        // The core's suites that run on the JVM and on every Kotlin/Native target alike (src/coreTest). They open
-        // loopback sockets and load quiche, so they are not in commonTest, which Android's unit tests compile.
-        val coreTest by creating {
-            dependsOn(commonTest.get())
-        }
-        jvmTest.get().dependsOn(coreTest)
-        findByName("nativeTest")?.dependsOn(coreTest)
+        // The core's suites that run on the JVM, on Android and on every Kotlin/Native target alike (src/coreTest). They
+        // open loopback sockets and load quiche, so they are not in commonTest, which Android's unit tests compile. Each
+        // platform's test source set supplies the few platform calls they make (CorePlatform: quiche's binding, the
+        // server certificate, thread names, a thread of their own); Android's instrumented tests get them staged.
+        jvmTest.get().kotlin.srcDir("src/coreTest/kotlin")
+        findByName("nativeTest")?.kotlin?.srcDir("src/coreTest/kotlin")
         jvmTest.dependencies {
             // A QUIC server this library did not write, for NettyServerActiveMigrationTests. Test scope on
             // the JVM only: nothing published depends on Netty.

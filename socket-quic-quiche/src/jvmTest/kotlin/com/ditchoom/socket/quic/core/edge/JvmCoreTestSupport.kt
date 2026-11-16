@@ -1,36 +1,22 @@
 package com.ditchoom.socket.quic.core.edge
 
-import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.buffer.Default
-import com.ditchoom.buffer.flow.ReadPolicy
-import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.flow.writeFully
-import com.ditchoom.socket.quic.QuicByteStream
-import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicTlsConfig
 import com.ditchoom.socket.quic.ScopedRead
-import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.ReceiveBatchResult
 import com.ditchoom.socket.quic.core.udp.SendBatch
 import com.ditchoom.socket.quic.core.udp.SendBatchResult
-import com.ditchoom.socket.quic.loadQuicheApi
 import com.ditchoom.socket.quic.read
 import com.ditchoom.socket.quic.withQuicServer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import java.io.ByteArrayOutputStream
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.time.Duration.Companion.seconds
-
-/** The options every core test connects with. */
-internal val coreTestOptions = QuicOptions(alpnProtocols = listOf("test"), verifyPeer = false, idleTimeout = 10.seconds)
 
 /** Counts, per thread name, the sends and receives a loop's socket saw. */
 internal class RecordingIo(
@@ -54,9 +40,6 @@ internal class RecordingIo(
 
     fun receivesByThread(): Map<String, Long> = receives.mapValues { it.value.get() }
 }
-
-/** The prefix of the loop threads' names, as [coreConnect] starts them. */
-internal const val LOOP_THREAD = "quic-core-client"
 
 /** Echoes every stream the 4.x server accepts, on [scope]; the body gets the server's port. */
 internal suspend fun withEchoServer(
@@ -86,59 +69,6 @@ internal suspend fun withEchoServer(
             server.cancel()
         }
     }
-}
-
-internal suspend fun connectCore(
-    port: Int,
-    host: String = "127.0.0.1",
-    loops: LoopSet = LoopSet.shared,
-    factory: BufferFactory = BufferFactory.Default,
-    api: com.ditchoom.socket.quic.QuicheApi = loadQuicheApi(),
-    wrapIo: (DatagramBatchIo) -> DatagramBatchIo = { it },
-): CoreClient =
-    coreConnect(
-        host = host,
-        port = port,
-        serverName = "localhost",
-        options = coreTestOptions,
-        factory = factory,
-        api = api,
-        timeout = 10.seconds,
-        readPolicy = ReadPolicy.Bounded(10.seconds),
-        writePolicy = WritePolicy.Bounded(10.seconds),
-        wrapIo = wrapIo,
-        loops = loops,
-        flight = TEST_FLIGHT,
-    )
-
-/** The flight recording of a test's client connection: a server connection's size. */
-internal val TEST_FLIGHT =
-    com.ditchoom.socket.quic.core.conn
-        .FlightSize(records = 256)
-
-/** Writes [payload] on [stream] while reading the echo; returns what came back. */
-internal suspend fun echoOver(
-    stream: QuicByteStream,
-    payload: ByteArray,
-): ByteArray {
-    val received = ByteArrayOutputStream()
-    coroutineScope {
-        val reader =
-            async {
-                while (received.size() < payload.size) {
-                    if (stream.read(10.seconds) { received.write(it.readByteArray(it.remaining())) } !is ScopedRead.Data<*>) break
-                }
-            }
-        stream.writeFully(
-            BufferFactory.Default.allocate(payload.size).apply {
-                writeBytes(payload)
-                resetForRead()
-            },
-            10.seconds,
-        )
-        reader.await()
-    }
-    return received.toByteArray()
 }
 
 /**
@@ -175,5 +105,3 @@ private fun coreCertPath(name: String): String {
     url.openStream().use { src -> out.outputStream().use { dst -> src.copyTo(dst) } }
     return out.absolutePath
 }
-
-internal suspend fun <T> onIo(block: suspend CoroutineScope.() -> T): T = withContext(Dispatchers.IO, block)

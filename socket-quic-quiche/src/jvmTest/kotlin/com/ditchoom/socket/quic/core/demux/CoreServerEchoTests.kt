@@ -22,7 +22,7 @@ import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.time.Duration.Companion.seconds
 
-/** The run-to-completion client against the run-to-completion server over a real loopback socket. */
+/** The JVM-only rows of the core client against the core server: 1,024 connections, a wildcard server, the 4.x client. */
 class CoreServerEchoTests {
     @get:org.junit.Rule
     val noLeak: org.junit.rules.TestRule = NoServerLoopLeft()
@@ -32,41 +32,6 @@ class CoreServerEchoTests {
 
     @AfterTest
     fun closeLoops() = loops.close()
-
-    @Test
-    fun aKibAndAMibEchoByteExact() =
-        runBlocking {
-            withCoreEchoServer { server ->
-                val client = connectCore(server.port, loops = loops)
-                try {
-                    for (size in listOf(1_024, 1 shl 20)) {
-                        val payload = Random(size).nextBytes(size)
-                        assertContentEquals(payload, echoOver(client.connection.openStream(), payload), "echo of $size bytes")
-                    }
-                } finally {
-                    client.connection.close(QuicError.NoError)
-                }
-                assertEquals(1L, server.counts.accepted)
-            }
-        }
-
-    @Test
-    fun aThousandStreamsPerRequestEachEchoTheirOwnBytes() =
-        runBlocking {
-            withCoreEchoServer { server ->
-                val client = connectCore(server.port, loops = loops)
-                try {
-                    repeat(1_000) { n ->
-                        val payload = Random(n).nextBytes(1 + n % 700)
-                        val stream = client.connection.openStream()
-                        assertContentEquals(payload, echoOver(stream, payload), "request $n")
-                        stream.close()
-                    }
-                } finally {
-                    client.connection.close(QuicError.NoError)
-                }
-            }
-        }
 
     @Test
     fun theFourPointXClientEchoesThroughTheCoreServer() =
@@ -83,9 +48,6 @@ class CoreServerEchoTests {
                 assertEquals(2L, server.counts.accepted)
             }
         }
-
-    @Test
-    fun sixtyFourConcurrentConnectionsEchoOnOneServerLoop() = concurrentEchoes(64)
 
     @Test
     fun aThousandAndTwentyFourConcurrentConnectionsEchoOnOneServerLoop() = concurrentEchoes(1_024)
@@ -134,7 +96,7 @@ class CoreServerEchoTests {
     @Test
     fun aWildcardServerAnswersIPv4AndIPv6Clients() =
         runBlocking {
-            withCoreEchoServer(bind = InetSocketAddress(0)) { server ->
+            withCoreEchoServer(bind = wildcardV4()) { server ->
                 val hosts = listOf("127.0.0.1") + if (hasIPv6Loopback()) listOf("::1") else emptyList()
                 for (host in hosts) {
                     val client = connectCore(server.port, host = host, loops = loops)

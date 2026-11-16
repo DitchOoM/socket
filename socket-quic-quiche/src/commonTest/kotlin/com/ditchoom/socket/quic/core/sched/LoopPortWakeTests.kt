@@ -19,6 +19,23 @@ class LoopPortWakeTests {
     private val port = LoopPort(poller)
 
     @Test
+    fun aPokeWhileTheLoopIsAwakeMakesItPassAgainInsteadOfSleeping() {
+        port.poke()
+        assertEquals(0, poller.wakes)
+        assertEquals(SleepPlan.Skip, port.beginSleep(NextDue.None))
+        port.endSleep()
+        assertEquals(SleepPlan.Await, port.beginSleep(NextDue.None), "one poke, one more pass")
+    }
+
+    @Test
+    fun aPokeWakesASleepingLoopOnce() {
+        assertEquals(SleepPlan.Await, port.beginSleep(NextDue.at(1_000L)))
+        port.poke()
+        port.poke()
+        assertEquals(1, poller.wakes)
+    }
+
+    @Test
     fun anAwakeLoopIsNeverWoken() {
         port.submit(RecordingWork())
         port.arm(Nanos(10L), Runnable { })
