@@ -2,83 +2,45 @@ package com.ditchoom.socket.quic.core.edge
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
-import com.ditchoom.buffer.flow.ReadPolicy
-import com.ditchoom.buffer.flow.WritePolicy
+import com.ditchoom.buffer.PlatformBuffer
+import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.writeFully
-import com.ditchoom.socket.quic.CommonJvmQuicConfigCalls
-import com.ditchoom.socket.quic.QUIC_ISSUED_CONN_ID_LEN
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicCloseReason
-import com.ditchoom.socket.quic.QuicConnectionIdentity
 import com.ditchoom.socket.quic.QuicError
-import com.ditchoom.socket.quic.QuicOptions
-import com.ditchoom.socket.quic.QuicRole
-import com.ditchoom.socket.quic.QuicSessionId
 import com.ditchoom.socket.quic.QuicStreamId
-import com.ditchoom.socket.quic.QuicTlsConfig
-import com.ditchoom.socket.quic.QuicWireConnectionId
 import com.ditchoom.socket.quic.ScopedRead
-import com.ditchoom.socket.quic.SendTarget
-import com.ditchoom.socket.quic.applyQuicOptions
 import com.ditchoom.socket.quic.core.conn.CallerPlace
 import com.ditchoom.socket.quic.core.conn.Conn
-import com.ditchoom.socket.quic.core.conn.ConnEnd
-import com.ditchoom.socket.quic.core.conn.ConnEvents
-import com.ditchoom.socket.quic.core.conn.ConnFreed
-import com.ditchoom.socket.quic.core.conn.ConnPath
 import com.ditchoom.socket.quic.core.conn.ConnWork
-import com.ditchoom.socket.quic.core.conn.DatagramSlot
-import com.ditchoom.socket.quic.core.conn.DatagramSlots
-import com.ditchoom.socket.quic.core.conn.OneConnParts
-import com.ditchoom.socket.quic.core.conn.WriteEnd
-import com.ditchoom.socket.quic.core.loop.CallerLanes
-import com.ditchoom.socket.quic.core.loop.CallerSend
-import com.ditchoom.socket.quic.core.loop.Entrant
+import com.ditchoom.socket.quic.core.conn.Inside
+import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.loop.Loop
-import com.ditchoom.socket.quic.core.loop.LoopClock
-import com.ditchoom.socket.quic.core.loop.LoopHost
-import com.ditchoom.socket.quic.core.loop.LoopWork
-import com.ditchoom.socket.quic.core.loop.SelectorWait
-import com.ditchoom.socket.quic.core.loop.startLoop
-import com.ditchoom.socket.quic.core.pool.FixedPool
-import com.ditchoom.socket.quic.core.stream.Parked
-import com.ditchoom.socket.quic.core.stream.StreamEntry
-import com.ditchoom.socket.quic.core.stream.StreamMap
-import com.ditchoom.socket.quic.core.udp.BatchLimits
+import com.ditchoom.socket.quic.core.loop.LoopSet
+import com.ditchoom.socket.quic.core.sched.LoopPort
+import com.ditchoom.socket.quic.core.sched.LoopWork
+import com.ditchoom.socket.quic.core.stream.WriteEnd
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
-import com.ditchoom.socket.quic.core.udp.NioOneByOne
+import com.ditchoom.socket.quic.core.udp.NativeBytes
+import com.ditchoom.socket.quic.core.udp.ReadAddress
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.ReceiveBatchResult
-import com.ditchoom.socket.quic.core.udp.ReceiveBuffer
 import com.ditchoom.socket.quic.core.udp.SendBatch
 import com.ditchoom.socket.quic.core.udp.SendBatchResult
 import com.ditchoom.socket.quic.core.udp.UdpError
-import com.ditchoom.socket.quic.encodeAlpnList
-import com.ditchoom.socket.quic.generateScid
-import com.ditchoom.socket.quic.loadQuicheApi
 import com.ditchoom.socket.quic.read
 import com.ditchoom.socket.quic.skipOnMissingNativeLib
-import com.ditchoom.socket.quic.toNativeSockAddr
-import com.ditchoom.socket.quic.withQuicServer
-import com.ditchoom.socket.udp.UdpSocket
-import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
-import java.net.InetSocketAddress
-import java.nio.channels.DatagramChannel
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
-import kotlin.coroutines.resume
 import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
@@ -96,8 +58,6 @@ import kotlin.time.Duration.Companion.seconds
  * `Error`s end every connection.
  */
 class CoreFailureTierTests {
-    private val options = QuicOptions(alpnProtocols = listOf("test"), verifyPeer = false, idleTimeout = 10.seconds)
-
     @Test
     fun anOperationThatThrowsFailsItsCallerAndLeavesTheOtherStreamsWorking() =
         withRig { rig ->
@@ -108,15 +68,15 @@ class CoreFailureTierTests {
 
             val failure =
                 assertFailsWith<IllegalStateException> {
-                    suspendCancellableCoroutine<Int> { cont ->
-                        rig.conn.submit(PlantedOp(broken.streamId, cont, rig.conn::submit, planted))
+                    suspendCancellableCoroutine<ReadResult> { cont ->
+                        rig.conn.submit(ReadOp(broken.streamId, OpDeadline(Duration.INFINITE), cont, rig.conn, ThrowingFactory(planted)))
                     }
                 }
             assertTrue(failure === planted || failure.cause === planted, "the caller got the planted exception: $failure")
 
             val payload = Random(1).nextBytes(1024)
             assertContentEquals(payload, echo(healthy, payload), "echo on the other stream, same connection")
-            assertTrue(rig.ended.getNow(NOT_ENDED) === NOT_ENDED, "the connection did not end")
+            assertIs<EdgeEnd.Open>(connection.end(), "the connection did not end")
         }
 
     @Test
@@ -129,8 +89,8 @@ class CoreFailureTierTests {
 
             rig.conn.submit(ThrowingWork(planted))
 
-            val end = assertIs<ConnEnd.Failed>(rig.ended.get(10, TimeUnit.SECONDS))
-            assertSame(planted, end.cause)
+            val end = assertIs<ConnEnd.ProcessingFailed>(rig.ended())
+            assertSame(planted, end.thrown.throwable)
             val read = assertIs<QuicCloseException>(parkedRead.await().exceptionOrNull())
             assertSame(planted, read.cause)
             assertEquals(QuicCloseCircumstance.ProcessingFailed, read.circumstance)
@@ -164,23 +124,23 @@ class CoreFailureTierTests {
         }
 
     @Test
-    fun anIoThatFailsEndsEveryConnectionWithTheLoopFailure() =
+    fun aLoopThatFailsEndsEveryConnectionWithTheLoopFailure() =
         withRig { rig ->
-            val planted = IllegalStateException("planted in receive")
-            rig.io.plant = Plant.Throws(planted)
-            rig.loop.submit(NothingWork)
+            // On a shared loop an io that throws ends its own socket's connection only (SharedClientLoopTests); what
+            // the loop itself throws ends every connection on it.
+            val planted = IllegalStateException("planted in the loop")
+            rig.loop.port.submit(ThrowingLoopWork(planted))
 
-            val end = assertIs<ConnEnd.LoopFailed>(rig.ended.get(10, TimeUnit.SECONDS))
-            assertSame(planted, end.cause)
+            val end = assertIs<ConnEnd.LoopFailed>(rig.ended())
+            assertSame(planted, end.thrown.throwable)
         }
 
     @Test
     fun anOperationStartedAfterTheConnectionEndedFailsInsteadOfWaiting() =
         withRig { rig ->
             val stream = rig.connection.openStream()
-            rig.io.plant = Plant.Throws(IllegalStateException("planted in receive"))
-            rig.loop.submit(NothingWork)
-            assertIs<ConnEnd.LoopFailed>(rig.ended.get(10, TimeUnit.SECONDS))
+            rig.loop.port.submit(ThrowingLoopWork(IllegalStateException("planted in the loop")))
+            assertIs<ConnEnd.LoopFailed>(rig.ended())
 
             assertFailsWith<QuicCloseException> { kotlinx.coroutines.withTimeout(5.seconds) { stream.read(10.seconds) { } } }
             assertFailsWith<QuicCloseException> { kotlinx.coroutines.withTimeout(5.seconds) { rig.connection.openStream() } }
@@ -190,10 +150,13 @@ class CoreFailureTierTests {
     fun anErrorFromConnectionProcessingIsNotContained() =
         withRig { rig ->
             val planted = PlantedError()
-            rig.conn.submit(ThrowingErrorWork(planted))
-
-            val end = assertIs<ConnEnd.LoopFailed>(rig.ended.get(10, TimeUnit.SECONDS))
-            assertSame(planted, end.cause)
+            val reported =
+                reportedOnTheLoop {
+                    rig.conn.submit(ThrowingErrorWork(planted))
+                    val end = assertIs<ConnEnd.LoopFailed>(rig.ended())
+                    assertSame(planted, end.thrown.throwable)
+                }
+            assertSame(planted, reported, "the Error was reported on the loop's thread, not contained")
         }
 
     @Test
@@ -202,8 +165,8 @@ class CoreFailureTierTests {
             val planted = IllegalStateException("planted in connection work, run by a caller")
             runOnACaller(rig) { OnACaller(planted) }
 
-            val end = assertIs<ConnEnd.Failed>(rig.ended.get(10, TimeUnit.SECONDS))
-            assertSame(planted, end.cause)
+            val end = assertIs<ConnEnd.ProcessingFailed>(rig.ended())
+            assertSame(planted, end.thrown.throwable)
             assertTrue(rig.conn.counts.enteredInPlace >= 1, "a caller ran the work, not the loop")
             val later = LateWork()
             rig.conn.submit(later, CallerPlace.MayEnter)
@@ -218,8 +181,8 @@ class CoreFailureTierTests {
             val reported = CompletableFuture<Throwable>()
             runOnACaller(rig, reported) { OnACaller(planted) }
 
-            val end = assertIs<ConnEnd.CallerFailed>(rig.ended.get(10, TimeUnit.SECONDS))
-            assertSame(planted, end.cause)
+            val end = assertIs<ConnEnd.CallerFailed>(rig.ended())
+            assertSame(planted, end.thrown.throwable)
             assertSame(planted, reported.get(5, TimeUnit.SECONDS), "the Error was reported on the caller's thread")
             val later = LateWork()
             rig.conn.submit(later, CallerPlace.MayEnter)
@@ -300,86 +263,78 @@ class CoreFailureTierTests {
     private suspend fun echo(
         stream: QuicByteStream,
         payload: ByteArray,
-    ): ByteArray {
-        val received = ByteArrayOutputStream()
-        kotlinx.coroutines.coroutineScope {
-            val reader =
-                async {
-                    while (received.size() < payload.size) {
-                        if (stream.read(10.seconds) { received.write(it.readByteArray(it.remaining())) } !is ScopedRead.Data<*>) break
-                    }
-                }
-            stream.writeFully(
-                BufferFactory.Default.allocate(payload.size).apply {
-                    writeBytes(payload)
-                    resetForRead()
-                },
-                10.seconds,
-            )
-            reader.await()
-        }
-        return received.toByteArray()
-    }
+    ): ByteArray = echoOver(stream, payload)
 
     private fun withRig(body: suspend CoroutineScope.(Rig) -> Unit) =
         runBlocking {
             skipOnMissingNativeLib(CoreFailureTierTests::class) {
-                withQuicServer(port = 0, tlsConfig = tlsConfig(), quicOptions = options) {
-                    val server =
-                        launch(Dispatchers.IO) {
-                            connections {
-                                while (true) {
-                                    val stream = acceptStream()
-                                    launch {
-                                        // The client closing the connection ends the read with a QuicCloseException; uncaught here it would end the
-                                        // whole process on Android.
-                                        try {
-                                            while (stream.read(10.seconds) { stream.writeFully(it, 10.seconds) } is ScopedRead.Data<*>) Unit
-                                        } catch (closed: QuicCloseException) {
-                                            // The peer is gone: the echo is over.
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                withEchoServer { port ->
                     withContext(Dispatchers.IO) {
-                        val rig = Rig.start(port, options)
+                        val rig = Rig.start(port)
                         try {
                             kotlinx.coroutines.withTimeout(30.seconds) { body(rig) }
                         } finally {
                             rig.stop()
                         }
                     }
-                    server.cancel()
                 }
             }
         }
 
-    private fun tlsConfig(): QuicTlsConfig = coreTlsConfig()
-
     private companion object {
-        val NOT_ENDED: ConnEnd = ConnEnd.Quietly
         const val HEAD_BYTES = 1_000
     }
 }
 
 private class PlantedError : Error()
 
-private object NothingWork : LoopWork() {
-    override fun run(loop: LoopHost) = Unit
+/** Answers every allocation by throwing what it was given: a read's attempt throws inside the connection. */
+private class ThrowingFactory(
+    private val planted: Exception,
+) : BufferFactory by BufferFactory.Default {
+    override fun allocate(
+        size: Int,
+        byteOrder: com.ditchoom.buffer.ByteOrder,
+    ): PlatformBuffer = throw planted
+}
 
-    override fun gone() = Unit
+private class ThrowingLoopWork(
+    private val planted: Exception,
+) : LoopWork() {
+    override fun run(port: LoopPort) = throw planted
+
+    override fun gone(end: ConnEnd) = Unit
+}
+
+/**
+ * Runs [body] with the process's default uncaught-exception handler replaced, and answers what a loop thread reported
+ * through it: an `Error` is not contained, and on Android the default handler would end the test process.
+ */
+private suspend fun reportedOnTheLoop(body: suspend () -> Unit): Throwable {
+    val reported = CompletableFuture<Throwable>()
+    val previous = Thread.getDefaultUncaughtExceptionHandler()
+    Thread.setDefaultUncaughtExceptionHandler { thread, error ->
+        if (thread.name.startsWith(LOOP_THREAD)) reported.complete(error) else previous?.uncaughtException(thread, error)
+    }
+    try {
+        body()
+        return reported.get(5, TimeUnit.SECONDS)
+    } finally {
+        Thread.setDefaultUncaughtExceptionHandler(previous)
+    }
 }
 
 /** Answers on the loop thread with the number of passes the loop has made. */
-private class PassesWork : LoopWork() {
+private class PassesWork(
+    private val loop: Loop,
+) : LoopWork() {
     val passes = CompletableFuture<Long>()
 
-    override fun run(loop: LoopHost) {
+    override fun run(port: LoopPort) {
         passes.complete(loop.counts.passes)
     }
 
-    override fun gone() {
+    override fun gone(end: ConnEnd) {
         passes.completeExceptionally(IllegalStateException("the loop had stopped"))
     }
 }
@@ -387,9 +342,9 @@ private class PassesWork : LoopWork() {
 private class ThrowingWork(
     private val planted: Exception,
 ) : ConnWork() {
-    override fun run(inside: Conn.Inside) = throw planted
+    override fun run(inside: Inside) = throw planted
 
-    override fun gone() = Unit
+    override fun gone(end: ConnEnd) = Unit
 }
 
 /** Holds the connection from inside until released, then throws what it is given. */
@@ -399,13 +354,13 @@ private class HoldThenThrow(
     val inside = CompletableFuture<Unit>()
     val release = java.util.concurrent.CountDownLatch(1)
 
-    override fun run(inside: Conn.Inside) {
+    override fun run(inside: Inside) {
         this.inside.complete(Unit)
         release.await()
         throw planted
     }
 
-    override fun gone() {
+    override fun gone(end: ConnEnd) {
         inside.complete(Unit)
     }
 }
@@ -413,25 +368,29 @@ private class HoldThenThrow(
 private class ThrowingErrorWork(
     private val planted: Error,
 ) : ConnWork() {
-    override fun run(inside: Conn.Inside) = throw planted
+    override fun run(inside: Inside) = throw planted
 
-    override fun gone() = Unit
+    override fun gone(end: ConnEnd) = Unit
 }
+
+private fun onTheLoop(): Boolean = Thread.currentThread().name.startsWith(LOOP_THREAD)
 
 /** Throws what it is given when a caller runs it, and does nothing when the loop does. */
 private class OnACaller(
     private val planted: Throwable,
 ) : ConnWork() {
     val settled = CompletableFuture<Unit>()
+
+    @Volatile
     var ranOnACaller = false
 
-    override fun run(inside: Conn.Inside) {
-        ranOnACaller = Thread.currentThread().name != "core-failure-tiers"
+    override fun run(inside: Inside) {
+        ranOnACaller = !onTheLoop()
         settled.complete(Unit)
         if (ranOnACaller) throw planted
     }
 
-    override fun gone() {
+    override fun gone(end: ConnEnd) {
         settled.complete(Unit)
     }
 }
@@ -446,15 +405,16 @@ private class SendOnACaller(
     @Volatile
     var sent = false
 
-    override fun run(inside: Conn.Inside) {
-        if (Thread.currentThread().name != "core-failure-tiers") {
-            inside.streamSend(stream, addressOf(bytes), bytes.remaining(), WriteEnd.More)
+    override fun run(inside: Inside) {
+        if (!onTheLoop()) {
+            val address = (NativeBytes.addressOf(bytes) as ReadAddress.At).address
+            inside.streams.io.send(stream, address, bytes.remaining(), WriteEnd.More)
             sent = true
         }
         settled.complete(Unit)
     }
 
-    override fun gone() {
+    override fun gone(end: ConnEnd) {
         settled.complete(Unit)
     }
 }
@@ -462,43 +422,20 @@ private class SendOnACaller(
 private class LateWork : ConnWork() {
     val gone = CompletableFuture<Int>()
 
-    override fun run(inside: Conn.Inside) {
+    override fun run(inside: Inside) {
         gone.completeExceptionally(IllegalStateException("ran on a failed connection"))
     }
 
-    override fun gone() {
+    override fun gone(end: ConnEnd) {
         gone.complete(1)
     }
-}
-
-private class PlantedOp(
-    stream: com.ditchoom.socket.quic.QuicStreamId,
-    cont: CancellableContinuation<Int>,
-    submit: (ConnWork) -> Unit,
-    private val planted: Exception,
-) : StreamOp<Int>(StreamMap(), stream, Duration.INFINITE, cont, submit) {
-    override fun attempt(
-        inside: Conn.Inside,
-        entry: StreamEntry,
-    ): Attempt = throw planted
-
-    override fun deliver() = cont.resume(0)
-
-    override fun park(
-        entry: StreamEntry,
-        waiter: Parked,
-    ) {
-        entry.reader = waiter
-    }
-
-    override fun parked(entry: StreamEntry): Parked = entry.reader
 }
 
 private sealed interface Plant {
     object None : Plant
 
     class Throws(
-        val failure: Exception,
+        val failure: Throwable,
     ) : Plant
 }
 
@@ -516,7 +453,7 @@ private class FlakyIo(
     fun refuseCallerSends(count: Int) = refusals.set(count)
 
     override fun send(batch: SendBatch): SendBatchResult =
-        if (Thread.currentThread().name != "core-failure-tiers" && refusals.getAndDecrement() > 0) {
+        if (!onTheLoop() && refusals.getAndDecrement() > 0) {
             SendBatchResult.Partial(0, UdpError.WouldBlock)
         } else {
             real.send(batch)
@@ -529,121 +466,41 @@ private class FlakyIo(
         }
 }
 
-/** A core client built by hand, the way a connect builds one but without ending its loop when the connection ends. */
+/** A core client on a loop of its own, so a failure planted in its loop ends no other test's connections. */
 private class Rig(
     val connection: CoreConnection,
     val conn: Conn,
     val loop: Loop,
     val io: FlakyIo,
-    val ended: CompletableFuture<ConnEnd>,
-    private val release: () -> Unit,
+    private val loops: LoopSet,
 ) {
+    /** How the connection ended, waiting up to ten seconds for it. */
+    fun ended(): ConnEnd {
+        val deadline = System.nanoTime() + 10_000_000_000L
+        while (System.nanoTime() < deadline) {
+            when (val end = connection.end()) {
+                is EdgeEnd.Ended -> return end.end
+                is EdgeEnd.Open -> Thread.sleep(5)
+            }
+        }
+        throw AssertionError("the connection did not end")
+    }
+
     /** The loop's pass count as the loop thread sees it. */
     fun runOnLoop(): Long {
-        val work = PassesWork()
-        loop.submit(work)
+        val work = PassesWork(loop)
+        loop.port.submit(work)
         return work.passes.get(5, TimeUnit.SECONDS)
     }
 
-    fun stop() {
-        val closed = CompletableFuture<Unit>()
-        loop.close { closed.complete(Unit) }
-        closed.get(5, TimeUnit.SECONDS)
-        release()
-    }
+    fun stop() = loops.close()
 
     companion object {
-        suspend fun start(
-            port: Int,
-            options: QuicOptions,
-        ): Rig {
-            val api = loadQuicheApi()
-            val factory = BufferFactory.Default
-            val channel = DatagramChannel.open().connect(InetSocketAddress("127.0.0.1", port))
-            channel.configureBlocking(false)
-            val local = (channel.localAddress as InetSocketAddress).toNativeSockAddr(factory)
-            val peer = (channel.remoteAddress as InetSocketAddress).toNativeSockAddr(factory)
-            val config = api.configNew(1)
-            encodeAlpnList(options.alpnProtocols, factory).let { api.configSetApplicationProtos(config, addressOf(it), it.remaining()) }
-            applyQuicOptions(options, CommonJvmQuicConfigCalls(api, config), QuicRole.Client)
-            val serverName =
-                factory.allocate(10).apply {
-                    writeString("localhost", com.ditchoom.buffer.Charset.UTF8)
-                    writeByte(0)
-                    resetForRead()
-                }
-            val scid = generateScid(factory)
-            val handle =
-                api.connect(
-                    addressOf(serverName),
-                    9,
-                    addressOf(scid),
-                    QUIC_ISSUED_CONN_ID_LEN,
-                    local.address,
-                    local.length,
-                    peer.address,
-                    peer.length,
-                    config,
-                )
-            val path =
-                ConnPath(
-                    api.recvInfoNew(peer.address, peer.length, local.address, local.length),
-                    api.sendInfoNew(),
-                    SendTarget.ConnectedPeer,
-                )
-            val limits = BatchLimits(maxDatagrams = 64, maxDatagramSize = 1500)
-            val sendStorage = factory.allocate(limits.maxDatagrams * limits.maxDatagramSize)
-            val send = SendBatch(sendStorage, addressOf(sendStorage), limits)
-            val receive =
-                ReceiveBatch(
-                    FixedPool(
-                        limits.maxDatagrams,
-                    ) { i -> factory.allocate(limits.maxDatagramSize).let { ReceiveBuffer(i, it, addressOf(it)) } },
-                    limits,
-                )
-            val clock = LoopClock { System.nanoTime() }
-            val parts = OneConnParts()
-            val callerLimits = BatchLimits(maxDatagrams = 16, maxDatagramSize = 1500)
-            val callerSends =
-                FixedPool(2) { i ->
-                    val storage = factory.allocate(callerLimits.maxDatagrams * callerLimits.maxDatagramSize)
-                    CallerSend(i, SendBatch(storage, addressOf(storage), callerLimits, lane = i + 1))
-                }
-            val copies =
-                FixedPool(4) { i -> factory.allocate(1500).let { DatagramSlot(i, it, addressOf(it)) } }
-            val io = FlakyIo(NioOneByOne(channel, listOf(send) + List(2) { callerSends[it].batch }))
-            val loop = Loop(SelectorWait(channel, clock), clock, io, parts, receive, send, CallerLanes.Of(callerSends))
-            val scope = CoroutineScope(SupervisorJob())
-            val connection =
-                CoreConnection(
-                    bufferFactory = factory,
-                    remoteAddress = UdpSocket.resolve("127.0.0.1", port),
-                    identity = QuicConnectionIdentity(QuicSessionId("tiers"), QuicWireConnectionId.Known("tiers")),
-                    role = QuicRole.Client,
-                    readPolicy = ReadPolicy.Bounded(10.seconds),
-                    writePolicy = WritePolicy.Bounded(10.seconds),
-                    scope = scope,
-                )
-            val ended = CompletableFuture<ConnEnd>()
-            val events =
-                object : ConnEvents by connection {
-                    override fun closed(end: ConnEnd) {
-                        connection.closed(end)
-                        ended.complete(end)
-                    }
-                }
-            val conn =
-                Conn(api, handle, path, loop, Entrant.loopTurn(loop = 1, generation = 1), clock, events, factory, DatagramSlots.Of(copies))
-            connection.bind(conn)
-            parts.attach(conn)
-            startLoop(loop, "core-failure-tiers")
-            conn.start()
-            connection.established()
-            return Rig(connection, conn, loop, io, ended) {
-                conn.release(ConnFreed { })
-                api.configFree(config)
-                scope.cancel()
-            }
+        suspend fun start(port: Int): Rig {
+            val loops = LoopSet(1)
+            val flaky = arrayOfNulls<FlakyIo>(1)
+            val client = connectCore(port, loops = loops) { FlakyIo(it).also { io -> flaky[0] = io } }
+            return Rig(client.connection, client.conn, client.loop, flaky[0]!!, loops)
         }
     }
 }

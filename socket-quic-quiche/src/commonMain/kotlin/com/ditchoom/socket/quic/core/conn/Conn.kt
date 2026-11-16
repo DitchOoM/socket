@@ -3,6 +3,7 @@
 package com.ditchoom.socket.quic.core.conn
 
 import com.ditchoom.socket.quic.core.life.ConnEnd
+import com.ditchoom.socket.quic.core.life.Life
 import com.ditchoom.socket.quic.core.observe.ConnCounts
 import com.ditchoom.socket.quic.core.observe.LoopOnly
 import com.ditchoom.socket.quic.core.sched.CallerSend
@@ -51,6 +52,9 @@ internal class Conn(
     private val timerWork = TimerWork(this)
     private val onTimer = Runnable { timerFired() }
     private var hold = LoopHold.Out
+
+    /** Any thread: whether the connection has ended, and how. */
+    fun life(): Life = turn.life()
 
     /** Any thread. Puts the connection in the loop's next pass: a new client's first flight goes out there. */
     fun start() = scheduleServe()

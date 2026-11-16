@@ -3,6 +3,7 @@ package com.ditchoom.socket.quic.core.loop
 import com.ditchoom.socket.quic.core.conn.Collected
 import com.ditchoom.socket.quic.core.conn.Conn
 import com.ditchoom.socket.quic.core.life.ConnEnd
+import com.ditchoom.socket.quic.core.life.Life
 import com.ditchoom.socket.quic.core.observe.LoopCounts
 import com.ditchoom.socket.quic.core.observe.LoopOnly
 import com.ditchoom.socket.quic.core.ready.Poller
@@ -21,6 +22,10 @@ import kotlinx.coroutines.Runnable
 /** A place in a loop's socket table: an endpoint, or empty. */
 internal sealed interface LoopSlot {
     data object Empty : LoopSlot
+
+    class Taken(
+        val endpoint: Endpoint,
+    ) : LoopSlot
 }
 
 /** Where an endpoint's datagrams go. */
@@ -36,14 +41,6 @@ private enum class Input { Maybe, Drained }
 
 private enum class Phase { Live, Dead, Gone }
 
-private sealed interface Leaving {
-    data object Staying : Leaving
-
-    class Going(
-        val then: Runnable,
-    ) : Leaving
-}
-
 /** Whether an endpoint is still on its loop after a serve. */
 internal enum class Stay { Stays, Left }
 
@@ -55,13 +52,14 @@ internal class Endpoint(
     private val socket: SendPort,
     private val send: SendBatch,
     private val route: Route,
-) : LoopSlot {
+    /** Runs on the loop once the socket has left it, after the connection ended and its last output went out. */
+    private val onLeft: Runnable,
+) {
     var token = 0
         private set
     private var input = Input.Maybe
     private var phase = Phase.Live
     private var interest = WriteInterest.None
-    private var leaving: Leaving = Leaving.Staying
 
     fun placed(token: Int) {
         this.token = token
@@ -117,22 +115,13 @@ internal class Endpoint(
             if (collected != Collected.MoreWaiting || send.pending > 0) break
         }
         noticeDeath()
-        return when (val now = leaving) {
-            is Leaving.Staying -> {
-                refreshInterest(poller)
-                Stay.Stays
-            }
-            is Leaving.Going -> {
-                close(poller)
-                now.then.run()
-                Stay.Left
-            }
+        if (connEnded() && (send.pending == 0 || phase != Phase.Live) && !socket.hasWaiting()) {
+            close(poller)
+            onLeft.run()
+            return Stay.Left
         }
-    }
-
-    /** Loop thread: the connection ended; the socket leaves the loop after its last output, then [then] runs. */
-    fun leave(then: Runnable) {
-        leaving = Leaving.Going(then)
+        refreshInterest(poller)
+        return Stay.Stays
     }
 
     /** The io threw: this socket's connection ends with it, and no other. */
@@ -149,10 +138,7 @@ internal class Endpoint(
     ) {
         endConn(end)
         close(poller)
-        when (val now = leaving) {
-            is Leaving.Staying -> Unit
-            is Leaving.Going -> now.then.run()
-        }
+        onLeft.run()
     }
 
     /** The loop had stopped before this endpoint joined it: the connection ends and the socket is closed. */
@@ -160,7 +146,13 @@ internal class Endpoint(
         endConn(end)
         phase = Phase.Gone
         io.close()
+        onLeft.run()
     }
+
+    private fun connEnded(): Boolean =
+        when (route) {
+            is Route.Fixed -> route.conn.life() is Life.Ended
+        }
 
     private fun noticeDeath() {
         when (val health = socket.health()) {

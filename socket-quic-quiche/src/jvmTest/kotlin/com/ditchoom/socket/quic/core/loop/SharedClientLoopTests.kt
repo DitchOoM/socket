@@ -31,6 +31,7 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertIs
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
@@ -42,7 +43,7 @@ class SharedClientLoopTests {
         runBlocking {
             skipOnMissingNativeLib(SharedClientLoopTests::class) {
                 withEchoServer { port ->
-                    val loops = ClientLoopSet(2)
+                    val loops = LoopSet(2)
                     try {
                         val clients = withContext(Dispatchers.IO) { List(CONNECTIONS) { connect(port, loops) } }
                         val perLoop = clients.groupingBy { it.loop.name }.eachCount()
@@ -75,7 +76,7 @@ class SharedClientLoopTests {
         runBlocking {
             skipOnMissingNativeLib(SharedClientLoopTests::class) {
                 withEchoServer { port ->
-                    val loops = ClientLoopSet(1)
+                    val loops = LoopSet(1)
                     try {
                         val planted = IllegalStateException("planted in receive")
                         val flaky = arrayOfNulls<FailingIo>(1)
@@ -93,7 +94,7 @@ class SharedClientLoopTests {
                         repeat(ECHOES) { round ->
                             streams.dropLast(1).forEach { assertContentEquals(payload, echoOver(it, payload), "healthy echo $round") }
                         }
-                        assertSame(ClientLoopLife.Alive, broken.loop.life.load(), "the loop itself did not fail")
+                        assertSame(LoopLife.Alive, broken.loop.life.load(), "the loop itself did not fail")
                         healthy.forEach { it.connection.close(QuicError.NoError) }
                     } finally {
                         loops.close()
@@ -107,7 +108,7 @@ class SharedClientLoopTests {
         runBlocking {
             skipOnMissingNativeLib(SharedClientLoopTests::class) {
                 withEchoServer { port ->
-                    val loops = ClientLoopSet(1)
+                    val loops = LoopSet(1)
                     try {
                         val doomed = arrayOfNulls<DatagramBatchIo>(1)
                         val healthy = withContext(Dispatchers.IO) { connect(port, loops) }
@@ -121,7 +122,10 @@ class SharedClientLoopTests {
                         try {
                             val failure =
                                 assertFailsWith<QuicCloseException> { withTimeout(10.seconds) { echoOver(brokenStream, payload) } }
-                            assertTrue(failure.cause is SocketFailure, "the cause says the socket failed: ${failure.cause}")
+                            assertIs<com.ditchoom.socket.quic.core.life.ConnEnd.SocketFailed>(
+                                (broken.connection.end() as com.ditchoom.socket.quic.core.edge.EdgeEnd.Ended).end,
+                                "the connection ended because its socket failed: $failure",
+                            )
 
                             repeat(
                                 ECHOES,
@@ -130,7 +134,7 @@ class SharedClientLoopTests {
                             // Where each side stood when it went wrong, so the next occurrence names its cause.
                             throw AssertionError(
                                 "broken=${broken.connection.state.value} healthy=${healthy.connection.state.value} " +
-                                    "loop=${broken.loop.life.load()} connectionsOnLoop=${broken.loop.connections.load()}",
+                                    "loop=${broken.loop.life.load()} connectionsOnLoop=${broken.loop.connections.value()}",
                                 failed,
                             )
                         }
@@ -147,7 +151,21 @@ class SharedClientLoopTests {
         runBlocking {
             skipOnMissingNativeLib(SharedClientLoopTests::class) {
                 withEchoServer { port ->
-                    val loops = ClientLoopSet(2)
+                    val loops = LoopSet(2)
+                    // The loop's Error is reported on its thread, not contained; on Android the default handler would
+                    // end the test process, so the report is captured here.
+                    val reported = java.util.concurrent.CompletableFuture<Throwable>()
+                    val previous = Thread.getDefaultUncaughtExceptionHandler()
+                    Thread.setDefaultUncaughtExceptionHandler { thread, error ->
+                        if (thread.name.startsWith(
+                                LoopSet.THREAD_PREFIX,
+                            )
+                        ) {
+                            reported.complete(error)
+                        } else {
+                            previous?.uncaughtException(thread, error)
+                        }
+                    }
                     try {
                         val planted = PlantedError()
                         val flaky = arrayOfNulls<FailingIo>(1)
@@ -172,18 +190,20 @@ class SharedClientLoopTests {
                         val failure = assertFailsWith<QuicCloseException> { withTimeout(10.seconds) { echoOver(streams[0], payload) } }
                         inFlight.await()
                         assertSame(planted, failure.cause, "the loop's failure is the cause")
-                        assertSame(ClientLoopLife.Stopped, first.loop.life.load())
+                        assertSame(planted, reported.get(5, java.util.concurrent.TimeUnit.SECONDS), "reported on the loop's thread")
+                        assertSame(LoopLife.Stopped, first.loop.life.load())
 
                         repeat(ECHOES) { round ->
                             assertContentEquals(payload, echoOver(streams[2], payload), "echo $round on the other loop")
                             assertContentEquals(payload, echoOver(streams[3], payload), "echo $round on the other loop")
                         }
-                        assertSame(ClientLoopLife.Alive, other.loop.life.load())
+                        assertSame(LoopLife.Alive, other.loop.life.load())
 
                         val replaced = withContext(Dispatchers.IO) { connect(port, loops) }
                         assertTrue(replaced.loop !== first.loop, "a connection is not placed on a stopped loop")
                         assertContentEquals(payload, echoOver(replaced.connection.openStream(), payload))
                     } finally {
+                        Thread.setDefaultUncaughtExceptionHandler(previous)
                         loops.close()
                     }
                 }
@@ -195,13 +215,13 @@ class SharedClientLoopTests {
         runBlocking {
             skipOnMissingNativeLib(SharedClientLoopTests::class) {
                 withEchoServer { port ->
-                    val loops = ClientLoopSet(2)
+                    val loops = LoopSet(2)
                     try {
                         val first = withContext(Dispatchers.IO) { connect(port, loops) }
                         first.connection.close(QuicError.NoError)
                         val deadline = System.nanoTime() + 10_000_000_000L
-                        while (first.loop.connections.load() != 0 && System.nanoTime() < deadline) kotlinx.coroutines.delay(10)
-                        assertEquals(0, first.loop.connections.load(), "the ended connection left its loop")
+                        while (first.loop.connections.value() != 0L && System.nanoTime() < deadline) kotlinx.coroutines.delay(10)
+                        assertEquals(0L, first.loop.connections.value(), "the ended connection left its loop")
                     } finally {
                         loops.close()
                     }
@@ -211,7 +231,7 @@ class SharedClientLoopTests {
 
     private suspend fun connect(
         port: Int,
-        loops: ClientLoopSet,
+        loops: LoopSet,
         wrapIo: (DatagramBatchIo) -> DatagramBatchIo = { it },
     ): CoreClient =
         coreConnect(

@@ -56,6 +56,7 @@ private sealed interface Run {
 @LoopOnly
 internal class Loop(
     val id: Int,
+    val name: String,
     private val poller: Poller,
     private val clock: LoopClock,
     private val receive: ReceiveBatch,
@@ -108,21 +109,21 @@ internal class Loop(
         port.fireDue(now)
         for (i in 0 until ready.count) {
             when (val slot = slots[ready.tokenAt(i)]) {
-                is Endpoint -> slot.readable()
+                is LoopSlot.Taken -> slot.endpoint.readable()
                 is LoopSlot.Empty -> Unit
             }
         }
         ready.clear()
         for (i in slots.indices) {
             when (val slot = slots[i]) {
-                is Endpoint -> receiveOn(slot)
+                is LoopSlot.Taken -> receiveOn(slot.endpoint)
                 is LoopSlot.Empty -> Unit
             }
         }
         counts.ran(port.runWork())
         for (i in slots.indices) {
             when (val slot = slots[i]) {
-                is Endpoint -> if (slot.serve(poller) == Stay.Left) vacate(slot)
+                is LoopSlot.Taken -> if (slot.endpoint.serve(poller) == Stay.Left) vacate(slot.endpoint)
                 is LoopSlot.Empty -> Unit
             }
         }
@@ -131,7 +132,7 @@ internal class Loop(
 
     internal fun attach(endpoint: Endpoint) {
         val token = if (free.isEmpty()) slots.size.also { slots.add(LoopSlot.Empty) } else free.removeAt(free.lastIndex)
-        slots[token] = endpoint
+        slots[token] = LoopSlot.Taken(endpoint)
         endpoint.placed(token)
         poller.add(endpoint.socketRef, token)
     }
@@ -171,7 +172,7 @@ internal class Loop(
         life.stopped()
         for (i in slots.indices) {
             when (val slot = slots[i]) {
-                is Endpoint -> slot.loopEnded(end, poller)
+                is LoopSlot.Taken -> slot.endpoint.loopEnded(end, poller)
                 is LoopSlot.Empty -> Unit
             }
         }
@@ -184,6 +185,13 @@ internal class Loop(
     private companion object {
         const val READY_TOKENS = 256
     }
+}
+
+/** Wakes the loop when a socket died on another thread: the next pass sees the socket's health. One per socket. */
+internal class SocketDiedNotice : LoopWork() {
+    override fun run(port: LoopPort) = Unit
+
+    override fun gone(end: ConnEnd) = Unit
 }
 
 /** Loop work: a new connection's socket joins the loop. */

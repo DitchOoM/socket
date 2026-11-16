@@ -878,7 +878,8 @@ public class CoreDefaultsCheck {
             Matcher m = Pattern.compile("(?<![.\\w])\\w*(?:Exception|Error)\\s*\\(|\\bthrow\\b|\\bresumeWithException\\b").matcher(p.code);
             while (m.find()) add(out, p, p.lineAt(m.start()), "F");
         } else {
-            Matcher m = Pattern.compile("(?<!class )\\bQuic\\w*Exception\\s*\\(").matcher(p.code);
+            // A connection's end is what a close exception reports; a stream's own failure has no end to begin with.
+            Matcher m = Pattern.compile("(?<!class )\\bQuicCloseException\\s*\\(").matcher(p.code);
             while (m.find()) {
                 int open = m.end() - 1;
                 String args = p.code.substring(open + 1, Math.min(matchingParen(p.code, open), p.code.length()));

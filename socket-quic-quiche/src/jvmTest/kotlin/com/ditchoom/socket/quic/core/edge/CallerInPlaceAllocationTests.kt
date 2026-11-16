@@ -4,6 +4,8 @@ import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.core.conn.CallerPlace
 import com.ditchoom.socket.quic.core.conn.Conn
 import com.ditchoom.socket.quic.core.conn.ConnWork
+import com.ditchoom.socket.quic.core.conn.Inside
+import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.skipOnMissingNativeLib
 import kotlinx.coroutines.runBlocking
 import java.lang.management.ManagementFactory
@@ -64,11 +66,11 @@ class CallerInPlaceAllocationTests {
         @Volatile
         var ran = 0L
 
-        override fun run(inside: Conn.Inside) {
+        override fun run(inside: Inside) {
             ran++
         }
 
-        override fun gone() = assertEquals(0, 1, "the connection was released under the test")
+        override fun gone(end: ConnEnd) = assertEquals(0, 1, "the connection was released under the test")
     }
 
     private companion object {

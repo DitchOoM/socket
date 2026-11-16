@@ -55,4 +55,7 @@ internal sealed interface ConnEnd {
 
     /** The network monitor reported no usable network for longer than the grace a flap is given. */
     data object NetworkLost : ConnEnd
+
+    /** The network came back without the local address the connection's socket is bound to: that is migration. */
+    data object LocalAddressGone : ConnEnd
 }

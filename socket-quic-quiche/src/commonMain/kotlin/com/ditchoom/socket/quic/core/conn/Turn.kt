@@ -45,6 +45,9 @@ internal class Turn(
 
     fun requestRelease(then: Runnable) = c.release.request(then)
 
+    /** Any thread: the connection's life as published. */
+    fun life(): Life = c.life.view()
+
     fun releaseAsked(): ReleaseAsk = c.release.asked()
 
     /** Inside: runs queued work, serves the connection and writes its output into [out]. An `Error` propagates. */
@@ -130,6 +133,7 @@ internal class Turn(
         when (c.network.changed(change, now)) {
             NetworkStep.Nudge -> c.timer.nudge()
             NetworkStep.Wait -> Unit
+            NetworkStep.End -> finish(now, ConnEnd.LocalAddressGone)
         }
     }
 

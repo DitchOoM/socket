@@ -8,6 +8,8 @@ import com.ditchoom.socket.quic.ScopedRead
 import com.ditchoom.socket.quic.core.conn.CallerPlace
 import com.ditchoom.socket.quic.core.conn.Conn
 import com.ditchoom.socket.quic.core.conn.ConnWork
+import com.ditchoom.socket.quic.core.conn.Inside
+import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.read
 import com.ditchoom.socket.quic.skipOnMissingNativeLib
 import kotlinx.coroutines.Dispatchers
@@ -146,7 +148,7 @@ private class HoldWork : ConnWork() {
     var heldBy = "nobody"
     val ran = AtomicInteger()
 
-    override fun run(inside: Conn.Inside) {
+    override fun run(inside: Inside) {
         if (Thread.currentThread().name.startsWith(LOOP_THREAD)) {
             ran.incrementAndGet()
             return
@@ -157,5 +159,5 @@ private class HoldWork : ConnWork() {
         release.await()
     }
 
-    override fun gone() = Unit
+    override fun gone(end: ConnEnd) = Unit
 }

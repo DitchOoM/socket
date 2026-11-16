@@ -21,6 +21,7 @@ internal fun ConnEnd.flightCode(): Int =
         is ConnEnd.NoErrorRecorded -> 11
         is ConnEnd.Released -> 12
         is ConnEnd.NetworkLost -> 13
+        is ConnEnd.LocalAddressGone -> 14
     }
 
 /** The wire error this end carries, as a number, for the flight record; zero when it carries none. */
@@ -30,7 +31,7 @@ internal fun ConnEnd.errorCode(): Long =
         is ConnEnd.ByLocal -> error.code
         is ConnEnd.IdleTimeout, is ConnEnd.HandshakeTimedOut, is ConnEnd.SocketFailed, is ConnEnd.ProcessingFailed,
         is ConnEnd.CallerFailed, is ConnEnd.LoopFailed, is ConnEnd.LoopStopped, is ConnEnd.ServerClosed,
-        is ConnEnd.NoErrorRecorded, is ConnEnd.Released, is ConnEnd.NetworkLost,
+        is ConnEnd.NoErrorRecorded, is ConnEnd.Released, is ConnEnd.NetworkLost, is ConnEnd.LocalAddressGone,
         -> 0L
     }
 
@@ -41,6 +42,7 @@ internal fun ConnEnd.kind(): EndKind =
         is ConnEnd.ByLocal -> if (error is QuicError.NoError) EndKind.Normal else EndKind.Abnormal
         is ConnEnd.IdleTimeout, is ConnEnd.HandshakeTimedOut, is ConnEnd.SocketFailed, is ConnEnd.ProcessingFailed,
         is ConnEnd.CallerFailed, is ConnEnd.LoopFailed, is ConnEnd.NoErrorRecorded, is ConnEnd.NetworkLost,
+        is ConnEnd.LocalAddressGone,
         -> EndKind.Abnormal
         is ConnEnd.LoopStopped, is ConnEnd.ServerClosed, is ConnEnd.Released -> EndKind.Normal
     }

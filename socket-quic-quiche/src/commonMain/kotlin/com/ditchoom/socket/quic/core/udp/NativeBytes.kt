@@ -1,6 +1,7 @@
 package com.ditchoom.socket.quic.core.udp
 
 import com.ditchoom.buffer.PlatformBuffer
+import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.UnsafeMemory
 import com.ditchoom.buffer.nativeMemoryAccess
 
@@ -43,7 +44,22 @@ internal class NativeBytes private constructor(
                 Addressed.Native(NativeBytes(access.nativeAddress.toLong(), buffer.capacity, buffer))
             }
         }
+
+        /** The address of the first byte of a caller's [buffer], read here and nowhere else. */
+        fun addressOf(buffer: ReadBuffer): ReadAddress {
+            val access = buffer.nativeMemoryAccess
+            return if (access == null) ReadAddress.NotAddressable else ReadAddress.At(access.nativeAddress.toLong())
+        }
     }
+}
+
+/** Where a caller's buffer lives, when quiche can read it in place. */
+internal sealed interface ReadAddress {
+    class At(
+        val address: Long,
+    ) : ReadAddress
+
+    data object NotAddressable : ReadAddress
 }
 
 /** Whether a buffer can be used as wire memory. */

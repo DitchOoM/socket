@@ -52,6 +52,7 @@ internal class NioEcho(
     val loop =
         Loop(
             id = 2,
+            name = threadName,
             poller = SelectorPoller(MonotonicClock, jdkStackOfThisRuntime().scan),
             clock = MonotonicClock,
             receive = ReceiveBatch(FixedPool(limits.maxDatagrams) { receiveBuffers[it] }, limits),
@@ -74,7 +75,7 @@ internal class NioEcho(
     val thread: Thread
 
     init {
-        loop.place(Endpoint(SocketRef(server), io, socket, send, Route.Fixed(conn)))
+        loop.place(Endpoint(SocketRef(server), io, socket, send, Route.Fixed(conn), Runnable { }))
         conn.start()
         thread = startLoopThread(loop, threadName)
     }

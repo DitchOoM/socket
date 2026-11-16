@@ -8,7 +8,6 @@ import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.QuicheSendInfo
-import com.ditchoom.socket.quic.core.demux.withCoreEchoServer
 import com.ditchoom.socket.quic.loadQuicheApi
 import com.ditchoom.socket.quic.skipOnMissingNativeLib
 import kotlinx.coroutines.coroutineScope
@@ -30,8 +29,9 @@ class CorePacingClockTests {
         runBlocking {
             skipOnMissingNativeLib(CorePacingClockTests::class) {
                 val api = RecordingApi(loadQuicheApi())
-                withCoreEchoServer(api = api) { server ->
-                    val client = connectCore(server.port)
+                // The client's own pacer times: the core server is step 4, and every sent datagram is timed alike.
+                withEchoServer { port ->
+                    val client = connectCore(port, api = api)
                     val stream = client.connection.openStream()
                     var received = 0L
                     coroutineScope {

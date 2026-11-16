@@ -1,0 +1,160 @@
+package com.ditchoom.socket.quic.core.edge
+
+import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.flow.BytesWritten
+import com.ditchoom.buffer.flow.ReadPolicy
+import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.buffer.flow.SocketAddress
+import com.ditchoom.buffer.flow.WritePolicy
+import com.ditchoom.socket.quic.QuicByteStream
+import com.ditchoom.socket.quic.QuicCapabilities
+import com.ditchoom.socket.quic.QuicCloseCircumstance
+import com.ditchoom.socket.quic.QuicConnection
+import com.ditchoom.socket.quic.QuicConnectionIdentity
+import com.ditchoom.socket.quic.QuicConnectionState
+import com.ditchoom.socket.quic.QuicError
+import com.ditchoom.socket.quic.QuicPathState
+import com.ditchoom.socket.quic.QuicStreamId
+import com.ditchoom.socket.quic.QuicUnreadAtClose
+import com.ditchoom.socket.quic.QuicheDriver
+import com.ditchoom.socket.quic.core.conn.CallerPlace
+import com.ditchoom.socket.quic.core.conn.Conn
+import com.ditchoom.socket.quic.core.conn.ConnWork
+import com.ditchoom.socket.quic.core.conn.Inside
+import com.ditchoom.socket.quic.core.conn.NetworkChange
+import com.ditchoom.socket.quic.core.conn.NetworkWork
+import com.ditchoom.socket.quic.core.life.ConnEnd
+import com.ditchoom.socket.testkit.trace.TraceSink
+import kotlinx.coroutines.CancellableContinuation
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.MainCoroutineDispatcher
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.consumeAsFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.ContinuationInterceptor
+import kotlin.coroutines.CoroutineContext
+import kotlin.coroutines.resume
+import kotlin.time.Duration
+
+/** What an on-demand dump of a connection's flight recording did. */
+internal enum class FlightDump {
+    /** Every record the connection still holds was written. */
+    Written,
+
+    /** The connection had ended; with `QuicOptions.trace` set its recording already went to the trace. */
+    ConnectionEnded,
+}
+
+/**
+ * A [QuicConnection] on the run-to-completion core. Every call becomes work inside the connection and suspends until
+ * the connection has done it; nothing here blocks a thread. A caller on a main dispatcher leaves its work for the loop;
+ * any other caller runs it in place when the connection is free.
+ */
+internal class CoreConnection(
+    private val conn: Conn,
+    private val edge: EdgeState,
+    override val bufferFactory: BufferFactory,
+    override val remoteAddress: SocketAddress,
+    override val identity: QuicConnectionIdentity,
+    private val readPolicy: ReadPolicy,
+    private val writePolicy: WritePolicy,
+    scope: CoroutineScope,
+) : QuicConnection,
+    CoroutineScope by scope {
+    override val state: StateFlow<QuicConnectionState> = edge.state
+    override val unreadAtClose: StateFlow<QuicUnreadAtClose> = MutableStateFlow(QuicUnreadAtClose.ConnectionOpen)
+    override val capabilities: QuicCapabilities get() = QuicheDriver.capabilities
+    override val pathState: StateFlow<QuicPathState> = MutableStateFlow(QuicPathState.Original)
+
+    /** How the connection stands: open, or ended and how. */
+    fun end(): EdgeEnd = edge.end()
+
+    /** Suspends until the handshake completes; raises the close if the connection ends first. */
+    suspend fun established() {
+        state.first { it is QuicConnectionState.Established || it is QuicConnectionState.Closed }
+        when (val end = edge.end()) {
+            is EdgeEnd.Open -> Unit
+            is EdgeEnd.Ended -> raise(Raised.ConnEnded(end.end), QuicCloseCircumstance.HandshakeFailed)
+        }
+    }
+
+    override suspend fun openStream(): QuicByteStream =
+        suspendCancellableCoroutine { cont ->
+            val open = OpenOp(cont, conn, ::streamFor)
+            conn.submit(open, placeOf(cont.context))
+            if (cont.isActive) cont.invokeOnCancellation { open.withdraw() }
+        }
+
+    override suspend fun acceptStream(): QuicByteStream = streamFor(edge.incoming.receive())
+
+    override fun streams(): Flow<QuicByteStream> = edge.incoming.consumeAsFlow().map { streamFor(it) }
+
+    override suspend fun close(error: QuicError) {
+        if (!edge.closed.isCompleted) conn.submit(CloseWork(error), CallerPlace.HandToLoop)
+        edge.closed.await()
+    }
+
+    /** Closes without waiting; for a caller that has already given up on the connection. */
+    fun closeNow(error: QuicError) = conn.submit(CloseWork(error), CallerPlace.HandToLoop)
+
+    /** Tells the connection the network monitor's news. */
+    fun network(change: NetworkChange) = conn.submit(NetworkWork(change), CallerPlace.HandToLoop)
+
+    /** Writes the connection's flight recording, in the trace grammar, into [sink]. */
+    suspend fun dumpFlight(sink: TraceSink): FlightDump =
+        suspendCancellableCoroutine { cont -> conn.submit(DumpWork(sink, cont), CallerPlace.HandToLoop) }
+
+    internal suspend fun read(
+        stream: QuicStreamId,
+        deadline: Duration,
+    ): ReadResult =
+        suspendCancellableCoroutine { cont ->
+            val op = ReadOp(stream, OpDeadline(deadline), cont, conn, bufferFactory)
+            conn.submit(op, placeOf(cont.context))
+            if (cont.isActive) cont.invokeOnCancellation { op.withdraw() }
+        }
+
+    internal suspend fun write(
+        stream: QuicStreamId,
+        source: WriteSource,
+        deadline: Duration,
+    ): BytesWritten =
+        suspendCancellableCoroutine { cont ->
+            val op = WriteOp(stream, source, OpDeadline(deadline), cont, conn)
+            conn.submit(op, placeOf(cont.context))
+            if (cont.isActive) cont.invokeOnCancellation { op.withdraw() }
+        }
+
+    private fun streamFor(id: Long): QuicByteStream =
+        QuicByteStream(QuicStreamId(id), CoreStream(this, QuicStreamId(id), readPolicy, writePolicy))
+
+    /** A caller on a main dispatcher never makes system calls; any other may. */
+    private fun placeOf(context: CoroutineContext): CallerPlace =
+        if (context[ContinuationInterceptor] is MainCoroutineDispatcher) CallerPlace.HandToLoop else CallerPlace.MayEnter
+}
+
+/** Starts the connection's close inside it. */
+private class CloseWork(
+    private val error: QuicError,
+) : ConnWork() {
+    override fun run(inside: Inside) = inside.close(error)
+
+    override fun gone(end: ConnEnd) = Unit
+}
+
+/** Writes the flight recording inside the connection. */
+private class DumpWork(
+    private val sink: TraceSink,
+    private val cont: CancellableContinuation<FlightDump>,
+) : ConnWork() {
+    override fun run(inside: Inside) {
+        inside.dump(sink)
+        cont.resume(FlightDump.Written)
+    }
+
+    override fun gone(end: ConnEnd) = cont.resume(FlightDump.ConnectionEnded)
+}

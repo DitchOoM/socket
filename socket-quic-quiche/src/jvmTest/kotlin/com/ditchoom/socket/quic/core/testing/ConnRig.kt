@@ -70,6 +70,7 @@ internal fun loopOver(
 ): Loop =
     Loop(
         id = 1,
+        name = "test-loop",
         poller = poller,
         clock = clock,
         receive =
@@ -140,6 +141,7 @@ internal class ConnRig(
             socket,
             SendBatch(nativeBytes(maxDatagrams * 1500), BatchLimits(maxDatagrams, 1500)),
             Route.Fixed(conn),
+            Runnable { },
         )
 
     init {

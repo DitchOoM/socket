@@ -14,6 +14,9 @@ internal enum class NetworkChange {
 
     /** No usable network at all. */
     Gone,
+
+    /** A usable network, without the local address the connection's socket is bound to. */
+    Moved,
 }
 
 /** What a connection does about a change. */
@@ -23,6 +26,9 @@ internal enum class NetworkStep {
 
     /** Keep going until the grace passes. */
     Wait,
+
+    /** The connection cannot go on from its socket: it ends now. */
+    End,
 }
 
 internal enum class NetworkVerdict { Usable, Lost }
@@ -62,6 +68,7 @@ internal class NetworkWatch(
                 }
                 NetworkStep.Wait
             }
+            NetworkChange.Moved -> NetworkStep.End
         }
 
     fun verdict(now: Nanos): NetworkVerdict =
