@@ -136,7 +136,13 @@ class CoreServerEchoTests {
     /** How a loop spent its time: passes against waits, and its longest pass. */
     private fun timing(counts: LoopCounts): String =
         "[${counts.passes} passes took ${counts.passNanos / NANOS_PER_MILLI} ms, " +
-            "longest ${counts.longestPassNanos / NANOS_PER_MILLI} ms; ${counts.waits} waits took ${counts.waitNanos / NANOS_PER_MILLI} ms]"
+            "longest ${counts.longestPassNanos / NANOS_PER_MILLI} ms (${phases(counts)}); " +
+            "${counts.waits} waits took ${counts.waitNanos / NANOS_PER_MILLI} ms; ${counts.datagramsIn} in, ${counts.datagramsOut} out]"
+
+    private fun phases(p: LoopCounts): String =
+        "deadlines ${p.longestFire / NANOS_PER_MILLI}, receive ${p.longestReceive / NANOS_PER_MILLI}, " +
+            "work ${p.longestWork / NANOS_PER_MILLI}, serve ${p.longestServe / NANOS_PER_MILLI} " +
+            "of which one connection ${p.longestSingleServe / NANOS_PER_MILLI}"
 
     private companion object {
         const val NANOS_PER_MILLI = 1_000_000L
