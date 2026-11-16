@@ -13,7 +13,11 @@ class SpecLayoutTests {
         val header = File("src/jni/qnet.h").readText()
 
         fun define(name: String): Int =
-            Regex("#define QN_SPEC_$name (\\d+)").find(header)?.groupValues?.get(1)?.toInt()
+            Regex("#define QN_SPEC_$name (\\d+)")
+                .find(header)
+                ?.groupValues
+                ?.get(1)
+                ?.toInt()
                 ?: throw AssertionError("qnet.h has no QN_SPEC_$name")
         assertEquals(define("BIND"), SpecLayout.BIND)
         assertEquals(define("PEER"), SpecLayout.PEER)
