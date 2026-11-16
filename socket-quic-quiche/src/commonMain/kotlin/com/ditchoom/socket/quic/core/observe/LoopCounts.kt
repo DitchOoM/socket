@@ -18,6 +18,23 @@ internal class LoopCounts {
     var work = 0L
         private set
 
+    /** Nanoseconds spent in passes, in waits for input, and in the longest single pass. */
+    var passNanos = 0L
+        private set
+    var waitNanos = 0L
+        private set
+    var longestPassNanos = 0L
+        private set
+
+    fun timedPass(nanos: Long) {
+        passNanos += nanos
+        if (nanos > longestPassNanos) longestPassNanos = nanos
+    }
+
+    fun timedWait(nanos: Long) {
+        waitNanos += nanos
+    }
+
     fun passed() {
         passes++
     }

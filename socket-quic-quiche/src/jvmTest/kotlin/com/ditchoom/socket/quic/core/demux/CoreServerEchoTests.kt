@@ -5,6 +5,7 @@ import com.ditchoom.socket.quic.core.edge.connectCore
 import com.ditchoom.socket.quic.core.edge.coreTestOptions
 import com.ditchoom.socket.quic.core.edge.echoOver
 import com.ditchoom.socket.quic.core.loop.LoopSet
+import com.ditchoom.socket.quic.core.observe.LoopCounts
 import com.ditchoom.socket.quic.core.udp.buffers
 import com.ditchoom.socket.quic.withQuicConnection
 import kotlinx.coroutines.Dispatchers
@@ -79,6 +80,7 @@ class CoreServerEchoTests {
                     // What the server and its socket saw, so the next occurrence names where the handshakes went.
                     val times = connectedAfter.sorted()
                     val counts = server.counts
+                    val clientLoops = loops.countsOfStarted().joinToString { timing(it) }
                     throw AssertionError(
                         "$connections connections, ${times.size} connected after ${times.lastOrNull()} ms (median ${times.getOrNull(
                             times.size / 2,
@@ -87,7 +89,9 @@ class CoreServerEchoTests {
                             "droppedUnknown=${counts.droppedUnknown} loopPasses=${server.loop.counts.passes} " +
                             "datagramsIn=${server.loop.counts.datagramsIn} datagramsOut=${server.loop.counts.datagramsOut} " +
                             "receiveFailures=${server.loop.counts.receiveFailures} sendRefusals=${server.loop.counts.sendRefusals} " +
-                            "socket=${server.socket.buffers.receiveBytes} B receive buffer, drops=${server.socket.drops()}",
+                            "socket=${server.socket.buffers.receiveBytes} B receive buffer, drops=${server.socket.drops()}; " +
+                            "server loop ${timing(server.loop.counts)}; client loops $clientLoops; " +
+                            "a route probe (open, bind, connect, close) takes ${probeMillis(server.port)} ms on this machine",
                         failed,
                     )
                 }
@@ -111,6 +115,28 @@ class CoreServerEchoTests {
                 assertEquals(hosts.size.toLong(), server.counts.accepted)
             }
         }
+
+    /**
+     * What one route probe costs here, in milliseconds: every client connection takes the process-wide probe gate, so
+     * this is the pace the connections of a herd start at, at best.
+     */
+    private fun probeMillis(port: Int): Double {
+        val probes = 20
+        val began = System.nanoTime()
+        repeat(probes) {
+            DatagramChannel.open().use { probe ->
+                probe.bind(InetSocketAddress("0.0.0.0", 0))
+                probe.connect(InetSocketAddress("127.0.0.1", port))
+                probe.localAddress
+            }
+        }
+        return (System.nanoTime() - began) / probes / NANOS_PER_MILLI.toDouble()
+    }
+
+    /** How a loop spent its time: passes against waits, and its longest pass. */
+    private fun timing(counts: LoopCounts): String =
+        "[${counts.passes} passes took ${counts.passNanos / NANOS_PER_MILLI} ms, " +
+            "longest ${counts.longestPassNanos / NANOS_PER_MILLI} ms; ${counts.waits} waits took ${counts.waitNanos / NANOS_PER_MILLI} ms]"
 
     private companion object {
         const val NANOS_PER_MILLI = 1_000_000L

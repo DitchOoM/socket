@@ -97,9 +97,15 @@ internal class Loop(
     fun run() {
         try {
             while (true) {
-                val next = pass(clock.now())
+                val began = clock.now()
+                val next = pass(began)
+                val ended = clock.now()
+                counts.timedPass(ended.value - began.value)
                 when (val now = run) {
-                    is Run.Running -> sleep(next)
+                    is Run.Running -> {
+                        sleep(next)
+                        counts.timedWait(clock.now().value - ended.value)
+                    }
                     is Run.Closing -> {
                         stop(ConnEnd.LoopStopped)
                         return now.then.run()
