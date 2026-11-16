@@ -11,12 +11,15 @@ import com.ditchoom.socket.quic.qnet.qn_poller_ready_at
 import com.ditchoom.socket.quic.qnet.qn_poller_remove
 import com.ditchoom.socket.quic.qnet.qn_poller_wait
 import com.ditchoom.socket.quic.qnet.qn_poller_wake
-import com.ditchoom.socket.quic.qnet.qn_udp_capability
+import com.ditchoom.socket.quic.qnet.qn_spec_layout
+import com.ditchoom.socket.quic.qnet.qn_udp_capabilities
 import com.ditchoom.socket.quic.qnet.qn_udp_error
-import com.ditchoom.socket.quic.qnet.qn_udp_open
+import com.ditchoom.socket.quic.qnet.qn_udp_open_socket
 import com.ditchoom.socket.quic.qnet.qn_udp_recv
 import com.ditchoom.socket.quic.qnet.qn_udp_recv_coalesced
 import com.ditchoom.socket.quic.qnet.qn_udp_send
+import com.ditchoom.socket.quic.qnet.qn_udp_set_dont_fragment
+import com.ditchoom.socket.quic.qnet.qn_udp_set_gro
 import kotlinx.cinterop.ExperimentalForeignApi
 
 /**
@@ -61,12 +64,18 @@ internal object CinteropNetShim : NetShim {
 
     override fun pollerClose(poller: Long) = qn_poller_close(poller)
 
-    override fun udpOpen(spec: Long): Int = qn_udp_open(spec)
+    override fun specLayout(): Int = qn_spec_layout()
 
-    override fun udpCapability(
+    override fun udpOpenSocket(spec: Long): Int = qn_udp_open_socket(spec)
+
+    override fun udpCapabilities(fd: Int): Int = qn_udp_capabilities(fd)
+
+    override fun udpSetGro(fd: Int): Int = qn_udp_set_gro(fd)
+
+    override fun udpSetDontFragment(
         fd: Int,
-        spec: Long,
-    ): Int = qn_udp_capability(fd, spec)
+        family: Int,
+    ): Int = qn_udp_set_dont_fragment(fd, family)
 
     override fun udpSend(
         fd: Int,
