@@ -409,9 +409,11 @@ jobs:
           os: macos
           lane: ${{ matrix.shard.prCache }}
 
-      # Picks the newest available iPhone, boots it and waits for boot to finish; the root build
-      # reads IOS_SIMULATOR_BOOTED_UDID and runs the iOS tests inside it (standalone = false).
-      - name: Boot an iOS simulator
+      # Picks the newest available iPhone and starts booting it; the boot runs while the test binaries
+      # compile, and "Wait for the iOS simulator" below blocks until it has finished, right before the
+      # tests. The root build reads IOS_SIMULATOR_BOOTED_UDID and runs the iOS tests inside it
+      # (standalone = false).
+      - name: Start booting an iOS simulator
         if: ${{ matrix.shard.bootSimulator == '1' }}
         run: |
           set -euo pipefail
@@ -423,8 +425,6 @@ jobs:
             exit 1
           fi
           xcrun simctl boot "$UDID" || true # already booted is fine
-          xcrun simctl bootstatus "$UDID" -b
-          echo "booted $(xcrun simctl list devices | grep "$UDID")"
           echo "IOS_SIMULATOR_BOOTED_UDID=$UDID" >> "$GITHUB_ENV"
 
       # Every test binary is linked BEFORE any simulator test starts, in its own Gradle invocation.
@@ -460,6 +460,13 @@ jobs:
           os: macos
           lane: ${{ matrix.shard.prCache }}
           restored-exact: ${{ steps.pr_bc.outputs.exact-hit }}
+
+      - name: Wait for the iOS simulator to finish booting
+        if: ${{ matrix.shard.bootSimulator == '1' }}
+        run: |
+          set -euo pipefail
+          xcrun simctl bootstatus "$IOS_SIMULATOR_BOOTED_UDID" -b
+          echo "booted $(xcrun simctl list devices | grep "$IOS_SIMULATOR_BOOTED_UDID")"
 
       # `testArgs` is the iOS shard's `--max-workers=1 --continue`: one module's simulator tests at a
       # time. With the default workers, Gradle runs several modules' test binaries in the one booted
