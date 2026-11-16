@@ -14,10 +14,24 @@ import kotlin.test.assertTrue
  * What the loop thread allocates per datagram it receives and sends, measured with the JVM's per-thread allocation
  * counter after warm-up. The connection's quiche echoes from preallocated memory, so anything counted is the loop's,
  * the connection's and the socket implementation's own.
+ *
+ * The test first holds [HELD_DESCRIPTORS] descriptors, so its sockets sit above 127 as a server's do (design 9.3):
+ * the JDK selector's `fdToKey.get(fd)` boxes every descriptor above 127, one `Integer` per ready key. A worker that
+ * happened to have fewer open passed, one with more failed (Apple FFM: 16 B per echo). On the JDK stack the gate is
+ * that boxing and nothing else: the native stack of design 9.1 takes its place and the gate returns to zero.
  */
 class LoopAllocationTests {
     @Test
-    fun theLoopAllocatesNothingPerEchoedDatagram() {
+    fun theLoopAllocatesNothingPerEchoedDatagramButTheJdkSelectorsBoxing() {
+        val held = List(HELD_DESCRIPTORS) { DatagramChannel.open() }
+        try {
+            measure()
+        } finally {
+            held.forEach { it.close() }
+        }
+    }
+
+    private fun measure() {
         val server = DatagramChannel.open().bind(InetSocketAddress("127.0.0.1", 0))
         server.configureBlocking(false)
         val client = DatagramChannel.open().connect(server.localAddress)
@@ -39,10 +53,12 @@ class LoopAllocationTests {
         recording.enable("jdk.ObjectAllocationSample").with("throttle", "1000000/s").withStackTrace()
         recording.start()
         val bytesBefore = threads.getThreadAllocatedBytes(echo.thread.id)
+        val waitsBefore = echo.loop.counts.waits
         val started = System.nanoTime()
         echoes(MEASURED)
         val nanos = System.nanoTime() - started
         val perEcho = (threads.getThreadAllocatedBytes(echo.thread.id) - bytesBefore).toDouble() / MEASURED
+        val wakesPerEcho = (echo.loop.counts.waits - waitsBefore).toDouble() / MEASURED
         recording.stop()
         val dump =
             java.nio.file.Files
@@ -67,11 +83,31 @@ class LoopAllocationTests {
         echo.loop.close { closed.complete(Unit) }
         closed.get(5, TimeUnit.SECONDS)
         client.close()
-        println("[core-loop] loop thread allocates %.1f bytes per echo; round trip %.1f µs".format(perEcho, nanos / 1_000.0 / MEASURED))
-        assertTrue(perEcho < 1.0, "the loop thread allocated %.1f bytes per echoed datagram, sampled from:\n%s".format(perEcho, whereFrom))
+        println(
+            "[core-loop] loop thread allocates %.1f bytes per echo, %.2f selector wakes; round trip %.1f µs".format(
+                perEcho,
+                wakesPerEcho,
+                nanos / 1_000.0 / MEASURED,
+            ),
+        )
+        val notTheSelectorsBoxing = sites.keys.filterNot { it.startsWith(BOXED_KEY) && it.contains(SELECTOR_FRAME) }
+        assertTrue(
+            notTheSelectorsBoxing.isEmpty(),
+            "the loop thread allocated at a site other than the JDK selector's boxing:\n%s".format(whereFrom),
+        )
+        assertTrue(
+            perEcho < BOXED_INTEGER_BYTES * wakesPerEcho + 1.0,
+            "the loop thread allocated %.1f bytes per echoed datagram, over one boxed descriptor per selector wake (%.2f), sampled from:\n%s"
+                .format(perEcho, wakesPerEcho, whereFrom),
+        )
     }
 
     private companion object {
+        /** Descriptors held open first, so the test's own sit above the JDK's `Integer` cache (-128..127). */
+        const val HELD_DESCRIPTORS = 160
+        const val BOXED_INTEGER_BYTES = 16
+        const val BOXED_KEY = "java.lang.Integer @ Integer.valueOf"
+        const val SELECTOR_FRAME = "SelectorImpl.process"
         const val WARM_UP = 20_000
         const val MEASURED = 20_000
     }
