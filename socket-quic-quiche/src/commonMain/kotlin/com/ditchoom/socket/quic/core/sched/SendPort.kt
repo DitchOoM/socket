@@ -43,6 +43,7 @@ internal class SendPort(
     private val errors: SocketErrors = SocketErrors(),
 ) {
     private val health = HealthCell()
+    private val gate = LaneGate()
     private val waiting = WaitingLanes()
     private val handOffs: Array<AdoptLane> =
         when (lanes) {
@@ -52,18 +53,42 @@ internal class SendPort(
 
     fun health(): SocketHealth = health.view()
 
-    /** A lane for a thread that is not the loop to send from, or [LaneTake.None]: then the loop does the sending. */
+    /**
+     * A lane for a thread that is not the loop to send from, or [LaneTake.None]: then the loop does the sending. A
+     * shut socket lends none.
+     */
     fun takeLane(): LaneTake =
         when (lanes) {
             is CallerLanes.None -> LaneTake.None
-            is CallerLanes.Of -> lanes.pool.take({ it }, { LaneTake.None })
+            is CallerLanes.Of ->
+                when (gate.reserve()) {
+                    Lend.Shut -> LaneTake.None
+                    Lend.Lent ->
+                        lanes.pool.take({ it }, {
+                            laneBack()
+                            LaneTake.None
+                        })
+                }
         }
 
     fun returnLane(lane: CallerSend) =
         when (lanes) {
             is CallerLanes.None -> Unit
-            is CallerLanes.Of -> lanes.pool.give(lane)
+            is CallerLanes.Of -> {
+                lanes.pool.give(lane)
+                laneBack()
+            }
         }
+
+    /**
+     * Loop thread: the socket lends no more lanes. [Shutdown.Quiet] when none is out: nothing but the loop can send,
+     * and the loop closes the socket now. Otherwise the last lane back wakes the loop to ask again, or, for
+     * [Closer.LastLane], closes the socket itself.
+     */
+    fun shut(closer: Closer): Shutdown = gate.shut(closer)
+
+    /** Diagnostics and tests: lanes lent and not yet back. */
+    fun lanesOut(): Int = gate.lanesOut()
 
     /** Any thread holding [lane]: hands what it collected to the network. */
     fun sendInPlace(lane: CallerSend): LaneSent =
@@ -148,6 +173,14 @@ internal class SendPort(
         when (who) {
             Who.Loop -> loopCounts.sent(count)
             Who.Caller -> callerCounts.sent(count)
+        }
+    }
+
+    private fun laneBack() {
+        when (gate.back()) {
+            LaneBack.Returned -> Unit
+            LaneBack.LoopCloses -> port.poke()
+            LaneBack.ThisThreadCloses -> io.close()
         }
     }
 

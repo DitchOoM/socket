@@ -4,20 +4,16 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.socket.quic.EncodedSockAddr
 import com.ditchoom.socket.quic.PathKey
-import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicRole
 import com.ditchoom.socket.quic.QuicheConfig
 import com.ditchoom.socket.quic.core.conn.Conn
 import com.ditchoom.socket.quic.core.conn.ConnAddress
 import com.ditchoom.socket.quic.core.conn.ConnMemory
 import com.ditchoom.socket.quic.core.conn.ConnSink
-import com.ditchoom.socket.quic.core.conn.ConnWork
 import com.ditchoom.socket.quic.core.conn.FlightSize
-import com.ditchoom.socket.quic.core.conn.Inside
 import com.ditchoom.socket.quic.core.conn.LoopMemory
 import com.ditchoom.socket.quic.core.conn.SlotRules
 import com.ditchoom.socket.quic.core.conn.buildConn
-import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.observe.ConnCounts
 import com.ditchoom.socket.quic.core.observe.Counter
@@ -167,11 +163,4 @@ internal class ServerPeer(
         scidRoute = RouteLink.End
         originalRoute = RouteLink.End
     }
-}
-
-/** Closes a server's connection with NO_ERROR, inside it: the server is closing. */
-internal class ServerCloseWork : ConnWork() {
-    override fun run(inside: Inside) = inside.close(QuicError.NoError)
-
-    override fun gone(end: ConnEnd) = Unit
 }

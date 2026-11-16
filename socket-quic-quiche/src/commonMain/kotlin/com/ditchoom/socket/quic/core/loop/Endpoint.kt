@@ -13,7 +13,9 @@ import com.ditchoom.socket.quic.core.observe.LoopOnly
 import com.ditchoom.socket.quic.core.ready.Poller
 import com.ditchoom.socket.quic.core.ready.SocketRef
 import com.ditchoom.socket.quic.core.ready.WriteInterest
+import com.ditchoom.socket.quic.core.sched.Closer
 import com.ditchoom.socket.quic.core.sched.SendPort
+import com.ditchoom.socket.quic.core.sched.Shutdown
 import com.ditchoom.socket.quic.core.sched.SocketHealth
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
@@ -162,9 +164,14 @@ internal class Endpoint(
         }
         noticeDeath()
         if (connEnded() && (send.pending == 0 || phase != Phase.Live) && !socket.hasWaiting()) {
-            close(poller)
-            onLeft.run()
-            return Stay.Left
+            when (close(poller, Closer.Loop)) {
+                is Shutdown.Quiet -> {
+                    onLeft.run()
+                    return Stay.Left
+                }
+                // The last lane back wakes the loop, and this asks again.
+                is Shutdown.LanesOut -> Unit
+            }
         }
         refreshInterest(poller)
         return Stay.Stays
@@ -202,13 +209,13 @@ internal class Endpoint(
         endConn(ConnEnd.SocketFailed(SocketFault.Unnamed(thrown)))
     }
 
-    /** The loop stopped with [end]: the connection ends, and the socket is closed. */
+    /** The loop stopped with [end]: the connection ends, and the socket is closed now or by the last lane back. */
     fun loopEnded(
         end: ConnEnd,
         poller: Poller,
     ) {
         endConn(end)
-        close(poller)
+        close(poller, Closer.LastLane)
         onLeft.run()
     }
 
@@ -216,7 +223,10 @@ internal class Endpoint(
     fun unplaced(end: ConnEnd) {
         endConn(end)
         phase = Phase.Gone
-        io.close()
+        when (socket.shut(Closer.LastLane)) {
+            is Shutdown.Quiet -> io.close()
+            is Shutdown.LanesOut -> Unit
+        }
         onLeft.run()
     }
 
@@ -263,11 +273,21 @@ internal class Endpoint(
         poller.interest(token, wanted)
     }
 
-    private fun close(poller: Poller) {
-        if (phase == Phase.Gone) return
+    /**
+     * Closes the socket once no lane is out: nothing can send on a closed socket. With lanes out, [Closer.Loop] keeps
+     * the socket on the loop until the last lane back wakes it; [Closer.LastLane] leaves it to that lane.
+     */
+    private fun close(
+        poller: Poller,
+        closer: Closer,
+    ): Shutdown {
+        if (phase == Phase.Gone) return Shutdown.Quiet
+        val shut = socket.shut(closer)
+        if (shut is Shutdown.LanesOut && closer == Closer.Loop) return shut
         phase = Phase.Gone
         poller.remove(token)
-        io.close()
+        if (shut is Shutdown.Quiet) io.close()
+        return shut
     }
 
     private companion object {

@@ -2,7 +2,6 @@ package com.ditchoom.socket.quic.core.demux
 
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicheApi
-import com.ditchoom.socket.quic.core.conn.CallerPlace
 import com.ditchoom.socket.quic.core.conn.Collected
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.Life
@@ -47,7 +46,6 @@ internal class Demux(
     private val peers = ArrayList<ServerPeer>()
     private val life = ServerLife()
     private val tick = PassTick()
-    private var passes = 0L
     private var mode = Mode.Receiving
 
     /** The connections routed to: read it on the loop, or once the server is quiet. */
@@ -56,7 +54,6 @@ internal class Demux(
     fun phase(): ServerPhase = life.view()
 
     fun passBegins() {
-        passes++
         admission.passBegins()
     }
 
@@ -94,25 +91,49 @@ internal class Demux(
             }
             if (peer.conn.life() is Life.Ended) unroute(peer) else i++
         }
-        when (life.step(passes)) {
+        when (life.step(clock.now(), unsettled())) {
             ServerStep.Serving -> Unit
             ServerStep.Finish -> endAll(ConnEnd.ServerClosed)
+            ServerStep.FinishAtBound -> endAtBound()
         }
         if (admission.owesPass()) tick.owe(port)
         return Collected.Everything
     }
 
-    /** Stops taking connections and tells each one to close; the server stops once their closes went out. */
+    /**
+     * Stops taking connections and tells each one to close; the server stops once every close is out, or at the drain
+     * bound. A connection the loop may enter is served in the next pass; a caller inside wakes the loop when it leaves.
+     */
     fun beginShutdown() {
-        if (life.begin(passes) != ServerPhase.Running) return
-        for (peer in peers) peer.conn.submit(ServerCloseWork(), CallerPlace.HandToLoop)
-        tick.owe(port)
+        if (life.begin(clock.now(), port) != ServerPhase.Running) return
+        for (peer in peers) peer.conn.closeForServer()
     }
 
     /** Ends every connection with [end] and lets go of each; the server takes no more. */
     fun endAll(end: ConnEnd) {
         life.stopped()
         for (peer in peers) peer.conn.endWithLoop(end)
+        while (peers.isNotEmpty()) unroute(peers[peers.size - 1])
+    }
+
+    /** How many connections still have a close that is not out. */
+    private fun unsettled(): Int {
+        var count = 0
+        for (peer in peers) if (!peer.conn.closeSettled()) count++
+        return count
+    }
+
+    /** The drain bound passed: each connection whose close is not out ends saying so, and is counted. */
+    private fun endAtBound() {
+        life.stopped()
+        for (peer in peers) {
+            if (peer.conn.closeSettled()) {
+                peer.conn.endWithLoop(ConnEnd.ServerClosed)
+            } else {
+                counts.closeUnsettled()
+                peer.conn.endWithLoop(ConnEnd.ServerClosedUnsettled)
+            }
+        }
         while (peers.isNotEmpty()) unroute(peers[peers.size - 1])
     }
 
