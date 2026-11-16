@@ -6354,8 +6354,9 @@ kotlin {
     }
 
     // The native stack (`qnet`, src/jni) on Kotlin/Native: the same C the JVM's libquiche_jni carries, compiled into a
-    // QNet cinterop klib, with its binding (src/qnetMain) on the targets that have a native stack: macOS and Linux.
-    // iOS does not: its client datagrams ride Network.framework, and it must not carry qnet's dlsym of sendmsg_x.
+    // QNet cinterop klib, with its binding (src/qnetMain), on every Kotlin/Native target: the core's loops wait in its
+    // poller, and servers use its sockets. On iOS qnet is compiled without Darwin's batched calls (TARGET_OS_IPHONE:
+    // not in the public SDK, so not even looked up), and a client's datagrams ride Network.framework.
     val configureQNet: org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget.() -> Unit = {
         compilations["main"].cinterops {
             create("QNet") {
@@ -6662,8 +6663,14 @@ kotlin {
             // representative. scripts/native-perf/ records it. (-g cannot combine with -opt; the dSYM still symbolicates.)
             binaries { test(listOf(org.jetbrains.kotlin.gradle.plugin.mpp.NativeBuildType.RELEASE)) }
         }
-        iosArm64 { configureQuicheApple("ios-arm64") }
-        iosSimulatorArm64 { configureQuicheApple("ios-simulator-arm64") }
+        iosArm64 {
+            configureQuicheApple("ios-arm64")
+            configureQNet()
+        }
+        iosSimulatorArm64 {
+            configureQuicheApple("ios-simulator-arm64")
+            configureQNet()
+        }
     }
 
     applyDefaultHierarchyTemplate()
@@ -6775,6 +6782,13 @@ kotlin {
             kotlin.srcDir("src/sharedJvmTestProtocol/kotlin")
         }
         jvmTest.get().dependsOn(commonJvmTest)
+        // The core's suites that run on the JVM and on every Kotlin/Native target alike (src/coreTest). They open
+        // loopback sockets and load quiche, so they are not in commonTest, which Android's unit tests compile.
+        val coreTest by creating {
+            dependsOn(commonTest.get())
+        }
+        jvmTest.get().dependsOn(coreTest)
+        findByName("nativeTest")?.dependsOn(coreTest)
         jvmTest.dependencies {
             // A QUIC server this library did not write, for NettyServerActiveMigrationTests. Test scope on
             // the JVM only: nothing published depends on Netty.

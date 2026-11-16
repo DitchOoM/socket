@@ -27,7 +27,6 @@ import com.ditchoom.socket.quic.core.udp.BatchLimits
 import com.ditchoom.socket.quic.core.udp.MAX_CACHED_TARGETS
 import com.ditchoom.socket.quic.core.udp.SendBatch
 import com.ditchoom.socket.quic.core.udp.SockAddr
-import com.ditchoom.socket.quic.core.udp.toPathKey
 import com.ditchoom.socket.quic.trace.TraceCapture
 import com.ditchoom.socket.quic.traceRecorderFor
 import kotlinx.coroutines.Runnable
@@ -63,6 +62,7 @@ internal class ClientParts(
             listOf(send.storage) + List(CALLER_LANES) { lanes[it].batch.storage },
             limits.maxDatagrams,
             MAX_CACHED_TARGETS,
+            w.running.loop.port::poke,
         )
     private val io = w.wrapIo(socketIo.io)
     private val loop = w.running.loop
@@ -79,7 +79,7 @@ internal class ClientParts(
                 ConnAddress(
                     SockAddr(peerSockAddr.address, peerSockAddr.length),
                     SockAddr(localSockAddr.address, localSockAddr.length),
-                    w.peer.toPathKey(),
+                    w.peer,
                     SendTarget.ConnectedPeer,
                 ),
             memory = ConnMemory(w.running.shared, w.memory.factory(), alpn),

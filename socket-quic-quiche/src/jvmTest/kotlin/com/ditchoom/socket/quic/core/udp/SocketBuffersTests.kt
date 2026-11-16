@@ -3,7 +3,6 @@ package com.ditchoom.socket.quic.core.udp
 import java.net.StandardSocketOptions
 import java.nio.channels.DatagramChannel
 import java.nio.file.Files
-import java.nio.file.Path
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -56,7 +55,7 @@ class SocketBuffersTests {
                     "  1: 00000000000000000000000000000000:B7B8 00000000000000000000000000000000:0000 07 0:0 0:0 0 1000 0 1 2 0 826",
                 ),
             )
-            val report = SocketReport(granted(), localPort = 0xB7B8, tables = listOf(v4, v6))
+            val report = SocketReport(Granted.Reported(granted()), localPort = 0xB7B8, tables = listOf(v4.toString(), v6.toString()))
 
             val drops = assertIs<SocketDrops.Counted>(report.drops())
 
@@ -69,7 +68,7 @@ class SocketBuffersTests {
 
     @Test
     fun whereTheTablesDoNotExistTheCountIsNotAvailable() {
-        val report = SocketReport(granted(), localPort = 1, tables = listOf(Path.of("/nonexistent/udp")))
+        val report = SocketReport(Granted.Reported(granted()), localPort = 1, tables = listOf("/nonexistent/udp"))
 
         assertEquals(SocketDrops.NotAvailable, report.drops())
     }

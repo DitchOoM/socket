@@ -27,8 +27,13 @@
 #include <unistd.h>
 
 #if defined(__APPLE__)
+#include <TargetConditionals.h>
 #include <sys/event.h>
 #define QN_KQUEUE 1
+#if TARGET_OS_IPHONE
+/* iOS, tvOS, watchOS: an app may call only the public SDK, so the batched calls are not even looked up by name. */
+#define QN_PUBLIC_SDK_ONLY 1
+#endif
 #else
 #include <sys/epoll.h>
 #include <sys/eventfd.h>

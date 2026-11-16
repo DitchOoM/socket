@@ -150,5 +150,3 @@ private fun bigEndian(
     for (i in from until from + count) value = (value shl 8) or (bytes[i].toLong() and 0xFF)
     return value
 }
-
-internal const val MAX_CACHED_TARGETS = 4096

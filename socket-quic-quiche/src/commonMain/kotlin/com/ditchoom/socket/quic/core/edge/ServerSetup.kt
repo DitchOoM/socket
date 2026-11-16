@@ -4,9 +4,9 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.use
-import com.ditchoom.socket.quic.CommonJvmQuicConfigCalls
-import com.ditchoom.socket.quic.EncodedSockAddr
+import com.ditchoom.socket.quic.ApiQuicConfigCalls
 import com.ditchoom.socket.quic.NativeSocketRefusal
+import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicRole
@@ -31,13 +31,15 @@ import com.ditchoom.socket.quic.core.demux.ServerParts
 import com.ditchoom.socket.quic.core.demux.Stateless
 import com.ditchoom.socket.quic.core.demux.Tokens
 import com.ditchoom.socket.quic.core.loop.Endpoint
+import com.ditchoom.socket.quic.core.loop.JdkViewsMade
 import com.ditchoom.socket.quic.core.loop.Loop
 import com.ditchoom.socket.quic.core.loop.LoopIds
 import com.ditchoom.socket.quic.core.loop.LoopIo
 import com.ditchoom.socket.quic.core.loop.Readiness
 import com.ditchoom.socket.quic.core.loop.Route
 import com.ditchoom.socket.quic.core.loop.SocketDiedNotice
-import com.ditchoom.socket.quic.core.loop.startLoopThread
+import com.ditchoom.socket.quic.core.loop.jdkViewsOf
+import com.ditchoom.socket.quic.core.loop.startLoop
 import com.ditchoom.socket.quic.core.loop.waitsOf
 import com.ditchoom.socket.quic.core.observe.ServerCounts
 import com.ditchoom.socket.quic.core.pool.FixedPool
@@ -46,7 +48,7 @@ import com.ditchoom.socket.quic.core.ready.NativePoller
 import com.ditchoom.socket.quic.core.ready.NetStack
 import com.ditchoom.socket.quic.core.ready.Poller
 import com.ditchoom.socket.quic.core.ready.PollerOpened
-import com.ditchoom.socket.quic.core.ready.SelectorPoller
+import com.ditchoom.socket.quic.core.ready.jdkPoller
 import com.ditchoom.socket.quic.core.sched.CallerLanes
 import com.ditchoom.socket.quic.core.sched.CallerSend
 import com.ditchoom.socket.quic.core.sched.Entrant
@@ -61,18 +63,15 @@ import com.ditchoom.socket.quic.core.udp.SendBatch
 import com.ditchoom.socket.quic.core.udp.SocketBuffers
 import com.ditchoom.socket.quic.core.udp.SocketPeer
 import com.ditchoom.socket.quic.core.udp.SocketReport
-import com.ditchoom.socket.quic.core.udp.toPathKey
 import com.ditchoom.socket.quic.encodeAlpnList
-import com.ditchoom.socket.quic.toNativeSockAddr
-import com.ditchoom.socket.quic.writeNullTerminatedString
+import com.ditchoom.socket.quic.encodeToNative
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.channels.Channel
-import java.net.InetSocketAddress
 
 /** Everything [coreServe] builds, in order: memory first (so a factory without native memory fails before any socket), then the socket and the loop. */
 internal class ServerSetup(
-    private val bind: InetSocketAddress,
+    private val bind: PathKey,
     private val tls: QuicTlsConfig,
     private val options: QuicOptions,
     private val factory: BufferFactory,
@@ -107,12 +106,17 @@ internal class ServerSetup(
             )
         val loopIo =
             when (stack) {
-                is NetStack.Jdk -> LoopIo.Jdk(receiveBuffers.map { memory.jdk(it.bytes) })
+                is NetStack.Jdk ->
+                    when (val made = jdkViewsOf(stack, receiveBuffers)) {
+                        is JdkViewsMade.Made -> LoopIo.Jdk(made.views)
+                        is JdkViewsMade.NotJdkMemory ->
+                            raise(Raised.FactoryNotNative(receiveBuffers[0].bytes.owner), QuicCloseCircumstance.HandshakeFailed)
+                    }
                 is NetStack.Native -> LoopIo.Native(stack.shim, memory.native(NativeIo.RECV_RECORD * NativeIo.MAX_RECEIVE))
             }
         val poller =
             when (stack) {
-                is NetStack.Jdk -> SelectorPoller(clock, stack.scan)
+                is NetStack.Jdk -> jdkPoller(clock, stack)
                 is NetStack.Native ->
                     when (val opened = NativePoller.open(stack.shim, clock, READY_EVENTS)) {
                         is PollerOpened.Opened -> opened.poller
@@ -127,7 +131,7 @@ internal class ServerSetup(
             val sends = listOf(send.storage) + List(CALLER_LANES) { lanes[it].batch.storage }
             return serve(
                 socket,
-                socket.ioOf(memory, sends, limits.maxDatagrams, MAX_PEERS_CACHED),
+                socket.ioOf(memory, sends, limits.maxDatagrams, MAX_PEERS_CACHED) { },
                 poller,
                 quicheConfig,
                 limits,
@@ -157,11 +161,8 @@ internal class ServerSetup(
         backlog: InitialBacklog,
         scratch: DemuxScratch,
     ): CoreServer {
-        val boundAddress = socket.bound().local
-        val granted = socket.bound().granted
-        val nativeLocal = boundAddress.toNativeSockAddr(factory)
-        val local = EncodedSockAddr(nativeLocal.buffer, nativeLocal.address, nativeLocal.length)
-        val localKey = boundAddress.toPathKey()
+        val localKey = socket.local()
+        val local = localKey.encodeToNative(factory)
         val tokens =
             when (val validation = config.addressValidation) {
                 is AddressValidation.Off -> Tokens.None
@@ -226,11 +227,11 @@ internal class ServerSetup(
             }
         loop.place(Endpoint(socketIo.ref, io, sendPort, send, Route.Demux(demux), Runnable { loop.close(finished) }, readiness))
         when (driver) {
-            LoopDriver.OwnThread -> startLoopThread(loop, SERVER_THREAD)
+            LoopDriver.OwnThread -> startLoop(loop, SERVER_THREAD)
             // The caller's first pass would place the socket only after that pass's receive: place it now.
             LoopDriver.Caller -> loop.pass(clock.now())
         }
-        return CoreServer(boundAddress.port, loop, demux, counts, accepted, SocketReport(granted, boundAddress.port), stopped)
+        return CoreServer(localKey.port, loop, demux, counts, accepted, SocketReport(socket.granted(), localKey.port), stopped)
     }
 
     /** The handshake rule every connection of this server is built with. */
@@ -239,10 +240,10 @@ internal class ServerSetup(
     /** A server config with the certificate, ALPN, options, handshake rule and session ticket keys applied. */
     private fun configured(): QuicheConfig {
         val quicheConfig = api.configNew(QUIC_V1)
-        writeNullTerminatedString(tls.certChainPath, factory).use { api.configLoadCertChainFromPemFile(quicheConfig, addressOf(it)) }
-        writeNullTerminatedString(tls.privKeyPath, factory).use { api.configLoadPrivKeyFromPemFile(quicheConfig, addressOf(it)) }
+        nullTerminated(tls.certChainPath, factory).use { api.configLoadCertChainFromPemFile(quicheConfig, addressOf(it)) }
+        nullTerminated(tls.privKeyPath, factory).use { api.configLoadPrivKeyFromPemFile(quicheConfig, addressOf(it)) }
         encodeAlpnList(options.alpnProtocols, factory).use { api.configSetApplicationProtos(quicheConfig, addressOf(it), it.remaining()) }
-        applyQuicOptions(options, CommonJvmQuicConfigCalls(api, quicheConfig), QuicRole.Server)
+        applyQuicOptions(options, ApiQuicConfigCalls(api, quicheConfig), QuicRole.Server)
         handshake.applyTo(api, quicheConfig)
         api.applySessionTicketKeys(quicheConfig, tls.sessionTicketKeys, factory)
         return quicheConfig

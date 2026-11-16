@@ -7,7 +7,7 @@ import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.unwrapFully
-import com.ditchoom.socket.quic.CommonJvmQuicConfigCalls
+import com.ditchoom.socket.quic.ApiQuicConfigCalls
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QUIC_ISSUED_CONN_ID_LEN
 import com.ditchoom.socket.quic.QuicRole
@@ -80,7 +80,7 @@ class CoreServerStartupHerdTests {
         val network = MemoryNetwork(kernelBuffer)
         val server =
             coreServe(
-                bind = InetSocketAddress("127.0.0.1", 0),
+                bind = InetSocketAddress("127.0.0.1", 0).toPathKey(),
                 tls = coreTlsConfig(),
                 options = coreTestOptions,
                 factory = factory,
@@ -98,7 +98,7 @@ class CoreServerStartupHerdTests {
             coreTestOptions.alpnProtocols,
             factory,
         ).let { api.configSetApplicationProtos(config, addressOf(it), it.remaining()) }
-        applyQuicOptions(coreTestOptions, CommonJvmQuicConfigCalls(api, config), QuicRole.Client)
+        applyQuicOptions(coreTestOptions, ApiQuicConfigCalls(api, config), QuicRole.Client)
         val serverName =
             factory.allocate(10).apply {
                 writeString("localhost", Charset.UTF8)

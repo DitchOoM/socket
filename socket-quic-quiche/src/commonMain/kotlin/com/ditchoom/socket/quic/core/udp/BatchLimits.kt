@@ -8,3 +8,6 @@ internal class BatchLimits(
 
 /** Whether a [SendBatch] can take another datagram. */
 internal enum class Room { Open, Full }
+
+/** The reply addresses a JDK socket keeps converted per lane; past it a server converts again. */
+internal const val MAX_CACHED_TARGETS = 4096

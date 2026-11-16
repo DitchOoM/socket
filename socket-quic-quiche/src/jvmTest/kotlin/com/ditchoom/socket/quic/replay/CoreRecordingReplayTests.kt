@@ -25,6 +25,7 @@ import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.ReceiveBatchResult
 import com.ditchoom.socket.quic.core.udp.SendBatch
 import com.ditchoom.socket.quic.core.udp.SendBatchResult
+import com.ditchoom.socket.quic.core.udp.toPathKey
 import com.ditchoom.socket.quic.jvmMigrationSimEnv
 import com.ditchoom.socket.quic.loadQuicheApi
 import com.ditchoom.socket.quic.read
@@ -109,7 +110,7 @@ class CoreRecordingReplayTests {
         val serverRecording = CopyOnWriteArrayList<TraceEvent>()
         val server =
             coreServe(
-                bind = InetSocketAddress("127.0.0.1", 0),
+                bind = InetSocketAddress("127.0.0.1", 0).toPathKey(),
                 // The replay's modelled server serves the RSA certificate: the recorded flight must have its shape.
                 tls = coreTlsConfig(TestCertificate.Rsa2048),
                 options = coreTestOptions.copy(trace = QuicTraceCapture(TraceSink { serverRecording += it })),

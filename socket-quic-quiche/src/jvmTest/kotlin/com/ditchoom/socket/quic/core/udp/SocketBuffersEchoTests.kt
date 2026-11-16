@@ -16,10 +16,10 @@ class SocketBuffersEchoTests {
             withCoreEchoServer { server ->
                 val client = connectCore(server.port)
                 try {
-                    assertTrue(server.socket.granted.receiveBytes > 0)
-                    assertEquals(SocketBuffers.Default.receiveBytes, server.socket.granted.requested.receiveBytes)
-                    assertTrue(client.socket.granted.receiveBytes > 0)
-                    assertTrue(client.socket.granted.sendBytes > 0)
+                    assertTrue(server.socket.buffers.receiveBytes > 0)
+                    assertEquals(SocketBuffers.Default.receiveBytes, server.socket.buffers.requested.receiveBytes)
+                    assertTrue(client.socket.buffers.receiveBytes > 0)
+                    assertTrue(client.socket.buffers.sendBytes > 0)
                 } finally {
                     client.connection.closeNow(QuicError.NoError)
                 }

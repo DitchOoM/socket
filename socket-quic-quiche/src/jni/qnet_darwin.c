@@ -4,6 +4,25 @@
  * reports no QN_CAP_MULTI, and a consumer that may not use private calls (an app store build) asks for one datagram
  * per call instead. Included by qnet_udp.c on Darwin only.
  */
+#if QN_PUBLIC_SDK_ONLY
+
+static int qn_msg_x_available(void) { return 0; }
+
+/* Never called: qn_msg_x_available() answers no, so every send and receive goes one datagram per call. */
+static int64_t qn_send_x(int fd, int family, uint8_t *base, int32_t stride, uint8_t *records, int32_t count) {
+    return qn_send_one(fd, family, base, stride, records, count);
+}
+
+static int64_t qn_recv_x(int fd, uint8_t *recs, int32_t count, int32_t size) {
+    (void)fd;
+    (void)recs;
+    (void)count;
+    (void)size;
+    return 0;
+}
+
+#else
+
 #include <dlfcn.h>
 #include <pthread.h>
 
@@ -95,3 +114,5 @@ static int64_t qn_recv_x(int fd, uint8_t *recs, int32_t count, int32_t size) {
     }
     return qn_result((int32_t)r, 0, 0);
 }
+
+#endif /* QN_PUBLIC_SDK_ONLY */

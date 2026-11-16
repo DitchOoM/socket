@@ -19,8 +19,8 @@ import com.ditchoom.socket.quic.qnet.qn_udp_send
 import kotlinx.cinterop.ExperimentalForeignApi
 
 /**
- * [NetShim] on Kotlin/Native (macOS and Linux): direct calls into `qnet`, compiled into the `QNet` cinterop klib.
- * iOS has no native stack here; its client datagrams ride Network.framework.
+ * [NetShim] on Kotlin/Native: direct calls into `qnet`, compiled into the `QNet` cinterop klib on every target.
+ * On iOS it is built without Darwin's batched calls, which are outside the public SDK.
  */
 internal object CinteropNetShim : NetShim {
     override val binding: NetBinding get() = NetBinding.Cinterop

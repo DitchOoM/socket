@@ -1,15 +1,13 @@
 package com.ditchoom.socket.quic.core.ready
 
+import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.WaitResolution
 import com.ditchoom.socket.quic.loadNetShim
 import java.nio.channels.Selector
 import java.util.function.Consumer
 
-/**
- * The stack of this process: [NetStack.Native] wherever `qnet` has a poller (macOS, Linux, Android), [NetStack.Jdk]
- * on Windows. Chosen once; a stack that cannot open a socket fails that connect, it never switches.
- */
-internal val netStackOfThisRuntime: NetStack by lazy {
+/** The JVM: [NetStack.Native] wherever `qnet` has a poller (macOS, Linux, Android), [NetStack.Jdk] on Windows. */
+internal actual val netStackOfThisRuntime: NetStack by lazy {
     if (isWindows()) jdkStackOfThisRuntime() else NetStack.Native(loadNetShim(), MILLISECOND)
 }
 
@@ -25,8 +23,16 @@ internal fun jdkStackOfThisRuntime(): NetStack.Jdk {
                 it.parameterTypes[0] == Consumer::class.java
         }
     val waits = if (isWindows()) WINDOWS_TIMER_TICK else MILLISECOND
-    return NetStack.Jdk(if (consumerForm) SelectedKeys.ByConsumer else SelectedKeys.BySet, waits)
+    return NetStack.Jdk(if (consumerForm) SelectedKeys.ByConsumer else SelectedKeys.BySet, waits, JdkRuntime())
 }
+
+/** Made only here, on a JVM. */
+internal actual class JdkRuntime
+
+internal actual fun jdkPoller(
+    clock: LoopClock,
+    stack: NetStack.Jdk,
+): Poller = SelectorPoller(clock, stack.scan)
 
 private fun isWindows(): Boolean = System.getProperty("os.name").lowercase().contains("win")
 

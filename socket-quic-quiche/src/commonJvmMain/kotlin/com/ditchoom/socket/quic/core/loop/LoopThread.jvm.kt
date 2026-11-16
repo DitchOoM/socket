@@ -10,3 +10,10 @@ internal fun startLoopThread(
     thread.start()
     return thread
 }
+
+internal actual fun startLoop(
+    loop: Loop,
+    name: String,
+) {
+    startLoopThread(loop, name)
+}

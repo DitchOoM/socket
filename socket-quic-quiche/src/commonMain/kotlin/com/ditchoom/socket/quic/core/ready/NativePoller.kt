@@ -39,16 +39,15 @@ internal class NativePoller private constructor(
         socket: SocketRef,
         token: Int,
     ) {
-        when (val handle = socket.handle) {
-            is SocketHandle.Descriptor -> {
+        when (val polled = socket.pollHandle()) {
+            is PollHandle.Descriptor -> {
                 grow(token)
-                val fd = handle.current.asInt
-                fds[token] = fd
+                fds[token] = polled.fd
                 watched[token] = WATCHED
-                shim.checkedAdd(this.handle, fd, token)
+                shim.checkedAdd(handle, polled.fd, token)
             }
-            // A channel belongs to the JDK stack's selector; no stack builds one for this poller.
-            is SocketHandle.Channel -> Unit
+            // Its readiness arrives by completion, or through the JDK stack's selector: nothing to watch here.
+            is PollHandle.NotPolled -> Unit
         }
     }
 

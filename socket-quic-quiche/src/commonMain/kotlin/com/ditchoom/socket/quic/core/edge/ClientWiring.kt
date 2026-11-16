@@ -2,6 +2,7 @@ package com.ditchoom.socket.quic.core.edge
 
 import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.WritePolicy
+import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.QuicheConfig
@@ -14,7 +15,6 @@ import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.MonotonicClock
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 import kotlinx.coroutines.CoroutineScope
-import java.net.InetSocketAddress
 
 /** The quiche handle a connect made, kept with what it needs to be built on the loop. */
 internal class ClientWiring(
@@ -26,7 +26,7 @@ internal class ClientWiring(
     val running: RunningLoop,
     val socket: StackSocket,
     val wrapIo: (DatagramBatchIo) -> DatagramBatchIo,
-    val peer: InetSocketAddress,
+    val peer: PathKey,
     val readPolicy: ReadPolicy,
     val writePolicy: WritePolicy,
     val scope: CoroutineScope,
@@ -34,6 +34,9 @@ internal class ClientWiring(
     val handshake: HandshakeRule,
     /** What the connection reads the time from: the loop's own clock. */
     val clock: LoopClock = MonotonicClock,
-    /** When the loop reads the socket: polled on a loop thread, every pass on a loop a test drives on virtual time. */
+    /**
+     * When the loop reads the socket: polled on a loop thread; every pass for a socket that reports by completion, or on a
+     * loop a test drives on virtual time.
+     */
     val readiness: Readiness = Readiness.Polled,
 )

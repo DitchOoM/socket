@@ -14,6 +14,7 @@ import com.ditchoom.socket.quic.core.edge.coreServe
 import com.ditchoom.socket.quic.core.edge.coreTestOptions
 import com.ditchoom.socket.quic.core.edge.coreTlsConfig
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
+import com.ditchoom.socket.quic.core.udp.toPathKey
 import com.ditchoom.socket.quic.loadQuicheApi
 import com.ditchoom.socket.quic.read
 import kotlinx.coroutines.CancellationException
@@ -43,7 +44,7 @@ internal suspend fun withCoreEchoServer(
 ) {
     val server =
         coreServe(
-            bind = bind,
+            bind = bind.toPathKey(),
             tls = coreTlsConfig(),
             options = coreTestOptions,
             factory = factory,

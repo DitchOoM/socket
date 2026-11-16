@@ -104,7 +104,7 @@ internal suspend fun buildJvmQuicConnection(
             api.configSetApplicationProtos(config, alpnAddr, alpnBuf.remaining())
         }
 
-        applyQuicOptions(quicOptions, CommonJvmQuicConfigCalls(api, config), QuicRole.Client)
+        applyQuicOptions(quicOptions, ApiQuicConfigCalls(api, config), QuicRole.Client)
 
         // CA trust anchors. Two sources, in priority order:
         //  1. Caller-pinned anchors: load exactly the supplied PEM bundle so non-Apple targets
@@ -342,63 +342,6 @@ internal suspend fun buildJvmQuicConnection(
     }
 }
 
-/** Adapts [QuicheApi] to the platform-neutral [QuicConfigCalls] interface. */
-internal class CommonJvmQuicConfigCalls(
-    private val api: QuicheApi,
-    private val cfg: QuicheConfig,
-) : QuicConfigCalls {
-    override fun setMaxIdleTimeout(ms: Long) = api.configSetMaxIdleTimeout(cfg, ms)
-
-    override fun setMaxRecvUdpPayloadSize(size: Long) = api.configSetMaxRecvUdpPayloadSize(cfg, size)
-
-    override fun setMaxSendUdpPayloadSize(size: Long) = api.configSetMaxSendUdpPayloadSize(cfg, size)
-
-    override fun setInitialMaxData(v: Long) = api.configSetInitialMaxData(cfg, v)
-
-    override fun setInitialMaxStreamDataBidiLocal(v: Long) = api.configSetInitialMaxStreamDataBidiLocal(cfg, v)
-
-    override fun setInitialMaxStreamDataBidiRemote(v: Long) = api.configSetInitialMaxStreamDataBidiRemote(cfg, v)
-
-    override fun setInitialMaxStreamDataUni(v: Long) = api.configSetInitialMaxStreamDataUni(cfg, v)
-
-    override fun setInitialMaxStreamsBidi(v: Long) = api.configSetInitialMaxStreamsBidi(cfg, v)
-
-    override fun setInitialMaxStreamsUni(v: Long) = api.configSetInitialMaxStreamsUni(cfg, v)
-
-    override fun setMaxConnectionWindow(v: Long) = api.configSetMaxConnectionWindow(cfg, v)
-
-    override fun setMaxStreamWindow(v: Long) = api.configSetMaxStreamWindow(cfg, v)
-
-    override fun setDisableActiveMigration(v: Boolean) = api.configSetDisableActiveMigration(cfg, v)
-
-    override fun setActiveConnectionIdLimit(v: Long) = api.configSetActiveConnectionIdLimit(cfg, v)
-
-    override fun verifyPeer(v: Boolean) = api.configVerifyPeer(cfg, v)
-
-    override fun setCcAlgorithm(algo: Int) = api.configSetCcAlgorithm(cfg, algo)
-
-    override fun enableHystart(v: Boolean) = api.configEnableHystart(cfg, v)
-
-    override fun setInitialCongestionWindowPackets(packets: Long) = api.configSetInitialCongestionWindowPackets(cfg, packets)
-
-    override fun enablePacing(v: Boolean) = api.configEnablePacing(cfg, v)
-
-    override fun setMaxPacingRate(v: Long) = api.configSetMaxPacingRate(cfg, v)
-
-    override fun discoverPmtu(v: Boolean) = api.configDiscoverPmtu(cfg, v)
-
-    override fun enableEarlyData() = api.configEnableEarlyData(cfg)
-
-    override fun grease(v: Boolean) = api.configGrease(cfg, v)
-
-    override fun enableDgram(
-        recvQueueLen: Long,
-        sendQueueLen: Long,
-    ) = api.configEnableDgram(cfg, true, recvQueueLen, sendQueueLen)
-
-    override fun logKeys() = api.configLogKeys(cfg)
-}
-
 /**
  * Write the supplied CA PEM blocks to a single temp bundle file and return its path.
  *
@@ -462,7 +405,7 @@ private fun encodeCertificateToPem(cert: java.security.cert.X509Certificate): St
  * the JVM's or Android's default store. quiche bundles BoringSSL with no default verify paths and loads anchors
  * only from a file, so the bundle goes through a temporary file.
  */
-internal fun loadTrustAnchors(
+internal actual fun loadTrustAnchors(
     api: QuicheApi,
     config: QuicheConfig,
     quicOptions: QuicOptions,

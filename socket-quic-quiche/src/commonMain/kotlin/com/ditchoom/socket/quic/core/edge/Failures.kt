@@ -4,6 +4,7 @@ package com.ditchoom.socket.quic.core.edge
 
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.socket.quic.NativeSocketRefusal
+import com.ditchoom.socket.quic.NetworkRefusal
 import com.ditchoom.socket.quic.QuicAppErrorCode
 import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicCloseException
@@ -94,6 +95,11 @@ internal sealed interface Raised : OpFailure {
     class SocketRefused(
         val refusal: NativeSocketRefusal,
     ) : Raised
+
+    /** Network.framework failed the client's connection before it was ready. */
+    class NetworkRefused(
+        val refusal: NetworkRefusal,
+    ) : Raised
 }
 
 /** The one place the edge hands a caller a failure: [failure] resumes this continuation as an exception. */
@@ -168,6 +174,7 @@ private fun exceptionOf(
         is Raised.RouteUnresolved -> UnresolvedRouteSourceException(failure.reason)
         is Raised.LoopsClosed -> CoreLoopsClosed()
         is Raised.SocketRefused -> failure.refusal
+        is Raised.NetworkRefused -> failure.refusal
     }
 
 /** The close exception for [end]: its reason, the circumstance it names, and its thrown object for the stack trace. */

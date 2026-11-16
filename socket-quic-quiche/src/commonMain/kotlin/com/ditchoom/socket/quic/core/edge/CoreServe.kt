@@ -5,6 +5,7 @@ package com.ditchoom.socket.quic.core.edge
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.WritePolicy
+import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicTlsConfig
 import com.ditchoom.socket.quic.QuicheApi
@@ -26,11 +27,11 @@ import com.ditchoom.socket.quic.core.udp.SocketBuffers
 import com.ditchoom.socket.quic.core.udp.SocketReport
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.IO
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.consumeAsFlow
 import kotlinx.coroutines.withContext
-import java.net.InetSocketAddress
 import kotlin.concurrent.atomics.AtomicReference
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 
@@ -109,7 +110,7 @@ private class ShutServer(
  * sends and receives.
  */
 internal suspend fun coreServe(
-    bind: InetSocketAddress,
+    bind: PathKey,
     tls: QuicTlsConfig,
     options: QuicOptions,
     factory: BufferFactory,

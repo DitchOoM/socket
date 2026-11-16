@@ -3,34 +3,29 @@ package com.ditchoom.socket.quic.core.edge
 import com.ditchoom.socket.quic.NativeSocketRefusal
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicCloseCircumstance
-import com.ditchoom.socket.quic.RouteProbeFailure
 import com.ditchoom.socket.quic.UdpBatching
 import com.ditchoom.socket.quic.core.loop.LoopIo
+import com.ditchoom.socket.quic.core.loop.Readiness
 import com.ditchoom.socket.quic.core.ready.SocketRef
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
+import com.ditchoom.socket.quic.core.udp.Granted
 import com.ditchoom.socket.quic.core.udp.GrantedBuffers
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 import com.ditchoom.socket.quic.core.udp.NativeIo
 import com.ditchoom.socket.quic.core.udp.NativeOpened
 import com.ditchoom.socket.quic.core.udp.NativeSocket
-import com.ditchoom.socket.quic.core.udp.NioOneByOne
 import com.ditchoom.socket.quic.core.udp.SocketBuffers
 import com.ditchoom.socket.quic.core.udp.SocketPeer
-import com.ditchoom.socket.quic.core.udp.toPathKey
-import com.ditchoom.socket.quic.toInetSocketAddress
-import java.net.InetSocketAddress
-import java.nio.channels.DatagramChannel
-import java.util.function.IntSupplier
-import java.util.function.Supplier
+import com.ditchoom.socket.quic.isWildcard
 
 /**
  * A socket opened for a loop, on that loop's stack: a JDK channel beside the loop's receive views, or a `qnet` socket
- * beside the loop's receive records. Each variant carries the loop io of its own stack, so a socket of one stack can
- * never be put on a loop of the other.
+ * beside the loop's receive records, or a client's Network.framework connection, which reports its own readiness.
+ * Each variant carries what only its own stack has, so a socket of one stack can never be put on a loop of another.
  */
 internal sealed interface StackSocket {
     class Jdk(
-        val channel: DatagramChannel,
+        val socket: JdkSocket,
         val loop: LoopIo.Jdk,
         val bound: SocketBound,
     ) : StackSocket
@@ -40,18 +35,39 @@ internal sealed interface StackSocket {
         val loop: LoopIo.Native,
         val bound: SocketBound,
     ) : StackSocket
+
+    class Network(
+        val socket: NwSocket,
+        /** The local address the connection's path leaves from. */
+        val local: PathKey,
+    ) : StackSocket
 }
 
 /** Where a socket was bound, and the buffer sizes the operating system granted it. */
 internal class SocketBound(
-    val local: InetSocketAddress,
+    val local: PathKey,
     val granted: GrantedBuffers,
 )
 
-internal fun StackSocket.bound(): SocketBound =
+internal fun StackSocket.local(): PathKey =
     when (this) {
-        is StackSocket.Jdk -> bound
-        is StackSocket.Native -> bound
+        is StackSocket.Jdk -> bound.local
+        is StackSocket.Native -> bound.local
+        is StackSocket.Network -> local
+    }
+
+internal fun StackSocket.granted(): Granted =
+    when (this) {
+        is StackSocket.Jdk -> Granted.Reported(bound.granted)
+        is StackSocket.Native -> Granted.Reported(bound.granted)
+        is StackSocket.Network -> Granted.NotReported
+    }
+
+/** When the loop reads this socket: when its poller says so, or every pass for one that reports by completion. */
+internal fun StackSocket.readiness(): Readiness =
+    when (this) {
+        is StackSocket.Jdk, is StackSocket.Native -> Readiness.Polled
+        is StackSocket.Network -> Readiness.EveryPass
     }
 
 /** A socket's batch io and the handle its loop's poller watches. */
@@ -61,25 +77,25 @@ internal class SocketIo(
 )
 
 /**
- * The io of [socket] over the send batches in [sends] (the loop's batch first, then each caller lane's, by lane), as
- * [memory] holds them. A server's socket keeps up to [maxPeersCached] reply addresses on the JDK stack.
+ * The io of [this] socket over the send batches in [sends] (the loop's batch first, then each caller lane's, by lane),
+ * as [memory] holds them. A server's socket keeps up to [maxPeersCached] reply addresses on the JDK stack. A socket
+ * that reports by completion calls [wake] when the loop has news to read.
  */
 internal fun StackSocket.ioOf(
     memory: EdgeMemory,
     sends: List<NativeBytes>,
     maxDatagrams: Int,
     maxPeersCached: Int,
+    wake: () -> Unit,
 ): SocketIo =
     when (this) {
-        is StackSocket.Jdk -> {
-            val nio = NioOneByOne(channel, sends.map { memory.jdk(it) }, loop.receiveViews, maxPeersCached)
-            SocketIo(nio, SocketRef(Supplier { nio.channel }))
-        }
+        is StackSocket.Jdk -> jdkSocketIo(this, sends, maxPeersCached)
         is StackSocket.Native -> {
             val records = List(sends.size) { memory.native(NativeIo.SEND_RECORD * maxDatagrams) }
             val native = NativeIo(loop.shim, socket, records, loop.receiveRecords)
-            SocketIo(native, SocketRef(IntSupplier { native.descriptor() }))
+            SocketIo(native, descriptorRef(native))
         }
+        is StackSocket.Network -> nwSocketIo(this, wake)
     }
 
 /**
@@ -90,32 +106,14 @@ internal fun StackSocket.ioOf(
 internal fun openStackSocket(
     io: LoopIo,
     memory: EdgeMemory,
-    bind: InetSocketAddress,
+    bind: PathKey,
     peer: SocketPeer,
     buffers: SocketBuffers,
     ceiling: UdpBatching,
     maxDatagrams: Int,
 ): StackSocket =
     when (io) {
-        is LoopIo.Jdk -> {
-            val channel = DatagramChannel.open()
-            var opened = false
-            try {
-                val granted = buffers.applyTo(channel)
-                channel.bind(bind)
-                when (peer) {
-                    is SocketPeer.Connected -> channel.connect(peer.peer.toInetSocketAddress() ?: unresolved())
-                    is SocketPeer.Unconnected -> Unit
-                }
-                channel.configureBlocking(false)
-                val local = channel.localAddress
-                if (local !is InetSocketAddress) unresolved()
-                opened = true
-                StackSocket.Jdk(channel, io, SocketBound(local, granted))
-            } finally {
-                if (!opened) channel.close()
-            }
-        }
+        is LoopIo.Jdk -> openJdkSocket(io, bind, peer, buffers)
         is LoopIo.Native ->
             when (
                 val opened =
@@ -132,8 +130,11 @@ internal fun openStackSocket(
             ) {
                 is NativeOpened.Opened -> {
                     val socket = opened.socket
-                    val local = socket.local.toInetSocketAddress() ?: unresolved()
-                    StackSocket.Native(socket, io, SocketBound(local, GrantedBuffers(buffers, socket.grantedReceive, socket.grantedSend)))
+                    StackSocket.Native(
+                        socket,
+                        io,
+                        SocketBound(socket.local, GrantedBuffers(buffers, socket.grantedReceive, socket.grantedSend)),
+                    )
                 }
                 is NativeOpened.Refused ->
                     raise(Raised.SocketRefused(NativeSocketRefusal(opened.refusal)), QuicCloseCircumstance.HandshakeFailed)
@@ -145,13 +146,38 @@ internal fun openStackSocket(
  * an IPv6 wildcard socket that also takes IPv4.
  */
 private fun bindKeyOf(
-    bind: InetSocketAddress,
+    bind: PathKey,
     peer: SocketPeer,
 ): PathKey =
     when (peer) {
-        is SocketPeer.Unconnected -> if (bind.address.isAnyLocalAddress) PathKey(6, bind.port, 0L, 0L) else bind.toPathKey()
-        is SocketPeer.Connected -> bind.toPathKey()
+        is SocketPeer.Unconnected -> if (bind.isWildcard()) PathKey(6, bind.port, 0L, 0L) else bind
+        is SocketPeer.Connected -> bind
     }
 
-private fun unresolved(): Nothing =
-    raise(Raised.RouteUnresolved(RouteProbeFailure.SourceAddressUnknown), QuicCloseCircumstance.HandshakeFailed)
+/** A JDK channel and the loop that reads it: made only on a JVM. */
+internal expect class JdkSocket
+
+/** Opens a JDK channel for a loop on the JDK stack. */
+internal expect fun openJdkSocket(
+    io: LoopIo.Jdk,
+    bind: PathKey,
+    peer: SocketPeer,
+    buffers: SocketBuffers,
+): StackSocket.Jdk
+
+internal expect fun jdkSocketIo(
+    socket: StackSocket.Jdk,
+    sends: List<NativeBytes>,
+    maxPeersCached: Int,
+): SocketIo
+
+/** The handle the poller watches for a native socket: its descriptor now, read again after a reopen. */
+internal expect fun descriptorRef(io: NativeIo): SocketRef
+
+/** A client's Network.framework connection: made only on Apple's Kotlin/Native targets. */
+internal expect class NwSocket
+
+internal expect fun nwSocketIo(
+    socket: StackSocket.Network,
+    wake: () -> Unit,
+): SocketIo

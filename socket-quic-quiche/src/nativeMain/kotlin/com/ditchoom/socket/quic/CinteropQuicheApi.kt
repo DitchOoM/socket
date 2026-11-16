@@ -24,12 +24,12 @@ import com.ditchoom.socket.quic.quiche.quiche_config_set_cc_algorithm
 import com.ditchoom.socket.quic.quiche.quiche_config_set_disable_active_migration
 import com.ditchoom.socket.quic.quiche.quiche_config_set_initial_congestion_window_packets
 import com.ditchoom.socket.quic.quiche.quiche_config_set_initial_max_data
-import com.ditchoom.socket.quic.quiche.quiche_config_set_initial_rtt
 import com.ditchoom.socket.quic.quiche.quiche_config_set_initial_max_stream_data_bidi_local
 import com.ditchoom.socket.quic.quiche.quiche_config_set_initial_max_stream_data_bidi_remote
 import com.ditchoom.socket.quic.quiche.quiche_config_set_initial_max_stream_data_uni
 import com.ditchoom.socket.quic.quiche.quiche_config_set_initial_max_streams_bidi
 import com.ditchoom.socket.quic.quiche.quiche_config_set_initial_max_streams_uni
+import com.ditchoom.socket.quic.quiche.quiche_config_set_initial_rtt
 import com.ditchoom.socket.quic.quiche.quiche_config_set_max_connection_window
 import com.ditchoom.socket.quic.quiche.quiche_config_set_max_idle_timeout
 import com.ditchoom.socket.quic.quiche.quiche_config_set_max_pacing_rate
@@ -69,7 +69,6 @@ import com.ditchoom.socket.quic.quiche.quiche_conn_peer_streams_left_uni
 import com.ditchoom.socket.quic.quiche.quiche_conn_peer_transport_params
 import com.ditchoom.socket.quic.quiche.quiche_conn_probe_now
 import com.ditchoom.socket.quic.quiche.quiche_conn_probe_path
-import com.ditchoom.socket.quic.quiche.quiche_conn_set_handshake_pto_ceiling
 import com.ditchoom.socket.quic.quiche.quiche_conn_readable
 import com.ditchoom.socket.quic.quiche.quiche_conn_recv
 import com.ditchoom.socket.quic.quiche.quiche_conn_recv_gaps
@@ -80,6 +79,7 @@ import com.ditchoom.socket.quic.quiche.quiche_conn_scids_left
 import com.ditchoom.socket.quic.quiche.quiche_conn_send
 import com.ditchoom.socket.quic.quiche.quiche_conn_send_ack_eliciting
 import com.ditchoom.socket.quic.quiche.quiche_conn_session
+import com.ditchoom.socket.quic.quiche.quiche_conn_set_handshake_pto_ceiling
 import com.ditchoom.socket.quic.quiche.quiche_conn_set_keylog_path
 import com.ditchoom.socket.quic.quiche.quiche_conn_set_qlog_path
 import com.ditchoom.socket.quic.quiche.quiche_conn_set_session

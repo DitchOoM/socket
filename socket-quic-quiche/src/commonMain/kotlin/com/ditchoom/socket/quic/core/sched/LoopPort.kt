@@ -41,6 +41,7 @@ internal class LoopPort(
     private val deadlines = DeadlineQueue()
     private val inbox = WorkInbox<LoopWork>()
     private val sleep = AtomicInt(AWAKE)
+    private val poked = AtomicInt(NOT_POKED)
     private val sleepsUntil = AtomicLong(0L)
     private val runner: (LoopWork) -> Unit = { it.run(this) }
 
@@ -50,6 +51,15 @@ internal class LoopPort(
             is Shut -> work.gone(pushed.end)
             is Pushed.Open -> wakeIfAsleep()
         }
+    }
+
+    /**
+     * Any thread. The loop has news that is in no queue of this port (a socket's completion arrived): it runs another
+     * pass before it sleeps, and is woken if it sleeps already. Allocates nothing; many pokes before a pass are one.
+     */
+    fun poke() {
+        poked.store(POKED)
+        wakeIfAsleep()
     }
 
     /** Any thread. Arms [action] for [due]; the returned node disarms it. */
@@ -87,7 +97,7 @@ internal class LoopPort(
     fun nextDue(now: Nanos): NextDue = deadlines.nextDue(now.value)
 
     /**
-     * Loop thread. Publishes the time the loop sleeps until, then checks once more for work and deadlines that
+     * Loop thread. Publishes the time the loop sleeps until, then checks once more for work, deadlines and pokes that
      * arrived before the sleep was visible; one that arrives after sees the sleep and wakes the loop.
      */
     fun beginSleep(next: NextDue): SleepPlan {
@@ -98,7 +108,8 @@ internal class LoopPort(
                 sleep.store(ASLEEP_UNTIL)
             },
         )
-        return if (inbox.looksEmpty() && !deadlines.hasInbox()) SleepPlan.Await else SleepPlan.Skip
+        val news = poked.exchange(NOT_POKED) == POKED
+        return if (inbox.looksEmpty() && !deadlines.hasInbox() && !news) SleepPlan.Await else SleepPlan.Skip
     }
 
     /** Loop thread, after the poller returned or the sleep was skipped. */
@@ -120,3 +131,5 @@ private const val AWAKE = 0
 private const val ASLEEP_FOR_EVER = 1
 private const val ASLEEP_UNTIL = 2
 private const val WOKEN = 3
+private const val NOT_POKED = 0
+private const val POKED = 1

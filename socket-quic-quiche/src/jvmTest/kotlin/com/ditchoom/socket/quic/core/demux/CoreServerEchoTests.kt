@@ -5,6 +5,7 @@ import com.ditchoom.socket.quic.core.edge.connectCore
 import com.ditchoom.socket.quic.core.edge.coreTestOptions
 import com.ditchoom.socket.quic.core.edge.echoOver
 import com.ditchoom.socket.quic.core.loop.LoopSet
+import com.ditchoom.socket.quic.core.udp.buffers
 import com.ditchoom.socket.quic.withQuicConnection
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -123,7 +124,7 @@ class CoreServerEchoTests {
                             "droppedUnknown=${counts.droppedUnknown} loopPasses=${server.loop.counts.passes} " +
                             "datagramsIn=${server.loop.counts.datagramsIn} datagramsOut=${server.loop.counts.datagramsOut} " +
                             "receiveFailures=${server.loop.counts.receiveFailures} sendRefusals=${server.loop.counts.sendRefusals} " +
-                            "socket=${server.socket.granted.receiveBytes} B receive buffer, drops=${server.socket.drops()}",
+                            "socket=${server.socket.buffers.receiveBytes} B receive buffer, drops=${server.socket.drops()}",
                         failed,
                     )
                 }

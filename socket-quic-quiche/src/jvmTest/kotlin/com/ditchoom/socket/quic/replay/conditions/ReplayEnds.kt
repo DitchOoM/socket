@@ -5,7 +5,7 @@ import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.flow.WritePolicy
-import com.ditchoom.socket.quic.CommonJvmQuicConfigCalls
+import com.ditchoom.socket.quic.ApiQuicConfigCalls
 import com.ditchoom.socket.quic.EncodedSockAddr
 import com.ditchoom.socket.quic.LinkClass
 import com.ditchoom.socket.quic.PathKey
@@ -24,6 +24,7 @@ import com.ditchoom.socket.quic.core.edge.ClientWiring
 import com.ditchoom.socket.quic.core.edge.CoreConnection
 import com.ditchoom.socket.quic.core.edge.CoreServer
 import com.ditchoom.socket.quic.core.edge.EdgeMemory
+import com.ditchoom.socket.quic.core.edge.JdkSocket
 import com.ditchoom.socket.quic.core.edge.LoopDriver
 import com.ditchoom.socket.quic.core.edge.SocketBound
 import com.ditchoom.socket.quic.core.edge.StackSocket
@@ -32,13 +33,16 @@ import com.ditchoom.socket.quic.core.edge.addressOf
 import com.ditchoom.socket.quic.core.edge.clientHandshakeRule
 import com.ditchoom.socket.quic.core.edge.coreServe
 import com.ditchoom.socket.quic.core.edge.coreTlsConfig
+import com.ditchoom.socket.quic.core.loop.JdkViewsMade
 import com.ditchoom.socket.quic.core.loop.Loop
 import com.ditchoom.socket.quic.core.loop.LoopIds
 import com.ditchoom.socket.quic.core.loop.LoopIo
 import com.ditchoom.socket.quic.core.loop.Readiness
 import com.ditchoom.socket.quic.core.loop.RunningLoop
+import com.ditchoom.socket.quic.core.loop.jdkViewsOf
 import com.ditchoom.socket.quic.core.pool.FixedPool
 import com.ditchoom.socket.quic.core.pool.MemoryHold
+import com.ditchoom.socket.quic.core.ready.jdkStackOfThisRuntime
 import com.ditchoom.socket.quic.core.testing.FakePoller
 import com.ditchoom.socket.quic.core.testing.VirtualClock
 import com.ditchoom.socket.quic.core.time.WaitResolution
@@ -90,7 +94,7 @@ internal suspend fun replayServer(
     clock: VirtualClock,
 ): CoreServer =
     coreServe(
-        bind = InetSocketAddress(LOCALHOST, 0),
+        bind = InetSocketAddress(LOCALHOST, 0).toPathKey(),
         tls = coreTlsConfig(),
         options = options,
         factory = factory,
@@ -135,7 +139,7 @@ internal fun replayClient(
     val local = channel.localAddress as InetSocketAddress
     val config = api.configNew(QUIC_V1)
     encodeAlpnList(options.alpnProtocols, factory).let { api.configSetApplicationProtos(config, addressOf(it), it.remaining()) }
-    applyQuicOptions(options, CommonJvmQuicConfigCalls(api, config), QuicRole.Client)
+    applyQuicOptions(options, ApiQuicConfigCalls(api, config), QuicRole.Client)
     val handshake = clientHandshakeRule(options, link)
     handshake.applyTo(api, config)
     val peer = encoded(peerInet, factory)
@@ -163,7 +167,7 @@ internal fun replayClient(
     name.freeNativeMemory()
     scid.freeNativeMemory()
     val scope = CoroutineScope(SupervisorJob())
-    val loopIo = LoopIo.Jdk(buffers.map { memory.jdk(it.bytes) })
+    val loopIo = LoopIo.Jdk((jdkViewsOf(jdkStackOfThisRuntime(), buffers) as JdkViewsMade.Made).views)
     val wiring =
         ClientWiring(
             api,
@@ -178,9 +182,9 @@ internal fun replayClient(
                 MemoryHold(Runnable { }),
                 WaitResolution(1_000_000L),
             ),
-            StackSocket.Jdk(channel, loopIo, SocketBound(local, GrantedBuffers(SocketBuffers.Default, 0, 0))),
+            StackSocket.Jdk(JdkSocket(channel), loopIo, SocketBound(local.toPathKey(), GrantedBuffers(SocketBuffers.Default, 0, 0))),
             { io },
-            peerInet,
+            peerInet.toPathKey(),
             ReadPolicy.Bounded(REPLAY_DEADLINE),
             WritePolicy.Bounded(REPLAY_DEADLINE),
             scope,

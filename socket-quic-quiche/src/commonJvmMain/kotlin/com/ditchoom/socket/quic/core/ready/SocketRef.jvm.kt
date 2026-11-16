@@ -28,3 +28,9 @@ internal sealed interface SocketHandle {
         val current: IntSupplier,
     ) : SocketHandle
 }
+
+internal actual fun SocketRef.pollHandle(): PollHandle =
+    when (val socket = handle) {
+        is SocketHandle.Descriptor -> PollHandle.Descriptor(socket.current.asInt)
+        is SocketHandle.Channel -> PollHandle.NotPolled
+    }

@@ -7,7 +7,6 @@ import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.flow.WritePolicy
-import com.ditchoom.socket.quic.EncodedSockAddr
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicConnectionIdentity
 import com.ditchoom.socket.quic.QuicConnectionState
@@ -19,8 +18,8 @@ import com.ditchoom.socket.quic.core.demux.ConnBuild
 import com.ditchoom.socket.quic.core.demux.Opened
 import com.ditchoom.socket.quic.core.demux.PeerSockAddr
 import com.ditchoom.socket.quic.core.demux.ServerHooks
-import com.ditchoom.socket.quic.toInetSocketAddress
-import com.ditchoom.socket.quic.toNativeSockAddr
+import com.ditchoom.socket.quic.encodeToNative
+import com.ditchoom.socket.quic.toSocketAddress
 import com.ditchoom.socket.quic.traceRecorderFor
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Runnable
@@ -29,7 +28,6 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.SendChannel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import java.net.InetSocketAddress
 
 /**
  * The caller-facing side of the connections a server accepts: each gets its own trace capture, the same
@@ -47,9 +45,8 @@ internal class ServerEdge(
 
     /** The sender's address as quiche reads it, in memory the accepted connection frees. */
     private fun peerAddress(key: PathKey): PeerSockAddr {
-        val inet = key.toInetSocketAddress() ?: return PeerSockAddr.Unencodable
-        val native = inet.toNativeSockAddr(factory)
-        return PeerSockAddr.Encoded(EncodedSockAddr(native.buffer, native.address, native.length))
+        if (key.family != IPV4 && key.family != IPV6) return PeerSockAddr.Unencodable
+        return PeerSockAddr.Encoded(key.encodeToNative(factory))
     }
 
     private fun open(
@@ -61,13 +58,12 @@ internal class ServerEdge(
         val conn = build.build(edge, capture)
         val scope = CoroutineScope(SupervisorJob())
         val id = hex(peer.scid0) + hex(peer.scid1)
-        val inet = peer.peer.toInetSocketAddress() ?: UNKNOWN_PEER
         val connection =
             CoreConnection(
                 conn,
                 edge,
                 factory,
-                SocketAddress.ofLiteral(inet.address.hostAddress.substringBefore('%'), inet.port),
+                remoteOf(peer.peer),
                 QuicConnectionIdentity(QuicSessionId(id), QuicWireConnectionId.Known(id)),
                 readPolicy,
                 writePolicy,
@@ -92,6 +88,11 @@ internal class ServerEdge(
         const val HEX_PER_WORD = 16
         const val BITS_PER_HEX = 4
         const val HEX_MASK = 0xFL
-        val UNKNOWN_PEER = InetSocketAddress(0)
+        const val IPV4 = 4
+        const val IPV6 = 6
     }
+
+    /** The peer as a caller reads it; a key that decoded to no family reads as the IPv4 wildcard. */
+    private fun remoteOf(key: PathKey): SocketAddress =
+        if (key.family == IPV4 || key.family == IPV6) key.toSocketAddress() else SocketAddress.ofLiteral("0.0.0.0", key.port)
 }

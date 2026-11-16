@@ -3,7 +3,6 @@
 package com.ditchoom.socket.quic.core.loop
 
 import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.socket.quic.NetShim
 import com.ditchoom.socket.quic.SocketRefusal
 import com.ditchoom.socket.quic.core.conn.FlightArena
 import com.ditchoom.socket.quic.core.conn.LoopMemory
@@ -13,38 +12,22 @@ import com.ditchoom.socket.quic.core.pool.MemoryHold
 import com.ditchoom.socket.quic.core.ready.NativePoller
 import com.ditchoom.socket.quic.core.ready.NetStack
 import com.ditchoom.socket.quic.core.ready.PollerOpened
-import com.ditchoom.socket.quic.core.ready.SelectorPoller
+import com.ditchoom.socket.quic.core.ready.jdkPoller
 import com.ditchoom.socket.quic.core.ready.netStackOfThisRuntime
 import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.MonotonicClock
 import com.ditchoom.socket.quic.core.time.WaitResolution
 import com.ditchoom.socket.quic.core.udp.Addressed
 import com.ditchoom.socket.quic.core.udp.BatchLimits
-import com.ditchoom.socket.quic.core.udp.JdkBacked
-import com.ditchoom.socket.quic.core.udp.JdkBytes
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 import com.ditchoom.socket.quic.core.udp.NativeIo
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.ReceiveBuffer
 import kotlinx.coroutines.Runnable
-import java.util.concurrent.atomic.AtomicReferenceArray
+import kotlin.concurrent.atomics.AtomicArray
 import kotlin.concurrent.atomics.AtomicInt
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.concurrent.atomics.fetchAndIncrement
-
-/** What a socket on a loop receives through, by the loop's stack. */
-internal sealed interface LoopIo {
-    /** One view per receive buffer of the loop, by the buffer's index: what a JDK socket on it reads into. */
-    class Jdk(
-        val receiveViews: List<JdkBytes>,
-    ) : LoopIo
-
-    /** The loop's receive records, which a native socket on it hands `qnet` with its buffers' addresses. */
-    class Native(
-        val shim: NetShim,
-        val receiveRecords: NativeBytes,
-    ) : LoopIo
-}
 
 /** A loop on its thread, with what its sockets receive through and the memory its connections share. */
 internal class RunningLoop(
@@ -86,8 +69,8 @@ private sealed interface Slot {
 
 /**
  * [size] client loops, each started on its first connection. A new connection goes to the loop with the fewest; a loop
- * that stopped is replaced by a fresh one. A loop with no connection stays parked in its poller: it is a daemon thread
- * and there are at most [size] of them.
+ * that stopped is replaced by a fresh one. A loop with no connection stays parked in its poller: there are at most
+ * [size] of them.
  */
 @Published
 internal class LoopSet(
@@ -98,7 +81,7 @@ internal class LoopSet(
     /** The stack every loop of this set and every socket on them use. */
     val stack: NetStack = netStackOfThisRuntime,
 ) {
-    private val slots = AtomicReferenceArray<Slot>(Array(size) { Slot.Unstarted })
+    private val slots = AtomicArray(Array<Slot>(size) { Slot.Unstarted })
 
     /** Any thread: the loop for the next connection, counted against it, started if it had not started. */
     fun place(factory: BufferFactory): Placement {
@@ -106,7 +89,7 @@ internal class LoopSet(
         var bestCount = 0L
         for (i in 0 until size) {
             val count =
-                when (val slot = slots.get(i)) {
+                when (val slot = slots.loadAt(i)) {
                     is Slot.Unstarted -> 0L
                     is Slot.Running ->
                         slot.running.loop.connections
@@ -118,7 +101,7 @@ internal class LoopSet(
                 bestCount = count
             }
         }
-        return when (val slot = slots.get(best)) {
+        return when (val slot = slots.loadAt(best)) {
             is Slot.Closed -> Placement.SetClosed
             is Slot.Unstarted -> start(best, slot, factory)
             is Slot.Running ->
@@ -132,7 +115,7 @@ internal class LoopSet(
                         Placement.Placed(slot.running)
                     }
                     LoopLife.Stopped -> {
-                        slots.compareAndSet(best, slot, Slot.Unstarted)
+                        slots.compareAndSetAt(best, slot, Slot.Unstarted)
                         place(factory)
                     }
                 }
@@ -142,7 +125,7 @@ internal class LoopSet(
     /** Any thread: stops every loop; their connections end, and the set places no more. */
     fun close() {
         for (i in 0 until size) {
-            when (val slot = slots.getAndSet(i, Slot.Closed)) {
+            when (val slot = slots.exchangeAt(i, Slot.Closed)) {
                 is Slot.Running -> slot.running.loop.close(Runnable { })
                 is Slot.Unstarted, is Slot.Closed -> Unit
             }
@@ -164,16 +147,11 @@ internal class LoopSet(
         }
         val io =
             when (stack) {
-                is NetStack.Jdk -> {
-                    val views = ArrayList<JdkBytes>(limits.maxDatagrams)
-                    for (buffer in buffers) {
-                        when (val view = JdkBytes.of(buffer.bytes)) {
-                            is JdkBacked.Backed -> views.add(view.bytes)
-                            is JdkBacked.NotJdkBacked -> return freed(buffers, emptyList(), Placement.NotJdkMemory)
-                        }
+                is NetStack.Jdk ->
+                    when (val made = jdkViewsOf(stack, buffers)) {
+                        is JdkViewsMade.Made -> LoopIo.Jdk(made.views)
+                        is JdkViewsMade.NotJdkMemory -> return freed(buffers, emptyList(), Placement.NotJdkMemory)
                     }
-                    LoopIo.Jdk(views)
-                }
                 is NetStack.Native ->
                     when (val a = NativeBytes.of(factory.allocate(NativeIo.RECV_RECORD * NativeIo.MAX_RECEIVE))) {
                         is Addressed.Native -> LoopIo.Native(stack.shim, a.bytes)
@@ -182,7 +160,7 @@ internal class LoopSet(
             }
         val poller =
             when (stack) {
-                is NetStack.Jdk -> SelectorPoller(clock, stack.scan)
+                is NetStack.Jdk -> jdkPoller(clock, stack)
                 is NetStack.Native ->
                     when (val opened = NativePoller.open(stack.shim, clock, READY_EVENTS)) {
                         is PollerOpened.Opened -> opened.poller
@@ -214,13 +192,13 @@ internal class LoopSet(
                     },
             )
         val running = RunningLoop(loop, io, shared, hold, waitsOf(stack))
-        if (!slots.compareAndSet(index, seen, Slot.Running(running))) {
+        if (!slots.compareAndSetAt(index, seen, Slot.Running(running))) {
             loop.close(Runnable { })
-            startLoopThread(loop, name)
+            startLoop(loop, name)
             return place(factory)
         }
         loop.connections.increment()
-        startLoopThread(loop, name)
+        startLoop(loop, name)
         return Placement.Placed(running)
     }
 

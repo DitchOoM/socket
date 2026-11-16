@@ -1,13 +1,15 @@
-@file:OptIn(com.ditchoom.socket.quic.InternalQuicApi::class)
+@file:OptIn(com.ditchoom.socket.quic.InternalQuicApi::class, com.ditchoom.buffer.flow.ExperimentalDatagramApi::class)
 
 package com.ditchoom.socket.quic.core.edge
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
+import com.ditchoom.buffer.flow.AddressFamily
 import com.ditchoom.buffer.flow.ReadPolicy
+import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.socket.networkId
-import com.ditchoom.socket.quic.CommonJvmQuicConfigCalls
+import com.ditchoom.socket.quic.ApiQuicConfigCalls
 import com.ditchoom.socket.quic.LocalEndpointSupport
 import com.ditchoom.socket.quic.NativeSocketRefusal
 import com.ditchoom.socket.quic.QUIC_ISSUED_CONN_ID_LEN
@@ -35,23 +37,23 @@ import com.ditchoom.socket.quic.core.udp.ReadAddress
 import com.ditchoom.socket.quic.core.udp.SocketBuffers
 import com.ditchoom.socket.quic.core.udp.SocketPeer
 import com.ditchoom.socket.quic.core.udp.SocketReport
-import com.ditchoom.socket.quic.core.udp.toPathKey
 import com.ditchoom.socket.quic.encodeAlpnList
 import com.ditchoom.socket.quic.encodeToNative
 import com.ditchoom.socket.quic.generateScid
+import com.ditchoom.socket.quic.hostLiteral
+import com.ditchoom.socket.quic.hostSockAddrLayout
 import com.ditchoom.socket.quic.loadTrustAnchors
 import com.ditchoom.socket.quic.resolveNetworkMonitor
+import com.ditchoom.socket.quic.toPathKey
 import com.ditchoom.socket.quic.wireClientConnectivityTap
 import com.ditchoom.socket.udp.SocketAddressCodec
 import com.ditchoom.socket.udp.UdpSocket
-import com.ditchoom.socket.udp.hostOsSockAddrLayout
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.IO
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
-import java.net.Inet6Address
-import java.net.InetSocketAddress
 import kotlin.time.Duration
 
 /** A connected [connection] with the [conn] and the shared [loop] under it, for what measures them. */
@@ -87,6 +89,7 @@ internal suspend fun coreConnect(
     flight: FlightSize = CLIENT_FLIGHT,
     routeSource: suspend (UdpSocketChannelFactory) -> RouteSource = { it.routeSourceAddress() },
     batching: UdpBatching = options.udpBatching,
+    ride: ClientRide = clientRideOfThisPlatform,
 ): CoreClient =
     withContext(Dispatchers.IO) {
         val memory = EdgeMemory(factory)
@@ -109,6 +112,7 @@ internal suspend fun coreConnect(
                 flight,
                 routeSource,
                 batching,
+                ride,
             ).also { connected = true }
         } finally {
             if (!connected) memory.freeAll()
@@ -133,17 +137,12 @@ private suspend fun connectOnThisThread(
     flight: FlightSize,
     routeSource: suspend (UdpSocketChannelFactory) -> RouteSource,
     batching: UdpBatching,
+    ride: ClientRide,
 ): CoreClient {
     val peer = UdpSocket.resolve(host, port)
-    val codec = SocketAddressCodec(hostOsSockAddrLayout())
+    val peerKey = peer.toPathKey()
+    val codec = SocketAddressCodec(hostSockAddrLayout)
     val route = UdpSocketChannelFactory(peer, codec, factory, factory, MAX_DATAGRAM, LocalEndpointSupport.Bindable)
-    val bindHost =
-        when (val source = routeSource(route)) {
-            is RouteSource.Resolved -> source.host
-            is RouteSource.PlatformAssigned -> anyHostFor(InetSocketAddress(host, port))
-            is RouteSource.Unresolved -> raise(Raised.RouteUnresolved(source.reason), QuicCloseCircumstance.HandshakeFailed)
-        }
-    val peerInet = InetSocketAddress(host, port)
     val running =
         when (val placed = loops.place(factory)) {
             is Placement.Placed -> placed.running
@@ -156,23 +155,27 @@ private suspend fun connectOnThisThread(
                 )
         }
     val socket =
-        openStackSocket(
-            running.io,
-            memory,
-            InetSocketAddress(bindHost, 0),
-            SocketPeer.Connected(peerInet.toPathKey()),
-            buffers,
-            batching,
-            CLIENT_BATCH,
-        )
-    val local = socket.bound().local
+        when (ride) {
+            is ClientRide.OwnSocket -> {
+                val bindHost =
+                    when (val source = routeSource(route)) {
+                        is RouteSource.Resolved -> source.host
+                        is RouteSource.PlatformAssigned -> anyHostFor(peer)
+                        is RouteSource.Unresolved -> raise(Raised.RouteUnresolved(source.reason), QuicCloseCircumstance.HandshakeFailed)
+                    }
+                val bind = UdpSocket.resolve(bindHost, 0).toPathKey()
+                openStackSocket(running.io, memory, bind, SocketPeer.Connected(peerKey), buffers, batching, CLIENT_BATCH)
+            }
+            is ClientRide.NetworkFramework -> withTimeout(timeout) { ride.connector.connect(host, port) }
+        }
+    val local = socket.local()
     val monitor = resolveNetworkMonitor(options.networkMonitor)
     val handshake = clientHandshakeRule(options, linkClassOf(monitor.state.value.networkId))
     val config = configured(api, options, factory, handshake)
     val scid = generateScid(factory)
     val scidHex = hex(scid)
     val peerSockAddr = codec.encodeToNative(peer, factory)
-    val localSockAddr = codec.encodeToNative(UdpSocket.resolve(local.address.hostAddress, local.port), factory)
+    val localSockAddr = local.encodeToNative(factory)
     val name = nullTerminated(serverName, factory)
     val handle =
         api.connect(
@@ -200,12 +203,13 @@ private suspend fun connectOnThisThread(
                 running,
                 socket,
                 wrapIo,
-                peerInet,
+                peerKey,
                 readPolicy,
                 writePolicy,
                 scope,
                 flight,
                 handshake,
+                readiness = socket.readiness(),
             ),
             peerSockAddr,
             localSockAddr,
@@ -218,7 +222,7 @@ private suspend fun connectOnThisThread(
         )
     wireClientConnectivityTap(options, built.capture, connection, monitor)
     built.start()
-    scope.feedNetwork(monitor, connection, built, { routeSource(route) }, local.address.hostAddress)
+    scope.feedNetwork(monitor, connection, built, { routeSource(route) }, local.hostLiteral())
     var established = false
     try {
         withTimeout(timeout) { connection.established() }
@@ -226,7 +230,7 @@ private suspend fun connectOnThisThread(
     } finally {
         if (!established) connection.closeNow(QuicError.NoError)
     }
-    return CoreClient(connection, built.conn, running.loop, SocketReport(socket.bound().granted, local.port))
+    return CoreClient(connection, built.conn, running.loop, SocketReport(socket.granted(), local.port))
 }
 
 /** A client config with the caller's ALPN, options, handshake rule and trust anchors applied. */
@@ -240,7 +244,7 @@ private fun configured(
     val alpn = encodeAlpnList(options.alpnProtocols, factory)
     api.configSetApplicationProtos(config, addressOf(alpn), alpn.remaining())
     alpn.freeNativeMemory()
-    applyQuicOptions(options, CommonJvmQuicConfigCalls(api, config), QuicRole.Client)
+    applyQuicOptions(options, ApiQuicConfigCalls(api, config), QuicRole.Client)
     handshake.applyTo(api, config)
     loadTrustAnchors(api, config, options, factory)
     return config
@@ -256,7 +260,7 @@ internal fun addressOf(buffer: com.ditchoom.buffer.PlatformBuffer): Long =
         is ReadAddress.NotAddressable -> raise(Raised.FactoryNotNative(buffer), QuicCloseCircumstance.HandshakeFailed)
     }
 
-private fun nullTerminated(
+internal fun nullTerminated(
     text: String,
     factory: BufferFactory,
 ): com.ditchoom.buffer.PlatformBuffer =
@@ -279,7 +283,7 @@ private const val HEX = "0123456789abcdef"
 private const val QUIC_V1 = 1
 
 /** The wildcard of [peer]'s family: an IPv6 peer needs an IPv6 socket on the native stack. */
-private fun anyHostFor(peer: InetSocketAddress): String = if (peer.address is Inet6Address) "::" else "0.0.0.0"
+private fun anyHostFor(peer: SocketAddress): String = if (peer.family == AddressFamily.IPv6) "::" else "0.0.0.0"
 
 /** The most datagrams one batch of a client socket carries. */
 internal const val CLIENT_BATCH = 64

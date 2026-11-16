@@ -4,8 +4,6 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.core.pool.MemoryHold
 import com.ditchoom.socket.quic.core.udp.Addressed
-import com.ditchoom.socket.quic.core.udp.JdkBacked
-import com.ditchoom.socket.quic.core.udp.JdkBytes
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 
 /**
@@ -31,13 +29,6 @@ internal class EdgeMemory(
             is Addressed.NotAddressable -> raise(Raised.FactoryNotNative(buffer), QuicCloseCircumstance.HandshakeFailed)
         }
     }
-
-    /** The JDK view a channel reads and writes [bytes] through. */
-    fun jdk(bytes: NativeBytes): JdkBytes =
-        when (val backed = JdkBytes.of(bytes)) {
-            is JdkBacked.Backed -> backed.bytes
-            is JdkBacked.NotJdkBacked -> raise(Raised.FactoryNotNative(bytes.owner), QuicCloseCircumstance.HandshakeFailed)
-        }
 
     fun factory(): BufferFactory = factory
 
