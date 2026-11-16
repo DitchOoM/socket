@@ -6,6 +6,7 @@ import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.core.edge.connectCore
 import com.ditchoom.socket.quic.core.loop.LoopSet
+import com.ditchoom.socket.quic.core.testing.allocationSamples
 import com.ditchoom.socket.quic.network
 import kotlinx.coroutines.runBlocking
 import java.lang.management.ManagementFactory
@@ -74,9 +75,7 @@ class CoreServerAllocationTests {
                 .createTempFile("core-server", ".jfr")
         recording.dump(dump)
         val sites = HashMap<String, Long>()
-        jdk.jfr.consumer.RecordingFile
-            .readAllEvents(dump)
-            .filter { it.thread?.javaName == SERVER_LOOP_THREAD }
+        allocationSamples(dump) { it == SERVER_LOOP_THREAD }
             .forEach { e ->
                 val frames =
                     e.stackTrace?.frames.orEmpty().take(6).joinToString(" < ") {

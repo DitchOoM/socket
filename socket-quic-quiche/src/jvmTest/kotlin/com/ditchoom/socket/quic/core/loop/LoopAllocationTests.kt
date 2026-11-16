@@ -1,6 +1,7 @@
 package com.ditchoom.socket.quic.core.loop
 
 import com.ditchoom.socket.quic.core.testing.NioEcho
+import com.ditchoom.socket.quic.core.testing.allocationSamples
 import java.lang.management.ManagementFactory
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
@@ -65,7 +66,7 @@ class LoopAllocationTests {
                 .createTempFile("core-loop", ".jfr")
         recording.dump(dump)
         val sites = HashMap<String, Long>()
-        jdk.jfr.consumer.RecordingFile.readAllEvents(dump).filter { it.thread?.javaName == "core-loop-alloc" }.forEach { e ->
+        allocationSamples(dump) { it == "core-loop-alloc" }.forEach { e ->
             val frames =
                 e.stackTrace?.frames.orEmpty().take(6).joinToString(" < ") {
                     "${it.method.type.name.substringAfterLast('.')}.${it.method.name}"

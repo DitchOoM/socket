@@ -9,6 +9,7 @@ import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.core.testing.allocationSamples
 import com.ditchoom.socket.quic.network
 import com.ditchoom.socket.quic.read
 import com.ditchoom.socket.quic.skipOnMissingNativeLib
@@ -218,12 +219,9 @@ class CoreQuicAllocationTests {
         recording.dump(dump)
         val sites = HashMap<String, Long>()
         var callerCore = 0L
-        jdk.jfr.consumer.RecordingFile
-            .readAllEvents(dump)
-            .filter {
-                it.startTime >= from &&
-                    (it.thread?.javaName?.startsWith(LOOP_THREAD) == true || it.thread?.javaName == CALLER_THREAD)
-            }.forEach { e ->
+        allocationSamples(dump) { it.startsWith(LOOP_THREAD) || it == CALLER_THREAD }
+            .filter { it.startTime >= from }
+            .forEach { e ->
                 val all = e.stackTrace?.frames.orEmpty()
                 val frames =
                     all.take(7).joinToString(" < ") {
