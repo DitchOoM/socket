@@ -3,12 +3,10 @@
 package com.ditchoom.socket.quic.core.path
 
 import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.socket.quic.EncodedSockAddr
 import com.ditchoom.socket.quic.MigrateOutcome
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.PeerMigrationPermission
 import com.ditchoom.socket.quic.ProbeOutcome
-import com.ditchoom.socket.quic.QuichePathEventType
 import com.ditchoom.socket.quic.QuicheRecvInfo
 import com.ditchoom.socket.quic.connPeerMigrationPermission
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
@@ -38,7 +36,8 @@ internal class ClientPaths(
     private val toPeer = Outgoing.To(first.target)
     private val fixed = Sorting.Fixed(toPeer)
     private var move: Move = Move.Settled(Linked(LocalAddr(q.api.decodePathKey(first.local.address), first.recvInfo, Made.ByEdge), 0L))
-    private var events: EventMemory = EventMemory.None
+    private val events = PathEvents(q, factory)
+    private val peer = TowardPeer(q, first)
     private var previous: Previous = Previous.None
     private val retiredIds = RetiredReader(factory)
 
@@ -81,19 +80,20 @@ internal class ClientPaths(
         }
         topUp()
         val sockAddr = local.encodeToNative(factory)
-        val at = LocalAddr(q.api.decodePathKey(sockAddr.address), recvInfoAt(sockAddr), Made.Here(sockAddr))
+        val at = LocalAddr(q.api.decodePathKey(sockAddr.address), peer.recvInfoAt(sockAddr), Made.Here(sockAddr))
         val from = abandon()
         move =
-            when (val probed = q.api.connProbePath(q.handle, sockAddr.address, sockAddr.length, first.peer.address, first.peer.length)) {
-                is ProbeOutcome.Probed -> Move.Probing(from, Linked(at, probed.dcidSeq), 0)
+            when (val probed = peer.probe(SockAddr(sockAddr.address, sockAddr.length))) {
+                is ProbeOutcome.Probed -> Move.Probing(from, Linked(at, probed.dcidSeq), 0, q.cadenceFrom(now))
                 is ProbeOutcome.Rejected -> Move.Stranded(from, at, Unprobed.NoSpareId, q.retryAt(now, 0), LinkedId.None)
             }
         return MoveAnswer.Following
     }
 
     /**
-     * Reads quiche's path events while a move is being validated, and migrates once it is; a move that found no path is
-     * probed again when its [Retry] falls due.
+     * Reads quiche's path events while a move is being validated, and migrates once it is. A path being validated is
+     * asked for a fresh PATH_CHALLENGE each time its [Cadence] falls due and abandoned at its end; a move that found no
+     * path is probed again when its [Retry] falls due.
      */
     fun step(now: Nanos): PathStep =
         when (val moving = move) {
@@ -102,11 +102,15 @@ internal class ClientPaths(
             is Move.Settled -> PathStep.Steady
         }
 
-    /** Offers the time the next probe of a stranded endpoint falls due; offers nothing otherwise. */
+    /** Offers the time the next challenge, abandonment or probe of a move falls due; offers nothing when settled. */
     fun offerWake(sink: WakeSink) {
         when (val now = move) {
             is Move.Stranded -> sink.offer(now.retry.due)
-            is Move.Settled, is Move.Probing -> Unit
+            is Move.Probing -> {
+                sink.offer(now.cadence.challengeDue)
+                sink.offer(now.cadence.abandonAt)
+            }
+            is Move.Settled -> Unit
         }
     }
 
@@ -130,10 +134,7 @@ internal class ClientPaths(
                 each(now.at)
             }
         }
-        when (val held = events) {
-            is EventMemory.Held -> held.scratch.free()
-            is EventMemory.None -> Unit
-        }
+        events.free()
         ids.free()
         retiredIds.free()
     }
@@ -141,21 +142,30 @@ internal class ClientPaths(
     /**
      * A stranded endpoint is tried again once its [Retry] falls due: a path that never had an id is probed with a fresh
      * one, one that failed validation is probed on the id it kept, and one that validated but could not be migrated to
-     * is migrated to.
+     * is migrated to. A response that comes after its validation was abandoned still validates the path: it is migrated
+     * to at once.
      */
     private fun reprobe(
         now: Nanos,
         stranded: Move.Stranded,
     ): PathStep {
+        when (stranded.why) {
+            Unprobed.ValidationFailed ->
+                when (events.verdict(stranded.at.key)) {
+                    PathVerdict.Validated -> return migrate(now, stranded.from, stranded.at, stranded.id, stranded.retry.failed)
+                    PathVerdict.Failed, PathVerdict.Undecided, PathVerdict.Unreadable -> Unit
+                }
+            Unprobed.NoSpareId, Unprobed.MigrationRefused -> Unit
+        }
         if (now.value < stranded.retry.due.value) return PathStep.Steady
         topUp()
         return when (stranded.why) {
             Unprobed.MigrationRefused -> migrate(now, stranded.from, stranded.at, LinkedId.None, stranded.retry.failed)
             Unprobed.NoSpareId, Unprobed.ValidationFailed -> {
-                val at = sockAddrOf(stranded.at)
                 move =
-                    when (val probed = q.api.connProbePath(q.handle, at.address, at.length, first.peer.address, first.peer.length)) {
-                        is ProbeOutcome.Probed -> Move.Probing(stranded.from, Linked(stranded.at, probed.dcidSeq), stranded.retry.failed)
+                    when (val probed = peer.probe(stranded.at)) {
+                        is ProbeOutcome.Probed ->
+                            Move.Probing(stranded.from, Linked(stranded.at, probed.dcidSeq), stranded.retry.failed, q.cadenceFrom(now))
                         is ProbeOutcome.Rejected -> strandedAgain(now, stranded)
                     }
                 PathStep.Reprobed
@@ -171,28 +181,42 @@ internal class ClientPaths(
     private fun follow(
         now: Nanos,
         probing: Move.Probing,
-    ): PathStep {
-        val scratch =
-            when (val taken = scratch()) {
-                is EventsTaken.Taken -> taken.scratch
-                is EventsTaken.NotNative -> return PathStep.Steady
-            }
-        while (true) {
-            val type =
-                when (val news = scratch.next(q)) {
-                    is PathNews.Event -> news.type
-                    is PathNews.Drained -> return PathStep.Steady
-                }
-            if (!q.addressIs(scratch.local, probing.to.local.key)) continue
-            if (type == QuichePathEventType.Validated) {
-                return migrate(now, probing.from, probing.to.local, LinkedId.Seq(probing.to.dcidSeq), probing.failed)
-            }
-            if (type == QuichePathEventType.FailedValidation || type == QuichePathEventType.Closed) {
-                val retry = q.retryAt(now, probing.failed + 1)
-                move = Move.Stranded(probing.from, probing.to.local, Unprobed.ValidationFailed, retry, LinkedId.Seq(probing.to.dcidSeq))
-                return PathStep.ProbeFailed
-            }
+    ): PathStep =
+        when (events.verdict(probing.to.local.key)) {
+            PathVerdict.Validated -> migrate(now, probing.from, probing.to.local, LinkedId.Seq(probing.to.dcidSeq), probing.failed)
+            PathVerdict.Failed -> giveUp(now, probing)
+            PathVerdict.Undecided -> tend(now, probing)
+            PathVerdict.Unreadable -> PathStep.Steady
         }
+
+    /**
+     * A validation quiche has not decided: abandoned once its cadence ends, else asked for a fresh PATH_CHALLENGE when
+     * one is due. Probing a path quiche holds only requests validation again, on the id the path already has; a
+     * response to any challenge sent on the path validates it (RFC 9000 §8.2.1).
+     */
+    private fun tend(
+        now: Nanos,
+        probing: Move.Probing,
+    ): PathStep {
+        if (now.value >= probing.cadence.abandonAt.value) return giveUp(now, probing)
+        if (now.value < probing.cadence.challengeDue.value) return PathStep.Steady
+        return when (peer.probe(probing.to.local)) {
+            is ProbeOutcome.Probed -> {
+                move = Move.Probing(probing.from, probing.to, probing.failed, probing.cadence.challenged(now))
+                PathStep.Challenged
+            }
+            is ProbeOutcome.Rejected -> giveUp(now, probing)
+        }
+    }
+
+    /** The validation of [probing]'s path ended unanswered: the endpoint keeps the path's id and is probed again later. */
+    private fun giveUp(
+        now: Nanos,
+        probing: Move.Probing,
+    ): PathStep {
+        val retry = validationRetryAt(now, probing.failed + 1)
+        move = Move.Stranded(probing.from, probing.to.local, Unprobed.ValidationFailed, retry, LinkedId.Seq(probing.to.dcidSeq))
+        return PathStep.ProbeFailed
     }
 
     private fun migrate(
@@ -202,11 +226,10 @@ internal class ClientPaths(
         id: LinkedId,
         failed: Int,
     ): PathStep =
-        when (val migrated = connMigrate(to)) {
+        when (val migrated = peer.migrate(to)) {
             is MigrateOutcome.Migrated -> {
                 // The old path's socket is gone: what it had in flight is resent from the new one now.
-                val left = sockAddrOf(from.local)
-                q.api.connRequeuePath(q.handle, left.address, left.length, first.peer.address, first.peer.length)
+                peer.requeue(from.local)
                 retire(from.dcidSeq)
                 spend(from.local)
                 move = Move.Settled(Linked(to, migrated.dcidSeq))
@@ -230,17 +253,6 @@ internal class ClientPaths(
         retiredIds.read(q)
         ids.issueAll(q, random)
     }
-
-    private fun connMigrate(to: LocalAddr): MigrateOutcome {
-        val local = sockAddrOf(to)
-        return q.api.connMigrate(q.handle, local.address, local.length, first.peer.address, first.peer.length)
-    }
-
-    private fun sockAddrOf(local: LocalAddr): SockAddr =
-        when (val made = local.made) {
-            is Made.Here -> SockAddr(made.sockAddr.address, made.sockAddr.length)
-            is Made.ByEdge -> first.local
-        }
 
     /** Ends an unfinished move: a probe's id is retired and its endpoint spent. Answers the path data still rides. */
     private fun abandon(): Linked =
@@ -276,21 +288,6 @@ internal class ClientPaths(
             is Move.Probing -> now.to.local
             is Move.Stranded -> now.at
         }
-
-    private fun scratch(): EventsTaken =
-        when (val held = events) {
-            is EventMemory.Held -> EventsTaken.Taken(held.scratch)
-            is EventMemory.None ->
-                EventScratch.of(factory).also { taken ->
-                    when (taken) {
-                        is EventsTaken.Taken -> events = EventMemory.Held(taken.scratch)
-                        is EventsTaken.NotNative -> Unit
-                    }
-                }
-        }
-
-    private fun recvInfoAt(local: EncodedSockAddr): QuicheRecvInfo =
-        q.api.recvInfoNew(first.peer.address, first.peer.length, local.address, local.length)
 
     private fun retire(seq: Long) {
         // A refusal leaves the id with quiche until the connection ends; no path uses it.

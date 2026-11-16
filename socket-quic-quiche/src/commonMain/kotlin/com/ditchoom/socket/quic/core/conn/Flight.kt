@@ -32,6 +32,9 @@ internal enum class PathMark {
 
     /** A stranded endpoint was probed again, or tried to be. */
     Reprobed,
+
+    /** The path being validated was asked for a fresh PATH_CHALLENGE. */
+    Challenged,
 }
 
 /** How many records a connection's flight recording holds; their payload is kept in its loop's [FlightArena]. */

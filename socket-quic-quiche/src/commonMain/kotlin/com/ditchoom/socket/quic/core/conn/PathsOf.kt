@@ -91,6 +91,7 @@ internal fun ConnParts.stepPaths(now: Nanos) =
             when (paths.paths.step(now)) {
                 PathStep.Steady -> Unit
                 PathStep.ProbeFailed -> flight.path(now, PathMark.ProbeFailed)
+                PathStep.Challenged -> flight.path(now, PathMark.Challenged)
                 PathStep.Reprobed -> {
                     flight.path(now, PathMark.Reprobed)
                     timer.nudge()
