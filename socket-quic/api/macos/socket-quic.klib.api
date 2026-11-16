@@ -1830,6 +1830,15 @@ sealed interface com.ditchoom.socket.quic/QuicError : com.ditchoom.buffer.flow/D
         final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicError.ProtocolViolation.toString|toString(){}[0]
     }
 
+    final object ServerStoppedBeforeCloseSent : com.ditchoom.socket.quic/QuicError { // com.ditchoom.socket.quic/QuicError.ServerStoppedBeforeCloseSent|null[0]
+        final val code // com.ditchoom.socket.quic/QuicError.ServerStoppedBeforeCloseSent.code|{}code[0]
+            final fun <get-code>(): kotlin/Long // com.ditchoom.socket.quic/QuicError.ServerStoppedBeforeCloseSent.code.<get-code>|<get-code>(){}[0]
+
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicError.ServerStoppedBeforeCloseSent.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicError.ServerStoppedBeforeCloseSent.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicError.ServerStoppedBeforeCloseSent.toString|toString(){}[0]
+    }
+
     final object StreamLimitError : com.ditchoom.socket.quic/QuicError { // com.ditchoom.socket.quic/QuicError.StreamLimitError|null[0]
         final val code // com.ditchoom.socket.quic/QuicError.StreamLimitError.code|{}code[0]
             final fun <get-code>(): kotlin/Long // com.ditchoom.socket.quic/QuicError.StreamLimitError.code.<get-code>|<get-code>(){}[0]
