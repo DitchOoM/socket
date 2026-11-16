@@ -160,7 +160,7 @@ internal class ConditionReplay(
         return due
     }
 
-    /** The probe's echo: [ECHO_BYTES] out, the same back, then the next one [Conditions.echoEvery] after this one left. */
+    /** The probe's echo: [Conditions.echoBytes] out, the same back, then the next one [Conditions.echoEvery] after this one left. */
     private suspend fun echo(client: ReplayClient) {
         try {
             val stream = client.connection.openStream()
@@ -169,13 +169,13 @@ internal class ConditionReplay(
                 sleep.until(next)
                 val sent = clock.at.value
                 val payload =
-                    factory.allocate(ECHO_BYTES).apply {
-                        repeat(ECHO_BYTES) { writeByte((echoes.size + it).toByte()) }
+                    factory.allocate(conditions.echoBytes).apply {
+                        repeat(conditions.echoBytes) { writeByte((echoes.size + it).toByte()) }
                         resetForRead()
                     }
                 stream.writeFully(payload, REPLAY_DEADLINE)
                 var got = 0
-                while (got < ECHO_BYTES) {
+                while (got < conditions.echoBytes) {
                     val read = stream.read(REPLAY_DEADLINE) { got += it.readByteArray(it.remaining()).size }
                     if (read !is ScopedRead.Data<*>) return
                 }
@@ -256,7 +256,6 @@ internal class ConditionReplay(
     private companion object {
         const val ORIGIN = 1_000_000_000L
         const val MIN_STEP = 1_000L
-        const val ECHO_BYTES = 16
         const val QUIET_ROUNDS = 2
         const val MAX_ROUNDS = 1_000
         const val YIELDS = 4

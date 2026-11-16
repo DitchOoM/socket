@@ -160,6 +160,8 @@ internal class CallerClockQuicheApi(
 
     override fun connSendAckEliciting(conn: QuicheConn): Int = synced { delegate.connSendAckEliciting(conn) }
 
+    override fun connProbeNow(conn: QuicheConn): Int = synced { delegate.connProbeNow(conn) }
+
     override fun connClose(
         conn: QuicheConn,
         error: QuicError,

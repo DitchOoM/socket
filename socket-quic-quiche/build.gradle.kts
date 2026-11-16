@@ -335,6 +335,9 @@ fun downloadQuicheSource(
     // The 1-RTT data a client's Handshake probe re-sends leaves in a datagram of its own, so a confirmed peer
     // that drops a datagram's undecryptable Handshake packet still reads it. Idempotent, fails loudly on drift.
     patchQuicheProbeAppDataInItsOwnDatagram(sourceDir)
+    // Export quiche_conn_probe_now: a network that came back has the PTO's probes sent at once, past a congestion
+    // window the outage's own probes filled (RFC 9002 §6.2.4). Idempotent, fails loudly on drift. See the KDoc.
+    patchQuicheProbeNowFfi(sourceDir)
 
     // Name the patch set this tree now carries. The tree outlives the run (CI caches it with a
     // prefix fallback), so a reader that compiles it outside these tasks checks this stamp rather
@@ -1623,6 +1626,166 @@ fun patchQuicheProbeAppDataInItsOwnDatagram(sourceDir: File) {
         ),
     )
     logger.lifecycle("Patched quiche source: 1-RTT data re-sent on a client's Handshake probe leaves in a datagram of its own")
+}
+
+/**
+ * Export `quiche_conn_probe_now`: the application knows the path is usable again after an outage (a network came
+ * back), so quiche sends what a PTO would send, now: up to two probe packets carrying the frames of the oldest
+ * unacknowledged packets, or a PING when nothing is in flight. Without it the only lever is
+ * `quiche_conn_send_ack_eliciting`, whose PING is held by the congestion window: the PTO probes sent into the outage
+ * count as bytes in flight, so after a few seconds' outage the window is full and nothing leaves until the next
+ * backed-off PTO, a second or more later (`RehomeConditionTests`). Even when the PING leaves, the data lost in the
+ * outage is resent only once its acknowledgement arrives, a round trip late (`WalkConditionReplayTests`).
+ *
+ * RFC 9002 §6.2.4: probe packets MUST NOT be blocked by the congestion controller, and are at most two; this sends
+ * exactly that, early, on the application's evidence instead of the timer's. It neither counts a PTO nor declares
+ * any packet lost, so the congestion controller and the PTO backoff are untouched; the probes' acknowledgements
+ * then drive ordinary loss detection for the rest. Both recovery implementations (`congestion` and `gcongestion`).
+ *
+ * Marker-guarded and loud in both directions: a re-run returns, a moved anchor throws, and an upstream that exports
+ * the same throws, telling you to delete this patch.
+ */
+fun patchQuicheProbeNowFfi(sourceDir: File) {
+    val marker = "socket-probe-now"
+    val src = sourceDir.resolve("quiche/src")
+    val ffiRs = src.resolve("ffi.rs")
+    if (!ffiRs.exists()) return
+    if (ffiRs.readText().contains(marker)) return
+    if (ffiRs.readText().contains("quiche_conn_probe_now")) {
+        throw GradleException(
+            "$marker: quiche's ffi.rs already exports quiche_conn_probe_now — upstream added it. DELETE " +
+                "patchQuicheProbeNowFfi and its call site, and check the upstream signature against libs/quiche/include/quiche.h.",
+        )
+    }
+
+    fun insertBefore(
+        file: File,
+        anchor: String,
+        insert: String,
+    ) {
+        val text = file.readText()
+        if (text.split(anchor).size != 2) {
+            throw GradleException(
+                "$marker: `${anchor.trim()}` not found exactly once in ${file.relativeTo(src)} — a quiche bump moved " +
+                    "it. Re-fit patchQuicheProbeNowFfi and re-verify with RehomeConditionTests.",
+            )
+        }
+        file.writeText(text.replace(anchor, insert + anchor))
+    }
+
+    val timeoutDecl = "    fn on_loss_detection_timeout(\n"
+    insertBefore(
+        src.resolve("recovery/mod.rs"),
+        timeoutDecl,
+        """
+        |    // $marker: sends up to two probes now, as a PTO would, without counting one.
+        |    fn socket_probe_now(&mut self, handshake_status: HandshakeStatus, now: Instant);
+        |
+        |
+        """.trimMargin(),
+    )
+    insertBefore(
+        src.resolve("recovery/congestion/recovery.rs"),
+        timeoutDecl,
+        """
+        |    // $marker: the PTO's probes, sent now: no PTO counted, no packet declared lost.
+        |    fn socket_probe_now(&mut self, handshake_status: HandshakeStatus, now: Instant) {
+        |        if self.bytes_in_flight.get() == 0 {
+        |            return;
+        |        }
+        |        let (_, e) = self.pto_time_and_space(handshake_status, now);
+        |        let epoch = &mut self.epochs[e];
+        |        epoch.loss_probes = MAX_PTO_PROBES_COUNT;
+        |        if !epoch.lost_frames_pto.is_empty() {
+        |            return;
+        |        }
+        |        let unacked_iter = epoch
+        |            .sent_packets
+        |            .iter()
+        |            .filter(|p| p.has_data && p.time_acked.is_none() && p.time_lost.is_none())
+        |            .take(MAX_PTO_PROBES_COUNT);
+        |        for unacked in unacked_iter {
+        |            epoch.lost_frames_pto.extend_from_slice(&unacked.frames);
+        |        }
+        |    }
+        |
+        |
+        """.trimMargin(),
+    )
+    insertBefore(
+        src.resolve("recovery/gcongestion/recovery.rs"),
+        timeoutDecl,
+        """
+        |    // $marker: the PTO's probes, sent now: no PTO counted, no packet declared lost.
+        |    fn socket_probe_now(&mut self, handshake_status: HandshakeStatus, now: Instant) {
+        |        if self.bytes_in_flight.get() == 0 {
+        |            return;
+        |        }
+        |        let (_, e) = self.pto_time_and_space(handshake_status, now);
+        |        let epoch = &mut self.epochs[e];
+        |        epoch.loss_probes = MAX_PTO_PROBES_COUNT;
+        |        if !epoch.lost_frames_pto.is_empty() {
+        |            return;
+        |        }
+        |        let unacked_frames = epoch
+        |            .sent_packets
+        |            .iter()
+        |            .filter_map(|p| {
+        |                if let SentStatus::Sent {
+        |                    has_data: true,
+        |                    frames,
+        |                    ..
+        |                } = &p.status
+        |                {
+        |                    Some(frames)
+        |                } else {
+        |                    None
+        |                }
+        |            })
+        |            .take(MAX_PTO_PROBES_COUNT)
+        |            .flatten()
+        |            .filter(|f| !matches!(f, frame::Frame::DatagramHeader { .. }));
+        |        epoch.lost_frames_pto.extend(unacked_frames.cloned());
+        |    }
+        |
+        |
+        """.trimMargin(),
+    )
+    insertBefore(
+        src.resolve("lib.rs"),
+        "    pub fn send_ack_eliciting(&mut self) -> Result<()> {\n",
+        """
+        |    /// $marker: the path is usable again after an outage the application knows of. Sends what a PTO
+        |    /// would, now: up to two probes with the oldest unacknowledged data, or a PING.
+        |    pub fn socket_probe_now(&mut self) -> Result<()> {
+        |        if self.is_closed() || self.is_draining() {
+        |            return Ok(());
+        |        }
+        |        let handshake_status = self.handshake_status();
+        |        let now = crate::now();
+        |        let path = self.paths.get_active_mut()?;
+        |        path.recovery.socket_probe_now(handshake_status, now);
+        |        path.needs_ack_eliciting = true;
+        |        Ok(())
+        |    }
+        |
+        |
+        """.trimMargin(),
+    )
+    ffiRs.appendText(
+        "\n" +
+            """
+            |// $marker: the path is usable again; send the PTO's probes now.
+            |#[no_mangle]
+            |pub extern "C" fn quiche_conn_probe_now(conn: &mut Connection) -> ssize_t {
+            |    match conn.socket_probe_now() {
+            |        Ok(()) => 0,
+            |        Err(e) => e.to_c(),
+            |    }
+            |}
+            """.trimMargin() + "\n",
+    )
+    logger.lifecycle("Patched quiche source: quiche_conn_probe_now FFI export")
 }
 
 /**
@@ -5079,6 +5242,7 @@ val stageCoreAndroidTests =
                 "demux/DemuxTests.kt",
                 "demux/AdmissionTests.kt",
                 "demux/CoreServerEchoTests.kt",
+                "demux/CoreServerMemoryTests.kt",
                 "demux/CoreServerStatelessTests.kt",
                 "demux/CoreServerCloseTests.kt",
                 "demux/CoreServerAdmissionTests.kt",

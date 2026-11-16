@@ -415,6 +415,14 @@ interface QuicheApi {
     fun connSendAckEliciting(conn: QuicheConn): Int
 
     /**
+     * The path is usable again after an outage the caller knows of: quiche sends what a PTO would, at its next
+     * [connSend] — up to two probe packets with the oldest unacknowledged data, past the congestion window, or a
+     * PING when nothing is in flight (`quiche_conn_probe_now`, a patched-in export). Counts no PTO and declares
+     * nothing lost. Returns 0 or a negative quiche error code.
+     */
+    fun connProbeNow(conn: QuicheConn): Int
+
+    /**
      * Close the connection with the given [error].
      * Implementations decompose [QuicError] into the C API's `app` flag and error code.
      */

@@ -630,6 +630,12 @@ JNIEXPORT jlong JNICALL JNI_FN(nConnSendAckEliciting)(JNIEnv *env, jclass cls, j
     return (jlong)quiche_conn_send_ack_eliciting((quiche_conn *)(uintptr_t)conn);
 }
 
+JNIEXPORT jlong JNICALL JNI_FN(nConnProbeNow)(JNIEnv *env, jclass cls, jlong conn) {
+    /* Queues the PTO's probes for the next send(), past the congestion window (patched-in export).
+       Returns 0 on success or a negative quiche error code. */
+    return (jlong)quiche_conn_probe_now((quiche_conn *)(uintptr_t)conn);
+}
+
 JNIEXPORT jint JNICALL JNI_FN(nConnClose)(
     JNIEnv *env, jclass cls,
     jlong conn, jboolean app, jlong err, jlong reason_addr, jint reason_len) {

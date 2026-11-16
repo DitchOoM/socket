@@ -24,7 +24,12 @@ internal data class Conditions(
     /** What the OS said, in time order. */
     val os: List<OsEvent>,
     val runFor: Duration,
+    /** Bytes in each echo: the walk probe's 16, or more to hold data in flight across an outage. */
+    val echoBytes: Int = PROBE_ECHO_BYTES,
 )
+
+/** The walk probe's echo size. */
+internal const val PROBE_ECHO_BYTES = 16
 
 internal enum class Family { V4, V6 }
 

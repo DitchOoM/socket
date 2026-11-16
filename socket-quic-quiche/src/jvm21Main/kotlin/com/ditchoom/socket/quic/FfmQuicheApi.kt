@@ -262,6 +262,10 @@ class FfmQuicheApi private constructor(
     private val hSendAckEliciting by lazy {
         downcall("quiche_conn_send_ack_eliciting", FunctionDescriptor.of(JAVA_LONG, JAVA_LONG))
     }
+    private val hProbeNow by lazy {
+        // ssize_t quiche_conn_probe_now(quiche_conn *conn) — patched-in export
+        downcall("quiche_conn_probe_now", FunctionDescriptor.of(JAVA_LONG, JAVA_LONG))
+    }
     private val hConnSetQlogPath by lazy {
         downcall(
             "quiche_conn_set_qlog_path",
@@ -1067,6 +1071,8 @@ class FfmQuicheApi private constructor(
         }
 
     override fun connSendAckEliciting(conn: QuicheConn): Int = (hSendAckEliciting.invokeExact(conn.handle) as Long).toInt()
+
+    override fun connProbeNow(conn: QuicheConn): Int = (hProbeNow.invokeExact(conn.handle) as Long).toInt()
 
     override fun connClose(
         conn: QuicheConn,

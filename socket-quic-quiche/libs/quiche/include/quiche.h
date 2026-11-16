@@ -1332,6 +1332,12 @@ void quiche_conn_peer_cert_chain_at(const quiche_conn *conn, size_t index, const
 // marker-guarded source patch in socket-quic-quiche/build.gradle.kts (patchQuicheHandshakeConfirmedFfi).
 bool quiche_conn_is_handshake_confirmed(const quiche_conn *conn);
 
+// socket-probe-now: the path is usable again after an outage: sends what a PTO would, now — up to two probe
+// packets with the oldest unacknowledged data, past the congestion window, or a PING. Counts no PTO and
+// declares nothing lost. Returns 0 or a negative quiche error. Added by the marker-guarded source patch in
+// socket-quic-quiche/build.gradle.kts (patchQuicheProbeNowFfi).
+ssize_t quiche_conn_probe_now(quiche_conn *conn);
+
 #if defined(__cplusplus)
 }  // extern C
 #endif

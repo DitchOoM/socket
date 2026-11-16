@@ -84,12 +84,12 @@ class ConnTests {
         val rig = ConnRig(api, io = out.io)
         rig.pass(0)
         assertEquals(0, out.sent)
-        api.onAckEliciting = { api.connSendQueue.addLast(60) }
+        api.onProbeNow = { api.connSendQueue.addLast(60) }
 
         rig.conn.submit(NetworkWork(NetworkChange.Usable))
         rig.pass(10 * ms)
 
-        assertEquals(1, api.ackElicitingCount, "quiche was asked to send now")
+        assertEquals(1, api.probeNowCount, "quiche was asked for its probes now")
         assertEquals(1, out.sent, "the datagram left in the pass that heard the news, not eight seconds later")
     }
 
@@ -119,7 +119,7 @@ class ConnTests {
         assertEquals(emptyList(), rig.sink.ended, "the connection is still up")
 
         refusing = false
-        api.onAckEliciting = { api.connSendQueue.addLast(60) }
+        api.onProbeNow = { api.connSendQueue.addLast(60) }
         rig.conn.submit(NetworkWork(NetworkChange.Usable))
         rig.pass(3_000 * ms)
 
@@ -143,7 +143,7 @@ class ConnTests {
         }
         assertEquals(emptyList(), rig.sink.ended, "a ten-second outage does not end the connection")
 
-        api.onAckEliciting = { api.connSendQueue.addLast(60) }
+        api.onProbeNow = { api.connSendQueue.addLast(60) }
         rig.conn.submit(NetworkWork(NetworkChange.Usable))
         rig.pass(10_001 * ms)
         assertEquals(1, out.sent, "the datagram left in the pass that heard the network is back")

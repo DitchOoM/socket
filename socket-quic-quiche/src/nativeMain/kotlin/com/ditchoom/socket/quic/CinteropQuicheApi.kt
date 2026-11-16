@@ -66,6 +66,7 @@ import com.ditchoom.socket.quic.quiche.quiche_conn_peer_error
 import com.ditchoom.socket.quic.quiche.quiche_conn_peer_streams_left_bidi
 import com.ditchoom.socket.quic.quiche.quiche_conn_peer_streams_left_uni
 import com.ditchoom.socket.quic.quiche.quiche_conn_peer_transport_params
+import com.ditchoom.socket.quic.quiche.quiche_conn_probe_now
 import com.ditchoom.socket.quic.quiche.quiche_conn_probe_path
 import com.ditchoom.socket.quic.quiche.quiche_conn_readable
 import com.ditchoom.socket.quic.quiche.quiche_conn_recv
@@ -760,6 +761,8 @@ internal object CinteropQuicheApi : QuicheApi, QuicheRandomPin {
     override fun clearThreadRandomState() = quiche_clear_thread_random_state()
 
     override fun connSendAckEliciting(conn: QuicheConn): Int = quiche_conn_send_ack_eliciting(conn.handle.toCPointer()!!).toInt()
+
+    override fun connProbeNow(conn: QuicheConn): Int = quiche_conn_probe_now(conn.handle.toCPointer()!!).toInt()
 
     override fun connClose(
         conn: QuicheConn,

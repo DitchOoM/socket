@@ -20,8 +20,9 @@ class WalkConditionReplayTests {
     /**
      * Pixel, core-v4: Wi-Fi gone for 12 s and back as a new network with the same address. The pre-fix core (3322c1fa)
      * kept sending from the socket of the old network and ended at the idle timeout; this one reopens the socket on the
-     * new network and echoes again. Its first echo takes two round trips: the nudge is a PING, and the echo lost in the
-     * outage is resent once the PING's acknowledgement shows it lost.
+     * new network and echoes again, within one round trip: the network's return sends the probes a PTO would at once,
+     * carrying the echo lost in the outage (a PING alone, as before, resent it only once its acknowledgement showed it
+     * lost: 151.6 ms against a 105.9 ms round trip).
      */
     @Test
     fun aWifiFlapBackOnANewNetworkWithTheSameAddressIsSurvived() {
@@ -36,7 +37,7 @@ class WalkConditionReplayTests {
         val replayed =
             replayTwice(
                 conditions,
-                Expect.Survives(firstEchoWithin = rtt * 2, longestGapAtMost = usable - outage.from + conditions.echoEvery + rtt * 2),
+                Expect.Survives(firstEchoWithin = rtt, longestGapAtMost = usable - outage.from + conditions.echoEvery + rtt),
             )
         assertEquals(1, replayed.reopens, "the socket was reopened on the new network once: ${replayed.describe()}")
     }

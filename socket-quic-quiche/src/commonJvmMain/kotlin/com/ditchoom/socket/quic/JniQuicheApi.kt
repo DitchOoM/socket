@@ -541,6 +541,8 @@ object JniQuicheApi : QuicheApi {
 
     override fun connSendAckEliciting(conn: QuicheConn): Int = nConnSendAckEliciting(conn.handle).toInt()
 
+    override fun connProbeNow(conn: QuicheConn): Int = nConnProbeNow(conn.handle).toInt()
+
     override fun connClose(
         conn: QuicheConn,
         error: QuicError,
@@ -1145,6 +1147,8 @@ object JniQuicheApi : QuicheApi {
     @JvmStatic private external fun nClearThreadRandomState()
 
     @JvmStatic private external fun nConnSendAckEliciting(conn: Long): Long
+
+    @JvmStatic private external fun nConnProbeNow(conn: Long): Long
 
     @JvmStatic private external fun nConnClose(
         conn: Long,

@@ -20,7 +20,7 @@ internal enum class NetworkChange {
 
 /** What a connection does about a change. */
 internal enum class NetworkStep {
-    /** Have quiche send at once: what its backed-off timers hold back is recovered in about one round trip. */
+    /** Have quiche send its probes at once: what the outage lost is resent now and answered in one round trip. */
     Nudge,
 
     /** Keep the connection: the idle timeout still bounds an outage, and a usable network nudges it. */
