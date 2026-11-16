@@ -1,7 +1,9 @@
 package com.ditchoom.socket.quic.core.edge
 
 import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.Charset
+import com.ditchoom.buffer.NativeMemoryAccess
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.WriteBuffer
@@ -14,8 +16,7 @@ import com.ditchoom.buffer.codec.WireSize
 import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.flow.writeFully
-import com.ditchoom.buffer.pool.BufferPool
-import com.ditchoom.buffer.pool.ThreadingMode
+import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.buffer.stream.StreamProcessor
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicCloseException
@@ -31,6 +32,8 @@ import kotlinx.coroutines.IO
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlin.concurrent.atomics.AtomicInt
+import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
@@ -106,18 +109,48 @@ internal fun headerDeclaring(declared: Int): PlatformBuffer =
 
 private const val HEADER_AND_ID = NoteCodec.HEADER + Int.SIZE_BYTES
 
-/** A pool over native memory; [outstanding] says how many of its buffers nobody has given back. */
-internal class TrackedFactory {
-    val pool = BufferPool(ThreadingMode.MultiThreaded, MAX_POOLED, POOLED_SIZE, BufferFactory.network())
+/**
+ * A factory over native memory that counts exactly: [live] is the buffers it made that nobody has freed. A pool's own
+ * statistics cannot say this, since a buffer too big to pool is never counted back in.
+ */
+@OptIn(ExperimentalAtomicApi::class)
+internal class TrackedFactory : BufferFactory {
+    private val made = AtomicInt(0)
+    private val freed = AtomicInt(0)
 
-    fun outstanding(): Long {
-        val stats = pool.stats()
-        return stats.poolMisses - stats.currentPoolSize
+    fun live(): Int = made.load() - freed.load()
+
+    override fun allocate(
+        size: Int,
+        byteOrder: ByteOrder,
+    ): PlatformBuffer {
+        made.fetchAndAdd(1)
+        return CountedBuffer(BufferFactory.network().allocate(size, byteOrder)) { freed.fetchAndAdd(1) }
     }
 
-    private companion object {
-        const val MAX_POOLED = 4_096
-        const val POOLED_SIZE = 4_096
+    override fun wrap(
+        array: ByteArray,
+        byteOrder: ByteOrder,
+    ): PlatformBuffer = BufferFactory.network().wrap(array, byteOrder)
+}
+
+/** A buffer that reports its first free to [onFree] and hands its memory address on, so quiche can use it in place. */
+@OptIn(ExperimentalAtomicApi::class)
+private class CountedBuffer(
+    private val inner: PlatformBuffer,
+    private val onFree: () -> Unit,
+) : PlatformBuffer by inner,
+    NativeMemoryAccess {
+    private val released = AtomicInt(0)
+
+    override val nativeAddress: Long get() = inner.nativeMemoryAccess!!.nativeAddress
+    override val nativeSize: Long get() = inner.nativeMemoryAccess!!.nativeSize
+
+    override fun freeNativeMemory() {
+        if (released.compareAndSet(0, 1)) {
+            onFree()
+            inner.freeNativeMemory()
+        }
     }
 }
 

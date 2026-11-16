@@ -255,7 +255,8 @@ class TypedStreamTests {
                 while (stream.receive() is ScopedRead.Data) Unit
                 stream.close()
             }) { server ->
-                val client = connectCore(server.port, loops = loops, factory = tracked.pool)
+                val client = connectCore(server.port, loops = loops, factory = tracked)
+                val connected = tracked.live()
 
                 suspend fun cycle(round: Int) {
                     val stream = client.connection.openTypedStream(NoteCodec)
@@ -268,16 +269,44 @@ class TypedStreamTests {
                     stream.close()
                     assertTrue(parked.await().isFailure, "the parked read must fail when the stream closes")
                 }
-                // The connection holds a few buffers of its own once it has sent and received; they are not the streams'.
                 cycle(WARM_UP_ID)
-                delay(200.milliseconds)
-                val before = tracked.outstanding()
+                // Each stream holds two buffers of its own; once it is closed they are freed, so a cycle changes nothing.
+                val settled = tracked.live()
                 repeat(20) { round -> cycle(round) }
                 assertTrue(
-                    eventually { tracked.outstanding() == before },
-                    "typed stream buffers were not returned: ${tracked.outstanding() - before} outstanding",
+                    eventually { tracked.live() == settled },
+                    "typed stream buffers were not freed: ${tracked.live() - settled} live after 20 streams (connect left $connected)",
                 )
                 client.connection.close(QuicError.NoError)
+                // The connection's own memory goes with its loop thread's socket, not with the connection.
+                loops.close()
+                assertTrue(
+                    eventually { tracked.live() == 0 },
+                    "${tracked.live()} buffers still live once the connection and its loops closed",
+                )
+            }
+        }
+
+    @Test
+    fun aByteStreamReadThatEndsLeavesOneIdleBufferWithTheConnection() =
+        coreTest("TypedStreamTests.aByteStreamReadThatEndsLeavesOneIdleBufferWithTheConnection") {
+            val tracked = TrackedFactory()
+            withCoreServer(onConnection = { connection ->
+                connection.acceptStream().also { it.read(10.seconds) }.let { (it as HalfCloseable).shutdownSend() }
+                delay(1.seconds)
+            }) { server ->
+                val client = connectCore(server.port, loops = loops, factory = tracked)
+                val before = tracked.live()
+                val stream = client.connection.openStream()
+                stream.write(frameOf(Note(1, "x")), 10.seconds)
+                // The server finishes its side without sending: the read ends with no data, and its buffer is kept, not freed.
+                assertEquals(ReadResult.End, stream.read(10.seconds))
+                val held = tracked.live() - before
+                // The connection's idle slot holds that one buffer, which only the connection's end frees.
+                assertEquals(1, held, "the ended read's buffer is the connection's idle slot")
+                client.connection.close(QuicError.NoError)
+                loops.close()
+                assertTrue(eventually { tracked.live() == 0 }, "${tracked.live()} buffers still live once the connection closed")
             }
         }
 
