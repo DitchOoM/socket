@@ -184,13 +184,29 @@ probe="$fixtures/probe"
 cat >"$probe" <<'EOF'
 #!/usr/bin/env bash
 echo "PROBED ${@: -1}"
+echo "FLAGS $*"
 EOF
 chmod +x "$probe"
 export GRADLE_RETRY_PROBE="$probe"
 run "$fixtures/plugin-unresolved" 1
 check "an unresolved settings plugin is retried" 0 2 "$RC" "$N" "$OUT" "transient repository failure"
 check "an unresolved settings plugin probes its portal marker" 0 2 "$RC" "$N" "$OUT" "PROBED https://plugins.gradle.org/m2/com/gradle/develocity/com.gradle.develocity.gradle.plugin/4.3/com.gradle.develocity.gradle.plugin-4.3.pom"
+check "the probe follows the portal's redirect to the host that answers" 0 2 "$RC" "$N" "$OUT" "FLAGS -sSL"
 unset GRADLE_RETRY_PROBE
+
+# The retry after an unresolved plugin asks Gradle for the stack trace, which carries the cause.
+tmp="$(mktemp -d)"
+cat >"$tmp/gradlew" <<EOF
+#!/usr/bin/env bash
+n=\$(cat "$tmp/n" 2>/dev/null || echo 0); n=\$((n + 1)); echo "\$n" >"$tmp/n"
+echo "ARGS: \$*"
+if [ "\$n" -le 1 ]; then cat "$fixtures/plugin-unresolved"; exit 1; fi
+echo "BUILD SUCCESSFUL"
+EOF
+chmod +x "$tmp/gradlew"
+OUT="$(cd "$tmp" && RUNNER_TEMP="$tmp" GRADLE_RETRY_BACKOFF_SECONDS=0 GRADLE_RETRY_PROBE=true bash "$script" help 2>&1)"
+RC=$?; N="$(cat "$tmp/n")"; rm -rf "$tmp"
+check "the retry after an unresolved plugin runs with --stacktrace" 0 2 "$RC" "$N" "$OUT" "ARGS: help --stacktrace"
 
 echo "---"
 echo "$pass passed, $fail failed"
