@@ -5,12 +5,14 @@ import com.ditchoom.socket.quic.QuicheSendInfo
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.SpareId
 import com.ditchoom.socket.quic.core.path.MoveAnswer
+import com.ditchoom.socket.quic.core.path.Outgoing
 import com.ditchoom.socket.quic.core.path.PathRead
 import com.ditchoom.socket.quic.core.path.PathStep
 import com.ditchoom.socket.quic.core.path.RecvFrom
 import com.ditchoom.socket.quic.core.path.Sorting
 import com.ditchoom.socket.quic.core.path.Window
 import com.ditchoom.socket.quic.core.time.Nanos
+import com.ditchoom.socket.quic.core.udp.NativeBytes
 
 // What every role's paths answer, asked the same way: each is one `when` over the slot.
 
@@ -19,6 +21,27 @@ internal fun Paths.recvFrom(from: PathKey): RecvFrom =
     when (this) {
         is Paths.Client -> paths.recvFrom()
         is Paths.Server -> paths.recvInfo(from)
+    }
+
+/** Hands quiche the datagram of [length] bytes at the start of [bytes] that came [from], unless no path takes it. */
+internal fun ConnParts.feed(
+    bytes: NativeBytes,
+    length: Int,
+    from: PathKey,
+    now: Nanos,
+) = when (val info = slots.paths.recvFrom(from)) {
+    is RecvFrom.Info -> ingress.direct(bytes, length, info.recvInfo, now, flight)
+    is RecvFrom.TooManyAddresses -> ingress.refused()
+}
+
+/**
+ * Where a CONNECTION_CLOSE quiche wrote for a path no socket of ours holds goes instead: a client's socket reaches the
+ * same peer from wherever it is now; a server has no socket for an address it does not know.
+ */
+internal fun Paths.closeRedirect(): Outgoing =
+    when (this) {
+        is Paths.Client -> paths.fromSocket()
+        is Paths.Server -> Outgoing.Dropped
     }
 
 internal fun Paths.sendInfo(): QuicheSendInfo =

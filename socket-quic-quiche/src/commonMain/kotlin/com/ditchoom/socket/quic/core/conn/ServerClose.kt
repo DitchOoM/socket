@@ -2,7 +2,6 @@
 
 package com.ditchoom.socket.quic.core.conn
 
-import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.observe.Published
 import kotlin.concurrent.atomics.AtomicInt
@@ -49,18 +48,23 @@ internal class ServerCloseCell {
 
     /** Whoever leaves after collecting the connection's output. */
     fun out(): Moved = if (stage.compareAndSet(RAN, OUT)) Moved.Yes else Moved.No
+
+    /** The connection had ended before the close could run: there is nothing of it to send. */
+    fun gone() {
+        stage.compareAndSet(ASKED, OUT)
+    }
 }
 
-/** Inside, once: the server closes the connection with NO_ERROR. */
+/** Inside, once: the server closes the connection with NO_ERROR, at once. */
 internal class ServerCloseWork(
     private val cell: ServerCloseCell,
 ) : ConnWork() {
     override fun run(inside: Inside) {
-        inside.close(QuicError.NoError)
+        inside.closeForServer()
         cell.ran()
     }
 
-    override fun gone(end: ConnEnd) = Unit
+    override fun gone(end: ConnEnd) = cell.gone()
 }
 
 private const val OPEN = 0

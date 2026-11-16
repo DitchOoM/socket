@@ -39,6 +39,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import java.net.InetSocketAddress
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.random.Random
@@ -152,6 +153,10 @@ class CoreRecordingReplayTests {
             // Recordings reach their sinks off the loop: give them a moment to arrive.
             delay(500.milliseconds)
             client.connection.close(QuicError.NoError)
+            // close() returns once the CONNECTION_CLOSE is sent; its record reaches the sink off the loop after that.
+            withTimeoutOrNull(5.seconds) {
+                while (clientRecording.count { it is TraceEvent.DgramOut } < link[0]!!.sent) delay(10.milliseconds)
+            }
         } finally {
             echo.cancel()
             server.close()

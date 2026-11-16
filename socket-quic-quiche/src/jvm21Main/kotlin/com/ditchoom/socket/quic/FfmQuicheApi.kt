@@ -210,6 +210,9 @@ class FfmQuicheApi private constructor(
     private val hIsClosed by lazy {
         downcall("quiche_conn_is_closed", FunctionDescriptor.of(JAVA_BOOLEAN, JAVA_LONG))
     }
+    private val hIsDraining by lazy {
+        downcall("quiche_conn_is_draining", FunctionDescriptor.of(JAVA_BOOLEAN, JAVA_LONG))
+    }
     private val hIsTimedOut by lazy {
         downcall("quiche_conn_is_timed_out", FunctionDescriptor.of(JAVA_BOOLEAN, JAVA_LONG))
     }
@@ -1026,6 +1029,8 @@ class FfmQuicheApi private constructor(
     override fun connIsHandshakeConfirmed(conn: QuicheConn): Boolean = hIsHandshakeConfirmed.invokeExact(conn.handle) as Boolean
 
     override fun connIsClosed(conn: QuicheConn): Boolean = hIsClosed.invokeExact(conn.handle) as Boolean
+
+    override fun connIsDraining(conn: QuicheConn): Boolean = hIsDraining.invokeExact(conn.handle) as Boolean
 
     override fun connIsTimedOut(conn: QuicheConn): Boolean = hIsTimedOut.invokeExact(conn.handle) as Boolean
 

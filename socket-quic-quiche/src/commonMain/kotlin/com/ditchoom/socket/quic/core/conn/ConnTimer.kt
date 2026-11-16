@@ -54,6 +54,29 @@ internal class ConnTimer(
         armed = Armed.At(port.arm(due, fire))
     }
 
+    /** Arms for the earliest time offered into [sink] alone, or not at all: an ended connection drives no quiche timer. */
+    fun armOffered(fire: Runnable) {
+        val asked = sink.state()
+        val due = sink.earliest()
+        sink.reset()
+        when (asked) {
+            WakeState.NotAsked -> return disarm()
+            WakeState.Asked -> Unit
+        }
+        when (val a = armed) {
+            is Armed.At -> if (a.node.isArmed() && a.node.dueNanos == due.value) return
+            is Armed.Not -> Unit
+        }
+        disarm()
+        armed = Armed.At(port.arm(due, fire))
+    }
+
+    /** When quiche's draining ends, seen at [now]: its timer once it sent a close, or [now] when it has none. */
+    fun drainEnds(now: Nanos): Nanos {
+        val wait = q.api.connTimeoutNanos(q.handle)
+        return if (wait == NO_TIMEOUT_NANOS) now else now + wait
+    }
+
     /** The deadline fell due: quiche's timeout runs. */
     fun expire() {
         when (val a = armed) {

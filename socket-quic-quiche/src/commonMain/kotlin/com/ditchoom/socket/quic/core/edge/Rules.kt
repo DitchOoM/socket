@@ -3,11 +3,13 @@ package com.ditchoom.socket.quic.core.edge
 import com.ditchoom.socket.quic.HandshakePacing
 import com.ditchoom.socket.quic.HandshakePolicy
 import com.ditchoom.socket.quic.LinkClass
+import com.ditchoom.socket.quic.QuicCloseLinger
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.RttPrior
 import com.ditchoom.socket.quic.core.conn.HandshakeBound
 import com.ditchoom.socket.quic.core.conn.HandshakeRule
 import com.ditchoom.socket.quic.core.conn.PtoRule
+import com.ditchoom.socket.quic.core.life.CloseRule
 import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.transport.NetworkKind
 
@@ -20,6 +22,17 @@ internal fun clientHandshakeRule(
 /** The handshake rule of a server: it cannot know a client's link, so its prior is RFC 9002's unless one is known. */
 internal fun serverHandshakeRule(options: QuicOptions): HandshakeRule =
     handshakeRule(options, LinkClass.Unknown, HandshakeRule.RFC9002_PRIOR_NANOS)
+
+/**
+ * When a graceful close sends its CONNECTION_CLOSE, from [QuicOptions.closeLinger]: waiting for acknowledgement is
+ * bounded by the idle timeout, as a peer that acknowledges nothing for that long would have ended the connection.
+ */
+internal fun closeRuleOf(options: QuicOptions): CloseRule =
+    when (val linger = options.closeLinger) {
+        is QuicCloseLinger.Immediate -> CloseRule.Immediate
+        is QuicCloseLinger.UntilAcknowledged -> CloseRule.UntilAcknowledged(options.idleTimeout.inWholeNanoseconds)
+        is QuicCloseLinger.UntilPeerDone -> CloseRule.UntilPeerDone(linger.bound.inWholeNanoseconds)
+    }
 
 /** The link class of a network the monitor identified; a VPN, another kind or no identity is [LinkClass.Unknown]. */
 internal fun linkClassOf(id: NetworkId): LinkClass =

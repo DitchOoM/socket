@@ -318,6 +318,9 @@ interface QuicheApi {
 
     fun connIsClosed(conn: QuicheConn): Boolean
 
+    /** `quiche_conn_is_draining`: quiche sent its CONNECTION_CLOSE, or read the peer's, and sends nothing more. */
+    fun connIsDraining(conn: QuicheConn): Boolean
+
     fun connIsTimedOut(conn: QuicheConn): Boolean
 
     // --- Session resumption and 0-RTT (RFC 8446 §2.2, RFC 9001 §4.6) ---

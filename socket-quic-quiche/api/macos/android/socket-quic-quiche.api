@@ -176,6 +176,7 @@ public final class com/ditchoom/socket/quic/JniQuicheApi : com/ditchoom/socket/q
 	public fun connEarlyDataReason-ObL0uzk (J)I
 	public fun connFree-ObL0uzk (J)V
 	public fun connIsClosed-ObL0uzk (J)Z
+	public fun connIsDraining-ObL0uzk (J)Z
 	public fun connIsEstablished-ObL0uzk (J)Z
 	public fun connIsHandshakeConfirmed-ObL0uzk (J)Z
 	public fun connIsInEarlyData-ObL0uzk (J)Z
@@ -678,6 +679,7 @@ public abstract interface class com/ditchoom/socket/quic/QuicheApi {
 	public abstract fun connEarlyDataReason-ObL0uzk (J)I
 	public abstract fun connFree-ObL0uzk (J)V
 	public abstract fun connIsClosed-ObL0uzk (J)Z
+	public abstract fun connIsDraining-ObL0uzk (J)Z
 	public abstract fun connIsEstablished-ObL0uzk (J)Z
 	public abstract fun connIsHandshakeConfirmed-ObL0uzk (J)Z
 	public abstract fun connIsInEarlyData-ObL0uzk (J)Z

@@ -78,6 +78,7 @@ abstract interface com.ditchoom.socket.quic/QuicheApi { // com.ditchoom.socket.q
     abstract fun connEarlyDataReason(com.ditchoom.socket.quic/QuicheConn): kotlin/Int // com.ditchoom.socket.quic/QuicheApi.connEarlyDataReason|connEarlyDataReason(com.ditchoom.socket.quic.QuicheConn){}[0]
     abstract fun connFree(com.ditchoom.socket.quic/QuicheConn) // com.ditchoom.socket.quic/QuicheApi.connFree|connFree(com.ditchoom.socket.quic.QuicheConn){}[0]
     abstract fun connIsClosed(com.ditchoom.socket.quic/QuicheConn): kotlin/Boolean // com.ditchoom.socket.quic/QuicheApi.connIsClosed|connIsClosed(com.ditchoom.socket.quic.QuicheConn){}[0]
+    abstract fun connIsDraining(com.ditchoom.socket.quic/QuicheConn): kotlin/Boolean // com.ditchoom.socket.quic/QuicheApi.connIsDraining|connIsDraining(com.ditchoom.socket.quic.QuicheConn){}[0]
     abstract fun connIsEstablished(com.ditchoom.socket.quic/QuicheConn): kotlin/Boolean // com.ditchoom.socket.quic/QuicheApi.connIsEstablished|connIsEstablished(com.ditchoom.socket.quic.QuicheConn){}[0]
     abstract fun connIsHandshakeConfirmed(com.ditchoom.socket.quic/QuicheConn): kotlin/Boolean // com.ditchoom.socket.quic/QuicheApi.connIsHandshakeConfirmed|connIsHandshakeConfirmed(com.ditchoom.socket.quic.QuicheConn){}[0]
     abstract fun connIsInEarlyData(com.ditchoom.socket.quic/QuicheConn): kotlin/Boolean // com.ditchoom.socket.quic/QuicheApi.connIsInEarlyData|connIsInEarlyData(com.ditchoom.socket.quic.QuicheConn){}[0]

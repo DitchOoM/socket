@@ -145,6 +145,11 @@ internal class GuardedQuicheApi(
         return delegate.connIsClosed(conn)
     }
 
+    override fun connIsDraining(conn: QuicheConn): Boolean {
+        guard.assertOnLoop(LoopSite.Quiche)
+        return delegate.connIsDraining(conn)
+    }
+
     override fun connIsTimedOut(conn: QuicheConn): Boolean {
         guard.assertOnLoop(LoopSite.Quiche)
         return delegate.connIsTimedOut(conn)

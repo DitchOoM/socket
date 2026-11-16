@@ -73,7 +73,7 @@ internal class ClientParts(
     private val edge = EdgeState(alpn.owner, capture)
     val conn: Conn =
         buildConn(
-            rules = SlotRules.forWaits(w.running.waits, w.handshake),
+            rules = SlotRules.forWaits(w.running.waits, w.handshake, closeRuleOf(w.options)),
             q = QuicheConnRef(w.api, w.handle),
             side = ConnSide.Client(w.ids),
             address =

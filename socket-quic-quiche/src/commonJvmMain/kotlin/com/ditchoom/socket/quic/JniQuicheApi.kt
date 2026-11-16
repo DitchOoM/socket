@@ -376,6 +376,8 @@ object JniQuicheApi : QuicheApi {
 
     override fun connIsClosed(conn: QuicheConn): Boolean = nConnIsClosed(conn.handle)
 
+    override fun connIsDraining(conn: QuicheConn): Boolean = nConnIsDraining(conn.handle)
+
     override fun connIsTimedOut(conn: QuicheConn): Boolean = nConnIsTimedOut(conn.handle)
 
     override fun connSetSession(
@@ -1123,6 +1125,8 @@ object JniQuicheApi : QuicheApi {
     private external fun nConnIsEstablished(conn: Long): Boolean
 
     @JvmStatic private external fun nConnIsClosed(conn: Long): Boolean
+
+    @JvmStatic private external fun nConnIsDraining(conn: Long): Boolean
 
     @JvmStatic private external fun nConnIsTimedOut(conn: Long): Boolean
 

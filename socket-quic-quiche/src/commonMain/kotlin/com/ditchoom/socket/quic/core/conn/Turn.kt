@@ -2,6 +2,7 @@ package com.ditchoom.socket.quic.core.conn
 
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicError
+import com.ditchoom.socket.quic.core.life.CloseHow
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.Ending
 import com.ditchoom.socket.quic.core.life.Life
@@ -9,12 +10,12 @@ import com.ditchoom.socket.quic.core.life.LifeStep
 import com.ditchoom.socket.quic.core.life.SpareId
 import com.ditchoom.socket.quic.core.life.Tier
 import com.ditchoom.socket.quic.core.life.Tiers
+import com.ditchoom.socket.quic.core.life.endOf
 import com.ditchoom.socket.quic.core.life.errorCode
 import com.ditchoom.socket.quic.core.life.flightCode
 import com.ditchoom.socket.quic.core.observe.TraceSection
 import com.ditchoom.socket.quic.core.observe.traced
 import com.ditchoom.socket.quic.core.path.MoveAnswer
-import com.ditchoom.socket.quic.core.path.RecvFrom
 import com.ditchoom.socket.quic.core.sched.LoopPort
 import com.ditchoom.socket.quic.core.sched.Pushed
 import com.ditchoom.socket.quic.core.time.LoopClock
@@ -66,17 +67,20 @@ internal class Turn(
     ): Collected {
         try {
             c.inbox.drain(runWork)
-            if (c.life.view() is Life.Ended) return last(now, out)
+            when (c.life.view()) {
+                is Life.Open -> Unit
+                is Life.Over -> return over(now, out, fire)
+            }
             val collected = step(now, out)
-            when (collected) {
-                Collected.Everything -> c.rearm(now, fire)
-                Collected.MoreWaiting, Collected.Abandoned -> Unit
+            when (c.life.view()) {
+                is Life.Open -> if (collected == Collected.Everything) c.rearm(now, fire)
+                is Life.Over -> return over(now, out, fire)
             }
             c.flight.toTrace()
             return collected
         } catch (failure: Exception) {
             fail(now, failure)
-            return last(now, out)
+            return over(now, out, fire)
         }
     }
 
@@ -94,9 +98,7 @@ internal class Turn(
         }
 
     /** Inside, as the loop, with nothing to send: runs the queued work only. */
-    fun drain() {
-        c.inbox.drain(runWork)
-    }
+    fun drain() = c.inbox.drain(runWork)
 
     /** Inside, as a caller with no lane: runs the queued work only; the loop writes what it leaves. */
     fun drainAsCaller(now: Nanos): Collected =
@@ -108,20 +110,20 @@ internal class Turn(
             Collected.Abandoned
         }
 
-    /** Inside: quiche reads a datagram at the start of [bytes] that came [from]. */
+    /** Inside: quiche reads a datagram at the start of [bytes] that came [from]; one after the end is only counted. */
     fun receive(
         bytes: NativeBytes,
         length: Int,
         from: PathKey,
         now: Nanos,
     ) {
-        if (c.life.view() is Life.Ended) return
+        when (c.life.view()) {
+            is Life.Open -> Unit
+            is Life.Over -> return c.life.linger.late()
+        }
         traced(TraceSection.ConnReceive) {
             try {
-                when (val info = paths.recvFrom(from)) {
-                    is RecvFrom.Info -> c.ingress.direct(bytes, length, info.recvInfo, now, c.flight)
-                    is RecvFrom.TooManyAddresses -> c.ingress.refused()
-                }
+                c.feed(bytes, length, from, now)
             } catch (failure: Exception) {
                 fail(now, failure)
             }
@@ -137,12 +139,7 @@ internal class Turn(
 
     /** Inside: the connection's deadline fell due. While unconfirmed, the handshake follows quiche's PTO expiries. */
     fun expire() {
-        if (c.life.view() !is Life.Open) return
-        c.timer.expire()
-        when (c.handshake.confirmation()) {
-            Confirmation.Pending -> c.handshake.expired(paths.read())
-            Confirmation.Confirmed -> Unit
-        }
+        if (c.life.view() is Life.Open) c.expired(paths)
     }
 
     fun network(
@@ -192,12 +189,14 @@ internal class Turn(
         c.flight.toTrace()
     }
 
-    /** Inside for good, nobody else can enter: frees quiche's memory. */
+    /** Inside for good, nobody else can enter: a linger still running is cut, and quiche's memory is freed. */
     fun free(now: Nanos) {
         finish(now, ConnEnd.Released)
+        c.life.settle()
         c.release.free(paths)
     }
 
+    /** Serves an open connection: the handshake, quiche's own close, a flush that is over, paths, and output. */
     private fun step(
         now: Nanos,
         out: SendBatch,
@@ -207,20 +206,22 @@ internal class Turn(
             HandshakeStep.JustEstablished -> {
                 c.sink.established(c.handshake.report(now, paths.read()))
                 paths.established()
-                streams()
+                c.wakeStreams()
             }
-            HandshakeStep.Established -> streams()
+            HandshakeStep.Established -> c.wakeStreams()
             HandshakeStep.DeadlinePassed -> {
-                c.life.close(QuicError.NoError)
-                finish(now, ConnEnd.HandshakeTimedOut(c.handshake.progress(now, paths.read())))
-                return last(now, out)
+                val end = ConnEnd.HandshakeTimedOut(c.handshake.progress(now, paths.read()))
+                c.life.close(QuicError.NoError, end, CloseHow.Now, now)
+                finish(now, end)
+                return Collected.Everything
             }
         }
+        c.life.flushStep(now)
         when (c.life.observe()) {
             LifeStep.Open -> Unit
             LifeStep.Closed -> {
                 finish(now, paths.endOf(c.network.endOf(c.life.quicheEnd())))
-                return last(now, out)
+                return Collected.Everything
             }
         }
         c.stepPaths(now)
@@ -229,34 +230,35 @@ internal class Turn(
                 is Pacing.Unpaced -> c.egress.write(out, paths, now, c.flight)
                 is Pacing.ByQuiche -> c.egress.writePaced(out, paths, now, pacing.pacer, c.flight)
             }
+        if (c.life.linger.sending() && c.keepClose(now, out) == CloseSent.Yes) {
+            when (val life = c.life.view()) {
+                is Life.Closing -> finish(now, life.end)
+                is Life.Running, is Life.Over -> Unit
+            }
+        }
         return when (wrote) {
             Wrote.All -> Collected.Everything
             Wrote.BatchFull -> Collected.MoreWaiting
         }
     }
 
-    private fun streams() {
-        c.streams.wake()
-        c.streams.takeIncoming { c.sink.incoming(it) }
-    }
-
-    /** What quiche still has to say on the wire, such as the CONNECTION_CLOSE of a failed connection. */
-    private fun last(
+    /** [over], where quiche may fail again while the connection is already ending: then nothing more goes out. */
+    private fun over(
         now: Nanos,
         out: SendBatch,
-    ): Collected {
+        fire: Runnable,
+    ): Collected =
         try {
-            c.egress.write(out, paths, now, c.flight)
+            c.over(now, out, paths, fire)
         } catch (late: Exception) {
-            // quiche failed again while the connection is already ending: nothing more can go out.
+            c.life.settle()
+            c.timer.disarm()
+            Collected.Everything
         }
-        c.flight.toTrace()
-        return Collected.Everything
-    }
 
     private fun runOne(work: ConnWork) {
         when (val life = c.life.view()) {
-            is Life.Ended -> work.gone(life.end)
+            is Life.Over -> work.gone(endOf(life))
             is Life.Open ->
                 try {
                     work.run(inside)
@@ -271,13 +273,14 @@ internal class Turn(
         now: Nanos,
         failure: Throwable,
     ) {
-        if (c.life.view() is Life.Ended) return
+        if (c.life.view() is Life.Over) return
+        val end = ConnEnd.ProcessingFailed(Thrown(failure))
         try {
-            c.life.close(QuicError.ProcessingFailed)
+            c.life.close(QuicError.ProcessingFailed, end, CloseHow.Now, now)
         } catch (late: Exception) {
             failure.addSuppressed(late)
         }
-        finish(now, ConnEnd.ProcessingFailed(Thrown(failure)))
+        finish(now, end)
     }
 
     /** A caller's thread threw inside: the connection ends with it, and what it cannot contain is reported. */

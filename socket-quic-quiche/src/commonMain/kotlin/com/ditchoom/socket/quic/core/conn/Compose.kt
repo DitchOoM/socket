@@ -5,6 +5,7 @@ import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicRole
 import com.ditchoom.socket.quic.SendTarget
 import com.ditchoom.socket.quic.core.life.ConnLife
+import com.ditchoom.socket.quic.core.life.Linger
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.observe.ConnCounts
 import com.ditchoom.socket.quic.core.path.ClientPaths
@@ -111,7 +112,7 @@ internal fun buildConn(
     val parts =
         ConnParts(
             role = side.role(),
-            life = ConnLife(q),
+            life = ConnLife(q, Linger(q, rules.close, memory.factory, counts)),
             handshake = Handshake(q, rules.handshake, clock.now().value, memory.alpn),
             streams = StreamTable(q, StreamIo(q), side.role()),
             timer = ConnTimer(q, port, WakeSink()),

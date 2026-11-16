@@ -122,6 +122,9 @@ internal class ClientPaths(
     /** Where a datagram quiche wrote from the local address at [from] goes: out of the socket, if it is the socket's. */
     fun outgoing(from: Long): Outgoing = if (q.addressIs(from, socket().key)) toPeer else Outgoing.Dropped
 
+    /** Where the socket sends from where it is now, whichever address quiche wrote a datagram for. */
+    fun fromSocket(): Outgoing.To = toPeer
+
     /** The connection is established: the peer is given the spare ids a move needs. */
     fun established(): Issued = ids.issueAll(q, random)
 

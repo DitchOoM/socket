@@ -13,13 +13,13 @@ internal class ServeConn(
     override fun gone(end: ConnEnd) = Unit
 }
 
-/** Inside: the connection's deadline fell due. One per connection. */
+/** Inside: the connection's deadline fell due. One per connection. Once it has ended, its linger's deadline serves it instead. */
 internal class TimerWork(
     private val conn: Conn,
 ) : ConnWork() {
     override fun run(inside: Inside) = conn.timerFiredInside()
 
-    override fun gone(end: ConnEnd) = Unit
+    override fun gone(end: ConnEnd) = conn.timerFiredAfterEnd()
 }
 
 /** Inside, once: the loop or the socket ends the connection with [end]. */

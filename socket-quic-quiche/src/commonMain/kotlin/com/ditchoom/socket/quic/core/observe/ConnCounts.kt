@@ -7,6 +7,8 @@ internal class ConnCounts {
     private val handed = Counter()
     private val copied = Counter()
     private val dropped = Counter()
+    private val late = Counter()
+    private val resent = Counter()
 
     /** Times a caller entered a free connection and served it on its own thread. */
     val enteredInPlace: Long get() = entered.value()
@@ -23,6 +25,12 @@ internal class ConnCounts {
     /** Datagrams that arrived after the connection stopped taking work, or found no memory to be copied into. */
     val datagramsDropped: Long get() = dropped.value()
 
+    /** Datagrams that arrived after the connection ended: none is handed to quiche. */
+    val lateDatagrams: Long get() = late.value()
+
+    /** Times a lingering connection answered a late datagram with its CONNECTION_CLOSE again. */
+    val closesResent: Long get() = resent.value()
+
     fun enteredInPlace() = entered.increment()
 
     fun leftForHolder() = busy.increment()
@@ -32,4 +40,8 @@ internal class ConnCounts {
     fun datagramCopied() = copied.increment()
 
     fun datagramDropped() = dropped.increment()
+
+    fun lateDatagram() = late.increment()
+
+    fun closeResent() = resent.increment()
 }

@@ -3,6 +3,7 @@ package com.ditchoom.socket.quic.core.conn
 import com.ditchoom.socket.quic.DeadlineNode
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicError
+import com.ditchoom.socket.quic.core.life.CloseHow
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.ConnLife
 import com.ditchoom.socket.quic.core.life.Life
@@ -27,8 +28,12 @@ internal class Inside(
 
     fun life(): Life = life.view()
 
-    /** Starts the connection's close with [error]. */
-    fun close(error: QuicError) = life.close(error)
+    /** Starts the connection's close with [error]; with no error it flushes first, as the connection's close rule says. */
+    fun close(error: QuicError) =
+        life.close(error, ConnEnd.ByLocal(error), if (error is QuicError.NoError) CloseHow.Graceful else CloseHow.Now, clock.now())
+
+    /** Starts the close its server asks for, with no error and no flush. */
+    fun closeForServer() = life.close(QuicError.NoError, ConnEnd.ServerClosed, CloseHow.Now, clock.now())
 
     /** Any deadline an operation needs, on the connection's loop. */
     fun arm(

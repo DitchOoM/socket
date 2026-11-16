@@ -558,6 +558,10 @@ JNIEXPORT jboolean JNICALL JNI_FN(nConnIsClosed)(JNIEnv *env, jclass cls, jlong 
     return (jboolean)quiche_conn_is_closed((const quiche_conn *)(uintptr_t)conn);
 }
 
+JNIEXPORT jboolean JNICALL JNI_FN(nConnIsDraining)(JNIEnv *env, jclass cls, jlong conn) {
+    return (jboolean)quiche_conn_is_draining((const quiche_conn *)(uintptr_t)conn);
+}
+
 JNIEXPORT jboolean JNICALL JNI_FN(nConnIsTimedOut)(JNIEnv *env, jclass cls, jlong conn) {
     return (jboolean)quiche_conn_is_timed_out((const quiche_conn *)(uintptr_t)conn);
 }

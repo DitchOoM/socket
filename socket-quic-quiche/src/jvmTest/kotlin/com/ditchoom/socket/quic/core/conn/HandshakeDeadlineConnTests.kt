@@ -29,7 +29,12 @@ class HandshakeDeadlineConnTests {
     private fun rig(bound: HandshakeBound) =
         ConnRig(
             api,
-            rules = SlotRules.forWaits(WaitResolution(ms), HandshakeRule.adaptive(80 * ms, 25 * ms, bound, LinkClass.Wifi)),
+            rules =
+                SlotRules.forWaits(
+                    WaitResolution(ms),
+                    HandshakeRule.adaptive(80 * ms, 25 * ms, bound, LinkClass.Wifi),
+                    SlotRules.Default.close,
+                ),
         )
 
     /**

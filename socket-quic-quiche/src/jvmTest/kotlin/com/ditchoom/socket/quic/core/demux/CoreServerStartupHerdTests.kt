@@ -14,6 +14,7 @@ import com.ditchoom.socket.quic.QuicRole
 import com.ditchoom.socket.quic.QuicheConn
 import com.ditchoom.socket.quic.SendTarget
 import com.ditchoom.socket.quic.applyQuicOptions
+import com.ditchoom.socket.quic.core.edge.CoreServer
 import com.ditchoom.socket.quic.core.edge.LoopDriver
 import com.ditchoom.socket.quic.core.edge.addressOf
 import com.ditchoom.socket.quic.core.edge.coreServe
@@ -76,9 +77,43 @@ class CoreServerStartupHerdTests {
     fun aThousandClientsStartingTogetherAllCompleteTheirHandshakesThroughAKernelBufferOfTwoHundredDatagrams() =
         herd(kernelBuffer = 200, wave = 200)
 
+    /**
+     * A server with a thousand established connections shuts down: every client receives the server's CONNECTION_CLOSE
+     * with no error, no close is left unsent at the drain bound, and the server lets go of every connection and route.
+     */
+    @Test
+    fun aServerShuttingDownWithAThousandConnectionsSendsEachItsCloseAndLetsGoOfEveryRoute() =
+        herd(kernelBuffer = Int.MAX_VALUE, wave = Int.MAX_VALUE) { server, network, clients, now ->
+            val closing = async { server.close() }
+            yield()
+            server.loop.run()
+            closing.await()
+            val replies = network.toClients.toList()
+            network.toClients.clear()
+            val factory = BufferFactory.Default
+            for (reply in replies) {
+                val client = clients.first { it.path == reply.path }
+                val bytes = factory.allocate(reply.bytes.size).apply { writeBytes(reply.bytes) }
+                api().connRecv(client.conn, addressOf(bytes), reply.bytes.size, client.recvInfo)
+                bytes.freeNativeMemory()
+            }
+            val told = clients.count { api().connPeerError(it.conn) == com.ditchoom.socket.quic.QuicError.NoError }
+            assertEquals(CLIENTS, told, "clients that read the server's CONNECTION_CLOSE with no error, at ${(now - START) / MILLI} ms")
+            assertEquals(0L, server.counts.closesUnsettled, "closes still with a thread inside at the drain bound")
+            assertEquals(0, server.parts.connections, "connections the stopped server still routes to")
+        }
+
+    private fun api() = loadQuicheApi()
+
     private fun herd(
         kernelBuffer: Int,
         wave: Int,
+        afterHandshakes: suspend kotlinx.coroutines.CoroutineScope.(
+            CoreServer,
+            MemoryNetwork,
+            List<Client>,
+            Long,
+        ) -> Unit = { _, _, _, _ -> },
     ) = runBlocking {
         val api = loadQuicheApi()
         val factory = BufferFactory.Default
@@ -209,14 +244,17 @@ class CoreServerStartupHerdTests {
             )
             assertEquals(CLIENTS, established, "handshakes completed")
             assertEquals(0, network.kernelDrops, "Initials the kernel buffer dropped because the server had not taken them yet")
+            afterHandshakes(server, network, clients, now)
         } finally {
             api.clearThreadVirtualTime()
             clients.forEach { api.connFree(it.conn) }
             // Nothing else runs the loop: asking for the close and then running it to its end is the whole shutdown.
-            val closing = async { server.close() }
-            yield()
-            server.loop.run()
-            closing.await()
+            if (server.loop.life.load() == com.ditchoom.socket.quic.core.loop.LoopLife.Alive) {
+                val closing = async { server.close() }
+                yield()
+                server.loop.run()
+                closing.await()
+            }
         }
     }
 

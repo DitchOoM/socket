@@ -181,6 +181,12 @@ internal class Conn(
         turn.expire()
     }
 
+    /** Loop thread: the deadline of a connection that ended fell due: the loop serves it, which steps its linger. */
+    internal fun timerFiredAfterEnd() {
+        timerQueued.store(IDLE)
+        scheduleServe()
+    }
+
     private fun touch(): LoopHold {
         if (hold == LoopHold.In) return hold
         hold =
