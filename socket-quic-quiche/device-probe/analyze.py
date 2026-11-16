@@ -21,6 +21,16 @@ A probe with lanes (one concurrent connection per target) prefixes every line wi
 `lane=run` for the run's own. Each lane is analysed exactly as a whole log is, then the lanes are
 paired handoff by handoff. A log without the token is one lane and prints exactly what it always did.
 
+A lane labelled `core-<family>` runs the run-to-completion core client against the same server as the 4.x lane
+`<family>`. With lanes of both engines in the log the report ends with an engine comparison — per lane the deaths
+by typed reason, the reconnect time (death to first answered echo) and the echo gap at each handoff — so the two
+stacks are read side by side over the same networks.
+
+`LIFECYCLE step=<n> name=<name> phase=begin|end` lines (written under `lane=run` by lifecycle.sh, which drives
+Doze, standby buckets, trim-memory, background kill, force-stop, airplane mode and Wi-Fi toggles on a device)
+add a per-step table: what each lane did through the step — survived, died with its typed reason, or recovered
+in Xs.
+
 `OS-NET` is a DEVICE fact, not a lane one — the radio, the links, their address families — so the
 probe writes it once under `lane=run` and it is shared into every lane the way `START` is. Its
 timeline is printed once, as a field-by-field diff, and each lane reports whether its connections'
@@ -658,6 +668,30 @@ ENDINGS = ("CONNECTION-DEAD", "CONNECTION-ENDED", "STREAM-ENDED-BY-PEER", "STREA
 DISRUPTION = ("PATH Probing", "PATH Validated", "PATH Migrated", "PATH Failed") + ENDINGS
 
 
+def handoff_gap(answered, start, end):
+    """The longest stretch without an answered echo across a handoff spanning start..end, edges included."""
+    lo, hi = start - 5_000, end + 30_000
+    points = [t for t in answered if lo <= t <= hi]
+    before = [t for t in answered if t < lo]
+    after = [t for t in answered if t > hi]
+    edges = ([before[-1]] if before else [lo]) + points + ([after[0]] if after else [hi])
+    return max(edges[k + 1] - edges[k] for k in range(len(edges) - 1))
+
+
+def handoff_clusters(lanes):
+    """Handoffs as clusters of (t, lane, body) path-activity events, events < HANDOFF_GAP_MS apart being one handoff."""
+    names = [n for n in lanes if n != RUN_LANE]
+    events = sorted((t, n, b) for n in names for t, b in lanes[n]
+                    if b.startswith(DISRUPTION) or (b.startswith("CONNECT-ATTEMPT") and not b.startswith("CONNECT-ATTEMPT n=1 ")))
+    clusters = []
+    for t, n, b in events:
+        if clusters and t - clusters[-1][-1][0] <= HANDOFF_GAP_MS:
+            clusters[-1].append((t, n, b))
+        else:
+            clusters.append([(t, n, b)])
+    return clusters
+
+
 def paired_handoffs(lanes):
     """One row per handoff: what each lane's path did, and the longest stretch it went without an answered echo."""
     names = [n for n in lanes if n != RUN_LANE]
@@ -697,15 +731,173 @@ def paired_handoffs(lanes):
             if reconnects:
                 parts.append(f"reconnect×{reconnects}")
             path = "; ".join(parts) if parts else "no path event"
-            # The longest stretch without an answered echo across the handoff, edges included.
-            lo, hi = start - 5_000, end + 30_000
-            points = [t for t in answered[n] if lo <= t <= hi]
-            before = [t for t in answered[n] if t < lo]
-            after = [t for t in answered[n] if t > hi]
-            edges = ([before[-1]] if before else [lo]) + points + ([after[0]] if after else [hi])
-            gap = max(edges[k + 1] - edges[k] for k in range(len(edges) - 1))
+            gap = handoff_gap(answered[n], start, end)
             cells.append(f"{n}: {path}, echo gap {gap / 1000:.1f}s")
         print(f"  #{i + 1} t+{start / 1000:.0f}s ({(end - start) / 1000:.1f}s) | " + " | ".join(cells))
+
+
+# --- engines: core lanes against 4.x lanes ---
+#
+# A lane `core-<family>` is the run-to-completion core client; any other lane is the 4.x client. The core has
+# no migration yet, so every handoff it crosses ends its connection: the question is how it ends (the typed
+# reason on CONNECTION-DEAD) and how long the lane is without an answered echo before it is back.
+CORE_PREFIX = "core-"
+DEAD_REASON = re.compile(r"CONNECTION-DEAD seq=\d+ reason=(.*?)(?: — leaving scope| - leaving scope|$)")
+ENDED_ERR_LINE = re.compile(r"CONNECTION-ENDED err=(\S+)")
+STREAM_ENDS = ("STREAM-ENDED-BY-PEER", "STREAM-RESET-BY-PEER", "STREAM-WRITES-STALLED", "STREAM-WRITE-TORN")
+Death = namedtuple("Death", "t reason recovered_ms")
+
+
+def engine_of(lane):
+    return "core" if lane.startswith(CORE_PREFIX) else "4.x"
+
+
+def death_reason(body):
+    """The typed reason a line names for the connection ending, or None when the line is not an ending."""
+    if body.startswith("CONNECTION-DEAD"):
+        m = DEAD_REASON.match(body)
+        return m.group(1).strip() if m else "unparsed"
+    if body.startswith(STREAM_ENDS):
+        return body.split(" ", 1)[0]
+    m = ENDED_ERR_LINE.match(body)
+    if m:
+        return "ended: " + m.group(1)
+    return None
+
+
+def lane_deaths(events):
+    """Every established connection that ended before the walk did, with its typed reason and how long until the
+    lane's next answered echo ('recovered_ms' is None when none came). Events are (t, body), time-ordered."""
+    answered = sorted(t for t, b in events if b.startswith(("ECHO-OK", "ECHO-LATE")))
+    deaths, connected, dead = [], False, False
+    for t, b in events:
+        if b.startswith("CONNECT-ATTEMPT"):
+            connected, dead = False, False
+        elif b.startswith("CONNECTED "):
+            connected = True
+        elif connected and not dead and not b.startswith("SCOPE-EXITED"):
+            reason = death_reason(b)
+            if reason is not None:
+                dead = True
+                later = bisect.bisect_right(answered, t)
+                deaths.append(Death(t, reason, answered[later] - t if later < len(answered) else None))
+    return deaths
+
+
+def percentile_text(values_ms):
+    if not values_ms:
+        return "n/a"
+    ordered = sorted(values_ms)
+    return f"p50={ordered[len(ordered) // 2] / 1000:.1f}s max={ordered[-1] / 1000:.1f}s"
+
+
+def print_engine_comparison(lanes):
+    names = [n for n in lanes if n != RUN_LANE]
+    engines = {engine_of(n) for n in names}
+    if len(engines) < 2:
+        return
+    print("\nengine comparison — core lanes against 4.x lanes (same server, same device, same networks):")
+    clusters = handoff_clusters(lanes)
+    answered = {n: sorted(t for t, b in lanes[n] if b.startswith(("ECHO-OK", "ECHO-LATE"))) for n in names}
+    per_engine = {}
+    for n in sorted(names, key=lambda n: (engine_of(n) != "4.x", n)):
+        deaths = lane_deaths(lanes[n])
+        by_reason = Counter(d.reason for d in deaths)
+        recovered = [d.recovered_ms for d in deaths if d.recovered_ms is not None]
+        gaps = [handoff_gap(answered[n], c[0][0], c[-1][0]) for c in clusters]
+        print(f"  lane {n} [{engine_of(n)}]: deaths={len(deaths)} by reason: {render_counts(by_reason)}")
+        print(f"      reconnect (death -> first answered echo): {percentile_text(recovered)}"
+              f"{'' if len(recovered) == len(deaths) else f' ({len(deaths) - len(recovered)} never recovered)'}")
+        print(f"      echo gap per handoff ({len(gaps)}): " + (" ".join(f"{g / 1000:.1f}s" for g in gaps) or "none")
+              + (f"  worst={max(gaps) / 1000:.1f}s" if gaps else ""))
+        agg = per_engine.setdefault(engine_of(n), {"deaths": 0, "recovered": [], "gaps": []})
+        agg["deaths"] += len(deaths)
+        agg["recovered"] += recovered
+        agg["gaps"] += gaps
+    for engine in ("4.x", "core"):
+        if engine in per_engine:
+            a = per_engine[engine]
+            print(f"  {engine} overall: deaths={a['deaths']} reconnect {percentile_text(a['recovered'])}"
+                  f" | handoff echo gap {percentile_text(a['gaps'])}")
+
+
+# --- lifecycle steps ---
+#
+# lifecycle.sh drives the app through the states a phone puts it in and writes
+#   LIFECYCLE step=<n> name=<name> phase=begin|end probe=alive|dead [action=…]
+# under lane=run. A step's window runs from its begin to the next step's begin (or the log's end): a lane
+# that dies in it is reported with its typed reason and how long it took to answer an echo again.
+LIFECYCLE_STEP = re.compile(r"LIFECYCLE step=(\d+) name=(\S+) phase=(begin|end)\b")
+SETTLE_MS = 120_000
+
+
+def lifecycle_steps(run_events, last_t):
+    """[(step, name, begin_t, end_t, window_end)] in order."""
+    begins, ends = {}, {}
+    for t, b in run_events:
+        m = LIFECYCLE_STEP.match(b)
+        if not m:
+            continue
+        (begins if m.group(3) == "begin" else ends).setdefault(int(m.group(1)), (t, m.group(2)))
+    ordered = sorted(begins.items(), key=lambda kv: kv[1][0])
+    steps = []
+    for i, (step, (t0, name)) in enumerate(ordered):
+        end_t = ends.get(step, (t0, name))[0]
+        nxt = ordered[i + 1][1][0] if i + 1 < len(ordered) else last_t
+        steps.append((step, name, t0, end_t, max(nxt, end_t)))
+    return steps
+
+
+RESUMED = "PREVIOUS-RUN none — resuming"
+
+
+def lane_in_step(events, t0, window_end, restarts=()):
+    """What one lane did through a step: survived, died (typed reason) and recovered in Xs, or never recovered.
+    `restarts` are the times the probe process was restarted in place (a killed process writes no ending of its
+    own, so the restart is the evidence); a lane is then reported killed, and its recovery is timed from the
+    step's begin to its first answered echo after the restart."""
+    answered = sorted(t for t, b in events if b.startswith(("ECHO-OK", "ECHO-LATE")))
+    killed = [r for r in restarts if t0 <= r <= window_end]
+    if killed:
+        later = bisect.bisect_right(answered, killed[0])
+        if later < len(answered):
+            return f"killed with the process, recovered in {(answered[later] - t0) / 1000:.1f}s (from the step's start)", True
+        return "killed with the process, NOT recovered by window end", True
+    inside = [(t, b) for t, b in events if t0 <= t <= window_end]
+    died = next(((t, r) for t, b in inside for r in [death_reason(b)] if r is not None and not b.startswith("SCOPE-EXITED")), None)
+    if died is None:
+        # No ending, but a connection that was down for the whole window has no echoes.
+        points = [t for t in answered if t0 <= t <= window_end]
+        if points:
+            return "survived", False
+        return "silent (no echo, no ending)", False
+    t, reason = died
+    later = bisect.bisect_right(answered, t)
+    if later < len(answered) and answered[later] <= window_end + SETTLE_MS:
+        return f"died ({reason}), recovered in {(answered[later] - t) / 1000:.1f}s", True
+    return f"died ({reason}), NOT recovered by window end", True
+
+
+def print_lifecycle(lanes, last_t):
+    run = lanes.get(RUN_LANE, [])
+    steps = lifecycle_steps(run, last_t)
+    if not steps:
+        return
+    names = [n for n in lanes if n != RUN_LANE]
+    restarts = [t for t, b in run if b.startswith(RESUMED)]
+    print("\nlifecycle steps — what each lane did (window = step begin to next step begin):")
+    for step, name, t0, end_t, window_end in steps:
+        probes = []
+        for _, b in run:
+            m = LIFECYCLE_STEP.match(b)
+            seen = re.search(r"probe=(\w+)", b)
+            if m and int(m.group(1)) == step and seen and seen.group(1) not in probes:
+                probes.append(seen.group(1))
+        print(f"  step {step} {name} t+{t0 / 1000:.0f}s..t+{end_t / 1000:.0f}s"
+              f"{' probe=' + '>'.join(probes) if probes else ''}")
+        for n in names:
+            verdict, _ = lane_in_step(lanes[n], t0, window_end, restarts)
+            print(f"      {n} [{engine_of(n)}]: {verdict}")
 
 
 def main():
@@ -729,6 +921,8 @@ def main():
         print(f"\n=================== lane {n} ===================")
         analyze(path, stamp(sorted(shared + lanes[n], key=lambda e: e[0])), lane=n)
     paired_handoffs(lanes)
+    print_engine_comparison(lanes)
+    print_lifecycle(lanes, max((t for evs in lanes.values() for t, _ in evs), default=0))
 
 
 if __name__ == "__main__":
