@@ -3,12 +3,12 @@
 package com.ditchoom.socket.quic.core.edge
 
 import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.ScopedRead
 import com.ditchoom.socket.quic.core.demux.withCoreEchoServer
 import com.ditchoom.socket.quic.core.loop.LoopSet
+import com.ditchoom.socket.quic.network
 import com.ditchoom.socket.quic.read
 import kotlinx.coroutines.runBlocking
 import kotlin.native.runtime.GC
@@ -30,7 +30,7 @@ class NativeEchoAllocationReport {
             withCoreEchoServer { server ->
                 val client = connectCore(server.port, loops = loops)
                 val stream = client.connection.openStream()
-                val out = BufferFactory.Default.allocate(PAYLOAD)
+                val out = BufferFactory.network().allocate(PAYLOAD)
                 val echo: suspend () -> Unit = {
                     out.resetForWrite()
                     out.position(PAYLOAD)
