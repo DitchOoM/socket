@@ -6,9 +6,7 @@ import com.ditchoom.socket.quic.core.conn.MovedWork
 import com.ditchoom.socket.quic.core.conn.NetworkChange
 import com.ditchoom.socket.quic.core.conn.NetworkWork
 import com.ditchoom.socket.quic.core.demux.Admitted
-import com.ditchoom.socket.quic.core.demux.ServerPhase
 import com.ditchoom.socket.quic.core.life.ConnEnd
-import com.ditchoom.socket.quic.core.life.Life
 import com.ditchoom.socket.quic.core.observe.LoopCounts
 import com.ditchoom.socket.quic.core.observe.LoopOnly
 import com.ditchoom.socket.quic.core.observe.TraceSection
@@ -241,11 +239,7 @@ internal class Endpoint(
         onLeft.run()
     }
 
-    private fun connEnded(): Boolean =
-        when (route) {
-            is Route.Fixed -> route.conn.life() is Life.Ended
-            is Route.Demux -> route.demux.phase() == ServerPhase.Stopped
-        }
+    private fun connEnded(): Boolean = route.ended()
 
     private fun noticeDeath() {
         when (val health = socket.health()) {
@@ -258,11 +252,7 @@ internal class Endpoint(
         }
     }
 
-    private fun endConn(end: ConnEnd) =
-        when (route) {
-            is Route.Fixed -> route.conn.endWithLoop(end)
-            is Route.Demux -> route.demux.endAll(end)
-        }
+    private fun endConn(end: ConnEnd) = route.endWith(end)
 
     /** The datagrams of one read, in a receive phase that began [at]. */
     private fun deliver(

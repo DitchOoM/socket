@@ -69,7 +69,7 @@ internal class Turn(
             if (c.life.view() is Life.Ended) return last(now, out)
             val collected = step(now, out)
             when (collected) {
-                Collected.Everything -> rearm(now, fire)
+                Collected.Everything -> c.rearm(now, fire)
                 Collected.MoreWaiting, Collected.Abandoned -> Unit
             }
             c.flight.toTrace()
@@ -238,18 +238,6 @@ internal class Turn(
     private fun streams() {
         c.streams.wake()
         c.streams.takeIncoming { c.sink.incoming(it) }
-    }
-
-    private fun rearm(
-        now: Nanos,
-        fire: Runnable,
-    ) {
-        when (val pacing = c.slots.pacing) {
-            is Pacing.Unpaced -> Unit
-            is Pacing.ByQuiche -> pacing.pacer.offerWake(c.timer.sink)
-        }
-        c.handshake.offerWake(c.timer.sink)
-        c.timer.rearm(now, fire)
     }
 
     /** What quiche still has to say on the wire, such as the CONNECTION_CLOSE of a failed connection. */

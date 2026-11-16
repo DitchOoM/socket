@@ -1,6 +1,9 @@
 package com.ditchoom.socket.quic.core.loop
 
 import com.ditchoom.socket.quic.core.conn.Conn
+import com.ditchoom.socket.quic.core.demux.ServerPhase
+import com.ditchoom.socket.quic.core.life.ConnEnd
+import com.ditchoom.socket.quic.core.life.Life
 
 /** A place in a loop's socket table: an endpoint, or empty. */
 internal sealed interface LoopSlot {
@@ -23,6 +26,20 @@ internal sealed interface Route {
         val demux: com.ditchoom.socket.quic.core.demux.Demux,
     ) : Route
 }
+
+/** Whether the connection, or the server, this route carries has ended. */
+internal fun Route.ended(): Boolean =
+    when (this) {
+        is Route.Fixed -> conn.life() is Life.Ended
+        is Route.Demux -> demux.phase() == ServerPhase.Stopped
+    }
+
+/** Ends every connection this route carries with [end]. */
+internal fun Route.endWith(end: ConnEnd) =
+    when (this) {
+        is Route.Fixed -> conn.endWithLoop(end)
+        is Route.Demux -> demux.endAll(end)
+    }
 
 /** Whether an endpoint is still on its loop after a serve. */
 internal enum class Stay { Stays, Left }
