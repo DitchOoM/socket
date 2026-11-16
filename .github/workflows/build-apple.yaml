@@ -178,9 +178,11 @@ jobs:
       # built from a DIFFERENT quiche source patch — exactly the #260/#263 bug where a pre-caller-clock
       # dylib (missing quiche_set_virtual_time_nanos) satisfied the marker and the JNI shim failed to link.
       # An exact-key miss must force a clean rebuild; cargo warm-start still comes from the cargo-target cache.
-      # Restore only: cache-warm-apple writes this key on main. A copy per pull-request ref (95 MB each)
-      # crowded the 10 GB cache; a pull request that changes the quiche build rebuilds these on each push.
+      # cache-warm-apple writes this key on main. A pull request saves its own copy (below) only when its
+      # quiche build inputs differ from main's, so only a pull request that changes the quiche build holds
+      # one (about 95 MB, deleted with the pull request's caches when it closes).
       - name: Restore quiche Apple native libs
+        id: restore_apple_natives
         uses: actions/cache/restore@v6
         with:
           path: |
@@ -213,6 +215,19 @@ jobs:
             if [ ! -f "$f" ]; then echo "::error::missing $f"; missing=1; else echo "ok: $f"; fi
           done
           [ "$missing" = 0 ] || { echo "::error::quiche Apple static libs missing — the build step failed."; exit 1; }
+
+      # The Apple natives sit on the iOS shard's critical path (8-9 min to build), so a pull request that
+      # changes the quiche build keeps them for its next push instead of rebuilding them every run.
+      - name: Save quiche Apple native libs for this pull request
+        if: ${{ github.event_name == 'pull_request' && steps.restore_apple_natives.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            socket-quic-quiche/libs/quiche/macos-arm64/lib
+            socket-quic-quiche/libs/quiche/macos-x64/lib
+            socket-quic-quiche/libs/quiche/ios-arm64/lib
+            socket-quic-quiche/libs/quiche/ios-simulator-arm64/lib
+          key: quiche-apple-v4-${{ steps.qkey.outputs.digest }}
 
       # ⚠️ include-hidden-files IS LOAD-BEARING — do not drop it.
       # The consumers skip their cargo builds via `onlyIf { !markerFile.exists() || ... }`, and every
