@@ -6,6 +6,7 @@ import com.ditchoom.socket.quic.SendTarget
 import com.ditchoom.socket.quic.StubQuicheApi
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.path.SinglePath
+import com.ditchoom.socket.quic.core.testing.FlightEvidenceRule
 import com.ditchoom.socket.quic.core.testing.nativeBytes
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.udp.BatchLimits
@@ -14,11 +15,15 @@ import com.ditchoom.socket.quic.core.udp.SockAddr
 import com.ditchoom.socket.quic.trace.TraceCapture
 import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.testkit.trace.TraceSink
+import org.junit.Rule
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /** Datagrams out: everything quiche has, up to a full batch, each committed to the path's target and recorded. */
 class EgressTests {
+    @get:Rule
+    val flightEvidence = FlightEvidenceRule()
+
     private val api = StubQuicheApi()
     private val q = QuicheConnRef(api, QuicheConn(1L))
     private val path = SinglePath(q, SockAddr(0L, 0), SockAddr(0L, 0), SendTarget.ConnectedPeer)

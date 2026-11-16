@@ -1,5 +1,7 @@
 package com.ditchoom.socket.quic.core.udp
 
+import com.ditchoom.socket.quic.core.testing.FlightEvidenceRule
+import org.junit.Rule
 import java.net.StandardSocketOptions
 import java.nio.channels.DatagramChannel
 import java.nio.file.Files
@@ -10,6 +12,9 @@ import kotlin.test.assertTrue
 
 /** The buffer sizes asked of the operating system and what it granted, and the per-socket drop count. */
 class SocketBuffersTests {
+    @get:Rule
+    val flightEvidence = FlightEvidenceRule()
+
     @Test
     fun theDefaultsAreFourMebibytesToReceiveAndTwoToSend() {
         assertEquals(4 shl 20, SocketBuffers.Default.receiveBytes)

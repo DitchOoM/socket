@@ -7,6 +7,7 @@ import com.ditchoom.socket.quic.core.sched.LoopPort
 import com.ditchoom.socket.quic.core.sched.LoopWork
 import com.ditchoom.socket.quic.core.testing.ConnRig
 import com.ditchoom.socket.quic.core.testing.FakeIo
+import com.ditchoom.socket.quic.core.testing.FlightEvidenceRule
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.udp.ArrivedOn
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
@@ -15,6 +16,7 @@ import com.ditchoom.socket.quic.core.udp.ReceiveBatchResult
 import com.ditchoom.socket.quic.core.udp.ReceiveBuffer
 import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.testkit.trace.TraceSink
+import org.junit.Rule
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
@@ -26,6 +28,9 @@ import kotlin.test.assertEquals
  * macOS and Linux, and by the next read of the same phase on Windows.
  */
 class ReceiveStampTests {
+    @get:Rule
+    val flightEvidence = FlightEvidenceRule()
+
     /** Returns the [reads] in order, one per receive call, then nothing. */
     private class Reads(
         private vararg val reads: Int,

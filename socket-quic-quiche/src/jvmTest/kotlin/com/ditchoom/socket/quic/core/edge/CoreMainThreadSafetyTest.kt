@@ -1,6 +1,7 @@
 package com.ditchoom.socket.quic.core.edge
 
 import com.ditchoom.socket.quic.QuicError
+import com.ditchoom.socket.quic.core.testing.FlightEvidenceRule
 import com.ditchoom.socket.quic.skipOnMissingNativeLib
 import com.ditchoom.socket.testkit.skip.SkipGate
 import com.ditchoom.socket.testkit.skip.SkipReason
@@ -11,6 +12,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.withContext
+import org.junit.Rule
 import reactor.blockhound.BlockHound
 import reactor.blockhound.BlockingOperationError
 import reactor.blockhound.integration.BlockHoundIntegration
@@ -28,6 +30,9 @@ import kotlin.test.assertTrue
  * BlockHound, which needs its own JVM (`mainThreadSafetyTest`) and `-XX:+AllowRedefinitionToAddDeleteMethods`.
  */
 class CoreMainThreadSafetyTest {
+    @get:Rule
+    val flightEvidence = FlightEvidenceRule()
+
     @Test
     fun aMainDispatcherCallerBlocksNoThreadAndTouchesNoSocket() =
         runBlocking {

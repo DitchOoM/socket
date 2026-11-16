@@ -10,8 +10,10 @@ import com.ditchoom.socket.quic.StubQuicheApi
 import com.ditchoom.socket.quic.core.conn.HandshakeBound
 import com.ditchoom.socket.quic.core.conn.HandshakeRule
 import com.ditchoom.socket.quic.core.conn.PtoRule
+import com.ditchoom.socket.quic.core.testing.FlightEvidenceRule
 import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.transport.NetworkKind
+import org.junit.Rule
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -20,6 +22,9 @@ import kotlin.time.Duration.Companion.seconds
 
 /** Options and the network monitor's link become the handshake rule a connection is built with. */
 class RulesTests {
+    @get:Rule
+    val flightEvidence = FlightEvidenceRule()
+
     private val ms = 1_000_000L
     private val defaults = QuicOptions(alpnProtocols = listOf("test"))
 

@@ -19,7 +19,7 @@ import kotlin.time.Duration.Companion.seconds
 class CoreErrorTierTests {
     @Test
     fun anErrorFromConnectionProcessingIsNotContained() =
-        withFailureRig { rig ->
+        withFailureRig("CoreErrorTierTests.anErrorFromConnectionProcessingIsNotContained") { rig ->
             val planted = PlantedError()
             val reported =
                 reportedOnTheLoop {
@@ -32,7 +32,7 @@ class CoreErrorTierTests {
 
     @Test
     fun anErrorInsideACallerEndsThatConnectionIsReportedAndTheCallerLeaves() =
-        withFailureRig { rig ->
+        withFailureRig("CoreErrorTierTests.anErrorInsideACallerEndsThatConnectionIsReportedAndTheCallerLeaves") { rig ->
             val planted = PlantedError()
             val reported = CompletableFuture<Throwable>()
             runOnAReportingCaller(rig, reported) { OnACaller(planted) }

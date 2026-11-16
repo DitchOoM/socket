@@ -7,6 +7,7 @@ import com.ditchoom.socket.quic.QuicheRecvInfo
 import com.ditchoom.socket.quic.core.edge.connectCore
 import com.ditchoom.socket.quic.core.edge.echoOver
 import com.ditchoom.socket.quic.core.loop.LoopSet
+import com.ditchoom.socket.quic.core.testing.FlightEvidenceRule
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.ReceiveBatchResult
@@ -16,6 +17,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import org.junit.Rule
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.random.Random
 import kotlin.test.AfterTest
@@ -26,6 +28,9 @@ import kotlin.time.Duration.Companion.milliseconds
 
 /** What the server does when more handshakes start than a pass admits, and what a connection's `recv_info` costs. */
 class CoreServerAdmissionTests {
+    @get:Rule
+    val flightEvidence = FlightEvidenceRule()
+
     @get:org.junit.Rule
     val noLeak: org.junit.rules.TestRule = NoServerLoopLeft()
 

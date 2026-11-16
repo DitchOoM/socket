@@ -8,8 +8,10 @@ import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.core.edge.CoreClient
 import com.ditchoom.socket.quic.core.edge.connectCore
 import com.ditchoom.socket.quic.core.loop.LoopSet
+import com.ditchoom.socket.quic.core.testing.FlightEvidenceRule
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import org.junit.Rule
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.test.AfterTest
 import kotlin.test.Test
@@ -22,6 +24,9 @@ import kotlin.time.Duration.Companion.milliseconds
  * how many connections a process holds (a thousand of them once filled that space).
  */
 class CoreServerMemoryTests {
+    @get:Rule
+    val flightEvidence = FlightEvidenceRule()
+
     private val loops = LoopSet(2)
 
     @AfterTest

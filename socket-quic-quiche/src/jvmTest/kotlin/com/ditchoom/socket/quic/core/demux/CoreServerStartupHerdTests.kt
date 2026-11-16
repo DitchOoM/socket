@@ -19,6 +19,7 @@ import com.ditchoom.socket.quic.core.edge.addressOf
 import com.ditchoom.socket.quic.core.edge.coreServe
 import com.ditchoom.socket.quic.core.edge.coreTestOptions
 import com.ditchoom.socket.quic.core.edge.coreTlsConfig
+import com.ditchoom.socket.quic.core.testing.FlightEvidenceRule
 import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.udp.ArrivedOn
@@ -40,6 +41,7 @@ import com.ditchoom.socket.quic.toNativeSockAddr
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.yield
+import org.junit.Rule
 import java.net.InetSocketAddress
 import java.nio.Buffer
 import java.nio.ByteBuffer
@@ -54,6 +56,9 @@ import kotlin.time.Duration.Companion.seconds
  * any client's idle timeout, which is nothing a scheduler, a socket or a machine's speed can change.
  */
 class CoreServerStartupHerdTests {
+    @get:Rule
+    val flightEvidence = FlightEvidenceRule()
+
     @get:org.junit.Rule
     val noLeak: org.junit.rules.TestRule = NoServerLoopLeft()
 

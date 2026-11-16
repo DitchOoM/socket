@@ -4,11 +4,11 @@ import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.core.edge.connectCore
 import com.ditchoom.socket.quic.core.edge.echoOver
 import com.ditchoom.socket.quic.core.loop.LoopSet
+import com.ditchoom.socket.quic.core.testing.coreTest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.runBlocking
 import kotlin.random.Random
 import kotlin.test.AfterTest
 import kotlin.test.Test
@@ -25,7 +25,7 @@ class CoreEchoTests {
 
     @Test
     fun aKibAndAMibEchoByteExact() =
-        runBlocking {
+        coreTest("CoreEchoTests.aKibAndAMibEchoByteExact") {
             withCoreEchoServer { server ->
                 val client = connectCore(server.port, loops = loops)
                 try {
@@ -42,7 +42,7 @@ class CoreEchoTests {
 
     @Test
     fun aThousandStreamsPerRequestEachEchoTheirOwnBytes() =
-        runBlocking {
+        coreTest("CoreEchoTests.aThousandStreamsPerRequestEachEchoTheirOwnBytes") {
             withCoreEchoServer { server ->
                 val client = connectCore(server.port, loops = loops)
                 try {
@@ -60,7 +60,7 @@ class CoreEchoTests {
 
     @Test
     fun sixtyFourConcurrentConnectionsEchoOnOneServerLoop() =
-        runBlocking {
+        coreTest("CoreEchoTests.sixtyFourConcurrentConnectionsEchoOnOneServerLoop") {
             withCoreEchoServer(ServerConfig(admission = AdmissionBounds(perPass = 256, inProgress = 2_048))) { server ->
                 val echoed =
                     (0 until CONNECTIONS)

@@ -1,7 +1,11 @@
 package com.ditchoom.socket.quic.core.conn
 
 import com.ditchoom.socket.quic.PathKey
+import com.ditchoom.socket.quic.QuicRole
 import com.ditchoom.socket.quic.core.observe.Confined
+import com.ditchoom.socket.quic.core.observe.EndedFlight
+import com.ditchoom.socket.quic.core.observe.Evidence
+import com.ditchoom.socket.quic.core.observe.FlightEvidence
 import com.ditchoom.socket.quic.core.observe.FlightKind
 import com.ditchoom.socket.quic.core.observe.FlightRing
 import com.ditchoom.socket.quic.core.time.Nanos
@@ -34,6 +38,7 @@ internal class ConnFlight(
 ) {
     private val ring = FlightRing(size.records)
     private val path = TracePath(peer.family, peer.port, peer.hi, peer.lo)
+    private val peerKey = peer
     private val peerId = ring.bindAddress(peer.family, peer.port, peer.hi, peer.lo)
     private val toTrace: TraceSink =
         when (capture) {
@@ -67,6 +72,20 @@ internal class ConnFlight(
         code: Int,
         error: Long,
     ) = ring.ended(now.value, code, error)
+
+    /**
+     * The connection ended: when [FlightEvidence] is keeping, the whole recording is handed to it while the payload is
+     * still in the arena. Costs one read when it is not.
+     */
+    fun keepEnded(role: QuicRole) =
+        when (FlightEvidence.current()) {
+            is Evidence.Off -> Unit
+            is Evidence.Keeping -> {
+                val events = ArrayList<TraceEvent>()
+                write(0L, TraceSink { events += it })
+                FlightEvidence.add(EndedFlight(role, peerKey, events))
+            }
+        }
 
     /** Writes what was recorded since the last call to the connection's trace, when the trace is on. */
     fun toTrace() =

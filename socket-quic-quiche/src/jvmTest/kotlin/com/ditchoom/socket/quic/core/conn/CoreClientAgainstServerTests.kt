@@ -15,6 +15,7 @@ import com.ditchoom.socket.quic.core.edge.EdgeEnd
 import com.ditchoom.socket.quic.core.edge.coreConnect
 import com.ditchoom.socket.quic.core.edge.coreTlsConfig
 import com.ditchoom.socket.quic.core.life.ConnEnd
+import com.ditchoom.socket.quic.core.testing.FlightEvidenceRule
 import com.ditchoom.socket.quic.loadQuicheApi
 import com.ditchoom.socket.quic.read
 import com.ditchoom.socket.quic.skipOnMissingNativeLib
@@ -26,6 +27,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import org.junit.Rule
 import java.io.ByteArrayOutputStream
 import kotlin.random.Random
 import kotlin.test.Test
@@ -38,6 +40,9 @@ import kotlin.time.Duration.Companion.seconds
  * written as fast as flow control allows, the same bytes echoed back, the connection closed and seen closed.
  */
 class CoreClientAgainstServerTests {
+    @get:Rule
+    val flightEvidence = FlightEvidenceRule()
+
     private val options = QuicOptions(alpnProtocols = listOf("test"), verifyPeer = false, idleTimeout = 10.seconds)
 
     /**

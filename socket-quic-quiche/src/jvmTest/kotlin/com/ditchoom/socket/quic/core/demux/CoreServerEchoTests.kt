@@ -5,12 +5,14 @@ import com.ditchoom.socket.quic.core.edge.connectCore
 import com.ditchoom.socket.quic.core.edge.coreTestOptions
 import com.ditchoom.socket.quic.core.edge.echoOver
 import com.ditchoom.socket.quic.core.loop.LoopSet
+import com.ditchoom.socket.quic.core.testing.FlightEvidenceRule
 import com.ditchoom.socket.quic.core.udp.buffers
 import com.ditchoom.socket.quic.withQuicConnection
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
+import org.junit.Rule
 import java.net.InetSocketAddress
 import java.net.StandardProtocolFamily
 import java.nio.channels.DatagramChannel
@@ -24,6 +26,9 @@ import kotlin.time.Duration.Companion.seconds
 
 /** The JVM-only rows of the core client against the core server: 1,024 connections, a wildcard server, the 4.x client. */
 class CoreServerEchoTests {
+    @get:Rule
+    val flightEvidence = FlightEvidenceRule()
+
     @get:org.junit.Rule
     val noLeak: org.junit.rules.TestRule = NoServerLoopLeft()
 

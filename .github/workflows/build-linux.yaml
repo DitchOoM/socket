@@ -1283,6 +1283,7 @@ jobs:
           path: |
             **/build/reports/tests/
             **/build/test-results/
+            **/build/core-flight/
             **/hs_err_pid*.log
             **/replay_pid*.log
             /tmp/cores/core.*
@@ -1761,6 +1762,7 @@ jobs:
           path: |
             **/build/reports/tests/
             **/build/test-results/
+            **/build/core-flight/
             **/hs_err_pid*.log
             **/replay_pid*.log
             /tmp/cores/core.*
@@ -1880,6 +1882,7 @@ jobs:
           path: |
             **/build/reports/tests/
             **/build/test-results/
+            **/build/core-flight/
             **/hs_err_pid*.log
             **/replay_pid*.log
           retention-days: 90
@@ -2367,6 +2370,19 @@ jobs:
           mode: collect
           artifact-name: native-crash-linux-x64
 
+      # What a failed core test wrote: the flight recording of each connection it touched (client and server),
+      # one .trace file per connection, named for the test. The test binary's working directory is the repo
+      # root, so they land in build/core-flight.
+      - name: Upload core flight recordings (on failure)
+        if: ${{ failure() || cancelled() }}
+        continue-on-error: true # an upload hiccup must not mask the failure it was capturing
+        uses: actions/upload-artifact@v7
+        with:
+          name: core-flight-linux-x64-native
+          path: build/core-flight/
+          retention-days: 14
+          if-no-files-found: ignore
+
       - name: Bring down test harness
         if: always()
         run: cd test-harness && docker compose down -v
@@ -2552,6 +2568,19 @@ jobs:
           mode: collect
           artifact-name: native-crash-linux-arm64
 
+      # What a failed core test wrote: the flight recording of each connection it touched (client and server),
+      # one .trace file per connection, named for the test. The test binary's working directory is the repo
+      # root, so they land in build/core-flight.
+      - name: Upload core flight recordings (on failure)
+        if: ${{ failure() || cancelled() }}
+        continue-on-error: true # an upload hiccup must not mask the failure it was capturing
+        uses: actions/upload-artifact@v7
+        with:
+          name: core-flight-linux-arm64-native
+          path: build/core-flight/
+          retention-days: 14
+          if-no-files-found: ignore
+
       - name: Bring down test harness
         if: always()
         run: cd test-harness && docker compose down -v
@@ -2699,6 +2728,7 @@ jobs:
           path: |
             **/build/reports/tests/
             **/build/test-results/
+            **/build/core-flight/
             **/hs_err_pid*.log
             **/replay_pid*.log
             /tmp/cores/core.*

@@ -10,6 +10,8 @@ import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.Life
 import com.ditchoom.socket.quic.core.observe.LoopCounts
 import com.ditchoom.socket.quic.core.observe.LoopOnly
+import com.ditchoom.socket.quic.core.observe.TraceSection
+import com.ditchoom.socket.quic.core.observe.traced
 import com.ditchoom.socket.quic.core.ready.Poller
 import com.ditchoom.socket.quic.core.ready.SocketRef
 import com.ditchoom.socket.quic.core.ready.WriteInterest
@@ -125,7 +127,7 @@ internal class Endpoint(
         if (input == Input.Drained && readiness == Readiness.Polled) return
         var taken = 0
         while (taken < MAX_PER_PASS) {
-            when (val got = io.receive(batch)) {
+            when (val got = traced(TraceSection.ReceiveBatch) { io.receive(batch) }) {
                 is ReceiveBatchResult.Got -> {
                     taken += batch.count
                     deliver(batch, at)
@@ -164,7 +166,7 @@ internal class Endpoint(
                 }
             if (send.pending > 0) {
                 when (phase) {
-                    Phase.Live -> socket.flush(send)
+                    Phase.Live -> traced(TraceSection.SendBatch) { socket.flush(send) }
                     Phase.Dead, Phase.Gone -> send.took(send.pending)
                 }
             }
@@ -273,7 +275,7 @@ internal class Endpoint(
     ) {
         when (route) {
             is Route.Fixed -> for (i in 0 until batch.count) route.conn.received(batch.bufferAt(i).bytes, batch.lengthAt(i), at)
-            is Route.Demux -> route.demux.route(batch, send, at)
+            is Route.Demux -> traced(TraceSection.Demux) { route.demux.route(batch, send, at) }
         }
         batch.release()
     }

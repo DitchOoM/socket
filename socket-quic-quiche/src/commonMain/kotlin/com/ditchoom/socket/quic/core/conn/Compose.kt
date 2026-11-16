@@ -69,6 +69,7 @@ internal fun buildConn(
         )
     val parts =
         ConnParts(
+            role = role,
             life = ConnLife(q),
             handshake = Handshake(q, rules.handshake, clock.now().value, memory.alpn),
             streams = StreamTable(q, StreamIo(q), role),

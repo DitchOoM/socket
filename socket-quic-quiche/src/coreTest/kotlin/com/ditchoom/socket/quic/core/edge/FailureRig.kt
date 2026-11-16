@@ -18,6 +18,7 @@ import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.sched.LoopPort
 import com.ditchoom.socket.quic.core.sched.LoopWork
 import com.ditchoom.socket.quic.core.stream.WriteEnd
+import com.ditchoom.socket.quic.core.testing.coreTest
 import com.ditchoom.socket.quic.core.testing.currentThreadName
 import com.ditchoom.socket.quic.core.testing.runOnANewThread
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
@@ -32,7 +33,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlin.concurrent.Volatile
@@ -81,20 +81,22 @@ internal class FailureRig(
     }
 }
 
-/** Runs [body] against a fresh rig and core echo server, bounded by 30 seconds. */
-internal fun withFailureRig(body: suspend CoroutineScope.(FailureRig) -> Unit) =
-    runBlocking {
-        withCoreEchoServer { server ->
-            withContext(Dispatchers.IO) {
-                val rig = FailureRig.start(server.port)
-                try {
-                    withTimeout(30.seconds) { body(rig) }
-                } finally {
-                    rig.stop()
-                }
+/** Runs the core test [test] (`Class.method`) against a fresh rig and core echo server, bounded by 30 seconds. */
+internal fun withFailureRig(
+    test: String,
+    body: suspend CoroutineScope.(FailureRig) -> Unit,
+) = coreTest(test) {
+    withCoreEchoServer { server ->
+        withContext(Dispatchers.IO) {
+            val rig = FailureRig.start(server.port)
+            try {
+                withTimeout(30.seconds) { body(rig) }
+            } finally {
+                rig.stop()
             }
         }
     }
+}
 
 /** The real socket's io, refusing the next sends a thread other than the loop makes when told to. */
 internal class RefusingIo(

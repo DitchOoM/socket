@@ -556,6 +556,7 @@ jobs:
           path: |
             **/build/reports/tests/
             **/build/test-results/
+            **/build/core-flight/
             build/reports/ktlint/
           retention-days: 7
           if-no-files-found: ignore
@@ -719,6 +720,7 @@ jobs:
           path: |
             **/build/reports/tests/
             **/build/test-results/
+            **/build/core-flight/
             **/hs_err_pid*.log
             **/replay_pid*.log
           retention-days: 7
@@ -986,4 +988,17 @@ jobs:
           name: macos-arm64-test-log
           path: /tmp/macos-arm64.log
           retention-days: 7
+          if-no-files-found: ignore
+
+      # What a failed core test wrote: the flight recording of each connection it touched (client and server),
+      # one .trace file per connection, named for the test. The test binary's working directory is the repo
+      # root, so they land in build/core-flight.
+      - name: Upload core flight recordings (on failure)
+        if: ${{ failure() || cancelled() }}
+        continue-on-error: true # an upload hiccup must not mask the failure it was capturing
+        uses: actions/upload-artifact@v7
+        with:
+          name: core-flight-macos-arm64-native
+          path: build/core-flight/
+          retention-days: 14
           if-no-files-found: ignore

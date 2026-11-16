@@ -1,11 +1,13 @@
 package com.ditchoom.socket.quic.core.conn
 
+import com.ditchoom.socket.quic.QuicRole
 import com.ditchoom.socket.quic.core.life.ConnLife
 import com.ditchoom.socket.quic.core.sched.WorkInbox
 import com.ditchoom.socket.quic.core.stream.StreamTable
 
 /** The components of one connection, each held here and nowhere else. An immutable record; [Turn] orders them. */
 internal class ConnParts(
+    val role: QuicRole,
     val life: ConnLife,
     val handshake: Handshake,
     val streams: StreamTable,
