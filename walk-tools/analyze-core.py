@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Per-lane verdicts for an iOS probe log with core lanes (`core-v4`, `core-v6`) beside the 4.x lanes (`v4`, `v6`).
+"""Per-lane verdicts for an iOS or Android probe log with core lanes (`core-v4`, `core-v6`) beside the 4.x lanes
+(`v4`, `v6`). Both probes write the same grammar (`t=<ms>ms lane=<lane> <WORD> ...`, the OS network under `lane=run OS-NET`).
 
     analyze-core.py logs/<stamp>-<tag>.log [more logs...]           # a whole walk
     analyze-core.py logs/<stamp>-<tag>.log.4 ... logs/<stamp>-<tag>.log   # rotated pieces, oldest first
@@ -15,8 +16,10 @@ What it prints, per lane:
       MIGRATED     the connection moved to the new path and kept going (a Migrated path event, no end);
       RODE-IT-OUT  the connection kept going with no path event at all (the change did not touch its path);
       ENDED        the connection ended in the window (and the typed reason), RECOVERED or NOT-RECOVERED by a reconnect;
-    with `echoGapMs` (the silence around the change: last answered echo before it to the first after it) and
-    `firstEchoAfterMs` (change to the first answered echo).
+    with `migratedAfterMs` (change to the lane's first Migrated), `echoGapMs` (the silence around the change: last answered echo before it to the first after it) and
+    `firstEchoAfterMs` (change to the first answered echo), and the lane's late / overdue echoes in the window;
+  * a 4.x-vs-core comparison per change and address family (v4 with core-v4, v6 with core-v6): which stack
+    migrated first and by how many ms, or that only one (or neither) did.
 Standard library only. Read-only.
 """
 import argparse
@@ -25,7 +28,8 @@ import sys
 from collections import defaultdict
 
 LINE = re.compile(r"^t=(\d+)ms lane=(\S+) (\S+)(?: (.*))?$")
-PATH_WORD = re.compile(r"\bPATH (\w+)")
+# A core lane's CORE-EVENT carries the trace line: `v1 <ns> PATH_STATE <phase> <host> <port>`.
+CORE_PATH = re.compile(r"^v1 \d+ PATH_STATE (\w+)")
 STATE_FIELD = re.compile(r"\bstate=(\S+)")
 CLOSE_REASON = re.compile(r"reason=(.*?)(?: typed=| — |$)")
 CORE_PATH_PHASES = ("Moved", "Migrated", "Refused", "Rehomed", "Gone", "Usable")
@@ -40,6 +44,8 @@ class Lane:
         self.attempts = 0
         self.ends = []  # (t, reason)
         self.paths = defaultdict(int)
+        self.late = []  # t of every ECHO-LATE
+        self.overdue = []  # t of every ECHO-OVERDUE
 
     @property
     def is_core(self):
@@ -71,12 +77,18 @@ def parse(paths, since, until):
                 if word == "ECHO-OK":
                     ln.echoes.append(t)
                     continue
+                if word == "ECHO-LATE":
+                    ln.late.append(t)
+                    continue
+                if word == "ECHO-OVERDUE":
+                    ln.overdue.append(t)
+                    continue
                 if word == "CONNECT-ATTEMPT":
                     ln.attempts += 1
                 elif word == "CONNECTED":
                     ln.connected += 1
                 if word == "CORE-EVENT":
-                    pm = PATH_WORD.search(rest)
+                    pm = CORE_PATH.match(rest)
                     if pm:
                         ln.paths[pm.group(1)] += 1
                         ln.events.append((t, "PATH", pm.group(1)))
@@ -124,7 +136,33 @@ def verdict(lane, t0, window_ms):
     else:
         outcome = "RODE-IT-OUT"
     detail = ",".join("%s@+%dms" % (e[2], e[0] - t0) for e in pathful) or "-"
-    return outcome, gap, first, detail
+    moved_at = (migrated[0][0] - t0) if migrated else None
+    late = sum(1 for e in lane.late if t0 <= e <= t0 + window_ms)
+    overdue = sum(1 for e in lane.overdue if t0 <= e <= t0 + window_ms)
+    return outcome, gap, first, detail, moved_at, late, overdue
+
+
+def compare(lanes, results):
+    """One line per family: which stack migrated first. `results` maps lane -> migratedAfterMs (or None)."""
+    lines = []
+    for fam in ("v4", "v6"):
+        old, core = results.get(fam, "absent"), results.get("core-" + fam, "absent")
+        if old == "absent" or core == "absent":
+            continue
+        if old is None and core is None:
+            what = "neither migrated"
+        elif core is None:
+            what = "only 4.x migrated (+%dms)" % old
+        elif old is None:
+            what = "only core migrated (+%dms)" % core
+        elif core == old:
+            what = "same time (+%dms)" % core
+        elif core < old:
+            what = "core first, %dms ahead (core +%dms, 4.x +%dms)" % (old - core, core, old)
+        else:
+            what = "4.x first, %dms ahead (4.x +%dms, core +%dms)" % (core - old, old, core)
+        lines.append("  %s vs core-%s: %s" % (fam, fam, what))
+    return lines
 
 
 def main():
@@ -163,12 +201,25 @@ def main():
         print("(none in this window)")
     for t0, old, new in anchors:
         print("\nt=%dms  %s  ->  %s" % (t0, old, new))
+        results = {}
         for label in order:
-            outcome, gap, first, detail = verdict(lanes[label], t0, args.window_s * 1000)
+            outcome, gap, first, detail, moved_at, late, overdue = verdict(lanes[label], t0, args.window_s * 1000)
+            results[label] = moved_at
             print(
-                "  lane=%-8s %-44s echoGapMs=%-7s firstEchoAfterMs=%-7s pathEvents=%s"
-                % (label, outcome, "-" if gap is None else gap, "-" if first is None else first, detail)
+                "  lane=%-8s %-44s migratedAfterMs=%-6s echoGapMs=%-7s firstEchoAfterMs=%-7s late=%d overdue=%d pathEvents=%s"
+                % (
+                    label,
+                    outcome,
+                    "-" if moved_at is None else moved_at,
+                    "-" if gap is None else gap,
+                    "-" if first is None else first,
+                    late,
+                    overdue,
+                    detail,
+                )
             )
+        for line in compare(lanes, results):
+            print(line)
     return 0
 
 

@@ -101,4 +101,4 @@ What a core lane captures, beside the per-connection trace every lane writes (`D
 - No qlog and no key log: the core does not write either (`CORE-CAPTURE` says so in the log).
 - The log rotates at 32 MB (`.1` .. `.4`) and `Documents/previous/` keeps the newest 3 runs.
 
-Read a walk with `device/analyze-core.py`; pull with `device/pull.sh` (also collects the rotated logs and `flight/`).
+Read a walk with `walk-tools/analyze-core.py` (shared with the Android probe); pull with `device/pull.sh` (also collects the rotated logs and `flight/`).
