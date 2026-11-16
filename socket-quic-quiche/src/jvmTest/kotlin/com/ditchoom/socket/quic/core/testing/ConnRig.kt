@@ -15,8 +15,9 @@ import com.ditchoom.socket.quic.core.conn.ConnAddress
 import com.ditchoom.socket.quic.core.conn.ConnMemory
 import com.ditchoom.socket.quic.core.conn.ConnSink
 import com.ditchoom.socket.quic.core.conn.ConnectReport
-import com.ditchoom.socket.quic.core.conn.CopySlot
+import com.ditchoom.socket.quic.core.conn.FlightArena
 import com.ditchoom.socket.quic.core.conn.FlightSize
+import com.ditchoom.socket.quic.core.conn.LoopMemory
 import com.ditchoom.socket.quic.core.conn.SlotRules
 import com.ditchoom.socket.quic.core.conn.buildConn
 import com.ditchoom.socket.quic.core.life.ConnEnd
@@ -81,6 +82,12 @@ internal fun loopOver(
         freeOnStop = Runnable { },
     )
 
+/** A loop's shared memory for a test: [copies] copy slots and an arena of [arenaBytes]. */
+internal fun testLoopMemory(
+    copies: Int = 4,
+    arenaBytes: Int = 64 * 1024,
+): LoopMemory = LoopMemory(List(copies) { nativeBytes(1500) }, FlightArena(nativeBytes(arenaBytes)))
+
 /** A connection built the way a connect builds one, on [loop], sending through [socket]. */
 internal fun testConn(
     api: QuicheApi,
@@ -98,14 +105,8 @@ internal fun testConn(
         q = QuicheConnRef(api, QuicheConn(1L)),
         role = QuicRole.Client,
         address = ConnAddress(SockAddr(0L, 0), SockAddr(0L, 0), PathKey(4, 443, 0L, 0x7F000001L), target),
-        memory =
-            ConnMemory(
-                FixedPool(4) { CopySlot(it, nativeBytes(1500)) },
-                BufferFactory.Default,
-                nativeBytes(255),
-                nativeBytes(64 * 1024),
-            ),
-        flight = FlightSize(records = 512, payloadBytes = 64 * 1024),
+        memory = ConnMemory(testLoopMemory(), BufferFactory.Default, nativeBytes(255)),
+        flight = FlightSize(records = 512),
         capture = capture,
         port = loop.port,
         socket = socket,

@@ -39,17 +39,15 @@ internal sealed class CopiedWork :
 
 /**
  * Datagrams in: the only file that hands quiche a datagram. The thread inside hands it over at once; a datagram that
- * reaches the loop while a caller is inside is copied into a pooled slot (or, with every slot in use, into memory
- * from the caller's factory) and runs as work before that caller leaves.
+ * reaches the loop while a caller is inside is copied into a slot its loop's connections share (or, with every slot
+ * in use, into memory from the caller's factory) and runs as work before that caller leaves.
  */
 internal class Ingress(
     private val q: QuicheConnRef,
-    private val slots: FixedPool<CopySlot>,
+    private val shared: LoopMemory,
     private val factory: BufferFactory,
     private val counts: ConnCounts,
 ) {
-    private val slotWork = Array(slots.size) { SlotRecv(slots[it]) }
-
     /** Inside: quiche reads the datagram of [length] bytes at the start of [bytes] now. */
     fun direct(
         bytes: NativeBytes,
@@ -67,13 +65,13 @@ internal class Ingress(
         from: NativeBytes,
         length: Int,
     ): Copy {
-        when (val slot = slots.tryTake()) {
+        when (val slot = shared.slots.tryTake()) {
             is Pooled -> {
-                val held = slots[slot.index]
+                val held = shared.slots[slot.index]
                 held.bytes.copyFrom(from, 0, 0, length)
                 held.filled(length)
                 counts.datagramCopied()
-                return slotWork[slot.index]
+                return shared.workFor(slot.index)
             }
             is Taken.Empty ->
                 when (val fresh = NativeBytes.of(factory.allocate(length))) {
@@ -88,21 +86,6 @@ internal class Ingress(
                     }
                 }
         }
-    }
-
-    /** A datagram copied into a pooled slot. */
-    private inner class SlotRecv(
-        private val slot: CopySlot,
-    ) : CopiedWork() {
-        override fun run(inside: Inside) {
-            try {
-                inside.receiveCopy(slot.bytes, slot.length)
-            } finally {
-                slots.give(slot)
-            }
-        }
-
-        override fun gone(end: ConnEnd) = slots.give(slot)
     }
 
     /** A datagram copied into memory of its own, because every slot was in use. */
@@ -120,4 +103,20 @@ internal class Ingress(
 
         override fun gone(end: ConnEnd) = bytes.free()
     }
+}
+
+/** A datagram copied into a shared slot: whichever connection took the slot runs it, then gives the slot back. */
+internal class SlotRecv(
+    private val slots: FixedPool<CopySlot>,
+    private val slot: CopySlot,
+) : CopiedWork() {
+    override fun run(inside: Inside) {
+        try {
+            inside.receiveCopy(slot.bytes, slot.length)
+        } finally {
+            slots.give(slot)
+        }
+    }
+
+    override fun gone(end: ConnEnd) = slots.give(slot)
 }

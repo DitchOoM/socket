@@ -14,6 +14,7 @@ import com.ditchoom.socket.quic.core.loop.Endpoint
 import com.ditchoom.socket.quic.core.loop.Readiness
 import com.ditchoom.socket.quic.core.loop.Route
 import com.ditchoom.socket.quic.core.observe.ServerCounts
+import com.ditchoom.socket.quic.core.pool.MemoryHold
 import com.ditchoom.socket.quic.core.ready.SocketRef
 import com.ditchoom.socket.quic.core.sched.CallerLanes
 import com.ditchoom.socket.quic.core.sched.Entrant
@@ -24,6 +25,7 @@ import com.ditchoom.socket.quic.core.testing.RecordingWork
 import com.ditchoom.socket.quic.core.testing.VirtualClock
 import com.ditchoom.socket.quic.core.testing.loopOver
 import com.ditchoom.socket.quic.core.testing.nativeBytes
+import com.ditchoom.socket.quic.core.testing.testLoopMemory
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.udp.ArrivedOn
 import com.ditchoom.socket.quic.core.udp.BatchCapability
@@ -125,7 +127,8 @@ internal class ServerRig(
         ServerParts(
             SlotRules.Default,
             BufferFactory.Default,
-            FlightSize(records = 64, payloadBytes = 8 * 1024),
+            FlightSize(records = 64),
+            testLoopMemory(arenaBytes = 8 * 1024),
             loop.port,
             socket,
             clock,
@@ -151,7 +154,7 @@ internal class ServerRig(
             InitialBacklog(List(backlog) { nativeBytes(1500) }),
             parts,
             hooks,
-            ServerHold(Runnable { }),
+            MemoryHold(Runnable { }),
             kotlin.random.Random(1),
             counts,
         )

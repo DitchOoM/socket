@@ -12,15 +12,14 @@ import com.ditchoom.socket.testkit.trace.TracePath
 import com.ditchoom.socket.testkit.trace.TraceSink
 import kotlin.time.Duration.Companion.nanoseconds
 
-/** How large a connection's flight recording is: records held, and bytes of datagram payload kept with them. */
+/** How many records a connection's flight recording holds; their payload is kept in its loop's [FlightArena]. */
 internal class FlightSize(
     val records: Int,
-    val payloadBytes: Int,
 )
 
 /**
  * A connection's flight recorder. Every datagram in and out, and every network change the connection is told of
- * (written to a trace as a path-state line named for the change, such as `Rehomed`), is recorded on the hot path into a preallocated ring and payload arena, allocating nothing. The recording is
+ * (written to a trace as a path-state line named for the change, such as `Rehomed`), is recorded on the hot path into a preallocated ring, and its payload into the loop's shared [FlightArena], allocating nothing. The recording is
  * written in the trace grammar of [com.ditchoom.socket.quic.trace.QuicTraceRecorder] (v1) only off that path: after
  * a turn when the connection's [TraceCapture] is on, and into any [TraceSink] on demand, so the existing trace
  * tools and the schedule replay read core recordings unchanged. Inside the connection only.
@@ -28,7 +27,7 @@ internal class FlightSize(
 @Confined
 internal class ConnFlight(
     size: FlightSize,
-    private val arena: NativeBytes,
+    private val arena: FlightArena,
     peer: PathKey,
     private val capture: TraceCapture,
     private val originNanos: Long,
@@ -41,7 +40,6 @@ internal class ConnFlight(
             is TraceCapture.Off -> TraceSink { }
             is TraceCapture.On -> TraceSink { capture.recorder.record(it) }
         }
-    private var arenaWritten = 0L
     private var traced = 0L
 
     fun datagramIn(
@@ -89,16 +87,7 @@ internal class ConnFlight(
         offset: Int,
         length: Int,
     ) {
-        val capacity = arena.capacity
-        var at = arenaWritten
-        var start = (at % capacity).toInt()
-        if (start + length > capacity) {
-            at += capacity - start
-            start = 0
-        }
-        val kept = minOf(length, capacity)
-        arena.copyFrom(bytes, offset, start, kept)
-        arenaWritten = at + kept
+        val at = arena.write(bytes, offset, length)
         ring.datagram(kind, now.value, length, 0, peerId, at, 0L)
     }
 
@@ -119,9 +108,12 @@ internal class ConnFlight(
             if (kind != FlightKind.DatagramIn && kind != FlightKind.DatagramOut) continue
             val at = ring.aAt(i)
             val length = ring.lengthAt(i)
-            if (at < arenaWritten - arena.capacity) continue
+            val hex =
+                when (val read = arena.hex(at, length)) {
+                    is ArenaRead.Hex -> read.text
+                    is ArenaRead.Overwritten -> continue
+                }
             val t = sinceOrigin(i)
-            val hex = hexOf((at % arena.capacity).toInt(), minOf(length, arena.capacity))
             emit.emit(
                 if (kind == FlightKind.DatagramOut) {
                     TraceEvent.DgramOut(t, length, path, hex)
@@ -134,20 +126,4 @@ internal class ConnFlight(
     }
 
     private fun sinceOrigin(i: Int) = (ring.nanosAt(i) - originNanos).nanoseconds
-
-    private fun hexOf(
-        start: Int,
-        length: Int,
-    ): String {
-        val out = StringBuilder(length * 2)
-        for (k in start until start + length) {
-            val b = arena.byteAt(k)
-            out.append(HEX[b ushr 4]).append(HEX[b and 0xF])
-        }
-        return out.toString()
-    }
-
-    private companion object {
-        const val HEX = "0123456789abcdef"
-    }
 }

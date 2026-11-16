@@ -8,7 +8,6 @@ import com.ditchoom.socket.quic.core.life.ConnLife
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.observe.ConnCounts
 import com.ditchoom.socket.quic.core.path.SinglePath
-import com.ditchoom.socket.quic.core.pool.FixedPool
 import com.ditchoom.socket.quic.core.sched.Entrant
 import com.ditchoom.socket.quic.core.sched.LoopPort
 import com.ditchoom.socket.quic.core.sched.SendPort
@@ -21,14 +20,12 @@ import com.ditchoom.socket.quic.core.udp.NativeBytes
 import com.ditchoom.socket.quic.core.udp.SockAddr
 import com.ditchoom.socket.quic.trace.TraceCapture
 
-/** The memory one connection is built with, all from the caller's factory. */
+/** The memory one connection is built with: what its loop's connections share, and its own ALPN scratch. */
 internal class ConnMemory(
-    val copies: FixedPool<CopySlot>,
+    val shared: LoopMemory,
     val factory: BufferFactory,
     /** Where the negotiated ALPN is copied at establishment. */
     val alpn: NativeBytes,
-    /** The flight recorder's payload arena. */
-    val arena: NativeBytes,
 )
 
 /** Where a connection's datagrams go and come from, and how it is recorded. */
@@ -76,11 +73,11 @@ internal fun buildConn(
             handshake = Handshake(q, clock.now().value, memory.alpn),
             streams = StreamTable(q, StreamIo(q), role),
             timer = ConnTimer(q, port, WakeSink()),
-            ingress = Ingress(q, memory.copies, memory.factory, counts),
+            ingress = Ingress(q, memory.shared, memory.factory, counts),
             egress = Egress(q),
             release = Release(q),
             network = NetworkWatch(),
-            flight = ConnFlight(flight, memory.arena, address.peerKey, capture, clock.now().value),
+            flight = ConnFlight(flight, memory.shared.arena, address.peerKey, capture, clock.now().value),
             inbox = WorkInbox(),
             slots = chosen,
             sink = sink,

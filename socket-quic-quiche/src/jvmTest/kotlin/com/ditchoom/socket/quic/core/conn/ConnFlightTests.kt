@@ -23,7 +23,7 @@ class ConnFlightTests {
 
     @Test
     fun aDumpIsTheV1GrammarAndParsesBack() {
-        val flight = ConnFlight(FlightSize(8, 64), nativeBytes(64), peer, TraceCapture.Off, originNanos = 100L)
+        val flight = ConnFlight(FlightSize(8), FlightArena(nativeBytes(64)), peer, TraceCapture.Off, originNanos = 100L)
         flight.datagramOut(Nanos(150L), datagram(0xC0, 0x01, 0xFF), 0, 3)
         flight.datagramIn(Nanos(170L), datagram(0x40, 0x02), 0, 2)
         val events = ArrayList<TraceEvent>()
@@ -41,9 +41,9 @@ class ConnFlightTests {
     fun aPayloadTheArenaOverwroteIsLeftOutAndTheTraceIsWrittenOnce() {
         val recorded = ArrayList<TraceEvent>()
         val capture = TraceCapture.On(QuicTraceRecorder(TraceSink { recorded += it }))
-        val arena = nativeBytes(4)
+        val arena = FlightArena(nativeBytes(4))
         val length = arena.capacity / 2 + 1
-        val flight = ConnFlight(FlightSize(8, arena.capacity), arena, peer, capture, originNanos = 0L)
+        val flight = ConnFlight(FlightSize(8), arena, peer, capture, originNanos = 0L)
         flight.datagramOut(Nanos(1L), datagram(*IntArray(length) { 1 }), 0, length)
         flight.datagramOut(Nanos(2L), datagram(*IntArray(length) { 2 }), 0, length)
         flight.toTrace()

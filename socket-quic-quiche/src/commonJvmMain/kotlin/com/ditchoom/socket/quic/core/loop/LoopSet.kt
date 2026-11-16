@@ -3,8 +3,11 @@
 package com.ditchoom.socket.quic.core.loop
 
 import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.socket.quic.core.conn.FlightArena
+import com.ditchoom.socket.quic.core.conn.LoopMemory
 import com.ditchoom.socket.quic.core.observe.Published
 import com.ditchoom.socket.quic.core.pool.FixedPool
+import com.ditchoom.socket.quic.core.pool.MemoryHold
 import com.ditchoom.socket.quic.core.ready.SelectorPoller
 import com.ditchoom.socket.quic.core.ready.jdkStackOfThisRuntime
 import com.ditchoom.socket.quic.core.time.LoopClock
@@ -22,11 +25,14 @@ import kotlin.concurrent.atomics.AtomicInt
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.concurrent.atomics.fetchAndIncrement
 
-/** A loop on its thread, with the views its sockets receive into. */
+/** A loop on its thread, with the views its sockets receive into and the memory its connections share. */
 internal class RunningLoop(
     val loop: Loop,
     /** One view per receive buffer of [loop], by the buffer's index: what a JDK socket on this loop reads into. */
     val receiveViews: List<JdkBytes>,
+    val shared: LoopMemory,
+    /** Held by the loop until it stops and by each connection until its memory is freed; frees [shared]. */
+    val hold: MemoryHold,
 )
 
 /** What [LoopSet.place] answers. */
@@ -60,6 +66,8 @@ private sealed interface Slot {
 internal class LoopSet(
     val size: Int,
     private val clock: LoopClock = MonotonicClock,
+    /** The flight payload arena each loop's connections share. */
+    private val flightArenaBytes: Int = LoopMemory.ARENA_BYTES,
 ) {
     private val slots = AtomicReferenceArray<Slot>(Array(size) { Slot.Unstarted })
 
@@ -124,17 +132,26 @@ internal class LoopSet(
             val bytes =
                 when (val a = NativeBytes.of(factory.allocate(limits.maxDatagramSize))) {
                     is Addressed.Native -> a.bytes
-                    is Addressed.NotAddressable -> return freed(buffers, Placement.NotJdkMemory)
+                    is Addressed.NotAddressable -> return freed(buffers, emptyList(), Placement.NotJdkMemory)
                 }
             when (val view = JdkBytes.of(bytes)) {
                 is JdkBacked.Backed -> views.add(view.bytes)
                 is JdkBacked.NotJdkBacked -> {
                     bytes.free()
-                    return freed(buffers, Placement.NotJdkMemory)
+                    return freed(buffers, emptyList(), Placement.NotJdkMemory)
                 }
             }
             buffers.add(ReceiveBuffer(i, bytes))
         }
+        val sharedBytes = ArrayList<NativeBytes>(LoopMemory.COPY_SLOTS + 1)
+        for (size in List(LoopMemory.COPY_SLOTS) { MAX_DATAGRAM } + flightArenaBytes) {
+            when (val a = NativeBytes.of(factory.allocate(size))) {
+                is Addressed.Native -> sharedBytes.add(a.bytes)
+                is Addressed.NotAddressable -> return freed(buffers, sharedBytes, Placement.NotJdkMemory)
+            }
+        }
+        val shared = LoopMemory(sharedBytes.subList(0, LoopMemory.COPY_SLOTS), FlightArena(sharedBytes.last()))
+        val hold = MemoryHold(Runnable { sharedBytes.forEach { it.free() } })
         val id = LoopIds.next()
         val name = "$THREAD_PREFIX-$id"
         val loop =
@@ -144,9 +161,13 @@ internal class LoopSet(
                 poller = SelectorPoller(clock, jdkStackOfThisRuntime().scan),
                 clock = clock,
                 receive = ReceiveBatch(FixedPool(limits.maxDatagrams) { buffers[it] }, limits),
-                freeOnStop = Runnable { buffers.forEach { it.bytes.free() } },
+                freeOnStop =
+                    Runnable {
+                        buffers.forEach { it.bytes.free() }
+                        hold.release()
+                    },
             )
-        val running = RunningLoop(loop, views)
+        val running = RunningLoop(loop, views, shared, hold)
         if (!slots.compareAndSet(index, seen, Slot.Running(running))) {
             loop.close(Runnable { })
             startLoopThread(loop, name)
@@ -159,9 +180,11 @@ internal class LoopSet(
 
     private fun freed(
         buffers: List<ReceiveBuffer>,
+        shared: List<NativeBytes>,
         answer: Placement,
     ): Placement {
         buffers.forEach { it.bytes.free() }
+        shared.forEach { it.free() }
         return answer
     }
 

@@ -97,7 +97,7 @@ class CoreRecordingReplayTests {
                 api = loadQuicheApi(),
                 readPolicy = ReadPolicy.Bounded(10.seconds),
                 writePolicy = WritePolicy.Bounded(10.seconds),
-                config = ServerConfig(flight = BIG),
+                config = ServerConfig(flight = BIG, flightArenaBytes = 1 shl 20),
             )
         val echo =
             CoroutineScope(Dispatchers.IO).launch {
@@ -259,6 +259,6 @@ class CoreRecordingReplayTests {
         const val PAYLOAD = 600
         const val MOVED_PORT = 40_000
         const val MOVED_ADDRESS = 0x7f000002L
-        val BIG = FlightSize(records = 4096, payloadBytes = 1 shl 20)
+        val BIG = FlightSize(records = 4096)
     }
 }

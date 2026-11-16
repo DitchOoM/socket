@@ -16,6 +16,8 @@ import com.ditchoom.socket.quic.RouteProbeFailure
 import com.ditchoom.socket.quic.applyQuicOptions
 import com.ditchoom.socket.quic.applySessionTicketKeys
 import com.ditchoom.socket.quic.connectionIdRandom
+import com.ditchoom.socket.quic.core.conn.FlightArena
+import com.ditchoom.socket.quic.core.conn.LoopMemory
 import com.ditchoom.socket.quic.core.conn.SlotRules
 import com.ditchoom.socket.quic.core.demux.AddressTokens
 import com.ditchoom.socket.quic.core.demux.AddressValidation
@@ -24,7 +26,6 @@ import com.ditchoom.socket.quic.core.demux.Demux
 import com.ditchoom.socket.quic.core.demux.DemuxScratch
 import com.ditchoom.socket.quic.core.demux.InitialBacklog
 import com.ditchoom.socket.quic.core.demux.ServerConfig
-import com.ditchoom.socket.quic.core.demux.ServerHold
 import com.ditchoom.socket.quic.core.demux.ServerParts
 import com.ditchoom.socket.quic.core.demux.Stateless
 import com.ditchoom.socket.quic.core.demux.Tokens
@@ -37,6 +38,7 @@ import com.ditchoom.socket.quic.core.loop.SocketDiedNotice
 import com.ditchoom.socket.quic.core.loop.startLoopThread
 import com.ditchoom.socket.quic.core.observe.ServerCounts
 import com.ditchoom.socket.quic.core.pool.FixedPool
+import com.ditchoom.socket.quic.core.pool.MemoryHold
 import com.ditchoom.socket.quic.core.ready.SelectorPoller
 import com.ditchoom.socket.quic.core.ready.SocketRef
 import com.ditchoom.socket.quic.core.ready.jdkStackOfThisRuntime
@@ -141,7 +143,7 @@ internal class ServerSetup(
                     Tokens.Of(AddressTokens(factory, connectionIdRandom, validation.lifetime.inWholeNanoseconds))
             }
         val hold =
-            ServerHold(
+            MemoryHold(
                 Runnable {
                     when (tokens) {
                         is Tokens.None -> Unit
@@ -171,6 +173,10 @@ internal class ServerSetup(
                 SlotRules.Default,
                 factory,
                 config.flight,
+                LoopMemory(
+                    List(LoopMemory.COPY_SLOTS) { memory.native(MAX_DATAGRAM) },
+                    FlightArena(memory.native(config.flightArenaBytes)),
+                ),
                 loop.port,
                 socket,
                 clock,

@@ -273,4 +273,4 @@ private const val ANY_HOST = "0.0.0.0"
 internal const val MAX_DATAGRAM = 1500
 
 /** A client connection's flight recording unless the connect asks for another size: enough for a walk's handshakes. */
-internal val CLIENT_FLIGHT = FlightSize(records = 2048, payloadBytes = 256 * 1024)
+internal val CLIENT_FLIGHT = FlightSize(records = 2048)

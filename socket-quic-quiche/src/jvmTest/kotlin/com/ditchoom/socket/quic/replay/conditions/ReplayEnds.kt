@@ -16,6 +16,8 @@ import com.ditchoom.socket.quic.QuicSessionId
 import com.ditchoom.socket.quic.QuicWireConnectionId
 import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.applyQuicOptions
+import com.ditchoom.socket.quic.core.conn.FlightArena
+import com.ditchoom.socket.quic.core.conn.LoopMemory
 import com.ditchoom.socket.quic.core.edge.ClientParts
 import com.ditchoom.socket.quic.core.edge.ClientWiring
 import com.ditchoom.socket.quic.core.edge.CoreConnection
@@ -31,6 +33,7 @@ import com.ditchoom.socket.quic.core.loop.LoopIds
 import com.ditchoom.socket.quic.core.loop.Readiness
 import com.ditchoom.socket.quic.core.loop.RunningLoop
 import com.ditchoom.socket.quic.core.pool.FixedPool
+import com.ditchoom.socket.quic.core.pool.MemoryHold
 import com.ditchoom.socket.quic.core.testing.FakePoller
 import com.ditchoom.socket.quic.core.testing.VirtualClock
 import com.ditchoom.socket.quic.core.udp.BatchLimits
@@ -151,7 +154,7 @@ internal fun replayClient(
             config,
             options,
             memory,
-            RunningLoop(loop, buffers.map { memory.jdk(it.bytes) }),
+            RunningLoop(loop, buffers.map { memory.jdk(it.bytes) }, replayLoopMemory(memory), MemoryHold(Runnable { })),
             channel,
             { io },
             peerInet,
@@ -171,6 +174,10 @@ internal fun replayClient(
         )
     return ReplayClient(connection, parts, loop, scope, local.toPathKey())
 }
+
+/** The copy slots and flight arena of a replay client's loop, freed with the client's memory. */
+private fun replayLoopMemory(memory: EdgeMemory): LoopMemory =
+    LoopMemory(List(LoopMemory.COPY_SLOTS) { memory.native(DATAGRAM) }, FlightArena(memory.native(LoopMemory.ARENA_BYTES)))
 
 private fun encoded(
     address: InetSocketAddress,
