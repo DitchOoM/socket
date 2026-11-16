@@ -543,6 +543,16 @@ object JniQuicheApi : QuicheApi {
 
     override fun connProbeNow(conn: QuicheConn): Int = nConnProbeNow(conn.handle).toInt()
 
+    override fun configSetInitialRtt(
+        config: QuicheConfig,
+        nanos: Long,
+    ) = nConfigSetInitialRtt(config.handle, nanos)
+
+    override fun connSetHandshakePtoCeiling(
+        conn: QuicheConn,
+        ceiling: PtoCeiling,
+    ) = nConnSetHandshakePtoCeiling(conn.handle, ptoCeilingNanos(ceiling))
+
     override fun connClose(
         conn: QuicheConn,
         error: QuicError,
@@ -1149,6 +1159,16 @@ object JniQuicheApi : QuicheApi {
     @JvmStatic private external fun nConnSendAckEliciting(conn: Long): Long
 
     @JvmStatic private external fun nConnProbeNow(conn: Long): Long
+
+    @JvmStatic private external fun nConfigSetInitialRtt(
+        config: Long,
+        nanos: Long,
+    )
+
+    @JvmStatic private external fun nConnSetHandshakePtoCeiling(
+        conn: Long,
+        nanos: Long,
+    )
 
     @JvmStatic private external fun nConnClose(
         conn: Long,

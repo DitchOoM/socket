@@ -55,6 +55,12 @@ interface QuicheApi {
         v: Long,
     )
 
+    /** The RTT quiche assumes before its first sample (`quiche_config_set_initial_rtt`, a patched-in export). */
+    fun configSetInitialRtt(
+        config: QuicheConfig,
+        nanos: Long,
+    )
+
     fun configSetInitialMaxStreamDataBidiLocal(
         config: QuicheConfig,
         v: Long,
@@ -300,6 +306,15 @@ interface QuicheApi {
      * round trip after [connIsEstablished] turns true.
      */
     fun connIsHandshakeConfirmed(conn: QuicheConn): Boolean
+
+    /**
+     * Caps every PTO interval at [ceiling] while the handshake is unconfirmed, and re-arms the loss-detection timer
+     * (`quiche_conn_set_handshake_pto_ceiling`, a patched-in export). quiche's own smaller PTO still wins.
+     */
+    fun connSetHandshakePtoCeiling(
+        conn: QuicheConn,
+        ceiling: PtoCeiling,
+    )
 
     fun connIsClosed(conn: QuicheConn): Boolean
 

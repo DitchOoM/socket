@@ -630,6 +630,18 @@ JNIEXPORT jlong JNICALL JNI_FN(nConnSendAckEliciting)(JNIEnv *env, jclass cls, j
     return (jlong)quiche_conn_send_ack_eliciting((quiche_conn *)(uintptr_t)conn);
 }
 
+JNIEXPORT void JNICALL JNI_FN(nConfigSetInitialRtt)(
+    JNIEnv *env, jclass cls, jlong config, jlong nanos) {
+    /* patched-in export */
+    quiche_config_set_initial_rtt((quiche_config *)(uintptr_t)config, (uint64_t)nanos);
+}
+
+JNIEXPORT void JNICALL JNI_FN(nConnSetHandshakePtoCeiling)(
+    JNIEnv *env, jclass cls, jlong conn, jlong nanos) {
+    /* patched-in export; 0 removes the ceiling */
+    quiche_conn_set_handshake_pto_ceiling((quiche_conn *)(uintptr_t)conn, (uint64_t)nanos);
+}
+
 JNIEXPORT jlong JNICALL JNI_FN(nConnProbeNow)(JNIEnv *env, jclass cls, jlong conn) {
     /* Queues the PTO's probes for the next send(), past the congestion window (patched-in export).
        Returns 0 on success or a negative quiche error code. */

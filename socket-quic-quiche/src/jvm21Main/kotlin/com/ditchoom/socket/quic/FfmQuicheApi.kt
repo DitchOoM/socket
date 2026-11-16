@@ -262,6 +262,14 @@ class FfmQuicheApi private constructor(
     private val hSendAckEliciting by lazy {
         downcall("quiche_conn_send_ack_eliciting", FunctionDescriptor.of(JAVA_LONG, JAVA_LONG))
     }
+    private val hSetInitialRtt by lazy {
+        // void quiche_config_set_initial_rtt(quiche_config *config, uint64_t v) — patched-in export
+        downcall("quiche_config_set_initial_rtt", FunctionDescriptor.ofVoid(JAVA_LONG, JAVA_LONG))
+    }
+    private val hSetHandshakePtoCeiling by lazy {
+        // void quiche_conn_set_handshake_pto_ceiling(quiche_conn *conn, uint64_t v) — patched-in export
+        downcall("quiche_conn_set_handshake_pto_ceiling", FunctionDescriptor.ofVoid(JAVA_LONG, JAVA_LONG))
+    }
     private val hProbeNow by lazy {
         // ssize_t quiche_conn_probe_now(quiche_conn *conn) — patched-in export
         downcall("quiche_conn_probe_now", FunctionDescriptor.of(JAVA_LONG, JAVA_LONG))
@@ -1073,6 +1081,20 @@ class FfmQuicheApi private constructor(
     override fun connSendAckEliciting(conn: QuicheConn): Int = (hSendAckEliciting.invokeExact(conn.handle) as Long).toInt()
 
     override fun connProbeNow(conn: QuicheConn): Int = (hProbeNow.invokeExact(conn.handle) as Long).toInt()
+
+    override fun configSetInitialRtt(
+        config: QuicheConfig,
+        nanos: Long,
+    ) {
+        hSetInitialRtt.invokeExact(config.handle, nanos)
+    }
+
+    override fun connSetHandshakePtoCeiling(
+        conn: QuicheConn,
+        ceiling: PtoCeiling,
+    ) {
+        hSetHandshakePtoCeiling.invokeExact(conn.handle, ptoCeilingNanos(ceiling))
+    }
 
     override fun connClose(
         conn: QuicheConn,

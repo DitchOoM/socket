@@ -1338,6 +1338,13 @@ bool quiche_conn_is_handshake_confirmed(const quiche_conn *conn);
 // socket-quic-quiche/build.gradle.kts (patchQuicheProbeNowFfi).
 ssize_t quiche_conn_probe_now(quiche_conn *conn);
 
+// socket-handshake-pto-ceiling: the RTT quiche assumes before its first sample, in nanoseconds (quiche's Rust
+// Config::set_initial_rtt, which its C API lacks); and the longest PTO interval while the handshake is unconfirmed,
+// in nanoseconds, 0 for none. Setting the ceiling re-arms the loss-detection timer. Added by the marker-guarded
+// source patch in socket-quic-quiche/build.gradle.kts (patchQuicheHandshakePtoCeiling).
+void quiche_config_set_initial_rtt(quiche_config *config, uint64_t v);
+void quiche_conn_set_handshake_pto_ceiling(quiche_conn *conn, uint64_t v);
+
 #if defined(__cplusplus)
 }  // extern C
 #endif

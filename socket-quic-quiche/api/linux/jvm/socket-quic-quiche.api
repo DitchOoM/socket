@@ -156,6 +156,7 @@ public final class com/ditchoom/socket/quic/JniQuicheApi : com/ditchoom/socket/q
 	public fun configSetInitialMaxStreamDataUni-656eFbI (JJ)V
 	public fun configSetInitialMaxStreamsBidi-656eFbI (JJ)V
 	public fun configSetInitialMaxStreamsUni-656eFbI (JJ)V
+	public fun configSetInitialRtt-656eFbI (JJ)V
 	public fun configSetMaxConnectionWindow-656eFbI (JJ)V
 	public fun configSetMaxIdleTimeout-656eFbI (JJ)V
 	public fun configSetMaxPacingRate-656eFbI (JJ)V
@@ -206,6 +207,7 @@ public final class com/ditchoom/socket/quic/JniQuicheApi : com/ditchoom/socket/q
 	public fun connSend-SpKmpVg (JJIJ)I
 	public fun connSendAckEliciting-ObL0uzk (J)I
 	public fun connSession-RTtnfzo (JJI)I
+	public fun connSetHandshakePtoCeiling-7TBY80c (JLcom/ditchoom/socket/quic/PtoCeiling;)V
 	public fun connSetKeylogPath-7TBY80c (JLjava/lang/String;)Z
 	public fun connSetQlogPath-rezszl0 (JLjava/lang/String;Ljava/lang/String;Ljava/lang/String;)Z
 	public fun connSetSession-RTtnfzo (JJI)I
@@ -501,6 +503,21 @@ public final class com/ditchoom/socket/quic/ProbeOutcome$Rejected : com/ditchoom
 	public final fun getCode ()I
 }
 
+public abstract interface class com/ditchoom/socket/quic/PtoCeiling {
+}
+
+public final class com/ditchoom/socket/quic/PtoCeiling$At : com/ditchoom/socket/quic/PtoCeiling {
+	public fun <init> (J)V
+	public final fun getNanos ()J
+}
+
+public final class com/ditchoom/socket/quic/PtoCeiling$None : com/ditchoom/socket/quic/PtoCeiling {
+	public static final field INSTANCE Lcom/ditchoom/socket/quic/PtoCeiling$None;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
 public final class com/ditchoom/socket/quic/QuicConnStats {
 	public fun <init> (JJJJJJJJJJJJJ)V
 	public final fun component1 ()J
@@ -640,6 +657,7 @@ public abstract interface class com/ditchoom/socket/quic/QuicheApi {
 	public abstract fun configSetInitialMaxStreamDataUni-656eFbI (JJ)V
 	public abstract fun configSetInitialMaxStreamsBidi-656eFbI (JJ)V
 	public abstract fun configSetInitialMaxStreamsUni-656eFbI (JJ)V
+	public abstract fun configSetInitialRtt-656eFbI (JJ)V
 	public abstract fun configSetMaxConnectionWindow-656eFbI (JJ)V
 	public abstract fun configSetMaxIdleTimeout-656eFbI (JJ)V
 	public abstract fun configSetMaxPacingRate-656eFbI (JJ)V
@@ -690,6 +708,7 @@ public abstract interface class com/ditchoom/socket/quic/QuicheApi {
 	public abstract fun connSend-SpKmpVg (JJIJ)I
 	public abstract fun connSendAckEliciting-ObL0uzk (J)I
 	public abstract fun connSession-RTtnfzo (JJI)I
+	public abstract fun connSetHandshakePtoCeiling-7TBY80c (JLcom/ditchoom/socket/quic/PtoCeiling;)V
 	public fun connSetKeylogPath-7TBY80c (JLjava/lang/String;)Z
 	public fun connSetQlogPath-rezszl0 (JLjava/lang/String;Ljava/lang/String;Ljava/lang/String;)Z
 	public abstract fun connSetSession-RTtnfzo (JJI)I
