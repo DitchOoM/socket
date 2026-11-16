@@ -84,12 +84,11 @@ internal class CoreConnection(
         }
     }
 
-    override suspend fun openStream(): QuicByteStream =
-        suspendCancellableCoroutine { cont ->
-            val open = OpenOp(cont, conn, ::streamFor)
-            conn.submit(open, placeOf(cont.context))
-            if (cont.isActive) cont.invokeOnCancellation { open.withdraw() }
-        }
+    override suspend fun openStream(): QuicByteStream {
+        val open = OpenOp(conn)
+        conn.submit(open, placeOf(currentCoroutineContext()))
+        return streamFor(open.answer())
+    }
 
     override suspend fun acceptStream(): QuicByteStream = streamFor(edge.incoming.receive())
 
@@ -141,12 +140,12 @@ internal class CoreConnection(
         stream: QuicStreamId,
         source: WriteSource,
         deadline: Duration,
-    ): BytesWritten =
-        suspendCancellableCoroutine { cont ->
-            val op = WriteOp(stream, source, OpDeadline(deadline), cont, conn)
-            conn.submit(op, placeOf(cont.context))
-            if (cont.isActive) cont.invokeOnCancellation { op.withdraw() }
-        }
+    ): BytesWritten {
+        val caller = currentCoroutineContext()
+        val op = WriteOp(stream, source, OpDeadline(deadline), conn, caller)
+        conn.submit(op, placeOf(caller))
+        return op.answer()
+    }
 
     private fun streamFor(id: Long): QuicByteStream =
         QuicByteStream(QuicStreamId(id), CoreStream(this, QuicStreamId(id), readPolicy, writePolicy))

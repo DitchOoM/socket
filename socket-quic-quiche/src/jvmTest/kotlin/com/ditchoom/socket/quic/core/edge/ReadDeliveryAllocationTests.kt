@@ -28,10 +28,8 @@ import kotlin.time.Duration.Companion.seconds
  * until the loop received them. A read the loop answers allocates nothing there, so how often reads park, which is how
  * fast the host is, adds nothing to the loop's bytes per echo.
  *
- * Both echoes let the loop idle for the same time, once each: an idle loop re-arms the connection's timer, and each
- * re-arm allocates a deadline node (from under 4 to about 19 B per echo, by host), whatever the reads do. With the idling
- * equal, the loop's bytes differ only by who answered the read; an answer's state and result box (48 B per parked
- * echo) do not fit in the margin.
+ * Both echoes let the loop idle for the same time, once each, so the loop's bytes differ only by who answered the read;
+ * an answer's state and result box (48 B per parked echo) do not fit in the margin.
  */
 class ReadDeliveryAllocationTests {
     @Test
@@ -124,6 +122,6 @@ class ReadDeliveryAllocationTests {
         const val WARM_UP = 1_000
         const val ECHOES = 2_000
         const val IDLE_MILLIS = 1L
-        const val MORE_AT_MOST = 8
+        const val MORE_AT_MOST = 4
     }
 }

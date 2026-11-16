@@ -66,7 +66,7 @@ class CoreQuicAllocationTests {
         measure("new stream per echo", NewStream, loopGate = loopGate(LOOP_GATE_NEW, JDK_LOOP_GATE_NEW), callerGate = CALLER_GATE_NEW)
 
     /**
-     * The loop's gate on this process's stack. The native stack boxes nothing (under 8 B/echo measured on macOS); the
+     * The loop's gate on this process's stack. The native stack boxes nothing (under 2 B/echo measured on macOS); the
      * JDK stack, left on Windows only, adds the selector's boxed descriptor per wake.
      */
     private fun loopGate(
@@ -265,10 +265,10 @@ class CoreQuicAllocationTests {
     private companion object {
         const val CALLER_THREAD = "core-alloc-caller"
         const val TEST_CLASS = "com.ditchoom.socket.quic.core.edge.CoreQuicAllocationTests"
-        const val LOOP_GATE_ONE = 32
+        const val LOOP_GATE_ONE = 8
         const val JDK_LOOP_GATE_ONE = 130
         const val CALLER_GATE_ONE = 950
-        const val LOOP_GATE_NEW = 32
+        const val LOOP_GATE_NEW = 8
         const val JDK_LOOP_GATE_NEW = 260
         const val CALLER_GATE_NEW = 2_400
         const val PAYLOAD = 64

@@ -6,7 +6,6 @@ import org.jetbrains.lincheck.datastructures.ModelCheckingOptions
 import org.jetbrains.lincheck.datastructures.Operation
 import org.jetbrains.lincheck.datastructures.Validate
 import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.Continuation
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.EmptyCoroutineContext
@@ -16,42 +15,41 @@ import kotlin.test.assertFailsWith
 /**
  * The hand-over of a [StreamTransfer]'s buffer, modelled on the real [PhaseCell] and [WaiterCell] with no connection: a
  * caller's call arms the operation and waits; the connection settles it, withdraws an abandoned one, or releases it;
- * a canceller abandons the call. A resumed wait runs the caller's next step on the resuming thread, as a coroutine
- * resumed without a dispatcher does.
+ * the caller's job is cancelled. A wait watches the job as the real one does: the watch is installed before the wait
+ * and fires once, at once when the job was already cancelled, and its handler abandons an operation still out and
+ * resumes the waiter, which then raises the cancellation. A resumed wait runs the caller's next step on the resuming
+ * thread, as a coroutine resumed without a dispatcher does.
  *
  * The audit after every interleaving: no resumed wait found the buffer still out (the caller would have been told its
- * stream was closed while it was not), and the buffer was freed at most once. With [loopsOnPhase] false a wait trusts
- * its resume, as the first version did: a settling thread slow to resume its waiter then resumes the next call's, and
- * the model must catch it.
+ * stream was closed while it was not), no wait is left suspended once the operation came back, and the buffer was freed
+ * at most once. With [loopsOnPhase] false a wait trusts its resume, as the first version did: a settling thread slow to
+ * resume its waiter then resumes the next call's, and the model must catch it.
  */
 abstract class TransferHandoffModel(
     private val loopsOnPhase: Boolean,
 ) {
     private val phase = PhaseCell()
     private val waiting = WaiterCell()
-    private val current = AtomicReference(Wait(RESUMED))
     private val withdrawPending = AtomicInteger()
     private val spurious = AtomicInteger()
     private val freed = AtomicInteger()
 
-    /** 1 while a call has begun and not yet returned or been cancelled: one call at a time, as one coroutine makes them. */
+    /** 1 while a call has begun and not yet returned or raised: one call at a time, as one coroutine makes them. */
     private val active = AtomicInteger()
 
-    /** A cancellation that found no wait pending: the call that waits next is already cancelled when it suspends. */
-    private val cancelEarly = AtomicInteger()
+    /** 1 once the caller's job is cancelled. */
+    private val jobCancelled = AtomicInteger()
 
-    /** One suspended wait: pending until it is resumed or its caller is cancelled. */
-    private inner class Wait(
-        initial: Int = PENDING,
-    ) : Continuation<Unit> {
-        private val state = AtomicInteger(initial)
+    /** The job watch of the wait in progress: none, installed, or fired (its handler ran, once). */
+    private val watch = AtomicInteger(NO_WATCH)
+
+    /** One suspended wait, resumed once. */
+    private inner class Wait : Continuation<Unit> {
+        private val state = AtomicInteger(PENDING)
         override val context: CoroutineContext = EmptyCoroutineContext
 
-        fun cancel(): Boolean = state.compareAndSet(PENDING, CANCELLED)
-
         override fun resumeWith(result: Result<Unit>) {
-            if (!state.compareAndSet(PENDING, RESUMED)) return
-            if (loopsOnPhase && phase.load() is Phase.Armed) await() else finish()
+            if (state.compareAndSet(PENDING, RESUMED)) woke()
         }
     }
 
@@ -68,20 +66,11 @@ abstract class TransferHandoffModel(
         if (phase.load() is Phase.Done) finish() else await()
     }
 
-    /** The caller's cancellation: a wait still pending is dropped, and an operation still out is abandoned. */
+    /** The caller's job is cancelled: a watch installed fires. */
     @Operation(nonParallelGroup = "canceller")
     fun cancel() {
-        if (active.get() == 0) return
-        if (current.get().cancel()) {
-            abandonIfOut()
-            active.set(0)
-        } else {
-            cancelEarly.set(1)
-        }
-    }
-
-    private fun abandonIfOut() {
-        if (phase.moves(Phase.Armed, Phase.Abandoned)) withdrawPending.set(1)
+        jobCancelled.set(1)
+        if (watch.compareAndSet(WATCHING, FIRED)) abandon()
     }
 
     /** The connection finishes the operation. */
@@ -114,21 +103,35 @@ abstract class TransferHandoffModel(
         }
     }
 
-    /** After every thread has finished. */
+    /** After every thread has finished. A call still waiting while its operation is no longer out was never woken. */
     @Validate
     fun validate() {
-        check(spurious.get() == 0 && freed.get() <= 1)
+        val stranded = active.get() == 1 && phase.load() !is Phase.Armed
+        check(spurious.get() == 0 && freed.get() <= 1 && !stranded)
     }
 
-    private fun await() {
-        val wait = Wait()
-        current.set(wait)
-        waiting.leave(wait)
-        if (cancelEarly.compareAndSet(1, 0) && wait.cancel()) {
-            abandonIfOut()
-            return active.set(0)
+    /** The watch's handler: an operation still out is abandoned, and its waiter resumed to raise the cancellation. */
+    private fun abandon() {
+        if (phase.moves(Phase.Armed, Phase.Abandoned)) {
+            withdrawPending.set(1)
+            waiting.resumeWaiting()
         }
-        if (phase.load() !is Phase.Armed) waiting.resumeSelf(wait)
+    }
+
+    /** The wait: installs the watch (which fires at once on a cancelled job), leaves the waiter, and takes it back when settled already. */
+    private fun await() {
+        watch.set(WATCHING)
+        if (jobCancelled.get() == 1 && watch.compareAndSet(WATCHING, FIRED)) abandon()
+        val wait = Wait()
+        waiting.leave(wait)
+        if (phase.load() !is Phase.Armed && waiting.takeBack(wait)) woke()
+    }
+
+    /** A wait ended: the watch is disposed; a cancelled caller raises, any other looks at the phase again. */
+    private fun woke() {
+        watch.compareAndSet(WATCHING, NO_WATCH)
+        if (jobCancelled.get() == 1) return active.set(0)
+        if (loopsOnPhase && phase.load() is Phase.Armed) await() else finish()
     }
 
     /** What the caller does once the operation settled: takes the buffer back and leaves it, or finds the stream closed. */
@@ -159,13 +162,15 @@ abstract class TransferHandoffModel(
     private companion object {
         const val PENDING = 0
         const val RESUMED = 1
-        const val CANCELLED = 2
+        const val NO_WATCH = 0
+        const val WATCHING = 1
+        const val FIRED = 2
     }
 }
 
 class TransferHandoffLincheckTest : TransferHandoffModel(loopsOnPhase = true) {
     @Test
-    fun aResumedWaitNeverFindsTheBufferStillOutAndTheBufferIsFreedOnce() {
+    fun aResumedWaitNeverFindsTheBufferStillOutNoWaitIsStrandedAndTheBufferIsFreedOnce() {
         options().check(this::class)
     }
 }

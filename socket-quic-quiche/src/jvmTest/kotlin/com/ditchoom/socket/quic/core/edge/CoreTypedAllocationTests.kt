@@ -234,7 +234,7 @@ class CoreTypedAllocationTests {
         const val BOUND = 4_096
         const val WARM_UP = 5_000
         const val MEASURED = 20_000
-        const val LOOP_GATE = 80
+        const val LOOP_GATE = 16
         const val PING_PONG_GATE = 520
         const val PIPELINED_GATE = 270
         const val BATCH = 32
