@@ -89,15 +89,27 @@ internal class ConnFlight(
     ) {
         val at = arena.write(bytes, offset, length)
         ring.datagram(kind, now.value, length, 0, peerId, at, 0L)
+        when (capture) {
+            is TraceCapture.Off -> Unit
+            // A trace that is on takes the datagram from its own bytes now: the arena is shared by the loop's
+            // connections, and their writes may reach this payload before the turn ends.
+            is TraceCapture.On -> {
+                val total = ring.dropped + ring.size
+                write(traced, toTrace, total - 1)
+                emitDatagram(kind, ring.size - 1, length, hexOf(bytes, offset, minOf(length, arena.capacity)), toTrace)
+                traced = total
+            }
+        }
     }
 
-    /** Writes the records from absolute record [from] on; returns the absolute count written up to. */
+    /** Writes the records from absolute record [from] up to [until]; returns the absolute count written up to. */
     private fun write(
         from: Long,
         emit: TraceSink,
+        until: Long = ring.dropped + ring.size,
     ): Long {
         val oldest = ring.dropped
-        val total = oldest + ring.size
+        val total = until
         for (n in maxOf(from, oldest) until total) {
             val i = (n - oldest).toInt()
             val kind = ring.kindAt(i)
@@ -113,17 +125,44 @@ internal class ConnFlight(
                     is ArenaRead.Hex -> read.text
                     is ArenaRead.Overwritten -> continue
                 }
-            val t = sinceOrigin(i)
-            emit.emit(
-                if (kind == FlightKind.DatagramOut) {
-                    TraceEvent.DgramOut(t, length, path, hex)
-                } else {
-                    TraceEvent.DgramIn(t, length, path, hex)
-                },
-            )
+            emitDatagram(kind, i, length, hex, emit)
         }
         return total
     }
 
     private fun sinceOrigin(i: Int) = (ring.nanosAt(i) - originNanos).nanoseconds
+
+    private fun emitDatagram(
+        kind: FlightKind,
+        i: Int,
+        length: Int,
+        hex: String,
+        emit: TraceSink,
+    ) {
+        val t = sinceOrigin(i)
+        emit.emit(
+            if (kind == FlightKind.DatagramOut) {
+                TraceEvent.DgramOut(t, length, path, hex)
+            } else {
+                TraceEvent.DgramIn(t, length, path, hex)
+            },
+        )
+    }
+
+    private fun hexOf(
+        bytes: NativeBytes,
+        offset: Int,
+        length: Int,
+    ): String {
+        val out = StringBuilder(length * 2)
+        for (k in offset until offset + length) {
+            val b = bytes.byteAt(k)
+            out.append(HEX[b ushr 4]).append(HEX[b and 0xF])
+        }
+        return out.toString()
+    }
+
+    private companion object {
+        const val HEX = "0123456789abcdef"
+    }
 }
