@@ -358,10 +358,25 @@ jobs:
           # Booted, not standalone: the shard boots an iPhone simulator and the tests spawn into it,
           # so the network daemons the WebTransport and QUIC-harness suites need are reachable.
           # requireAllTests stays off until this shard's skip inventory reads zero.
-          - name: "iOS simulator"
-            tasks: "iosSimulatorArm64Test"
+          #
+          # The iOS simulator suite is TWO shards that together run exactly what one task did,
+          # `iosSimulatorArm64Test` over every module. The quiche module (about 7 of the ~11 minutes of
+          # test execution, and the longest link) runs alone; the other shard runs the same task with
+          # that one module excluded, so a module added later lands in "iOS simulator" without anyone
+          # editing this matrix. Measured (run 43900949614): one shard took 45 minutes, 27 of them
+          # compiling and linking ten test binaries one after another, and was the run's critical path.
+          - name: "iOS simulator (quiche)"
+            tasks: ":socket-quic-quiche:iosSimulatorArm64Test"
             ring: "sample"
-            linkFirst: "linkDebugTestIosSimulatorArm64"
+            linkFirst: ":socket-quic-quiche:linkDebugTestIosSimulatorArm64"
+            testArgs: "--max-workers=1 --continue"
+            bootSimulator: "1"
+            prCache: "ios-sim-quiche"
+            prCacheSave: "1"
+          - name: "iOS simulator"
+            tasks: "iosSimulatorArm64Test -x :socket-quic-quiche:iosSimulatorArm64Test"
+            ring: "sample"
+            linkFirst: "linkDebugTestIosSimulatorArm64 -x :socket-quic-quiche:linkDebugTestIosSimulatorArm64"
             testArgs: "--max-workers=1 --continue"
             bootSimulator: "1"
             # The one Apple job that SAVES the PR-scoped build cache (the pr-build-cache action);

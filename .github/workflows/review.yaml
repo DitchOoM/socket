@@ -585,8 +585,10 @@ jobs:
             args: '-PjvmTestLauncher=25 "-Porg.gradle.java.installations.fromEnv=TEST_LAUNCHER_JDK_HOME"'
     runs-on: windows-latest
     timeout-minutes: 30
-    # needs build-linux for the cross-compiled quiche_jni.dll artifact below.
-    needs: [version, build-linux]
+    # Starts beside build-linux and takes only the cross-compiled quiche_jni.dll artifact from it
+    # (await-artifact below), instead of queueing behind the whole workflow (~27 min) for an artifact
+    # that exists after ~6.
+    needs: [version]
     env:
       ORG_GRADLE_PROJECT_version: ${{ needs.version.outputs.version }}
     # continue-on-error stays during Windows-peer bring-up, and #515 is the run on which that
@@ -640,6 +642,11 @@ jobs:
       # cross-build is REQUIRED in build-linux.yaml's natives job now, and this job `needs:` it, so
       # by the time these steps run the artifact exists unless the artifact round-trip itself broke.
       # That is a defect worth a red step, not a silent skip.
+      - uses: ./.github/actions/await-artifact
+        with:
+          name: quiche-windows-natives
+          producer: "quiche natives (Linux/Android/Windows)"
+          github-token: ${{ github.token }}
       - name: Download Windows quiche native lib
         uses: actions/download-artifact@v8
         with:

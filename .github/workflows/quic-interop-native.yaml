@@ -63,14 +63,9 @@ jobs:
       # Setup that needs no artifact of this run goes before the wait, so it overlaps the natives build.
       - name: quic-go's interop endpoints
         uses: ./.github/actions/quic-go-endpoints
-      - uses: ./.github/actions/await-artifact
-        if: ${{ inputs.await-natives }}
-        with:
-          name: quiche-apple-natives
-          producer: "Apple quiche natives"
-          github-token: ${{ github.token }}
       - uses: ./.github/actions/apple-quiche-env
         with:
+          await-natives-producer: ${{ inputs.await-natives && 'Apple quiche natives' || '' }}
           konan: "false"
           natives-run-id: ${{ inputs.apple-natives-run-id }}
           github-token: ${{ github.token }}
@@ -118,14 +113,9 @@ jobs:
       # Setup that needs no artifact of this run goes before the wait, so it overlaps the natives build.
       - name: quic-go's interop endpoints
         uses: ./.github/actions/quic-go-endpoints
-      - uses: ./.github/actions/await-artifact
-        if: ${{ inputs.await-natives }}
-        with:
-          name: quiche-apple-natives
-          producer: "Apple quiche natives"
-          github-token: ${{ github.token }}
       - uses: ./.github/actions/apple-quiche-env
         with:
+          await-natives-producer: ${{ inputs.await-natives && 'Apple quiche natives' || '' }}
           natives-run-id: ${{ inputs.apple-natives-run-id }}
           github-token: ${{ github.token }}
       # Read-only: the iOS simulator shard of build-apple is the single writer of this lane's entry.
