@@ -7,13 +7,37 @@ on:
         description: "Version string to validate"
         required: true
         type: string
+      await-producers:
+        description: "Start beside the build workflows and wait for this run's Maven Local artifacts, instead of after every build and test job (a caller that does not `needs:` the build workflows)."
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   validate:
     name: "Validate Artifacts"
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: ${{ inputs.await-producers && 75 || 10 }}
     steps:
+      # The publish jobs upload these well before the test jobs finish; the natives they bundle are
+      # uploaded before publish starts, so they exist by the time both of these do.
+      - uses: actions/checkout@v7
+        if: ${{ inputs.await-producers }}
+      - uses: ./.github/actions/await-artifact
+        if: ${{ inputs.await-producers }}
+        with:
+          name: maven-local-linux
+          producer: "Publish Linux targets to Maven Local"
+          timeout-minutes: "60"
+          github-token: ${{ github.token }}
+      - uses: ./.github/actions/await-artifact
+        if: ${{ inputs.await-producers }}
+        with:
+          name: maven-local-apple
+          producer: "Publish Apple targets to Maven Local"
+          timeout-minutes: "60"
+          github-token: ${{ github.token }}
+
       - name: Download Linux artifacts
         uses: actions/download-artifact@v8
         with:

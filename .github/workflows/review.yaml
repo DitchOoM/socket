@@ -49,11 +49,14 @@ jobs:
     with:
       version: ${{ needs.version.outputs.version }}
 
+  # Starts beside the build workflows and takes the Maven Local artifacts as soon as the publish jobs
+  # upload them, so validation and the consumer smokes run while the test jobs are still going.
   validate:
-    needs: [version, build-linux, build-apple]
+    needs: [version]
     uses: ./.github/workflows/validate-artifacts.yaml
     with:
       version: ${{ needs.version.outputs.version }}
+      await-producers: true
 
   # Consumer-smoke: drive the MERGED published artifacts as a real downstream consumer would.
   # `validate` (above) RESOLVES the dependency graph and checks module-metadata shape; it never
