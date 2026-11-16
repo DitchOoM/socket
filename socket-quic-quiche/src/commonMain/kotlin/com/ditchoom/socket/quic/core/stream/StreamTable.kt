@@ -3,6 +3,7 @@ package com.ditchoom.socket.quic.core.stream
 import androidx.collection.MutableLongObjectMap
 import com.ditchoom.socket.quic.QuicStreamId
 import com.ditchoom.socket.quic.core.conn.Conn
+import com.ditchoom.socket.quic.core.edge.ConnectionReleased
 
 /** What a parked operation says when the connection retries it. */
 internal sealed interface Retry {
@@ -124,6 +125,13 @@ internal class StreamMap {
         ending = StreamsEnding.By(failure)
         entries.forEachValue { it.endWaiters(failure) }
     }
+
+    /** What work answered as gone fails with: the connection's own ending once it has one, else its release. */
+    fun goneFailure(): Throwable =
+        when (val now = ending) {
+            StreamsEnding.Open -> ConnectionReleased.failure()
+            is StreamsEnding.By -> now.failure
+        }
 
     fun contains(id: QuicStreamId): Boolean = entries.containsKey(id.id)
 

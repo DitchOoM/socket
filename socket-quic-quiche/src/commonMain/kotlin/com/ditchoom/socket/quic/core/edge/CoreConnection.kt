@@ -277,7 +277,7 @@ internal class CoreConnection(
                     }
 
                     override fun gone() {
-                        if (cont.isActive) cont.resumeWith(kotlin.Result.failure(ConnectionReleased.failure()))
+                        if (cont.isActive) cont.resumeWith(kotlin.Result.failure(streams.goneFailure()))
                     }
                 },
                 place,
@@ -336,7 +336,7 @@ internal class CoreConnection(
             opens.remove(this)
         }
 
-        override fun gone() = fail(ConnectionReleased.failure())
+        override fun gone() = fail(streams.goneFailure())
     }
 
     /** The cancellation handler of a waiting stream operation: when its caller is cancelled it has the connection unpark the operation. */

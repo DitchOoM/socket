@@ -145,6 +145,25 @@ class CoreFailureTierTests {
         }
 
     @Test
+    fun anOperationQueuedBehindTheWorkThatEndedTheConnectionFailsWithThatCause() =
+        withRig { rig ->
+            val stream = rig.connection.openStream()
+            val planted = IllegalStateException("planted in connection work")
+            val hold = HoldThenThrow(planted)
+            rig.conn.submit(hold)
+            hold.inside.get(10, TimeUnit.SECONDS)
+            // The loop is inside the connection, so the read is queued behind the work that is about to end it.
+            val queued = rig.conn.counts.leftForHolder
+            val read = async(Dispatchers.IO) { runCatching { stream.read(10.seconds) { } } }
+            while (rig.conn.counts.leftForHolder == queued) Thread.onSpinWait()
+            hold.release.countDown()
+
+            val failure = assertIs<QuicCloseException>(read.await().exceptionOrNull())
+            assertSame(planted, failure.cause, "the read ended with the connection's own failure: $failure")
+            assertEquals(QuicCloseCircumstance.ProcessingFailed, failure.circumstance)
+        }
+
+    @Test
     fun anIoThatFailsEndsEveryConnectionWithTheLoopFailure() =
         withRig { rig ->
             val planted = IllegalStateException("planted in receive")
@@ -371,6 +390,24 @@ private class ThrowingWork(
     override fun run(inside: Conn.Inside) = throw planted
 
     override fun gone() = Unit
+}
+
+/** Holds the connection from inside until released, then throws what it is given. */
+private class HoldThenThrow(
+    private val planted: Exception,
+) : ConnWork() {
+    val inside = CompletableFuture<Unit>()
+    val release = java.util.concurrent.CountDownLatch(1)
+
+    override fun run(inside: Conn.Inside) {
+        this.inside.complete(Unit)
+        release.await()
+        throw planted
+    }
+
+    override fun gone() {
+        inside.complete(Unit)
+    }
 }
 
 private class ThrowingErrorWork(

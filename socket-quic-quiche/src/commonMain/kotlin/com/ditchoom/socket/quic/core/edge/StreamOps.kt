@@ -171,7 +171,7 @@ internal abstract class StreamOp<T>(
 
     override fun gone() {
         release()
-        if (cont.isActive) cont.resumeWithException(ConnectionReleased.failure())
+        if (cont.isActive) cont.resumeWithException(streams.goneFailure())
     }
 
     /** On the deadline's thread: asks the connection to expire this operation. */

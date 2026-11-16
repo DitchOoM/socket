@@ -491,12 +491,12 @@ internal class Conn(
             val end = ConnEnd.CallerFailed(error)
             lifecycle = ConnLifecycle.Closed(end)
             disarm()
-            inbox.close(ConnWork::gone)
             try {
                 events.closed(end)
             } catch (late: Exception) {
                 error.addSuppressed(late)
             }
+            inbox.close(ConnWork::gone)
         }
         while (owner.tryLeave(callerEntrant) === Leave.WorkArrived) inbox.close(ConnWork::gone)
         reportOnThisThread(error)
@@ -569,12 +569,13 @@ internal class Conn(
             cause.addSuppressed(late)
         }
         disarm()
-        inbox.close(ConnWork::gone)
+        // Ended before the inbox closes, so work answered as gone says how the connection ended.
         try {
             events.closed(end)
         } catch (late: Exception) {
             cause.addSuppressed(late)
         }
+        inbox.close(ConnWork::gone)
     }
 
     /**
