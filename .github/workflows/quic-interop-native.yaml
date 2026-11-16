@@ -114,10 +114,18 @@ jobs:
         with:
           natives-run-id: ${{ inputs.apple-natives-run-id }}
           github-token: ${{ github.token }}
+      # Read-only: the iOS simulator shard of build-apple is the single writer of this lane's entry.
+      - name: Restore the PR's Gradle build cache
+        uses: ./.github/actions/pr-build-cache
+        with:
+          mode: restore
+          os: macos
+          lane: ios-sim
       # Linked before the simulator boots, so the link does not share the runner with the booting device.
       - name: Link the test binaries
         run: ./gradlew :socket-quic-quiche:linkDebugTestMacosArm64 :socket-quic-quiche:linkDebugTestIosSimulatorArm64 --no-configuration-cache
-      - name: Boot an iOS simulator
+      # The boot runs while quic-go's endpoints build; "Wait for the iOS simulator" blocks before the pairs.
+      - name: Start booting an iOS simulator
         run: |
           set -euo pipefail
           UDID=$(xcrun simctl list devices available -j \
@@ -128,7 +136,6 @@ jobs:
             exit 1
           fi
           xcrun simctl boot "$UDID" || true # already booted is fine
-          xcrun simctl bootstatus "$UDID" -b
           echo "IOS_SIMULATOR_BOOTED_UDID=$UDID" >> "$GITHUB_ENV"
       - uses: actions/setup-go@v6
         with:
@@ -136,6 +143,8 @@ jobs:
           cache: false
       - name: Build quic-go's interop endpoints
         run: .github/scripts/build-quic-go-interop.sh "$RUNNER_TEMP/peers"
+      - name: Wait for the iOS simulator to finish booting
+        run: xcrun simctl bootstatus "$IOS_SIMULATOR_BOOTED_UDID" -b
       - name: Run the pairs
         run: .github/scripts/quic-interop-native-kn-run.sh
       - uses: actions/upload-artifact@v7
