@@ -108,7 +108,16 @@ internal suspend fun connectCore(
         writePolicy = WritePolicy.Bounded(10.seconds),
         wrapIo = wrapIo,
         loops = loops,
+        flight = TEST_FLIGHT,
     )
+
+/**
+ * The flight recording of a test's client connection: a server's size, so a thousand connections in one test JVM fit
+ * its direct-memory limit (the default 256 KiB arena each would take 256 MiB on its own).
+ */
+internal val TEST_FLIGHT =
+    com.ditchoom.socket.quic.core.conn
+        .FlightSize(records = 256, payloadBytes = 32 * 1024)
 
 /** Writes [payload] on [stream] while reading the echo; returns what came back. */
 internal suspend fun echoOver(

@@ -1,8 +1,7 @@
 package com.ditchoom.socket.quic.core.conn
 
+import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.observe.Confined
-import com.ditchoom.socket.quic.core.time.Nanos
-import com.ditchoom.socket.quic.core.time.WakeSink
 
 /** What the network monitor said, as a connection is told it. */
 internal enum class NetworkChange {
@@ -24,62 +23,42 @@ internal enum class NetworkStep {
     /** Have quiche send at once: what its backed-off timers hold back is recovered in about one round trip. */
     Nudge,
 
-    /** Keep going until the grace passes. */
+    /** Keep the connection: the idle timeout still bounds an outage, and a usable network nudges it. */
     Wait,
 
     /** The connection cannot go on from its socket: it ends now. */
     End,
 }
 
-internal enum class NetworkVerdict { Usable, Lost }
-
-private sealed interface Watch {
-    data object Usable : Watch
-
-    class Gone : Watch {
-        var untilNanos = 0L
-    }
-}
+/** Whether the network monitor last reported a usable network. */
+private enum class Watch { Usable, Unusable }
 
 /**
- * Whether the connection still has a usable network. A report of none starts the grace a flap is given; a usable
- * network reported within it ends the grace, and when it passes the connection ends. Migration replaces the grace.
+ * Whether the connection has a usable network. No usable network does not end it: a flap is ridden out, and a usable
+ * network nudges it to send at once. Only an idle timeout that passes with no usable network ends it, and then as
+ * [ConnEnd.NetworkLost], which says why the peer went silent. Migration will act on [NetworkChange.Moved].
  */
 @Confined
-internal class NetworkWatch(
-    private val rule: NetworkRule,
-) {
-    private val gone = Watch.Gone()
-    private var phase: Watch = Watch.Usable
+internal class NetworkWatch {
+    private var watch = Watch.Usable
 
-    fun changed(
-        change: NetworkChange,
-        now: Nanos,
-    ): NetworkStep =
+    fun changed(change: NetworkChange): NetworkStep =
         when (change) {
             NetworkChange.Usable, NetworkChange.Changed -> {
-                phase = Watch.Usable
+                watch = Watch.Usable
                 NetworkStep.Nudge
             }
             NetworkChange.Gone -> {
-                if (phase is Watch.Usable) {
-                    gone.untilNanos = now.value + rule.graceNanos
-                    phase = gone
-                }
+                watch = Watch.Unusable
                 NetworkStep.Wait
             }
             NetworkChange.Moved -> NetworkStep.End
         }
 
-    fun verdict(now: Nanos): NetworkVerdict =
-        when (val p = phase) {
-            is Watch.Usable -> NetworkVerdict.Usable
-            is Watch.Gone -> if (now.value >= p.untilNanos) NetworkVerdict.Lost else NetworkVerdict.Usable
-        }
-
-    fun offerWake(sink: WakeSink) =
-        when (val p = phase) {
-            is Watch.Usable -> Unit
-            is Watch.Gone -> sink.offer(Nanos(p.untilNanos))
+    /** The end quiche reported, named [ConnEnd.NetworkLost] when it is an idle timeout with no usable network. */
+    fun endOf(quiche: ConnEnd): ConnEnd =
+        when (watch) {
+            Watch.Usable -> quiche
+            Watch.Unusable -> if (quiche is ConnEnd.IdleTimeout) ConnEnd.NetworkLost else quiche
         }
 }

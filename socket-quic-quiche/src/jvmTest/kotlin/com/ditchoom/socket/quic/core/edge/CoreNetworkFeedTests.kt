@@ -9,7 +9,6 @@ import com.ditchoom.socket.NetworkMonitor
 import com.ditchoom.socket.NetworkState
 import com.ditchoom.socket.quic.NetworkMonitorSource
 import com.ditchoom.socket.quic.QuicError
-import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.loadQuicheApi
 import com.ditchoom.socket.quic.skipOnMissingNativeLib
 import com.ditchoom.socket.transport.NetworkId
@@ -20,12 +19,11 @@ import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertIs
-import kotlin.test.assertSame
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * The network monitor's news reaches a real core connection as connection work: no usable network ends it with a
- * typed end once the grace passes (not the idle timeout), and a usable network back within the grace keeps it.
+ * The network monitor's news reaches a real core connection as connection work: no usable network keeps it (the idle
+ * timeout bounds an outage), and a usable network back has it send at once.
  */
 class CoreNetworkFeedTests {
     private class FakeMonitor : NetworkMonitor {
@@ -53,32 +51,16 @@ class CoreNetworkFeedTests {
         }
 
     @Test
-    fun noUsableNetworkEndsTheConnectionWithNetworkLostWellBeforeTheIdleTimeout() =
+    fun anOutageOfSeveralSecondsKeepsTheConnectionAndItEchoesOnceTheNetworkReturns() =
         runBlocking {
             skipOnMissingNativeLib(CoreNetworkFeedTests::class) {
                 withEchoServer { port ->
                     val monitor = FakeMonitor()
                     val client = connectWatched(port, monitor)
                     monitor.state.value = NetworkState.Offline
-                    val deadline = System.nanoTime() + 6_000_000_000L
-                    while (client.connection.end() is EdgeEnd.Open && System.nanoTime() < deadline) delay(20)
-                    assertSame(ConnEnd.NetworkLost, assertIs<EdgeEnd.Ended>(client.connection.end()).end)
-                }
-            }
-        }
-
-    @Test
-    fun aUsableNetworkBackWithinTheGraceKeepsTheConnectionAndItEchoes() =
-        runBlocking {
-            skipOnMissingNativeLib(CoreNetworkFeedTests::class) {
-                withEchoServer { port ->
-                    val monitor = FakeMonitor()
-                    val client = connectWatched(port, monitor)
-                    monitor.state.value = NetworkState.Offline
-                    delay(500)
+                    delay(4_000)
+                    assertIs<EdgeEnd.Open>(client.connection.end(), "no usable network does not end the connection")
                     monitor.state.value = UP
-                    delay(3_500)
-                    assertIs<EdgeEnd.Open>(client.connection.end())
                     val payload = Random(7).nextBytes(2_000)
                     assertContentEquals(payload, echoOver(client.connection.openStream(), payload))
                     client.connection.close(QuicError.NoError)

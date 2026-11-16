@@ -4,7 +4,7 @@ import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.core.edge.connectCore
 import com.ditchoom.socket.quic.core.edge.coreTestOptions
 import com.ditchoom.socket.quic.core.edge.echoOver
-import com.ditchoom.socket.quic.core.loop.ClientLoopSet
+import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.withQuicConnection
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -27,7 +27,7 @@ class CoreServerEchoTests {
     val noLeak: org.junit.rules.TestRule = NoServerLoopLeft()
 
     /** Client loops of this class's own, so connections it leaves ending never share a thread with another test's. */
-    private val loops = ClientLoopSet(2)
+    private val loops = LoopSet(2)
 
     @AfterTest
     fun closeLoops() = loops.close()
@@ -91,7 +91,7 @@ class CoreServerEchoTests {
 
     private fun concurrentEchoes(connections: Int) =
         runBlocking {
-            withCoreEchoServer(ServerConfig(admission = Admission(perPass = 256, inProgress = 2_048))) { server ->
+            withCoreEchoServer(ServerConfig(admission = AdmissionBounds(perPass = 256, inProgress = 2_048))) { server ->
                 val connectedAfter = ConcurrentLinkedQueue<Long>()
                 val started = System.nanoTime()
                 try {

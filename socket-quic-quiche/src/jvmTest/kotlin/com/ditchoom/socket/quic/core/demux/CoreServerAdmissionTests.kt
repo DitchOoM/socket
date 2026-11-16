@@ -6,7 +6,7 @@ import com.ditchoom.socket.quic.QuicheConn
 import com.ditchoom.socket.quic.QuicheRecvInfo
 import com.ditchoom.socket.quic.core.edge.connectCore
 import com.ditchoom.socket.quic.core.edge.echoOver
-import com.ditchoom.socket.quic.core.loop.ClientLoopSet
+import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.ReceiveBatchResult
@@ -30,7 +30,7 @@ class CoreServerAdmissionTests {
     val noLeak: org.junit.rules.TestRule = NoServerLoopLeft()
 
     /** Client loops of this class's own, so connections it leaves ending never share a thread with another test's. */
-    private val loops = ClientLoopSet(2)
+    private val loops = LoopSet(2)
 
     @AfterTest
     fun closeLoops() = loops.close()
@@ -40,7 +40,10 @@ class CoreServerAdmissionTests {
         runBlocking {
             val gate = GatedIo()
             val bound = 4
-            withCoreEchoServer(ServerConfig(admission = Admission(perPass = bound, inProgress = 1_024)), wrapIo = gate::around) { server ->
+            withCoreEchoServer(
+                ServerConfig(admission = AdmissionBounds(perPass = bound, inProgress = 1_024)),
+                wrapIo = gate::around,
+            ) { server ->
                 val connects =
                     (0 until 4 * bound).map { n ->
                         async(Dispatchers.IO) {
@@ -69,7 +72,7 @@ class CoreServerAdmissionTests {
             val api = CountingApi(loadQuicheApi())
             val waves = 64
             val wave = 64
-            withCoreEchoServer(ServerConfig(admission = Admission(perPass = 256, inProgress = 1_024)), api = api) { server ->
+            withCoreEchoServer(ServerConfig(admission = AdmissionBounds(perPass = 256, inProgress = 1_024)), api = api) { server ->
                 repeat(waves) { w ->
                     (0 until wave)
                         .map { n ->

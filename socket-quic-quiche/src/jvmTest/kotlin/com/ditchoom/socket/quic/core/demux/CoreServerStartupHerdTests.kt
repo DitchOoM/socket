@@ -19,7 +19,8 @@ import com.ditchoom.socket.quic.core.edge.addressOf
 import com.ditchoom.socket.quic.core.edge.coreServe
 import com.ditchoom.socket.quic.core.edge.coreTestOptions
 import com.ditchoom.socket.quic.core.edge.coreTlsConfig
-import com.ditchoom.socket.quic.core.loop.LoopClock
+import com.ditchoom.socket.quic.core.time.LoopClock
+import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.udp.ArrivedOn
 import com.ditchoom.socket.quic.core.udp.BatchCapability
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
@@ -29,6 +30,7 @@ import com.ditchoom.socket.quic.core.udp.ReceiveBuffer
 import com.ditchoom.socket.quic.core.udp.SendBatch
 import com.ditchoom.socket.quic.core.udp.SendBatchResult
 import com.ditchoom.socket.quic.core.udp.SocketClosed
+import com.ditchoom.socket.quic.core.udp.SocketProbe
 import com.ditchoom.socket.quic.core.udp.toPathKey
 import com.ditchoom.socket.quic.encodeAlpnList
 import com.ditchoom.socket.quic.generateScid
@@ -85,7 +87,7 @@ class CoreServerStartupHerdTests {
                 readPolicy = ReadPolicy.Bounded(10.seconds),
                 writePolicy = WritePolicy.Bounded(10.seconds),
                 wrapIo = { network },
-                clock = LoopClock { network.now },
+                clock = LoopClock { Nanos(network.now) },
                 driver = LoopDriver.Caller,
             )
         val serverAddress = InetSocketAddress("127.0.0.1", server.port)
@@ -146,12 +148,12 @@ class CoreServerStartupHerdTests {
                             if (length <= 0) break
                             if (isInitial(outView.get(0))) client.initials.add(now)
                             network.arrive(Datagram(client.path, ByteArray(length).also { outView.duplicate().get(it, 0, length) }))
-                            if (++sent % wave == 0) server.loop.pass(now)
+                            if (++sent % wave == 0) server.loop.pass(Nanos(now))
                         }
                     }
                     val pending = network.toServer.isNotEmpty()
                     do {
-                        val due = server.loop.pass(now)
+                        val due = server.loop.pass(Nanos(now))
                         due.fold(none = {}, due = { next = minOf(next, it) })
                     } while (network.toServer.isNotEmpty())
                     val replies = network.toClients.toList()
@@ -255,7 +257,7 @@ class CoreServerStartupHerdTests {
                 val buffer = into.take()
                 if (buffer !is ReceiveBuffer) break
                 val datagram = toServer.removeFirst()
-                val view = (buffer.buffer.unwrapFully() as BaseJvmBuffer).byteBuffer
+                val view = (buffer.bytes.owner.unwrapFully() as BaseJvmBuffer).byteBuffer
                 (view as Buffer).clear()
                 view.put(datagram.bytes)
                 into.received(buffer, datagram.bytes.size, datagram.path, ArrivedOn.Unreported)
@@ -265,7 +267,7 @@ class CoreServerStartupHerdTests {
         }
 
         override fun send(batch: SendBatch): SendBatchResult {
-            val view: ByteBuffer = (batch.storage.unwrapFully() as BaseJvmBuffer).byteBuffer.duplicate()
+            val view: ByteBuffer = (batch.storage.owner.unwrapFully() as BaseJvmBuffer).byteBuffer.duplicate()
             for (n in 0 until batch.pending) {
                 val target = batch.targetOf(n) as SendTarget.ServerReply
                 (view as Buffer).limit(batch.offsetOf(n) + batch.lengthOf(n)).position(batch.offsetOf(n))
@@ -275,6 +277,8 @@ class CoreServerStartupHerdTests {
             }
             return SendBatchResult.AllTaken
         }
+
+        override fun probe(): SocketProbe = SocketProbe.Open
 
         override fun close(): SocketClosed = SocketClosed
     }

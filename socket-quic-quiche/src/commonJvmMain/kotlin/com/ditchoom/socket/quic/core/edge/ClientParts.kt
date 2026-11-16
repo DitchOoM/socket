@@ -10,7 +10,6 @@ import com.ditchoom.socket.quic.core.conn.Conn
 import com.ditchoom.socket.quic.core.conn.ConnAddress
 import com.ditchoom.socket.quic.core.conn.ConnMemory
 import com.ditchoom.socket.quic.core.conn.CopySlot
-import com.ditchoom.socket.quic.core.conn.FlightSize
 import com.ditchoom.socket.quic.core.conn.SlotRules
 import com.ditchoom.socket.quic.core.conn.buildConn
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
@@ -18,7 +17,6 @@ import com.ditchoom.socket.quic.core.loop.Endpoint
 import com.ditchoom.socket.quic.core.loop.Route
 import com.ditchoom.socket.quic.core.loop.SocketDiedNotice
 import com.ditchoom.socket.quic.core.observe.ConnCounts
-import com.ditchoom.socket.quic.core.path.SockAddr
 import com.ditchoom.socket.quic.core.pool.FixedPool
 import com.ditchoom.socket.quic.core.ready.SocketRef
 import com.ditchoom.socket.quic.core.sched.CallerLanes
@@ -29,6 +27,7 @@ import com.ditchoom.socket.quic.core.time.MonotonicClock
 import com.ditchoom.socket.quic.core.udp.BatchLimits
 import com.ditchoom.socket.quic.core.udp.NioOneByOne
 import com.ditchoom.socket.quic.core.udp.SendBatch
+import com.ditchoom.socket.quic.core.udp.SockAddr
 import com.ditchoom.socket.quic.core.udp.toPathKey
 import com.ditchoom.socket.quic.trace.TraceCapture
 import com.ditchoom.socket.quic.traceRecorderFor
@@ -81,9 +80,9 @@ internal class ClientParts(
                     FixedPool(COPY_SLOTS) { CopySlot(it, w.memory.native(MAX_DATAGRAM)) },
                     w.memory.factory(),
                     alpn,
-                    w.memory.native(FLIGHT_PAYLOAD),
+                    w.memory.native(w.flight.payloadBytes),
                 ),
-            flight = FlightSize(FLIGHT_RECORDS, FLIGHT_PAYLOAD),
+            flight = w.flight,
             capture = capture,
             port = loop.port,
             socket = socket,
@@ -125,7 +124,5 @@ internal class ClientParts(
         const val CALLER_BATCH = 16
         const val COPY_SLOTS = 16
         const val MAX_ALPN = 255
-        const val FLIGHT_RECORDS = 2048
-        const val FLIGHT_PAYLOAD = 256 * 1024
     }
 }

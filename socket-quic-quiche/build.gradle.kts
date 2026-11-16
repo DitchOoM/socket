@@ -5042,6 +5042,18 @@ val stageCoreAndroidTests =
                 "loop/NioLoopEchoTests.kt",
                 "loop/LoopDeadlineWakeTests.kt",
                 "loop/LoopPassTests.kt",
+                "conn/CoreClientAgainstServerTests.kt",
+                "conn/NetworkWatchTests.kt",
+                "udp/SocketBuffersEchoTests.kt",
+                "demux/ServerTestSupport.kt",
+                "demux/ServerRig.kt",
+                "demux/DemuxTests.kt",
+                "demux/AdmissionTests.kt",
+                "demux/CoreServerEchoTests.kt",
+                "demux/CoreServerStatelessTests.kt",
+                "demux/CoreServerCloseTests.kt",
+                "demux/CoreServerAdmissionTests.kt",
+                "demux/CoreServerStartupHerdTests.kt",
             )
             into("com/ditchoom/socket/quic/core")
         }

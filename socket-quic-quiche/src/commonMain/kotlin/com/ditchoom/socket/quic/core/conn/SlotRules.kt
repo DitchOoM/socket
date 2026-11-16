@@ -15,16 +15,10 @@ internal sealed interface AckRule {
     data object Immediate : AckRule
 }
 
-/** How long a connection keeps going after the network monitor reports no usable network. */
-internal class NetworkRule(
-    val graceNanos: Long,
-)
-
 /** The rules every connection of an endpoint is built with; immutable and shared. */
 internal class SlotRules(
     val pacing: PacingRule,
     val ack: AckRule,
-    val network: NetworkRule,
 ) {
     companion object {
         /** quiche's pacing within 1 ms is sent at once; beyond a second it is a different clock's reading. */
@@ -32,7 +26,6 @@ internal class SlotRules(
             SlotRules(
                 PacingRule.ByQuiche(allowanceNanos = 1_000_000L, limitNanos = 1_000_000_000L),
                 AckRule.Immediate,
-                NetworkRule(graceNanos = 3_000_000_000L),
             )
     }
 }

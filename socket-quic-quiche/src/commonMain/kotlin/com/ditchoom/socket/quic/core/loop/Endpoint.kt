@@ -2,6 +2,8 @@ package com.ditchoom.socket.quic.core.loop
 
 import com.ditchoom.socket.quic.core.conn.Collected
 import com.ditchoom.socket.quic.core.conn.Conn
+import com.ditchoom.socket.quic.core.demux.Admitted
+import com.ditchoom.socket.quic.core.demux.ServerPhase
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.Life
 import com.ditchoom.socket.quic.core.observe.LoopCounts
@@ -34,6 +36,20 @@ internal sealed interface Route {
     class Fixed(
         val conn: Conn,
     ) : Route
+
+    /** A server's unconnected socket carries every connection it accepted. */
+    class Demux(
+        val demux: com.ditchoom.socket.quic.core.demux.Demux,
+    ) : Route
+}
+
+/** When an endpoint reads its socket. */
+internal enum class Readiness {
+    /** When the poller reported it readable, and until a read finds nothing. */
+    Polled,
+
+    /** Every pass: a socket whose readiness no poller sees, such as one driven by a test on virtual time. */
+    EveryPass,
 }
 
 /** Whether a socket may hold datagrams: set by readiness, cleared by a receive that found none. */
@@ -54,6 +70,7 @@ internal class Endpoint(
     private val route: Route,
     /** Runs on the loop once the socket has left it, after the connection ended and its last output went out. */
     private val onLeft: Runnable,
+    private val readiness: Readiness = Readiness.Polled,
 ) {
     var token = 0
         private set
@@ -69,12 +86,33 @@ internal class Endpoint(
         input = Input.Maybe
     }
 
-    /** Receives up to [MAX_PER_PASS] datagrams and hands them to the route. */
+    /**
+     * Receives up to [MAX_PER_PASS] datagrams and hands them to the route. A server then starts held handshakes a
+     * chunk at a time, reading the socket again after each chunk so its buffer never fills while they start.
+     */
     fun receive(
         batch: ReceiveBatch,
         counts: LoopCounts,
     ) {
-        if (input == Input.Drained || phase != Phase.Live) return
+        if (phase != Phase.Live) return
+        when (route) {
+            is Route.Fixed -> receiveWaiting(batch, counts)
+            is Route.Demux -> {
+                route.demux.passBegins()
+                receiveWaiting(batch, counts)
+                while (route.demux.admitSome(send) == Admitted.More) {
+                    input = Input.Maybe
+                    receiveWaiting(batch, counts)
+                }
+            }
+        }
+    }
+
+    private fun receiveWaiting(
+        batch: ReceiveBatch,
+        counts: LoopCounts,
+    ) {
+        if (input == Input.Drained && readiness == Readiness.Polled) return
         var taken = 0
         while (taken < MAX_PER_PASS) {
             when (val got = io.receive(batch)) {
@@ -105,6 +143,7 @@ internal class Endpoint(
             val collected =
                 when (route) {
                     is Route.Fixed -> route.conn.turn(send)
+                    is Route.Demux -> route.demux.turn(send)
                 }
             if (send.pending > 0) {
                 when (phase) {
@@ -152,6 +191,7 @@ internal class Endpoint(
     private fun connEnded(): Boolean =
         when (route) {
             is Route.Fixed -> route.conn.life() is Life.Ended
+            is Route.Demux -> route.demux.phase() == ServerPhase.Stopped
         }
 
     private fun noticeDeath() {
@@ -168,11 +208,13 @@ internal class Endpoint(
     private fun endConn(end: ConnEnd) =
         when (route) {
             is Route.Fixed -> route.conn.endWithLoop(end)
+            is Route.Demux -> route.demux.endAll(end)
         }
 
     private fun deliver(batch: ReceiveBatch) {
         when (route) {
             is Route.Fixed -> for (i in 0 until batch.count) route.conn.received(batch.bufferAt(i).bytes, batch.lengthAt(i))
+            is Route.Demux -> route.demux.route(batch, send)
         }
         batch.release()
     }

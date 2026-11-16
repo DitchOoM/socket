@@ -3,6 +3,7 @@ package com.ditchoom.socket.quic.core.edge
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicStreamId
 import com.ditchoom.socket.quic.core.conn.CallerPlace
@@ -17,7 +18,6 @@ import com.ditchoom.socket.quic.core.stream.StreamEntry
 import com.ditchoom.socket.quic.core.stream.StreamTable
 import com.ditchoom.socket.quic.core.stream.Streams
 import com.ditchoom.socket.quic.core.stream.Waiter
-import com.ditchoom.socket.quic.core.udp.Addressed
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.Runnable
@@ -93,7 +93,7 @@ internal class ReadOp(
         table: StreamTable,
         entry: StreamEntry,
     ): Retry {
-        if (entry.received == Received.Finished) return deliver(ReadResult.End, Spare.None)
+        if (entry.received == Received.Finished) return deliver(ReadResult.End)
         val buffer =
             when (val kept = spare) {
                 is Spare.None -> factory.allocate(entry.chunk.bytes)
@@ -101,13 +101,10 @@ internal class ReadOp(
             }
         spare = Spare.None
         val address =
-            when (val native = NativeBytes.of(buffer)) {
-                is Addressed.Native -> native.bytes.address
-                is Addressed.NotAddressable -> {
-                    buffer.freeNativeMemory()
-                    cont.fail(Raised.NotNative(stream, buffer), QuicCloseCircumstance.Ended)
-                    return Retry.Settled
-                }
+            NativeBytes.addressing(buffer, { it }) {
+                buffer.freeNativeMemory()
+                cont.fail(Raised.NotNative(stream, buffer), QuicCloseCircumstance.Ended)
+                return Retry.Settled
             }
         val asked = buffer.limit()
         return table.io.recv(stream, address, asked).fold(
@@ -140,7 +137,7 @@ internal class ReadOp(
         entry.read(asked, read)
         buffer.position(0)
         buffer.setLimit(read)
-        return deliver(ReadResult.Data(buffer), Spare.Held(buffer))
+        return deliver(ReadResult.Data(buffer))
     }
 
     private fun hold(buffer: PlatformBuffer): Retry {
@@ -153,20 +150,12 @@ internal class ReadOp(
         result: ReadResult,
     ): Retry {
         buffer.freeNativeMemory()
-        return deliver(result, Spare.None)
+        return deliver(result)
     }
 
-    /** Resumes the caller with [result]; a caller cancelled after the resume frees the [owned] buffer it never saw. */
-    private fun deliver(
-        result: ReadResult,
-        owned: Spare,
-    ): Retry {
-        cont.resume(result) { _, _, _ ->
-            when (owned) {
-                is Spare.Held -> owned.buffer.freeNativeMemory()
-                is Spare.None -> Unit
-            }
-        }
+    /** Resumes the caller with [result]; a caller cancelled after the resume frees the buffer it never saw. */
+    private fun deliver(result: ReadResult): Retry {
+        cont.resume(result, FREE_UNSEEN)
         return Retry.Settled
     }
 
@@ -206,4 +195,9 @@ internal class ReadOp(
 
         override fun gone(end: ConnEnd) = Unit
     }
+}
+
+/** A result a cancelled caller never saw: its buffer is freed. Shared, so a delivery allocates no handler. */
+private val FREE_UNSEEN: (Throwable, ReadResult, kotlin.coroutines.CoroutineContext) -> Unit = { _, unseen, _ ->
+    if (unseen is ReadResult.Data) unseen.buffer.freeIfNeeded()
 }

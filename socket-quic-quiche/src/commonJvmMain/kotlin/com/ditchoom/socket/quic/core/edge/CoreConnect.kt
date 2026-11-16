@@ -24,6 +24,7 @@ import com.ditchoom.socket.quic.RouteSource
 import com.ditchoom.socket.quic.UdpSocketChannelFactory
 import com.ditchoom.socket.quic.applyQuicOptions
 import com.ditchoom.socket.quic.core.conn.Conn
+import com.ditchoom.socket.quic.core.conn.FlightSize
 import com.ditchoom.socket.quic.core.loop.Loop
 import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.loop.Placement
@@ -79,9 +80,10 @@ internal suspend fun coreConnect(
     wrapIo: (DatagramBatchIo) -> DatagramBatchIo = { it },
     loops: LoopSet = LoopSet.shared,
     buffers: SocketBuffers = SocketBuffers.Default,
+    flight: FlightSize = CLIENT_FLIGHT,
 ): CoreClient =
     withContext(Dispatchers.IO) {
-        val memory = ClientMemory(factory)
+        val memory = EdgeMemory(factory)
         var connected = false
         try {
             connectOnThisThread(
@@ -98,6 +100,7 @@ internal suspend fun coreConnect(
                 wrapIo,
                 loops,
                 buffers,
+                flight,
             ).also { connected = true }
         } finally {
             if (!connected) memory.freeAll()
@@ -110,7 +113,7 @@ private suspend fun connectOnThisThread(
     port: Int,
     serverName: String,
     options: QuicOptions,
-    memory: ClientMemory,
+    memory: EdgeMemory,
     factory: BufferFactory,
     api: QuicheApi,
     timeout: Duration,
@@ -119,6 +122,7 @@ private suspend fun connectOnThisThread(
     wrapIo: (DatagramBatchIo) -> DatagramBatchIo,
     loops: LoopSet,
     buffers: SocketBuffers,
+    flight: FlightSize,
 ): CoreClient {
     val peer = UdpSocket.resolve(host, port)
     val codec = SocketAddressCodec(hostOsSockAddrLayout())
@@ -167,7 +171,7 @@ private suspend fun connectOnThisThread(
     val scope = CoroutineScope(SupervisorJob())
     val built =
         ClientParts(
-            ClientWiring(api, handle, config, options, memory, running, channel, wrapIo, peerInet, readPolicy, writePolicy, scope),
+            ClientWiring(api, handle, config, options, memory, running, channel, wrapIo, peerInet, readPolicy, writePolicy, scope, flight),
             peerSockAddr,
             localSockAddr,
         )
@@ -206,7 +210,7 @@ private fun configured(
     return config
 }
 
-private fun addressOf(buffer: com.ditchoom.buffer.PlatformBuffer): Long =
+internal fun addressOf(buffer: com.ditchoom.buffer.PlatformBuffer): Long =
     when (
         val at =
             com.ditchoom.socket.quic.core.udp.NativeBytes
@@ -241,7 +245,7 @@ internal class ClientWiring(
     val handle: QuicheConn,
     val config: QuicheConfig,
     val options: QuicOptions,
-    val memory: ClientMemory,
+    val memory: EdgeMemory,
     val running: RunningLoop,
     val channel: DatagramChannel,
     val wrapIo: (DatagramBatchIo) -> DatagramBatchIo,
@@ -249,9 +253,13 @@ internal class ClientWiring(
     val readPolicy: ReadPolicy,
     val writePolicy: WritePolicy,
     val scope: CoroutineScope,
+    val flight: FlightSize,
 )
 
 private const val HEX = "0123456789abcdef"
 private const val QUIC_V1 = 1
 private const val ANY_HOST = "0.0.0.0"
 internal const val MAX_DATAGRAM = 1500
+
+/** A client connection's flight recording unless the connect asks for another size: enough for a walk's handshakes. */
+internal val CLIENT_FLIGHT = FlightSize(records = 2048, payloadBytes = 256 * 1024)

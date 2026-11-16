@@ -34,6 +34,12 @@ internal class NativeBytes private constructor(
     /** The eight bytes at [offset], in native order: a tag, never a number to compute with. */
     fun longAt(offset: Int): Long = UnsafeMemory.getLong(address + offset)
 
+    /** Writes [value] at [offset] in native order: a native `size_t` or a tag, as [longAt] reads it back. */
+    fun putLong(
+        offset: Int,
+        value: Long,
+    ) = UnsafeMemory.putLong(address + offset, value)
+
     companion object {
         /** Reads [buffer]'s address once, here; a buffer without one is [Addressed.NotAddressable]. */
         fun of(buffer: PlatformBuffer): Addressed {
@@ -43,6 +49,16 @@ internal class NativeBytes private constructor(
             } else {
                 Addressed.Native(NativeBytes(access.nativeAddress.toLong(), buffer.capacity, buffer))
             }
+        }
+
+        /** Answers [at] with [buffer]'s address, or [notAddressable]; allocates nothing, for a buffer used once. */
+        inline fun <R> addressing(
+            buffer: ReadBuffer,
+            at: (address: Long) -> R,
+            notAddressable: () -> R,
+        ): R {
+            val access = buffer.nativeMemoryAccess
+            return if (access == null) notAddressable() else at(access.nativeAddress.toLong())
         }
 
         /** The address of the first byte of a caller's [buffer], read here and nowhere else. */
