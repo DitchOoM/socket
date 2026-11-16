@@ -78,6 +78,9 @@ internal class Loop(
     /** Any thread: [endpoint] joins this loop; its connection may start once this returns. */
     fun place(endpoint: Endpoint) = port.submit(PlaceWork(this, endpoint))
 
+    /** Any thread: [endpoint]'s socket is reopened on the network that carries its address now (see [Endpoint.rehome]). */
+    fun rehome(endpoint: Endpoint) = port.submit(RehomeWork(this, endpoint))
+
     /** Any thread: the loop stops, ends every connection on it, and then runs [then]. */
     fun close(then: Runnable) = port.submit(StopWork(this, then))
 
@@ -136,6 +139,8 @@ internal class Loop(
         endpoint.placed(token)
         poller.add(endpoint.socketRef, token)
     }
+
+    internal fun reopen(endpoint: Endpoint) = endpoint.rehome(poller)
 
     internal fun beginClosing(then: Runnable) {
         run = Run.Closing(then)
@@ -202,6 +207,16 @@ private class PlaceWork(
     override fun run(port: LoopPort) = loop.attach(endpoint)
 
     override fun gone(end: ConnEnd) = endpoint.unplaced(end)
+}
+
+/** Loop work: a socket is reopened on a changed network. */
+private class RehomeWork(
+    private val loop: Loop,
+    private val endpoint: Endpoint,
+) : LoopWork() {
+    override fun run(port: LoopPort) = loop.reopen(endpoint)
+
+    override fun gone(end: ConnEnd) = Unit
 }
 
 /** Loop work: the loop's owner stops it. */

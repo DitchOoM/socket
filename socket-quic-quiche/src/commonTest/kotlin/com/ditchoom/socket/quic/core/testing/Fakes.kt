@@ -21,6 +21,7 @@ import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.ReceiveBatchResult
+import com.ditchoom.socket.quic.core.udp.Reopened
 import com.ditchoom.socket.quic.core.udp.SendBatch
 import com.ditchoom.socket.quic.core.udp.SendBatchResult
 import com.ditchoom.socket.quic.core.udp.SocketClosed
@@ -80,6 +81,16 @@ internal class FakeIo : DatagramBatchIo {
     override fun receive(into: ReceiveBatch): ReceiveBatchResult = ReceiveBatchResult.Nothing
 
     override fun probe(): SocketProbe = probeAnswer
+
+    /** What [reopen] answers; the test may change it. */
+    var reopenAnswer: Reopened = Reopened.SameEndpoint
+    var reopens = 0
+        private set
+
+    override fun reopen(): Reopened {
+        reopens++
+        return reopenAnswer
+    }
 
     override fun close(): SocketClosed = SocketClosed
 }

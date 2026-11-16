@@ -17,7 +17,25 @@ internal interface DatagramBatchIo {
     /** Asked after an unnamed error: does the socket still work? */
     fun probe(): SocketProbe
 
+    /**
+     * Loop thread, with the socket out of the poller: closes this socket and opens one bound to the same local address
+     * and port, connected to the same peer, on whatever network carries that address now. The 4-tuple is unchanged,
+     * so the peer sees the same path. A send racing the swap is answered [UdpError.Replaced].
+     */
+    fun reopen(): Reopened
+
     fun close(): SocketClosed
+}
+
+/** What a [DatagramBatchIo.reopen] did. */
+internal sealed interface Reopened {
+    /** A new socket holds the same local address and port. */
+    data object SameEndpoint : Reopened
+
+    /** No socket could be opened there again: the old one is closed. */
+    class Refused(
+        val thrown: Thrown,
+    ) : Reopened
 }
 
 internal sealed interface BatchCapability {

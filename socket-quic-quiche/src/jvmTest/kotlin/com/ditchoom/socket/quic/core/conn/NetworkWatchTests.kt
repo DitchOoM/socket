@@ -13,7 +13,7 @@ class NetworkWatchTests {
     @Test
     fun aUsableOrChangedNetworkNudges() {
         assertEquals(NetworkStep.Nudge, watch.changed(NetworkChange.Usable))
-        assertEquals(NetworkStep.Nudge, watch.changed(NetworkChange.Changed))
+        assertEquals(NetworkStep.Nudge, watch.changed(NetworkChange.Rehomed))
     }
 
     @Test

@@ -78,6 +78,12 @@ internal class Conn(
         }
     }
 
+    /** Loop thread: [work] runs inside in this pass's serve, unless a caller is inside, who runs it. */
+    fun submitFromLoop(work: ConnWork) {
+        submit(work)
+        touch()
+    }
+
     /** Loop thread: a datagram for this connection, at the start of [bytes]; copied when a caller is inside. */
     fun received(
         bytes: NativeBytes,

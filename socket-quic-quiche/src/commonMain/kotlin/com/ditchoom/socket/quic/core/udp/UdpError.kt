@@ -18,6 +18,9 @@ internal sealed interface UdpError {
 
     data object SocketClosed : UdpError
 
+    /** The socket was closed because a new one took its place while this send was under way: send again. */
+    data object Replaced : UdpError
+
     /** An error the mapping does not name, with the platform's own exception. */
     class Unnamed(
         val thrown: Thrown,

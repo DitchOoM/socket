@@ -19,8 +19,8 @@ internal class FlightSize(
 )
 
 /**
- * A connection's flight recorder. Every datagram in and out, and every network change the connection is told of,
- * is recorded on the hot path into a preallocated ring and payload arena, allocating nothing. The recording is
+ * A connection's flight recorder. Every datagram in and out, and every network change the connection is told of
+ * (written to a trace as a path-state line named for the change, such as `Rehomed`), is recorded on the hot path into a preallocated ring and payload arena, allocating nothing. The recording is
  * written in the trace grammar of [com.ditchoom.socket.quic.trace.QuicTraceRecorder] (v1) only off that path: after
  * a turn when the connection's [TraceCapture] is on, and into any [TraceSink] on demand, so the existing trace
  * tools and the schedule replay read core recordings unchanged. Inside the connection only.
@@ -112,11 +112,15 @@ internal class ConnFlight(
         for (n in maxOf(from, oldest) until total) {
             val i = (n - oldest).toInt()
             val kind = ring.kindAt(i)
+            if (kind == FlightKind.NetworkEvent) {
+                emit.emit(TraceEvent.PathState(sinceOrigin(i), NetworkChange.entries[ring.subAt(i)].name, null, 0))
+                continue
+            }
             if (kind != FlightKind.DatagramIn && kind != FlightKind.DatagramOut) continue
             val at = ring.aAt(i)
             val length = ring.lengthAt(i)
             if (at < arenaWritten - arena.capacity) continue
-            val t = (ring.nanosAt(i) - originNanos).nanoseconds
+            val t = sinceOrigin(i)
             val hex = hexOf((at % arena.capacity).toInt(), minOf(length, arena.capacity))
             emit.emit(
                 if (kind == FlightKind.DatagramOut) {
@@ -128,6 +132,8 @@ internal class ConnFlight(
         }
         return total
     }
+
+    private fun sinceOrigin(i: Int) = (ring.nanosAt(i) - originNanos).nanoseconds
 
     private fun hexOf(
         start: Int,
