@@ -71,7 +71,14 @@
       "longrtt": "pass",
       "multiplexing": "pass",
       "rebind-addr": "pass",
-      "rebind-port": "pass",
+      "rebind-port": {
+        "flaky": {
+          "why": "peer: the runner fails the test when aioquic's first packet to our client's new port carries no PATH_CHALLENGE, a check of the server's own packets; our client downloads every file and exits 0 (run 43947308066, both attempts)",
+          "signature": {
+            "kind": "peer-server-did-not-challenge-new-path-first"
+          }
+        }
+      },
       "resumption": "pass",
       "retry": "pass",
       "transfer": "pass",
