@@ -928,8 +928,8 @@ interface QuicheApi {
      * libquiche reads (the one the loop's clock reads), from the `at` field of the send info. A time at or before
      * now means send at once. Backends read the struct without allocating; the default answers 0, which is never
      * in the future, so a backend without it does not pace. The clock is CLOCK_MONOTONIC on Linux and
-     * CLOCK_UPTIME_RAW on Apple platforms (the patched libquiche converts its instant to it); on Windows the field
-     * holds no time and reads as the distant past, so nothing is paced there.
+     * CLOCK_UPTIME_RAW on Apple platforms and QueryPerformanceCounter nanoseconds on Windows (the patched libquiche
+     * converts its instant to each).
      */
     fun sendInfoAtNanos(info: QuicheSendInfo): Long = 0L
 

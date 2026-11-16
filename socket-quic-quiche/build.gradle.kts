@@ -240,6 +240,8 @@ fun downloadQuicheSource(
     // Give Apple targets a real `quiche_send_info.at` (upstream writes zero there). Applied after the caller
     // clock so it reads `crate::now()`. Idempotent, fails loudly on drift. See the KDoc.
     patchQuichePacingTimeOnApple(sourceDir)
+    // The same for Windows, on the clock System.nanoTime reads there. Idempotent, fails loudly on drift.
+    patchQuichePacingTimeOnWindows(sourceDir)
     // Give ffi.rs' `TransportParams` the `#[repr(C)]` it is missing upstream, so its ABI matches what
     // quiche.h declares. Idempotent, fails loudly on drift OR on an upstream fix. See the KDoc.
     patchQuicheTransportParamsRepr(sourceDir)
@@ -411,6 +413,70 @@ fun patchQuichePacingTimeOnApple(sourceDir: File) {
         """.trimMargin()
     ffiRs.writeText(text.replace(anchor, replacement))
     logger.lifecycle("Patched quiche source: send_info.at on Apple")
+}
+
+/**
+ * Make `quiche_send_info.at` carry a time on Windows too. After [patchQuichePacingTimeOnApple] only Windows kept
+ * upstream's zero, so every datagram read as due at zero on a clock then reading 1,069 s (CorePacingClockTests on
+ * every Windows lane) and nothing was paced there.
+ *
+ * Here `at` is written as `QueryPerformanceCounter` scaled to nanoseconds, the reading `System.nanoTime` takes on
+ * Windows, plus how far `at` is from quiche's own now, as the Apple conversion does.
+ *
+ * Marker-guarded and loud in both directions: a re-run returns, a moved anchor throws, and an upstream that converts
+ * the Windows instant itself throws, telling you to delete this patch.
+ */
+fun patchQuichePacingTimeOnWindows(sourceDir: File) {
+    val ffiRs = sourceDir.resolve("quiche/src/ffi.rs")
+    if (!ffiRs.exists()) return
+    val text = ffiRs.readText()
+    val marker = "socket-windows-pacing-time"
+    if (text.contains(marker)) return
+    val anchor =
+        """
+        |#[cfg(target_os = "windows")]
+        |fn std_time_to_c(_time: &Instant, out: &mut timespec) {
+        |    // TODO: implement Instant conversion for systems that don't use timespec.
+        |    out.tv_sec = 0;
+        |    out.tv_nsec = 0;
+        |}
+        """.trimMargin()
+    if (text.split(anchor).size != 2) {
+        throw GradleException(
+            "$marker: the Windows `std_time_to_c` stub left by patchQuichePacingTimeOnApple was not found exactly once " +
+                "in quiche/src/ffi.rs. If upstream now converts the Windows instant, DELETE patchQuichePacingTimeOnWindows " +
+                "and its call site; otherwise re-fit it.",
+        )
+    }
+    val replacement =
+        """
+        |// $marker: the instant as QueryPerformanceCounter nanoseconds, the clock System.nanoTime reads on Windows.
+        |#[cfg(target_os = "windows")]
+        |fn std_time_to_c(time: &Instant, out: &mut timespec) {
+        |    #[link(name = "kernel32")]
+        |    extern "system" {
+        |        fn QueryPerformanceCounter(count: *mut i64) -> i32;
+        |        fn QueryPerformanceFrequency(frequency: *mut i64) -> i32;
+        |    }
+        |    let mut count: i64 = 0;
+        |    let mut frequency: i64 = 0;
+        |    unsafe {
+        |        QueryPerformanceCounter(&mut count);
+        |        QueryPerformanceFrequency(&mut frequency);
+        |    }
+        |    let base_nanos = if frequency > 0 { count as i128 * 1_000_000_000 / frequency as i128 } else { 0 };
+        |    let now = crate::now();
+        |    let ahead = match time.checked_duration_since(now) {
+        |        Some(d) => d.as_nanos() as i128,
+        |        None => -(now.saturating_duration_since(*time).as_nanos() as i128),
+        |    };
+        |    let at = base_nanos + ahead;
+        |    out.tv_sec = at.div_euclid(1_000_000_000) as libc::time_t;
+        |    out.tv_nsec = at.rem_euclid(1_000_000_000) as libc::c_long;
+        |}
+        """.trimMargin()
+    ffiRs.writeText(text.replace(anchor, replacement))
+    logger.lifecycle("Patched quiche source: send_info.at on Windows")
 }
 
 /**
