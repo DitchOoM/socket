@@ -10,6 +10,7 @@ import com.ditchoom.socket.quic.core.observe.LoopOnly
 import com.ditchoom.socket.quic.core.observe.ServerCounts
 import com.ditchoom.socket.quic.core.sched.LoopPort
 import com.ditchoom.socket.quic.core.time.LoopClock
+import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.Room
@@ -63,8 +64,9 @@ internal class Demux(
     fun route(
         batch: ReceiveBatch,
         out: SendBatch,
+        at: Nanos,
     ) {
-        for (i in 0 until batch.count) routeOne(batch.bufferAt(i).bytes, batch.lengthAt(i), batch.fromAt(i), out)
+        for (i in 0 until batch.count) routeOne(batch.bufferAt(i).bytes, batch.lengthAt(i), batch.fromAt(i), out, at)
     }
 
     /** Starts a chunk of the held Initials, oldest first; [Admitted.More] when the loop should read and come back. */
@@ -72,8 +74,9 @@ internal class Demux(
         admission.chunkBegins()
         mode = Mode.Admitting
         val backlog = admission.backlog
+        val at = clock.now()
         while (admission.mayTakeMore()) {
-            routeOne(backlog.oldest(), backlog.oldestLength(), backlog.oldestFrom(), out)
+            routeOne(backlog.oldest(), backlog.oldestLength(), backlog.oldestFrom(), out, at)
             backlog.dropOldest()
         }
         mode = Mode.Receiving
@@ -118,13 +121,14 @@ internal class Demux(
         length: Int,
         from: PathKey,
         out: SendBatch,
+        at: Nanos,
     ) {
         when (header.read(datagram, length)) {
-            Wire.Short, Wire.OtherV1 -> deliver(datagram, length)
+            Wire.Short, Wire.OtherV1 -> deliver(datagram, length, at)
             Wire.InitialV1 ->
                 when (val route = table.find(header.cid)) {
-                    is Route<ServerPeer> -> deliverTo(route.owner, datagram, length)
-                    is RouteLink.End -> start(datagram, length, from, out)
+                    is Route<ServerPeer> -> deliverTo(route.owner, datagram, length, at)
+                    is RouteLink.End -> start(datagram, length, from, out, at)
                 }
             Wire.UnsupportedVersion ->
                 if (length < MIN_INITIAL) counts.runtDropped() else stateless.negotiate(header, datagram, from, out)
@@ -135,8 +139,9 @@ internal class Demux(
     private fun deliver(
         datagram: NativeBytes,
         length: Int,
+        at: Nanos,
     ) = when (val route = table.find(header.cid)) {
-        is Route<ServerPeer> -> deliverTo(route.owner, datagram, length)
+        is Route<ServerPeer> -> deliverTo(route.owner, datagram, length, at)
         is RouteLink.End -> counts.unknownDropped()
     }
 
@@ -144,9 +149,10 @@ internal class Demux(
         peer: ServerPeer,
         datagram: NativeBytes,
         length: Int,
+        at: Nanos,
     ) {
         counts.routedOne()
-        peer.conn.received(datagram, length)
+        peer.conn.received(datagram, length, at)
     }
 
     /** An Initial that names no connection: a new one, if the server takes it. */
@@ -155,16 +161,17 @@ internal class Demux(
         length: Int,
         from: PathKey,
         out: SendBatch,
+        at: Nanos,
     ) {
         if (life.view() != ServerPhase.Running) return counts.unknownDropped()
         if (length < MIN_INITIAL) return counts.runtDropped()
         when (val tokens = stateless.tokens) {
-            is Tokens.None -> admit(Admit.Fresh, datagram, length, from)
+            is Tokens.None -> admit(Admit.Fresh, datagram, length, from, at)
             is Tokens.Of ->
                 when (scratch.readToken(api, datagram, length)) {
                     TokenRead.Refused -> counts.unknownDropped()
                     TokenRead.Absent -> stateless.retry(tokens.tokens, header, datagram, from, scratch, clock.now(), out)
-                    TokenRead.Present -> redeem(tokens.tokens, datagram, length, from)
+                    TokenRead.Present -> redeem(tokens.tokens, datagram, length, from, at)
                 }
         }
     }
@@ -174,10 +181,11 @@ internal class Demux(
         datagram: NativeBytes,
         length: Int,
         from: PathKey,
+        at: Nanos,
     ) {
         val checked = tokens.check(scratch.token.owner, scratch.tokenLength, clock.now().value, header.cid, from)
         when (checked) {
-            is TokenCheck.Valid -> admit(Admit.Redeemed(checked), datagram, length, from)
+            is TokenCheck.Valid -> admit(Admit.Redeemed(checked), datagram, length, from, at)
             is TokenCheck.Malformed, is TokenCheck.Forged, is TokenCheck.Expired -> counts.tokenDropped()
         }
     }
@@ -187,6 +195,7 @@ internal class Demux(
         datagram: NativeBytes,
         length: Int,
         from: PathKey,
+        at: Nanos,
     ) {
         when (mode) {
             Mode.Receiving -> return admission.hold(datagram, length, from)
@@ -205,7 +214,7 @@ internal class Demux(
         peer.routed(table.add(admission.newCid, peer), original)
         peer.listedAt(peers.size)
         peers.add(peer)
-        peer.conn.received(datagram, length)
+        peer.conn.received(datagram, length, at)
     }
 
     /** [peer] ended: its routes go, and its memory is released once nobody is inside it. */

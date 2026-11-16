@@ -20,6 +20,8 @@ import com.ditchoom.socket.quic.core.edge.coreTlsConfig
 import com.ditchoom.socket.quic.core.edge.echoOver
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 import com.ditchoom.socket.quic.core.udp.NioOneByOne
+import com.ditchoom.socket.quic.core.udp.ReceiveBatch
+import com.ditchoom.socket.quic.core.udp.ReceiveBatchResult
 import com.ditchoom.socket.quic.core.udp.SendBatch
 import com.ditchoom.socket.quic.core.udp.SendBatchResult
 import com.ditchoom.socket.quic.jvmMigrationSimEnv
@@ -61,6 +63,15 @@ class CoreRecordingReplayTests {
     ) : DatagramBatchIo by real {
         private var ordinal = 0
         val dropped = CopyOnWriteArrayList<Int>()
+
+        /** Every datagram the client handed the link, lost or not. */
+        val sent: Int get() = ordinal
+
+        /** How many datagrams each receive call returned, in order. */
+        val received = CopyOnWriteArrayList<Int>()
+
+        override fun receive(into: ReceiveBatch): ReceiveBatchResult =
+            real.receive(into).also { if (it is ReceiveBatchResult.Got) received += into.count }
 
         override fun send(batch: SendBatch): SendBatchResult {
             val channel = (real as NioOneByOne).channel
@@ -136,6 +147,11 @@ class CoreRecordingReplayTests {
             server.close()
         }
         assertEquals(1, link[0]!!.dropped.size, "the link lost the client's data datagram")
+        assertEquals(
+            link[0]!!.sent,
+            clientRecording.count { it is TraceEvent.DgramOut },
+            "the client's recording holds every datagram it sent; receive calls returned ${link[0]!!.received}",
+        )
         return Recorded(clientRecording.toList(), serverRecording.toList(), link[0]!!.dropped.size)
     }
 

@@ -20,6 +20,7 @@ import com.ditchoom.socket.quic.core.sched.SendPort
 import com.ditchoom.socket.quic.core.sched.Shut
 import com.ditchoom.socket.quic.core.sched.WorkLeft
 import com.ditchoom.socket.quic.core.time.LoopClock
+import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 import com.ditchoom.socket.quic.core.udp.SendBatch
 import kotlinx.coroutines.Runnable
@@ -84,13 +85,17 @@ internal class Conn(
         touch()
     }
 
-    /** Loop thread: a datagram for this connection, at the start of [bytes]; copied when a caller is inside. */
+    /**
+     * Loop thread: a datagram for this connection, at the start of [bytes], read from the socket [at]; copied when a
+     * caller is inside. Datagrams one read returned share [at], so a recording keeps them one receive pass.
+     */
     fun received(
         bytes: NativeBytes,
         length: Int,
+        at: Nanos,
     ) {
         when (touch()) {
-            LoopHold.In -> turn.receive(bytes, length, clock.now())
+            LoopHold.In -> turn.receive(bytes, length, at)
             LoopHold.Out -> copyForHolder(bytes, length)
         }
     }
