@@ -90,6 +90,7 @@ public data class WalkLane(
     val target: WalkTarget,
     val index: Int,
     val radio: LaneRadio = LaneRadio.Default,
+    val engine: LaneEngine = LaneEngine.Quiche4,
 ) {
     public val token: String get() = "lane=$label"
 
@@ -109,6 +110,15 @@ public data class WalkLane(
         /** The token of a line that belongs to the whole run rather than to one lane. */
         public const val RUN_TOKEN: String = "lane=run"
     }
+}
+
+/** Which client stack a lane's connection runs on, so one phone compares them over the same networks and server. */
+public sealed interface LaneEngine {
+    /** The 4.x client (`withQuicConnection`). */
+    public data object Quiche4 : LaneEngine
+
+    /** The run-to-completion core client, which has no connection migration: a handoff ends the connection and the lane reconnects. */
+    public data object Core : LaneEngine
 }
 
 /** Which network a lane's connection runs over. */
@@ -146,6 +156,8 @@ public data class WalkTargets(
     val rest: List<WalkTarget> = emptyList(),
     /** Radios to pin a second lane per target to, beside each target's [LaneRadio.Default] lane. */
     val pinned: List<NetworkKind.Radio> = emptyList(),
+    /** Adds a `core-<family>` lane per target, on the core client, beside each target's 4.x lane. */
+    val core: Boolean = false,
 ) {
     public val all: List<WalkTarget> = listOf(first) + rest
 
@@ -156,12 +168,21 @@ public data class WalkTargets(
             WalkLane(label = if (earlier == 0) family else "$family-${earlier + 1}", target = target, index = index)
         }
 
-    /** Each target's default lane, then one lane per [pinned] radio per target (`v4-cellular`). */
+    private val coreLanes: List<WalkLane> =
+        if (core) {
+            defaultLanes.mapIndexed { i, lane ->
+                lane.copy(label = "core-${lane.label}", engine = LaneEngine.Core, index = defaultLanes.size + i)
+            }
+        } else {
+            emptyList()
+        }
+
+    /** Each target's default lane, then its core lane when [core], then one lane per [pinned] radio per target (`v4-cellular`). */
     public val lanes: List<WalkLane> =
-        defaultLanes +
+        defaultLanes + coreLanes +
             pinned
                 .flatMap { radio -> defaultLanes.map { it.copy(label = "${it.label}-${radio.token}", radio = LaneRadio.Pinned(radio)) } }
-                .mapIndexed { i, lane -> lane.copy(index = defaultLanes.size + i) }
+                .mapIndexed { i, lane -> lane.copy(index = defaultLanes.size + coreLanes.size + i) }
 
     /** What `START` carries: every target in lane order, each with its family. */
     public val line: String get() = "targets=" + all.joinToString(",") { "${it.authority}/${it.family.label}" }

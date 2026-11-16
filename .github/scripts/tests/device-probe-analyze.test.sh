@@ -5,3 +5,4 @@
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../../.." && pwd)"
 python3 -m unittest discover -s "$root/socket-quic-quiche/device-probe" -p 'test_*.py' -v
+python3 -m unittest discover -s "$root/walk-tools" -p 'test_*.py' -v

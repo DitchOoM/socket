@@ -319,3 +319,9 @@ re-derived `#447` verdicts and the echo-liveness verdicts, each grouped by the f
 that connection walked. That is the line that answers "does v6 behave differently from v4 on this
 device and this route", and a family whose `attempts` far exceed its `connected` is a family the
 network would not carry.
+
+### Core lanes against the 4.x lanes
+
+`walk-tools/analyze-core.py device-probe/logs/<stamp>-walk.log` (rotated pieces oldest first) reports, per OS network
+change, what each lane did (MIGRATED / RODE-IT-OUT / ENDED), the echo gap, late and overdue echoes, and which stack
+migrated first. The iOS probe logs read the same way.

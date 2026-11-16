@@ -84,3 +84,21 @@ same reason `FailedProbeConnectionIdTestSuite` does not assert "attempt N report
 `PathNotValidated`": which failure a given attempt reports is timing, but whether the connection can
 ever migrate again is not. It is also the conflation-robust signal — `pathState` is a `StateFlow`, so
 a `Probing` can be conflated away, whereas `NoSpareConnectionId` is emitted *instead of* probing.
+
+## Core lanes
+
+The probe runs four lanes at once against the walk server: `v4` / `v6` on the 4.x client and `core-v4` / `core-v6` on the
+run-to-completion core (`coreConnect`, `MigrationPolicy.Automatic`), same echo loop and pacing, so the results compare.
+The core API is `internal` to `:socket-quic-quiche`; this module names that klib a friend (`-friend-modules` in
+`build.gradle.kts`) and is never published.
+
+What a core lane captures, beside the per-connection trace every lane writes (`Documents/traces/conn-core-v4-0003.trace`):
+
+- `CORE-EVENT <trace line>` in the log for every path / network / state / error event the core reports (it has no
+  `pathState`), and `CORE-PATHS moved= migrated= refused=` and `CONNECTION-END reason=<typed close>` when a connection ends.
+- The core's flight recorder: on any end but our own clean close, `Documents/flight/conn-core-v4-0003.flight.trace`; on app
+  background / memory warning / terminate, `conn-core-v4-0003.flight-<label>.trace` of the open connection. 256 MB budget.
+- No qlog and no key log: the core does not write either (`CORE-CAPTURE` says so in the log).
+- The log rotates at 32 MB (`.1` .. `.4`) and `Documents/previous/` keeps the newest 3 runs.
+
+Read a walk with `walk-tools/analyze-core.py` (shared with the Android probe); pull with `device/pull.sh` (also collects the rotated logs and `flight/`).

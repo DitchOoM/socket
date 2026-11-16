@@ -48,6 +48,18 @@ class WalkTargetsTests {
         assertEquals(listOf("v4", "v6", "v6-2"), WalkTargets(v4, listOf(v6, other)).lanes.map { it.label })
     }
 
+    /** The core lane of a target runs on the core client, named after the 4.x lane it is compared with. */
+    @Test
+    fun aCoreLaneBesideEachTargetsFourDotXLane() {
+        val lanes = WalkTargets(v4, listOf(v6), core = true).lanes
+        assertEquals(listOf("v4", "v6", "core-v4", "core-v6"), lanes.map { it.label })
+        assertEquals(listOf(LaneEngine.Quiche4, LaneEngine.Quiche4, LaneEngine.Core, LaneEngine.Core), lanes.map { it.engine })
+        assertEquals(listOf(v4, v6, v4, v6), lanes.map { it.target })
+        assertEquals(listOf(0, 1, 2, 3), lanes.map { it.index })
+        assertEquals("lane=core-v6", lanes[3].token)
+        assertEquals(listOf("v4", "v6"), WalkTargets(v4, listOf(v6)).lanes.map { it.label })
+    }
+
     @Test
     fun theSecondLaneStartsHalfAnIntervalLater() {
         val lanes = WalkTargets(v4, listOf(v6)).lanes

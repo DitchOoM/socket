@@ -15,6 +15,7 @@ import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicPathState
+import com.ditchoom.socket.quic.QuicScope
 import com.ditchoom.socket.quic.ScopedRead
 import com.ditchoom.socket.quic.UnresolvedRouteSourceException
 import com.ditchoom.socket.quic.describe
@@ -47,12 +48,14 @@ import com.ditchoom.socket.testkit.osnet.OsNetWatch
 import com.ditchoom.socket.testkit.trace.TraceBudget
 import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.testkit.trace.TraceSink
+import com.ditchoom.socket.testkit.walk.AddressFamily
 import com.ditchoom.socket.testkit.walk.AttemptOutcome
 import com.ditchoom.socket.testkit.walk.AttemptTotals
 import com.ditchoom.socket.testkit.walk.BuildRevision
 import com.ditchoom.socket.testkit.walk.ConnectAttempt
 import com.ditchoom.socket.testkit.walk.ConnectFailure
 import com.ditchoom.socket.testkit.walk.DiskFree
+import com.ditchoom.socket.testkit.walk.LaneEngine
 import com.ditchoom.socket.testkit.walk.LaneRadio
 import com.ditchoom.socket.testkit.walk.LaneWatch
 import com.ditchoom.socket.testkit.walk.StallBounds
@@ -76,10 +79,13 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.launch
 import platform.Foundation.NSDate
 import platform.Foundation.NSDocumentDirectory
 import platform.Foundation.NSFileManager
+import platform.Foundation.NSFileSize
 import platform.Foundation.NSFileSystemFreeSize
 import platform.Foundation.NSLibraryDirectory
 import platform.Foundation.NSLog
@@ -96,6 +102,8 @@ import platform.darwin.mach_task_basic_info
 import platform.darwin.mach_task_self_
 import platform.darwin.task_info
 import platform.posix.fclose
+import platform.posix.remove
+import platform.posix.rename
 import platform.posix.fopen
 import platform.posix.fputs
 import kotlin.concurrent.AtomicArray
@@ -238,6 +246,23 @@ object IosHandoffProbe {
     /** A run line from the host app (location authorization, why it launched); dropped while no walk runs. */
     fun noteRun(line: String) = runEmit(line)
 
+    /**
+     * The app's lifecycle, from the host app: `background`, `foreground`, `memory-warning`, `terminate`. Logged, and on
+     * every label but `foreground` the flight recording of each core lane's open connection is written to
+     * `Documents/flight/`, so a suspension or a kill leaves what the core saw up to then. `terminate` waits (bounded)
+     * for the write: the process is about to go.
+     */
+    fun noteAppState(label: String) {
+        runEmit("APP-STATE $label")
+        val evidence = coreEvidence ?: return
+        if (label == "foreground") return
+        val written = GlobalScope.launch(Dispatchers.Default) { probeLanes.forEach { evidence.snapshot(it.live.value, it.stem.value, it.emit, label) } }
+        if (label == "terminate") runBlocking { withTimeoutOrNull(TERMINATE_WAIT) { written.join() } }
+    }
+
+    @Volatile
+    private var coreEvidence: CoreEvidence? = null
+
     @Volatile
     private var runEmit: (String) -> Unit = {}
 
@@ -277,7 +302,7 @@ object IosHandoffProbe {
                     statusLine = "no host — launch with -host <ip>[,<ip>]"
                     return
                 }
-                is WalkTargetsParse.Parsed -> parsed.targets.copy(pinned = WalkTargets.radios(pinned))
+                is WalkTargetsParse.Parsed -> parsed.targets.copy(pinned = WalkTargets.radios(pinned), core = true)
             }
         // A previous run is never deleted here: it moves under previous/<stamp>/ until pull.sh
         // collects it. Tapping Start used to delete the log, and the trace files would have been
@@ -336,7 +361,7 @@ object IosHandoffProbe {
         val qlog =
             targets.lanes.associate { lane ->
                 val laneEmit = log.forLane(lane)
-                laneEmit(laneBudget.line)
+                if (lane.engine == LaneEngine.Quiche4) laneEmit(laneBudget.line)
                 lane.label to QlogDirectory(qlogDir(), laneBudget) { event -> laneEmit(event.line) }
             }
         val traceFiles =
@@ -346,6 +371,18 @@ object IosHandoffProbe {
                         "longer replayable past this point.",
                 )
             }
+
+        // The core's flight recorder, kept for every core connection that ends and written when one ends other than by our
+        // own close (see [CoreEvidence]); the core has no qlog and no key log, so these two are the capture it adds.
+        val evidence = CoreEvidence("${documents()}/flight", FLIGHT_BUDGET_BYTES)
+        coreEvidence = evidence
+        val evidenceWriter = evidence.start(GlobalScope)
+        targets.lanes.filter { it.engine == LaneEngine.Core }.forEach { lane ->
+            log.forLane(lane)(
+                "CORE-CAPTURE trace=${traceDir()}/conn-${lane.label}-NNNN.trace flight=${documents()}/flight/conn-${lane.label}-NNNN.flight.trace " +
+                    "flightBudgetMb=${FLIGHT_BUDGET_BYTES / (1024 * 1024)} qlog=unsupported-by-core keys=unsupported-by-core migration=Automatic",
+            )
+        }
 
         val deadline = startedAt + minutes * 60.0
 
@@ -406,12 +443,15 @@ object IosHandoffProbe {
                 .map { probe ->
                     launch {
                         delay(probe.startsAfter)
-                        runLane(probe, traceFiles, osNet, minutes, echoIntervalMs, deadline)
+                        runLane(probe, traceFiles, osNet, evidence, minutes, echoIntervalMs, deadline)
                     }
                 }.joinAll()
         }
         osFollow.cancel()
         heartbeat.cancel()
+        evidence.stop()
+        evidenceWriter.cancel()
+        coreEvidence = null
         osSource.unregister()
 
         // Each lane's totals and verdicts are its own; the run's line is their sum.
@@ -434,6 +474,7 @@ object IosHandoffProbe {
         probe: ProbeLane,
         traceFiles: WalkTraceFiles,
         osNet: OsNetWatch,
+        evidence: CoreEvidence,
         minutes: Int,
         echoIntervalMs: Long,
         deadline: Double,
@@ -449,6 +490,8 @@ object IosHandoffProbe {
                     QuicTraceCapture(
                         captureFor = {
                             val connection = traceFiles.next(lane)
+                            probe.stem.value = traceFiles.lastStem(lane)
+                            probe.paths.reset()
                             // The network the phone is already on, so a fixture cut from this connection
                             // starts from it rather than from whatever changed later.
                             osNet.seed(connection.sink)
@@ -460,6 +503,12 @@ object IosHandoffProbe {
                                     TraceSink { event ->
                                         probe.ring.emit(event)
                                         connection.sink.emit(event)
+                                        // The core reports its path through the trace, not through pathState: every path,
+                                        // network and state event of a core connection is a line of its lane's log as it happens.
+                                        if (lane.engine == LaneEngine.Core && event.isCorePathEvent()) {
+                                            probe.paths.note(event)
+                                            emit("CORE-EVENT $event")
+                                        }
                                         // The qlog directory reports its own events; a key log has only this one.
                                         if (event is TraceEvent.TrafficSecretsRefused) emit("TRAFFIC-SECRETS-REFUSED path=${event.path}")
                                     },
@@ -485,10 +534,11 @@ object IosHandoffProbe {
             // A connection only once its handshake completes: an attempt that never got there has
             // no stream, no path and no verdict, only a reason.
             val connect = ConnectAttempt()
+            var ended: CoreEnd = CoreEnd.Clean
             val outcome: AttemptOutcome =
                 try {
                     val established =
-                        withQuicConnection(target.host, target.port, options, timeout = (minutes + 2).minutes) {
+                        connectOn(probe, options, minutes) {
                             emit("CONNECTED session=${identity.session} wire=${identity.wire} alpn=$negotiatedAlpn")
                             // What is still owed when it ends is what failed on it, and how long it went
                             // without an answered echo is its own verdict.
@@ -545,9 +595,13 @@ object IosHandoffProbe {
                                 EchoLoopEnd.WalkOver -> Unit
                                 is EchoLoopEnd.Left -> {
                                     probe.status = "${end.step.end.label} — reconnecting"
+                                    ended = CoreEnd.Abnormal("echo-loop left: ${end.step.end.label}")
+                                    emit("CONNECTION-END via=echo-loop left=${end.step.end.label}")
                                 }
                                 is EchoLoopEnd.ConnectionClosed -> {
                                     probe.status = "connection dead (${end.reason}) — reconnecting"
+                                    ended = CoreEnd.Abnormal(end.reason)
+                                    emit("CONNECTION-END via=echo-loop reason=${end.reason}")
                                 }
                             }
                             session
@@ -556,12 +610,23 @@ object IosHandoffProbe {
                     AttemptOutcome.Established(established.close(fallback = SessionEnd.WalkOver, at = now()))
                 } catch (e: Throwable) {
                     emit("CONNECTION-ENDED err=${e::class.simpleName} msg=${e.message}")
+                    ended =
+                        CoreEnd.Abnormal(
+                            if (e is QuicCloseException) e.closeReason.describe() else "${e::class.simpleName}: ${e.message}",
+                        )
+                    // The typed reason, whole: the rendering above names the side and the error, this names the type.
+                    if (e is QuicCloseException) emit("CONNECTION-END reason=${e.closeReason.describe()} typed=${e.closeReason}")
                     // A connection that ends cancels its scope and surfaces here, typed: the connection died
                     // under the session, which is not the scope failing.
                     val sessionEnd = if (e is QuicCloseException) SessionEnd.ConnectionDead else SessionEnd.ScopeFailed
                     connect.failed(connectFailure(e), sessionEnd, at = now())
                 }
             probe.trace.value = Discarded
+            if (lane.engine == LaneEngine.Core) {
+                emit("CORE-PATHS ${probe.paths.line} end=${ended::class.simpleName}")
+                // Once the connection is closed its recording is handed over: written unless the end was ours and clean.
+                evidence.ended(FlightRequest(target.family.peerFamily, probe.stem.value, ended, emit))
+            }
             probe.attempts.absorb(outcome)
             when (outcome) {
                 is AttemptOutcome.Established -> {
@@ -621,6 +686,15 @@ private class ProbeLane(
 
     // Every connect attempt, established or not: only the established ones feed the two above.
     val attempts = AttemptTotals()
+
+    /** The core connection open now, so the app going to the background can write its flight recording. */
+    val live = AtomicReference<LiveCore>(LiveCore.None)
+
+    /** The file stem of the connection in flight (`conn-core-v4-0003`): its trace and its flight recording pair by it. */
+    val stem = AtomicReference("")
+
+    /** What the core reported of its path on the connection in flight. */
+    val paths = CorePathTally()
 
     /** The lane's line in the app: what its connection is doing right now. */
     @Volatile
@@ -684,6 +758,11 @@ private class Logger(
     private val path: String,
     private val startedAt: Double,
 ) {
+    // Bounded: past [LOG_ROTATE_BYTES] the file moves to `<path>.1` (older ones to `.2`..`.[LOG_KEEP]`, the oldest deleted),
+    // so a long walk keeps at most about (LOG_KEEP + 1) x LOG_ROTATE_BYTES of log. pull.sh collects them all.
+    private val written = AtomicLong(sizeOf(path))
+    private val rotating = AtomicInt(0)
+
     /**
      * A line of the whole run's. Every line names who it belongs to, so an analyzer that does not know
      * lanes reads nothing it recognises instead of two lanes merged into one.
@@ -704,7 +783,22 @@ private class Logger(
         val file = fopen(path, "a") ?: return
         fputs(rendered + "\n", file)
         fclose(file)
+        if (written.addAndGet(rendered.length + 1L) > LOG_ROTATE_BYTES && rotating.compareAndSet(0, 1)) {
+            rotate()
+            rotating.value = 0
+        }
     }
+
+    private fun rotate() {
+        remove("$path.$LOG_KEEP")
+        for (n in LOG_KEEP - 1 downTo 1) rename("$path.$n", "$path.${n + 1}")
+        rename(path, "$path.1")
+        written.value = 0
+        write("${WalkLane.RUN_TOKEN} LOG-ROTATED keep=$LOG_KEEP segmentMb=${LOG_ROTATE_BYTES / (1024 * 1024)} — earlier lines are in $path.1 .. $path.$LOG_KEEP")
+    }
+
+    private fun sizeOf(path: String): Long =
+        (NSFileManager.defaultManager.attributesOfItemAtPath(path, null)?.get(NSFileSize) as? NSNumber)?.longLongValue ?: 0L
 }
 
 /**
@@ -905,12 +999,70 @@ private class MigrationTotals {
 
 private const val HEARTBEAT_INTERVAL_MS = 60_000L
 
+/** The most the core's flight recordings take on the phone, snapshots included. */
+private const val FLIGHT_BUDGET_BYTES = 256L * 1024 * 1024
+
+/** How long the app's terminate notification waits for the flight snapshots: the process is about to go. */
+private val TERMINATE_WAIT = 2.seconds
+
+/** A log file's size at which it is moved aside, and how many moved-aside files are kept: the log is bounded at about 5x this. */
+private const val LOG_ROTATE_BYTES = 32L * 1024 * 1024
+private const val LOG_KEEP = 4
+
+/** How many earlier runs' directories under `Documents/previous/` a new run keeps. */
+private const val PREVIOUS_KEEP = 3
+
 /** Free space on the volume holding this app's Documents, as the file system reports it. */
 private fun diskFree(): DiskFree {
     val documents = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, true).first() as String
     val free = NSFileManager.defaultManager.attributesOfFileSystemForPath(documents, null)?.get(NSFileSystemFreeSize) as? NSNumber
     return if (free == null) DiskFree.Unknown else DiskFree.ofReading(free.longLongValue)
 }
+
+/** One lane's connection on the stack its [WalkLane.engine] names: the 4.x client, or the core. */
+private suspend fun <R> connectOn(
+    probe: ProbeLane,
+    options: QuicOptions,
+    minutes: Int,
+    block: suspend QuicScope.() -> R,
+): R {
+    val target = probe.lane.target
+    return when (probe.lane.engine) {
+        LaneEngine.Quiche4 -> withQuicConnection(target.host, target.port, options, timeout = (minutes + 2).minutes) { block() }
+        LaneEngine.Core -> coreConnection(target.host, target.port, options, probe.live, block)
+    }
+}
+
+/** What a core connection reported of its path: how often it was moved, migrated, or refused the move. */
+internal class CorePathTally {
+    private val moved = AtomicInt(0)
+    private val migrated = AtomicInt(0)
+    private val refused = AtomicInt(0)
+    private val other = AtomicInt(0)
+
+    fun reset() {
+        moved.value = 0
+        migrated.value = 0
+        refused.value = 0
+        other.value = 0
+    }
+
+    fun note(event: TraceEvent) {
+        if (event !is TraceEvent.PathState) return
+        when (event.phase) {
+            "Moved" -> moved.incrementAndGet()
+            "Migrated" -> migrated.incrementAndGet()
+            "Refused" -> refused.incrementAndGet()
+            else -> other.incrementAndGet()
+        }
+    }
+
+    val line: String get() = "moved=${moved.value} migrated=${migrated.value} refused=${refused.value} otherPathEvents=${other.value}"
+}
+
+/** The peer address family the core's flight recording names a connection by: 4 or 6. */
+private val AddressFamily.peerFamily: Int
+    get() = if (label == "v6") 6 else 4
 
 /** Why a connect that never completed its handshake failed; the route probe's refusal is named, anything else by its type. */
 @OptIn(InternalQuicApi::class)
@@ -1015,6 +1167,9 @@ private class WalkTraceFiles(
             }
         }
     }
+
+    /** The stem of the connection [next] last made for [lane]. */
+    fun lastStem(lane: WalkLane): String = lane.fileStem(connections.getValue(lane.label).value)
 
     fun next(lane: WalkLane): QuicConnectionCapture {
         val name = lane.fileStem(connections.getValue(lane.label).incrementAndGet())
@@ -1142,7 +1297,13 @@ private fun rotatePreviousRun(
     val into = "$documents/previous/$stamp"
     fm.createDirectoryAtPath(into, true, null, null)
     leftovers.forEach { fm.moveItemAtPath("$documents/$it", "$into/$it", null) }
-    return "PREVIOUS-RUN kept previous/$stamp/ [${leftovers.joinToString(",")}] — pull.sh collects it"
+    // Bounded: a phone that restarts walks for weeks must not fill up with the ones nobody pulled. The newest
+    // [PREVIOUS_KEEP] runs stay, older ones are deleted (and said so).
+    val runs = fm.contentsOfDirectoryAtPath("$documents/previous", null).orEmpty().map { it.toString() }.sorted()
+    val pruned = runs.dropLast(PREVIOUS_KEEP)
+    pruned.forEach { fm.removeItemAtPath("$documents/previous/$it", null) }
+    val prunedNote = if (pruned.isEmpty()) "" else " PREVIOUS-PRUNED deleted=[${pruned.joinToString(",")}] keptNewest=$PREVIOUS_KEEP"
+    return "PREVIOUS-RUN kept previous/$stamp/ [${leftovers.joinToString(",")}] — pull.sh collects it$prunedNote"
 }
 
 /** A lane's radio as the connection's policy: the default lane migrates with the OS, a pinned lane never leaves its radio. */
