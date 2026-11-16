@@ -58,11 +58,24 @@ internal class EdgeState(
         incoming.trySend(stream.id)
     }
 
+    /**
+     * The end is published, in [end] and in the public state, before any waiter is woken: closing [incoming] and completing
+     * [closed] resume callers, and a resumed caller may run on its own thread at once, so whatever it reads must
+     * already say how the connection ended.
+     */
     override fun ended(end: ConnEnd) {
         endCell.store(EdgeEnd.Ended(end))
         val reason = closeReasonOf(end)
-        incoming.close(endedWith(end, QuicCloseCircumstance.Ended))
         publish(QuicConnectionState.Closed(reason))
+        wake(end, reason)
+    }
+
+    /** Fails a parked accept and every later one, and returns every waiting `close()`; only after the end is published. */
+    private fun wake(
+        end: ConnEnd,
+        reason: QuicCloseReason,
+    ) {
+        incoming.close(endedWith(end, QuicCloseCircumstance.Ended))
         closed.complete(reason)
     }
 
