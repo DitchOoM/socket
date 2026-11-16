@@ -30,10 +30,14 @@ BUDGET_ARG=""; [ -n "$BUDGET" ] && BUDGET_ARG="-e probeTraceBudgetMb $BUDGET"
 STANDBY_ARG=""; [ -n "${STANDBY_LINK:-}" ] && STANDBY_ARG="-e probeStandbyLink $STANDBY_LINK"
 # PINNED=cellular (or wifi, or both comma-separated): a lane per target pinned to that radio, beside the default lanes.
 PINNED_ARG=""; [ -n "${PINNED:-}" ] && PINNED_ARG="-e probePinned $PINNED"
+# Core lanes (core-v4, core-v6) run beside the 4.x lanes by default: the run-to-completion core client against the
+# same server. CORE=0 ./start.sh ... runs the 4.x lanes alone. The core has no migration yet, so a handoff ends its
+# connection (CONNECTION-DEAD with the typed reason) and the lane reconnects.
+CORE_ARG="-e probeCore 1"; [ "${CORE:-1}" = "0" ] && CORE_ARG=""
 # probeHost is one host or a COMMA-separated list of lanes (see common.sh). Quoted twice on purpose: once
 # for this shell and once for the device's, because a list is one argument and an IPv6 literal must
 # reach the probe with its colons intact.
-adbs shell "nohup am instrument -w -e class $PROBE_CLASS -e probeHost '$SERVER_HOST' -e probePort $SERVER_PORT -e probeMinutes $MIN -e probeEchoIntervalMs $EI -e probeQlog 1 -e probeKeyLog 1 $BUDGET_ARG $STANDBY_ARG $PINNED_ARG $RESUME_ARG $RUNNER > /dev/null 2>&1 &"
+adbs shell "nohup am instrument -w -e class $PROBE_CLASS -e probeHost '$SERVER_HOST' -e probePort $SERVER_PORT -e probeMinutes $MIN -e probeEchoIntervalMs $EI -e probeQlog 1 -e probeKeyLog 1 $BUDGET_ARG $STANDBY_ARG $PINNED_ARG $CORE_ARG $RESUME_ARG $RUNNER > /dev/null 2>&1 &"
 sleep 8
 echo "== first lines =="; adbs shell head -6 "$DEVICE_LOG"
 echo "== process =="; adbs shell pidof "$PKG" || echo "(no process yet)"

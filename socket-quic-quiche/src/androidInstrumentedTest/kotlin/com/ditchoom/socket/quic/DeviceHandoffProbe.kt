@@ -119,6 +119,10 @@ import kotlin.time.TimeSource
  * the device crosses. Every line names its lane (`lane=v6 ECHO-OK …`), or `lane=run` for the run's
  * own. Lanes, and why a lane never falls back to another family: see [WalkTargets].
  *
+ * `-e probeCore 1` adds a `core-<family>` lane per target on the run-to-completion core client, beside the 4.x
+ * lane of the same target (see [ProbeEngine]). The core has no connection migration yet: a handoff ends its
+ * connection, the lane logs `CONNECTION-DEAD reason=<typed>` and reconnects.
+ *
  * What the OS said about the device's network — the radio, the links, their address families — is
  * recorded once for the whole run, under `lane=run`: see [OsNetWatch].
  */
@@ -143,7 +147,12 @@ class DeviceHandoffProbe {
                     throw AssumptionViolatedException(
                         "hand-driven probe — pass -e probeHost <ip>[,<ip>] to run it (see class KDoc)",
                     )
-                is WalkTargetsParse.Parsed -> parsed.targets.copy(pinned = WalkTargets.radios(arg("probePinned", "")))
+                is WalkTargetsParse.Parsed ->
+                    parsed.targets.copy(
+                        pinned = WalkTargets.radios(arg("probePinned", "")),
+                        core =
+                            arg("probeCore", "") == "1",
+                    )
             }
         val ctx = InstrumentationRegistry.getInstrumentation().targetContext
         val dir = ctx.getExternalFilesDir(null) ?: ctx.filesDir
@@ -405,7 +414,7 @@ class DeviceHandoffProbe {
                         // `TimeoutCancellationException: Timed out waiting for 15000 ms` while echoes were
                         // flowing fine. So it has to cover the whole walk, not the handshake.
                         val established =
-                            withQuicConnection(target.host, target.port, options, timeout = (minutes + 2).minutes) {
+                            lane.engine.probeEngine().connect(target.host, target.port, options, timeout = (minutes + 2).minutes) {
                                 laneEmit("CONNECTED session=${identity.session} wire=${identity.wire} alpn=$negotiatedAlpn")
                                 // What is still owed when it ends is what failed on it, and how long it went
                                 // without an answered echo is its own verdict.
