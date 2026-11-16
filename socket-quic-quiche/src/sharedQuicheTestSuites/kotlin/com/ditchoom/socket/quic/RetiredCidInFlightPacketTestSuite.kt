@@ -135,7 +135,8 @@ abstract class RetiredCidInFlightPacketTestSuite {
         holdTarget: HoldTarget,
         phaseBudget: Duration,
     ) {
-        val opts = QuicOptions(alpnProtocols = listOf("test"), verifyPeer = false, idleTimeout = 30.seconds)
+        // Without discovery: its probe on the migrated path is a second 1350-byte datagram beside the one the scenario holds back.
+        val opts = QuicOptions(alpnProtocols = listOf("test"), verifyPeer = false, idleTimeout = 30.seconds, enablePmtuDiscovery = false)
         val streamDeadline = phaseBudget * 2
         val api = LaggingScidRetirementQuicheApi(platformQuicheApi())
         val socket =

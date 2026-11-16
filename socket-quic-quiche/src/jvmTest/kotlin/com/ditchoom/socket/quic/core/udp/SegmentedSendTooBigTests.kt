@@ -6,6 +6,7 @@ import com.ditchoom.socket.quic.NetShim
 import com.ditchoom.socket.quic.SendTarget
 import com.ditchoom.socket.quic.UdpBatching
 import com.ditchoom.socket.quic.core.pool.FixedPool
+import com.ditchoom.socket.quic.core.testing.assumeNativeStack
 import com.ditchoom.socket.quic.loadNetShim
 import com.ditchoom.socket.quic.network
 import java.net.InetSocketAddress
@@ -58,6 +59,7 @@ class SegmentedSendTooBigTests {
 
     @Test
     fun aSegmentedBatchOverTheLinkIsSentWithoutSegmentsInTheSameCall() {
+        assumeNativeStack()
         val (client, server) = pair()
         val batch = sendBatch()
         repeat(9) { batch.put(it, 1350) }
@@ -68,6 +70,7 @@ class SegmentedSendTooBigTests {
 
     @Test
     fun aSizeTheKernelRefusedIsNotAskedForSegmentsAgainButASmallerOneStillIs() {
+        assumeNativeStack()
         val (client, server) = pair()
         repeat(3) { round ->
             val batch = sendBatch()

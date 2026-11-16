@@ -62,7 +62,8 @@ class NativeIoTests {
         }
 
     @Test
-    fun everySocketOpensWithDfSetAndSaysSo() =
+    fun everySocketOpensWithDfSetAndSaysSo() {
+        assumeNativeStack()
         listOf(V4_LOOPBACK, V6_LOOPBACK).forEach { host ->
             val socket =
                 assertIs<NativeOpened.Opened>(
@@ -80,6 +81,7 @@ class NativeIoTests {
             assertIs<DontFragment.Set>(socket.dontFragment, host)
             socket.cell.close { fd -> shim.close(fd) }
         }
+    }
 
     @Test
     fun theKernelsBatchingIsProbedOnceAndReported() {
