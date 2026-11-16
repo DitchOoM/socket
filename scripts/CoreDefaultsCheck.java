@@ -384,6 +384,8 @@ public class CoreDefaultsCheck {
         SEAMS.put("Waiter", "stream");
         SEAMS.put("ConnSink", "conn");
         SEAMS.put("Pooled", "pool");
+        SEAMS.put("FlightSink", "observe");
+        SEAMS.put("FlightSource", "observe");
     }
 
     /** Value classes that live outside core (QuicheHandles.kt, StreamRecvStep.kt, DeadlineQueue.kt). */
@@ -397,7 +399,7 @@ public class CoreDefaultsCheck {
     static final List<String> OPEN_WHEN_FILES = List.of("udp/*Errors.kt", "edge/Failures.kt", "life/Tiers.kt");
 
     /** Files that may carry an intrusive `@Link` var, written by their queue. */
-    static final List<String> LINK_FILES = List.of("sched/WorkInbox.kt", "sched/LoopPort.kt");
+    static final List<String> LINK_FILES = List.of("sched/WorkInbox.kt", "sched/LoopPort.kt", "sched/CallerLanes.kt");
 
     static final List<String> WIRING_FILES = List.of("Turn.kt", "Compose.kt", "Slots.kt", "Rules.kt");
 
@@ -830,12 +832,15 @@ public class CoreDefaultsCheck {
     /** The other half of I: every allowlisted seam must be declared somewhere in core. */
     static void missingSeams(List<Parsed> files, List<Finding> out) {
         Set<String> found = new HashSet<>();
+        Set<String> built = new HashSet<>();
         for (Parsed p : files) {
+            built.add(p.pkg);
             Matcher m = Pattern.compile("(?<!sealed )\\b(?:fun\\s+)?interface\\s+(\\w+)|\\b(?:open|abstract)\\s+class\\s+(\\w+)").matcher(p.code);
             while (m.find()) found.add(m.group(1) != null ? m.group(1) : m.group(2));
         }
         for (Map.Entry<String, String> seam : SEAMS.entrySet()) {
-            if (seam.getValue().isEmpty() || found.contains(seam.getKey())) continue;
+            // A seam of a package the rebuild has not reached yet is not missing, the package is.
+            if (seam.getValue().isEmpty() || found.contains(seam.getKey()) || !built.contains(seam.getValue())) continue;
             out.add(new Finding("<seams>", 0, "I", "allowlisted seam " + seam.getKey() + " is declared nowhere in core"));
         }
     }
@@ -1053,7 +1058,7 @@ public class CoreDefaultsCheck {
         planted("I", "conn/A.kt", "internal interface ConnEvents");
         planted("I", "conn/A.kt", "open class Base");
         planted("I", "conn/A.kt", "sealed interface S { fun f() }");
-        CASES.add(new Case("I", true, true, "ready/Poller.kt", "internal interface Poller"));
+        CASES.add(new Case("I", true, true, "ready/Poller.kt", "internal interface Poller", "conn/A.kt", "class A"));
         clean("I", "conn/A.kt", "sealed interface Pacing { data object Unpaced : Pacing }");
         clean("I", "ready/Poller.kt", "internal interface Poller");
         CASES.add(new Case("I", false, true, "seams/All.kt", seamsDeclared));

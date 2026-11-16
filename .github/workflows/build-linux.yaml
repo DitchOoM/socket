@@ -766,7 +766,7 @@ jobs:
         run: |
           set -euo pipefail
           java scripts/CoreDefaultsCheck.java --selftest
-          java scripts/CoreDefaultsCheck.java .
+          java scripts/CoreDefaultsCheck.java --rules=all .
 
       # Flight Recorder ring on every Gradle test worker of this job (JNI backend, JDK 25): dumped
       # only if a test fails or a worker hangs, uploaded only on failure. Traced lanes on Linux:

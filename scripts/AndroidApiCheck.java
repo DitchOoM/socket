@@ -47,7 +47,7 @@ public class AndroidApiCheck {
     static final Set<String> DESUGARED = Set.of("java/lang/invoke/LambdaMetafactory", "java/lang/invoke/StringConcatFactory");
 
     /** Classes whose use is chosen by a one-time runtime probe, so the references they hold are never reached. */
-    static final Set<String> GUARDED = Set.of("com/ditchoom/socket/quic/core/loop/ReadinessScan$ByConsumer");
+    static final Set<String> GUARDED = Set.of("com/ditchoom/socket/quic/core/ready/ConsumerScan");
 
     public static void main(String[] args) throws Exception {
         if (args.length == 2 && args[0].equals("--selftest")) {
