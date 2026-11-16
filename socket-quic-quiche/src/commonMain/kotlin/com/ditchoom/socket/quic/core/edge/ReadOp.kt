@@ -93,40 +93,51 @@ internal class ReadOp(
         table: StreamTable,
         entry: StreamEntry,
     ): Retry {
-        if (entry.received == Received.Finished) return deliver(ReadResult.End)
+        if (entry.received == Received.Finished) {
+            release()
+            return deliver(ReadResult.End)
+        }
+        // A retry keeps the buffer the park holds; only a settled read lets it go.
         val buffer =
             when (val kept = spare) {
-                // A pooled factory may return a larger buffer than asked for; the read asks for the chunk, not the buffer.
-                is Spare.None -> factory.allocate(entry.chunk.bytes).also { it.setLimit(entry.chunk.bytes) }
+                is Spare.None ->
+                    table.idle.take(entry.chunk.bytes) { factory.allocate(entry.chunk.bytes) }.also {
+                        // A pooled factory may return a larger buffer than asked for; the read asks for the chunk, not the buffer.
+                        it.position(0)
+                        it.setLimit(entry.chunk.bytes)
+                    }
                 is Spare.Held -> kept.buffer
             }
-        spare = Spare.None
         val address =
             NativeBytes.addressing(buffer, { it }) {
                 buffer.freeNativeMemory()
+                spare = Spare.None
                 cont.fail(Raised.NotNative(stream, buffer), QuicCloseCircumstance.Ended)
                 return Retry.Settled
             }
         val asked = buffer.limit()
-        return table.io.recv(stream, address, asked).fold(
-            more = { read -> if (read == 0) hold(buffer) else data(entry, buffer, asked, read) },
-            last = { read ->
-                entry.finished()
-                if (read == 0) discard(buffer, ReadResult.End) else data(entry, buffer, asked, read)
-            },
-            nothingYet = { hold(buffer) },
-            gone = {
-                buffer.freeNativeMemory()
-                cont.fail(Raised.ConnEnded(ConnEnd.Released), QuicCloseCircumstance.Released)
-                Retry.Settled
-            },
-            reset = { discard(buffer, ReadResult.Reset) },
-            error = { code ->
-                buffer.freeNativeMemory()
-                cont.fail(Raised.ReadRefused(stream, code), QuicCloseCircumstance.Ended)
-                Retry.Settled
-            },
-        )
+        val answer =
+            table.io.recv(stream, address, asked).fold(
+                more = { read -> if (read == 0) hold(buffer) else data(entry, buffer, asked, read) },
+                last = { read ->
+                    entry.finished()
+                    if (read == 0) discard(table, buffer, ReadResult.End) else data(entry, buffer, asked, read)
+                },
+                nothingYet = { hold(buffer) },
+                gone = {
+                    buffer.freeNativeMemory()
+                    cont.fail(Raised.ConnEnded(ConnEnd.Released), QuicCloseCircumstance.Released)
+                    Retry.Settled
+                },
+                reset = { discard(table, buffer, ReadResult.Reset) },
+                error = { code ->
+                    buffer.freeNativeMemory()
+                    cont.fail(Raised.ReadRefused(stream, code), QuicCloseCircumstance.Ended)
+                    Retry.Settled
+                },
+            )
+        if (answer == Retry.Settled) spare = Spare.None
+        return answer
     }
 
     private fun data(
@@ -141,16 +152,19 @@ internal class ReadOp(
         return deliver(ReadResult.Data(buffer))
     }
 
+    /** Parks on [buffer]; a retry that finds nothing again holds the same one and allocates nothing. */
     private fun hold(buffer: PlatformBuffer): Retry {
-        spare = Spare.Held(buffer)
+        if (spare is Spare.None) spare = Spare.Held(buffer)
         return Retry.Again
     }
 
+    /** Ends the read with [result], keeping [buffer] for the connection's next read: handing it back to a pool allocates. */
     private fun discard(
+        table: StreamTable,
         buffer: PlatformBuffer,
         result: ReadResult,
     ): Retry {
-        buffer.freeNativeMemory()
+        table.idle.keep(buffer)
         return deliver(result)
     }
 
