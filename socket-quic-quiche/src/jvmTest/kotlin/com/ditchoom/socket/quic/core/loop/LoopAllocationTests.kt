@@ -3,6 +3,7 @@ package com.ditchoom.socket.quic.core.loop
 import com.ditchoom.socket.quic.core.testing.NativeEcho
 import com.ditchoom.socket.quic.core.testing.NioEcho
 import com.ditchoom.socket.quic.core.testing.allocationSamples
+import com.ditchoom.socket.quic.core.testing.assumeNativeStack
 import com.ditchoom.socket.quic.core.testing.withDescriptorsAbove127
 import java.lang.management.ManagementFactory
 import java.net.InetSocketAddress
@@ -31,6 +32,7 @@ class LoopAllocationTests {
 
     @Test
     fun onTheNativeStackTheLoopAllocatesNothingPerEchoedDatagram() {
+        assumeNativeStack()
         withDescriptorsAbove127 { measure(Stack.Native) }
     }
 
