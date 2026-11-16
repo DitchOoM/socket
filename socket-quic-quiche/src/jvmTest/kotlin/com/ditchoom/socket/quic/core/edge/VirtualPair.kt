@@ -1,0 +1,296 @@
+package com.ditchoom.socket.quic.core.edge
+
+import com.ditchoom.buffer.BaseJvmBuffer
+import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.Default
+import com.ditchoom.buffer.unwrapFully
+import com.ditchoom.socket.quic.LinkClass
+import com.ditchoom.socket.quic.PathKey
+import com.ditchoom.socket.quic.QuicOptions
+import com.ditchoom.socket.quic.QuicheApi
+import com.ditchoom.socket.quic.QuicheConn
+import com.ditchoom.socket.quic.QuicheRecvInfo
+import com.ditchoom.socket.quic.core.loop.Loop
+import com.ditchoom.socket.quic.core.testing.VirtualClock
+import com.ditchoom.socket.quic.core.time.Nanos
+import com.ditchoom.socket.quic.core.udp.ArrivedOn
+import com.ditchoom.socket.quic.core.udp.BatchCapability
+import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
+import com.ditchoom.socket.quic.core.udp.Moved
+import com.ditchoom.socket.quic.core.udp.ReceiveBatch
+import com.ditchoom.socket.quic.core.udp.ReceiveBatchResult
+import com.ditchoom.socket.quic.core.udp.ReceiveBuffer
+import com.ditchoom.socket.quic.core.udp.Reopened
+import com.ditchoom.socket.quic.core.udp.SendBatch
+import com.ditchoom.socket.quic.core.udp.SendBatchResult
+import com.ditchoom.socket.quic.core.udp.SocketClosed
+import com.ditchoom.socket.quic.core.udp.SocketProbe
+import com.ditchoom.socket.quic.core.udp.toPathKey
+import com.ditchoom.socket.quic.loadQuicheApi
+import com.ditchoom.socket.quic.replay.conditions.LOCALHOST
+import com.ditchoom.socket.quic.replay.conditions.ReplayClient
+import com.ditchoom.socket.quic.replay.conditions.replayClient
+import com.ditchoom.socket.quic.replay.conditions.replayServer
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Runnable
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.yield
+import java.net.InetSocketAddress
+import java.nio.Buffer
+import java.util.PriorityQueue
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
+
+/** Which end of a [VirtualPair]. */
+internal enum class End { Client, Server }
+
+/** One datagram an end handed its socket, at virtual [at] nanoseconds from the pair's start. */
+internal class Sent(
+    val from: End,
+    val at: Long,
+    val bytes: ByteArray,
+)
+
+/**
+ * A real core client and a real core server on one thread and one virtual clock, quiche's own clock included, joined by
+ * a link that delays every datagram by [oneWay] each way and loses none. Tests drive time with [runUntil] and
+ * [runFor]; coroutines they launch on the pair's scope run between passes.
+ */
+internal class VirtualPair private constructor(
+    val oneWay: Duration,
+    private val api: QuicheApi,
+) {
+    val clock = VirtualClock(Nanos(ORIGIN))
+    private val inFlight = PriorityQueue<InFlight>(compareBy<InFlight>({ it.arrives }, { it.order }))
+    private var order = 0L
+    private val waiting = mapOf(End.Client to ArrayDeque<ByteArray>(), End.Server to ArrayDeque())
+
+    /** Every datagram either end sent, in order, the lost ones included. */
+    val sent = ArrayList<Sent>()
+    private val dropping = mutableMapOf(End.Client to 0, End.Server to 0)
+
+    /** The link loses the next [count] datagrams [end] sends. */
+    fun lose(
+        end: End,
+        count: Int,
+    ) {
+        dropping[end] = count
+    }
+
+    /** Datagrams the client's quiche was handed, counted at the client's api. */
+    var clientRecvs = 0
+        private set
+
+    lateinit var server: CoreServer
+        private set
+    lateinit var client: ReplayClient
+        private set
+    private lateinit var serverKey: PathKey
+    private lateinit var clientKey: PathKey
+
+    /** Virtual nanoseconds since the pair started. */
+    fun now(): Long = clock.at.value - ORIGIN
+
+    /** The datagrams [end] sent at or after [from] nanoseconds. */
+    fun sentBy(
+        end: End,
+        from: Long = 0L,
+    ): List<Sent> = sent.filter { it.from == end && it.at >= from }
+
+    /** Passes both loops, delivering what is due, until [done] holds; fails past [within] of virtual time. */
+    suspend fun runUntil(
+        within: Duration = 10.seconds,
+        done: () -> Boolean,
+    ) {
+        val limit = now() + within.inWholeNanoseconds
+        while (true) {
+            val due = settle()
+            if (done()) return
+            check(now() < limit) { "not done within $within of virtual time" }
+            advanceTo(minOf(due, nextArrival(), clock.at.value + limit - now()).coerceAtLeast(clock.at.value + MIN_STEP))
+        }
+    }
+
+    /** Runs [length] of virtual time. */
+    suspend fun runFor(length: Duration) {
+        val until = clock.at.value + length.inWholeNanoseconds
+        while (true) {
+            val due = settle()
+            if (clock.at.value >= until) return
+            advanceTo(minOf(due, nextArrival(), until).coerceAtLeast(clock.at.value + MIN_STEP).coerceAtMost(until))
+        }
+    }
+
+    private fun advanceTo(nanos: Long) {
+        clock.at = Nanos(nanos)
+        api.setThreadVirtualTimeNanos(nanos)
+    }
+
+    private fun nextArrival(): Long = if (inFlight.isEmpty()) Long.MAX_VALUE else inFlight.peek().arrives
+
+    private suspend fun settle(): Long {
+        var due = Long.MAX_VALUE
+        repeat(ROUNDS) {
+            while (inFlight.isNotEmpty() && inFlight.peek().arrives <= clock.at.value) {
+                val datagram = inFlight.poll()
+                waiting.getValue(datagram.to).addLast(datagram.bytes)
+            }
+            val now = clock.at
+            due = minOf(passOf(server.loop, now), passOf(client.loop, now))
+            repeat(YIELDS) { yield() }
+        }
+        return due
+    }
+
+    private fun passOf(
+        loop: Loop,
+        now: Nanos,
+    ): Long = loop.pass(now).fold({ Long.MAX_VALUE }, { it })
+
+    private class InFlight(
+        val arrives: Long,
+        val order: Long,
+        val to: End,
+        val bytes: ByteArray,
+    )
+
+    /** The link loses every datagram [end] sent that has not arrived yet; returns how many. */
+    fun loseInFlight(end: End): Int {
+        val toward = if (end == End.Client) End.Server else End.Client
+        val lost = inFlight.filter { it.to == toward }
+        inFlight.removeAll(lost.toSet())
+        return lost.size
+    }
+
+    /** One end's socket on the link. */
+    private inner class Socket(
+        private val end: End,
+    ) : DatagramBatchIo {
+        override val capability: BatchCapability = BatchCapability.OneByOne
+
+        override fun send(batch: SendBatch): SendBatchResult {
+            val view = (batch.storage.owner.unwrapFully() as BaseJvmBuffer).byteBuffer.duplicate()
+            for (n in 0 until batch.pending) {
+                (view as Buffer).limit(batch.offsetOf(n) + batch.lengthOf(n)).position(batch.offsetOf(n))
+                val bytes = ByteArray(batch.lengthOf(n))
+                view.get(bytes)
+                sent += Sent(end, now(), bytes)
+                if (dropping.getValue(end) > 0) {
+                    dropping[end] = dropping.getValue(end) - 1
+                    continue
+                }
+                val to = if (end == End.Client) End.Server else End.Client
+                inFlight.add(InFlight(clock.at.value + oneWay.inWholeNanoseconds, order++, to, bytes))
+            }
+            return SendBatchResult.AllTaken
+        }
+
+        override fun receive(into: ReceiveBatch): ReceiveBatchResult {
+            val queue = waiting.getValue(end)
+            var got = 0
+            while (queue.isNotEmpty()) {
+                val buffer = into.take()
+                if (buffer !is ReceiveBuffer) break
+                val bytes = queue.removeFirst()
+                val view = (buffer.bytes.owner.unwrapFully() as BaseJvmBuffer).byteBuffer
+                (view as Buffer).clear()
+                view.put(bytes)
+                val from = if (end == End.Client) serverKey else clientKey
+                into.received(buffer, bytes.size, from, ArrivedOn.Unreported)
+                got++
+            }
+            return if (got > 0) ReceiveBatchResult.Got else ReceiveBatchResult.Nothing
+        }
+
+        override fun probe(): SocketProbe = SocketProbe.Open
+
+        override fun reopen(): Reopened = Reopened.SameEndpoint
+
+        /** The client's socket moves to the next port: the server sees its datagrams come from there. */
+        override fun moveTo(bind: PathKey): Moved {
+            clientKey = clientKey.copy(port = clientKey.port + 1)
+            return Moved.To(clientKey)
+        }
+
+        override fun close(): SocketClosed = SocketClosed
+    }
+
+    /** The client's api: counts every datagram handed to its quiche. */
+    private inner class CountingClientApi(
+        private val inner: QuicheApi,
+    ) : QuicheApi by inner {
+        override fun connRecv(
+            conn: QuicheConn,
+            buf: Long,
+            bufLen: Int,
+            info: QuicheRecvInfo,
+        ): Int {
+            clientRecvs++
+            return inner.connRecv(conn, buf, bufLen, info)
+        }
+    }
+
+    companion object {
+        private const val ORIGIN = 1_000_000_000L
+        private const val MIN_STEP = 1_000L
+        private const val ROUNDS = 4
+        private const val YIELDS = 4
+
+        /** Builds the pair with [options] on both ends, runs [body] once the client's handshake completed, and stops both. */
+        fun with(
+            options: QuicOptions,
+            oneWay: Duration = 30.milliseconds,
+            body: suspend CoroutineScope.(VirtualPair) -> Unit,
+        ) = runBlocking {
+            val api = loadQuicheApi()
+            val pair = VirtualPair(oneWay, api)
+            api.setThreadVirtualTimeNanos(ORIGIN)
+            try {
+                pair.server = replayServer(api, options, BufferFactory.Default, pair.Socket(End.Server), pair.clock)
+                pair.serverKey = InetSocketAddress(LOCALHOST, pair.server.port).toPathKey()
+                pair.client =
+                    replayClient(
+                        pair.CountingClientApi(api),
+                        options,
+                        BufferFactory.Default,
+                        pair.Socket(End.Client),
+                        pair.clock,
+                        pair.server.port,
+                        1L,
+                        LinkClass.Ethernet,
+                    )
+                pair.clientKey = pair.client.local
+                pair.client.parts.start()
+                pair.runUntil {
+                    pair.client.connection.end() is EdgeEnd.Open &&
+                        pair.client.connection.state.value
+                            .isEstablished()
+                }
+                // The server establishes once the client's last handshake flight arrives, and both acknowledge it.
+                pair.runFor(oneWay * 4)
+                body(pair)
+            } finally {
+                pair.stop()
+                api.clearThreadVirtualTime()
+            }
+        }
+    }
+
+    /** The server's accepted connection: it is offered from a thread of the server's own, so awaited on the wall clock. */
+    suspend fun accept(): CoreConnection = withTimeout(10.seconds) { server.accept() }
+
+    private fun stop() {
+        client.connection.closeNow(com.ditchoom.socket.quic.QuicError.NoError)
+        client.loop.close(Runnable { })
+        client.loop.run()
+        server.loop.close(Runnable { })
+        server.loop.run()
+        client.scope.cancel()
+    }
+}
+
+private fun com.ditchoom.socket.quic.QuicConnectionState.isEstablished(): Boolean =
+    this is com.ditchoom.socket.quic.QuicConnectionState.Established
