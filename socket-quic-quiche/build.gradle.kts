@@ -4709,6 +4709,33 @@ tasks.register<JavaExec>("captureToReplay") {
     argumentProviders.add { capture.get().split(Regex("\\s+")).filter { it.isNotEmpty() } }
 }
 
+// Walk failure -> permanent test: converts one connection's walk recording (and the peer's, when there is one) into
+// the network conditions it lived through, replays them against a core client and server on virtual time, and writes
+// the anonymised conditions fixture and a test holding the core to the outcome it gives today:
+//   ./gradlew :socket-quic-quiche:conditionsFromTrace -Ptrace=<file> -Pname=<TestName> [-Ppeer=<file>] [-PfromMs=<n> -PtoMs=<n>]
+tasks.register<JavaExec>("conditionsFromTrace") {
+    group = "trace"
+    description = "Write the conditions fixture and replay test of a walk recording."
+    dependsOn("jvmTestClasses", "prepareQuicheNativeLib", "stageQuicheNativeResources")
+    val jvmTestCompilation = kotlin.jvm().compilations["test"]
+    classpath = files(jvmTestCompilation.output.allOutputs, jvmTestCompilation.runtimeDependencyFiles, stagedNativeResourcesDir)
+    mainClass.set("com.ditchoom.socket.quic.replay.conditions.ConditionsFromTraceCliKt")
+    workingDir = projectDir
+    jvmArgs("--enable-native-access=ALL-UNNAMED", "--add-opens", "java.base/java.nio=ALL-UNNAMED")
+    val given =
+        mapOf(
+            "trace" to providers.gradleProperty("trace"),
+            "name" to providers.gradleProperty("name"),
+            "peer" to providers.gradleProperty("peer"),
+            "from-ms" to providers.gradleProperty("fromMs"),
+            "to-ms" to providers.gradleProperty("toMs"),
+            "source" to providers.gradleProperty("source"),
+        )
+    argumentProviders.add {
+        given.flatMap { (option, value) -> if (value.isPresent) listOf("--$option", value.get()) else emptyList() }
+    }
+}
+
 tasks.register<JavaExec>("quicHeaderFuzz") {
     group = "verification"
     description = "Coverage-guided Jazzer fuzzing of quiche_header_info (HeaderInfoFuzzer). " +

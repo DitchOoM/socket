@@ -23,7 +23,6 @@ import com.ditchoom.socket.quic.core.sched.CallerLanes
 import com.ditchoom.socket.quic.core.sched.CallerSend
 import com.ditchoom.socket.quic.core.sched.Entrant
 import com.ditchoom.socket.quic.core.sched.SendPort
-import com.ditchoom.socket.quic.core.time.MonotonicClock
 import com.ditchoom.socket.quic.core.udp.BatchLimits
 import com.ditchoom.socket.quic.core.udp.NioOneByOne
 import com.ditchoom.socket.quic.core.udp.SendBatch
@@ -86,7 +85,7 @@ internal class ClientParts(
             capture = capture,
             port = loop.port,
             socket = socket,
-            clock = MonotonicClock,
+            clock = w.clock,
             sink = edge,
             loopEntrant = Entrant.loopTurn(loop.id, 1),
             counts = ConnCounts(),
@@ -112,7 +111,7 @@ internal class ClientParts(
         identity: QuicConnectionIdentity,
     ): CoreConnection = CoreConnection(conn, edge, factory, remote, identity, w.readPolicy, w.writePolicy, w.scope)
 
-    private val endpoint = Endpoint(SocketRef(Supplier { nio.channel }), io, socket, send, Route.Fixed(conn), released)
+    private val endpoint = Endpoint(SocketRef(Supplier { nio.channel }), io, socket, send, Route.Fixed(conn), released, w.readiness)
 
     /** The endpoint joins its loop and the connection's first flight goes out in the loop's next pass. */
     fun start() {

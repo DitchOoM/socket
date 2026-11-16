@@ -28,7 +28,10 @@ import com.ditchoom.socket.quic.core.conn.FlightSize
 import com.ditchoom.socket.quic.core.loop.Loop
 import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.loop.Placement
+import com.ditchoom.socket.quic.core.loop.Readiness
 import com.ditchoom.socket.quic.core.loop.RunningLoop
+import com.ditchoom.socket.quic.core.time.LoopClock
+import com.ditchoom.socket.quic.core.time.MonotonicClock
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 import com.ditchoom.socket.quic.core.udp.ReadAddress
 import com.ditchoom.socket.quic.core.udp.SocketBuffers
@@ -258,6 +261,10 @@ internal class ClientWiring(
     val writePolicy: WritePolicy,
     val scope: CoroutineScope,
     val flight: FlightSize,
+    /** What the connection reads the time from: the loop's own clock. */
+    val clock: LoopClock = MonotonicClock,
+    /** When the loop reads the socket: polled on a loop thread, every pass on a loop a test drives on virtual time. */
+    val readiness: Readiness = Readiness.Polled,
 )
 
 private const val HEX = "0123456789abcdef"
