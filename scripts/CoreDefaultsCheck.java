@@ -384,8 +384,6 @@ public class CoreDefaultsCheck {
         SEAMS.put("Waiter", "stream");
         SEAMS.put("ConnSink", "conn");
         SEAMS.put("Pooled", "pool");
-        SEAMS.put("FlightSink", "observe");
-        SEAMS.put("FlightSource", "observe");
     }
 
     /** Value classes that live outside core (QuicheHandles.kt, StreamRecvStep.kt, DeadlineQueue.kt). */
@@ -876,7 +874,8 @@ public class CoreDefaultsCheck {
         while (cause.find()) add(out, p, p.lineAt(cause.start()), "F");
         boolean failures = p.pkg.equals("edge") && p.base.equals("Failures.kt");
         if (!failures) {
-            Matcher m = Pattern.compile("\\b\\w*(?:Exception|Error)\\s*\\(|\\bthrow\\b|\\bresumeWithException\\b").matcher(p.code);
+            // A call on a receiver (`api.connPeerError(h)`) is a method, not a constructor.
+            Matcher m = Pattern.compile("(?<![.\\w])\\w*(?:Exception|Error)\\s*\\(|\\bthrow\\b|\\bresumeWithException\\b").matcher(p.code);
             while (m.find()) add(out, p, p.lineAt(m.start()), "F");
         } else {
             Matcher m = Pattern.compile("(?<!class )\\bQuic\\w*Exception\\s*\\(").matcher(p.code);
@@ -1085,6 +1084,8 @@ public class CoreDefaultsCheck {
         clean("F", "edge/Failures.kt", "fun f() = QuicCloseException(end, during)\nfun g(): Nothing = throw QuicStreamException(end, side)");
         clean("F", "life/ConnEnd.kt", "internal class Thrown(val throwable: Throwable)");
         clean("F", "conn/A.kt", "// e.cause\nval s = \"x.cause\"");
+        clean("F", "life/ConnLife.kt", "val peer = q.api.connPeerError(q.handle)");
+        planted("F", "life/ConnLife.kt", "val e = IllegalStateException()");
         clean("F", "conn/Turn.kt", "fun f() { try { g() } catch (e: Exception) { h() } }");
         // Q quiche ownership
         planted("Q", "conn/Turn.kt", "fun f() { api.connClose(handle, e) }");

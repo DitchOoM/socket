@@ -2,7 +2,6 @@ package com.ditchoom.socket.quic.core.sched
 
 import com.ditchoom.socket.quic.core.observe.CallerCounts
 import com.ditchoom.socket.quic.core.observe.LoopCounts
-import com.ditchoom.socket.quic.core.pool.Taken
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 import com.ditchoom.socket.quic.core.udp.SendBatch
 import com.ditchoom.socket.quic.core.udp.SendBatchResult
@@ -53,11 +52,11 @@ internal class SendPort(
 
     fun health(): SocketHealth = health.view()
 
-    /** A lane for a thread that is not the loop to send from, or [Taken.Empty]: then the loop does the sending. */
-    fun takeLane(): Taken =
+    /** A lane for a thread that is not the loop to send from, or [LaneTake.None]: then the loop does the sending. */
+    fun takeLane(): LaneTake =
         when (lanes) {
-            is CallerLanes.None -> Taken.Empty
-            is CallerLanes.Of -> lanes.pool.tryTake()
+            is CallerLanes.None -> LaneTake.None
+            is CallerLanes.Of -> lanes.pool.take({ it }, { LaneTake.None })
         }
 
     fun returnLane(lane: CallerSend) =

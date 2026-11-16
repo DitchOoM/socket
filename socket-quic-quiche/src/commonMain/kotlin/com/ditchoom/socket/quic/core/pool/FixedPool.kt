@@ -18,7 +18,8 @@ internal class FixedPool<T : Pooled>(
     count: Int,
     make: (index: Int) -> T,
 ) {
-    private val items: List<T> = List(count) { index -> make(index) }
+    @PublishedApi
+    internal val items: List<T> = List(count) { index -> make(index) }
 
     // Indices are stored plus one, so zero is the empty stack and needs no sentinel.
     private val below = IntArray(count) { index -> index }
@@ -29,12 +30,25 @@ internal class FixedPool<T : Pooled>(
     /** The item at [index], taken or not: for owners that keep a companion object per item. */
     operator fun get(index: Int): T = items[index]
 
-    fun tryTake(): Taken {
+    fun tryTake(): Taken = take({ it }, { Taken.Empty })
+
+    /** Takes an item and answers [item] with it, or answers [empty] when the pool has none. */
+    inline fun <R> take(
+        item: (T) -> R,
+        empty: () -> R,
+    ): R {
+        val top = takeTop()
+        return if (top == 0) empty() else item(items[top - 1])
+    }
+
+    /** The taken item's index plus one, or zero when the pool is empty. */
+    @PublishedApi
+    internal fun takeTop(): Int {
         while (true) {
             val seen = head.load()
             val top = topOf(seen)
-            if (top == EMPTY) return Taken.Empty
-            if (head.compareAndSet(seen, pack(stampOf(seen) + 1, below[top - 1]))) return items[top - 1]
+            if (top == EMPTY) return EMPTY
+            if (head.compareAndSet(seen, pack(stampOf(seen) + 1, below[top - 1]))) return top
         }
     }
 

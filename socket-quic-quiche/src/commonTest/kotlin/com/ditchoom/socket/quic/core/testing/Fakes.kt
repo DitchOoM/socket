@@ -36,6 +36,8 @@ internal class FakePoller : Poller {
         token: Int,
     ) = Unit
 
+    override fun remove(token: Int) = Unit
+
     override fun interest(
         token: Int,
         write: WriteInterest,

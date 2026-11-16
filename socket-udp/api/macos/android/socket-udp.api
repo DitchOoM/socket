@@ -190,6 +190,10 @@ public final class com/ditchoom/socket/udp/InternedJvmSocketAddressKt {
 	public static final fun hostOsSockAddrLayout ()Lcom/ditchoom/socket/udp/SockAddrLayout;
 }
 
+public final class com/ditchoom/socket/udp/JvmSendErrorsKt {
+	public static final fun jvmSendErrorOf (Ljava/io/IOException;II)Lcom/ditchoom/socket/udp/DatagramSendError;
+}
+
 public abstract interface class com/ditchoom/socket/udp/MulticastDatagramChannel : com/ditchoom/buffer/flow/AddressedDatagramChannel {
 	public abstract fun joinGroup (Lcom/ditchoom/socket/udp/MulticastMembership;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public abstract fun leaveGroup (Lcom/ditchoom/socket/udp/MulticastMembership;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;

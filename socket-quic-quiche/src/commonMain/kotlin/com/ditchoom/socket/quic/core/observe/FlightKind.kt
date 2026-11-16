@@ -5,7 +5,7 @@ package com.ditchoom.socket.quic.core.observe
  *
  * | kind | local, peer | length | sub | a | b |
  * |---|---|---|---|---|---|
- * | [DatagramIn], [DatagramOut] | address ids | datagram bytes | 0 | last 8 bytes of the datagram | first 8 bytes |
+ * | [DatagramIn], [DatagramOut] | address ids | datagram bytes | 0 | where its payload starts in the arena | 0 |
  * | [TimerArm] | 0 | 0 | 0 | due time | 0 |
  * | [TimerFire] | 0 | 0 | 0 | the time it was due | 0 |
  * | [OpSubmit], [OpComplete] | 0 | 0 | operation kind | stream id | bytes |

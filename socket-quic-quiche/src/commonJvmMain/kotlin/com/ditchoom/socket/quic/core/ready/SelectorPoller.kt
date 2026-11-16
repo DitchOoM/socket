@@ -47,6 +47,16 @@ internal class SelectorPoller(
         keys.add(socket.channel.register(selector, SelectionKey.OP_READ))
     }
 
+    override fun remove(token: Int) {
+        for (i in keys.indices) {
+            if (tokens[i] != token) continue
+            keys[i].cancel()
+            keys.removeAt(i)
+            for (j in i until keys.size) tokens[j] = tokens[j + 1]
+            return
+        }
+    }
+
     override fun interest(
         token: Int,
         write: WriteInterest,

@@ -1,7 +1,10 @@
 package com.ditchoom.socket.quic.core.udp
 
 import com.ditchoom.buffer.PlatformBuffer
+import com.ditchoom.buffer.UnsafeMemory
 import com.ditchoom.buffer.nativeMemoryAccess
+
+private const val BYTE_MASK = 0xFF
 
 /**
  * Memory that has an address: the only form in which anything below the edge holds wire memory. A batch, a pool
@@ -15,6 +18,20 @@ internal class NativeBytes private constructor(
 ) {
     /** Releases the native memory. The bytes are not used afterwards. */
     fun free() = owner.freeNativeMemory()
+
+    /** Copies [length] bytes from [from] at [fromOffset] to this memory at [toOffset]. Allocates nothing. */
+    fun copyFrom(
+        from: NativeBytes,
+        fromOffset: Int,
+        toOffset: Int,
+        length: Int,
+    ) = UnsafeMemory.copyMemory(from.address + fromOffset, address + toOffset, length.toLong())
+
+    /** The byte at [offset], as an unsigned value. */
+    fun byteAt(offset: Int): Int = UnsafeMemory.getByte(address + offset).toInt() and BYTE_MASK
+
+    /** The eight bytes at [offset], in native order: a tag, never a number to compute with. */
+    fun longAt(offset: Int): Long = UnsafeMemory.getLong(address + offset)
 
     companion object {
         /** Reads [buffer]'s address once, here; a buffer without one is [Addressed.NotAddressable]. */

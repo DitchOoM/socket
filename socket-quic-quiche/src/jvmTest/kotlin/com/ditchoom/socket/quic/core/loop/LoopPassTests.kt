@@ -1,54 +1,60 @@
 package com.ditchoom.socket.quic.core.loop
 
-import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.buffer.PlatformBuffer
-import com.ditchoom.buffer.managed
 import com.ditchoom.socket.quic.NextDue
 import com.ditchoom.socket.quic.PathKey
-import com.ditchoom.socket.quic.ReplySource
 import com.ditchoom.socket.quic.SendTarget
-import com.ditchoom.socket.quic.core.pool.FixedPool
+import com.ditchoom.socket.quic.core.life.ConnEnd
+import com.ditchoom.socket.quic.core.sched.LoopPort
+import com.ditchoom.socket.quic.core.sched.LoopWork
+import com.ditchoom.socket.quic.core.testing.ConnRig
+import com.ditchoom.socket.quic.core.testing.EchoQuiche
+import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.udp.ArrivedOn
 import com.ditchoom.socket.quic.core.udp.BatchCapability
-import com.ditchoom.socket.quic.core.udp.BatchLimits
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.ReceiveBatchResult
 import com.ditchoom.socket.quic.core.udp.ReceiveBuffer
-import com.ditchoom.socket.quic.core.udp.Room
 import com.ditchoom.socket.quic.core.udp.SendBatch
 import com.ditchoom.socket.quic.core.udp.SendBatchResult
 import com.ditchoom.socket.quic.core.udp.SocketClosed
+import com.ditchoom.socket.quic.core.udp.SocketProbe
 import com.ditchoom.socket.quic.core.udp.UdpError
 import kotlinx.coroutines.Runnable
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
+import kotlin.test.assertSame
 
-/** One pass of [Loop] as a function of its inputs and the time: a fake socket, an echo, a clock that is a number. */
+/**
+ * One pass of [Loop] as a function of its inputs and the time: a fake socket, a connection whose quiche echoes every
+ * datagram, a clock that is a number.
+ */
 class LoopPassTests {
     @Test
     fun aPassEchoesEveryWaitingDatagramWithOneSend() {
         val rig = Rig()
         repeat(3) { rig.io.arrive(byteArrayOf(it.toByte(), 7), peer(it)) }
 
-        rig.loop.pass(now = 0)
+        rig.loop.pass(Nanos(0))
 
         assertEquals(1, rig.io.sendCalls)
         assertEquals(listOf(0, 1, 2).map { listOf(it, 7) }, rig.io.sent.map { it.bytes.map(Byte::toInt) })
-        assertEquals(listOf(peer(0), peer(1), peer(2)), rig.io.sent.map { (it.target as SendTarget.ServerReply).to })
+        // One connection, one path: every reply goes to that path's peer. Per-sender replies are a server's (step 4).
+        assertEquals(List(3) { SendTarget.ConnectedPeer }, rig.io.sent.map { it.target })
     }
 
     @Test
     fun aDeadlineFiresInThePassAtItsTimeAndNotBefore() {
         val rig = Rig()
         var fired = 0
-        rig.loop.deadlines.arm(100, Runnable { fired++ })
+        rig.loop.port.arm(Nanos(100), Runnable { fired++ })
 
-        val next = rig.loop.pass(now = 50)
+        val next = rig.loop.pass(Nanos(50))
         assertEquals(0, fired)
         assertEquals(NextDue.at(100L), next)
 
-        rig.loop.pass(now = 100)
+        rig.loop.pass(Nanos(100))
         assertEquals(1, fired)
     }
 
@@ -56,17 +62,17 @@ class LoopPassTests {
     fun submittedWorkRunsInTheNextPass() {
         val rig = Rig()
         var ran = 0
-        rig.loop.submit(
+        rig.loop.port.submit(
             object : LoopWork() {
-                override fun run(loop: LoopHost) {
+                override fun run(port: LoopPort) {
                     ran++
                 }
 
-                override fun gone() = Unit
+                override fun gone(end: ConnEnd) = Unit
             },
         )
         assertEquals(0, ran)
-        rig.loop.pass(now = 0)
+        rig.loop.pass(Nanos(0))
         assertEquals(1, ran)
     }
 
@@ -76,10 +82,10 @@ class LoopPassTests {
         rig.io.arrive(byteArrayOf(1), peer(1))
         rig.io.refuseNext(UdpError.WouldBlock)
 
-        rig.loop.pass(now = 0)
+        rig.loop.pass(Nanos(0))
         assertEquals(0, rig.io.sent.size)
 
-        rig.loop.pass(now = 1)
+        rig.loop.pass(Nanos(1))
         assertEquals(listOf(listOf(1)), rig.io.sent.map { it.bytes.map(Byte::toInt) })
     }
 
@@ -90,8 +96,8 @@ class LoopPassTests {
         rig.io.arrive(byteArrayOf(2), peer(2))
         rig.io.refuseNext(UdpError.HostUnreachable)
 
-        rig.loop.pass(now = 0)
-        rig.loop.pass(now = 1)
+        rig.loop.pass(Nanos(0))
+        rig.loop.pass(Nanos(1))
 
         assertEquals(listOf(listOf(2)), rig.io.sent.map { it.bytes.map(Byte::toInt) })
         assertEquals(1L, rig.loop.counts.sendRefusals)
@@ -102,7 +108,7 @@ class LoopPassTests {
         val rig = Rig(maxDatagrams = 2)
         repeat(5) { rig.io.arrive(byteArrayOf(it.toByte()), peer(it)) }
 
-        rig.loop.pass(now = 0)
+        rig.loop.pass(Nanos(0))
 
         assertEquals(5, rig.io.sent.size)
         assertEquals(3, rig.io.sendCalls)
@@ -113,78 +119,51 @@ class LoopPassTests {
         val rig = Rig()
         repeat(1500) { rig.io.arrive(byteArrayOf(1), peer(it)) }
 
-        rig.loop.pass(now = 0)
+        rig.loop.pass(Nanos(0))
         assertEquals(1024L, rig.loop.counts.datagramsIn)
 
-        rig.loop.pass(now = 1)
+        rig.loop.pass(Nanos(1))
         assertEquals(1500L, rig.loop.counts.datagramsIn)
     }
 
     @Test
-    fun aLoopThatFailsEndsItsPartsAndAnswersLaterWorkAsGone() {
+    fun aLoopThatFailsEndsItsConnectionsAndAnswersLaterWorkAsGone() {
         val failure = IllegalStateException("planted")
-        val parts = FailingParts(failure)
-        val rig = Rig(parts = parts)
+        val rig = Rig()
         var gone = 0
-        val work =
+        rig.loop.port.submit(
             object : LoopWork() {
-                override fun run(loop: LoopHost) = Unit
+                override fun run(port: LoopPort) = throw failure
 
-                override fun gone() {
-                    gone++
-                }
-            }
+                override fun gone(end: ConnEnd) = Unit
+            },
+        )
 
         rig.loop.run()
 
-        assertEquals(listOf<Throwable>(failure), parts.failures, "the loop stopped and told its parts, once")
-        rig.loop.submit(work)
+        val end =
+            assertIs<ConnEnd.LoopFailed>(
+                rig.conn.sink.ended
+                    .single(),
+                "the loop stopped and ended its connection, once",
+            )
+        assertSame(failure, end.thrown.throwable)
+        rig.loop.port.submit(
+            object : LoopWork() {
+                override fun run(port: LoopPort) = Unit
+
+                override fun gone(end: ConnEnd) {
+                    gone++
+                }
+            },
+        )
         assertEquals(1, gone, "work handed to a stopped loop is answered as gone")
     }
 
     private fun peer(n: Int) = PathKey(family = 4, port = 1000 + n, hi = 0L, lo = 0x7F000001L)
 }
 
-/** Answers every datagram with its own bytes, to its sender. */
-internal class EchoParts : LoopParts {
-    private class Waiting(
-        val bytes: PlatformBuffer,
-        val to: PathKey,
-    )
-
-    private val waiting = ArrayDeque<Waiting>()
-
-    override fun onDatagram(
-        buffer: ReceiveBuffer,
-        length: Int,
-        from: PathKey,
-        to: ArrivedOn,
-    ) {
-        val copy = BufferFactory.managed().allocate(length)
-        buffer.buffer.position(0)
-        buffer.buffer.setLimit(length)
-        copy.write(buffer.buffer)
-        copy.resetForRead()
-        waiting.addLast(Waiting(copy, from))
-    }
-
-    override fun loopFailed(cause: Throwable) = Unit
-
-    override fun collect(out: SendBatch): Collected {
-        while (waiting.isNotEmpty()) {
-            if (out.room() === Room.Full) return Collected.MoreWaiting
-            val next = waiting.removeFirst()
-            val length = next.bytes.remaining()
-            out.storage.position(out.nextOffset())
-            out.storage.setLimit(out.storage.capacity)
-            out.storage.write(next.bytes)
-            out.commit(length, SendTarget.ServerReply(next.to, ReplySource.Undecodable))
-        }
-        return Collected.Everything
-    }
-}
-
-private class FakeIo : DatagramBatchIo {
+private class ScriptedIo : DatagramBatchIo {
     class Sent(
         val bytes: ByteArray,
         val target: SendTarget,
@@ -212,9 +191,10 @@ private class FakeIo : DatagramBatchIo {
         sendCalls++
         for (n in 0 until batch.pending) {
             if (refusals.isNotEmpty()) return SendBatchResult.Partial(n, refusals.removeFirst())
-            batch.storage.setLimit(batch.offsetOf(n) + batch.lengthOf(n))
-            batch.storage.position(batch.offsetOf(n))
-            sent.add(Sent(batch.storage.readByteArray(batch.lengthOf(n)), batch.targetOf(n)))
+            val storage = batch.storage.owner
+            storage.setLimit(batch.offsetOf(n) + batch.lengthOf(n))
+            storage.position(batch.offsetOf(n))
+            sent.add(Sent(storage.readByteArray(batch.lengthOf(n)), batch.targetOf(n)))
         }
         return SendBatchResult.AllTaken
     }
@@ -225,64 +205,24 @@ private class FakeIo : DatagramBatchIo {
             val buffer = into.take()
             if (buffer !is ReceiveBuffer) break
             val arrival = arrivals.removeFirst()
-            buffer.buffer.resetForWrite()
-            buffer.buffer.writeBytes(arrival.bytes)
+            val memory = buffer.bytes.owner
+            memory.resetForWrite()
+            memory.writeBytes(arrival.bytes)
             into.received(buffer, arrival.bytes.size, arrival.from, ArrivedOn.Unreported)
             got++
         }
         return if (got > 0) ReceiveBatchResult.Got else ReceiveBatchResult.Nothing
     }
 
+    override fun probe(): SocketProbe = SocketProbe.Open
+
     override fun close(): SocketClosed = SocketClosed
-}
-
-private class FailingParts(
-    private val failure: Throwable,
-) : LoopParts {
-    val failures = ArrayList<Throwable>()
-
-    override fun onDatagram(
-        buffer: ReceiveBuffer,
-        length: Int,
-        from: PathKey,
-        to: ArrivedOn,
-    ) = Unit
-
-    override fun collect(out: SendBatch): Collected = throw failure
-
-    override fun loopFailed(cause: Throwable) {
-        failures.add(cause)
-    }
 }
 
 private class Rig(
     maxDatagrams: Int = 64,
-    parts: LoopParts = EchoParts(),
 ) {
-    val io = FakeIo()
-    private val limits = BatchLimits(maxDatagrams = maxDatagrams, maxDatagramSize = 1500)
-    val loop =
-        Loop(
-            wait = NeverWaits,
-            clock = { 0L },
-            io = io,
-            parts = parts,
-            receive =
-                ReceiveBatch(
-                    FixedPool(maxDatagrams) { ReceiveBuffer(it, BufferFactory.managed().allocate(1500), address = 0L) },
-                    limits,
-                ),
-            send = SendBatch(BufferFactory.managed().allocate(maxDatagrams * 1500), address = 0L, limits),
-        )
-}
-
-private object NeverWaits : LoopWait {
-    override fun await(
-        until: NextDue,
-        write: WriteInterest,
-    ): WakeCause = WakeCause.Woken
-
-    override fun wake() = Unit
-
-    override fun close() = Unit
+    val io = ScriptedIo()
+    val conn = ConnRig(EchoQuiche(), io = io, maxDatagrams = maxDatagrams)
+    val loop = conn.loop
 }

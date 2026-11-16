@@ -1,13 +1,6 @@
 package com.ditchoom.socket.quic.core.loop
 
-import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.buffer.Default
-import com.ditchoom.socket.quic.core.pool.FixedPool
-import com.ditchoom.socket.quic.core.udp.BatchLimits
-import com.ditchoom.socket.quic.core.udp.NioOneByOne
-import com.ditchoom.socket.quic.core.udp.ReceiveBatch
-import com.ditchoom.socket.quic.core.udp.ReceiveBuffer
-import com.ditchoom.socket.quic.core.udp.SendBatch
+import com.ditchoom.socket.quic.core.testing.NioEcho
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.nio.channels.DatagramChannel
@@ -21,22 +14,11 @@ import kotlin.test.assertTrue
 class NioLoopEchoTests {
     @Test
     fun aLoopThreadEchoesEveryDatagramByteExactAndClosesItsSocket() {
-        val limits = BatchLimits(maxDatagrams = 64, maxDatagramSize = 1500)
         val server = DatagramChannel.open().bind(InetSocketAddress("127.0.0.1", 0))
         server.configureBlocking(false)
-        val send = SendBatch(BufferFactory.Default.allocate(limits.maxDatagrams * limits.maxDatagramSize), address = 0L, limits)
-        val receive =
-            ReceiveBatch(
-                FixedPool(limits.maxDatagrams) {
-                    ReceiveBuffer(it, BufferFactory.Default.allocate(limits.maxDatagramSize), address = 0L)
-                },
-                limits,
-            )
-        val clock = LoopClock { System.nanoTime() }
-        val loop = Loop(SelectorWait(server, clock), clock, NioOneByOne(server, send), EchoParts(), receive, send)
-        val running = startLoop(loop, "core-loop-test")
-
         val client = DatagramChannel.open().connect(server.localAddress)
+        val echo = NioEcho(server, client.localAddress as InetSocketAddress, "core-loop-test")
+
         val reply = ByteBuffer.allocate(1500)
         repeat(ROUND_TRIPS) { n ->
             val payload = ByteArray(1 + n % 1200) { (n + it).toByte() }
@@ -48,12 +30,12 @@ class NioLoopEchoTests {
         }
 
         val closed = CountDownLatch(1)
-        loop.close { closed.countDown() }
+        echo.loop.close { closed.countDown() }
         assertTrue(closed.await(5, TimeUnit.SECONDS), "the loop closed")
-        running.thread.join(5_000)
-        assertTrue(!running.thread.isAlive, "the loop thread ended")
+        echo.thread.join(5_000)
+        assertTrue(!echo.thread.isAlive, "the loop thread ended")
         assertTrue(!server.isOpen, "the loop closed its socket")
-        assertTrue(loop.counts.waits > 0, "the loop slept between datagrams instead of spinning")
+        assertTrue(echo.loop.counts.waits > 0, "the loop slept between datagrams instead of spinning")
         client.close()
     }
 

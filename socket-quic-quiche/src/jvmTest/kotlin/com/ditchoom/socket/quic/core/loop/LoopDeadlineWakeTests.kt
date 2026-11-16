@@ -1,18 +1,11 @@
 package com.ditchoom.socket.quic.core.loop
 
-import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.buffer.Default
-import com.ditchoom.socket.quic.PathKey
-import com.ditchoom.socket.quic.core.pool.FixedPool
-import com.ditchoom.socket.quic.core.udp.ArrivedOn
-import com.ditchoom.socket.quic.core.udp.BatchLimits
-import com.ditchoom.socket.quic.core.udp.NioOneByOne
-import com.ditchoom.socket.quic.core.udp.ReceiveBatch
-import com.ditchoom.socket.quic.core.udp.ReceiveBuffer
-import com.ditchoom.socket.quic.core.udp.SendBatch
+import com.ditchoom.socket.quic.core.ready.SelectorPoller
+import com.ditchoom.socket.quic.core.ready.jdkStackOfThisRuntime
+import com.ditchoom.socket.quic.core.testing.loopOver
+import com.ditchoom.socket.quic.core.time.MonotonicClock
+import com.ditchoom.socket.quic.core.time.Nanos
 import kotlinx.coroutines.Runnable
-import java.net.InetSocketAddress
-import java.nio.channels.DatagramChannel
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -28,18 +21,9 @@ import kotlin.test.assertTrue
 class LoopDeadlineWakeTests {
     @Test
     fun deadlinesArmedFromOtherThreadsAllFireOnTime() {
-        val limits = BatchLimits(maxDatagrams = 4, maxDatagramSize = 1500)
-        val channel = DatagramChannel.open().bind(InetSocketAddress("127.0.0.1", 0))
-        channel.configureBlocking(false)
-        val send = SendBatch(BufferFactory.Default.allocate(limits.maxDatagrams * limits.maxDatagramSize), address = 0L, limits)
-        val receive =
-            ReceiveBatch(
-                FixedPool(limits.maxDatagrams) { ReceiveBuffer(it, BufferFactory.Default.allocate(limits.maxDatagramSize), address = 0L) },
-                limits,
-            )
-        val clock = LoopClock { System.nanoTime() }
-        val loop = Loop(SelectorWait(channel, clock), clock, NioOneByOne(channel, send), NoParts, receive, send)
-        startLoop(loop, "core-deadline-wake")
+        val clock = MonotonicClock
+        val loop = loopOver(SelectorPoller(clock, jdkStackOfThisRuntime().scan), clock, maxDatagrams = 4)
+        startLoopThread(loop, "core-deadline-wake")
 
         val armers = 4
         val perArmer = 400
@@ -50,11 +34,11 @@ class LoopDeadlineWakeTests {
                 Thread {
                     val random = Random(armer)
                     repeat(perArmer) {
-                        val due = System.nanoTime() + random.nextLong(0, 3_000_000)
-                        loop.armDeadline(
-                            due,
+                        val due = clock.now().value + random.nextLong(0, 3_000_000)
+                        loop.port.arm(
+                            Nanos(due),
                             Runnable {
-                                worstLateNanos.accumulateAndGet(System.nanoTime() - due, ::maxOf)
+                                worstLateNanos.accumulateAndGet(clock.now().value - due, ::maxOf)
                                 fired.countDown()
                             },
                         )
@@ -74,18 +58,5 @@ class LoopDeadlineWakeTests {
         )
         assertTrue(allFired, "$unfired of ${armers * perArmer} deadlines never fired: a wake was lost")
         assertTrue(worstLateNanos.get() < 250_000_000L, "a deadline fired ${worstLateNanos.get() / 1_000_000} ms late")
-    }
-
-    private object NoParts : LoopParts {
-        override fun onDatagram(
-            buffer: ReceiveBuffer,
-            length: Int,
-            from: PathKey,
-            to: ArrivedOn,
-        ) = Unit
-
-        override fun collect(out: SendBatch): Collected = Collected.Everything
-
-        override fun loopFailed(cause: Throwable) = Unit
     }
 }

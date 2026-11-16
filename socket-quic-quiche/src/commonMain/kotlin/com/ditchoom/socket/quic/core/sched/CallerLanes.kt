@@ -20,6 +20,11 @@ internal sealed interface LaneLink {
     data object End : LaneLink
 }
 
+/** What [SendPort.takeLane] gives: a lane, or none. */
+internal sealed interface LaneTake {
+    data object None : LaneTake
+}
+
 /**
  * A send batch of its own for a thread that is not the loop. It is lent for one entry into a connection and then
  * given back, or, when the network refused part of it, handed to the loop to finish.
@@ -29,7 +34,8 @@ internal class CallerSend(
     index: Int,
     val batch: SendBatch,
 ) : Pooled(index),
-    LaneLink {
+    LaneLink,
+    LaneTake {
     /** Loop thread only: the next lane waiting for the network. */
     @Link
     internal var nextLane: LaneLink = LaneLink.End

@@ -1,0 +1,189 @@
+package com.ditchoom.socket.quic.core.conn
+
+import com.ditchoom.socket.quic.NextDue
+import com.ditchoom.socket.quic.QuicError
+import com.ditchoom.socket.quic.StubQuicheApi
+import com.ditchoom.socket.quic.core.life.ConnEnd
+import com.ditchoom.socket.quic.core.testing.ConnRig
+import com.ditchoom.socket.quic.core.testing.FakeIo
+import com.ditchoom.socket.quic.core.udp.SendBatchResult
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertIs
+import kotlin.test.assertSame
+import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
+
+/** A connection served by its loop over a scripted quiche, a fake socket and virtual time: no socket, no thread. */
+class ConnTests {
+    private val ms = 1_000_000L
+
+    private class Counted {
+        val io = FakeIo()
+        var sent = 0
+
+        init {
+            io.onSend = { pending ->
+                sent += pending
+                SendBatchResult.AllTaken
+            }
+        }
+    }
+
+    @Test
+    fun theFirstPassSendsTheFirstFlightAndEstablishmentIsReportedOnce() {
+        val api = StubQuicheApi().apply { connSendQueue.addLast(1200) }
+        val out = Counted()
+        val rig = ConnRig(api, io = out.io)
+
+        rig.pass(0)
+        rig.conn.submit(Nothing())
+        rig.pass(1)
+
+        assertEquals(1, out.sent)
+        assertEquals(1, rig.sink.established.size)
+    }
+
+    @Test
+    fun workThatThrowsEndsTheConnectionWithItAndLaterWorkIsToldTheSameEnd() {
+        val api = StubQuicheApi()
+        val rig = ConnRig(api)
+        val planted = IllegalStateException("planted")
+        rig.pass(0)
+
+        rig.conn.submit(Throws(planted))
+        rig.pass(1)
+
+        val end = assertIs<ConnEnd.ProcessingFailed>(rig.sink.ended.single())
+        assertSame(planted, end.thrown.throwable)
+        assertEquals(listOf<QuicError>(QuicError.ProcessingFailed), api.closeErrors)
+        val later = Nothing()
+        rig.conn.submit(later)
+        assertSame(end, later.goneWith.single())
+    }
+
+    @Test
+    fun aConnectionQuicheClosedEndsWithThePeersError() {
+        val api = StubQuicheApi()
+        val rig = ConnRig(api)
+        rig.pass(0)
+        api.peerError = QuicError.ProtocolViolation
+        api.closed = true
+
+        rig.conn.submit(Nothing())
+        rig.pass(1)
+
+        assertEquals(QuicError.ProtocolViolation, assertIs<ConnEnd.ByPeer>(rig.sink.ended.single()).error)
+    }
+
+    @Test
+    fun aUsableNetworkMakesTheConnectionSendInTheSamePassInsteadOfWaitingOutItsBackedOffTimer() {
+        // A PTO backed off to eight seconds: quiche sends nothing until then on its own.
+        val api = StubQuicheApi().apply { connTimeout = 8.seconds }
+        val out = Counted()
+        val rig = ConnRig(api, io = out.io)
+        rig.pass(0)
+        assertEquals(0, out.sent)
+        api.onAckEliciting = { api.connSendQueue.addLast(60) }
+
+        rig.conn.submit(NetworkWork(NetworkChange.Usable))
+        rig.pass(10 * ms)
+
+        assertEquals(1, api.ackElicitingCount, "quiche was asked to send now")
+        assertEquals(1, out.sent, "the datagram left in the pass that heard the news, not eight seconds later")
+    }
+
+    @Test
+    fun anOutageShorterThanTheIdleTimeoutDoesNotEndTheSocketAndTheConnectionSendsAtOnceWhenTheNetworkReturns() {
+        val api = StubQuicheApi().apply { connTimeout = 8.seconds }
+        val io = FakeIo()
+        var refusing = true
+        var sent = 0
+        io.onSend = { pending ->
+            if (refusing) {
+                SendBatchResult.Partial(0, com.ditchoom.socket.quic.core.udp.UdpError.NetworkUnreachable)
+            } else {
+                sent += pending
+                SendBatchResult.AllTaken
+            }
+        }
+        val rig = ConnRig(api, io = io)
+        rig.pass(0)
+        // Every probe during the outage is refused by an unreachable network: each datagram's own fault.
+        repeat(20) {
+            api.connSendQueue.addLast(1200)
+            rig.conn.submit(Nothing())
+            rig.pass((it + 1) * 100 * ms)
+        }
+        assertIs<com.ditchoom.socket.quic.core.sched.SocketHealth.Live>(rig.socket.health())
+        assertEquals(emptyList(), rig.sink.ended, "the connection is still up")
+
+        refusing = false
+        api.onAckEliciting = { api.connSendQueue.addLast(60) }
+        rig.conn.submit(NetworkWork(NetworkChange.Usable))
+        rig.pass(3_000 * ms)
+
+        assertEquals(1, sent, "the network came back: the connection sent in that pass")
+    }
+
+    @Test
+    fun noUsableNetworkEndsTheConnectionAfterTheGraceWithATypedEndNotTheIdleTimeout() {
+        val api = StubQuicheApi().apply { connTimeout = 30.seconds }
+        val rig = ConnRig(api)
+        rig.pass(0)
+
+        rig.conn.submit(NetworkWork(NetworkChange.Gone))
+        val next = rig.pass(1 * ms)
+        assertEquals(NextDue.at(3_001 * ms), next, "the loop wakes at the grace's end, not at the idle timeout")
+        rig.pass(3_001 * ms)
+
+        assertSame(ConnEnd.NetworkLost, rig.sink.ended.single())
+    }
+
+    @Test
+    fun aFlapWithinTheGraceDoesNotEndTheConnection() {
+        val api = StubQuicheApi().apply { connTimeout = 30.seconds }
+        val rig = ConnRig(api)
+        rig.pass(0)
+
+        rig.conn.submit(NetworkWork(NetworkChange.Gone))
+        rig.pass(1 * ms)
+        rig.conn.submit(NetworkWork(NetworkChange.Usable))
+        rig.pass(500 * ms)
+        rig.conn.submit(Nothing())
+        rig.pass(4_000 * ms)
+
+        assertEquals(emptyList(), rig.sink.ended)
+    }
+
+    @Test
+    fun aReleaseFreesOnceNobodyIsInsideAndEndsQueuedWork() {
+        val rig = ConnRig()
+        rig.pass(0)
+        var freed = 0
+        rig.conn.release { freed++ }
+        assertEquals(1, freed)
+        assertTrue(rig.sink.ended.single() is ConnEnd.Released)
+        val later = Nothing()
+        rig.conn.submit(later)
+        assertSame(ConnEnd.Released, later.goneWith.single())
+    }
+
+    private class Nothing : ConnWork() {
+        val goneWith = ArrayList<ConnEnd>()
+
+        override fun run(inside: Inside) = Unit
+
+        override fun gone(end: ConnEnd) {
+            goneWith += end
+        }
+    }
+
+    private class Throws(
+        private val planted: Exception,
+    ) : ConnWork() {
+        override fun run(inside: Inside) = throw planted
+
+        override fun gone(end: ConnEnd) = Unit
+    }
+}

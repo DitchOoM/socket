@@ -52,4 +52,7 @@ internal sealed interface ConnEnd {
 
     /** Freed before any end was recorded. */
     data object Released : ConnEnd
+
+    /** The network monitor reported no usable network for longer than the grace a flap is given. */
+    data object NetworkLost : ConnEnd
 }

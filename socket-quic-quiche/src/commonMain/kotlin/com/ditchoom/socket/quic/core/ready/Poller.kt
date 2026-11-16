@@ -10,6 +10,9 @@ internal interface Poller {
         token: Int,
     )
 
+    /** Stops watching the socket reported as [token]; the token may be given to another socket afterwards. */
+    fun remove(token: Int)
+
     fun interest(
         token: Int,
         write: WriteInterest,
