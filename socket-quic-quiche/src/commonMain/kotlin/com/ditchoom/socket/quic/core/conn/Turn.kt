@@ -7,6 +7,7 @@ import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.Ending
 import com.ditchoom.socket.quic.core.life.Life
 import com.ditchoom.socket.quic.core.life.LifeStep
+import com.ditchoom.socket.quic.core.life.RetiredId
 import com.ditchoom.socket.quic.core.life.SpareId
 import com.ditchoom.socket.quic.core.life.Tier
 import com.ditchoom.socket.quic.core.life.Tiers
@@ -117,10 +118,7 @@ internal class Turn(
         from: PathKey,
         now: Nanos,
     ) {
-        when (c.life.view()) {
-            is Life.Open -> Unit
-            is Life.Over -> return c.life.linger.late()
-        }
+        if (c.life.view() is Life.Over) return c.life.linger.late()
         traced(TraceSection.ConnReceive) {
             try {
                 c.feed(bytes, length, from, now)
@@ -168,6 +166,9 @@ internal class Turn(
 
     /** Any thread: how many new ids the loop should route to this connection, taken once. */
     fun idsWanted(): Int = c.slots.paths.idsWanted()
+
+    /** Any thread: the ids this connection's peer retired, taken once. */
+    fun idsRetired(): List<RetiredId> = c.slots.paths.idsRetired()
 
     fun dump(sink: TraceSink) = c.flight.dump(sink)
 

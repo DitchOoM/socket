@@ -124,6 +124,7 @@ internal suspend fun coreServe(
     driver: LoopDriver = LoopDriver.OwnThread,
     stack: NetStack = netStackOfThisRuntime,
     batching: UdpBatching = options.udpBatching,
+    datagramSize: DatagramSize = DatagramSize.Probed,
 ): CoreServer =
     withContext(Dispatchers.IO) {
         val memory = EdgeMemory(factory)
@@ -132,7 +133,7 @@ internal suspend fun coreServe(
             ServerSetup(
                 bind,
                 tls,
-                options,
+                options.sizedBy(datagramSize),
                 factory,
                 api,
                 readPolicy,

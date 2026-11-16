@@ -21,6 +21,7 @@ import com.ditchoom.socket.quic.core.conn.LoopMemory
 import com.ditchoom.socket.quic.core.conn.Paths
 import com.ditchoom.socket.quic.core.conn.SlotRules
 import com.ditchoom.socket.quic.core.conn.buildConn
+import com.ditchoom.socket.quic.core.conn.freeInfo
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.loop.Endpoint
@@ -181,5 +182,6 @@ internal fun stubClientPaths(
             BufferFactory.Default,
             IdIssuer(BufferFactory.Default),
             Random(1),
+            { info, made -> q.freeInfo(info, made) },
         ),
     )

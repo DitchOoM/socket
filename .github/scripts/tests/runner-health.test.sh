@@ -41,7 +41,12 @@ GITHUB_ENV="$tmp/env" RUNNER_TEMP="$tmp" RUNNER_HEALTH_PERIOD=1 bash "$script" s
 sleep 2
 contains "start records the job's start" "$(cat "$tmp/env")" "JOB_STARTED_AT="
 expect "start samples the runner" "$([ -s "$tmp/runner-health.log" ] && echo yes)" yes
-pkill -f "runner-health" 2>/dev/null || true
+# A pattern kill (`pkill -f runner-health`) also matches this script's own command line and ends the whole run.
+sampler="$(cat "$tmp/runner-health.pid" 2>/dev/null)"
+RUNNER_TEMP="$tmp" bash "$script" stop
+sleep 1
+expect "stop ends the sampler" "$(kill -0 "${sampler:-0}" 2>/dev/null && echo alive || echo gone)" gone
+expect "stop clears the pid file" "$([ -e "$tmp/runner-health.pid" ] && echo left || echo cleared)" cleared
 
 echo "---"
 echo "runner-health: $pass passed, $fail failed"

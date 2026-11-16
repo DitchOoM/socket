@@ -2,7 +2,9 @@ package com.ditchoom.socket.quic.core.path
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.socket.quic.QUIC_ISSUED_CONN_ID_LEN
+import com.ditchoom.socket.quic.RETIRED_SCID_SLOT_BYTES
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
+import com.ditchoom.socket.quic.core.life.RetiredId
 import com.ditchoom.socket.quic.core.life.SpareId
 import com.ditchoom.socket.quic.core.udp.Addressed
 import com.ditchoom.socket.quic.core.udp.NativeBytes
@@ -82,5 +84,62 @@ internal class IdIssuer(
         const val TOKEN = 16
         const val SEQ = 32
         const val BYTES = 40
+    }
+}
+
+/**
+ * Reads the ids the peer retired out of quiche, which drops them as it reads: the native slots they are written into
+ * are the connection's own, made when the first id is retired and freed with the connection.
+ */
+internal class RetiredReader(
+    private val factory: BufferFactory,
+) {
+    private val scratch = ArrayList<NativeBytes>(1)
+
+    /** The ids of [QUIC_ISSUED_CONN_ID_LEN] bytes the peer retired since the last read, at most [SLOTS] of them. */
+    fun read(q: QuicheConnRef): List<RetiredId> {
+        if (q.api.connRetiredScids(q.handle) == 0) return emptyList()
+        val bytes =
+            when (val held = held()) {
+                is Addressed.Native -> held.bytes
+                is Addressed.NotAddressable -> return emptyList()
+            }
+        val yielded = minOf(q.api.connDrainRetiredScids(q.handle, bytes.address, SLOTS), SLOTS)
+        val ids = ArrayList<RetiredId>(yielded)
+        for (slot in 0 until yielded) {
+            val at = slot * RETIRED_SCID_SLOT_BYTES
+            if (bytes.byteAt(at) == QUIC_ISSUED_CONN_ID_LEN) ids.add(RetiredId(bigEndian(bytes, at + 1), bigEndian(bytes, at + 1 + WORD)))
+        }
+        return ids
+    }
+
+    fun free() {
+        for (bytes in scratch) bytes.free()
+        scratch.clear()
+    }
+
+    private fun held(): Addressed {
+        if (scratch.isNotEmpty()) return Addressed.Native(scratch[0])
+        val made = NativeBytes.of(factory.allocate(SLOTS * RETIRED_SCID_SLOT_BYTES))
+        when (made) {
+            is Addressed.Native -> scratch.add(made.bytes)
+            is Addressed.NotAddressable -> Unit
+        }
+        return made
+    }
+
+    private fun bigEndian(
+        bytes: NativeBytes,
+        from: Int,
+    ): Long {
+        var value = 0L
+        for (i in from until from + WORD) value = (value shl BITS) or bytes.byteAt(i).toLong()
+        return value
+    }
+
+    private companion object {
+        const val SLOTS = 32
+        const val WORD = 8
+        const val BITS = 8
     }
 }

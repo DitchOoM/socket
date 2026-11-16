@@ -32,6 +32,12 @@ internal interface DatagramBatchIo {
      */
     fun moveTo(bind: PathKey): Moved
 
+    /**
+     * Loop thread, each pass while a [moveTo] answered [Moved.Arriving]: whether the new socket is ready. [Moved.To] and
+     * [Moved.Refused] end the wait; [Moved.Arriving] says to ask again at the next wake.
+     */
+    fun settleMove(): Moved = Moved.Unsupported
+
     fun close(): SocketClosed
 }
 
@@ -46,6 +52,9 @@ internal sealed interface Moved {
     class Refused(
         val thrown: Thrown,
     ) : Moved
+
+    /** A socket is being made without waiting for it: [DatagramBatchIo.settleMove] says when it is ready, and wakes the loop. */
+    data object Arriving : Moved
 
     /** This kind of socket follows the device's paths by itself and cannot be moved. */
     data object Unsupported : Moved

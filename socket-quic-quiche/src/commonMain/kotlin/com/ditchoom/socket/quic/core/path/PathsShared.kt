@@ -121,3 +121,12 @@ internal class EventScratch private constructor(
 }
 
 private const val V4 = 4
+
+/** The endpoint a client left last: kept while a datagram that crossed the move may still come for it. */
+internal sealed interface Previous {
+    data object None : Previous
+
+    class Held(
+        val local: LocalAddr,
+    ) : Previous
+}

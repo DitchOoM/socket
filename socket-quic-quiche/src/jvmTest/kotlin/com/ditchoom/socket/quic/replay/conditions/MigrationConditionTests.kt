@@ -71,6 +71,30 @@ class MigrationConditionTests {
         replayTwice(conditions, Expect.Ends(ConnEnd.NoUsablePath::class, notAfter = MOVE_AT + IDLE + 1.seconds))
     }
 
+    /**
+     * The new address carries nothing for a while after the move, then works: the probe sent while it was dark is lost,
+     * the connection probes the address again a PTO later, backing off, and migrates once a probe gets through, well
+     * inside the idle timeout. At 40 ms each way, never at no delay: a retry timed by the PTO of a path with no round
+     * trip would spin.
+     */
+    @Test
+    fun aMoveWhoseProbesAreLostIsProbedAgainUntilTheAddressWorks() {
+        val flowing = DelayRange(40.milliseconds, 40.milliseconds)
+        val healed = MOVE_AT + 1.seconds
+        val conditions =
+            move(flowing, PerMille(0)).copy(
+                name = "A move onto a link that carries nothing for a second",
+                link =
+                    listOf(
+                        LinkWindow.Flowing(Duration.ZERO, MOVE_AT - FADE, flowing, PerMille(0), PerMille(0)),
+                        LinkWindow.Outage(MOVE_AT - FADE, healed),
+                        LinkWindow.Flowing(healed, RUN_FOR, flowing, PerMille(0), PerMille(0)),
+                    ),
+            )
+        val replayed = replayTwice(conditions, Expect.Survives(firstEchoWithin = IDLE))
+        assertEquals(1, replayed.moves, replayed.describe())
+    }
+
     /** The sizes of what was sent (at [sends]) while the new path was being validated: the move's first round trip. */
     private fun during(
         sends: List<Duration>,

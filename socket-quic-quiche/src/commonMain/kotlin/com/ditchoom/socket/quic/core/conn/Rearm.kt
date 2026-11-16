@@ -14,6 +14,7 @@ internal fun ConnParts.rearm(
     }
     handshake.offerWake(timer.sink)
     life.linger.offerWake(timer.sink)
+    slots.paths.offerWake(timer.sink)
     timer.rearm(now, fire)
 }
 

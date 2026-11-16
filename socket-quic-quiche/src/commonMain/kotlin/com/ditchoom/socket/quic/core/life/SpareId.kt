@@ -10,3 +10,9 @@ internal class SpareId(
     val token0: Long,
     val token1: Long,
 )
+
+/** One connection id the peer retired, as the two halves a server's routes read its bytes into. */
+internal class RetiredId(
+    val c0: Long,
+    val c1: Long,
+)
