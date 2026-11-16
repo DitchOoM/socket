@@ -7,6 +7,7 @@ import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.QuicheConfig
 import com.ditchoom.socket.quic.QuicheConn
+import com.ditchoom.socket.quic.connectionIdRandom
 import com.ditchoom.socket.quic.core.conn.FlightSize
 import com.ditchoom.socket.quic.core.conn.HandshakeRule
 import com.ditchoom.socket.quic.core.loop.Readiness
@@ -15,6 +16,7 @@ import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.MonotonicClock
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 import kotlinx.coroutines.CoroutineScope
+import kotlin.random.Random
 
 /** The quiche handle a connect made, kept with what it needs to be built on the loop. */
 internal class ClientWiring(
@@ -39,4 +41,6 @@ internal class ClientWiring(
      * loop a test drives on virtual time.
      */
     val readiness: Readiness = Readiness.Polled,
+    /** Where the ids the connection hands its peer for a new path are drawn from. */
+    val ids: Random = connectionIdRandom,
 )

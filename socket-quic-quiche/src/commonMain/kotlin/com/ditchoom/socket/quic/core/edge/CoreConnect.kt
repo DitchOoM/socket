@@ -222,7 +222,7 @@ private suspend fun connectOnThisThread(
         )
     wireClientConnectivityTap(options, built.capture, connection, monitor)
     built.start()
-    scope.feedNetwork(monitor, connection, built, { routeSource(route) }, local.hostLiteral())
+    scope.feedNetwork(monitor, connection, built, { routeSource(route) }, local.hostLiteral(), onMoveOf(options.migration))
     var established = false
     try {
         withTimeout(timeout) { connection.established() }

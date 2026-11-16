@@ -32,10 +32,10 @@ class IngressTests {
         val slots = shared.slots
         val ingress = Ingress(q, shared, BufferFactory.Default, counts)
 
-        val first = assertIs<CopiedWork>(ingress.copy(datagram, 16))
+        val first = assertIs<CopiedWork>(ingress.copy(datagram, 16, FROM))
         assertEquals(16, slots[0].length)
         assertEquals(15, slots[0].bytes.byteAt(15))
-        assertIs<CopiedWork>(ingress.copy(datagram, 16))
+        assertIs<CopiedWork>(ingress.copy(datagram, 16, FROM))
         assertEquals(2L, counts.datagramsCopied)
 
         first.gone(ConnEnd.Released)
@@ -48,9 +48,9 @@ class IngressTests {
         val one = Ingress(q, shared, BufferFactory.Default, counts)
         val other = Ingress(QuicheConnRef(StubQuicheApi(), QuicheConn(2L)), shared, BufferFactory.Default, ConnCounts())
 
-        val held = assertIs<CopiedWork>(one.copy(datagram, 16))
+        val held = assertIs<CopiedWork>(one.copy(datagram, 16, FROM))
         assertEquals(0, shared.slots.available(), "one connection's copy holds the loop's only slot")
-        assertIs<CopiedWork>(other.copy(datagram, 16))
+        assertIs<CopiedWork>(other.copy(datagram, 16, FROM))
         assertEquals(0, shared.slots.available(), "the other connection's copy took memory of its own")
         held.gone(ConnEnd.Released)
         assertEquals(1, shared.slots.available())
@@ -59,7 +59,11 @@ class IngressTests {
     @Test
     fun aFactoryWithoutNativeMemoryDropsTheDatagramAndCountsIt() {
         val ingress = Ingress(q, testLoopMemory(copies = 0), BufferFactory.managed(), counts)
-        assertSame(Copy.Dropped, ingress.copy(datagram, 16))
+        assertSame(Copy.Dropped, ingress.copy(datagram, 16, FROM))
         assertEquals(1L, counts.datagramsDropped)
     }
 }
+
+private val FROM =
+    com.ditchoom.socket.quic
+        .PathKey(4, 443, 0L, 0x7F000001L)

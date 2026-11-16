@@ -341,6 +341,13 @@ class FfmQuicheApi private constructor(
     }
 
     // --- Path migration handles ---
+    private val hRequeuePath by lazy {
+        // ssize_t quiche_conn_requeue_path(conn, local, local_len, peer, peer_len) — patched-in export
+        downcall(
+            "quiche_conn_requeue_path",
+            FunctionDescriptor.of(JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_LONG, JAVA_INT),
+        )
+    }
     private val hConnProbePath by lazy {
         downcall(
             "quiche_conn_probe_path",
@@ -1081,6 +1088,14 @@ class FfmQuicheApi private constructor(
     override fun connSendAckEliciting(conn: QuicheConn): Int = (hSendAckEliciting.invokeExact(conn.handle) as Long).toInt()
 
     override fun connProbeNow(conn: QuicheConn): Int = (hProbeNow.invokeExact(conn.handle) as Long).toInt()
+
+    override fun connRequeuePath(
+        conn: QuicheConn,
+        localAddr: Long,
+        localLen: Int,
+        peerAddr: Long,
+        peerLen: Int,
+    ): Int = (hRequeuePath.invokeExact(conn.handle, localAddr, localLen, peerAddr, peerLen) as Long).toInt()
 
     override fun configSetInitialRtt(
         config: QuicheConfig,

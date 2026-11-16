@@ -3,12 +3,10 @@ package com.ditchoom.socket.quic.core.conn
 import com.ditchoom.socket.quic.QuicheConn
 import com.ditchoom.socket.quic.QuicheRecvInfo
 import com.ditchoom.socket.quic.QuicheSendInfo
-import com.ditchoom.socket.quic.SendTarget
 import com.ditchoom.socket.quic.StubQuicheApi
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
-import com.ditchoom.socket.quic.core.path.SinglePath
 import com.ditchoom.socket.quic.core.testing.FlightEvidenceRule
-import com.ditchoom.socket.quic.core.udp.SockAddr
+import com.ditchoom.socket.quic.core.testing.stubClientPaths
 import org.junit.Rule
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -36,7 +34,7 @@ class ReleaseTests {
                 }
             }
         val q = QuicheConnRef(api, QuicheConn(1L))
-        val path = SinglePath(q, SockAddr(0L, 0), SockAddr(0L, 0), SendTarget.ConnectedPeer)
+        val path = stubClientPaths(q)
         val release = Release(q)
         release.free(path)
         assertEquals(emptyList(), freed, "nothing asked for a release")

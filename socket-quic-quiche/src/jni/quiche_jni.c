@@ -652,6 +652,18 @@ JNIEXPORT jlong JNICALL JNI_FN(nConnProbeNow)(JNIEnv *env, jclass cls, jlong con
     return (jlong)quiche_conn_probe_now((quiche_conn *)(uintptr_t)conn);
 }
 
+JNIEXPORT jlong JNICALL JNI_FN(nConnRequeuePath)(
+    JNIEnv *env, jclass cls,
+    jlong conn, jlong local_addr, jint local_len,
+    jlong peer_addr, jint peer_len) {
+    /* The path carries nothing more: what it owes is resent from the active path (patched-in export).
+       Returns the number of frames moved or a negative quiche error code. */
+    return (jlong)quiche_conn_requeue_path(
+        (quiche_conn *)(uintptr_t)conn,
+        (const struct sockaddr *)(uintptr_t)local_addr, (socklen_t)local_len,
+        (const struct sockaddr *)(uintptr_t)peer_addr, (socklen_t)peer_len);
+}
+
 JNIEXPORT jint JNICALL JNI_FN(nConnClose)(
     JNIEnv *env, jclass cls,
     jlong conn, jboolean app, jlong err, jlong reason_addr, jint reason_len) {

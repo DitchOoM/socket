@@ -1,10 +1,13 @@
 package com.ditchoom.socket.quic.core.demux
 
 import com.ditchoom.socket.quic.PathKey
+import com.ditchoom.socket.quic.QUIC_ISSUED_CONN_ID_LEN
 import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.core.conn.Collected
+import com.ditchoom.socket.quic.core.conn.IssueIdsWork
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.Life
+import com.ditchoom.socket.quic.core.life.SpareId
 import com.ditchoom.socket.quic.core.observe.LoopOnly
 import com.ditchoom.socket.quic.core.observe.ServerCounts
 import com.ditchoom.socket.quic.core.sched.LoopPort
@@ -42,6 +45,7 @@ internal class Demux(
     private val counts: ServerCounts,
 ) {
     private val header = PacketHeader()
+    private val spareCid = CidRead()
     private val table = RouteTable<ServerPeer>()
     private val peers = ArrayList<ServerPeer>()
     private val life = ServerLife()
@@ -89,7 +93,12 @@ internal class Demux(
                 Collected.MoreWaiting -> if (out.room() == Room.Full) return Collected.MoreWaiting else continue
                 Collected.Everything, Collected.Abandoned -> Unit
             }
-            if (peer.conn.life() is Life.Ended) unroute(peer) else i++
+            if (peer.conn.life() is Life.Ended) {
+                unroute(peer)
+            } else {
+                issueIds(peer)
+                i++
+            }
         }
         when (life.step(clock.now(), unsettled())) {
             ServerStep.Serving -> Unit
@@ -145,10 +154,10 @@ internal class Demux(
         at: Nanos,
     ) {
         when (header.read(datagram, length)) {
-            Wire.Short, Wire.OtherV1 -> deliver(datagram, length, at)
+            Wire.Short, Wire.OtherV1 -> deliver(datagram, length, from, at)
             Wire.InitialV1 ->
                 when (val route = table.find(header.cid)) {
-                    is Route<ServerPeer> -> deliverTo(route.owner, datagram, length, at)
+                    is Route<ServerPeer> -> deliverTo(route.owner, datagram, length, from, at)
                     is RouteLink.End -> start(datagram, length, from, out, at)
                 }
             Wire.UnsupportedVersion ->
@@ -160,9 +169,10 @@ internal class Demux(
     private fun deliver(
         datagram: NativeBytes,
         length: Int,
+        from: PathKey,
         at: Nanos,
     ) = when (val route = table.find(header.cid)) {
-        is Route<ServerPeer> -> deliverTo(route.owner, datagram, length, at)
+        is Route<ServerPeer> -> deliverTo(route.owner, datagram, length, from, at)
         is RouteLink.End -> counts.unknownDropped()
     }
 
@@ -170,10 +180,11 @@ internal class Demux(
         peer: ServerPeer,
         datagram: NativeBytes,
         length: Int,
+        from: PathKey,
         at: Nanos,
     ) {
         counts.routedOne()
-        peer.conn.received(datagram, length, at)
+        peer.conn.received(datagram, length, from, at)
     }
 
     /** An Initial that names no connection: a new one, if the server takes it. */
@@ -235,7 +246,24 @@ internal class Demux(
         peer.routed(table.add(admission.newCid, peer), original)
         peer.listedAt(peers.size)
         peers.add(peer)
-        peer.conn.received(datagram, length, at)
+        peer.conn.received(datagram, length, from, at)
+    }
+
+    /**
+     * The ids [peer] may hand its own peer for a new path are routed here first, then handed to quiche inside the
+     * connection, so a datagram that carries one always finds its connection.
+     */
+    private fun issueIds(peer: ServerPeer) {
+        val wanted = peer.conn.idsWanted()
+        if (wanted == 0) return
+        val spare = ArrayList<SpareId>(wanted)
+        repeat(wanted) {
+            val id = admission.spareId()
+            spareCid.set(id.c0, id.c1, 0L, QUIC_ISSUED_CONN_ID_LEN)
+            peer.routedSpare(table.add(spareCid, peer))
+            spare.add(id)
+        }
+        peer.conn.submitFromLoop(IssueIdsWork(spare))
     }
 
     /** [peer] ended: its routes go, and its memory is released once nobody is inside it. */
@@ -248,6 +276,7 @@ internal class Demux(
             is Route<ServerPeer> -> table.remove(route)
             is RouteLink.End -> Unit
         }
+        peer.spareRoutes { table.remove(it) }
         when (peer.listing) {
             Listing.Listed -> {
                 val last = peers.removeAt(peers.size - 1)

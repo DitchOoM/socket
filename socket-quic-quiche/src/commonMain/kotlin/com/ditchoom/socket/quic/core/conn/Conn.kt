@@ -2,6 +2,7 @@
 
 package com.ditchoom.socket.quic.core.conn
 
+import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.Life
 import com.ditchoom.socket.quic.core.observe.ConnCounts
@@ -98,20 +99,24 @@ internal class Conn(
     }
 
     /**
-     * Loop thread: a datagram for this connection, at the start of [bytes], read in the receive phase that began [at];
-     * copied when a caller is inside. Every datagram of one phase shares [at], so a recording keeps them one receive
+     * Loop thread: a datagram for this connection from [from], at the start of [bytes], read in the receive phase that
+     * began [at]; copied when a caller is inside. Every datagram of one phase shares [at], so a recording keeps them one receive
      * pass: quiche has all of them before the connection sends.
      */
     fun received(
         bytes: NativeBytes,
         length: Int,
+        from: PathKey,
         at: Nanos,
     ) {
         when (touch()) {
-            LoopHold.In -> turn.receive(bytes, length, at)
-            LoopHold.Out -> copyForHolder(bytes, length)
+            LoopHold.In -> turn.receive(bytes, length, from, at)
+            LoopHold.Out -> copyForHolder(bytes, length, from)
         }
     }
+
+    /** Any thread: how many new connection ids the loop should route to this connection, taken once. */
+    fun idsWanted(): Int = turn.idsWanted()
 
     /** Loop thread, once or more per pass: serves the connection if the loop is inside, and leaves when done. */
     fun turn(out: SendBatch): Collected {
@@ -189,9 +194,10 @@ internal class Conn(
     private fun copyForHolder(
         bytes: NativeBytes,
         length: Int,
+        from: PathKey,
     ) {
         val work =
-            when (val copy = turn.copy(bytes, length)) {
+            when (val copy = turn.copy(bytes, length, from)) {
                 is CopiedWork -> copy
                 is Copy.Dropped -> return
             }

@@ -11,6 +11,7 @@ import com.ditchoom.socket.quic.core.edge.CoreServer
 import com.ditchoom.socket.quic.core.edge.EdgeEnd
 import com.ditchoom.socket.quic.core.edge.feedNetwork
 import com.ditchoom.socket.quic.core.edge.linkClassOf
+import com.ditchoom.socket.quic.core.edge.onMoveOf
 import com.ditchoom.socket.quic.core.loop.Loop
 import com.ditchoom.socket.quic.core.testing.VirtualClock
 import com.ditchoom.socket.quic.core.time.Nanos
@@ -83,7 +84,10 @@ internal class ConditionReplay(
             client.parts,
             { monitor.routeSource() },
             LOCALHOST,
+            onMoveOf(options.migration),
             coroutineContext.minusKey(Job),
+            // The link picks the moved socket's address itself; nothing here may leave the replay's thread.
+            { link.client },
         )
         val accepted = CompletableDeferred<Unit>()
         val serverApp = launch { echoBack(server, accepted) }
@@ -126,7 +130,11 @@ internal class ConditionReplay(
             outcomeOf(conditions, echoes, finish),
             echoes.toList(),
             link.reopens,
+            link.moves,
             link.clientSends.map { it.nanoseconds },
+            link.clientSizes.toList(),
+            link.serverSends.map { it.nanoseconds },
+            link.serverSizes.toList(),
             established.map { (it - ORIGIN).nanoseconds },
         )
     }

@@ -16,6 +16,18 @@ import com.ditchoom.socket.testkit.trace.TracePath
 import com.ditchoom.socket.testkit.trace.TraceSink
 import kotlin.time.Duration.Companion.nanoseconds
 
+/** A change of a connection's path, as its flight recording names it. */
+internal enum class PathMark {
+    /** The client's socket moved to a new local address and the path from it is probed. */
+    Moved,
+
+    /** The probed path was validated and the connection migrated to it. */
+    Migrated,
+
+    /** The client's socket moved, and the connection could not follow it. */
+    Refused,
+}
+
 /** How many records a connection's flight recording holds; their payload is kept in its loop's [FlightArena]. */
 internal class FlightSize(
     val records: Int,
@@ -66,6 +78,12 @@ internal class ConnFlight(
         now: Nanos,
         code: Int,
     ) = ring.event(FlightKind.NetworkEvent, now.value, code, 0, peerId, 0L, 0L)
+
+    /** The connection's path changed as [mark] says. */
+    fun path(
+        now: Nanos,
+        mark: PathMark,
+    ) = ring.event(FlightKind.QuichePathEvent, now.value, mark.ordinal, 0, peerId, 0L, 0L)
 
     fun ended(
         now: Nanos,
@@ -134,6 +152,10 @@ internal class ConnFlight(
             val kind = ring.kindAt(i)
             if (kind == FlightKind.NetworkEvent) {
                 emit.emit(TraceEvent.PathState(sinceOrigin(i), NetworkChange.entries[ring.subAt(i)].name, null, 0))
+                continue
+            }
+            if (kind == FlightKind.QuichePathEvent) {
+                emit.emit(TraceEvent.PathState(sinceOrigin(i), PathMark.entries[ring.subAt(i)].name, null, 0))
                 continue
             }
             if (kind != FlightKind.DatagramIn && kind != FlightKind.DatagramOut) continue

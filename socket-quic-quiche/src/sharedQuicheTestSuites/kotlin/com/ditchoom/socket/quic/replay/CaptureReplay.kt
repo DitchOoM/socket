@@ -719,7 +719,10 @@ private class CaptureReplay(
     }
 
     private fun noteOurState() {
-        if (established == Moment.Never && pair.established(ours)) established = Moment.At(now)
+        if (established == Moment.Never && pair.established(ours)) {
+            established = Moment.At(now)
+            if (schedule.idsAtEstablishment > 0) pair.issueSpareCids(ours, atMost = schedule.idsAtEstablishment)
+        }
         if (end == ConnectionEnd.Open) {
             end =
                 when (pair.ending(ours)) {

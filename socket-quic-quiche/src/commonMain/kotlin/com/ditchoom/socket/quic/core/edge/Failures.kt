@@ -136,6 +136,7 @@ internal fun closeReasonOf(end: ConnEnd): QuicCloseReason =
         is ConnEnd.ProcessingFailed -> QuicCloseReason.ByLocal(QuicError.ProcessingFailed)
         is ConnEnd.ServerClosed -> QuicCloseReason.ByLocal(QuicError.NoError)
         is ConnEnd.ServerClosedUnsettled -> QuicCloseReason.ByLocal(QuicError.ServerStoppedBeforeCloseSent)
+        is ConnEnd.NoUsablePath -> QuicCloseReason.ByLocal(QuicError.NoViablePath)
         is ConnEnd.SocketFailed, is ConnEnd.CallerFailed, is ConnEnd.LoopFailed, is ConnEnd.LoopStopped,
         is ConnEnd.NoErrorRecorded, is ConnEnd.Released, is ConnEnd.NetworkLost, is ConnEnd.LocalAddressGone,
         -> QuicCloseReason.Unspecified
@@ -207,7 +208,7 @@ private fun ConnEnd.circumstance(during: QuicCloseCircumstance): QuicCloseCircum
         is ConnEnd.Released -> QuicCloseCircumstance.Released
         is ConnEnd.ByPeer, is ConnEnd.ByLocal, is ConnEnd.IdleTimeout, is ConnEnd.HandshakeTimedOut,
         is ConnEnd.SocketFailed, is ConnEnd.LoopStopped, is ConnEnd.ServerClosed, is ConnEnd.NoErrorRecorded,
-        is ConnEnd.NetworkLost, is ConnEnd.LocalAddressGone, is ConnEnd.ServerClosedUnsettled,
+        is ConnEnd.NetworkLost, is ConnEnd.LocalAddressGone, is ConnEnd.ServerClosedUnsettled, is ConnEnd.NoUsablePath,
         -> during
     }
 
@@ -221,11 +222,12 @@ private fun ConnEnd.trace(): Trace =
                 is SocketFault.Unnamed -> Trace.Of(fault.thrown.throwable)
                 is SocketFault.Repeated -> Trace.Of(fault.thrown.throwable)
                 is SocketFault.ReopenRefused -> Trace.Of(fault.thrown.throwable)
+                is SocketFault.MoveRefused -> Trace.Of(fault.thrown.throwable)
                 is SocketFault.Closed -> Trace.None
             }
         is ConnEnd.ByPeer, is ConnEnd.ByLocal, is ConnEnd.IdleTimeout, is ConnEnd.HandshakeTimedOut,
         is ConnEnd.LoopStopped, is ConnEnd.ServerClosed, is ConnEnd.NoErrorRecorded, is ConnEnd.Released,
-        is ConnEnd.NetworkLost, is ConnEnd.LocalAddressGone, is ConnEnd.ServerClosedUnsettled,
+        is ConnEnd.NetworkLost, is ConnEnd.LocalAddressGone, is ConnEnd.ServerClosedUnsettled, is ConnEnd.NoUsablePath,
         -> Trace.None
     }
 

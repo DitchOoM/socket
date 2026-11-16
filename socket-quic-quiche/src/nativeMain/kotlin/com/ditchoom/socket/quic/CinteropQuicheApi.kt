@@ -72,6 +72,7 @@ import com.ditchoom.socket.quic.quiche.quiche_conn_probe_path
 import com.ditchoom.socket.quic.quiche.quiche_conn_readable
 import com.ditchoom.socket.quic.quiche.quiche_conn_recv
 import com.ditchoom.socket.quic.quiche.quiche_conn_recv_gaps
+import com.ditchoom.socket.quic.quiche.quiche_conn_requeue_path
 import com.ditchoom.socket.quic.quiche.quiche_conn_retire_dcid
 import com.ditchoom.socket.quic.quiche.quiche_conn_retired_scid_iter
 import com.ditchoom.socket.quic.quiche.quiche_conn_retired_scids
@@ -765,6 +766,21 @@ internal object CinteropQuicheApi : QuicheApi, QuicheRandomPin {
     override fun connSendAckEliciting(conn: QuicheConn): Int = quiche_conn_send_ack_eliciting(conn.handle.toCPointer()!!).toInt()
 
     override fun connProbeNow(conn: QuicheConn): Int = quiche_conn_probe_now(conn.handle.toCPointer()!!).toInt()
+
+    override fun connRequeuePath(
+        conn: QuicheConn,
+        localAddr: Long,
+        localLen: Int,
+        peerAddr: Long,
+        peerLen: Int,
+    ): Int =
+        quiche_conn_requeue_path(
+            conn.handle.toCPointer()!!,
+            localAddr.toCPointer()!!,
+            localLen.convert(),
+            peerAddr.toCPointer()!!,
+            peerLen.convert(),
+        ).toInt()
 
     override fun configSetInitialRtt(
         config: QuicheConfig,

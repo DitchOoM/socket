@@ -1338,6 +1338,14 @@ bool quiche_conn_is_handshake_confirmed(const quiche_conn *conn);
 // socket-quic-quiche/build.gradle.kts (patchQuicheProbeNowFfi).
 ssize_t quiche_conn_probe_now(quiche_conn *conn);
 
+// socket-requeue-path: the path at local/peer carries nothing more (a client's socket moved away from it); every
+// frame it still owes the peer is queued for retransmission on the active path now. Returns the number of frames
+// moved, or a negative quiche error (QUICHE_ERR_INVALID_STATE for the active path or no path at the 4-tuple). Added
+// by the marker-guarded source patch in socket-quic-quiche/build.gradle.kts (patchQuicheRequeuePathFfi).
+ssize_t quiche_conn_requeue_path(quiche_conn *conn,
+                                 const struct sockaddr *local, socklen_t local_len,
+                                 const struct sockaddr *peer, socklen_t peer_len);
+
 // socket-handshake-pto-ceiling: the RTT quiche assumes before its first sample, in nanoseconds (quiche's Rust
 // Config::set_initial_rtt, which its C API lacks); and the longest PTO interval while the handshake is unconfirmed,
 // in nanoseconds, 0 for none. Setting the ceiling re-arms the loss-detection timer. Added by the marker-guarded

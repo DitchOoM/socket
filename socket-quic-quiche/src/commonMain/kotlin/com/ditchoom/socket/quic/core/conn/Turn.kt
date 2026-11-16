@@ -1,17 +1,20 @@
 package com.ditchoom.socket.quic.core.conn
 
+import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.Ending
 import com.ditchoom.socket.quic.core.life.Life
 import com.ditchoom.socket.quic.core.life.LifeStep
+import com.ditchoom.socket.quic.core.life.SpareId
 import com.ditchoom.socket.quic.core.life.Tier
 import com.ditchoom.socket.quic.core.life.Tiers
 import com.ditchoom.socket.quic.core.life.errorCode
 import com.ditchoom.socket.quic.core.life.flightCode
 import com.ditchoom.socket.quic.core.observe.TraceSection
 import com.ditchoom.socket.quic.core.observe.traced
-import com.ditchoom.socket.quic.core.path.SinglePath
+import com.ditchoom.socket.quic.core.path.MoveAnswer
+import com.ditchoom.socket.quic.core.path.RecvFrom
 import com.ditchoom.socket.quic.core.sched.LoopPort
 import com.ditchoom.socket.quic.core.sched.Pushed
 import com.ditchoom.socket.quic.core.time.LoopClock
@@ -38,10 +41,7 @@ internal class Turn(
 ) {
     private val inside = Inside(c.streams, c.life, clock, port, this)
     private val runWork: (ConnWork) -> Unit = { runOne(it) }
-    private val path: SinglePath =
-        when (val p = c.slots.paths) {
-            is Paths.Single -> p.path
-        }
+    private val paths: Paths = c.slots.paths
 
     fun push(work: ConnWork): Pushed = c.inbox.push(work)
 
@@ -108,16 +108,20 @@ internal class Turn(
             Collected.Abandoned
         }
 
-    /** Inside: quiche reads a datagram at the start of [bytes]. */
+    /** Inside: quiche reads a datagram at the start of [bytes] that came [from]. */
     fun receive(
         bytes: NativeBytes,
         length: Int,
+        from: PathKey,
         now: Nanos,
     ) {
         if (c.life.view() is Life.Ended) return
         traced(TraceSection.ConnReceive) {
             try {
-                c.ingress.direct(bytes, length, path, now, c.flight)
+                when (val info = paths.recvFrom(from)) {
+                    is RecvFrom.Info -> c.ingress.direct(bytes, length, info.recvInfo, now, c.flight)
+                    is RecvFrom.TooManyAddresses -> c.ingress.refused()
+                }
             } catch (failure: Exception) {
                 fail(now, failure)
             }
@@ -128,14 +132,15 @@ internal class Turn(
     fun copy(
         bytes: NativeBytes,
         length: Int,
-    ): Copy = c.ingress.copy(bytes, length)
+        from: PathKey,
+    ): Copy = c.ingress.copy(bytes, length, from)
 
     /** Inside: the connection's deadline fell due. While unconfirmed, the handshake follows quiche's PTO expiries. */
     fun expire() {
         if (c.life.view() !is Life.Open) return
         c.timer.expire()
         when (c.handshake.confirmation()) {
-            Confirmation.Pending -> c.handshake.expired(path.read())
+            Confirmation.Pending -> c.handshake.expired(paths.read())
             Confirmation.Confirmed -> Unit
         }
     }
@@ -151,6 +156,21 @@ internal class Turn(
             NetworkStep.End -> finish(now, ConnEnd.LocalAddressGone)
         }
     }
+
+    /** Inside: a client's socket now leaves from [local]; a connection that cannot follow it ends ([follow]). */
+    fun moved(
+        now: Nanos,
+        local: PathKey,
+    ) = when (c.follow(now, local)) {
+        MoveAnswer.Following -> Unit
+        MoveAnswer.Refused -> finish(now, ConnEnd.LocalAddressGone)
+    }
+
+    /** Inside: the ids the loop routed to this server connection go to quiche. */
+    fun issue(spare: List<SpareId>) = c.slots.paths.issue(spare)
+
+    /** Any thread: how many new ids the loop should route to this connection, taken once. */
+    fun idsWanted(): Int = c.slots.paths.idsWanted()
 
     fun dump(sink: TraceSink) = c.flight.dump(sink)
 
@@ -175,7 +195,7 @@ internal class Turn(
     /** Inside for good, nobody else can enter: frees quiche's memory. */
     fun free(now: Nanos) {
         finish(now, ConnEnd.Released)
-        c.release.free(path)
+        c.release.free(paths)
     }
 
     private fun step(
@@ -185,27 +205,29 @@ internal class Turn(
         when (c.handshake.step(now)) {
             HandshakeStep.Handshaking -> Unit
             HandshakeStep.JustEstablished -> {
-                c.sink.established(c.handshake.report(now, path.read()))
+                c.sink.established(c.handshake.report(now, paths.read()))
+                paths.established()
                 streams()
             }
             HandshakeStep.Established -> streams()
             HandshakeStep.DeadlinePassed -> {
                 c.life.close(QuicError.NoError)
-                finish(now, ConnEnd.HandshakeTimedOut(c.handshake.progress(now, path.read())))
+                finish(now, ConnEnd.HandshakeTimedOut(c.handshake.progress(now, paths.read())))
                 return last(now, out)
             }
         }
         when (c.life.observe()) {
             LifeStep.Open -> Unit
             LifeStep.Closed -> {
-                finish(now, c.network.endOf(c.life.quicheEnd()))
+                finish(now, paths.endOf(c.network.endOf(c.life.quicheEnd())))
                 return last(now, out)
             }
         }
+        c.stepPaths(now)
         val wrote =
             when (val pacing = c.slots.pacing) {
-                is Pacing.Unpaced -> c.egress.write(out, path, now, c.flight)
-                is Pacing.ByQuiche -> c.egress.writePaced(out, path, now, pacing.pacer, c.flight)
+                is Pacing.Unpaced -> c.egress.write(out, paths, now, c.flight)
+                is Pacing.ByQuiche -> c.egress.writePaced(out, paths, now, pacing.pacer, c.flight)
             }
         return when (wrote) {
             Wrote.All -> Collected.Everything
@@ -236,7 +258,7 @@ internal class Turn(
         out: SendBatch,
     ): Collected {
         try {
-            c.egress.write(out, path, now, c.flight)
+            c.egress.write(out, paths, now, c.flight)
         } catch (late: Exception) {
             // quiche failed again while the connection is already ending: nothing more can go out.
         }

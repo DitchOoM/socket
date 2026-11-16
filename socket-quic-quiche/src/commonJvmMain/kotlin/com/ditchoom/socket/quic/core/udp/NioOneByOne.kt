@@ -96,6 +96,12 @@ internal class NioOneByOne(
 
     override fun reopen(): Reopened = cell.reopen()
 
+    override fun moveTo(bind: PathKey): Moved =
+        when (val address = bind.toInetSocketAddress()) {
+            null -> Moved.Unsupported
+            else -> cell.moveTo(address)
+        }
+
     override fun close(): SocketClosed {
         cell.load().close()
         return SocketClosed

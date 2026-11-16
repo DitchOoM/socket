@@ -379,6 +379,14 @@ fun downloadQuicheSource(
     // Export quiche_config_set_initial_rtt and a ceiling on the handshake's PTO interval, so the handshake's
     // retransmit gaps follow the caller's prior and growth rule. Idempotent, fails loudly on drift. See the KDoc.
     patchQuicheHandshakePtoCeiling(sourceDir)
+    // A path already validated is never failed by PATH_CHALLENGEs counted lost, and a connection left with no path
+    // closes with NO_VIABLE_PATH instead of no error. Applied after patchQuicheRetireDcidNoRelink, whose edit of
+    // the same branch it guards. Idempotent, fails loudly on drift. See the KDoc.
+    patchQuicheValidatedPathSurvivesProbeLoss(sourceDir)
+    // Export quiche_conn_requeue_path: a client that migrated away from a path whose socket is gone resends what that
+    // path had in flight now, from the active path. Applied after patchQuicheEvictedPathFramesRequeued, whose recovery
+    // methods it uses. Idempotent, fails loudly on drift. See the KDoc.
+    patchQuicheRequeuePathFfi(sourceDir)
 
     // Name the patch set this tree now carries. The tree outlives the run (CI caches it with a
     // prefix fallback), so a reader that compiles it outside these tasks checks this stamp rather
@@ -2022,6 +2030,200 @@ fun patchQuicheHandshakePtoCeiling(sourceDir: File) {
             """.trimMargin() + "\n",
     )
     logger.lifecycle("Patched quiche source: quiche_config_set_initial_rtt and quiche_conn_set_handshake_pto_ceiling FFI exports")
+}
+
+/**
+ * Export `quiche_conn_requeue_path`: every frame a path still owes the peer (in packets neither acknowledged nor
+ * declared lost, and lost frames not yet resent) is queued for retransmission on the active path, now.
+ *
+ * A client that migrates because its local address went away has nothing left on the old path: its socket is closed.
+ * quiche declares the old path's packets lost only by its own rules, by time against the largest acknowledged packet
+ * when the active path changes, and by the first acknowledgement of a later packet afterwards: what the old path sent
+ * after its last acknowledgement waits a round trip on the new path before it is resent. This hands it to the new path
+ * at once. PING, PATH_CHALLENGE and PATH_RESPONSE stay behind, as in [patchQuicheEvictedPathFramesRequeued], whose
+ * recovery methods this uses; the old path's packets stay counted in its own recovery, which no longer sends.
+ *
+ * Returns the number of frames moved, or a negative quiche error: `InvalidState` for the active path or no path at
+ * the 4-tuple. Marker-guarded and loud in both directions: a re-run returns, a moved anchor throws, and an upstream
+ * that exports the same throws.
+ */
+fun patchQuicheRequeuePathFfi(sourceDir: File) {
+    val marker = "socket-requeue-path"
+    val src = sourceDir.resolve("quiche/src")
+    val ffiRs = src.resolve("ffi.rs")
+    val libRs = src.resolve("lib.rs")
+    if (!ffiRs.exists() || !libRs.exists()) return
+    if (ffiRs.readText().contains(marker)) return
+    if (ffiRs.readText().contains("quiche_conn_requeue_path")) {
+        throw GradleException(
+            "$marker: quiche's ffi.rs already exports quiche_conn_requeue_path. DELETE patchQuicheRequeuePathFfi and " +
+                "its call site, and check the upstream signature against libs/quiche/include/quiche.h.",
+        )
+    }
+    val anchor = "    pub fn send_ack_eliciting(&mut self) -> Result<()> {\n"
+    val text = libRs.readText()
+    if (text.split(anchor).size != 2) {
+        throw GradleException(
+            "$marker: `${anchor.trim()}` not found exactly once in lib.rs: a quiche bump moved it. Re-fit " +
+                "patchQuicheRequeuePathFfi and re-verify with MigrationConditionTests.",
+        )
+    }
+    libRs.writeText(
+        text.replace(
+            anchor,
+            """
+            |    /// $marker: the path at `local`/`peer` will carry nothing more; what it still owes
+            |    /// the peer is resent from the active path. Returns how many frames moved.
+            |    pub fn socket_requeue_path(
+            |        &mut self, local: SocketAddr, peer: SocketAddr,
+            |    ) -> Result<usize> {
+            |        let pid = self
+            |            .paths
+            |            .path_id_from_addrs(&(local, peer))
+            |            .ok_or(Error::InvalidState)?;
+            |        let active = self.paths.get_active_path_id()?;
+            |        if pid == active {
+            |            return Err(Error::InvalidState);
+            |        }
+            |        let mut moved = 0;
+            |        for &epoch in packet::Epoch::epochs(
+            |            packet::Epoch::Initial..=packet::Epoch::Application,
+            |        ) {
+            |            let frames: Vec<frame::Frame> = self
+            |                .paths
+            |                .get_mut(pid)?
+            |                .recovery
+            |                .socket_take_outstanding_frames(epoch)
+            |                .into_iter()
+            |                .filter(|f| {
+            |                    !matches!(
+            |                        f,
+            |                        frame::Frame::Ping { .. } |
+            |                            frame::Frame::PathChallenge { .. } |
+            |                            frame::Frame::PathResponse { .. }
+            |                    )
+            |                })
+            |                .collect();
+            |            moved += frames.len();
+            |            self.paths
+            |                .get_mut(active)?
+            |                .recovery
+            |                .socket_requeue_lost_frames(epoch, frames);
+            |        }
+            |        Ok(moved)
+            |    }
+            |
+            |
+            """.trimMargin() + anchor,
+        ),
+    )
+    ffiRs.appendText(
+        "\n" +
+            """
+            |// $marker: the path at local/peer carries nothing more; resend what it owes from the active path.
+            |#[no_mangle]
+            |pub extern "C" fn quiche_conn_requeue_path(
+            |    conn: &mut Connection, local: &sockaddr, local_len: socklen_t,
+            |    peer: &sockaddr, peer_len: socklen_t,
+            |) -> ssize_t {
+            |    let local = std_addr_from_c(local, local_len);
+            |    let peer = std_addr_from_c(peer, peer_len);
+            |    match conn.socket_requeue_path(local, peer) {
+            |        Ok(moved) => moved as ssize_t,
+            |        Err(e) => e.to_c(),
+            |    }
+            |}
+            """.trimMargin() + "\n",
+    )
+    logger.lifecycle("Patched quiche source: quiche_conn_requeue_path FFI export")
+}
+
+/**
+ * Never fail a path that is already validated because PATH_CHALLENGEs sent on it were counted lost, and close a
+ * connection left with no usable path with `NO_VIABLE_PATH` (RFC 9000 §20.1) instead of with no error.
+ *
+ * `Path::on_loss_detection_timeout` counts a challenge lost when a loss timer passes its send time, and
+ * `probing_lost` is reset only by a PATH_RESPONSE. A response validates the path and removes only its own
+ * challenge: the others sent before it are counted lost at the next timer, and each count re-requests validation,
+ * so a fresh challenge goes out on the validated path. While the path's round trip is longer than its PTO (an uplink
+ * that holds datagrams for seconds), every one of those is counted too, and the third fails the path. When it was
+ * the active path no candidate is left, `on_timeout` calls `mark_closed()` with no error, and the connection ends
+ * unexplained while the path carries traffic.
+ *
+ * The edits: in `on_loss_detection_timeout`, a validated path forgets the challenges it counted instead of failing
+ * or re-probing; a path not yet validated is judged as before. In `on_timeout`, a connection with no path to switch
+ * to records the transport error `NO_VIABLE_PATH` (0x10) as its local error before it closes; it sends nothing, as
+ * before, since it has no path to send on.
+ *
+ * Reproduced by `ValidatedPathProbeLossTests`. Marker-guarded and loud: a re-run returns, a moved anchor throws.
+ */
+fun patchQuicheValidatedPathSurvivesProbeLoss(sourceDir: File) {
+    val marker = "socket-validated-path-survives-probe-loss"
+    val pathRs = sourceDir.resolve("quiche/src/path.rs")
+    val libRs = sourceDir.resolve("quiche/src/lib.rs")
+    if (!pathRs.exists() || !libRs.exists()) return
+    if (pathRs.readText().contains(marker)) return
+
+    fun replaceOnce(
+        file: File,
+        anchor: String,
+        replacement: String,
+    ) {
+        val text = file.readText()
+        if (text.split(anchor).size != 2) {
+            throw GradleException(
+                "$marker: `${anchor.trim().lines().first()}` not found exactly once in ${file.name}: a quiche bump or " +
+                    "a change to patchQuicheRetireDcidNoRelink moved it. Re-fit patchQuicheValidatedPathSurvivesProbeLoss " +
+                    "and re-verify with ValidatedPathProbeLossTests.",
+            )
+        }
+        file.writeText(text.replace(anchor, replacement))
+    }
+
+    replaceOnce(
+        pathRs,
+        """
+        |            if self.probing_lost >= crate::MAX_PROBING_TIMEOUTS ||
+        |                (is_server && self.max_send_bytes < crate::MIN_PROBING_SIZE)
+        |            {
+        |                self.on_failed_validation();
+        """.trimMargin(),
+        """
+        |            if self.validated() {
+        |                // $marker: the path's reachability is proven; a challenge
+        |                // that went unanswered is not evidence against it.
+        |                self.probing_lost = 0;
+        |                self.last_probe_lost_time = None;
+        |            } else if self.probing_lost >= crate::MAX_PROBING_TIMEOUTS ||
+        |                (is_server && self.max_send_bytes < crate::MIN_PROBING_SIZE)
+        |            {
+        |                self.on_failed_validation();
+        """.trimMargin(),
+    )
+    replaceOnce(
+        libRs,
+        """
+        |                // The connection cannot continue.
+        |                None => {
+        |                    self.mark_closed();
+        |                },
+        """.trimMargin(),
+        """
+        |                // The connection cannot continue.
+        |                None => {
+        |                    // $marker: say why.
+        |                    if self.local_error.is_none() {
+        |                        self.local_error = Some(ConnectionError {
+        |                            is_app: false,
+        |                            error_code: 0x10,
+        |                            reason: vec![],
+        |                        });
+        |                    }
+        |                    self.mark_closed();
+        |                },
+        """.trimMargin(),
+    )
+    logger.lifecycle("Patched quiche source: a validated path survives lost probes; no usable path closes with NO_VIABLE_PATH")
 }
 
 /**

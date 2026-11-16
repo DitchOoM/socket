@@ -91,6 +91,9 @@ internal class NwIo(
     /** The connection follows the device's paths itself: the same connection is the same endpoint. */
     override fun reopen(): Reopened = Reopened.SameEndpoint
 
+    /** A connection's local endpoint is Network.framework's to choose: moving it is a new connection. */
+    override fun moveTo(bind: PathKey): Moved = Moved.Unsupported
+
     override fun close(): SocketClosed {
         life.cancelled()
         connection.cancel()

@@ -7,6 +7,10 @@ import com.ditchoom.socket.quic.SendTarget
 import com.ditchoom.socket.quic.core.life.ConnLife
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.observe.ConnCounts
+import com.ditchoom.socket.quic.core.path.ClientPaths
+import com.ditchoom.socket.quic.core.path.IdIssuer
+import com.ditchoom.socket.quic.core.path.IdsWanted
+import com.ditchoom.socket.quic.core.path.ServerPaths
 import com.ditchoom.socket.quic.core.path.SinglePath
 import com.ditchoom.socket.quic.core.sched.Entrant
 import com.ditchoom.socket.quic.core.sched.LoopPort
@@ -19,6 +23,7 @@ import com.ditchoom.socket.quic.core.time.WakeSink
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 import com.ditchoom.socket.quic.core.udp.SockAddr
 import com.ditchoom.socket.quic.trace.TraceCapture
+import kotlin.random.Random
 
 /** The memory one connection is built with: what its loop's connections share, and its own ALPN scratch. */
 internal class ConnMemory(
@@ -28,11 +33,23 @@ internal class ConnMemory(
     val alpn: NativeBytes,
 )
 
+/** Which end of a connection this is, with what that end alone needs. */
+internal sealed interface ConnSide {
+    /** A client draws the ids it hands its peer from [ids]. */
+    class Client(
+        val ids: Random,
+    ) : ConnSide
+
+    /** A server hands its peer the ids its loop routes to it. */
+    data object Server : ConnSide
+}
+
 /** Where a connection's datagrams go and come from, and how it is recorded. */
 internal class ConnAddress(
     val peer: SockAddr,
     val local: SockAddr,
     val peerKey: PathKey,
+    val localKey: PathKey,
     val target: SendTarget,
 )
 
@@ -40,7 +57,7 @@ internal class ConnAddress(
 internal fun buildConn(
     rules: SlotRules,
     q: QuicheConnRef,
-    role: QuicRole,
+    side: ConnSide,
     address: ConnAddress,
     memory: ConnMemory,
     flight: FlightSize,
@@ -63,19 +80,43 @@ internal fun buildConn(
                 when (rules.ack) {
                     is AckRule.Immediate -> AckCadence.Immediate
                 },
-            paths = Paths.Single(SinglePath(q, address.peer, address.local, address.target)),
+            paths =
+                when (side) {
+                    is ConnSide.Client ->
+                        Paths.Client(
+                            ClientPaths(
+                                q,
+                                SinglePath(q, address.peer, address.local, address.target),
+                                memory.factory,
+                                IdIssuer(memory.factory),
+                                side.ids,
+                            ),
+                        )
+                    is ConnSide.Server ->
+                        Paths.Server(
+                            ServerPaths(
+                                q,
+                                SinglePath(q, address.peer, address.local, address.target),
+                                address.peerKey,
+                                address.localKey,
+                                memory.factory,
+                                IdIssuer(memory.factory),
+                                IdsWanted(),
+                            ),
+                        )
+                },
             resumption = Resumption.None,
             datagrams = Datagrams.Off,
         )
     val parts =
         ConnParts(
-            role = role,
+            role = side.role(),
             life = ConnLife(q),
             handshake = Handshake(q, rules.handshake, clock.now().value, memory.alpn),
-            streams = StreamTable(q, StreamIo(q), role),
+            streams = StreamTable(q, StreamIo(q), side.role()),
             timer = ConnTimer(q, port, WakeSink()),
             ingress = Ingress(q, memory.shared, memory.factory, counts),
-            egress = Egress(q),
+            egress = Egress(q, counts),
             release = Release(q),
             network = NetworkWatch(),
             flight = ConnFlight(flight, memory.shared.arena, address.peerKey, capture, clock.now().value),
@@ -85,3 +126,9 @@ internal fun buildConn(
         )
     return Conn(Turn(parts, clock, port), port, socket, clock, loopEntrant, counts)
 }
+
+private fun ConnSide.role(): QuicRole =
+    when (this) {
+        is ConnSide.Client -> QuicRole.Client
+        is ConnSide.Server -> QuicRole.Server
+    }

@@ -1,6 +1,7 @@
 package com.ditchoom.socket.quic.core.conn
 
-import com.ditchoom.socket.quic.core.path.SinglePath
+import com.ditchoom.socket.quic.core.path.ClientPaths
+import com.ditchoom.socket.quic.core.path.ServerPaths
 
 // One sealed type per concern. No members: decision sites are `when` in Turn.
 
@@ -17,8 +18,14 @@ internal sealed interface AckCadence {
 }
 
 internal sealed interface Paths {
-    class Single(
-        val path: SinglePath,
+    /** A client's socket moves when its local address does, and the connection migrates with it. */
+    class Client(
+        val paths: ClientPaths,
+    ) : Paths
+
+    /** A server follows a peer that moves. */
+    class Server(
+        val paths: ServerPaths,
     ) : Paths
 }
 

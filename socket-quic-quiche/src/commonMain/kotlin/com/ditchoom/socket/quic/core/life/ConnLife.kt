@@ -57,9 +57,10 @@ internal class ConnLife(
         if (q.api.connIsTimedOut(q.handle)) return ConnEnd.IdleTimeout
         val peer = q.api.connPeerError(q.handle)
         if (peer != null) return ConnEnd.ByPeer(peer)
-        val local = q.api.connLocalError(q.handle)
-        if (local != null) return ConnEnd.ByLocal(local)
-        return ConnEnd.NoErrorRecorded
+        val local = q.api.connLocalError(q.handle) ?: return ConnEnd.NoErrorRecorded
+        // quiche closes with NO_VIABLE_PATH when it has no path left to send on, and sends nothing.
+        if (local is QuicError.NoViablePath) return ConnEnd.NoUsablePath
+        return ConnEnd.ByLocal(local)
     }
 
     /** Starts quiche's close with [error]; the end is recorded when quiche reports the connection closed. */

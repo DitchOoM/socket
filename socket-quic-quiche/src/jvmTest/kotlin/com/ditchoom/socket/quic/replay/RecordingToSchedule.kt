@@ -44,6 +44,7 @@ internal object RecordingToSchedule {
         actions: List<RecordedAction> = emptyList(),
         peerApp: PeerApp = PeerApp.Reads,
         ourApp: OurApp = OurApp.Ignores,
+        idsAtEstablishment: Int = 0,
     ): Converted {
         val ourOut = outOf(ourRecording)
         val ourIn = inOf(ourRecording)
@@ -104,6 +105,7 @@ internal object RecordingToSchedule {
                 end = if (closedAt == null) ConnectionEnd.Open else ConnectionEnd.ClosedByUs(closedAt),
                 runsFor = ordered.maxOf { it.at },
                 tolerance = SendTimeTolerance(),
+                idsAtEstablishment = idsAtEstablishment,
             )
         return Converted.Schedule(schedule)
     }

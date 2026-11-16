@@ -4,7 +4,6 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
 import com.ditchoom.socket.quic.NextDue
 import com.ditchoom.socket.quic.PathKey
-import com.ditchoom.socket.quic.QuicRole
 import com.ditchoom.socket.quic.QuicStreamId
 import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.QuicheConn
@@ -13,11 +12,13 @@ import com.ditchoom.socket.quic.StubQuicheApi
 import com.ditchoom.socket.quic.core.conn.Conn
 import com.ditchoom.socket.quic.core.conn.ConnAddress
 import com.ditchoom.socket.quic.core.conn.ConnMemory
+import com.ditchoom.socket.quic.core.conn.ConnSide
 import com.ditchoom.socket.quic.core.conn.ConnSink
 import com.ditchoom.socket.quic.core.conn.ConnectReport
 import com.ditchoom.socket.quic.core.conn.FlightArena
 import com.ditchoom.socket.quic.core.conn.FlightSize
 import com.ditchoom.socket.quic.core.conn.LoopMemory
+import com.ditchoom.socket.quic.core.conn.Paths
 import com.ditchoom.socket.quic.core.conn.SlotRules
 import com.ditchoom.socket.quic.core.conn.buildConn
 import com.ditchoom.socket.quic.core.life.ConnEnd
@@ -26,6 +27,9 @@ import com.ditchoom.socket.quic.core.loop.Endpoint
 import com.ditchoom.socket.quic.core.loop.Loop
 import com.ditchoom.socket.quic.core.loop.Route
 import com.ditchoom.socket.quic.core.observe.ConnCounts
+import com.ditchoom.socket.quic.core.path.ClientPaths
+import com.ditchoom.socket.quic.core.path.IdIssuer
+import com.ditchoom.socket.quic.core.path.SinglePath
 import com.ditchoom.socket.quic.core.pool.FixedPool
 import com.ditchoom.socket.quic.core.ready.Poller
 import com.ditchoom.socket.quic.core.ready.SocketRef
@@ -43,6 +47,7 @@ import com.ditchoom.socket.quic.core.udp.SockAddr
 import com.ditchoom.socket.quic.trace.TraceCapture
 import kotlinx.coroutines.Runnable
 import java.nio.channels.DatagramChannel
+import kotlin.random.Random
 
 /** What a connection told its sink. */
 internal class RecordingSink : ConnSink {
@@ -103,8 +108,15 @@ internal fun testConn(
     buildConn(
         rules = rules,
         q = QuicheConnRef(api, QuicheConn(1L)),
-        role = QuicRole.Client,
-        address = ConnAddress(SockAddr(0L, 0), SockAddr(0L, 0), PathKey(4, 443, 0L, 0x7F000001L), target),
+        side = ConnSide.Client(Random(1)),
+        address =
+            ConnAddress(
+                SockAddr(0L, 0),
+                SockAddr(0L, 0),
+                PathKey(4, 443, 0L, 0x7F000001L),
+                PathKey(4, 50_000, 0L, 0x7F000001L),
+                target,
+            ),
         memory = ConnMemory(testLoopMemory(), BufferFactory.Default, nativeBytes(255)),
         flight = FlightSize(records = 512),
         capture = capture,
@@ -156,3 +168,18 @@ internal class ConnRig(
         return loop.pass(Nanos(at))
     }
 }
+
+/** A client's paths over [q], as a connect builds them, with every address zero. */
+internal fun stubClientPaths(
+    q: QuicheConnRef,
+    target: SendTarget = SendTarget.ConnectedPeer,
+): Paths =
+    Paths.Client(
+        ClientPaths(
+            q,
+            SinglePath(q, SockAddr(0L, 0), SockAddr(0L, 0), target),
+            BufferFactory.Default,
+            IdIssuer(BufferFactory.Default),
+            Random(1),
+        ),
+    )
