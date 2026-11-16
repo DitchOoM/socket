@@ -14,6 +14,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertSame
+import kotlin.test.assertTrue
 import kotlin.test.fail
 
 /**
@@ -68,7 +69,8 @@ class PrimaryPathSourceAddressTests {
                         "migration path has since #434 — `null` here is the unnamed bind that fix removed",
                 )
                 assertEquals("127.0.0.1", channel.localAddress.orNull()?.host)
-                assertEquals(listOf(DISCARD_PORT), opener.probes, "one route probe, stepped aside from the peer's port")
+                assertEquals(1, opener.probes.size, "one route probe")
+                assertTrue(PEER_PORT !in opener.probes, "the route probe stepped aside from the peer's port")
             } finally {
                 runCatching { channel.close() }
             }
@@ -244,11 +246,7 @@ class PrimaryPathSourceAddressTests {
          */
         private const val PEER_PORT = 9999
 
-        /** Same, for the contention suite: a peer port that is not the probe's own. */
         private const val UNUSED_PORT = 9998
-
-        /** RFC 863 discard — where [UdpSocketChannelFactory] points the route probe. */
-        private const val DISCARD_PORT = 9
 
         /** Sockets held to the peer while drawing. At 250, an unnamed draw loses ~1.5% of the time. */
         private const val HELD = 250

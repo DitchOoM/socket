@@ -34,47 +34,25 @@ import kotlin.test.fail
 import kotlin.time.Duration.Companion.milliseconds
 
 /**
- * Regression test for #547: two route probes must never be alive at the same time.
+ * Concurrent route probes never share a 4-tuple, without a lock.
  *
- * ## The mechanism
- *
- * [UdpSocketChannelFactory.routeSourceAddress] learns a path's source address by opening a probe
- * with an **unnamed** bind — it has to, it is learning the address it would otherwise name — and
- * every probe in the process aims at the same `peer.host:9`. Two probes alive at once can therefore
- * draw the same ephemeral port and form the same 4-tuple, and the second `connect` fails with
- * `EADDRINUSE`: measured at 4–5 lost per 32 000 with 64 threads probing back to back. Since #523 a
- * lost draw is `RouteProbeFailure.ProbeRefused` and fails the open — a migration retries, a connect
- * (#519) does not.
- *
- * A probe holds its socket for microseconds and sends nothing, so the fix is not to retry the draw
- * (a second draw can collide too, at p²) but to make the collision impossible: probes run one at a
- * time, process-wide. Socket 1 is closed before socket 2 binds, so the kernel is free to hand the
- * same ephemeral port out again and nothing is in the way. What serialising cannot reach — another
- * process's socket on the same `peer.host:9` — is a microsecond holder, and that collision is redrawn.
- *
- * ## Why this is measured as overlap and not as refusals
- *
- * The refusal rate is 1-in-thousands and needs a peer holding hundreds of sockets to reach even
- * that, so a test asserting "0 refused" at a runnable size passes against the defect by luck. The
- * single mechanism is *overlap* — a second probe open while a first is still open — and that is
- * countable exactly through the opener seam: the scripted opener below counts probes alive across
- * its `open`/`close` and remembers the high-water mark. 64 coroutines each probing 8 times, with a
- * suspension inside every probe window so the dispatcher has every chance to overlap them, must
- * report a high-water mark of exactly 1. Against `main` it reports tens.
- *
- * [aRealProbeStormLosesNoDraws] is the end-to-end measurement the issue made, kept small enough
- * for the ordinary suite and raised with `HUNT547_PROBES` when hunting; on its own it is the
- * instrument, not the regression guard.
+ * Every probe binds unnamed and aims at `peer.host:port`; two alive at once that aim at the same port
+ * can draw the same ephemeral source port and fail the second `connect` with `EADDRINUSE`. Each probe
+ * therefore takes its own [RouteProbePort], so probes alive together are distinct by construction.
+ * The scripted opener records the port of every probe alive at once; the real-socket arms run
+ * hundreds of probes in parallel and require every one to resolve.
  */
-class RouteProbeSerializationTests {
+class RouteProbeConcurrencyTests {
     /**
-     * Counts probes alive between `open` and `close`, and the most that were ever alive at once.
-     * `delay` inside the window is what turns "could overlap" into "will overlap" on a
-     * multi-threaded dispatcher, so the unpatched factory cannot pass by scheduling luck.
+     * Records the destination port of every probe. `delay` inside the window keeps the probes alive
+     * together on a multi-threaded dispatcher.
      */
     private class OverlapCountingOpener(
         private val peerPort: Int,
     ) : ConnectedUdpOpener {
+        val ports: MutableSet<Int> =
+            java.util.concurrent.ConcurrentHashMap
+                .newKeySet()
         private val alive = AtomicInteger(0)
         val highWater = AtomicInteger(0)
         val probes = AtomicInteger(0)
@@ -89,6 +67,7 @@ class RouteProbeSerializationTests {
         ): ConnectedDatagramChannel {
             if (remotePort == peerPort) fail("only the route probe is expected through this opener")
             probes.incrementAndGet()
+            ports += remotePort
             val now = alive.incrementAndGet()
             highWater.accumulateAndGet(now, ::maxOf)
             delay(PROBE_WINDOW)
@@ -122,33 +101,51 @@ class RouteProbeSerializationTests {
     }
 
     @Test
-    fun concurrentRouteProbesNeverOverlap() =
+    fun probesAliveTogetherAimAtDistinctPortsNeverThePeers() =
         runBlocking {
-            val peer = UdpSocket.resolve("127.0.0.1", PEER_PORT)
-            val opener = OverlapCountingOpener(peer.port)
-            val factory = factoryFor(peer, opener)
+            for (peerPort in listOf(PEER_PORT, 9, 20_000, 20_007, 24_096)) {
+                val peer = UdpSocket.resolve("127.0.0.1", peerPort)
+                val opener = OverlapCountingOpener(peer.port)
+                val factory = factoryFor(peer, opener)
 
-            val sources =
-                withContext(Dispatchers.Default) {
-                    (1..PROBERS)
-                        .map {
-                            async {
-                                (1..PROBES_EACH).map { factory.routeSourceAddress() }
-                            }
-                        }.awaitAll()
-                        .flatten()
-                }
+                val sources =
+                    withContext(Dispatchers.Default) {
+                        (1..PROBERS).map { async { factory.routeSourceAddress() } }.awaitAll()
+                    }
 
-            assertEquals(PROBERS * PROBES_EACH, opener.probes.get(), "every call must have probed")
-            sources.forEach { assertIs<RouteSource.Resolved>(it) }
-            assertEquals(
-                1,
-                opener.highWater.get(),
-                "${opener.highWater.get()} route probes were alive at once (#547): two probes alive at the same " +
-                    "instant draw from the same ephemeral range against the same peer.host:9 and can form the " +
-                    "same 4-tuple, which fails the second connect with EADDRINUSE and fails the open. A probe " +
-                    "sends nothing and lives for microseconds; they must run one at a time.",
-            )
+                sources.forEach { assertIs<RouteSource.Resolved>(it) }
+                assertEquals(PROBERS, opener.probes.get())
+                assertEquals(PROBERS, opener.ports.size, "probes alive together shared a destination port (peer $peerPort)")
+                assertTrue(peerPort !in opener.ports, "a probe aimed at the peer's own port $peerPort")
+            }
+        }
+
+    @Test
+    fun theProbePortRotationNeverYieldsThePeersPortAndIsOneToOne() {
+        for (avoiding in listOf(9, 19_999, 20_000, 20_001, 22_000, 24_095, 24_096, 24_097)) {
+            val ports = (1..RouteProbePort.SPAN).map { RouteProbePort.next(avoiding).number }
+            assertTrue(avoiding !in ports, "port $avoiding was handed out against itself")
+            assertEquals(ports.size, ports.toSet().size, "one rotation repeated a port (avoiding $avoiding)")
+        }
+    }
+
+    @Test
+    fun manyConcurrentRealProbesAllResolveOnLoopback() =
+        runBlocking {
+            for (host in listOf("127.0.0.1", "::1")) {
+                val peer = UdpSocket.resolve(host, PEER_PORT)
+                val factory = factoryFor(peer, ConnectedUdpOpener.Platform)
+                val outcomes =
+                    withContext(Dispatchers.Default) {
+                        (1..CONCURRENT_REAL).map { async { factory.routeSourceAddress() } }.awaitAll()
+                    }
+                val lost = outcomes.filterIsInstance<RouteSource.Unresolved>()
+                assertEquals(
+                    emptyList(),
+                    lost,
+                    "$host: ${lost.size} of ${outcomes.size} probes failed: " + lost.take(3).joinToString { it.reason.describe() },
+                )
+            }
         }
 
     /**
@@ -158,7 +155,7 @@ class RouteProbeSerializationTests {
      *
      * ```
      * HUNT547_PROBES=32000 ./gradlew :socket-quic-quiche:jvmTest \
-     *   --tests 'com.ditchoom.socket.quic.RouteProbeSerializationTests' --rerun
+     *   --tests 'com.ditchoom.socket.quic.RouteProbeConcurrencyTests' --rerun
      * ```
      */
     @Test
@@ -210,7 +207,7 @@ class RouteProbeSerializationTests {
     private fun collision() = UdpConnectException(UdpConnectError.AddressInUse(ERRNO_NOT_SURFACED))
 
     /**
-     * A probe's 4-tuple collides only with another process's socket on `peer.host:9`, a holder that
+     * A probe's 4-tuple collides only with another process's socket on `peer.host:port`, a holder that
      * lives for microseconds, so a collided probe draws again rather than failing the open.
      */
     @Test
@@ -268,7 +265,7 @@ class RouteProbeSerializationTests {
 
         /** The issue's own shape: 64 threads probing back to back. */
         const val PROBERS = 64
-        const val PROBES_EACH = 8
+        const val CONCURRENT_REAL = 256
 
         /** Long enough that two probes scheduled at once are certainly both inside it. */
         val PROBE_WINDOW = 2.milliseconds

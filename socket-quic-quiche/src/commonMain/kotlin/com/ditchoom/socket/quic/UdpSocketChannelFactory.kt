@@ -1,4 +1,4 @@
-@file:OptIn(ExperimentalDatagramApi::class)
+@file:OptIn(ExperimentalDatagramApi::class, ExperimentalAtomicApi::class)
 
 package com.ditchoom.socket.quic
 
@@ -10,9 +10,10 @@ import com.ditchoom.socket.udp.SocketAddressCodec
 import com.ditchoom.socket.udp.UdpConnectError
 import com.ditchoom.socket.udp.UdpConnectException
 import com.ditchoom.socket.udp.UdpSocket
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
+import kotlin.concurrent.atomics.AtomicInt
+import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.coroutines.cancellation.CancellationException
+import kotlin.jvm.JvmInline
 
 /**
  * Common [UdpChannelFactory] over `:socket-udp`. Opens every connected [UdpSocket.connect]
@@ -81,7 +82,7 @@ internal class UdpSocketChannelFactory(
      * not buy a connection either.** [RouteProbeFailure.ProbeRefused] is the same call to the same
      * address the real connect is about to make, differing only in a destination port a connected UDP
      * socket never contacts — no descriptor, a sandbox, no route refuse both, and the one refusal that
-     * is a *draw* rather than the environment is disjoint from the peer's paths (see [routeProbePort]).
+     * is a *draw* rather than the environment is disjoint from the peer's paths (see [RouteProbePort]).
      * [RouteProbeFailure.SourceAddressUnknown] is a state the primary open already fails on two
      * statements later, because quiche needs that address. And a [RouteProbeFailure.SourceAddressUnnamed]
      * source would be encoded into `quiche_connect`'s local sockaddr and `recv_info.to` for the
@@ -201,16 +202,7 @@ internal class UdpSocketChannelFactory(
      */
     internal suspend fun routeSourceAddress(): RouteSource {
         if (localEndpointSupport != LocalEndpointSupport.Bindable) return RouteSource.PlatformAssigned
-        // One probe alive at a time, process-wide. Every probe binds unnamed — it has to, it
-        // is learning the address it would otherwise name — and every probe aims at the same
-        // `peer.host:routeProbePort`, so two alive at once can draw the same ephemeral port and form
-        // the same 4-tuple; the second connect then fails EADDRINUSE and fails the open.
-        // A probe sends nothing and lives for
-        // microseconds, so serialising them costs nothing measurable and removes the collision
-        // instead of retrying past it: socket 1 is closed before socket 2 binds, and the kernel is
-        // free to hand the same port out again with nothing in the way. Process-wide rather than
-        // per-factory because the ephemeral range is per host, not per connection.
-        return routeProbeGate.withLock { probeRouteSource() }
+        return probeRouteSource()
     }
 
     /**
@@ -218,9 +210,9 @@ internal class UdpSocketChannelFactory(
      *
      * The no-retry argument in [openPrimaryChannel] is about **path** sockets, whose draw is blind to
      * the sockets this process already holds connected to [peer], so a redraw only squares the odds. A
-     * probe is different: probes are serialised process-wide and aim at [routeProbePort], disjoint from
-     * every path, so a probe's 4-tuple can only be held by *another process's* socket on the same
-     * `peer.host:routeProbePort` — a holder that lives for microseconds — and each draw is independent.
+     * probe is different: each probe aims at its own [RouteProbePort], disjoint from every path and from every
+     * probe alive alongside it, so a probe's 4-tuple can only be held by *another process's* socket on
+     * the same `peer.host:port` — a holder that lives for microseconds — and each draw is independent.
      * A lost draw would otherwise fail the whole open. Every other refusal is the environment and is
      * reported at once. When every draw collides, [RouteProbeFailure.ProbeRefused] carries the last
      * collision with the earlier ones suppressed.
@@ -230,7 +222,15 @@ internal class UdpSocketChannelFactory(
         var probe: ConnectedDatagramChannel? = null
         while (probe == null) {
             try {
-                probe = openChannel.open(peer.host, routeProbePort, null, 0, receiveBufferSize, recvBufferFactory)
+                probe =
+                    openChannel.open(
+                        peer.host,
+                        RouteProbePort.next(avoiding = peer.port).number,
+                        null,
+                        0,
+                        receiveBufferSize,
+                        recvBufferFactory,
+                    )
             } catch (cancellation: CancellationException) {
                 // Cancellation is not a route answer: swallowed into a refusal it would make a
                 // cancelled migration report a resolved-enough route and bind the wildcard.
@@ -263,30 +263,40 @@ internal class UdpSocketChannelFactory(
         }
     }
 
-    /**
-     * Where [routeSourceAddress] points its probe: any port [peer] does not use, so the probe's draw is
-     * disjoint from every path's. Both candidates are ports nothing answers on, which is incidental —
-     * a connected UDP socket sends nothing, so neither is contacted either way.
-     */
-    private val routeProbePort: Int =
-        if (peer.port == ROUTE_PROBE_PORT) ROUTE_PROBE_PORT_ALT else ROUTE_PROBE_PORT
-
     private companion object {
-        /** RFC 863 discard. */
-        const val ROUTE_PROBE_PORT = 9
-
-        /** RFC 862 echo — used only when [peer] is itself on [ROUTE_PROBE_PORT]. */
-        const val ROUTE_PROBE_PORT_ALT = 7
-
         /** Bounded draws for one route probe — see [probeRouteSource]. */
         const val ROUTE_PROBE_DRAWS = 4
+    }
+}
 
-        /**
-         * Serialises every route probe in the process — see [routeSourceAddress]. Held only across
-         * the probe's open, `getsockname` and close; never across a path's own open, which draws
-         * against a different destination port and cannot collide with a probe.
-         */
-        val routeProbeGate = Mutex()
+/**
+ * The destination port of one route probe. Probes alive together get distinct ports, so no two can
+ * form the same `(source, peer)` 4-tuple whatever ephemeral source port each draws, and no probe ever
+ * aims at the peer's own port, which the connection's paths contend for.
+ *
+ * A route is chosen by destination *address*, so the port does not change the source address the
+ * probe reports; a connected UDP socket sends nothing, so nothing is contacted either.
+ */
+@JvmInline
+internal value class RouteProbePort private constructor(
+    val number: Int,
+) {
+    internal companion object {
+        /** First port of the probe range; the range spans [SPAN] + 1 ports so one can be skipped. */
+        private const val FIRST = 20_000
+
+        /** Probes alive at once that are guaranteed distinct ports; more than any process holds in flight. */
+        const val SPAN = 4_096
+
+        private val sequence = AtomicInt(0)
+
+        /** The next probe port, in rotation and never [avoiding]. Lock-free: one atomic increment. */
+        fun next(avoiding: Int): RouteProbePort {
+            val index = (sequence.fetchAndAdd(1) and Int.MAX_VALUE) % SPAN
+            val port = FIRST + index
+            // Ports FIRST..FIRST+SPAN minus `avoiding`: shifting up past it keeps the map one-to-one.
+            return RouteProbePort(if (avoiding in FIRST..port) port + 1 else port)
+        }
     }
 }
 
