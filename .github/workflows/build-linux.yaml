@@ -768,6 +768,18 @@ jobs:
         with:
           test-launcher-jdk: "25"
 
+      # This job is the single Linux writer of the PR-scoped build cache (.github/actions/pr-build-cache,
+      # pull_request runs only). Main's gradle-linux entry has build-cache-1 pruned out
+      # (gradle-cache-prune) and the PR changes task keys anyway, so without this every run compiled
+      # cold (968 tasks, 104 from cache).
+      - name: Restore the PR's Gradle build cache
+        id: pr_bc
+        uses: ./.github/actions/pr-build-cache
+        with:
+          mode: restore
+          os: linux
+          lane: linux-checks
+
       # The seven defaults on the run-to-completion core's production sources. The self-test plants one
       # violation of each kind first, so a checker that stopped catching one fails here.
       - name: Seven defaults in the QUIC core
@@ -1239,6 +1251,15 @@ jobs:
       # gdb backtraces + the symbol-bearing JNI shim let us reconstruct the crash fully offline.
       # (The :socket-quic-quiche:jvmTest half of that story now uploads from the `quiche-jvm` job,
       # under test-reports-linux-quiche-jvm-<leg>; this artifact keeps its exact name.)
+      - name: Save the PR's Gradle build cache
+        uses: ./.github/actions/pr-build-cache
+        if: ${{ !cancelled() }}
+        with:
+          mode: save
+          os: linux
+          lane: linux-checks
+          restored-exact: ${{ steps.pr_bc.outputs.exact-hit }}
+
       - name: Upload test reports (on failure)
         if: ${{ failure() || cancelled() }}
         continue-on-error: true # an upload hiccup must not mask the failure it was capturing
