@@ -90,7 +90,8 @@ def parse(paths, since, until):
                 if word in ("CONNECTION-END", "CONNECTION-DEAD", "CONNECTION-ENDED"):
                     rm = CLOSE_REASON.search(rest)
                     reason = rm.group(1) if rm else rest[:80]
-                    if word != "CONNECTION-ENDED":  # ENDED repeats END for the same connection
+                    # ENDED repeats END, and END repeats DEAD, for the same connection: one end per connection.
+                    if word != "CONNECTION-ENDED" and not (ln.ends and t - ln.ends[-1][0] < 2000):
                         ln.ends.append((t, reason))
                     ln.events.append((t, word, reason))
                     continue
