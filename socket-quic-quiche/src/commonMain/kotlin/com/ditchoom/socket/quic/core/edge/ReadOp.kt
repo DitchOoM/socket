@@ -18,13 +18,8 @@ import com.ditchoom.socket.quic.core.stream.StreamTable
 import com.ditchoom.socket.quic.core.stream.Streams
 import com.ditchoom.socket.quic.core.stream.Waiter
 import com.ditchoom.socket.quic.core.udp.NativeBytes
-import kotlinx.coroutines.InternalCoroutinesApi
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.NonDisposableHandle
 import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.currentCoroutineContext
-import kotlin.coroutines.intrinsics.intercepted
-import kotlin.coroutines.intrinsics.suspendCoroutineUninterceptedOrReturn
 
 /** The buffer a read that found nothing keeps for its retry, already made into the answer the bytes will be: [ReadAnswer.Data]. */
 internal sealed interface Spare {
@@ -36,7 +31,7 @@ internal sealed interface Spare {
  * returned buffer. First runs as work inside the connection, then waits parked on its stream until data, its deadline,
  * its caller's cancellation or the connection's end.
  *
- * The connection lands the answer in the read's [ReadHand] and the caller makes the [ReadResult] on its own thread, so a
+ * The connection lands the answer in the read's [Hand] and the caller makes the [ReadResult] on its own thread, so a
  * parked read is answered without allocating. The caller's job is watched while it waits: a cancellation that comes
  * first resumes the caller at once and hands the read back to the connection, and a caller whose job is cancelled after
  * the answer frees the buffer it never returned.
@@ -53,29 +48,17 @@ internal class ReadOp(
     Waiter,
     Runnable {
     private var spare: Spare = Spare.None
-    private val hand = ReadHand()
+    private val hand = Hand<ReadAnswer>()
 
     // ---- the caller's side ----
 
-    /** The read's result once the connection answered it; a read answered while it ran in place does not suspend. */
-    suspend fun answer(): ReadResult =
-        when (val now = hand.load()) {
-            is ReadAnswer -> resultOf(now, currentCoroutineContext())
-            is ReadPhase.Out, is ReadPhase.Waiting -> awaitAnswer()
-        }
-
-    /** Waits for the answer, watching the caller's job for a cancellation while it does. */
-    @OptIn(InternalCoroutinesApi::class)
-    private suspend fun awaitAnswer(): ReadResult {
+    /**
+     * The read's result once the connection answered it; a read answered while it ran in place does not suspend. The
+     * caller's job is watched while the read waits.
+     */
+    suspend fun answer(): ReadResult {
         val context = currentCoroutineContext()
-        val watch = context[Job]?.invokeOnCompletion(onCancelling = true) { _ -> cancelled() } ?: NonDisposableHandle
-        val answer =
-            try {
-                suspendCoroutineUninterceptedOrReturn { caller -> hand.park(caller.intercepted()) }
-            } finally {
-                watch.dispose()
-            }
-        return resultOf(answer, context)
+        return resultOf(hand.await(context) { cancelled() }, context)
     }
 
     /** The cancelling thread: a read not answered yet is answered Cancelled and handed back to the connection. */
@@ -94,7 +77,7 @@ internal class ReadOp(
                 is Streams.Ended -> return connectionEnded(state.end)
                 is Streams.Open -> Unit
             }
-            if (hand.callerLeft()) return release()
+            if (hand.landed(ReadAnswer.Cancelled)) return release()
             val entry = inside.streams.entry(stream)
             if (attempt(inside.streams, entry) == Retry.Again) {
                 entry.parkReader(this)
@@ -105,7 +88,7 @@ internal class ReadOp(
     override fun retry(table: StreamTable): Retry {
         var answer = Retry.Settled
         guarded(::failed) {
-            if (hand.callerLeft()) {
+            if (hand.landed(ReadAnswer.Cancelled)) {
                 deadline.disarm()
                 return@guarded release()
             }

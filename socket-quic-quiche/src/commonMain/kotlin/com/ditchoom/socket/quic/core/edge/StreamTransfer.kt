@@ -14,8 +14,14 @@ import com.ditchoom.socket.quic.core.stream.StreamTable
 import com.ditchoom.socket.quic.core.stream.Streams
 import com.ditchoom.socket.quic.core.stream.Waiter
 import kotlinx.coroutines.CompletionHandler
+import kotlinx.coroutines.InternalCoroutinesApi
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonDisposableHandle
 import kotlinx.coroutines.Runnable
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.intrinsics.suspendCoroutineUninterceptedOrReturn
 
 /**
  * One direction of one typed stream: a single operation, made once and reused for every message, that moves bytes
@@ -25,8 +31,8 @@ import kotlinx.coroutines.suspendCancellableCoroutine
  * - a caller [acquire]s the buffer, works in it, and [arm]s the operation, which hands it to the connection;
  * - the connection runs the operation inside, in place on the caller's thread or on the loop's, and settles it, which
  *   hands the buffer back and resumes the caller, which has nothing to wait for when the operation already ran;
- * - a caller cancelled while the operation is out abandons it: the connection keeps the buffer until it has taken the
- *   operation back, and the next caller waits for that, suspended, never blocked.
+ * - a caller cancelled while the operation is out abandons it and is resumed at once: the connection keeps the buffer
+ *   until it has taken the operation back, and the next caller waits for that, suspended, never blocked.
  *
  * Closing the stream frees the buffer from inside the connection, after every operation that could still touch it.
  */
@@ -91,15 +97,19 @@ internal class StreamTransfer(
     /** Whether the operation already settled, so the caller has nothing to wait for. */
     fun isDone(): Boolean = phase.load() is Phase.Done
 
-    /** Suspends until the operation settles. */
+    /** Suspends until the operation settles; settling resumes the caller's own continuation and allocates nothing. */
+    @OptIn(InternalCoroutinesApi::class)
     suspend fun awaitDone() {
+        val context = currentCoroutineContext()
         // A settling thread that is slow to resume its waiter can resume the next operation's: the phase says it is over.
         while (phase.load() is Phase.Armed) {
-            suspendCancellableCoroutine<Unit> { cont ->
-                waiting.leave(cont)
-                cont.invokeOnCancellation(onCancel)
-                if (phase.load() !is Phase.Armed) waiting.resumeSelf(cont)
+            val watch = context[Job]?.invokeOnCompletion(onCancelling = true, handler = onCancel) ?: NonDisposableHandle
+            try {
+                suspendCoroutineUninterceptedOrReturn { caller -> waiting.park(caller) { phase.load() !is Phase.Armed } }
+            } finally {
+                watch.dispose()
             }
+            if (!context.isActive) raiseCancelled(context)
         }
     }
 
@@ -196,10 +206,16 @@ internal class StreamTransfer(
     }
 
     private fun settle(result: Outcome): Retry {
-        deadline.disarm()
+        endParking()
         outcome = result
         if (phase.moves(Phase.Armed, Phase.Done)) waiting.resumeWaiting()
         return Retry.Settled
+    }
+
+    /** The parking is over: its deadline is disarmed, and an expiry handed over already finds a later generation. */
+    private fun endParking() {
+        deadline.disarm()
+        generation++
     }
 
     private fun failed(failure: Exception) {
@@ -208,7 +224,10 @@ internal class StreamTransfer(
 
     /** The caller's call was cancelled while the operation was out. */
     private fun abandon() {
-        if (phase.moves(Phase.Armed, Phase.Abandoned)) conn.submit(withdraw, CallerPlace.HandToLoop)
+        if (phase.moves(Phase.Armed, Phase.Abandoned)) {
+            conn.submit(withdraw, CallerPlace.HandToLoop)
+            waiting.resumeWaiting()
+        }
     }
 
     private fun unpark(table: StreamTable) = table.entry(stream).unpark(this)
@@ -217,7 +236,7 @@ internal class StreamTransfer(
     private inner class Withdraw : ConnWork() {
         override fun run(inside: Inside) {
             unpark(inside.streams)
-            deadline.disarm()
+            endParking()
             takenBack(inside)
             acknowledge()
         }

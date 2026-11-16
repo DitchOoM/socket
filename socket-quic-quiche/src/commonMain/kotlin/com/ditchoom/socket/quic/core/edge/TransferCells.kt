@@ -8,6 +8,8 @@ import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.coroutines.Continuation
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.EmptyCoroutineContext
+import kotlin.coroutines.intrinsics.COROUTINE_SUSPENDED
+import kotlin.coroutines.intrinsics.intercepted
 import kotlin.coroutines.resume
 
 /** Who may touch a transfer's buffer. */
@@ -85,8 +87,24 @@ internal class WaiterCell {
 
     /** Takes [waiting] back, resuming it at once, when nothing settled it first. */
     fun resumeSelf(waiting: Continuation<Unit>) {
-        if (slot.compareAndSet(waiting, NoWaiter)) waiting.resume(Unit)
+        if (takeBack(waiting)) waiting.resume(Unit)
     }
+
+    /**
+     * The caller: leaves [caller], intercepted, for whoever settles next; returns at once, unsuspended, when [settled]
+     * says the wait is over and nothing took the waiter first.
+     */
+    inline fun park(
+        caller: Continuation<Unit>,
+        settled: () -> Boolean,
+    ): Any {
+        val resumable = caller.intercepted()
+        leave(resumable)
+        return if (settled() && takeBack(resumable)) Unit else COROUTINE_SUSPENDED
+    }
+
+    /** Takes [waiting] back unresumed; false when whoever settled took it first and resumes it. */
+    fun takeBack(waiting: Continuation<Unit>): Boolean = slot.compareAndSet(waiting, NoWaiter)
 
     /** Resumes whoever waits. */
     fun resumeWaiting() {
