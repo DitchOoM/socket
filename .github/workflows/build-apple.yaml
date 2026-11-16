@@ -349,13 +349,19 @@ jobs:
             linkFirst: "linkDebugTestIosSimulatorArm64"
             testArgs: "--max-workers=1 --continue"
             bootSimulator: "1"
+            # The one Apple job that SAVES the PR-scoped build cache (the pr-build-cache action);
+            # the other compiling shards restore it.
+            prCache: "ios-sim"
+            prCacheSave: "1"
           # tvOS and watchOS split apart: together they were 791-833s, the second-longest lane.
           # Neither has a quiche target (→ UnsupportedQuicEngine), so their QUIC suites skip
           # cleanly and what remains is mostly compile time, which parallelises well.
           - name: "tvOS simulator"
             tasks: "tvosSimulatorArm64Test"
+            prCache: "ios-sim"
           - name: "watchOS simulator"
             tasks: "watchosSimulatorArm64Test"
+            prCache: "ios-sim"
           # ktlint gets its OWN lane. It is ~400s
           # of work in its own right (measured: the ILP32 lane went 414s -> 813s the moment ktlint
           # landed on it). It depends on no native artifact and no test, so it parallelises freely.
@@ -370,6 +376,7 @@ jobs:
           # nothing else covers. Cheap: compile only, no link, no run.
           - name: "device-target compile (ILP32 guard)"
             tasks: "compileTestKotlinWatchosDeviceArm64 compileTestKotlinTvosArm64 compileTestKotlinIosArm64"
+            prCache: "ios-sim"
     steps:
       - uses: actions/checkout@v7
       # The marker every failure-capture window starts from, and a hang watchdog: at 52 minutes (the
@@ -388,6 +395,19 @@ jobs:
           trace-ring: ${{ matrix.shard.ring }}
       - uses: ./.github/actions/apple-quiche-env
         id: quiche_env
+
+      # The PR's own build cache on top of the base restore above (pull_request runs only): this PR's
+      # klibs from its previous run, so a push recompiles what it changed instead of the whole
+      # Kotlin/Native graph (iOS shard: 351 of 354 tasks executed cold, 35 min). Read by every shard
+      # that compiles; written by the iOS shard alone (the save step below).
+      - name: Restore the PR's Gradle build cache
+        id: pr_bc
+        if: ${{ matrix.shard.prCache != '' }}
+        uses: ./.github/actions/pr-build-cache
+        with:
+          mode: restore
+          os: macos
+          lane: ${{ matrix.shard.prCache }}
 
       # Picks the newest available iPhone, boots it and waits for boot to finish; the root build
       # reads IOS_SIMULATOR_BOOTED_UDID and runs the iOS tests inside it (standalone = false).
@@ -451,7 +471,17 @@ jobs:
       - uses: ./.github/actions/skip-inventory
         if: ${{ !cancelled() }}
 
-      # No cache saves here. The klib entry (`gradle-macos-kn-*`) and the Kotlin/Native toolchain
+      # The single Apple writer of the PR-scoped build cache, and only when its exact key missed.
+      - name: Save the PR's Gradle build cache
+        if: ${{ !cancelled() && matrix.shard.prCacheSave == '1' }}
+        uses: ./.github/actions/pr-build-cache
+        with:
+          mode: save
+          os: macos
+          lane: ${{ matrix.shard.prCache }}
+          restored-exact: ${{ steps.pr_bc.outputs.exact-hit }}
+
+      # No other cache saves here. The klib entry (`gradle-macos-kn-*`) and the Kotlin/Native toolchain
       # (`konan-macos-*`) are both written by native-deps-freshness.yaml's `cache-warm-apple`, a
       # scheduled run on main. This shard used to save both "on main", but on main it runs from
       # merged.yaml as `pull_request_target`, whose token cannot write caches: job 108256043120
