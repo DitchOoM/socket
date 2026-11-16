@@ -20,18 +20,23 @@ import java.nio.channels.DatagramChannel
  */
 @LoopOnly
 internal class NioOneByOne(
-    val channel: DatagramChannel,
+    first: DatagramChannel,
     sendViews: List<JdkBytes>,
     private val receiveViews: List<JdkBytes>,
     /** Destinations whose [InetSocketAddress] each lane keeps; a server with more peers than this converts again past it. */
     private val maxCachedTargets: Int = MAX_CACHED_TARGETS,
 ) : DatagramBatchIo {
     override val capability: BatchCapability = BatchCapability.OneByOne
+    private val cell = ChannelCell(first)
     private val sendBuffers: Array<ByteBuffer> = Array(sendViews.size) { sendViews[it].view.duplicate() }
     private val targets: Array<HashMap<PathKey, InetSocketAddress>> = Array(sendViews.size) { HashMap() }
     private var lastSender: Sender = Sender.None
 
+    /** The channel in use now; [reopen] replaces it. */
+    val channel: DatagramChannel get() = cell.load()
+
     override fun send(batch: SendBatch): SendBatchResult {
+        val channel = cell.load()
         val sendView: Buffer = sendBuffers[batch.lane]
         val cache = targets[batch.lane]
         for (n in 0 until batch.pending) {
@@ -54,7 +59,7 @@ internal class NioOneByOne(
                         }
                     }
                 } catch (e: IOException) {
-                    return SendBatchResult.Partial(n, udpErrorOf(e))
+                    return SendBatchResult.Partial(n, if (cell.replaced(channel)) UdpError.Replaced else udpErrorOf(e))
                 }
             if (written == 0) return SendBatchResult.Partial(n, UdpError.WouldBlock)
         }
@@ -62,6 +67,7 @@ internal class NioOneByOne(
     }
 
     override fun receive(into: ReceiveBatch): ReceiveBatchResult {
+        val channel = cell.load()
         var got = 0
         while (true) {
             val buffer = into.take()
@@ -86,10 +92,12 @@ internal class NioOneByOne(
         return if (got > 0) ReceiveBatchResult.Got else ReceiveBatchResult.Nothing
     }
 
-    override fun probe(): SocketProbe = if (channel.isOpen) SocketProbe.Open else SocketProbe.Closed
+    override fun probe(): SocketProbe = if (cell.load().isOpen) SocketProbe.Open else SocketProbe.Closed
+
+    override fun reopen(): Reopened = cell.reopen()
 
     override fun close(): SocketClosed {
-        channel.close()
+        cell.load().close()
         return SocketClosed
     }
 

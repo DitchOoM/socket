@@ -5036,6 +5036,8 @@ val stageCoreAndroidTests =
                 "edge/CoreBulkTransferTests.kt",
                 "edge/CorePacingClockTests.kt",
                 "edge/CoreNetworkFeedTests.kt",
+                "edge/HomeWatchTests.kt",
+                "loop/EndpointRehomeTests.kt",
                 "conn/ConnTests.kt",
                 "conn/ConnPacingTests.kt",
                 "loop/SharedClientLoopTests.kt",

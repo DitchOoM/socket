@@ -33,6 +33,7 @@ import com.ditchoom.socket.quic.trace.TraceCapture
 import com.ditchoom.socket.quic.traceRecorderFor
 import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.cancel
+import java.util.function.Supplier
 
 /**
  * One client connection's parts on its loop: its socket's batches and caller lanes, the connection, the endpoint that
@@ -50,14 +51,13 @@ internal class ClientParts(
         FixedPool(CALLER_LANES) { i ->
             CallerSend(i, SendBatch(w.memory.native(callerLimits.maxDatagrams * callerLimits.maxDatagramSize), callerLimits, lane = i + 1))
         }
-    private val io =
-        w.wrapIo(
-            NioOneByOne(
-                w.channel,
-                listOf(w.memory.jdk(send.storage)) + List(CALLER_LANES) { w.memory.jdk(lanes[it].batch.storage) },
-                w.running.receiveViews,
-            ),
+    private val nio =
+        NioOneByOne(
+            w.channel,
+            listOf(w.memory.jdk(send.storage)) + List(CALLER_LANES) { w.memory.jdk(lanes[it].batch.storage) },
+            w.running.receiveViews,
         )
+    private val io = w.wrapIo(nio)
     private val loop = w.running.loop
     private val socket = SendPort(io, loop.port, CallerLanes.Of(lanes), SocketDiedNotice(), loop.counts, loop.callerCounts)
     private val alpn = w.memory.native(MAX_ALPN)
@@ -112,11 +112,16 @@ internal class ClientParts(
         identity: QuicConnectionIdentity,
     ): CoreConnection = CoreConnection(conn, edge, factory, remote, identity, w.readPolicy, w.writePolicy, w.scope)
 
+    private val endpoint = Endpoint(SocketRef(Supplier { nio.channel }), io, socket, send, Route.Fixed(conn), released)
+
     /** The endpoint joins its loop and the connection's first flight goes out in the loop's next pass. */
     fun start() {
-        loop.place(Endpoint(SocketRef(w.channel), io, socket, send, Route.Fixed(conn), released))
+        loop.place(endpoint)
         conn.start()
     }
+
+    /** Any thread, after [start]: the socket is reopened on the network that carries its address now. */
+    fun rehome() = loop.rehome(endpoint)
 
     private companion object {
         const val MAX_BATCH = 64

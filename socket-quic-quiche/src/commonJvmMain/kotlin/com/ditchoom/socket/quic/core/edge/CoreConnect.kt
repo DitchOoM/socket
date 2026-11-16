@@ -65,7 +65,8 @@ internal class CoreClient(
  * completed. Setup that opens files, sockets and native libraries runs off the caller's thread, so a caller on a main
  * dispatcher is never blocked. The connection owns its socket, bound to the address the route to the peer leaves
  * from, and shares a loop thread, the one of [loops] with the fewest connections; the socket ends with the connection.
- * [wrapIo] may wrap the socket's batch interface, which a test uses to see which thread sends and receives.
+ * [wrapIo] may wrap the socket's batch interface, which a test uses to see which thread sends and receives;
+ * [routeSource] answers where the route to the peer leaves from, which a test uses to move it.
  */
 internal suspend fun coreConnect(
     host: String,
@@ -81,6 +82,7 @@ internal suspend fun coreConnect(
     loops: LoopSet = LoopSet.shared,
     buffers: SocketBuffers = SocketBuffers.Default,
     flight: FlightSize = CLIENT_FLIGHT,
+    routeSource: suspend (UdpSocketChannelFactory) -> RouteSource = { it.routeSourceAddress() },
 ): CoreClient =
     withContext(Dispatchers.IO) {
         val memory = EdgeMemory(factory)
@@ -101,6 +103,7 @@ internal suspend fun coreConnect(
                 loops,
                 buffers,
                 flight,
+                routeSource,
             ).also { connected = true }
         } finally {
             if (!connected) memory.freeAll()
@@ -123,12 +126,13 @@ private suspend fun connectOnThisThread(
     loops: LoopSet,
     buffers: SocketBuffers,
     flight: FlightSize,
+    routeSource: suspend (UdpSocketChannelFactory) -> RouteSource,
 ): CoreClient {
     val peer = UdpSocket.resolve(host, port)
     val codec = SocketAddressCodec(hostOsSockAddrLayout())
     val route = UdpSocketChannelFactory(peer, codec, factory, factory, MAX_DATAGRAM, LocalEndpointSupport.Bindable)
     val bindHost =
-        when (val source = route.routeSourceAddress()) {
+        when (val source = routeSource(route)) {
             is RouteSource.Resolved -> source.host
             is RouteSource.PlatformAssigned -> ANY_HOST
             is RouteSource.Unresolved -> raise(Raised.RouteUnresolved(source.reason), QuicCloseCircumstance.HandshakeFailed)
@@ -182,9 +186,9 @@ private suspend fun connectOnThisThread(
             QuicConnectionIdentity(QuicSessionId(scidHex), QuicWireConnectionId.Known(scidHex)),
         )
     val monitor = resolveNetworkMonitor(options.networkMonitor)
-    scope.feedNetwork(monitor, connection, route, local.address.hostAddress)
     wireClientConnectivityTap(options, built.capture, connection, monitor)
     built.start()
+    scope.feedNetwork(monitor, connection, built, { routeSource(route) }, local.address.hostAddress)
     var established = false
     try {
         withTimeout(timeout) { connection.established() }
