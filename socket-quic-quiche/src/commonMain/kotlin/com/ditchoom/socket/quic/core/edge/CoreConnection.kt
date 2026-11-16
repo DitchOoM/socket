@@ -29,6 +29,7 @@ import com.ditchoom.socket.testkit.trace.TraceSink
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.MainCoroutineDispatcher
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -130,12 +131,11 @@ internal class CoreConnection(
     internal suspend fun read(
         stream: QuicStreamId,
         deadline: Duration,
-    ): ReadResult =
-        suspendCancellableCoroutine { cont ->
-            val op = ReadOp(stream, OpDeadline(deadline), cont, conn, bufferFactory)
-            conn.submit(op, placeOf(cont.context))
-            if (cont.isActive) cont.invokeOnCancellation { op.withdraw() }
-        }
+    ): ReadResult {
+        val op = ReadOp(stream, OpDeadline(deadline), conn, bufferFactory)
+        conn.submit(op, placeOf(currentCoroutineContext()))
+        return op.answer()
+    }
 
     internal suspend fun write(
         stream: QuicStreamId,

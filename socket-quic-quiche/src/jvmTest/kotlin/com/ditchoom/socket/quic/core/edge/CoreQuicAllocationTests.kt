@@ -43,14 +43,14 @@ import kotlin.time.Duration.Companion.seconds
  *
  * The harness is built not to allocate on its own account: buffers come from `BufferFactory.network()`, whose pool turns
  * a result buffer into a reuse, and the caller's thread takes tasks from a bounded array queue, which allocates no node
- * per hand-off. What is left is what a call forces on any host: on the loop thread the [ReadResult.Data] box, the
- * completed-continuation state kotlinx keeps for a cancellable read and the hand-off task; on the caller's thread the
- * continuations of each suspend call, the operation object that carries a call into the connection, and, for a new
- * stream, its handle objects and the open's continuation. The counters repeat to within one percent across runs, so
- * both threads are gated. Run alone the loop thread measures about 48 and 83 bytes and the caller 740 and 1,900; after the
- * server tests in one JVM the shared call sites stop inlining and the same echoes measure about 49 and 86, and 750 and 1,920.
- * The gates leave a margin above that for JIT inlining that differs by JDK and host. The test holds 160 descriptors
- * first, so the JDK selector's boxed descriptor per wake (16 B, design 9.3) is in every run and the gates include it.
+ * per hand-off. What is left is what a call forces on any host, all of it on the caller's thread: the continuations of
+ * each suspend call, the operation object that carries a call into the connection, a parked read's wait and the watch on
+ * its caller's job, the [ReadResult.Data] box, and, for a new stream, its handle objects and the open's continuation. The
+ * loop answers a parked read without allocating, so its bytes do not depend on how often reads park; what it allocates is
+ * the connection's timer re-arms, 0 to 7 bytes per echo. The caller's counter repeats to within a few percent across
+ * runs: about 780 to 830 and 1,950 to 2,090 bytes on JDK 21 and 25. The gates leave a margin above that for JIT inlining
+ * that differs by JDK and host. The test holds 160 descriptors first, so the JDK selector's boxed descriptor per wake
+ * (16 B, design 9.3) is in every run and the gates include it.
  *
  * The bytes of objects whose class is in `com.ditchoom.socket.quic.core` are reported from a JFR allocation sample as
  * what the core itself allocates on the caller's thread. A sample is an estimate that swings by a factor of two between
@@ -66,8 +66,8 @@ class CoreQuicAllocationTests {
         measure("new stream per echo", NewStream, loopGate = loopGate(LOOP_GATE_NEW, JDK_LOOP_GATE_NEW), callerGate = CALLER_GATE_NEW)
 
     /**
-     * The loop's gate on this process's stack. The native stack boxes nothing (48 and 83 B/echo measured on macOS); the
-     * JDK stack, left on Windows only, adds the selector's boxed descriptor per wake (80 and 168 B/echo measured).
+     * The loop's gate on this process's stack. The native stack boxes nothing (under 8 B/echo measured on macOS); the
+     * JDK stack, left on Windows only, adds the selector's boxed descriptor per wake.
      */
     private fun loopGate(
         native: Int,
@@ -265,10 +265,10 @@ class CoreQuicAllocationTests {
     private companion object {
         const val CALLER_THREAD = "core-alloc-caller"
         const val TEST_CLASS = "com.ditchoom.socket.quic.core.edge.CoreQuicAllocationTests"
-        const val LOOP_GATE_ONE = 80
+        const val LOOP_GATE_ONE = 32
         const val JDK_LOOP_GATE_ONE = 130
         const val CALLER_GATE_ONE = 950
-        const val LOOP_GATE_NEW = 110
+        const val LOOP_GATE_NEW = 32
         const val JDK_LOOP_GATE_NEW = 260
         const val CALLER_GATE_NEW = 2_400
         const val PAYLOAD = 64
