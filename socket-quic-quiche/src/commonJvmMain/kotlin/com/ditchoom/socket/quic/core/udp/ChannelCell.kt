@@ -61,6 +61,7 @@ internal class ChannelCell(
             val receive = old.getOption(StandardSocketOptions.SO_RCVBUF)
             val send = old.getOption(StandardSocketOptions.SO_SNDBUF)
             old.close()
+            fresh.forbidFragmentation()
             fresh.setOption(StandardSocketOptions.SO_RCVBUF, receive)
             fresh.setOption(StandardSocketOptions.SO_SNDBUF, send)
             fresh.bind(local)

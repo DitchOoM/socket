@@ -74,7 +74,9 @@
 #define QN_SPEC_GSO_SEGMENTS 92 /* int32 out */
 #define QN_SPEC_GRO_WANT 96   /* int32 in: 1 = turn UDP_GRO on at open, and again at every reopen from this block */
 #define QN_SPEC_GRO_STATE 100 /* int32 out: 1 = on; 0 = off (not asked, or this platform has none); -QN_E* = refused */
-#define QN_SPEC_BYTES 104
+
+#define QN_SPEC_DF 104        /* int32 out: 0 = the socket sends with DF set (never fragments), else the QN_E* code of the refusal */
+#define QN_SPEC_BYTES 108
 
 /* Send record, one per datagram (QN_SEND_RECORD bytes): int32 length, then the target record at +8 (family 0 =
  * the connected peer). */
@@ -113,6 +115,8 @@ QN_EXPORT void qn_poller_close(int64_t poller);
 
 QN_EXPORT int32_t qn_udp_open(int64_t spec);
 QN_EXPORT int32_t qn_udp_capability(int32_t fd, int64_t spec);
+/* 1 when the socket's own option says it sets DF on its datagrams (the family's option), 0 when not, negated QN_E* on error. */
+QN_EXPORT int32_t qn_udp_dont_fragment(int32_t fd, int32_t family_of_socket);
 QN_EXPORT int64_t qn_udp_send(int32_t fd, int32_t family, int32_t mode, int64_t base, int32_t stride, int64_t records,
                               int32_t count, int32_t segments);
 QN_EXPORT int64_t qn_udp_recv(int32_t fd, int32_t mode, int64_t records, int32_t count, int32_t size);

@@ -33,6 +33,12 @@ nw_connection_t _Nullable nw_udp_create(
     const char * _Nonnull host,
     const char * _Nonnull port);
 
+// nw_udp_create, with DF set on every datagram (nw_ip_options_set_disable_fragmentation): one over the path's MTU is
+// refused instead of fragmented, as QUIC requires (RFC 9000 section 14).
+nw_connection_t _Nullable nw_udp_create_dont_fragment(
+    const char * _Nonnull host,
+    const char * _Nonnull port);
+
 // nw_udp_create, but the connection may only use an interface of [interface_type] (nw_interface_type_t:
 // 1=wifi, 2=cellular). With no such interface NW parks it `waiting` on an unsatisfied path.
 nw_connection_t _Nullable nw_udp_create_requiring(

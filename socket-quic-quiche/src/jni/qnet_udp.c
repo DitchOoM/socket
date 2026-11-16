@@ -107,6 +107,59 @@ static int32_t qn_gro_split(const uint8_t *data, int32_t total, int32_t gso, uin
     return n;
 }
 
+
+#if QN_KQUEUE && !defined(IPV6_DONTFRAG)
+#define IPV6_DONTFRAG 62 /* <netinet6/in6.h> exposes it only under __APPLE_USE_RFC_3542, which a caller's earlier include may have skipped */
+#endif
+
+/* RFC 9000 §14: a datagram is never fragmented by the sender's IP layer; one over the link's MTU is refused with
+ * EMSGSIZE, which is what path MTU discovery needs. Linux/Android: PROBE sets DF and ignores the kernel's cached
+ * PMTU, so only quiche's own discovery moves the size. Darwin: DONTFRAG. 0 when set, else the QN_E* code. */
+static int qn_set_dont_fragment(int fd, int family) {
+    int first = 0;
+#if QN_EPOLL
+    int probe = IP_PMTUDISC_PROBE;
+    if (setsockopt(fd, IPPROTO_IP, IP_MTU_DISCOVER, &probe, sizeof probe) < 0) first = qn_code(errno);
+    if (family == AF_INET6) {
+        int probe6 = IPV6_PMTUDISC_PROBE;
+        if (setsockopt(fd, IPPROTO_IPV6, IPV6_MTU_DISCOVER, &probe6, sizeof probe6) < 0 && first == 0) first = qn_code(errno);
+    }
+#else
+    int on = 1;
+    if (family == AF_INET6) {
+        /* A dual-stack socket sends IPv4-mapped datagrams with the IPv4 option; an IPv6-only kernel path may refuse it. */
+        if (setsockopt(fd, IPPROTO_IPV6, IPV6_DONTFRAG, &on, sizeof on) < 0) first = qn_code(errno);
+        setsockopt(fd, IPPROTO_IP, IP_DONTFRAG, &on, sizeof on);
+    } else if (setsockopt(fd, IPPROTO_IP, IP_DONTFRAG, &on, sizeof on) < 0) {
+        first = qn_code(errno);
+    }
+#endif
+    return first;
+}
+
+/* Reads the option back: 1 = DF is set on this socket's datagrams, 0 = not, negated QN_E* on error. */
+QN_EXPORT int32_t qn_udp_dont_fragment(int32_t fd, int32_t family_of_socket) {
+    int value = 0;
+    socklen_t len = sizeof value;
+#if QN_EPOLL
+    if (getsockopt(fd, IPPROTO_IP, IP_MTU_DISCOVER, &value, &len) < 0) return -qn_code(errno);
+    if (value != IP_PMTUDISC_PROBE && value != IP_PMTUDISC_DO) return 0;
+    if (family_of_socket == 6) {
+        len = sizeof value;
+        if (getsockopt(fd, IPPROTO_IPV6, IPV6_MTU_DISCOVER, &value, &len) < 0) return -qn_code(errno);
+        if (value != IPV6_PMTUDISC_PROBE && value != IPV6_PMTUDISC_DO) return 0;
+    }
+    return 1;
+#else
+    if (family_of_socket == 6) {
+        if (getsockopt(fd, IPPROTO_IPV6, IPV6_DONTFRAG, &value, &len) < 0) return -qn_code(errno);
+    } else if (getsockopt(fd, IPPROTO_IP, IP_DONTFRAG, &value, &len) < 0) {
+        return -qn_code(errno);
+    }
+    return value != 0;
+#endif
+}
+
 QN_EXPORT int32_t qn_udp_open(int64_t spec) {
     uint8_t *s = qn_at(spec);
     int32_t bind_family = qn_spec_int(spec, QN_SPEC_BIND);
@@ -125,6 +178,7 @@ QN_EXPORT int32_t qn_udp_open(int64_t spec) {
     int rcv = qn_spec_int(spec, QN_SPEC_RCVBUF), snd = qn_spec_int(spec, QN_SPEC_SNDBUF);
     if (rcv > 0) setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcv, sizeof rcv);
     if (snd > 0) setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &snd, sizeof snd);
+    qn_spec_put(spec, QN_SPEC_DF, qn_set_dont_fragment(fd, family));
     if (bind(fd, (struct sockaddr *)&bind_addr, bind_len) < 0) goto failed;
     if (qn_spec_int(spec, QN_SPEC_PEER) != 0) {
         socklen_t peer_len = qn_to_sockaddr(s + QN_SPEC_PEER, family, &peer_addr);

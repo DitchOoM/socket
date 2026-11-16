@@ -62,6 +62,26 @@ class NativeIoTests {
         }
 
     @Test
+    fun everySocketOpensWithDfSetAndSaysSo() =
+        listOf(V4_LOOPBACK, V6_LOOPBACK).forEach { host ->
+            val socket =
+                assertIs<NativeOpened.Opened>(
+                    NativeSocket.open(
+                        shim,
+                        native(NativeSocket.SPEC_BYTES),
+                        InetSocketAddress(host, 0).toPathKey(),
+                        SocketPeer.Unconnected,
+                        1 shl 20,
+                        1 shl 20,
+                        UdpBatching.Newest,
+                        BATCH,
+                    ),
+                ).socket
+            assertIs<DontFragment.Set>(socket.dontFragment, host)
+            socket.cell.close { fd -> shim.close(fd) }
+        }
+
+    @Test
     fun theKernelsBatchingIsProbedOnceAndReported() {
         val io = open(V4_LOOPBACK, SocketPeer.Unconnected, UdpBatching.Newest).io
         val described =

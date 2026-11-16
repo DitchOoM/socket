@@ -5,6 +5,7 @@ import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.RouteProbeFailure
 import com.ditchoom.socket.quic.core.loop.LoopIo
 import com.ditchoom.socket.quic.core.ready.SocketRef
+import com.ditchoom.socket.quic.core.udp.DontFragment
 import com.ditchoom.socket.quic.core.udp.JdkBacked
 import com.ditchoom.socket.quic.core.udp.JdkBytes
 import com.ditchoom.socket.quic.core.udp.NativeBytes
@@ -13,6 +14,7 @@ import com.ditchoom.socket.quic.core.udp.NioOneByOne
 import com.ditchoom.socket.quic.core.udp.SocketBuffers
 import com.ditchoom.socket.quic.core.udp.SocketPeer
 import com.ditchoom.socket.quic.core.udp.applyTo
+import com.ditchoom.socket.quic.core.udp.forbidFragmentation
 import com.ditchoom.socket.quic.core.udp.toPathKey
 import com.ditchoom.socket.quic.toInetSocketAddress
 import java.net.InetSocketAddress
@@ -22,6 +24,8 @@ import java.util.function.Supplier
 
 internal actual class JdkSocket(
     val channel: DatagramChannel,
+    /** Whether the channel sends with DF, as it was set at open. */
+    val dontFragment: DontFragment = DontFragment.NotOffered,
 )
 
 internal actual fun openJdkSocket(
@@ -34,6 +38,7 @@ internal actual fun openJdkSocket(
     var opened = false
     try {
         val granted = buffers.applyTo(channel)
+        val dontFragment = channel.forbidFragmentation()
         channel.bind(bind.toInetSocketAddress() ?: unresolved())
         when (peer) {
             is SocketPeer.Connected -> channel.connect(peer.peer.toInetSocketAddress() ?: unresolved())
@@ -43,7 +48,7 @@ internal actual fun openJdkSocket(
         val local = channel.localAddress
         if (local !is InetSocketAddress) unresolved()
         opened = true
-        return StackSocket.Jdk(JdkSocket(channel), io, SocketBound(local.toPathKey(), granted))
+        return StackSocket.Jdk(JdkSocket(channel, dontFragment), io, SocketBound(local.toPathKey(), granted))
     } finally {
         if (!opened) channel.close()
     }

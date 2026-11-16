@@ -232,6 +232,8 @@ static void gro_round_trip(int family) {
     CHECK(server >= 0, "gro server open %d", server);
     CHECK(qn_spec_int((int64_t)(uintptr_t)spec_b, QN_SPEC_GRO_STATE) == 1, "family %d: UDP_GRO state %d, want on", family,
           qn_spec_int((int64_t)(uintptr_t)spec_b, QN_SPEC_GRO_STATE));
+    CHECK(qn_spec_int((int64_t)(uintptr_t)spec_b, QN_SPEC_DF) == 0 && qn_udp_dont_fragment(server, family) == 1,
+          "family %d: a UDP_GRO socket has no DF", family);
     int client = open_socket(spec_a, family, spec_b + QN_SPEC_LOCAL);
     /* 16 datagrams of 1200 plus a short last one, twice, as UDP_SEGMENT groups, then one lone datagram. */
     int32_t sent_total = 0, lengths[256], got = 0, widest = 0;
@@ -467,11 +469,34 @@ static void poller(void) {
     qn_poller_close(p);
 }
 
+/* RFC 9000 section 14: every socket opens with DF set, read back from the kernel; where the link is smaller than the
+ * datagram, the send is refused instead of fragmented. */
+static void dont_fragment(void) {
+    for (int family = 4; family <= 6; family += 2) {
+        int fd = open_socket(spec_a, family, NULL);
+        CHECK(fd >= 0, "family %d: open %d", family, fd);
+        CHECK(qn_spec_int((int64_t)(uintptr_t)spec_a, QN_SPEC_DF) == 0, "family %d: open reported DF refused %d", family,
+              qn_spec_int((int64_t)(uintptr_t)spec_a, QN_SPEC_DF));
+        CHECK(qn_udp_dont_fragment(fd, family) == 1, "family %d: DF not set on the socket", family);
+#if QN_KQUEUE
+        /* lo0's MTU is 16384: a datagram over it is refused with DF, fragmented without. */
+        int server = open_socket(spec_b, family, NULL);
+        fill(0, 20000);
+        put_record(send_records + 8, family, rec_int(spec_b + QN_SPEC_LOCAL, 4), 0, family == 4 ? 0x7f000001 : 1);
+        int64_t r = qn_udp_send(fd, family, QN_IO_ONE, (int64_t)(uintptr_t)send_base, STRIDE, (int64_t)(uintptr_t)send_records, 1, 1);
+        CHECK((r & 0xffffffff) == 0 && ((r >> 32) & 0xffff) == QN_EMSGSIZE, "family %d: oversize send %llx", family, (long long)r);
+        qn_close(server);
+#endif
+        qn_close(fd);
+    }
+}
+
 int main(void) {
     send_base = calloc(SLOTS, STRIDE);
     for (int i = 0; i < 64; i++) recv_bufs[i] = calloc(1, 2048);
     gro_split();
     poller();
+    dont_fragment();
     int caps = 0;
     int probe = open_socket(spec_a, 6, NULL);
     caps = qn_udp_capability(probe, 0);
