@@ -12,8 +12,10 @@ import com.ditchoom.socket.quic.core.observe.LoopOnly
  * hands `qnet` the batch's own memory; a receive hands `qnet` the addresses of the pool buffers it took. `qnet`
  * answers how many datagrams went or came, exactly, and what stopped it.
  *
- * Receiving is the loop's alone; sending is safe from any thread, one thread per lane. A refused segmented send
- * steps the socket down to [BatchCapability.Multi] for good.
+ * Receiving is the loop's alone; sending is safe from any thread, one thread per lane. A socket with `UDP_GRO` on
+ * ([Receiving.Coalesced]) reads up to 64 KiB per call and `qnet` splits it into the batch's slots, so what is handed on
+ * is the datagrams as the sender sent them. A refused segmented send steps the socket down to [BatchCapability.Multi]
+ * for good.
  */
 @LoopOnly
 internal class NativeIo(
@@ -82,7 +84,7 @@ internal class NativeIo(
         val count = held.size
         val result =
             socket.cell.use(
-                call = { fd -> shim.udpRecv(fd, modeOf(mode.load()), receiveRecords.address, count, into.limits.maxDatagramSize) },
+                call = { fd -> readInto(fd, count, into.limits.maxDatagramSize) },
                 replacing = { 0L },
                 closed = { CLOSED },
             )
@@ -100,6 +102,17 @@ internal class NativeIo(
             else -> ReceiveBatchResult.Nothing
         }
     }
+
+    /** One `qnet` receive into the first [count] records: a coalescing socket's read is split into datagrams there. */
+    private fun readInto(
+        fd: Int,
+        count: Int,
+        size: Int,
+    ): Long =
+        when (val receiving = socket.receiving) {
+            is Receiving.Coalesced -> shim.udpRecvCoalesced(fd, receiveRecords.address, count, size, receiving.scratch.address)
+            is Receiving.PerDatagram -> shim.udpRecv(fd, modeOf(mode.load()), receiveRecords.address, count, size)
+        }
 
     override fun probe(): SocketProbe =
         socket.cell.use(

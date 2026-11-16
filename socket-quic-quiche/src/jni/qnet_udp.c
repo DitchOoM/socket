@@ -37,6 +37,48 @@ QN_EXPORT int32_t qn_udp_capability(int32_t fd, int64_t spec) {
     return caps;
 }
 
+/* UDP_GRO on when asked: 1 on, 0 not asked or this platform has none, -QN_E* when the kernel refused. */
+static int32_t qn_gro_enable(int fd, int32_t want) {
+#if QN_EPOLL
+    if (want == 0) return 0;
+    int on = 1;
+    if (setsockopt(fd, SOL_UDP, UDP_GRO, &on, sizeof on) < 0) return -qn_code(errno);
+    return 1;
+#else
+    (void)fd;
+    (void)want;
+    return 0;
+#endif
+}
+
+/* How many datagrams a coalesced read of `total` bytes holds when the kernel cut it every `gso` bytes (the last may be
+ * shorter). A read with no segment size, or one no longer than it, is one datagram; so is an empty one. */
+static int32_t qn_gro_count(int32_t total, int32_t gso) {
+    if (gso <= 0 || total <= gso) return 1;
+    return (int32_t)(((int64_t)total + gso - 1) / gso);
+}
+
+/* Splits one coalesced read into the slots of `recs` (QN_RECV_RECORD each: slot address in, length and source out), as
+ * many datagrams as fit `count`, each copied up to `size` bytes. Returns the datagrams written. */
+static int32_t qn_gro_split(const uint8_t *data, int32_t total, int32_t gso, uint8_t *recs, int32_t count,
+                            int32_t size, const struct sockaddr_storage *from) {
+    int32_t n = qn_gro_count(total, gso);
+    if (n > count) n = count;
+    for (int32_t i = 0; i < n; i++) {
+        uint8_t *rec = recs + (size_t)i * QN_RECV_RECORD;
+        int64_t address;
+        memcpy(&address, rec, 8);
+        int64_t start = (int64_t)i * (gso > 0 ? gso : total);
+        int32_t length = total - (int32_t)start;
+        if (gso > 0 && length > gso) length = gso;
+        if (length > size) length = size;
+        memcpy(qn_at(address), data + start, (size_t)length);
+        memcpy(rec + 8, &length, 4);
+        qn_from_sockaddr(from, rec + 16);
+    }
+    return n;
+}
+
 QN_EXPORT int32_t qn_udp_open(int64_t spec) {
     uint8_t *s = qn_at(spec);
     int32_t bind_family = qn_spec_int(spec, QN_SPEC_BIND);
@@ -74,6 +116,7 @@ QN_EXPORT int32_t qn_udp_open(int64_t spec) {
     memset(&local, 0, sizeof local);
     if (getsockname(fd, (struct sockaddr *)&local, &local_len) < 0) goto failed;
     qn_from_sockaddr(&local, s + QN_SPEC_LOCAL);
+    qn_spec_put(spec, QN_SPEC_GRO_STATE, qn_gro_enable(fd, qn_spec_int(spec, QN_SPEC_GRO_WANT)));
     qn_udp_capability(fd, spec);
     return fd;
 failed:
@@ -263,6 +306,76 @@ QN_EXPORT int64_t qn_udp_recv(int32_t fd, int32_t mode, int64_t records, int32_t
         qn_from_sockaddr(&from, rec + 16);
     }
     return qn_result(count, 0, 0);
+}
+
+#if QN_EPOLL
+/* The UDP_GRO segment size of a received message: 0 when the kernel did not coalesce it. The kernel writes an int; an
+ * older one wrote the 16 bits it had. */
+static int32_t qn_gro_segment_size(struct msghdr *h) {
+    for (struct cmsghdr *c = CMSG_FIRSTHDR(h); c != NULL; c = CMSG_NXTHDR(h, c)) {
+        if (c->cmsg_level != SOL_UDP || c->cmsg_type != UDP_GRO) continue;
+        size_t bytes = c->cmsg_len - CMSG_LEN(0);
+        if (bytes >= sizeof(int32_t)) {
+            int32_t v;
+            memcpy(&v, CMSG_DATA(c), sizeof v);
+            return v;
+        }
+        uint16_t v;
+        memcpy(&v, CMSG_DATA(c), sizeof v);
+        return v;
+    }
+    return 0;
+}
+#endif
+
+QN_EXPORT int64_t qn_udp_recv_coalesced(int32_t fd, int64_t records, int32_t count, int32_t size, int64_t scratch) {
+#if QN_EPOLL
+    if (count > QN_MAX_BATCH) count = QN_MAX_BATCH;
+    struct sockaddr_storage from;
+    union {
+        char buf[CMSG_SPACE(sizeof(int32_t))];
+        struct cmsghdr align;
+    } control;
+    struct iovec iov;
+    struct msghdr h;
+    ssize_t got;
+    if (count < QN_GRO_MAX_DATAGRAMS) {
+        /* Fewer free slots than a message may hold: look at the message without taking it, and leave it queued when
+         * its datagrams would not all fit. */
+        char one;
+        iov.iov_base = &one;
+        iov.iov_len = 1;
+        memset(&h, 0, sizeof h);
+        h.msg_iov = &iov;
+        h.msg_iovlen = 1;
+        h.msg_control = control.buf;
+        h.msg_controllen = sizeof control.buf;
+        do {
+            got = recvmsg(fd, &h, MSG_PEEK | MSG_TRUNC | MSG_DONTWAIT);
+        } while (got < 0 && errno == EINTR);
+        if (got < 0) return errno == EAGAIN || errno == EWOULDBLOCK ? 0 : qn_result(0, qn_code(errno), 0);
+        if (qn_gro_count((int32_t)got, qn_gro_segment_size(&h)) > count) return 0;
+    }
+    iov.iov_base = qn_at(scratch);
+    iov.iov_len = QN_GRO_SCRATCH_BYTES;
+    memset(&h, 0, sizeof h);
+    memset(&from, 0, sizeof from);
+    h.msg_iov = &iov;
+    h.msg_iovlen = 1;
+    h.msg_name = &from;
+    h.msg_namelen = sizeof from;
+    h.msg_control = control.buf;
+    h.msg_controllen = sizeof control.buf;
+    do {
+        got = recvmsg(fd, &h, MSG_DONTWAIT);
+    } while (got < 0 && errno == EINTR);
+    if (got < 0) return errno == EAGAIN || errno == EWOULDBLOCK ? 0 : qn_result(0, qn_code(errno), 0);
+    return qn_result(qn_gro_split(qn_at(scratch), (int32_t)got, qn_gro_segment_size(&h), qn_at(records), count, size, &from),
+                     0, 0);
+#else
+    (void)fd, (void)records, (void)count, (void)size, (void)scratch;
+    return qn_result(0, QN_ENOSYS, 0);
+#endif
 }
 
 /* The socket's pending error, cleared by reading it: 0 when it has none, a QN code otherwise; -QN_EBADF when the

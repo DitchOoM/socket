@@ -72,7 +72,9 @@
 #define QN_SPEC_LOCAL 64    /* record out */
 #define QN_SPEC_CAPS 88     /* int32 out: QN_CAP_* */
 #define QN_SPEC_GSO_SEGMENTS 92 /* int32 out */
-#define QN_SPEC_BYTES 96
+#define QN_SPEC_GRO_WANT 96   /* int32 in: 1 = turn UDP_GRO on at open, and again at every reopen from this block */
+#define QN_SPEC_GRO_STATE 100 /* int32 out: 1 = on; 0 = off (not asked, or this platform has none); -QN_E* = refused */
+#define QN_SPEC_BYTES 104
 
 /* Send record, one per datagram (QN_SEND_RECORD bytes): int32 length, then the target record at +8 (family 0 =
  * the connected peer). */
@@ -80,6 +82,11 @@
 /* Receive record, one per slot (QN_RECV_RECORD bytes): int64 buffer address (in), int32 length (out) at +8,
  * then the source record at +16. */
 #define QN_RECV_RECORD 40
+
+/* qn_udp_recv_coalesced: the scratch block one coalesced read lands in (a UDP_GRO message is at most 64 KiB), and the
+ * most datagrams such a message holds (the kernel's UDP_MAX_SEGMENTS). */
+#define QN_GRO_SCRATCH_BYTES 65600
+#define QN_GRO_MAX_DATAGRAMS 64
 
 /* Send/receive result: low 32 bits = datagrams taken or received; bits 32..47 = QN_E* code of the refusal that
  * stopped it (0 = none); bit 48 = UDP_SEGMENT refused by the device, the batch was sent without it. */
@@ -101,6 +108,12 @@ QN_EXPORT int32_t qn_udp_capability(int32_t fd, int64_t spec);
 QN_EXPORT int64_t qn_udp_send(int32_t fd, int32_t family, int32_t mode, int64_t base, int32_t stride, int64_t records,
                               int32_t count, int32_t segments);
 QN_EXPORT int64_t qn_udp_recv(int32_t fd, int32_t mode, int64_t records, int32_t count, int32_t size);
+/* Receive on a socket opened with QN_SPEC_GRO_WANT: one read of up to 64 KiB, which the kernel may have coalesced from
+ * many datagrams, is split into the receive records' slots exactly as separately received datagrams would be (each
+ * slot gets at most `size` bytes; each record carries the message's source). `scratch` is QN_GRO_SCRATCH_BYTES of
+ * caller memory. Takes nothing when the message's datagrams would not all fit the `count` slots: it stays queued. The
+ * result is qn_udp_recv's. Only Linux and Android coalesce; elsewhere this refuses with QN_ENOSYS. */
+QN_EXPORT int64_t qn_udp_recv_coalesced(int32_t fd, int64_t records, int32_t count, int32_t size, int64_t scratch);
 QN_EXPORT int32_t qn_udp_error(int32_t fd);
 QN_EXPORT int32_t qn_close(int32_t fd);
 

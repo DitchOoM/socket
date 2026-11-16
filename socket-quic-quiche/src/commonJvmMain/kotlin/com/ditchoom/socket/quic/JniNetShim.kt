@@ -69,6 +69,14 @@ internal object JniNetShim : NetShim {
         size: Int,
     ): Long = nUdpRecv(fd, mode, records, count, size)
 
+    override fun udpRecvCoalesced(
+        fd: Int,
+        records: Long,
+        count: Int,
+        size: Int,
+        scratch: Long,
+    ): Long = nUdpRecvCoalesced(fd, records, count, size, scratch)
+
     override fun udpError(fd: Int): Int = nUdpError(fd)
 
     override fun close(fd: Int): Int = nClose(fd)
@@ -132,6 +140,14 @@ internal object JniNetShim : NetShim {
         records: Long,
         count: Int,
         size: Int,
+    ): Long
+
+    @JvmStatic private external fun nUdpRecvCoalesced(
+        fd: Int,
+        records: Long,
+        count: Int,
+        size: Int,
+        scratch: Long,
     ): Long
 
     @JvmStatic private external fun nUdpError(fd: Int): Int

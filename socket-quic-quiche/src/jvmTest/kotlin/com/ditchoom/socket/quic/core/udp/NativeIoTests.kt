@@ -24,6 +24,9 @@ class NativeIoTests {
     private val owned = ArrayList<NativeBytes>()
     private val opened = ArrayList<NativeIo>()
 
+    /** The most datagrams one receive of the last [receiveAll] returned. */
+    private var widestRead = 0
+
     @AfterTest
     fun freeAll() {
         opened.forEach { it.close() }
@@ -71,6 +74,11 @@ class NativeIoTests {
         // Linux: every batched call is public.
         assertIs<BatchCapability.Segmented>(NativeSocket.capabilityOf(all, 64, UdpBatching.Newest, 64))
         assertIs<BatchCapability.Multi>(NativeSocket.capabilityOf(all, 64, UdpBatching.WithoutSegments, 64))
+        // A socket that coalesces its receives says so; one with no segmented send still receives segmented.
+        val coalescing = NativeSocket.capabilityOf(all, 64, UdpBatching.Newest, 64, Gro.On)
+        assertEquals(Gro.On, assertIs<BatchCapability.Segmented>(coalescing).receive)
+        val receiveOnly = assertIs<BatchCapability.Segmented>(NativeSocket.capabilityOf(1 or 4, 0, UdpBatching.Newest, 64, Gro.On))
+        assertIs<Gso.Off>(receiveOnly.send)
         assertIs<BatchCapability.Multi>(NativeSocket.capabilityOf(1, 0, UdpBatching.Newest, 64))
         assertIs<BatchCapability.OneByOne>(NativeSocket.capabilityOf(0, 0, UdpBatching.Newest, 64))
         assertIs<BatchCapability.OneByOne>(NativeSocket.capabilityOf(all, 64, UdpBatching.OneDatagramPerCall, 64))
@@ -79,6 +87,31 @@ class NativeIoTests {
         assertIs<BatchCapability.Multi>(NativeSocket.capabilityOf(darwin, 0, UdpBatching.Newest, 64))
         assertIs<BatchCapability.OneByOne>(NativeSocket.capabilityOf(darwin, 0, UdpBatching.PublicCallsOnly, 64))
         assertIs<BatchCapability.Segmented>(NativeSocket.capabilityOf(all, 64, UdpBatching.PublicCallsOnly, 64))
+    }
+
+    @Test
+    fun aSegmentedSendReachesAGroSocketAsTheDatagramsSentWithTheReceivePathReportingGro() {
+        val server = open(V4_LOOPBACK, SocketPeer.Unconnected, UdpBatching.Newest, GRO_SLOTS, GroMemory.Allocating { native(it) })
+        val client = open(V4_LOOPBACK, SocketPeer.Connected(server.local), UdpBatching.Newest, GRO_SLOTS)
+        if (!System.getProperty("os.name").startsWith("Linux")) {
+            // Only Linux and Android coalesce: elsewhere the socket says so and receives one datagram per message.
+            assertIs<GroSetup.Unavailable>(server.socket.gro)
+            assertIs<Receiving.PerDatagram>(server.socket.receiving)
+            return
+        }
+        assertIs<GroSetup.Enabled>(server.socket.gro)
+        assertIs<Receiving.Coalesced>(server.socket.receiving)
+        assertEquals(Gro.On, assertIs<BatchCapability.Segmented>(server.io.capability).receive)
+        // Two segmented groups of sixteen 1,200-byte datagrams each ending in a short one, then a lone datagram.
+        val sizes = List(2) { List(16) { 1200 } + 500 }.flatten() + 1200
+        val batch = sendBatch(GRO_SLOTS)
+        sizes.forEachIndexed { i, size -> batch.put(i, size, SendTarget.ConnectedPeer) }
+        assertEquals(SendBatchResult.AllTaken, client.io.send(batch))
+        val got = receiveAll(server.io, sizes.size, GRO_SLOTS)
+        assertEquals(sizes, got.map { it.first }, "lengths in order")
+        assertEquals(List(sizes.size) { it }, got.map { it.second }, "each datagram's own bytes")
+        assertEquals(client.local, got.first().third, "the source is the client")
+        assert(widestRead > 1) { "no read held more than one datagram: the kernel did not coalesce" }
     }
 
     private fun roundTrip(
@@ -100,12 +133,15 @@ class NativeIoTests {
     private class Opened(
         val io: NativeIo,
         val local: PathKey,
+        val socket: NativeSocket,
     )
 
     private fun open(
         host: String,
         peer: SocketPeer,
         ceiling: UdpBatching,
+        slots: Int = BATCH,
+        gro: GroMemory = GroMemory.None,
     ): Opened {
         val socket =
             assertIs<NativeOpened.Opened>(
@@ -117,15 +153,16 @@ class NativeIoTests {
                     1 shl 20,
                     1 shl 20,
                     ceiling,
-                    BATCH,
+                    slots,
+                    gro,
                 ),
             ).socket
-        val io = NativeIo(shim, socket, listOf(native(NativeIo.SEND_RECORD * BATCH)), native(NativeIo.RECV_RECORD * NativeIo.MAX_RECEIVE))
+        val io = NativeIo(shim, socket, listOf(native(NativeIo.SEND_RECORD * slots)), native(NativeIo.RECV_RECORD * NativeIo.MAX_RECEIVE))
         opened.add(io)
-        return Opened(io, socket.local)
+        return Opened(io, socket.local, socket)
     }
 
-    private fun sendBatch(): SendBatch = SendBatch(native(BATCH * DATAGRAM), BatchLimits(BATCH, DATAGRAM))
+    private fun sendBatch(slots: Int = BATCH): SendBatch = SendBatch(native(slots * DATAGRAM), BatchLimits(slots, DATAGRAM))
 
     /** Writes datagram [index] as [length] bytes of the value [index], so a torn or misplaced one shows. */
     private fun SendBatch.put(
@@ -142,14 +179,17 @@ class NativeIoTests {
     private fun receiveAll(
         io: NativeIo,
         expected: Int,
+        slots: Int = BATCH,
     ): List<Triple<Int, Int, PathKey>> {
-        val buffers = List(BATCH) { ReceiveBuffer(it, native(DATAGRAM)) }
-        val batch = ReceiveBatch(FixedPool(BATCH) { buffers[it] }, BatchLimits(BATCH, DATAGRAM))
+        widestRead = 0
+        val buffers = List(slots) { ReceiveBuffer(it, native(DATAGRAM)) }
+        val batch = ReceiveBatch(FixedPool(slots) { buffers[it] }, BatchLimits(slots, DATAGRAM))
         val got = ArrayList<Triple<Int, Int, PathKey>>()
         val until = System.nanoTime() + 5_000_000_000L
         while (got.size < expected && System.nanoTime() < until) {
             when (io.receive(batch)) {
-                is ReceiveBatchResult.Got ->
+                is ReceiveBatchResult.Got -> {
+                    widestRead = maxOf(widestRead, batch.count)
                     for (i in 0 until batch.count) {
                         val bytes = batch.bufferAt(i).bytes
                         val length = batch.lengthAt(i)
@@ -157,6 +197,7 @@ class NativeIoTests {
                         for (b in 0 until length) assertEquals(first, bytes.byteAt(b), "datagram ${got.size} is torn at $b")
                         got.add(Triple(length, first, batch.fromAt(i)))
                     }
+                }
                 is ReceiveBatchResult.Nothing -> Thread.sleep(1)
                 is ReceiveBatchResult.Failed -> Unit
             }
@@ -170,6 +211,7 @@ class NativeIoTests {
 
     private companion object {
         const val BATCH = 16
+        const val GRO_SLOTS = 64
         const val DATAGRAM = 1500
         const val V4_LOOPBACK = "127.0.0.1"
         const val V6_LOOPBACK = "::1"

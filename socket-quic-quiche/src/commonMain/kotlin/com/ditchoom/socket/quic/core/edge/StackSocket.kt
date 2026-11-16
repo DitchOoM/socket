@@ -10,6 +10,7 @@ import com.ditchoom.socket.quic.core.ready.SocketRef
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 import com.ditchoom.socket.quic.core.udp.Granted
 import com.ditchoom.socket.quic.core.udp.GrantedBuffers
+import com.ditchoom.socket.quic.core.udp.GroMemory
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 import com.ditchoom.socket.quic.core.udp.NativeIo
 import com.ditchoom.socket.quic.core.udp.NativeOpened
@@ -126,6 +127,7 @@ internal fun openStackSocket(
                         buffers.sendBytes,
                         ceiling,
                         maxDatagrams,
+                        GroMemory.Allocating { bytes -> memory.native(bytes) },
                     )
             ) {
                 is NativeOpened.Opened -> {

@@ -15,6 +15,7 @@ import com.ditchoom.socket.quic.qnet.qn_udp_capability
 import com.ditchoom.socket.quic.qnet.qn_udp_error
 import com.ditchoom.socket.quic.qnet.qn_udp_open
 import com.ditchoom.socket.quic.qnet.qn_udp_recv
+import com.ditchoom.socket.quic.qnet.qn_udp_recv_coalesced
 import com.ditchoom.socket.quic.qnet.qn_udp_send
 import kotlinx.cinterop.ExperimentalForeignApi
 
@@ -85,6 +86,14 @@ internal object CinteropNetShim : NetShim {
         count: Int,
         size: Int,
     ): Long = qn_udp_recv(fd, mode, records, count, size)
+
+    override fun udpRecvCoalesced(
+        fd: Int,
+        records: Long,
+        count: Int,
+        size: Int,
+        scratch: Long,
+    ): Long = qn_udp_recv_coalesced(fd, records, count, size, scratch)
 
     override fun udpError(fd: Int): Int = qn_udp_error(fd)
 

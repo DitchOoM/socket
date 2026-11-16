@@ -42,6 +42,8 @@ internal class FfmNetShim private constructor(
         )
     private val hUdpRecv =
         downcall("qn_udp_recv", FunctionDescriptor.of(JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT))
+    private val hUdpRecvCoalesced =
+        downcall("qn_udp_recv_coalesced", FunctionDescriptor.of(JAVA_LONG, JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_LONG))
     private val hUdpError = downcall("qn_udp_error", FunctionDescriptor.of(JAVA_INT, JAVA_INT))
     private val hClose = downcall("qn_close", FunctionDescriptor.of(JAVA_INT, JAVA_INT))
 
@@ -109,6 +111,14 @@ internal class FfmNetShim private constructor(
         count: Int,
         size: Int,
     ): Long = hUdpRecv.invokeExact(fd, mode, records, count, size) as Long
+
+    override fun udpRecvCoalesced(
+        fd: Int,
+        records: Long,
+        count: Int,
+        size: Int,
+        scratch: Long,
+    ): Long = hUdpRecvCoalesced.invokeExact(fd, records, count, size, scratch) as Long
 
     override fun udpError(fd: Int): Int = hUdpError.invokeExact(fd) as Int
 

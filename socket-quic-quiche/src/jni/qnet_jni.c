@@ -53,6 +53,11 @@ JNIEXPORT jlong JNICALL QN_JNI(nUdpRecv)(JNIEnv *env, jclass cls, jint fd, jint 
     return qn_udp_recv(fd, mode, records, count, size);
 }
 
+JNIEXPORT jlong JNICALL QN_JNI(nUdpRecvCoalesced)(JNIEnv *env, jclass cls, jint fd, jlong records, jint count, jint size,
+                                                    jlong scratch) {
+    return qn_udp_recv_coalesced(fd, records, count, size, scratch);
+}
+
 JNIEXPORT jint JNICALL QN_JNI(nUdpError)(JNIEnv *env, jclass cls, jint fd) { return qn_udp_error(fd); }
 
 JNIEXPORT jint JNICALL QN_JNI(nClose)(JNIEnv *env, jclass cls, jint fd) { return qn_close(fd); }
