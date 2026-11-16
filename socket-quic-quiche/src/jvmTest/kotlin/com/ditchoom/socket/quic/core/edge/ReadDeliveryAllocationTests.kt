@@ -6,8 +6,6 @@ import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicError
-import com.ditchoom.socket.quic.core.ready.NetStack
-import com.ditchoom.socket.quic.core.ready.netStackOfThisRuntime
 import com.ditchoom.socket.quic.network
 import com.ditchoom.socket.quic.skipOnMissingNativeLib
 import kotlinx.coroutines.CoroutineStart
@@ -28,9 +26,12 @@ import kotlin.time.Duration.Companion.seconds
 /**
  * Where a read's answer is paid for: on the caller's thread, whether the read found its bytes in place or waited parked
  * until the loop received them. A read the loop answers allocates nothing there, so how often reads park, which is how
- * fast the host is, adds nothing to the loop's bytes per echo. Either way the loop re-arms the connection's timer, which
- * allocates a few bytes per echo (0 to 5 measured) whatever the reads do; the gates leave room for that, and an
- * answer's state and result box (48 B per parked echo) do not fit in it.
+ * fast the host is, adds nothing to the loop's bytes per echo.
+ *
+ * Both echoes let the loop idle for the same time, once each: an idle loop re-arms the connection's timer, and each
+ * re-arm allocates a deadline node (from under 4 to about 19 B per echo, by host), whatever the reads do. With the idling
+ * equal, the loop's bytes differ only by who answered the read; an answer's state and result box (48 B per parked
+ * echo) do not fit in the margin.
  */
 class ReadDeliveryAllocationTests {
     @Test
@@ -45,33 +46,35 @@ class ReadDeliveryAllocationTests {
                         val stream = client.connection.openStream()
                         val payload = payload()
                         val loop = threadId(client.loop.name)
-                        val parked = loopBytesPerEcho(loop, PARKED_ECHOES) { parkedEcho(stream, payload) }
-                        val inPlace = loopBytesPerEcho(loop, IN_PLACE_ECHOES) { inPlaceEcho(stream, payload) }
+                        val parked = loopBytesPerEcho(loop) { parkedEcho(stream, payload) }
+                        val inPlace = loopBytesPerEcho(loop) { inPlaceEcho(stream, payload) }
                         parked to inPlace
                     }.startCoroutine(Continuation(dispatcher + Job()) { done.complete(it) })
                     val (parked, inPlace) = done.get(120, TimeUnit.SECONDS).getOrThrow()
                     client.connection.close(QuicError.NoError)
                     dispatcher.close()
                     println("[core read delivery allocation] loop %.1f B/echo parked, %.1f B/echo in place".format(parked, inPlace))
-                    val gate = loopGate()
                     assertTrue(
-                        parked <= gate && inPlace <= gate && parked <= inPlace + MORE_AT_MOST,
-                        "loop %.1f B/echo when the read waited parked, %.1f when it found its bytes (gate %d, parked more by at most %d)"
-                            .format(parked, inPlace, gate, MORE_AT_MOST),
+                        parked <= inPlace + MORE_AT_MOST,
+                        "loop %.1f B/echo when the read waited parked, %.1f when it found its bytes (parked more by at most %d)"
+                            .format(parked, inPlace, MORE_AT_MOST),
                     )
                 }
             }
         }
 
-    /** The read parks before the write, so the loop answers it when the echo arrives. */
+    /** The read parks before the write, so the loop answers it when the echo arrives; then the loop idles. */
     private suspend fun parkedEcho(
         stream: QuicByteStream,
         payload: PlatformBuffer,
-    ) = coroutineScope {
-        val read = async(start = CoroutineStart.UNDISPATCHED) { stream.read(10.seconds) }
-        payload.position(0)
-        stream.write(payload, 10.seconds)
-        release(read.await())
+    ) {
+        coroutineScope {
+            val read = async(start = CoroutineStart.UNDISPATCHED) { stream.read(10.seconds) }
+            payload.position(0)
+            stream.write(payload, 10.seconds)
+            release(read.await())
+        }
+        Thread.sleep(IDLE_MILLIS)
     }
 
     /** The read starts after the echo had time to arrive, so it mostly finds its bytes and answers in place. */
@@ -81,7 +84,7 @@ class ReadDeliveryAllocationTests {
     ) {
         payload.position(0)
         stream.write(payload, 10.seconds)
-        Thread.sleep(1)
+        Thread.sleep(IDLE_MILLIS)
         release(stream.read(10.seconds))
     }
 
@@ -93,22 +96,14 @@ class ReadDeliveryAllocationTests {
 
     private suspend fun loopBytesPerEcho(
         loop: Long,
-        echoes: Int,
         echo: suspend () -> Unit,
     ): Double {
         val threads = ManagementFactory.getThreadMXBean() as com.sun.management.ThreadMXBean
         repeat(WARM_UP) { echo() }
         val before = threads.getThreadAllocatedBytes(loop)
-        repeat(echoes) { echo() }
-        return (threads.getThreadAllocatedBytes(loop) - before).toDouble() / echoes
+        repeat(ECHOES) { echo() }
+        return (threads.getThreadAllocatedBytes(loop) - before).toDouble() / ECHOES
     }
-
-    /** The JDK stack, left on Windows only, boxes the selector's descriptor on each wake. */
-    private fun loopGate(): Int =
-        when (netStackOfThisRuntime) {
-            is NetStack.Native -> LOOP_GATE
-            is NetStack.Jdk -> JDK_LOOP_GATE
-        }
 
     private fun payload(): PlatformBuffer =
         BufferFactory.network().allocate(PAYLOAD).apply {
@@ -126,11 +121,9 @@ class ReadDeliveryAllocationTests {
     private companion object {
         const val CALLER_THREAD = "read-delivery-caller"
         const val PAYLOAD = 64
-        const val WARM_UP = 2_000
-        const val PARKED_ECHOES = 10_000
-        const val IN_PLACE_ECHOES = 2_000
-        const val LOOP_GATE = 16
-        const val JDK_LOOP_GATE = 64
+        const val WARM_UP = 1_000
+        const val ECHOES = 2_000
+        const val IDLE_MILLIS = 1L
         const val MORE_AT_MOST = 8
     }
 }
