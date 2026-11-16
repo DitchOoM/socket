@@ -73,7 +73,7 @@ jobs:
           github-token: ${{ github.token }}
       - name: Build the endpoint jar
         run: ./gradlew :socket-quic-quiche:quicInteropJar -PappleTargets=false --no-configuration-cache
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: stable
           cache: false
@@ -130,7 +130,7 @@ jobs:
           xcrun simctl boot "$UDID" || true # already booted is fine
           xcrun simctl bootstatus "$UDID" -b
           echo "IOS_SIMULATOR_BOOTED_UDID=$UDID" >> "$GITHUB_ENV"
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: stable
           cache: false
@@ -181,7 +181,7 @@ jobs:
           github-token: ${{ github.token }}
       - name: Build the endpoint jar
         run: ./gradlew :socket-quic-quiche:quicInteropJar --no-configuration-cache
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: stable
           cache: false
@@ -210,7 +210,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           pattern: interop-results-native-*
           path: interop-results
