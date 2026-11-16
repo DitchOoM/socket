@@ -1464,6 +1464,10 @@ jobs:
             jfr: "false"
     steps:
       - uses: actions/checkout@v7
+      # Samples the runner's I/O and CPU stalls and records the job's start, so a job that spends half its
+      # budget in setup leaves evidence of the host being slow, and the hang dump below fits in the budget.
+      - name: Sample the runner
+        run: .github/scripts/runner-health.sh start
       # konan: false — this lane is JVM-only (see -PlinuxTargets=false on the test step), so restoring
       # the ~450MB Kotlin/Native toolchain would be download cost for nothing. A second JDK only on
       # the legs whose Test task runs on a 17 or 25 launcher.
@@ -1558,8 +1562,10 @@ jobs:
           SOCKET_REQUIRE_ALL_TESTS: "1"
         run: |
           # A run still going at 20 of its 24 minutes is hung (a healthy one takes under 10): print every
-          # test worker's threads into this log before the step lid kills them without a trace.
-          ( sleep 1200
+          # test worker's threads into this log before the step lid kills them without a trace. The wait
+          # is shortened to what is left of the job's 40 minutes, so a slow setup cannot let the job
+          # timeout arrive first.
+          ( sleep "$(.github/scripts/runner-health.sh hang-wait 1200 40)"
             for p in $(pgrep -f GradleWorkerMain); do echo "===== HANG: jstack pid=$p ====="; jstack -l "$p" || true; done
           ) &
           HANG_DUMP=$!
@@ -1578,6 +1584,11 @@ jobs:
             .github/scripts/gradle-retry.sh :socket-quic-quiche:jvmTest ${{ matrix.leg.args }} -PlinuxTargets=false \
               --continue --no-configuration-cache ${{ inputs.gradle-args }}
           fi
+
+      - name: Runner health
+        if: ${{ always() }}
+        continue-on-error: true
+        run: .github/scripts/runner-health.sh report
 
       # Distinct from the harness OK/SKIP audit below: that one counts whether the QUIC *client*
       # reached the live harness, this one counts test bodies that never executed at all.
