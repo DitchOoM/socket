@@ -182,6 +182,32 @@ class PeerNeverResentServerHello:
         return NotMatched()
 
 
+class PeerAckedInitialsWithoutServerHello:
+    """Our client's handshake never completed and ran on until the runner's time limit: the server kept acknowledging
+    our Initial packets (at least min_acks of them, so our probes never went unanswered) but none of its Initial
+    packets carried CRYPTO data (its ServerHello) and no Handshake packet reached us, so it never sent the lost
+    ServerHello again."""
+
+    kind = "peer-acked-initials-without-server-hello"
+
+    def __init__(self, fields):
+        if set(fields) != {"min_acks"}:
+            raise ExpectationError(f"{self.kind} takes exactly min_acks, got {sorted(fields)}")
+        self.min_acks = positive_int(self.kind, fields, "min_acks")
+
+    def match(self, test_evidence, peer_role):
+        for c in test_evidence.get("connections", []):
+            if (
+                not c["local_closes"]
+                and "close_reason" not in c
+                and c["rx_initial_crypto"] == 0
+                and c["rx_handshake_crypto"] == 0
+                and c["rx_initial_acks"] >= self.min_acks
+            ):
+                return Matched(f"{c['qlog']}: {c['rx_initial_acks']} Initial acknowledgements, no ServerHello, no close")
+        return NotMatched()
+
+
 class PeerFinishedNeverArrived:
     """A connection our server never answered on: the client acknowledged our Handshake packets but none of its own
     carrying CRYPTO data (its Finished) ever arrived, so it never sent it again after losing it."""
@@ -513,6 +539,7 @@ SIGNATURES = {
         FrameEncodingErrorFromZeroLengthCidPeer,
         PeerSilentUntilOurTimeout,
         PeerNeverResentServerHello,
+        PeerAckedInitialsWithoutServerHello,
         PeerFinishedNeverArrived,
         PeerResetDuplicatedRequest,
         PeerCountedExtraHandshake,

@@ -267,6 +267,12 @@ expect "quinn handshakeloss expects the silent signature as well" "$(python3 -c 
 hello='{"kind":"peer-never-resent-server-hello"}'
 check_kind "Initial acks without a ServerHello" "$hello" our-client "{\"connections\":[$(hconn a '"close_reason":"Failed to establish connection"' | sed 's/"rx_initial_crypto":1/"rx_initial_crypto":0/')]}" Matched
 check_kind "a ServerHello that arrived is not the signature" "$hello" our-client "{\"connections\":[$(hconn a '"close_reason":"Failed to establish connection"')]}" NotMatched
+acked='{"kind":"peer-acked-initials-without-server-hello","min_acks":1000}'
+stuck='"rx_initial_crypto":0,"rx_handshake_crypto":0,"rx_initial_acks":2578'
+check_kind "Initial acks for minutes, no ServerHello, never closed" "$acked" our-client "{\"connections\":[$(hconn a '"end_ms":270227,"last_rx_ms":270226.9' | sed "s/\"rx_initial_crypto\":1,\"rx_initial_acks\":1,\"rx_handshake_crypto\":1/$stuck/")]}" Matched
+check_kind "a few Initial acks is not the signature" "$acked" our-client "{\"connections\":[$(hconn a | sed 's/"rx_initial_crypto":1,"rx_initial_acks":1,"rx_handshake_crypto":1/"rx_initial_crypto":0,"rx_handshake_crypto":0,"rx_initial_acks":3/')]}" NotMatched
+check_kind "a ServerHello that arrived is not the signature" "$acked" our-client "{\"connections\":[$(hconn a | sed 's/"rx_initial_acks":1,/"rx_initial_acks":2578,/')]}" NotMatched
+check_kind "a connection we closed is not the signature" "$acked" our-client "{\"connections\":[$(hconn a '"close_reason":"Failed to establish connection"' | sed "s/\"rx_initial_crypto\":1,\"rx_initial_acks\":1,\"rx_handshake_crypto\":1/$stuck/")]}" NotMatched
 finished='{"kind":"peer-finished-never-arrived"}'
 check_kind "Handshake acks without a Finished" "$finished" our-server "{\"connections\":[$(hconn a | sed 's/"rx_handshake_crypto":1/"rx_handshake_crypto":0/;s/"fin_sent_streams":1/"fin_sent_streams":0/')]}" Matched
 check_kind "a connection we answered is not the signature" "$finished" our-server "{\"connections\":[$(hconn a | sed 's/"rx_handshake_crypto":1/"rx_handshake_crypto":0/')]}" NotMatched
