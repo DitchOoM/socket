@@ -8,7 +8,9 @@ import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.ComponentCallbacks2
 import android.content.IntentFilter
+import android.content.res.Configuration
 import android.hardware.Sensor
 import android.hardware.SensorManager
 import android.hardware.TriggerEvent
@@ -62,6 +64,7 @@ import com.ditchoom.socket.testkit.walk.BuildRevision
 import com.ditchoom.socket.testkit.walk.ConnectAttempt
 import com.ditchoom.socket.testkit.walk.ConnectFailure
 import com.ditchoom.socket.testkit.walk.DiskFree
+import com.ditchoom.socket.testkit.walk.LaneEngine
 import com.ditchoom.socket.testkit.walk.LaneRadio
 import com.ditchoom.socket.testkit.walk.LaneWatch
 import com.ditchoom.socket.testkit.walk.StallBounds
@@ -69,6 +72,7 @@ import com.ditchoom.socket.testkit.walk.WalkLane
 import com.ditchoom.socket.testkit.walk.WalkTargets
 import com.ditchoom.socket.testkit.walk.WalkTargetsParse
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
@@ -143,7 +147,7 @@ class DeviceHandoffProbe {
                     throw AssumptionViolatedException(
                         "hand-driven probe — pass -e probeHost <ip>[,<ip>] to run it (see class KDoc)",
                     )
-                is WalkTargetsParse.Parsed -> parsed.targets.copy(pinned = WalkTargets.radios(arg("probePinned", "")))
+                is WalkTargetsParse.Parsed -> parsed.targets.copy(pinned = WalkTargets.radios(arg("probePinned", "")), core = true)
             }
         val ctx = InstrumentationRegistry.getInstrumentation().targetContext
         val dir = ctx.getExternalFilesDir(null) ?: ctx.filesDir
@@ -291,6 +295,18 @@ class DeviceHandoffProbe {
                 )
             }
 
+        // The core's flight recorder, kept for every core connection that ends and written when one ends other than by our
+        // own close (see [CoreEvidence]); the core has no qlog and no key log, so this and the trace are the capture it adds.
+        val flightDir = File(dir, "flight")
+        val evidence = CoreEvidence(flightDir, FLIGHT_BUDGET_BYTES)
+        val evidenceWriter = evidence.start(kotlinx.coroutines.GlobalScope)
+        targets.lanes.filter { it.engine == LaneEngine.Core }.forEach { lane ->
+            lane.log(::write)(
+                "CORE-CAPTURE trace=${traceDir.absolutePath}/conn-${lane.label}-NNNN.trace flight=${flightDir.absolutePath}/conn-${lane.label}-NNNN.flight.trace " +
+                    "flightBudgetMb=${FLIGHT_BUDGET_BYTES / (1024 * 1024)} qlog=unsupported-by-core keys=unsupported-by-core migration=Automatic",
+            )
+        }
+
         val deadline = begin.endsAt
         // A dead man's switch: an alarm kept a few minutes out and pushed back by every heartbeat. If
         // this process dies nothing pushes it back, and its receiver posts a notification that says so.
@@ -312,6 +328,22 @@ class DeviceHandoffProbe {
         // cannot hide in the other's numbers, and nothing is shared between lanes but the log and the
         // trace budget.
         val lanes = targets.lanes.map { ProbeLane(it, ::write, startsAfter = it.stagger(echoIntervalMs.milliseconds, targets.lanes.size)) }
+
+        // The app being trimmed or low on memory leaves the recording of each open core connection.
+        val trimCallbacks =
+            object : ComponentCallbacks2 {
+                private fun snapshot(label: String) {
+                    emit("APP-STATE $label")
+                    GlobalScope.launch(Dispatchers.Default) { lanes.forEach { evidence.snapshot(it.live.get(), it.stem.get(), it.emit, label) } }
+                }
+
+                override fun onTrimMemory(level: Int) = snapshot("trim-memory-$level")
+
+                override fun onLowMemory() = snapshot("low-memory")
+
+                override fun onConfigurationChanged(newConfig: Configuration) = Unit
+            }
+        ctx.applicationContext.registerComponentCallbacks(trimCallbacks)
 
         // Live status in the shade, one line per lane, so the walk can be driven by what each
         // connection actually did rather than by a stopwatch. See [ProbeStatus].
@@ -358,6 +390,8 @@ class DeviceHandoffProbe {
                                 // connection starts from it rather than from whatever changed later.
                                 osNet.seed(connection.sink)
                                 probe.trace.value = connection.sink
+                                probe.stem.set(traceFiles.lastStem(lane))
+                                probe.paths.reset()
                                 // Tee: the lane's ring keeps the cross-connection tail its watchdog needs,
                                 // the file keeps this connection's own replayable trace. The qlog rides
                                 // along unchanged; its directory reports every segment, drop and refusal as
@@ -367,6 +401,12 @@ class DeviceHandoffProbe {
                                         TraceSink { event ->
                                             probe.ring.emit(event)
                                             connection.sink.emit(event)
+                                            // The core reports its path through the trace, not through pathState: every path,
+                                            // network and state event of a core connection is a line of its lane's log as it happens.
+                                            if (lane.engine == LaneEngine.Core && event.isCorePathEvent()) {
+                                                probe.paths.note(event)
+                                                laneEmit("CORE-EVENT $event")
+                                            }
                                             // The qlog directory reports its own events; a key log has only this one.
                                             if (event is TraceEvent.TrafficSecretsRefused) {
                                                 laneEmit(
@@ -398,6 +438,7 @@ class DeviceHandoffProbe {
                 // A connection only once its handshake completes: an attempt that never got there has
                 // no stream, no path and no verdict, only a reason.
                 val connect = ConnectAttempt()
+                var ended: CoreEnd = CoreEnd.Clean
                 val outcome: AttemptOutcome =
                     try {
                         // NOTE: this `timeout` bounds the ENTIRE scope block, not just the connect —
@@ -405,7 +446,7 @@ class DeviceHandoffProbe {
                         // `TimeoutCancellationException: Timed out waiting for 15000 ms` while echoes were
                         // flowing fine. So it has to cover the whole walk, not the handshake.
                         val established =
-                            withQuicConnection(target.host, target.port, options, timeout = (minutes + 2).minutes) {
+                            connectOn(probe, options, minutes) {
                                 laneEmit("CONNECTED session=${identity.session} wire=${identity.wire} alpn=$negotiatedAlpn")
                                 // What is still owed when it ends is what failed on it, and how long it went
                                 // without an answered echo is its own verdict.
@@ -461,9 +502,16 @@ class DeviceHandoffProbe {
                                     }
                                 when (val end = loop.run(until = minutes.minutes)) {
                                     EchoLoopEnd.WalkOver -> Unit
-                                    is EchoLoopEnd.Left -> status.onEnded(lane, "${end.step.end.label} — reconnecting")
-                                    is EchoLoopEnd.ConnectionClosed ->
+                                    is EchoLoopEnd.Left -> {
+                                        status.onEnded(lane, "${end.step.end.label} — reconnecting")
+                                        ended = CoreEnd.Abnormal("echo-loop left: ${end.step.end.label}")
+                                        laneEmit("CONNECTION-END via=echo-loop left=${end.step.end.label}")
+                                    }
+                                    is EchoLoopEnd.ConnectionClosed -> {
                                         status.onEnded(lane, "connection dead (${end.reason}) — reconnecting")
+                                        ended = CoreEnd.Abnormal(end.reason)
+                                        laneEmit("CONNECTION-END via=echo-loop reason=${end.reason}")
+                                    }
                                 }
                                 session
                             }
@@ -471,12 +519,22 @@ class DeviceHandoffProbe {
                         AttemptOutcome.Established(established.close(fallback = SessionEnd.WalkOver, at = now()))
                     } catch (e: Throwable) {
                         laneEmit("CONNECTION-ENDED err=${e::class.simpleName} msg=${e.message}")
+                        ended =
+                            CoreEnd.Abnormal(
+                                if (e is QuicCloseException) e.closeReason.describe() else "${e::class.simpleName}: ${e.message}",
+                            )
+                        if (e is QuicCloseException) laneEmit("CONNECTION-END reason=${e.closeReason.describe()} typed=${e.closeReason}")
                         // A connection that ends cancels its scope and surfaces here, typed: the connection died
                         // under the session, which is not the scope failing.
                         val sessionEnd = if (e is QuicCloseException) SessionEnd.ConnectionDead else SessionEnd.ScopeFailed
                         connect.failed(connectFailure(e), sessionEnd, at = now())
                     }
                 probe.trace.value = Discarded
+                if (lane.engine == LaneEngine.Core) {
+                    laneEmit("CORE-PATHS ${probe.paths.line} end=${ended::class.simpleName}")
+                    // Once the connection is closed its recording is handed over: written unless the end was ours and clean.
+                    evidence.ended(FlightRequest(if (target.family.label == "v6") 6 else 4, probe.stem.get(), ended, laneEmit))
+                }
                 probe.attempts.absorb(outcome)
                 when (outcome) {
                     is AttemptOutcome.Established -> {
@@ -560,6 +618,9 @@ class DeviceHandoffProbe {
             standbyFollow.cancel()
             heartbeat.cancel()
         }
+        ctx.applicationContext.unregisterComponentCallbacks(trimCallbacks)
+        evidence.stop()
+        evidenceWriter.cancel()
         osSource.unregister()
 
         if (wakeLock.isHeld) wakeLock.release()
@@ -614,7 +675,33 @@ private class ProbeLane(
 
     // Every connect attempt, established or not: only the established ones feed the two above.
     val attempts = AttemptTotals()
+
+    /** The core connection open now, so the app being trimmed can write its flight recording. */
+    val live = AtomicReference<LiveCore>(LiveCore.None)
+
+    /** The file stem of the connection in flight (`conn-core-v4-0003`): its trace and its flight recording pair by it. */
+    val stem = AtomicReference("")
+
+    /** What the core reported of its path on the connection in flight. */
+    val paths = CorePathTally()
 }
+
+/** One lane's connection on the stack its [WalkLane.engine] names: the 4.x client, or the core. */
+private suspend fun <R> connectOn(
+    probe: ProbeLane,
+    options: QuicOptions,
+    minutes: Int,
+    block: suspend QuicScope.() -> R,
+): R {
+    val target = probe.lane.target
+    return when (probe.lane.engine) {
+        LaneEngine.Quiche4 -> withQuicConnection(target.host, target.port, options, timeout = (minutes + 2).minutes) { block() }
+        LaneEngine.Core -> coreConnection(target.host, target.port, options, probe.live, block)
+    }
+}
+
+/** The most the core's flight recordings take on the device, snapshots included. */
+private const val FLIGHT_BUDGET_BYTES = 256L * 1024 * 1024
 
 /**
  * A live status notification for the walk, one line per lane — because the operator cannot watch
@@ -1202,6 +1289,9 @@ private class WalkTraceFiles(
             }
         }
     }
+
+    /** The stem of the connection [next] last made for [lane]. */
+    fun lastStem(lane: WalkLane): String = lane.fileStem(connections.getValue(lane.label).get())
 
     fun next(lane: WalkLane): QuicConnectionCapture {
         val name = lane.fileStem(connections.getValue(lane.label).incrementAndGet())

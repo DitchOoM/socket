@@ -25,6 +25,16 @@ else
   echo "no replay traces on the device — the walk is NOT replayable. Check that the probe build carries the trace sink." >&2
 fi
 
+# The core lanes' flight recordings (written when a core connection ends other than by our own close, and when the app is trimmed).
+FLIGHT="/sdcard/Android/data/$PKG/files/flight"
+if adbs shell "ls $FLIGHT/*.trace 2>/dev/null" | grep -q .; then
+  flight="$(dirname "$0")/logs/$stamp-$TAG-flight"; mkdir -p "$flight"
+  adbs pull "$FLIGHT/." "$flight" >/dev/null
+  echo "pulled $(find "$flight" -name '*.trace' | wc -l | tr -d ' ') core flight recording(s) -> $flight"
+else
+  echo "no core flight recordings on the device (every core connection ended by our own clean close, or a build without core lanes)"
+fi
+
 # quiche's own frame-level record, when the run had it on (start.sh turns it on): a run of .sqlog
 # segments per connection, decrypted by quiche itself — evidence that does not pass through this
 # library's code.
