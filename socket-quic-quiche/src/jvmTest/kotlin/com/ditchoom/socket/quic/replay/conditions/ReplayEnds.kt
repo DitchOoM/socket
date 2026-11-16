@@ -36,6 +36,7 @@ import com.ditchoom.socket.quic.core.pool.FixedPool
 import com.ditchoom.socket.quic.core.pool.MemoryHold
 import com.ditchoom.socket.quic.core.testing.FakePoller
 import com.ditchoom.socket.quic.core.testing.VirtualClock
+import com.ditchoom.socket.quic.core.time.WaitResolution
 import com.ditchoom.socket.quic.core.udp.BatchLimits
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
@@ -154,7 +155,13 @@ internal fun replayClient(
             config,
             options,
             memory,
-            RunningLoop(loop, buffers.map { memory.jdk(it.bytes) }, replayLoopMemory(memory), MemoryHold(Runnable { })),
+            RunningLoop(
+                loop,
+                buffers.map { memory.jdk(it.bytes) },
+                replayLoopMemory(memory),
+                MemoryHold(Runnable { }),
+                WaitResolution(1_000_000L),
+            ),
             channel,
             { io },
             peerInet,

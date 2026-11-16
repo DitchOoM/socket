@@ -1,5 +1,7 @@
 package com.ditchoom.socket.quic.core.conn
 
+import com.ditchoom.socket.quic.core.time.WaitResolution
+
 /** Whether a connection obeys the send times quiche's pacer gives each datagram. */
 internal sealed interface PacingRule {
     data object Unpaced : PacingRule
@@ -21,10 +23,16 @@ internal class SlotRules(
     val ack: AckRule,
 ) {
     companion object {
-        /** quiche's pacing within 1 ms is sent at once; beyond a second it is a different clock's reading. */
-        val Default =
+        /** A loop whose waits wake within a millisecond. */
+        val Default = forWaits(WaitResolution(1_000_000L))
+
+        /**
+         * quiche's pacing within one step of the loop's wait is sent at once: holding it would sleep a whole step
+         * (16 ms on Windows) for what is due sooner. Beyond a second it is a different clock's reading.
+         */
+        fun forWaits(waits: WaitResolution) =
             SlotRules(
-                PacingRule.ByQuiche(allowanceNanos = 1_000_000L, limitNanos = 1_000_000_000L),
+                PacingRule.ByQuiche(allowanceNanos = waits.nanos, limitNanos = 1_000_000_000L),
                 AckRule.Immediate,
             )
     }

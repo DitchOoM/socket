@@ -127,6 +127,7 @@ internal class ServerSetup(
         receiveViews: List<com.ditchoom.socket.quic.core.udp.JdkBytes>,
     ): CoreServer {
         val granted = buffers.applyTo(channel)
+        val stack = jdkStackOfThisRuntime()
         channel.bind(bind)
         channel.configureBlocking(false)
         val boundAddress = channel.localAddress
@@ -159,7 +160,7 @@ internal class ServerSetup(
             Loop(
                 id = LoopIds.next(),
                 name = SERVER_THREAD,
-                poller = SelectorPoller(clock, jdkStackOfThisRuntime().scan),
+                poller = SelectorPoller(clock, stack.scan),
                 clock = clock,
                 receive = ReceiveBatch(FixedPool(limits.maxDatagrams) { receiveBuffers[it] }, limits),
                 freeOnStop = Runnable { hold.release() },
@@ -170,7 +171,7 @@ internal class ServerSetup(
         val edge = ServerEdge(options, factory, readPolicy, writePolicy, accepted)
         val parts =
             ServerParts(
-                SlotRules.Default,
+                SlotRules.forWaits(stack.waits),
                 factory,
                 config.flight,
                 LoopMemory(

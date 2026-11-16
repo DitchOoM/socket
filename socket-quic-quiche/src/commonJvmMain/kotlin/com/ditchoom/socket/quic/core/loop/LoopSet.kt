@@ -12,6 +12,7 @@ import com.ditchoom.socket.quic.core.ready.SelectorPoller
 import com.ditchoom.socket.quic.core.ready.jdkStackOfThisRuntime
 import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.MonotonicClock
+import com.ditchoom.socket.quic.core.time.WaitResolution
 import com.ditchoom.socket.quic.core.udp.Addressed
 import com.ditchoom.socket.quic.core.udp.BatchLimits
 import com.ditchoom.socket.quic.core.udp.JdkBacked
@@ -33,6 +34,8 @@ internal class RunningLoop(
     val shared: LoopMemory,
     /** Held by the loop until it stops and by each connection until its memory is freed; frees [shared]. */
     val hold: MemoryHold,
+    /** How finely the loop's timed waits wake: what its connections pace within. */
+    val waits: WaitResolution,
 )
 
 /** What [LoopSet.place] answers. */
@@ -125,6 +128,7 @@ internal class LoopSet(
         seen: Slot,
         factory: BufferFactory,
     ): Placement {
+        val stack = jdkStackOfThisRuntime()
         val limits = BatchLimits(maxDatagrams = RECEIVE_BATCH, maxDatagramSize = MAX_DATAGRAM)
         val buffers = ArrayList<ReceiveBuffer>(limits.maxDatagrams)
         val views = ArrayList<JdkBytes>(limits.maxDatagrams)
@@ -158,7 +162,7 @@ internal class LoopSet(
             Loop(
                 id = id,
                 name = name,
-                poller = SelectorPoller(clock, jdkStackOfThisRuntime().scan),
+                poller = SelectorPoller(clock, stack.scan),
                 clock = clock,
                 receive = ReceiveBatch(FixedPool(limits.maxDatagrams) { buffers[it] }, limits),
                 freeOnStop =
@@ -167,7 +171,7 @@ internal class LoopSet(
                         hold.release()
                     },
             )
-        val running = RunningLoop(loop, views, shared, hold)
+        val running = RunningLoop(loop, views, shared, hold, stack.waits)
         if (!slots.compareAndSet(index, seen, Slot.Running(running))) {
             loop.close(Runnable { })
             startLoopThread(loop, name)
