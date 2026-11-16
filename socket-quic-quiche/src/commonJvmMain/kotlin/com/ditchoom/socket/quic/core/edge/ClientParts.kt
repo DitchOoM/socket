@@ -19,13 +19,12 @@ import com.ditchoom.socket.quic.core.loop.SocketDiedNotice
 import com.ditchoom.socket.quic.core.observe.ConnCounts
 import com.ditchoom.socket.quic.core.pool.FixedPool
 import com.ditchoom.socket.quic.core.pool.Hold
-import com.ditchoom.socket.quic.core.ready.SocketRef
 import com.ditchoom.socket.quic.core.sched.CallerLanes
 import com.ditchoom.socket.quic.core.sched.CallerSend
 import com.ditchoom.socket.quic.core.sched.Entrant
 import com.ditchoom.socket.quic.core.sched.SendPort
 import com.ditchoom.socket.quic.core.udp.BatchLimits
-import com.ditchoom.socket.quic.core.udp.NioOneByOne
+import com.ditchoom.socket.quic.core.udp.MAX_CACHED_TARGETS
 import com.ditchoom.socket.quic.core.udp.SendBatch
 import com.ditchoom.socket.quic.core.udp.SockAddr
 import com.ditchoom.socket.quic.core.udp.toPathKey
@@ -33,7 +32,6 @@ import com.ditchoom.socket.quic.trace.TraceCapture
 import com.ditchoom.socket.quic.traceRecorderFor
 import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.cancel
-import java.util.function.Supplier
 
 /**
  * One client connection's parts on its loop: its socket's batches and caller lanes, the connection, the endpoint that
@@ -59,13 +57,14 @@ internal class ClientParts(
         FixedPool(CALLER_LANES) { i ->
             CallerSend(i, SendBatch(w.memory.native(callerLimits.maxDatagrams * callerLimits.maxDatagramSize), callerLimits, lane = i + 1))
         }
-    private val nio =
-        NioOneByOne(
-            w.channel,
-            listOf(w.memory.jdk(send.storage)) + List(CALLER_LANES) { w.memory.jdk(lanes[it].batch.storage) },
-            w.running.receiveViews,
+    private val socketIo =
+        w.socket.ioOf(
+            w.memory,
+            listOf(send.storage) + List(CALLER_LANES) { lanes[it].batch.storage },
+            limits.maxDatagrams,
+            MAX_CACHED_TARGETS,
         )
-    private val io = w.wrapIo(nio)
+    private val io = w.wrapIo(socketIo.io)
     private val loop = w.running.loop
     private val socket = SendPort(io, loop.port, CallerLanes.Of(lanes), SocketDiedNotice(), loop.counts, loop.callerCounts)
     private val alpn = w.memory.native(MAX_ALPN)
@@ -114,7 +113,7 @@ internal class ClientParts(
         identity: QuicConnectionIdentity,
     ): CoreConnection = CoreConnection(conn, edge, factory, remote, identity, w.readPolicy, w.writePolicy, w.scope)
 
-    private val endpoint = Endpoint(SocketRef(Supplier { nio.channel }), io, socket, send, Route.Fixed(conn), released, w.readiness)
+    private val endpoint = Endpoint(socketIo.ref, io, socket, send, Route.Fixed(conn), released, w.readiness)
 
     /** The endpoint joins its loop and the connection's first flight goes out in the loop's next pass. */
     fun start() {

@@ -9,6 +9,8 @@ import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.core.ready.NetStack
+import com.ditchoom.socket.quic.core.ready.netStackOfThisRuntime
 import com.ditchoom.socket.quic.core.testing.allocationSamples
 import com.ditchoom.socket.quic.core.testing.withDescriptorsAbove127
 import com.ditchoom.socket.quic.network
@@ -57,11 +59,24 @@ import kotlin.time.Duration.Companion.seconds
 class CoreQuicAllocationTests {
     @Test
     fun anEchoOnOneStreamAllocatesOnlyWhatTheCallersApiForces() =
-        measure("one stream", OneStream, loopGate = LOOP_GATE_ONE, callerGate = CALLER_GATE_ONE)
+        measure("one stream", OneStream, loopGate = loopGate(LOOP_GATE_ONE, JDK_LOOP_GATE_ONE), callerGate = CALLER_GATE_ONE)
 
     @Test
     fun anEchoOnANewStreamAllocatesOnlyWhatTheCallersApiForces() =
-        measure("new stream per echo", NewStream, loopGate = LOOP_GATE_NEW, callerGate = CALLER_GATE_NEW)
+        measure("new stream per echo", NewStream, loopGate = loopGate(LOOP_GATE_NEW, JDK_LOOP_GATE_NEW), callerGate = CALLER_GATE_NEW)
+
+    /**
+     * The loop's gate on this process's stack. The native stack boxes nothing (48 and 105 B/echo measured on macOS); the
+     * JDK stack, left on Windows only, adds the selector's boxed descriptor per wake (80 and 168 B/echo measured).
+     */
+    private fun loopGate(
+        native: Int,
+        jdk: Int,
+    ): Int =
+        when (netStackOfThisRuntime) {
+            is NetStack.Native -> native
+            is NetStack.Jdk -> jdk
+        }
 
     /** One echo from the caller's side. */
     private sealed interface Shape {
@@ -250,9 +265,11 @@ class CoreQuicAllocationTests {
     private companion object {
         const val CALLER_THREAD = "core-alloc-caller"
         const val TEST_CLASS = "com.ditchoom.socket.quic.core.edge.CoreQuicAllocationTests"
-        const val LOOP_GATE_ONE = 130
+        const val LOOP_GATE_ONE = 80
+        const val JDK_LOOP_GATE_ONE = 130
         const val CALLER_GATE_ONE = 950
-        const val LOOP_GATE_NEW = 260
+        const val LOOP_GATE_NEW = 170
+        const val JDK_LOOP_GATE_NEW = 260
         const val CALLER_GATE_NEW = 2_400
         const val PAYLOAD = 64
         const val WARM_UP = 5_000

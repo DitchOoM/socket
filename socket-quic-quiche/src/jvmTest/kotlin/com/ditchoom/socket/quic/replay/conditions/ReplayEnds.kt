@@ -25,6 +25,8 @@ import com.ditchoom.socket.quic.core.edge.CoreConnection
 import com.ditchoom.socket.quic.core.edge.CoreServer
 import com.ditchoom.socket.quic.core.edge.EdgeMemory
 import com.ditchoom.socket.quic.core.edge.LoopDriver
+import com.ditchoom.socket.quic.core.edge.SocketBound
+import com.ditchoom.socket.quic.core.edge.StackSocket
 import com.ditchoom.socket.quic.core.edge.TEST_FLIGHT
 import com.ditchoom.socket.quic.core.edge.addressOf
 import com.ditchoom.socket.quic.core.edge.clientHandshakeRule
@@ -32,6 +34,7 @@ import com.ditchoom.socket.quic.core.edge.coreServe
 import com.ditchoom.socket.quic.core.edge.coreTlsConfig
 import com.ditchoom.socket.quic.core.loop.Loop
 import com.ditchoom.socket.quic.core.loop.LoopIds
+import com.ditchoom.socket.quic.core.loop.LoopIo
 import com.ditchoom.socket.quic.core.loop.Readiness
 import com.ditchoom.socket.quic.core.loop.RunningLoop
 import com.ditchoom.socket.quic.core.pool.FixedPool
@@ -41,8 +44,10 @@ import com.ditchoom.socket.quic.core.testing.VirtualClock
 import com.ditchoom.socket.quic.core.time.WaitResolution
 import com.ditchoom.socket.quic.core.udp.BatchLimits
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
+import com.ditchoom.socket.quic.core.udp.GrantedBuffers
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.ReceiveBuffer
+import com.ditchoom.socket.quic.core.udp.SocketBuffers
 import com.ditchoom.socket.quic.core.udp.toPathKey
 import com.ditchoom.socket.quic.encodeAlpnList
 import com.ditchoom.socket.quic.generateScid
@@ -158,6 +163,7 @@ internal fun replayClient(
     name.freeNativeMemory()
     scid.freeNativeMemory()
     val scope = CoroutineScope(SupervisorJob())
+    val loopIo = LoopIo.Jdk(buffers.map { memory.jdk(it.bytes) })
     val wiring =
         ClientWiring(
             api,
@@ -167,12 +173,12 @@ internal fun replayClient(
             memory,
             RunningLoop(
                 loop,
-                buffers.map { memory.jdk(it.bytes) },
+                loopIo,
                 replayLoopMemory(memory),
                 MemoryHold(Runnable { }),
                 WaitResolution(1_000_000L),
             ),
-            channel,
+            StackSocket.Jdk(channel, loopIo, SocketBound(local, GrantedBuffers(SocketBuffers.Default, 0, 0))),
             { io },
             peerInet,
             ReadPolicy.Bounded(REPLAY_DEADLINE),

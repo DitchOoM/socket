@@ -115,7 +115,7 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: socket-quic-quiche/libs/quiche/linux-x64
-          key: quiche-linux-x64-v8-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/build.gradle.kts', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
+          key: quiche-linux-x64-v8-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/build.gradle.kts', 'socket-quic-quiche/src/jni/*.c', 'socket-quic-quiche/src/jni/*.h') }}
 
       - name: Enable KVM
         run: |

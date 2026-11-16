@@ -9,6 +9,7 @@ import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.socket.networkId
 import com.ditchoom.socket.quic.CommonJvmQuicConfigCalls
 import com.ditchoom.socket.quic.LocalEndpointSupport
+import com.ditchoom.socket.quic.NativeSocketRefusal
 import com.ditchoom.socket.quic.QUIC_ISSUED_CONN_ID_LEN
 import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicConnectionIdentity
@@ -19,9 +20,8 @@ import com.ditchoom.socket.quic.QuicSessionId
 import com.ditchoom.socket.quic.QuicWireConnectionId
 import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.QuicheConfig
-import com.ditchoom.socket.quic.QuicheConn
-import com.ditchoom.socket.quic.RouteProbeFailure
 import com.ditchoom.socket.quic.RouteSource
+import com.ditchoom.socket.quic.UdpBatching
 import com.ditchoom.socket.quic.UdpSocketChannelFactory
 import com.ditchoom.socket.quic.applyQuicOptions
 import com.ditchoom.socket.quic.core.conn.Conn
@@ -30,14 +30,12 @@ import com.ditchoom.socket.quic.core.conn.HandshakeRule
 import com.ditchoom.socket.quic.core.loop.Loop
 import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.loop.Placement
-import com.ditchoom.socket.quic.core.loop.Readiness
-import com.ditchoom.socket.quic.core.loop.RunningLoop
-import com.ditchoom.socket.quic.core.time.LoopClock
-import com.ditchoom.socket.quic.core.time.MonotonicClock
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 import com.ditchoom.socket.quic.core.udp.ReadAddress
 import com.ditchoom.socket.quic.core.udp.SocketBuffers
+import com.ditchoom.socket.quic.core.udp.SocketPeer
 import com.ditchoom.socket.quic.core.udp.SocketReport
+import com.ditchoom.socket.quic.core.udp.toPathKey
 import com.ditchoom.socket.quic.encodeAlpnList
 import com.ditchoom.socket.quic.encodeToNative
 import com.ditchoom.socket.quic.generateScid
@@ -52,8 +50,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import java.net.Inet6Address
 import java.net.InetSocketAddress
-import java.nio.channels.DatagramChannel
 import kotlin.time.Duration
 
 /** A connected [connection] with the [conn] and the shared [loop] under it, for what measures them. */
@@ -88,6 +86,7 @@ internal suspend fun coreConnect(
     buffers: SocketBuffers = SocketBuffers.Default,
     flight: FlightSize = CLIENT_FLIGHT,
     routeSource: suspend (UdpSocketChannelFactory) -> RouteSource = { it.routeSourceAddress() },
+    batching: UdpBatching = options.udpBatching,
 ): CoreClient =
     withContext(Dispatchers.IO) {
         val memory = EdgeMemory(factory)
@@ -109,6 +108,7 @@ internal suspend fun coreConnect(
                 buffers,
                 flight,
                 routeSource,
+                batching,
             ).also { connected = true }
         } finally {
             if (!connected) memory.freeAll()
@@ -132,6 +132,7 @@ private suspend fun connectOnThisThread(
     buffers: SocketBuffers,
     flight: FlightSize,
     routeSource: suspend (UdpSocketChannelFactory) -> RouteSource,
+    batching: UdpBatching,
 ): CoreClient {
     val peer = UdpSocket.resolve(host, port)
     val codec = SocketAddressCodec(hostOsSockAddrLayout())
@@ -139,24 +140,32 @@ private suspend fun connectOnThisThread(
     val bindHost =
         when (val source = routeSource(route)) {
             is RouteSource.Resolved -> source.host
-            is RouteSource.PlatformAssigned -> ANY_HOST
+            is RouteSource.PlatformAssigned -> anyHostFor(InetSocketAddress(host, port))
             is RouteSource.Unresolved -> raise(Raised.RouteUnresolved(source.reason), QuicCloseCircumstance.HandshakeFailed)
         }
     val peerInet = InetSocketAddress(host, port)
-    val channel = DatagramChannel.open()
-    channel.bind(InetSocketAddress(bindHost, 0)).connect(peerInet)
-    val granted = buffers.applyTo(channel)
-    channel.configureBlocking(false)
-    val local = channel.localAddress
-    if (local !is InetSocketAddress) {
-        raise(Raised.RouteUnresolved(RouteProbeFailure.SourceAddressUnknown), QuicCloseCircumstance.HandshakeFailed)
-    }
     val running =
         when (val placed = loops.place(factory)) {
             is Placement.Placed -> placed.running
             is Placement.SetClosed -> raise(Raised.LoopsClosed, QuicCloseCircumstance.HandshakeFailed)
             is Placement.NotJdkMemory -> raise(Raised.FactoryNotNative(factory.allocate(1)), QuicCloseCircumstance.HandshakeFailed)
+            is Placement.PollerRefused ->
+                raise(
+                    Raised.SocketRefused(NativeSocketRefusal(placed.refusal)),
+                    QuicCloseCircumstance.HandshakeFailed,
+                )
         }
+    val socket =
+        openStackSocket(
+            running.io,
+            memory,
+            InetSocketAddress(bindHost, 0),
+            SocketPeer.Connected(peerInet.toPathKey()),
+            buffers,
+            batching,
+            CLIENT_BATCH,
+        )
+    val local = socket.bound().local
     val monitor = resolveNetworkMonitor(options.networkMonitor)
     val handshake = clientHandshakeRule(options, linkClassOf(monitor.state.value.networkId))
     val config = configured(api, options, factory, handshake)
@@ -189,7 +198,7 @@ private suspend fun connectOnThisThread(
                 options,
                 memory,
                 running,
-                channel,
+                socket,
                 wrapIo,
                 peerInet,
                 readPolicy,
@@ -217,7 +226,7 @@ private suspend fun connectOnThisThread(
     } finally {
         if (!established) connection.closeNow(QuicError.NoError)
     }
-    return CoreClient(connection, built.conn, running.loop, SocketReport(granted, local.port))
+    return CoreClient(connection, built.conn, running.loop, SocketReport(socket.bound().granted, local.port))
 }
 
 /** A client config with the caller's ALPN, options, handshake rule and trust anchors applied. */
@@ -266,31 +275,14 @@ private fun hex(buffer: com.ditchoom.buffer.PlatformBuffer): String {
     return out.toString()
 }
 
-/** The quiche handle a connect made, kept with what it needs to be built on the loop. */
-internal class ClientWiring(
-    val api: QuicheApi,
-    val handle: QuicheConn,
-    val config: QuicheConfig,
-    val options: QuicOptions,
-    val memory: EdgeMemory,
-    val running: RunningLoop,
-    val channel: DatagramChannel,
-    val wrapIo: (DatagramBatchIo) -> DatagramBatchIo,
-    val peer: InetSocketAddress,
-    val readPolicy: ReadPolicy,
-    val writePolicy: WritePolicy,
-    val scope: CoroutineScope,
-    val flight: FlightSize,
-    val handshake: HandshakeRule,
-    /** What the connection reads the time from: the loop's own clock. */
-    val clock: LoopClock = MonotonicClock,
-    /** When the loop reads the socket: polled on a loop thread, every pass on a loop a test drives on virtual time. */
-    val readiness: Readiness = Readiness.Polled,
-)
-
 private const val HEX = "0123456789abcdef"
 private const val QUIC_V1 = 1
-private const val ANY_HOST = "0.0.0.0"
+
+/** The wildcard of [peer]'s family: an IPv6 peer needs an IPv6 socket on the native stack. */
+private fun anyHostFor(peer: InetSocketAddress): String = if (peer.address is Inet6Address) "::" else "0.0.0.0"
+
+/** The most datagrams one batch of a client socket carries. */
+internal const val CLIENT_BATCH = 64
 internal const val MAX_DATAGRAM = 1500
 
 /** A client connection's flight recording unless the connect asks for another size: enough for a walk's handshakes. */

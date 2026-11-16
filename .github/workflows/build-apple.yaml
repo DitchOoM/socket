@@ -180,7 +180,7 @@ jobs:
             socket-quic-quiche/libs/quiche/macos-x64/lib
             socket-quic-quiche/libs/quiche/ios-arm64/lib
             socket-quic-quiche/libs/quiche/ios-simulator-arm64/lib
-          key: quiche-apple-v3-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/build.gradle.kts', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
+          key: quiche-apple-v3-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/build.gradle.kts', 'socket-quic-quiche/src/jni/*.c', 'socket-quic-quiche/src/jni/*.h') }}
 
       # Build every Apple quiche native lib. buildQuicheAppleStaticLibs makes the macOS dylib+.a (arm64)
       # + the two iOS static libs (vendored BoringSSL, build.rs patched for the arm64 iOS

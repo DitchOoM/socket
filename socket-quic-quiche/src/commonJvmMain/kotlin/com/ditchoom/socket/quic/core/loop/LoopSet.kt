@@ -3,13 +3,18 @@
 package com.ditchoom.socket.quic.core.loop
 
 import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.socket.quic.NetShim
+import com.ditchoom.socket.quic.SocketRefusal
 import com.ditchoom.socket.quic.core.conn.FlightArena
 import com.ditchoom.socket.quic.core.conn.LoopMemory
 import com.ditchoom.socket.quic.core.observe.Published
 import com.ditchoom.socket.quic.core.pool.FixedPool
 import com.ditchoom.socket.quic.core.pool.MemoryHold
+import com.ditchoom.socket.quic.core.ready.NativePoller
+import com.ditchoom.socket.quic.core.ready.NetStack
+import com.ditchoom.socket.quic.core.ready.PollerOpened
 import com.ditchoom.socket.quic.core.ready.SelectorPoller
-import com.ditchoom.socket.quic.core.ready.jdkStackOfThisRuntime
+import com.ditchoom.socket.quic.core.ready.netStackOfThisRuntime
 import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.MonotonicClock
 import com.ditchoom.socket.quic.core.time.WaitResolution
@@ -18,6 +23,7 @@ import com.ditchoom.socket.quic.core.udp.BatchLimits
 import com.ditchoom.socket.quic.core.udp.JdkBacked
 import com.ditchoom.socket.quic.core.udp.JdkBytes
 import com.ditchoom.socket.quic.core.udp.NativeBytes
+import com.ditchoom.socket.quic.core.udp.NativeIo
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.ReceiveBuffer
 import kotlinx.coroutines.Runnable
@@ -26,11 +32,24 @@ import kotlin.concurrent.atomics.AtomicInt
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.concurrent.atomics.fetchAndIncrement
 
-/** A loop on its thread, with the views its sockets receive into and the memory its connections share. */
+/** What a socket on a loop receives through, by the loop's stack. */
+internal sealed interface LoopIo {
+    /** One view per receive buffer of the loop, by the buffer's index: what a JDK socket on it reads into. */
+    class Jdk(
+        val receiveViews: List<JdkBytes>,
+    ) : LoopIo
+
+    /** The loop's receive records, which a native socket on it hands `qnet` with its buffers' addresses. */
+    class Native(
+        val shim: NetShim,
+        val receiveRecords: NativeBytes,
+    ) : LoopIo
+}
+
+/** A loop on its thread, with what its sockets receive through and the memory its connections share. */
 internal class RunningLoop(
     val loop: Loop,
-    /** One view per receive buffer of [loop], by the buffer's index: what a JDK socket on this loop reads into. */
-    val receiveViews: List<JdkBytes>,
+    val io: LoopIo,
     val shared: LoopMemory,
     /** Held by the loop until it stops and by each connection until its memory is freed; frees [shared]. */
     val hold: MemoryHold,
@@ -48,6 +67,11 @@ internal sealed interface Placement {
 
     /** The factory makes memory a JDK socket cannot read into. */
     data object NotJdkMemory : Placement
+
+    /** The native stack could not open the loop's poller. */
+    class PollerRefused(
+        val refusal: SocketRefusal,
+    ) : Placement
 }
 
 private sealed interface Slot {
@@ -71,6 +95,8 @@ internal class LoopSet(
     private val clock: LoopClock = MonotonicClock,
     /** The flight payload arena each loop's connections share. */
     private val flightArenaBytes: Int = LoopMemory.ARENA_BYTES,
+    /** The stack every loop of this set and every socket on them use. */
+    val stack: NetStack = netStackOfThisRuntime,
 ) {
     private val slots = AtomicReferenceArray<Slot>(Array(size) { Slot.Unstarted })
 
@@ -128,25 +154,41 @@ internal class LoopSet(
         seen: Slot,
         factory: BufferFactory,
     ): Placement {
-        val stack = jdkStackOfThisRuntime()
         val limits = BatchLimits(maxDatagrams = RECEIVE_BATCH, maxDatagramSize = MAX_DATAGRAM)
         val buffers = ArrayList<ReceiveBuffer>(limits.maxDatagrams)
-        val views = ArrayList<JdkBytes>(limits.maxDatagrams)
         for (i in 0 until limits.maxDatagrams) {
-            val bytes =
-                when (val a = NativeBytes.of(factory.allocate(limits.maxDatagramSize))) {
-                    is Addressed.Native -> a.bytes
-                    is Addressed.NotAddressable -> return freed(buffers, emptyList(), Placement.NotJdkMemory)
-                }
-            when (val view = JdkBytes.of(bytes)) {
-                is JdkBacked.Backed -> views.add(view.bytes)
-                is JdkBacked.NotJdkBacked -> {
-                    bytes.free()
-                    return freed(buffers, emptyList(), Placement.NotJdkMemory)
-                }
+            when (val a = NativeBytes.of(factory.allocate(limits.maxDatagramSize))) {
+                is Addressed.Native -> buffers.add(ReceiveBuffer(i, a.bytes))
+                is Addressed.NotAddressable -> return freed(buffers, emptyList(), Placement.NotJdkMemory)
             }
-            buffers.add(ReceiveBuffer(i, bytes))
         }
+        val io =
+            when (stack) {
+                is NetStack.Jdk -> {
+                    val views = ArrayList<JdkBytes>(limits.maxDatagrams)
+                    for (buffer in buffers) {
+                        when (val view = JdkBytes.of(buffer.bytes)) {
+                            is JdkBacked.Backed -> views.add(view.bytes)
+                            is JdkBacked.NotJdkBacked -> return freed(buffers, emptyList(), Placement.NotJdkMemory)
+                        }
+                    }
+                    LoopIo.Jdk(views)
+                }
+                is NetStack.Native ->
+                    when (val a = NativeBytes.of(factory.allocate(NativeIo.RECV_RECORD * NativeIo.MAX_RECEIVE))) {
+                        is Addressed.Native -> LoopIo.Native(stack.shim, a.bytes)
+                        is Addressed.NotAddressable -> return freed(buffers, emptyList(), Placement.NotJdkMemory)
+                    }
+            }
+        val poller =
+            when (stack) {
+                is NetStack.Jdk -> SelectorPoller(clock, stack.scan)
+                is NetStack.Native ->
+                    when (val opened = NativePoller.open(stack.shim, clock, READY_EVENTS)) {
+                        is PollerOpened.Opened -> opened.poller
+                        is PollerOpened.Refused -> return freed(buffers, ioBytes(io), Placement.PollerRefused(opened.refusal))
+                    }
+            }
         val sharedBytes = ArrayList<NativeBytes>(LoopMemory.COPY_SLOTS + 1)
         for (size in List(LoopMemory.COPY_SLOTS) { MAX_DATAGRAM } + flightArenaBytes) {
             when (val a = NativeBytes.of(factory.allocate(size))) {
@@ -155,14 +197,14 @@ internal class LoopSet(
             }
         }
         val shared = LoopMemory(sharedBytes.subList(0, LoopMemory.COPY_SLOTS), FlightArena(sharedBytes.last()))
-        val hold = MemoryHold(Runnable { sharedBytes.forEach { it.free() } })
+        val hold = MemoryHold(Runnable { (sharedBytes + ioBytes(io)).forEach { it.free() } })
         val id = LoopIds.next()
         val name = "$THREAD_PREFIX-$id"
         val loop =
             Loop(
                 id = id,
                 name = name,
-                poller = SelectorPoller(clock, stack.scan),
+                poller = poller,
                 clock = clock,
                 receive = ReceiveBatch(FixedPool(limits.maxDatagrams) { buffers[it] }, limits),
                 freeOnStop =
@@ -171,7 +213,7 @@ internal class LoopSet(
                         hold.release()
                     },
             )
-        val running = RunningLoop(loop, views, shared, hold, stack.waits)
+        val running = RunningLoop(loop, io, shared, hold, waitsOf(stack))
         if (!slots.compareAndSet(index, seen, Slot.Running(running))) {
             loop.close(Runnable { })
             startLoopThread(loop, name)
@@ -201,6 +243,19 @@ internal class LoopSet(
     }
 }
 
+private fun ioBytes(io: LoopIo): List<NativeBytes> =
+    when (io) {
+        is LoopIo.Jdk -> emptyList()
+        is LoopIo.Native -> listOf(io.receiveRecords)
+    }
+
+/** How finely a loop on [stack] wakes on a timed wait. */
+internal fun waitsOf(stack: NetStack): WaitResolution =
+    when (stack) {
+        is NetStack.Jdk -> stack.waits
+        is NetStack.Native -> stack.waits
+    }
+
 /** Numbers loops, so each loop's turns are its own in a connection's owner word. */
 @Published
 internal object LoopIds {
@@ -213,4 +268,7 @@ internal object LoopIds {
 internal const val DEFAULT_CLIENT_LOOPS = 2
 
 private const val RECEIVE_BATCH = 64
+
+/** The ready sockets one native wait reports: as many as the loop's ready-token array holds. */
+private const val READY_EVENTS = 256
 private const val MAX_DATAGRAM = 1500

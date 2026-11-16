@@ -10,6 +10,10 @@
  *     -L/path/to/quiche/lib -lquiche
  */
 
+/* qnet (included at the end) needs glibc's sendmmsg/recvmmsg declarations, which only _GNU_SOURCE exposes. */
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE
+#endif
 #include <jni.h>
 #include <quiche.h>
 #include <stdint.h>
@@ -1118,3 +1122,6 @@ JNIEXPORT jlong JNICALL JNI_FN(nSockAddrV6Lo)(JNIEnv *env, jclass cls, jlong add
     for (int i = 0; i < 8; i++) lo = (lo << 8) | b[i];
     return (jlong)lo;
 }
+
+/* The native stack (poller and UDP socket calls) rides in this library: see qnet.h. */
+#include "qnet_jni.c"

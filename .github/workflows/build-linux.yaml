@@ -277,13 +277,13 @@ jobs:
         uses: actions/cache@v6
         with:
           path: socket-quic-quiche/libs/quiche/linux-x64
-          key: quiche-linux-x64-v8-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/build.gradle.kts', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
+          key: quiche-linux-x64-v8-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/build.gradle.kts', 'socket-quic-quiche/src/jni/*.c', 'socket-quic-quiche/src/jni/*.h') }}
 
       - name: Cache quiche Linux ARM64
         uses: actions/cache@v6
         with:
           path: socket-quic-quiche/libs/quiche/linux-arm64
-          key: quiche-linux-arm64-v8-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/build.gradle.kts', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
+          key: quiche-linux-arm64-v8-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/build.gradle.kts', 'socket-quic-quiche/src/jni/*.c', 'socket-quic-quiche/src/jni/*.h') }}
 
       # Cache the cargo target/ trees for all four quiche cross-compile
       # targets (Linux x64, Linux arm64, Windows x64, Android arm64). The
@@ -305,7 +305,7 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: socket-quic-quiche/build/quiche
-          key: quiche-cargo-target-v3-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/build.gradle.kts', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
+          key: quiche-cargo-target-v3-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/build.gradle.kts', 'socket-quic-quiche/src/jni/*.c', 'socket-quic-quiche/src/jni/*.h') }}
           restore-keys: quiche-cargo-target-v3-
 
       - name: Cache Cargo registry

@@ -44,7 +44,11 @@ internal class SelectorPoller(
     ) {
         if (keys.size == tokens.size) tokens = tokens.copyOf(tokens.size * 2)
         tokens[keys.size] = token
-        keys.add(socket.channel.register(selector, SelectionKey.OP_READ))
+        when (val handle = socket.handle) {
+            is SocketHandle.Channel -> keys.add(handle.current.get().register(selector, SelectionKey.OP_READ))
+            // A descriptor belongs to the native stack's poller; no stack builds one for this selector.
+            is SocketHandle.Descriptor -> Unit
+        }
     }
 
     override fun remove(token: Int) {
