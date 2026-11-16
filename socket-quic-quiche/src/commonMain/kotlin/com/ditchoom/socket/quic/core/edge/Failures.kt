@@ -29,9 +29,12 @@ import com.ditchoom.socket.quic.core.stream.QUICHE_ERR_STREAM_STOPPED
 import com.ditchoom.socket.quic.core.udp.SocketFault
 import com.ditchoom.socket.quic.core.udp.SpecLayoutMismatch
 import kotlinx.coroutines.CancellableContinuation
+import kotlinx.coroutines.InternalCoroutinesApi
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.job
 import kotlinx.coroutines.withTimeout
 import kotlin.coroutines.Continuation
+import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.coroutines.resumeWithException
 import kotlin.coroutines.startCoroutine
@@ -135,6 +138,10 @@ internal fun raiseFailure(
         is OpFailure.DeadlinePassed -> throw deadlineException(failure.bound)
         is Raised -> raise(failure, during)
     }
+
+/** Raises, on the caller's thread, the cancellation of the job in [context], which a caller that was cancelled has. */
+@OptIn(InternalCoroutinesApi::class)
+internal fun raiseCancelled(context: CoroutineContext): Nothing = throw context.job.getCancellationException()
 
 /** The exception a zero-length timeout throws, which is what a stream deadline raises everywhere else. */
 private fun deadlineException(bound: Duration): Throwable {
