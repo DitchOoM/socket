@@ -1,9 +1,10 @@
 package com.ditchoom.socket.quic.core.edge
 
-import com.ditchoom.socket.quic.DeadlineNode
+import com.ditchoom.buffer.BufferOverflowException
 import com.ditchoom.socket.quic.core.conn.Inside
 import com.ditchoom.socket.quic.core.observe.Confined
 import com.ditchoom.socket.quic.core.time.Nanos
+import kotlinx.coroutines.DisposableHandle
 import kotlinx.coroutines.Runnable
 import kotlin.time.Duration
 
@@ -22,12 +23,34 @@ internal inline fun guarded(
     }
 }
 
-private sealed interface Bound {
-    data object None : Bound
+/** Runs [body], which is the caller's own code (a codec); what it throws is turned into the answer by [failed]. */
+internal inline fun <R> userCode(
+    failed: (Exception) -> R,
+    body: () -> R,
+): R =
+    try {
+        body()
+    } catch (failure: Exception) {
+        failed(failure)
+    }
 
-    class Armed(
-        val node: DeadlineNode,
-    ) : Bound
+/** Runs [body], which writes into a buffer; a write past its end is answered by [overflow]. */
+internal inline fun <R> overflowing(
+    overflow: () -> R,
+    body: () -> R,
+): R =
+    try {
+        body()
+    } catch (full: BufferOverflowException) {
+        overflow()
+    } catch (full: IllegalArgumentException) {
+        // A position seek past the limit is signalled differently per platform; the same answer.
+        overflow()
+    }
+
+/** What an unarmed [OpDeadline] holds in place of a node. */
+private object NotArmed : DisposableHandle {
+    override fun dispose() = Unit
 }
 
 /** One parked operation's deadline: armed when the operation parks, disarmed when it settles. Inside only. */
@@ -35,7 +58,8 @@ private sealed interface Bound {
 internal class OpDeadline(
     val bound: Duration,
 ) {
-    private var armed: Bound = Bound.None
+    /** The armed node, which is its own handle; [NotArmed] when none is. */
+    private var armed: DisposableHandle = NotArmed
 
     /** Arms [expire] for the bound from now, unless the bound is infinite. */
     fun arm(
@@ -43,14 +67,11 @@ internal class OpDeadline(
         expire: Runnable,
     ) {
         if (!bound.isFinite()) return
-        armed = Bound.Armed(inside.arm(Nanos(inside.now().value + bound.inWholeNanoseconds), expire))
+        armed = inside.arm(Nanos(inside.now().value + bound.inWholeNanoseconds), expire)
     }
 
     fun disarm() {
-        when (val now = armed) {
-            is Bound.Armed -> now.node.disarm()
-            is Bound.None -> Unit
-        }
-        armed = Bound.None
+        armed.dispose()
+        armed = NotArmed
     }
 }
