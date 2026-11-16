@@ -15,7 +15,6 @@ import com.ditchoom.socket.quic.core.ready.SocketRef
 import com.ditchoom.socket.quic.core.ready.WriteInterest
 import com.ditchoom.socket.quic.core.sched.SendPort
 import com.ditchoom.socket.quic.core.sched.SocketHealth
-import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
@@ -98,26 +97,27 @@ internal class Endpoint(
     fun receive(
         batch: ReceiveBatch,
         counts: LoopCounts,
-        clock: LoopClock,
+        at: Nanos,
     ) {
         if (phase != Phase.Live) return
         when (route) {
-            is Route.Fixed -> receiveWaiting(batch, counts, clock)
+            is Route.Fixed -> receiveWaiting(batch, counts, at)
             is Route.Demux -> {
                 route.demux.passBegins()
-                receiveWaiting(batch, counts, clock)
+                receiveWaiting(batch, counts, at)
                 while (route.demux.admitSome(send) == Admitted.More) {
                     input = Input.Maybe
-                    receiveWaiting(batch, counts, clock)
+                    receiveWaiting(batch, counts, at)
                 }
             }
         }
     }
 
+    /** Reads until the socket is drained or [MAX_PER_PASS]; every datagram of this receive phase is stamped [at]. */
     private fun receiveWaiting(
         batch: ReceiveBatch,
         counts: LoopCounts,
-        clock: LoopClock,
+        at: Nanos,
     ) {
         if (input == Input.Drained && readiness == Readiness.Polled) return
         var taken = 0
@@ -125,14 +125,14 @@ internal class Endpoint(
             when (val got = io.receive(batch)) {
                 is ReceiveBatchResult.Got -> {
                     taken += batch.count
-                    deliver(batch, clock.now())
+                    deliver(batch, at)
                 }
                 is ReceiveBatchResult.Nothing -> {
                     input = Input.Drained
                     break
                 }
                 is ReceiveBatchResult.Failed -> {
-                    deliver(batch, clock.now())
+                    deliver(batch, at)
                     input = Input.Drained
                     socket.receiveFailed(got.error)
                     break
@@ -243,7 +243,7 @@ internal class Endpoint(
             is Route.Demux -> route.demux.endAll(end)
         }
 
-    /** The datagrams of one read, read [at]. */
+    /** The datagrams of one read, in a receive phase that began [at]. */
     private fun deliver(
         batch: ReceiveBatch,
         at: Nanos,

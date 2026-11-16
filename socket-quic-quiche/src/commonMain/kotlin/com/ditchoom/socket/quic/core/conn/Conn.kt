@@ -86,8 +86,9 @@ internal class Conn(
     }
 
     /**
-     * Loop thread: a datagram for this connection, at the start of [bytes], read from the socket [at]; copied when a
-     * caller is inside. Datagrams one read returned share [at], so a recording keeps them one receive pass.
+     * Loop thread: a datagram for this connection, at the start of [bytes], read in the receive phase that began [at];
+     * copied when a caller is inside. Every datagram of one phase shares [at], so a recording keeps them one receive
+     * pass: quiche has all of them before the connection sends.
      */
     fun received(
         bytes: NativeBytes,

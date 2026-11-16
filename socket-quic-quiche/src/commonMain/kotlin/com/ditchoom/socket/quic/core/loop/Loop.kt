@@ -148,7 +148,7 @@ internal class Loop(
 
     private fun receiveOn(endpoint: Endpoint) {
         try {
-            endpoint.receive(receive, counts, clock)
+            endpoint.receive(receive, counts, clock.now())
         } catch (failure: Exception) {
             receive.release()
             endpoint.ioThrew(Thrown(failure))
