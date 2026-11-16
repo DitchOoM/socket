@@ -1,7 +1,6 @@
 package com.ditchoom.socket.quic.core.edge
 
 import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicCloseException
@@ -18,7 +17,6 @@ import kotlinx.coroutines.IO
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.yield
 import kotlin.random.Random
@@ -48,9 +46,9 @@ class CoreFailureTierTests {
 
             val failure =
                 assertFailsWith<IllegalStateException> {
-                    suspendCancellableCoroutine<ReadResult> { cont ->
-                        rig.conn.submit(ReadOp(broken.streamId, OpDeadline(Duration.INFINITE), cont, rig.conn, ThrowingFactory(planted)))
-                    }
+                    val op = ReadOp(broken.streamId, OpDeadline(Duration.INFINITE), rig.conn, ThrowingFactory(planted))
+                    rig.conn.submit(op)
+                    op.answer()
                 }
             assertTrue(failure === planted || failure.cause === planted, "the caller got the planted exception: $failure")
 
