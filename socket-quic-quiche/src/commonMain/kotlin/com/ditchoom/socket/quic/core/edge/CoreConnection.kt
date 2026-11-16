@@ -1,6 +1,7 @@
 package com.ditchoom.socket.quic.core.edge
 
 import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.codec.Codec
 import com.ditchoom.buffer.flow.BytesWritten
 import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.ReadResult
@@ -91,6 +92,24 @@ internal class CoreConnection(
 
     override suspend fun acceptStream(): QuicByteStream = streamFor(edge.incoming.receive())
 
+    /** Opens the next bidirectional stream as one carrying values of [T] framed by [codec]. */
+    internal suspend fun <T : Any> openTypedStream(
+        codec: Codec<T>,
+        config: TypedStreamConfig = TypedStreamConfig(),
+    ): TypedQuicStream<T> = typed(openStream().streamId, codec, config)
+
+    /** Accepts the next stream the peer opened as one carrying values of [T] framed by [codec]. */
+    internal suspend fun <T : Any> acceptTypedStream(
+        codec: Codec<T>,
+        config: TypedStreamConfig = TypedStreamConfig(),
+    ): TypedQuicStream<T> = typed(QuicStreamId(edge.incoming.receive()), codec, config)
+
+    private fun <T : Any> typed(
+        id: QuicStreamId,
+        codec: Codec<T>,
+        config: TypedStreamConfig,
+    ): TypedQuicStream<T> = TypedQuicStream(this, conn, id, codec, config, readPolicy, writePolicy, bufferFactory)
+
     override fun streams(): Flow<QuicByteStream> = edge.incoming.consumeAsFlow().map { streamFor(it) }
 
     override suspend fun close(error: QuicError) {
@@ -133,7 +152,7 @@ internal class CoreConnection(
         QuicByteStream(QuicStreamId(id), CoreStream(this, QuicStreamId(id), readPolicy, writePolicy))
 
     /** A caller on a main dispatcher never makes system calls; any other may. */
-    private fun placeOf(context: CoroutineContext): CallerPlace =
+    internal fun placeOf(context: CoroutineContext): CallerPlace =
         if (context[ContinuationInterceptor] is MainCoroutineDispatcher) CallerPlace.HandToLoop else CallerPlace.MayEnter
 }
 

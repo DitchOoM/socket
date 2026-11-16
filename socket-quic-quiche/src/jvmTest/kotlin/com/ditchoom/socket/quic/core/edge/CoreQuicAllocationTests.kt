@@ -49,8 +49,8 @@ import kotlin.time.Duration.Companion.seconds
  * completed-continuation state kotlinx keeps for a cancellable read and the hand-off task; on the caller's thread the
  * continuations of each suspend call, the operation object that carries a call into the connection, and, for a new
  * stream, its handle objects and the open's continuation. The counters repeat to within one percent across runs, so
- * both threads are gated. Run alone the loop thread measures about 48 and 105 bytes and the caller 740 and 1,930; after the
- * server tests in one JVM the shared call sites stop inlining and the same echoes measure about 80 and 170, and 760 and 2,000.
+ * both threads are gated. Run alone the loop thread measures about 48 and 83 bytes and the caller 740 and 1,900; after the
+ * server tests in one JVM the shared call sites stop inlining and the same echoes measure about 49 and 86, and 750 and 1,920.
  * The gates leave a margin above that for JIT inlining that differs by JDK and host. The test holds 160 descriptors
  * first, so the JDK selector's boxed descriptor per wake (16 B, design 9.3) is in every run and the gates include it.
  *
@@ -71,7 +71,7 @@ class CoreQuicAllocationTests {
         measure("new stream per echo", NewStream, loopGate = loopGate(LOOP_GATE_NEW, JDK_LOOP_GATE_NEW), callerGate = CALLER_GATE_NEW)
 
     /**
-     * The loop's gate on this process's stack. The native stack boxes nothing (48 and 105 B/echo measured on macOS); the
+     * The loop's gate on this process's stack. The native stack boxes nothing (48 and 83 B/echo measured on macOS); the
      * JDK stack, left on Windows only, adds the selector's boxed descriptor per wake (80 and 168 B/echo measured).
      */
     private fun loopGate(
@@ -273,7 +273,7 @@ class CoreQuicAllocationTests {
         const val LOOP_GATE_ONE = 80
         const val JDK_LOOP_GATE_ONE = 130
         const val CALLER_GATE_ONE = 950
-        const val LOOP_GATE_NEW = 170
+        const val LOOP_GATE_NEW = 110
         const val JDK_LOOP_GATE_NEW = 260
         const val CALLER_GATE_NEW = 2_400
         const val PAYLOAD = 64

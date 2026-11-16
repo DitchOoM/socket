@@ -66,6 +66,12 @@ internal sealed interface Raised : OpFailure {
         val exception: Exception,
     ) : Raised
 
+    /** A typed stream refused a frame, or a call on it. */
+    class Typed(
+        val stream: QuicStreamId,
+        val failure: TypedFailure,
+    ) : Raised
+
     /** The caller already closed this side of the stream. */
     class StreamClosed(
         val stream: QuicStreamId,
@@ -112,6 +118,23 @@ internal fun <T> CancellableContinuation<T>.fail(
         is OpFailure.DeadlinePassed -> timeOut(failure.bound)
         is Raised -> resumeWithException(exceptionOf(failure, during))
     }
+}
+
+/** Raises [failure] on the caller's own thread, for a caller that is not a continuation. */
+internal fun raiseFailure(
+    failure: OpFailure,
+    during: QuicCloseCircumstance,
+): Nothing =
+    when (failure) {
+        is OpFailure.DeadlinePassed -> throw deadlineException(failure.bound)
+        is Raised -> raise(failure, during)
+    }
+
+/** The exception a zero-length timeout throws, which is what a stream deadline raises everywhere else. */
+private fun deadlineException(bound: Duration): Throwable {
+    val caught = ArrayList<Throwable>(1)
+    suspend { timedOut(bound) }.startCoroutine(Continuation(EmptyCoroutineContext) { it.onFailure { thrown -> caught.add(thrown) } })
+    return caught[0]
 }
 
 /** Raises [failure] on the caller's own thread, before any work was handed to the connection. */
@@ -165,6 +188,7 @@ private fun exceptionOf(
             )
         is Raised.Thrown -> failure.exception
         is Raised.StreamClosed -> QuicStreamClosedException(failure.stream.id, failure.side)
+        is Raised.Typed -> QuicTypedStreamException(failure.stream.id, failure.failure)
         is Raised.NotNative ->
             QuicNativeMemoryRequiredException.forBuffer(
                 QuicWriteTarget.Stream(failure.stream.id),
@@ -246,4 +270,10 @@ internal class CoreLoopsClosed : IllegalStateException()
 internal class QuicStreamWriteFailed(
     val streamId: Long,
     val quicheCode: Int,
+) : Exception()
+
+/** What a typed stream throws: [failure] says which rule the frame or the call broke. */
+internal class QuicTypedStreamException(
+    val streamId: Long,
+    val failure: TypedFailure,
 ) : Exception()

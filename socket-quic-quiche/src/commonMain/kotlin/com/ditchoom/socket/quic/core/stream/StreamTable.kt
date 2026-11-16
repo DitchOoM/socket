@@ -34,6 +34,9 @@ internal class StreamTable(
 ) {
     private val entries = LongObjectMap<StreamEntry>()
 
+    /** The buffer a read that ended without handing one to its caller leaves for the next read. */
+    val idle = IdleBuffer()
+
     /** Made once: it captures nothing, so a lookup of a stream that exists allocates nothing. */
     private val newEntry: (Long) -> StreamEntry = { id -> StreamEntry(QuicStreamId(id)) }
     private val writeWaiters = LongSet()
@@ -109,6 +112,7 @@ internal class StreamTable(
     fun endAll(end: ConnEnd) {
         if (state is Streams.Ended) return
         state = Streams.Ended(end)
+        idle.free()
         entries.forEachValue { it.endWaiters(end) }
         while (opens.isNotEmpty()) opens.removeFirst().connectionEnded(end)
     }
