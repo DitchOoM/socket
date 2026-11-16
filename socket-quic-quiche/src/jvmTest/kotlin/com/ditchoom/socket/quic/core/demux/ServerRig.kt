@@ -8,15 +8,18 @@ import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.QuicheConfig
 import com.ditchoom.socket.quic.SendTarget
 import com.ditchoom.socket.quic.StubQuicheApi
+import com.ditchoom.socket.quic.core.conn.Conn
 import com.ditchoom.socket.quic.core.conn.FlightSize
 import com.ditchoom.socket.quic.core.conn.SlotRules
 import com.ditchoom.socket.quic.core.loop.Endpoint
 import com.ditchoom.socket.quic.core.loop.Readiness
 import com.ditchoom.socket.quic.core.loop.Route
 import com.ditchoom.socket.quic.core.observe.ServerCounts
+import com.ditchoom.socket.quic.core.pool.FixedPool
 import com.ditchoom.socket.quic.core.pool.MemoryHold
 import com.ditchoom.socket.quic.core.ready.SocketRef
 import com.ditchoom.socket.quic.core.sched.CallerLanes
+import com.ditchoom.socket.quic.core.sched.CallerSend
 import com.ditchoom.socket.quic.core.sched.Entrant
 import com.ditchoom.socket.quic.core.sched.SendPort
 import com.ditchoom.socket.quic.core.testing.FakePoller
@@ -60,6 +63,9 @@ internal class BoundedIo(
     override val capability: BatchCapability = BatchCapability.OneByOne
     private val waiting = ArrayDeque<Arrival>()
     val sent = ArrayList<Sent>()
+
+    /** What happened to the socket, in order: each datagram sent, and its close. */
+    val events = java.util.concurrent.CopyOnWriteArrayList<String>()
     var kernelDrops = 0
         private set
 
@@ -76,6 +82,7 @@ internal class BoundedIo(
             storage.setLimit(batch.offsetOf(n) + batch.lengthOf(n))
             storage.position(batch.offsetOf(n))
             sent.add(Sent(storage.readByteArray(batch.lengthOf(n)), batch.targetOf(n)))
+            events.add(if (events.contains(CLOSED)) "$SENT after close" else SENT)
         }
         return SendBatchResult.AllTaken
     }
@@ -99,7 +106,15 @@ internal class BoundedIo(
 
     override fun reopen(): Reopened = Reopened.SameEndpoint
 
-    override fun close(): SocketClosed = SocketClosed
+    override fun close(): SocketClosed {
+        events.add(CLOSED)
+        return SocketClosed
+    }
+
+    companion object {
+        const val SENT = "sent"
+        const val CLOSED = "closed"
+    }
 }
 
 /**
@@ -112,6 +127,8 @@ internal class ServerRig(
     backlog: Int = 64,
     kernelBuffer: Int = Int.MAX_VALUE,
     val tokens: Tokens = Tokens.None,
+    /** Lanes for threads other than the loop: with none, no caller ever enters a connection. */
+    lanes: Int = 0,
 ) {
     val clock = VirtualClock()
     val io = BoundedIo(kernelBuffer)
@@ -119,9 +136,24 @@ internal class ServerRig(
     val counts = ServerCounts()
     val sinks = ArrayList<RecordingSink>()
 
+    /** Every connection accepted, in order. */
+    val conns = ArrayList<Conn>()
+
     /** Who was accepted, in order: each one's id is what a short header names. */
     val accepted = ArrayList<AcceptedPeer>()
-    val socket = SendPort(io, loop.port, CallerLanes.None, RecordingWork(), loop.counts, loop.callerCounts)
+    val socket =
+        SendPort(
+            io,
+            loop.port,
+            if (lanes == 0) {
+                CallerLanes.None
+            } else {
+                CallerLanes.Of(FixedPool(lanes) { CallerSend(it, SendBatch(nativeBytes(8 * 1500), BatchLimits(8, 1500), it + 1)) })
+            },
+            RecordingWork(),
+            loop.counts,
+            loop.callerCounts,
+        )
     private val local = sockAddr()
     private val parts =
         ServerParts(
@@ -144,7 +176,7 @@ internal class ServerRig(
                 accepted += peer
                 val sink = RecordingSink()
                 sinks += sink
-                Opened(build.build(sink, com.ditchoom.socket.quic.trace.TraceCapture.Off), Runnable { })
+                Opened(build.build(sink, com.ditchoom.socket.quic.trace.TraceCapture.Off).also { conns += it }, Runnable { })
             },
         )
     val admission =
