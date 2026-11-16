@@ -87,12 +87,33 @@ internal class SendPort(
      */
     fun shut(closer: Closer): Shutdown = gate.shut(closer)
 
+    /**
+     * Loop thread, once lanes stalled past their bound: no lane calls the socket any more, back or not. A lane that
+     * sends later gets [LaneSent.Cut] without reaching the socket. [Shutdown.Quiet] when no thread is inside a send:
+     * the loop closes the socket now. Otherwise the last thread out of its send wakes the loop, or, for
+     * [Closer.LastLane], closes the socket itself.
+     */
+    fun cut(closer: Closer): Shutdown {
+        loopCounts.cutLanes()
+        return gate.cut(closer)
+    }
+
     /** Diagnostics and tests: lanes lent and not yet back. */
     fun lanesOut(): Int = gate.lanesOut()
 
-    /** Any thread holding [lane]: hands what it collected to the network. */
-    fun sendInPlace(lane: CallerSend): LaneSent =
-        when (drive(lane.batch, Who.Caller)) {
+    /** Any thread holding [lane]: hands what it collected to the network, unless the socket was cut from its lanes. */
+    fun sendInPlace(lane: CallerSend): LaneSent {
+        when (gate.enterSend()) {
+            SendEntry.Entered -> Unit
+            SendEntry.Cut -> {
+                callerCounts.cut()
+                lane.batch.took(lane.batch.pending)
+                return LaneSent.Cut
+            }
+        }
+        val flushed = drive(lane.batch, Who.Caller)
+        lastOut(gate.leaveSend())
+        return when (flushed) {
             Flushed.Sent -> LaneSent.Sent
             Flushed.Dead -> LaneSent.SocketDied
             Flushed.Full -> {
@@ -101,6 +122,7 @@ internal class SendPort(
                 LaneSent.Deferred
             }
         }
+    }
 
     /** Loop thread: sends [batch]. */
     fun flush(batch: SendBatch): Flushed = drive(batch, Who.Loop)
@@ -176,8 +198,11 @@ internal class SendPort(
         }
     }
 
-    private fun laneBack() {
-        when (gate.back()) {
+    private fun laneBack() = lastOut(gate.back())
+
+    /** A lane came back or left its send: the last one out of a shut or cut socket finishes its close. */
+    private fun lastOut(back: LaneBack) {
+        when (back) {
             LaneBack.Returned -> Unit
             LaneBack.LoopCloses -> port.poke()
             LaneBack.ThisThreadCloses -> io.close()

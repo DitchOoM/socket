@@ -126,7 +126,7 @@ internal class Loop(
         counts.ran(port.runWork())
         for (i in slots.indices) {
             when (val slot = slots[i]) {
-                is LoopSlot.Taken -> if (slot.endpoint.serve(poller) == Stay.Left) vacate(slot.endpoint)
+                is LoopSlot.Taken -> if (slot.endpoint.serve(poller, now, port) == Stay.Left) vacate(slot.endpoint)
                 is LoopSlot.Empty -> Unit
             }
         }

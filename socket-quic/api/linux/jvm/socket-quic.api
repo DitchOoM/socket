@@ -1604,6 +1604,15 @@ public final class com/ditchoom/socket/quic/QuicError$SendRejected : com/ditchoo
 	public fun toString ()Ljava/lang/String;
 }
 
+public final class com/ditchoom/socket/quic/QuicError$ServerStoppedBeforeCloseSent : com/ditchoom/socket/quic/QuicError {
+	public static final field INSTANCE Lcom/ditchoom/socket/quic/QuicError$ServerStoppedBeforeCloseSent;
+	public fun describe ()Ljava/lang/String;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getCode ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
 public final class com/ditchoom/socket/quic/QuicError$StreamLimitError : com/ditchoom/socket/quic/QuicError {
 	public static final field INSTANCE Lcom/ditchoom/socket/quic/QuicError$StreamLimitError;
 	public fun describe ()Ljava/lang/String;

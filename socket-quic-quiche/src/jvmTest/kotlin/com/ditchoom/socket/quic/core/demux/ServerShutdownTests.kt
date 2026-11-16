@@ -1,5 +1,9 @@
 package com.ditchoom.socket.quic.core.demux
 
+import com.ditchoom.socket.quic.QuicCloseCircumstance
+import com.ditchoom.socket.quic.QuicCloseException
+import com.ditchoom.socket.quic.QuicCloseReason
+import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.StubQuicheApi
 import com.ditchoom.socket.quic.core.conn.CallerPlace
 import com.ditchoom.socket.quic.core.conn.Conn
@@ -9,6 +13,8 @@ import com.ditchoom.socket.quic.core.demux.BoundedIo.Companion.CLOSED
 import com.ditchoom.socket.quic.core.demux.BoundedIo.Companion.SENT
 import com.ditchoom.socket.quic.core.demux.ServerRig.Companion.initial
 import com.ditchoom.socket.quic.core.demux.ServerRig.Companion.peer
+import com.ditchoom.socket.quic.core.edge.closeReasonOf
+import com.ditchoom.socket.quic.core.edge.endedWith
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.sched.SleepPlan
 import java.util.concurrent.CountDownLatch
@@ -89,6 +95,63 @@ class ServerShutdownTests {
     }
 
     @Test
+    fun aConnectionEndedAtTheDrainBoundTellsItsUserThatItsCloseWasNeverSent() {
+        val (rig, conn) = serverWithOnePeer()
+        val holder = HoldWork()
+        val caller = holdAsCaller(conn, holder)
+
+        rig.demux.beginShutdown()
+        rig.pass(0)
+        rig.pass(DRAIN_BOUND)
+        holder.release.countDown()
+        caller.join(5_000)
+
+        val end =
+            rig.sinks
+                .single()
+                .ended
+                .single()
+        val reason = closeReasonOf(end)
+        assertNotEquals<QuicCloseReason>(
+            QuicCloseReason.ByLocal(QuicError.NoError),
+            reason,
+            "a close the peer never got is not a clean one",
+        )
+        assertEquals<QuicCloseReason>(QuicCloseReason.ByLocal(QuicError.ServerStoppedBeforeCloseSent), reason)
+        assertEquals(reason, (endedWith(end, QuicCloseCircumstance.Ended) as QuicCloseException).closeReason)
+    }
+
+    @Test
+    fun aCallerStalledPastTheLaneBoundIsCutTheSocketClosesAndItsLateSendNeverReachesTheSocket() {
+        val (rig, conn) = serverWithOnePeer()
+        val holder = HoldWork()
+        val caller = holdAsCaller(conn, holder)
+
+        rig.demux.beginShutdown()
+        rig.pass(0)
+        val next = rig.pass(DRAIN_BOUND)
+        assertEquals(ServerPhase.Stopped, rig.demux.phase())
+        assertEquals(1, rig.socket.lanesOut(), "the stalled caller still holds its lane")
+        assertEquals(DRAIN_BOUND + LANE_BOUND, next.fold({ -1L }, { it }), "the loop's next wake is the lane bound")
+
+        rig.pass(DRAIN_BOUND + LANE_BOUND - 1)
+        assertEquals(emptyList(), rig.io.events, "the lane bound has not passed: the socket stays open")
+        assertEquals(0L, rig.loop.counts.lanesCut)
+
+        rig.pass(DRAIN_BOUND + LANE_BOUND)
+        assertEquals(listOf(CLOSED), rig.io.events.toList(), "the lane was cut and the socket closed with it still out")
+        assertEquals(1L, rig.loop.counts.lanesCut)
+        assertEquals(1, rig.socket.lanesOut())
+
+        holder.release.countDown()
+        caller.join(5_000)
+        assertEquals(listOf(CLOSED), rig.io.events.toList(), "the late send never reached the socket")
+        assertTrue(rig.loop.callerCounts.sendsCut >= 1, "the late send was refused as cut")
+        assertEquals(0L, rig.loop.callerCounts.sendsInPlace)
+        assertEquals(0, rig.socket.lanesOut(), "the lane came back")
+    }
+
+    @Test
     fun aServerWithNoConnectionsStopsInThePassItWasClosedIn() {
         val rig = ServerRig(lanes = 2)
         rig.demux.beginShutdown()
@@ -134,5 +197,6 @@ class ServerShutdownTests {
 
     private companion object {
         const val DRAIN_BOUND = 1_000_000_000L
+        const val LANE_BOUND = 1_000_000_000L
     }
 }

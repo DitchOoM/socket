@@ -42,7 +42,9 @@ sealed interface QuicCloseReason {
     /**
      * **We** closed the connection with [error] — quiche aborted locally (handshake/TLS failure,
      * protocol violation), the connection idled out ([QuicError.IdleTimeout]), or the caller's
-     * establishment bound elapsed with the handshake still in flight ([QuicError.HandshakeTimeout]).
+     * establishment bound elapsed with the handshake still in flight ([QuicError.HandshakeTimeout]), or
+     * the server stopped before the connection's CONNECTION_CLOSE was sent
+     * ([QuicError.ServerStoppedBeforeCloseSent]).
      *
      * Those two timeouts are deliberately modelled here rather than as their own top-level cases: each
      * is a local decision with no wire code, and its [QuicError] already names it, so giving it a

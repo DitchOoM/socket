@@ -50,4 +50,7 @@ internal enum class LaneSent {
 
     /** The socket died: the rest was dropped; the lane is still the caller's. */
     SocketDied,
+
+    /** The socket was cut from its lanes: nothing reached it and everything was dropped; the lane is still the caller's. */
+    Cut,
 }

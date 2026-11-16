@@ -6,6 +6,7 @@ internal class CallerCounts {
     private val datagrams = Counter()
     private val deferred = Counter()
     private val wakes = Counter()
+    private val cuts = Counter()
 
     /** Sends a thread other than the loop made. */
     val sendsInPlace: Long get() = sends.value()
@@ -27,4 +28,9 @@ internal class CallerCounts {
     fun deferred() = deferred.increment()
 
     fun woke() = wakes.increment()
+
+    /** Sends a lane tried after its socket was cut from its lanes; none reached the socket. */
+    val sendsCut: Long get() = cuts.value()
+
+    fun cut() = cuts.increment()
 }

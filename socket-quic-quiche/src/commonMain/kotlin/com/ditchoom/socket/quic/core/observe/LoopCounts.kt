@@ -42,6 +42,14 @@ internal class LoopCounts {
         receiveFailures++
     }
 
+    /** Times the loop cut a socket from lanes that stalled past their bound. */
+    var lanesCut = 0L
+        private set
+
+    fun cutLanes() {
+        lanesCut++
+    }
+
     fun ran(count: Int) {
         work += count
     }
