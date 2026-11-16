@@ -3,6 +3,7 @@
 # What a slow runner looked like, and a hang watchdog that fits inside the job's own budget.
 #
 #   start                    record the job's start time and sample the runner every RUNNER_HEALTH_PERIOD seconds
+#   stop                     end the sampler that `start` began
 #   report                   print the samples and warn when the disk or CPU was starved (run with `if: always()`)
 #   hang-wait <cap> <job-min> seconds to wait before dumping thread stacks: <cap>, or less when the job's timeout
 #                            would arrive first
@@ -19,6 +20,7 @@ set -uo pipefail
 period="${RUNNER_HEALTH_PERIOD:-20}"
 dir="${RUNNER_TEMP:-/tmp}"
 log="$dir/runner-health.log"
+pidfile="$dir/runner-health.pid"
 
 pressure() { # <file>: the avg10 of the "some" line, or nothing where the kernel has no pressure files
   [ -r "$1" ] && sed -n 's/^some avg10=\([0-9.]*\).*/\1/p' "$1"
@@ -37,7 +39,12 @@ case "${1:-}" in
     [ -n "${GITHUB_ENV:-}" ] && echo "JOB_STARTED_AT=$(date +%s)" >>"$GITHUB_ENV"
     : >"$log"
     ( while true; do sample; sleep "$period"; done ) >/dev/null 2>&1 &
+    echo "$!" >"$pidfile"
     disown 2>/dev/null || true
+    ;;
+  stop)
+    [ -s "$pidfile" ] && kill "$(cat "$pidfile")" 2>/dev/null
+    rm -f "$pidfile"
     ;;
   report)
     [ -s "$log" ] || { echo "no runner health samples"; exit 0; }
@@ -58,7 +65,7 @@ case "${1:-}" in
     echo "$cap"
     ;;
   *)
-    echo "usage: $0 start | report | hang-wait <cap-seconds> <job-minutes>" >&2
+    echo "usage: $0 start | stop | report | hang-wait <cap-seconds> <job-minutes>" >&2
     exit 2
     ;;
 esac
