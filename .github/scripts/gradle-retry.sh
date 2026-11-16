@@ -77,13 +77,10 @@ fold_status_lines() {
        END { if (NR > 0) print line }' "$1"
 }
 
-# Gradle caches a repository's "not found" answer for 24 hours, and a plugin that no repository could
-# serve is such an answer. A retry that reuses the cache re-reads the first attempt's failure instead
-# of asking the repositories again, and fails in seconds however healthy they are (job 133587218454:
-# the portal probe answered 200 while three attempts failed identically in 13 s, 4 s and 4 s). The
-# retry after a plugin failure therefore re-asks every repository.
-# `${extra[@]+...}` keeps bash 3.2 (macOS) happy under `set -u` while the array is empty. The retry also
-# runs with --stacktrace: Gradle puts the cause (the HTTP status, the timeout) only in the stack trace.
+# Gradle caches a repository's "not found" answer, so a retry after an unresolved plugin re-asks every
+# repository (--refresh-dependencies) instead of re-reading the first attempt's answer. It also runs with
+# --stacktrace: Gradle puts the cause (the HTTP status, the timeout) only in the stack trace.
+# `${extra[@]+...}` keeps bash 3.2 (macOS) happy under `set -u` while the array is empty.
 extra=()
 # Lists what the Gradle cache holds for each plugin the failed build could not resolve, so a cached
 # answer is visible in the log instead of inferred. Failure path only.
@@ -102,10 +99,8 @@ for i in $(seq 1 "$attempts"); do
   if ./gradlew "$@" ${extra[@]+"${extra[@]}"} 2>&1 | tee "$log"; then
     exit 0
   fi
-  # Folded once into a variable. Piping fold_status_lines into `grep -q` under pipefail let awk's
-  # write to the closed pipe (grep exits at its first match) fail the pipeline, so a transient failure
-  # read as non-transient whenever awk lost that race (job 133587218454: "awk: i/o error occurred
-  # while closing /dev/stdout", then "not retrying").
+  # Folded once: piping into `grep -q` under pipefail fails the pipeline when grep exits before awk
+  # finishes writing, which would read a transient failure as non-transient.
   folded="$(fold_status_lines "$log")"
   if ! grep -qE "$transient" <<<"$folded"; then
     echo "::error::gradle failed for a non-transient reason — not retrying. See the output above."
