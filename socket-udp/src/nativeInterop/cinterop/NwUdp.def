@@ -53,6 +53,17 @@ nw_connection_t _Nullable nw_udp_create(const char * _Nonnull host, const char *
     return nw_connection_create(endpoint, nw_udp_parameters());
 }
 
+nw_connection_t _Nullable nw_udp_create_dont_fragment(const char * _Nonnull host, const char * _Nonnull port)
+{
+    nw_endpoint_t endpoint = nw_endpoint_create_host(host, port);
+    if (endpoint == NULL) return NULL;
+    nw_parameters_t params = nw_udp_parameters();
+    nw_protocol_stack_t stack = nw_parameters_copy_default_protocol_stack(params);
+    nw_protocol_options_t ip = nw_protocol_stack_copy_internet_protocol(stack);
+    nw_ip_options_set_disable_fragmentation(ip, true);
+    return nw_connection_create(endpoint, params);
+}
+
 nw_connection_t _Nullable nw_udp_create_requiring(const char * _Nonnull host, const char * _Nonnull port, int32_t interface_type)
 {
     nw_endpoint_t endpoint = nw_endpoint_create_host(host, port);

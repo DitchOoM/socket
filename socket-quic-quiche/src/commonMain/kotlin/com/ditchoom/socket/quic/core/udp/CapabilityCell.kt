@@ -26,3 +26,38 @@ internal class CapabilityCell(
         }
     }
 }
+
+/**
+ * The datagram size a link refused segments at (EMSGSIZE: its MTU is below the size). Sizes from there up are sent
+ * without segments; smaller datagrams keep theirs, so one oversized send costs the socket nothing it still needs.
+ */
+@Published
+internal class SegmentLimit {
+    private val current = AtomicReference<Limit>(Limit.None)
+
+    /** Any thread: the link refused segments of [size] bytes. The smallest refused size stands. */
+    fun refuse(size: Int) {
+        while (true) {
+            val seen = current.load()
+            when (seen) {
+                is Limit.None -> if (current.compareAndSet(seen, Limit.From(size))) return
+                is Limit.From -> if (size >= seen.size || current.compareAndSet(seen, Limit.From(size))) return
+            }
+        }
+    }
+
+    /** Whether a segmented send of datagrams up to [longest] bytes may be tried. */
+    fun allows(longest: Int): Boolean =
+        when (val limit = current.load()) {
+            is Limit.None -> true
+            is Limit.From -> longest < limit.size
+        }
+
+    private sealed interface Limit {
+        data object None : Limit
+
+        class From(
+            val size: Int,
+        ) : Limit
+    }
+}

@@ -6,7 +6,7 @@ import com.ditchoom.socket.quic.core.udp.Arrival
 import com.ditchoom.socket.udp.nw.nw_udp_cancel
 import com.ditchoom.socket.udp.nw.nw_udp_copy_local_sockaddr
 import com.ditchoom.socket.udp.nw.nw_udp_copy_remote_sockaddr
-import com.ditchoom.socket.udp.nw.nw_udp_create
+import com.ditchoom.socket.udp.nw.nw_udp_create_dont_fragment
 import com.ditchoom.socket.udp.nw.nw_udp_receive
 import com.ditchoom.socket.udp.nw.nw_udp_send
 import com.ditchoom.socket.udp.nw.nw_udp_set_state_handler
@@ -103,12 +103,12 @@ internal class NwConnection private constructor(
     }
 
     companion object {
-        /** A connection to [host]:[port], not started; [NwCreated.Refused] when Network.framework would not make one. */
+        /** A connection to [host]:[port] whose datagrams carry DF (RFC 9000 §14), not started; [NwCreated.Refused] when Network.framework would not make one. */
         fun create(
             host: String,
             port: Int,
         ): NwCreated =
-            when (val conn = nw_udp_create(host, port.toString())) {
+            when (val conn = nw_udp_create_dont_fragment(host, port.toString())) {
                 null -> NwCreated.Refused
                 else -> NwCreated.Created(NwConnection(conn))
             }

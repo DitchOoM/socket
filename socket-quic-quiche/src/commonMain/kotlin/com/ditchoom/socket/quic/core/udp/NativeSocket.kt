@@ -44,6 +44,9 @@ internal class NativeSocket private constructor(
 
     val local: PathKey get() = recordAt(spec, LOCAL)
 
+    /** Whether this socket's datagrams carry DF, as it was set at open and read back. */
+    val dontFragment: DontFragment get() = dontFragmentOf(spec.intAt(DF))
+
     val grantedReceive: Int get() = spec.intAt(GRANTED_RCV)
 
     val grantedSend: Int get() = spec.intAt(GRANTED_SND)
@@ -70,7 +73,7 @@ internal class NativeSocket private constructor(
 
     companion object {
         /** The spec block's size in bytes, as `qnet.h` lays it out. */
-        const val SPEC_BYTES = 96
+        const val SPEC_BYTES = 100
 
         fun open(
             shim: NetShim,
@@ -134,11 +137,31 @@ internal class NativeSocket private constructor(
         private const val LOCAL = 64
         private const val CAPS = 88
         private const val GSO_SEGMENTS = 92
+        private const val DF = 96
         private const val CAP_MULTI = 1
         private const val CAP_GSO = 2
         private const val CAP_PRIVATE = 8
     }
 }
+
+/**
+ * What opening the socket did about IP fragmentation (RFC 9000 §14). A datagram over the link's MTU is refused with
+ * EMSGSIZE only while [Set]; on [Refused] the kernel may fragment it, and path MTU discovery cannot see the limit.
+ */
+internal sealed interface DontFragment {
+    /** DF is set on every datagram of the socket. */
+    data object Set : DontFragment
+
+    /** The platform refused the option, with [refusal]. */
+    class Refused(
+        val refusal: SocketRefusal,
+    ) : DontFragment
+
+    /** This platform's sockets have no such option. */
+    data object NotOffered : DontFragment
+}
+
+internal fun dontFragmentOf(code: Int): DontFragment = if (code == 0) DontFragment.Set else DontFragment.Refused(SocketRefusal.of(code))
 
 /** Writes [key] as a `qnet` address record (family, port, hi, lo) at [offset]. */
 internal fun putRecord(

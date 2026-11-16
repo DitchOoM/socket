@@ -12,8 +12,9 @@ import com.ditchoom.socket.quic.core.observe.LoopOnly
  * hands `qnet` the batch's own memory; a receive hands `qnet` the addresses of the pool buffers it took. `qnet`
  * answers how many datagrams went or came, exactly, and what stopped it.
  *
- * Receiving is the loop's alone; sending is safe from any thread, one thread per lane. A refused segmented send
- * steps the socket down to [BatchCapability.Multi] for good.
+ * Receiving is the loop's alone; sending is safe from any thread, one thread per lane. A device that refuses
+ * segmented sends steps the socket down to [BatchCapability.Multi] for good; a link whose MTU is below a datagram size
+ * (EMSGSIZE) sends that batch without segments and takes segments only for smaller datagrams after.
  */
 @LoopOnly
 internal class NativeIo(
@@ -22,8 +23,11 @@ internal class NativeIo(
     private val sendRecords: List<NativeBytes>,
     /** The loop's receive records, [RECV_RECORD] bytes per datagram a receive may take. */
     private val receiveRecords: NativeBytes,
+    /** The batching the socket starts at: what its probe found. */
+    first: BatchCapability = socket.capability,
 ) : DatagramBatchIo {
-    private val mode = CapabilityCell(socket.capability)
+    private val mode = CapabilityCell(first)
+    private val segmentLimit = SegmentLimit()
     private val held = ArrayList<ReceiveBuffer>(MAX_RECEIVE)
     private var lastFrom: Sender = Sender.None
 
@@ -38,37 +42,59 @@ internal class NativeIo(
     override fun send(batch: SendBatch): SendBatchResult {
         val count = batch.pending
         val records = sendRecords[batch.lane]
+        var longest = 0
         for (n in 0 until count) {
             val at = n * SEND_RECORD
-            records.putInt(at, batch.lengthOf(n))
+            val length = batch.lengthOf(n)
+            if (length > longest) longest = length
+            records.putInt(at, length)
             when (val target = batch.targetOf(n)) {
                 is SendTarget.ConnectedPeer -> records.putInt(at + TARGET, 0)
                 is SendTarget.ServerReply -> putRecord(records, at + TARGET, target.to)
             }
         }
-        val capability = mode.load()
-        val result =
-            socket.cell.use(
-                call = { fd ->
-                    shim.udpSend(
-                        fd,
-                        socket.family,
-                        modeOf(capability),
-                        batch.storage.address + batch.offsetOf(0),
-                        batch.limits.maxDatagramSize,
-                        records.address,
-                        count,
-                        segmentsOf(capability),
-                    )
-                },
-                replacing = { REPLACED },
-                closed = { CLOSED },
-            )
-        if (result and SEGMENT_REFUSED != 0L) mode.stepDown(capability)
-        val taken = (result and COUNT_MASK).toInt()
-        val code = ((result ushr CODE_SHIFT) and CODE_MASK).toInt()
-        return if (code == 0) SendBatchResult.AllTaken else SendBatchResult.Partial(taken, errorOf(code))
+        var taken = 0
+        while (true) {
+            val capability = mode.load()
+            val segmented = capability is BatchCapability.Segmented && capability.send is Gso.On && segmentLimit.allows(longest)
+            val result = sendFrom(batch, records, taken, count - taken, if (segmented) capability else unsegmented(capability))
+            if (result and SEGMENT_REFUSED != 0L) mode.stepDown(capability)
+            taken += (result and COUNT_MASK).toInt()
+            val code = ((result ushr CODE_SHIFT) and CODE_MASK).toInt()
+            if (code == 0) return SendBatchResult.AllTaken
+            val error = errorOf(code)
+            if (segmented && error is UdpError.MessageTooLarge) {
+                // The link's MTU is below this datagram size: send the rest without segments, and remember the size.
+                segmentLimit.refuse(longest)
+                continue
+            }
+            return SendBatchResult.Partial(taken, error)
+        }
     }
+
+    private fun sendFrom(
+        batch: SendBatch,
+        records: NativeBytes,
+        skip: Int,
+        count: Int,
+        capability: BatchCapability,
+    ): Long =
+        socket.cell.use(
+            call = { fd ->
+                shim.udpSend(
+                    fd,
+                    socket.family,
+                    modeOf(capability),
+                    batch.storage.address + batch.offsetOf(skip),
+                    batch.limits.maxDatagramSize,
+                    records.address + skip * SEND_RECORD,
+                    count,
+                    segmentsOf(capability),
+                )
+            },
+            replacing = { REPLACED },
+            closed = { CLOSED },
+        )
 
     override fun receive(into: ReceiveBatch): ReceiveBatchResult {
         held.clear()
@@ -172,6 +198,13 @@ internal class NativeIo(
         private const val CLOSED = CLOSED_CODE.toLong() shl CODE_SHIFT
     }
 }
+
+/** [capability] without segments: the same socket's message-per-datagram batching. */
+private fun unsegmented(capability: BatchCapability): BatchCapability =
+    when (capability) {
+        is BatchCapability.Segmented -> BatchCapability.Multi(capability.maxDatagrams)
+        is BatchCapability.Multi, is BatchCapability.OneByOne -> capability
+    }
 
 private fun modeOf(capability: BatchCapability): Int =
     when (capability) {
