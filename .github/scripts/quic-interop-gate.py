@@ -320,6 +320,35 @@ class SimLostEveryDatagramToThePeer:
         return NotMatched()
 
 
+class PeerIdledOutWhileWeProbed:
+    """The peer's own log says it gave up on a connection after its idle timeout with requests unanswered, while a
+    connection of ours had answered, heard nothing more and probed at least min_probes times, and the simulator
+    corrupted or dropped at least min_lost of the datagrams we sent to one of the peer's ports: every probe of ours
+    that could have re-sent the answer was lost, and the peer, which sends nothing while it waits, had nothing to
+    prompt us with before it idled out."""
+
+    kind = "peer-idled-out-while-we-probed"
+
+    def __init__(self, fields):
+        if set(fields) != {"min_probes", "min_lost"}:
+            raise ExpectationError(f"{self.kind} takes exactly min_probes and min_lost, got {sorted(fields)}")
+        self.min_probes = positive_int(self.kind, {"min_probes": fields["min_probes"]}, "min_probes")
+        self.min_lost = positive_int(self.kind, {"min_lost": fields["min_lost"]}, "min_lost")
+
+    def match(self, test_evidence, peer_role):
+        gave_up = [t for t in test_evidence.get("peer_idle_timeouts", []) if t["completed"] < t["requested"]]
+        probing = [c for c in test_evidence.get("connections", []) if c["fin_sent_streams"] > 0 and c["tx_after_last_rx"] >= self.min_probes]
+        lost = [p for p in test_evidence.get("sim_to_peer", []) if p["datagrams"] - p["delivered"] >= self.min_lost]
+        if gave_up and probing and lost:
+            t = gave_up[0]
+            return Matched(
+                f"peer gave up after {t['after_s']:.0f} s with {t['completed']}/{t['requested']} answered; "
+                f"{probing[0]['qlog']} probed {probing[0]['tx_after_last_rx']} times; the simulator lost "
+                f"{lost[0]['datagrams'] - lost[0]['delivered']} of {lost[0]['datagrams']} datagrams to port {lost[0]['port']}"
+            )
+        return NotMatched()
+
+
 class PeerLeftADownloadEmpty:
     """The peer's client exited 0 although the runner found a download it wrote empty, while our server answered
     a request on every connection: the client reported success for a file it never received."""
@@ -498,6 +527,7 @@ SIGNATURES = {
         PeerHandshakePacketsNeverArrived,
         PeerGoneWhileWeProbed,
         PeerClientHelloNeverCompleted,
+        PeerIdledOutWhileWeProbed,
         AnyOf,
     )
 }

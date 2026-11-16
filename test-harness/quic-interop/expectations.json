@@ -965,7 +965,7 @@
       "handshake": "pass",
       "handshakecorruption": {
         "flaky": {
-          "why": "peer and simulator: the stock quiche client sends its request 30 s after our HANDSHAKE_DONE (its own unreset backoff) and idles out with our answer in flight (run 43609318908); or every datagram we send it is corrupted, so its ClientHello's second packet is never re-sent (run 43612995827); or every copy of its Finished is corrupted while half its probes go to 1-RTT packets our server cannot read before the Finished (run 43680120243); or only part of its two-packet ClientHello ever arrives (run 43687068929); or it acknowledges our flight and its Finished never arrives (run 43687046353)",
+          "why": "peer and simulator: the stock quiche client sends its request 30 s after our HANDSHAKE_DONE (its own unreset backoff) and idles out with our answer in flight (run 43609318908); or every datagram we send it is corrupted, so its ClientHello's second packet is never re-sent (run 43612995827); or every copy of its Finished is corrupted while half its probes go to 1-RTT packets our server cannot read before the Finished (run 43680120243); or only part of its two-packet ClientHello ever arrives (run 43687068929); or it acknowledges our flight and its Finished never arrives (run 43687046353); or the simulator corrupts every one of our answer's copies, which our server sends at the pace RFC 9002 gives it after a handshake that lost packets (smoothed RTT 1.7 s, PTO 7 s then 14 s: three probes in the client's 30 s), and the client, which sends nothing while it waits, idles out (run 43947308066)",
           "signature": {
             "kind": "any-of",
             "signatures": [
@@ -987,6 +987,11 @@
               },
               {
                 "kind": "peer-finished-never-arrived"
+              },
+              {
+                "kind": "peer-idled-out-while-we-probed",
+                "min_probes": 3,
+                "min_lost": 5
               }
             ]
           }

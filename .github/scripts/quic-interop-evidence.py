@@ -32,6 +32,7 @@ EMPTY_DOWNLOAD = re.compile(r"doesn't match\. Original: \d+ bytes, downloaded: 0
 SIM_DATAGRAM = re.compile(r"\b(Forwarding|Corrupting|Dropping) \d+ bytes [\d.]+:(\d+) -> ([\d.]+):(\d+)")
 OUR_ADDRESS = {"client": "193.167.0.100", "server": "193.167.100.100"}
 MIGRATION_SUMMARY = re.compile(r"MIGRATION-SUMMARY attempted=(\d+) succeeded=(\d+)(?:.*?firstUnmoved=move \d+: (\w+))?")
+PEER_IDLE_TIMEOUT = re.compile(r"connection timed out after ([\d.]+)s and only completed (\d+)/(\d+) requests")
 TRANSPORT_SPACE = "transport"
 
 
@@ -161,6 +162,19 @@ def connection_facts(path, side):
     return facts
 
 
+def peer_idle_timeouts(log_txt):
+    """What the stock quiche client's own log says about each connection it gave up on: the seconds it waited and
+    how many of its requests were answered."""
+    timeouts = []
+    if os.path.exists(log_txt):
+        with open(log_txt, errors="replace") as f:
+            for line in f:
+                m = PEER_IDLE_TIMEOUT.search(line)
+                if m:
+                    timeouts.append({"after_s": float(m.group(1)), "completed": int(m.group(2)), "requested": int(m.group(3))})
+    return timeouts
+
+
 def runner_output(output_txt, side):
     """(container exits, our client's migration summaries, runner verdicts, simulator deliveries to us)."""
     exits, migrations, runner, to_us, to_peer, from_peer = {}, [], {}, {}, {}, {}
@@ -223,6 +237,7 @@ def evidence(logs, direction, peer):
             "sim_to_us": to_us,
             "sim_to_peer": to_peer,
             "sim_from_peer": from_peer,
+            "peer_idle_timeouts": peer_idle_timeouts(os.path.join(test_dir, "client" if side == "server" else "server", "log.txt")),
         }
     return tests
 
