@@ -11,13 +11,11 @@ import com.ditchoom.socket.quic.core.life.HandshakeReached
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.life.RttSample
 import com.ditchoom.socket.quic.core.path.SinglePath
-import com.ditchoom.socket.quic.core.testing.FlightEvidenceRule
 import com.ditchoom.socket.quic.core.testing.nativeBytes
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.time.WakeSink
 import com.ditchoom.socket.quic.core.time.WakeState
 import com.ditchoom.socket.quic.core.udp.SockAddr
-import org.junit.Rule
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -27,9 +25,6 @@ import kotlin.time.Duration.Companion.seconds
 
 /** [Handshake] against a scripted quiche and plain times: its ceiling sequence, its deadline and its report. */
 class HandshakeTests {
-    @get:Rule
-    val flightEvidence = FlightEvidenceRule()
-
     private val ms = 1_000_000L
     private val stub = StubQuicheApi().apply { established = false }
     private var confirmed = false

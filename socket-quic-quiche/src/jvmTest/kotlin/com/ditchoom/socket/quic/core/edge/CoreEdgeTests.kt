@@ -16,7 +16,6 @@ import com.ditchoom.socket.quic.QuicStreamClosedException
 import com.ditchoom.socket.quic.QuicStreamSide
 import com.ditchoom.socket.quic.QuicTlsConfig
 import com.ditchoom.socket.quic.ScopedRead
-import com.ditchoom.socket.quic.core.testing.FlightEvidenceRule
 import com.ditchoom.socket.quic.loadQuicheApi
 import com.ditchoom.socket.quic.read
 import com.ditchoom.socket.quic.skipOnMissingNativeLib
@@ -30,7 +29,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
-import org.junit.Rule
 import java.io.ByteArrayOutputStream
 import kotlin.random.Random
 import kotlin.test.Test
@@ -43,9 +41,6 @@ import kotlin.time.Duration.Companion.seconds
 
 /** The public stream and connection API on the run-to-completion core, against today's server over a real socket. */
 class CoreEdgeTests {
-    @get:Rule
-    val flightEvidence = FlightEvidenceRule()
-
     private val options = QuicOptions(alpnProtocols = listOf("test"), verifyPeer = false, idleTimeout = 10.seconds)
 
     @Test

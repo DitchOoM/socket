@@ -6,17 +6,12 @@ import com.ditchoom.socket.quic.QuicheConn
 import com.ditchoom.socket.quic.StubQuicheApi
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
-import com.ditchoom.socket.quic.core.testing.FlightEvidenceRule
-import org.junit.Rule
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertSame
 
 class StreamTableTests {
-    @get:Rule
-    val flightEvidence = FlightEvidenceRule()
-
     private val api = StubQuicheApi()
     private val q = QuicheConnRef(api, QuicheConn(1L))
     private val table = StreamTable(q, StreamIo(q), QuicRole.Client)

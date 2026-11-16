@@ -7,13 +7,11 @@ import com.ditchoom.socket.quic.QuicheConn
 import com.ditchoom.socket.quic.SendTarget
 import com.ditchoom.socket.quic.StubQuicheApi
 import com.ditchoom.socket.quic.core.observe.ConnCounts
-import com.ditchoom.socket.quic.core.testing.FlightEvidenceRule
 import com.ditchoom.socket.quic.core.testing.nativeBytes
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.udp.BatchLimits
 import com.ditchoom.socket.quic.core.udp.Room
 import com.ditchoom.socket.quic.core.udp.SendBatch
-import org.junit.Rule
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -21,9 +19,6 @@ import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 class ConnLifeTests {
-    @get:Rule
-    val flightEvidence = FlightEvidenceRule()
-
     private val api = StubQuicheApi()
     private val q = QuicheConnRef(api, QuicheConn(1L))
     private val counts = ConnCounts()

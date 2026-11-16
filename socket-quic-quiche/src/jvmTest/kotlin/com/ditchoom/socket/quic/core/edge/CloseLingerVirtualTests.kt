@@ -8,11 +8,9 @@ import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.ScopedRead
 import com.ditchoom.socket.quic.core.life.ConnEnd
-import com.ditchoom.socket.quic.core.testing.FlightEvidenceRule
 import com.ditchoom.socket.quic.read
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import org.junit.Rule
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
@@ -28,9 +26,6 @@ import kotlin.time.Duration.Companion.seconds
  * datagram and handing none to quiche, and a graceful close delivers what was written before it closes.
  */
 class CloseLingerVirtualTests {
-    @get:Rule
-    val flightEvidence = FlightEvidenceRule()
-
     private val options =
         QuicOptions(alpnProtocols = listOf("test"), verifyPeer = false, idleTimeout = 30.seconds, enablePmtuDiscovery = false)
 

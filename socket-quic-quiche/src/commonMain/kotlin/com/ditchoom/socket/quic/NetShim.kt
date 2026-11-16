@@ -46,12 +46,22 @@ internal interface NetShim {
 
     fun pollerClose(poller: Long)
 
-    /** Opens the socket the spec block at [spec] describes; the descriptor, or a negated code. */
-    fun udpOpen(spec: Long): Int
+    /** `qnet`'s fingerprint of the spec block's layout, to compare with [com.ditchoom.socket.quic.core.udp.SpecLayout.FINGERPRINT]. */
+    fun specLayout(): Int
 
-    fun udpCapability(
+    /** Opens the socket the spec block at [spec] describes; the descriptor, or a negated code. */
+    fun udpOpenSocket(spec: Long): Int
+
+    /** The batching the socket's kernel offers: `QN_CAP_*` bits, and the GSO segment ceiling shifted 8 bits up. */
+    fun udpCapabilities(fd: Int): Int
+
+    /** Turns `UDP_GRO` on: 1 on, 0 this platform has none, a negated code when refused. */
+    fun udpSetGro(fd: Int): Int
+
+    /** Sets DF on the socket's datagrams: 0 when set, else a negated code. [family] is the socket's, 4 or 6. */
+    fun udpSetDontFragment(
         fd: Int,
-        spec: Long,
+        family: Int,
     ): Int
 
     /** Datagrams taken in the low 32 bits, the refusal that stopped the batch in bits 32..47, flags above. */

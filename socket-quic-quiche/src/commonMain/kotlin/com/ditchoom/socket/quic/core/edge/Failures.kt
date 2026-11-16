@@ -27,6 +27,7 @@ import com.ditchoom.socket.quic.core.stream.QUICHE_ERR_INVALID_STREAM_STATE
 import com.ditchoom.socket.quic.core.stream.QUICHE_ERR_STREAM_RESET
 import com.ditchoom.socket.quic.core.stream.QUICHE_ERR_STREAM_STOPPED
 import com.ditchoom.socket.quic.core.udp.SocketFault
+import com.ditchoom.socket.quic.core.udp.SpecLayoutMismatch
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.withTimeout
@@ -100,6 +101,11 @@ internal sealed interface Raised : OpFailure {
     /** The native stack could not open the socket or the loop's poller. */
     class SocketRefused(
         val refusal: NativeSocketRefusal,
+    ) : Raised
+
+    /** The loaded `qnet` lays its socket spec block out differently from this code. */
+    class SpecLayoutRefused(
+        val mismatch: SpecLayoutMismatch,
     ) : Raised
 
     /** Network.framework failed the client's connection before it was ready. */
@@ -200,6 +206,7 @@ private fun exceptionOf(
         is Raised.RouteUnresolved -> UnresolvedRouteSourceException(failure.reason)
         is Raised.LoopsClosed -> CoreLoopsClosed()
         is Raised.SocketRefused -> failure.refusal
+        is Raised.SpecLayoutRefused -> CoreSpecLayoutMismatch(failure.mismatch)
         is Raised.NetworkRefused -> failure.refusal
     }
 
@@ -265,6 +272,11 @@ private suspend fun timedOut(bound: Duration): Nothing = withTimeout(Duration.ZE
 
 /** A connect was given a set of loops that has been closed. */
 internal class CoreLoopsClosed : IllegalStateException()
+
+/** The native library this process loaded does not lay out the socket spec block as this code does. */
+internal class CoreSpecLayoutMismatch(
+    val mismatch: SpecLayoutMismatch,
+) : IllegalStateException()
 
 /** A write quiche refused for a reason of its own, by quiche's code. */
 internal class QuicStreamWriteFailed(

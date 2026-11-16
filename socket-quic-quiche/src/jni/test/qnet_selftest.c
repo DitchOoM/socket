@@ -48,7 +48,9 @@ static int open_socket(uint8_t *spec, int family, const uint8_t *peer_local) {
     if (peer_local != NULL) memcpy(spec + QN_SPEC_PEER, peer_local, 24);
     qn_spec_put((int64_t)(uintptr_t)spec, QN_SPEC_RCVBUF, 4 << 20);
     qn_spec_put((int64_t)(uintptr_t)spec, QN_SPEC_SNDBUF, 2 << 20);
-    return qn_udp_open((int64_t)(uintptr_t)spec);
+    int fd = qn_udp_open_socket((int64_t)(uintptr_t)spec);
+    if (fd >= 0) CHECK(qn_udp_set_dont_fragment(fd, family) == 0, "family %d: DF refused", family);
+    return fd;
 }
 
 static void fill(int32_t i, int32_t length) {
@@ -222,18 +224,15 @@ static int32_t coalesced_all(int fd, int32_t slots, int32_t expected, int32_t *l
 /* The sender's UDP_SEGMENT groups reach a UDP_GRO receiver coalesced, and come out of the split as the datagrams that
  * were sent: every one byte-exact and in order, from the sender's address; a message that does not fit the free slots
  * stays queued. */
+static int open_gro_server(int family, int want);
 static void gro_round_trip(int family) {
     memset(spec_b, 0, QN_SPEC_BYTES);
     if (family == 4) put_record(spec_b + QN_SPEC_BIND, 4, 0, 0, 0x7f000001);
     else put_record(spec_b + QN_SPEC_BIND, 6, 0, 0, 1);
     qn_spec_put((int64_t)(uintptr_t)spec_b, QN_SPEC_RCVBUF, 4 << 20);
-    qn_spec_put((int64_t)(uintptr_t)spec_b, QN_SPEC_GRO_WANT, 1);
-    int server = qn_udp_open((int64_t)(uintptr_t)spec_b);
+    int server = open_gro_server(family, 1);
     CHECK(server >= 0, "gro server open %d", server);
-    CHECK(qn_spec_int((int64_t)(uintptr_t)spec_b, QN_SPEC_GRO_STATE) == 1, "family %d: UDP_GRO state %d, want on", family,
-          qn_spec_int((int64_t)(uintptr_t)spec_b, QN_SPEC_GRO_STATE));
-    CHECK(qn_spec_int((int64_t)(uintptr_t)spec_b, QN_SPEC_DF) == 0 && qn_udp_dont_fragment(server, family) == 1,
-          "family %d: a UDP_GRO socket has no DF", family);
+    CHECK(qn_udp_dont_fragment(server, family) == 1, "family %d: a UDP_GRO socket has no DF", family);
     int client = open_socket(spec_a, family, spec_b + QN_SPEC_LOCAL);
     /* 16 datagrams of 1200 plus a short last one, twice, as UDP_SEGMENT groups, then one lone datagram. */
     int32_t sent_total = 0, lengths[256], got = 0, widest = 0;
@@ -292,8 +291,10 @@ static int open_gro_server(int family, int want) {
     if (family == 4) put_record(spec_b + QN_SPEC_BIND, 4, 0, 0, 0x7f000001);
     else put_record(spec_b + QN_SPEC_BIND, 6, 0, 0, 1);
     qn_spec_put((int64_t)(uintptr_t)spec_b, QN_SPEC_RCVBUF, 4 << 20);
-    qn_spec_put((int64_t)(uintptr_t)spec_b, QN_SPEC_GRO_WANT, want);
-    return qn_udp_open((int64_t)(uintptr_t)spec_b);
+    int fd = qn_udp_open_socket((int64_t)(uintptr_t)spec_b);
+    if (fd >= 0 && want) CHECK(qn_udp_set_gro(fd) == 1, "family %d: UDP_GRO not on", family);
+    if (fd >= 0) CHECK(qn_udp_set_dont_fragment(fd, family) == 0, "family %d: DF refused", family);
+    return fd;
 }
 
 /* One recvmmsg batch that holds lone datagrams and coalesced messages together: everything arrives in order, byte-exact,
@@ -475,8 +476,6 @@ static void dont_fragment(void) {
     for (int family = 4; family <= 6; family += 2) {
         int fd = open_socket(spec_a, family, NULL);
         CHECK(fd >= 0, "family %d: open %d", family, fd);
-        CHECK(qn_spec_int((int64_t)(uintptr_t)spec_a, QN_SPEC_DF) == 0, "family %d: open reported DF refused %d", family,
-              qn_spec_int((int64_t)(uintptr_t)spec_a, QN_SPEC_DF));
         CHECK(qn_udp_dont_fragment(fd, family) == 1, "family %d: DF not set on the socket", family);
 #if QN_KQUEUE
         /* lo0's MTU is 16384: a datagram over it is refused with DF, fragmented without. */
@@ -491,7 +490,22 @@ static void dont_fragment(void) {
     }
 }
 
+/* The offsets this file and every binding read the spec block by are the ones the library was built with. */
+static void spec_layout(void) {
+    uint32_t h = QN_SPEC_BYTES;
+    const int32_t fields[] = {QN_SPEC_BIND,        QN_SPEC_PEER,        QN_SPEC_RCVBUF, QN_SPEC_SNDBUF,
+                              QN_SPEC_GRANTED_RCV, QN_SPEC_GRANTED_SND, QN_SPEC_LOCAL};
+    for (size_t i = 0; i < sizeof fields / sizeof fields[0]; i++) h = h * 31u + (uint32_t)fields[i];
+    CHECK(qn_spec_layout() == (int32_t)h, "spec layout %d, the offsets fold to %d", qn_spec_layout(), (int32_t)h);
+    /* every field sits inside the block, in order, without overlap */
+    CHECK(QN_SPEC_PEER == QN_SPEC_BIND + 24 && QN_SPEC_RCVBUF == QN_SPEC_PEER + 24 && QN_SPEC_SNDBUF == QN_SPEC_RCVBUF + 4 &&
+              QN_SPEC_GRANTED_RCV == QN_SPEC_SNDBUF + 4 && QN_SPEC_GRANTED_SND == QN_SPEC_GRANTED_RCV + 4 &&
+              QN_SPEC_LOCAL == QN_SPEC_GRANTED_SND + 4 && QN_SPEC_BYTES == QN_SPEC_LOCAL + 24,
+          "spec fields overlap or leave a gap");
+}
+
 int main(void) {
+    spec_layout();
     send_base = calloc(SLOTS, STRIDE);
     for (int i = 0; i < 64; i++) recv_bufs[i] = calloc(1, 2048);
     gro_split();
@@ -499,8 +513,9 @@ int main(void) {
     dont_fragment();
     int caps = 0;
     int probe = open_socket(spec_a, 6, NULL);
-    caps = qn_udp_capability(probe, 0);
+    caps = qn_udp_capabilities(probe);
     qn_close(probe);
+    caps &= (1 << QN_CAP_SEGMENTS_SHIFT) - 1;
     printf("capabilities: multi=%d gso=%d gro=%d\n", !!(caps & QN_CAP_MULTI), !!(caps & QN_CAP_GSO),
            !!(caps & QN_CAP_GRO));
     for (int family = 4; family <= 6; family += 2) {

@@ -61,6 +61,9 @@ internal class NativeEcho(
         ) {
             is NativeOpened.Opened -> opened.socket
             is NativeOpened.Refused -> throw AssertionError("qnet refused the echo socket: ${opened.refusal}")
+            is NativeOpened.LayoutMismatch -> throw AssertionError(
+                "qnet lays the spec block out as ${opened.mismatch.reported}, expected ${opened.mismatch.expected}",
+            )
         }
 
     /** Where the echo listens. */

@@ -10,10 +10,8 @@ import com.ditchoom.socket.quic.core.stream.Retry
 import com.ditchoom.socket.quic.core.stream.StreamTable
 import com.ditchoom.socket.quic.core.stream.Waiter
 import com.ditchoom.socket.quic.core.testing.ConnRig
-import com.ditchoom.socket.quic.core.testing.FlightEvidenceRule
 import com.ditchoom.socket.quic.core.testing.nativeBytes
 import com.ditchoom.socket.quic.core.time.Nanos
-import org.junit.Rule
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
@@ -28,9 +26,6 @@ import kotlin.time.Duration.Companion.nanoseconds
  * once the linger is over its socket closes.
  */
 class ConnCloseTests {
-    @get:Rule
-    val flightEvidence = FlightEvidenceRule()
-
     private val api =
         StubQuicheApi().apply {
             emitOneDatagramOnClose = true

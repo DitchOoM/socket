@@ -14,7 +14,6 @@ import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.QuicheRecvInfo
 import com.ditchoom.socket.quic.RouteSource
 import com.ditchoom.socket.quic.core.demux.withCoreEchoServer
-import com.ditchoom.socket.quic.core.testing.FlightEvidenceRule
 import com.ditchoom.socket.quic.loadQuicheApi
 import com.ditchoom.socket.quic.skipOnMissingNativeLib
 import com.ditchoom.socket.testkit.trace.TraceEvent
@@ -25,7 +24,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
-import org.junit.Rule
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.random.Random
 import kotlin.test.Test
@@ -40,9 +38,6 @@ import kotlin.time.Duration.Companion.seconds
  * address only.
  */
 class CoreManyMovesTests {
-    @get:Rule
-    val flightEvidence = FlightEvidenceRule()
-
     private class FakeMonitor : NetworkMonitor {
         override val state = MutableStateFlow<NetworkState>(WIFI_BEFORE)
 

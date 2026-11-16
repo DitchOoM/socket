@@ -56,27 +56,39 @@
 #define QN_IO_MULTI 1   /* sendmmsg / recvmmsg */
 #define QN_IO_SEGMENT 2 /* sendmmsg of UDP_SEGMENT groups */
 
-/* Capability bits written by qn_udp_open / qn_udp_capability. */
+/* Capability bits returned by qn_udp_capabilities (low 8 bits; the GSO segment ceiling is above them). */
+#define QN_CAP_SEGMENTS_SHIFT 8
 #define QN_CAP_MULTI 1
 #define QN_CAP_GSO 2
 #define QN_CAP_GRO 4
 #define QN_CAP_PRIVATE 8 /* QN_CAP_MULTI rides calls outside the public SDK (Darwin sendmsg_x/recvmsg_x) */
 
-/* Socket spec block (caller memory, QN_SPEC_BYTES): in = bind and peer and buffer sizes; out = granted and local. */
-#define QN_SPEC_BIND 0      /* record: int32 family, int32 port, int64 hi, int64 lo (24 bytes) */
-#define QN_SPEC_PEER 24     /* record; family 0 = unconnected */
-#define QN_SPEC_RCVBUF 48   /* int32 in */
-#define QN_SPEC_SNDBUF 52   /* int32 in */
+/* Socket spec block (caller memory, QN_SPEC_BYTES) for qn_udp_open_socket: in = bind, peer and buffer sizes; out = granted
+ * buffer sizes and the local address. Socket options are not in it: each is a call on the open descriptor with its own
+ * result (qn_udp_set_gro, qn_udp_set_dont_fragment, qn_udp_capabilities). The Kotlin side checks its copy of these
+ * offsets against qn_spec_layout() before it opens a socket. */
+#define QN_SPEC_BIND 0    /* record: int32 family, int32 port, int64 hi, int64 lo (24 bytes) */
+#define QN_SPEC_PEER 24   /* record; family 0 = unconnected */
+#define QN_SPEC_RCVBUF 48 /* int32 in */
+#define QN_SPEC_SNDBUF 52 /* int32 in */
 #define QN_SPEC_GRANTED_RCV 56
 #define QN_SPEC_GRANTED_SND 60
-#define QN_SPEC_LOCAL 64    /* record out */
-#define QN_SPEC_CAPS 88     /* int32 out: QN_CAP_* */
-#define QN_SPEC_GSO_SEGMENTS 92 /* int32 out */
-#define QN_SPEC_GRO_WANT 96   /* int32 in: 1 = turn UDP_GRO on at open, and again at every reopen from this block */
-#define QN_SPEC_GRO_STATE 100 /* int32 out: 1 = on; 0 = off (not asked, or this platform has none); -QN_E* = refused */
+#define QN_SPEC_LOCAL 64 /* record out */
+#define QN_SPEC_BYTES 88
 
-#define QN_SPEC_DF 104        /* int32 out: 0 = the socket sends with DF set (never fragments), else the QN_E* code of the refusal */
-#define QN_SPEC_BYTES 108
+/* qn_spec_layout(): a fingerprint of the offsets above, folded as h = h * 31 + offset over QN_SPEC_BYTES, BIND, PEER, RCVBUF,
+ * SNDBUF, GRANTED_RCV, GRANTED_SND, LOCAL in that order. */
+#define QN_SPEC_FOLD(h, offset) ((h) * 31u + (uint32_t)(offset))
+#define QN_SPEC_LAYOUT                                                                                              \
+    ((int32_t)QN_SPEC_FOLD(                                                                                          \
+        QN_SPEC_FOLD(                                                                                                \
+            QN_SPEC_FOLD(QN_SPEC_FOLD(QN_SPEC_FOLD(QN_SPEC_FOLD(QN_SPEC_FOLD((uint32_t)QN_SPEC_BYTES, QN_SPEC_BIND), \
+                                                                QN_SPEC_PEER),                                       \
+                                                   QN_SPEC_RCVBUF),                                                  \
+                                      QN_SPEC_SNDBUF),                                                               \
+                         QN_SPEC_GRANTED_RCV),                                                                       \
+            QN_SPEC_GRANTED_SND),                                                                                    \
+        QN_SPEC_LOCAL))
 
 /* Send record, one per datagram (QN_SEND_RECORD bytes): int32 length, then the target record at +8 (family 0 =
  * the connected peer). */
@@ -113,14 +125,24 @@ QN_EXPORT int32_t qn_poller_ready_at(int64_t poller, int32_t index);
 QN_EXPORT int32_t qn_poller_wake(int64_t poller);
 QN_EXPORT void qn_poller_close(int64_t poller);
 
-QN_EXPORT int32_t qn_udp_open(int64_t spec);
-QN_EXPORT int32_t qn_udp_capability(int32_t fd, int64_t spec);
+/* QN_SPEC_LAYOUT as this library was built, for the caller to compare with its own copy. */
+QN_EXPORT int32_t qn_spec_layout(void);
+/* The descriptor of a non-blocking, close-on-exec UDP socket opened from the spec block, or a negated QN_E* code. */
+QN_EXPORT int32_t qn_udp_open_socket(int64_t spec);
+/* What the socket can batch, asked of the kernel without changing it: QN_CAP_* bits, and the GSO segment ceiling
+ * shifted by QN_CAP_SEGMENTS_SHIFT. */
+QN_EXPORT int32_t qn_udp_capabilities(int32_t fd);
+/* Turns UDP_GRO on and gives the socket its receive scratch: 1 on, 0 this platform has none, negated QN_E* when refused.
+ * Call again on a socket reopened from the same spec. */
+QN_EXPORT int32_t qn_udp_set_gro(int32_t fd);
+/* Sets DF on the socket's datagrams (RFC 9000 section 14): 0 when set, else the negated QN_E* code of the refusal. */
+QN_EXPORT int32_t qn_udp_set_dont_fragment(int32_t fd, int32_t family_of_socket);
 /* 1 when the socket's own option says it sets DF on its datagrams (the family's option), 0 when not, negated QN_E* on error. */
 QN_EXPORT int32_t qn_udp_dont_fragment(int32_t fd, int32_t family_of_socket);
 QN_EXPORT int64_t qn_udp_send(int32_t fd, int32_t family, int32_t mode, int64_t base, int32_t stride, int64_t records,
                               int32_t count, int32_t segments);
 QN_EXPORT int64_t qn_udp_recv(int32_t fd, int32_t mode, int64_t records, int32_t count, int32_t size);
-/* Receive on a socket opened with QN_SPEC_GRO_WANT: one recvmmsg of up to a message per free slot, each message split by
+/* Receive on a socket opened with qn_udp_set_gro: one recvmmsg of up to a message per free slot, each message split by
  * its own UDP_GRO segment size (none: a single datagram) into the receive records' slots exactly as separately received
  * datagrams would be, each record carrying its message's source. Lone datagrams therefore cost what qn_udp_recv's
  * QN_IO_MULTI costs. A message is never split across reads: one that does not fit the slots left waits whole in the
