@@ -5279,7 +5279,7 @@ val stageCoreAndroidTests =
     tasks.register<Sync>("stageCoreAndroidTests") {
         group = "verification"
         description = "Copy the JVM-tool-free core test sources into the Android instrumented test source set"
-        // Re-admitted suites that need no JVM-only tool (suites still parked live in src/parkedCoreTest).
+        // Core suites that need no JVM-only tool.
         from("src/jvmTest/kotlin/com/ditchoom/socket/quic/core") {
             include(
                 "testing/ConnRig.kt",

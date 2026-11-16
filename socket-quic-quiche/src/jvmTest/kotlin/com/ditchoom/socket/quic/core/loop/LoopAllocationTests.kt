@@ -2,6 +2,7 @@ package com.ditchoom.socket.quic.core.loop
 
 import com.ditchoom.socket.quic.core.testing.NioEcho
 import com.ditchoom.socket.quic.core.testing.allocationSamples
+import com.ditchoom.socket.quic.core.testing.withDescriptorsAbove127
 import java.lang.management.ManagementFactory
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
@@ -16,7 +17,7 @@ import kotlin.test.assertTrue
  * counter after warm-up. The connection's quiche echoes from preallocated memory, so anything counted is the loop's,
  * the connection's and the socket implementation's own.
  *
- * The test first holds [HELD_DESCRIPTORS] descriptors, so its sockets sit above 127 as a server's do (design 9.3):
+ * The test first holds 160 descriptors, so its sockets sit above 127 as a server's do (design 9.3):
  * the JDK selector's `fdToKey.get(fd)` boxes every descriptor above 127, one `Integer` per ready key. A worker that
  * happened to have fewer open passed, one with more failed (Apple FFM: 16 B per echo). On the JDK stack the gate is
  * that boxing and nothing else: the native stack of design 9.1 takes its place and the gate returns to zero.
@@ -24,12 +25,7 @@ import kotlin.test.assertTrue
 class LoopAllocationTests {
     @Test
     fun theLoopAllocatesNothingPerEchoedDatagramButTheJdkSelectorsBoxing() {
-        val held = List(HELD_DESCRIPTORS) { DatagramChannel.open() }
-        try {
-            measure()
-        } finally {
-            held.forEach { it.close() }
-        }
+        withDescriptorsAbove127 { measure() }
     }
 
     private fun measure() {
@@ -104,8 +100,6 @@ class LoopAllocationTests {
     }
 
     private companion object {
-        /** Descriptors held open first, so the test's own sit above the JDK's `Integer` cache (-128..127). */
-        const val HELD_DESCRIPTORS = 160
         const val BOXED_INTEGER_BYTES = 16
         const val BOXED_KEY = "java.lang.Integer @ Integer.valueOf"
         const val SELECTOR_FRAME = "SelectorImpl.process"
