@@ -57,6 +57,16 @@ kotlin {
         binaries.framework {
             baseName = "probe"
         }
+        // The core lanes drive the run-to-completion client (`coreConnect`) and read its flight recorder
+        // (`FlightEvidence`), both `internal` to :socket-quic-quiche and not part of any public API. A probe
+        // that is never published may see them: the quiche klib is named a friend of this compilation.
+        val quicheKlib =
+            project(":socket-quic-quiche")
+                .layout.buildDirectory
+                .file("classes/kotlin/iosArm64/main/klib/socket-quic-quiche")
+        compilations.getByName("main").compileTaskProvider.configure {
+            compilerOptions.freeCompilerArgs.addAll(quicheKlib.map { listOf("-friend-modules", it.asFile.absolutePath) })
+        }
     }
 
     sourceSets {

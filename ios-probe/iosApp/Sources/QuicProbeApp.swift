@@ -142,12 +142,16 @@ final class ProbeRunner: NSObject, ObservableObject, CLLocationManagerDelegate {
         manager.desiredAccuracy = kCLLocationAccuracyThreeKilometers
         manager.distanceFilter = 50
         manager.pausesLocationUpdatesAutomatically = false
+        // The lifecycle goes to the probe, which logs it and, on all but `foreground`, writes the core lanes'
+        // flight recordings (Documents/flight) so a suspension, a memory kill or a termination leaves them.
         for (name, label) in [
             (UIApplication.didEnterBackgroundNotification, "background"),
             (UIApplication.willEnterForegroundNotification, "foreground"),
+            (UIApplication.didReceiveMemoryWarningNotification, "memory-warning"),
+            (UIApplication.willTerminateNotification, "terminate"),
         ] {
             NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { _ in
-                IosHandoffProbe.shared.noteRun(line: "APP-STATE \(label)")
+                IosHandoffProbe.shared.noteAppState(label: label)
             }
         }
     }
