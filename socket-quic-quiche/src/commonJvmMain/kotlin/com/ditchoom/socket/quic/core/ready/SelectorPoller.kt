@@ -53,6 +53,9 @@ internal class SelectorPoller(
             keys[i].cancel()
             keys.removeAt(i)
             for (j in i until keys.size) tokens[j] = tokens[j + 1]
+            // The JDK closes a registered channel's descriptor only once its key is deregistered, in a select: do it
+            // now, so a channel closed after this frees its port at once and a socket reopened on it can bind it.
+            select(Wait.Now, 0L)
             return
         }
     }

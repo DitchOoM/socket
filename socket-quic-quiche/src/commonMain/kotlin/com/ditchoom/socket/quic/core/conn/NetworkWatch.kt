@@ -8,8 +8,8 @@ internal enum class NetworkChange {
     /** A usable network appeared where there was none. */
     Usable,
 
-    /** The usable network changed to another one. */
-    Changed,
+    /** The usable network changed to another one, and the socket was reopened on it at the same address and port. */
+    Rehomed,
 
     /** No usable network at all. */
     Gone,
@@ -44,7 +44,7 @@ internal class NetworkWatch {
 
     fun changed(change: NetworkChange): NetworkStep =
         when (change) {
-            NetworkChange.Usable, NetworkChange.Changed -> {
+            NetworkChange.Usable, NetworkChange.Rehomed -> {
                 watch = Watch.Usable
                 NetworkStep.Nudge
             }

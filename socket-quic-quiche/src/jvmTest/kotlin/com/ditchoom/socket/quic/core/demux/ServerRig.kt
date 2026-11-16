@@ -32,6 +32,7 @@ import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.ReceiveBatchResult
 import com.ditchoom.socket.quic.core.udp.ReceiveBuffer
+import com.ditchoom.socket.quic.core.udp.Reopened
 import com.ditchoom.socket.quic.core.udp.SendBatch
 import com.ditchoom.socket.quic.core.udp.SendBatchResult
 import com.ditchoom.socket.quic.core.udp.SocketClosed
@@ -93,6 +94,8 @@ internal class BoundedIo(
     }
 
     override fun probe(): SocketProbe = SocketProbe.Open
+
+    override fun reopen(): Reopened = Reopened.SameEndpoint
 
     override fun close(): SocketClosed = SocketClosed
 }

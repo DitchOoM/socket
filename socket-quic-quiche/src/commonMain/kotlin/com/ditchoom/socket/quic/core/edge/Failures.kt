@@ -204,6 +204,7 @@ private fun ConnEnd.trace(): Trace =
             when (val fault = fault) {
                 is SocketFault.Unnamed -> Trace.Of(fault.thrown.throwable)
                 is SocketFault.Repeated -> Trace.Of(fault.thrown.throwable)
+                is SocketFault.ReopenRefused -> Trace.Of(fault.thrown.throwable)
                 is SocketFault.Closed -> Trace.None
             }
         is ConnEnd.ByPeer, is ConnEnd.ByLocal, is ConnEnd.IdleTimeout, is ConnEnd.HandshakeTimedOut,

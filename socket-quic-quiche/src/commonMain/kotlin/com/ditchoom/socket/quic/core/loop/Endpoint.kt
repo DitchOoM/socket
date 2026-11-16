@@ -2,6 +2,8 @@ package com.ditchoom.socket.quic.core.loop
 
 import com.ditchoom.socket.quic.core.conn.Collected
 import com.ditchoom.socket.quic.core.conn.Conn
+import com.ditchoom.socket.quic.core.conn.NetworkChange
+import com.ditchoom.socket.quic.core.conn.NetworkWork
 import com.ditchoom.socket.quic.core.demux.Admitted
 import com.ditchoom.socket.quic.core.demux.ServerPhase
 import com.ditchoom.socket.quic.core.life.ConnEnd
@@ -16,6 +18,7 @@ import com.ditchoom.socket.quic.core.sched.SocketHealth
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.ReceiveBatchResult
+import com.ditchoom.socket.quic.core.udp.Reopened
 import com.ditchoom.socket.quic.core.udp.SendBatch
 import com.ditchoom.socket.quic.core.udp.SocketFault
 import com.ditchoom.socket.quic.core.udp.Thrown
@@ -161,6 +164,31 @@ internal class Endpoint(
         }
         refreshInterest(poller)
         return Stay.Stays
+    }
+
+    /**
+     * The network under this socket changed: the socket is reopened on the same local address and port, and its
+     * connection is told so in this pass, so it sends from the new socket at once instead of waiting out its
+     * backed-off timers. A socket that cannot be reopened ends its connection.
+     */
+    fun rehome(poller: Poller) {
+        if (phase != Phase.Live) return
+        poller.remove(token)
+        when (val reopened = io.reopen()) {
+            is Reopened.SameEndpoint -> {
+                poller.add(socketRef, token)
+                interest = WriteInterest.None
+                input = Input.Maybe
+                when (route) {
+                    is Route.Fixed -> route.conn.submitFromLoop(NetworkWork(NetworkChange.Rehomed))
+                    is Route.Demux -> Unit
+                }
+            }
+            is Reopened.Refused -> {
+                phase = Phase.Gone
+                endConn(ConnEnd.SocketFailed(SocketFault.ReopenRefused(reopened.thrown)))
+            }
+        }
     }
 
     /** The io threw: this socket's connection ends with it, and no other. */

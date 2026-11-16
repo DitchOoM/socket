@@ -42,6 +42,11 @@ internal sealed interface SocketFault {
         val thrown: Thrown,
     ) : SocketFault
 
+    /** The network changed and no socket could be opened again on the same local address and port. */
+    class ReopenRefused(
+        val thrown: Thrown,
+    ) : SocketFault
+
     /** [count] unnamed errors in a row with no datagram taken in between. */
     class Repeated(
         val count: Int,
@@ -67,7 +72,7 @@ internal class SocketErrors {
         probe: SocketProbe,
     ): SendFault =
         when (error) {
-            is UdpError.WouldBlock -> SendFault.Full
+            is UdpError.WouldBlock, is UdpError.Replaced -> SendFault.Full
             is UdpError.MessageTooLarge -> datagram(DatagramFault.TooLarge)
             is UdpError.NetworkUnreachable -> datagram(DatagramFault.NetworkUnreachable)
             is UdpError.HostUnreachable -> datagram(DatagramFault.HostUnreachable)
