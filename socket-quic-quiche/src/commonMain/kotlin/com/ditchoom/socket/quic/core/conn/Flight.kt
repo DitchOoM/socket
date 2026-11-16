@@ -26,6 +26,12 @@ internal enum class PathMark {
 
     /** The client's socket moved, and the connection could not follow it. */
     Refused,
+
+    /** Quiche gave up validating the probed path, or closed it; the endpoint waits to be probed again. */
+    ProbeFailed,
+
+    /** A stranded endpoint was probed again, or tried to be. */
+    Reprobed,
 }
 
 /** How many records a connection's flight recording holds; their payload is kept in its loop's [FlightArena]. */
