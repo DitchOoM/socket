@@ -497,6 +497,12 @@ fi
 kill "$LOGCAT_PID" 2>/dev/null || true
 wait "$LOGCAT_PID" 2>/dev/null || true
 
+# What a failed core test logged under the core-flight tag becomes one .trace file per connection.
+if [ "$TEST_EXIT" != "0" ]; then
+  source "$(dirname "${BASH_SOURCE[0]}")/android-core-flight.sh"
+  core_flight_extract "$LOGCAT_FILE" "core-flight" || true
+fi
+
 # A test process that died is named from the logcat: its package, signal, thread, abort message and
 # the test it had started last.
 # shellcheck source=scripts/android-process-death.sh

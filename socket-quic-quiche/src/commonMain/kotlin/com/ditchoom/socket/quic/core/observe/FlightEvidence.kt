@@ -39,6 +39,7 @@ internal sealed interface Evidence {
  * Where the flight recordings of ended connections are kept for a process that asks for them, so a failed test can
  * write what every connection it touched saw. Off unless [keep] was called.
  */
+@Published
 internal object FlightEvidence {
     private val state = AtomicReference<Evidence>(Evidence.Off)
 
@@ -51,7 +52,11 @@ internal object FlightEvidence {
     fun release(): List<EndedFlight> {
         val last = state.exchange(Evidence.Off)
         val kept = ArrayList<EndedFlight>()
-        var at = (last as? Evidence.Keeping)?.kept ?: KeptFlights.None
+        var at =
+            when (last) {
+                is Evidence.Off -> KeptFlights.None
+                is Evidence.Keeping -> last.kept
+            }
         while (true) {
             when (at) {
                 is KeptFlights.None -> return kept.asReversed()

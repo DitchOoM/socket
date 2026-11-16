@@ -692,6 +692,7 @@ jobs:
           path: |
             build/test-results/jvmTest
             socket-quic-quiche/build/test-results/jvmTest
+            socket-quic-quiche/build/core-flight
           if-no-files-found: warn
       - name: Flight recorder ring (on failure)
         if: ${{ (failure() || cancelled()) && matrix.jfr == 'true' }}
