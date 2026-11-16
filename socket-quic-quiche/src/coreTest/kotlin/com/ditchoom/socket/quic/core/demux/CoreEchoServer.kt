@@ -1,7 +1,6 @@
 package com.ditchoom.socket.quic.core.demux
 
 import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.flow.writeFully
@@ -16,6 +15,7 @@ import com.ditchoom.socket.quic.core.edge.coreTestOptions
 import com.ditchoom.socket.quic.core.testing.platformQuicheApi
 import com.ditchoom.socket.quic.core.testing.platformTlsConfig
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
+import com.ditchoom.socket.quic.network
 import com.ditchoom.socket.quic.read
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -41,7 +41,7 @@ internal suspend fun withCoreEchoServer(
     wrapIo: (DatagramBatchIo) -> DatagramBatchIo = { it },
     api: QuicheApi = platformQuicheApi(),
     onAccepted: (CoreConnection) -> Unit = {},
-    factory: BufferFactory = BufferFactory.Default,
+    factory: BufferFactory = BufferFactory.network(),
     body: suspend CoroutineScope.(CoreServer) -> Unit,
 ) {
     val server =

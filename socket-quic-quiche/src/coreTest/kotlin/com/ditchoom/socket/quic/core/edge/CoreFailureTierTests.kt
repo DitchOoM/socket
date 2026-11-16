@@ -1,7 +1,6 @@
 package com.ditchoom.socket.quic.core.edge
 
 import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.socket.quic.QuicCloseCircumstance
@@ -12,6 +11,7 @@ import com.ditchoom.socket.quic.QuicStreamId
 import com.ditchoom.socket.quic.ScopedRead
 import com.ditchoom.socket.quic.core.conn.CallerPlace
 import com.ditchoom.socket.quic.core.life.ConnEnd
+import com.ditchoom.socket.quic.network
 import com.ditchoom.socket.quic.read
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
@@ -144,7 +144,7 @@ class CoreFailureTierTests {
         withFailureRig { rig ->
             val stream = rig.connection.openStream()
             val payload = Random(9).nextBytes(20_000)
-            val head = BufferFactory.Default.allocate(HEAD_BYTES)
+            val head = BufferFactory.network().allocate(HEAD_BYTES)
             head.writeBytes(payload, 0, HEAD_BYTES)
             head.resetForRead()
             rig.io.refuseCallerSends(1)
@@ -160,7 +160,7 @@ class CoreFailureTierTests {
                         }
                     }
                 stream.writeFully(
-                    BufferFactory.Default.allocate(payload.size - HEAD_BYTES).apply {
+                    BufferFactory.network().allocate(payload.size - HEAD_BYTES).apply {
                         writeBytes(payload, HEAD_BYTES, payload.size - HEAD_BYTES)
                         resetForRead()
                     },

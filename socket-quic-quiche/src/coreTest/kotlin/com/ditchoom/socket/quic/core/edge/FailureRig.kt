@@ -4,7 +4,6 @@ package com.ditchoom.socket.quic.core.edge
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ByteOrder
-import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.socket.quic.QuicStreamId
@@ -27,6 +26,7 @@ import com.ditchoom.socket.quic.core.udp.ReadAddress
 import com.ditchoom.socket.quic.core.udp.SendBatch
 import com.ditchoom.socket.quic.core.udp.SendBatchResult
 import com.ditchoom.socket.quic.core.udp.UdpError
+import com.ditchoom.socket.quic.network
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -114,7 +114,7 @@ internal fun onTheLoop(): Boolean = currentThreadName().startsWith(LOOP_THREAD)
 /** Answers every allocation by throwing what it was given: a read's attempt throws inside the connection. */
 internal class ThrowingFactory(
     private val planted: Exception,
-) : BufferFactory by BufferFactory.Default {
+) : BufferFactory by BufferFactory.network() {
     override fun allocate(
         size: Int,
         byteOrder: ByteOrder,

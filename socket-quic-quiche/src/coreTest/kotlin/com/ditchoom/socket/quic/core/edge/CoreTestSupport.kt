@@ -1,7 +1,6 @@
 package com.ditchoom.socket.quic.core.edge
 
 import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.WritePolicy
@@ -13,6 +12,7 @@ import com.ditchoom.socket.quic.core.conn.FlightSize
 import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.testing.platformQuicheApi
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
+import com.ditchoom.socket.quic.network
 import com.ditchoom.socket.quic.read
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -32,7 +32,7 @@ internal suspend fun connectCore(
     port: Int,
     host: String = "127.0.0.1",
     loops: LoopSet = LoopSet.shared,
-    factory: BufferFactory = BufferFactory.Default,
+    factory: BufferFactory = BufferFactory.network(),
     api: com.ditchoom.socket.quic.QuicheApi = platformQuicheApi(),
     wrapIo: (DatagramBatchIo) -> DatagramBatchIo = { it },
 ): CoreClient =
@@ -68,7 +68,7 @@ internal suspend fun echoOver(
                 }
             }
         stream.writeFully(
-            BufferFactory.Default.allocate(payload.size).apply {
+            BufferFactory.network().allocate(payload.size).apply {
                 writeBytes(payload)
                 resetForRead()
             },

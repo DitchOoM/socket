@@ -1,7 +1,6 @@
 package com.ditchoom.socket.quic.core.conn
 
 import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.flow.HalfCloseable
 import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.socket.quic.QuicCloseException
@@ -13,6 +12,7 @@ import com.ditchoom.socket.quic.core.edge.ReceivedBytes
 import com.ditchoom.socket.quic.core.edge.connectCore
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.loop.LoopSet
+import com.ditchoom.socket.quic.network
 import com.ditchoom.socket.quic.read
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -49,7 +49,7 @@ class CoreClientServerTests {
                     val reader =
                         async { while (stream.read(10.seconds) { received.add(it) } is ScopedRead.Data<*>) Unit }
                     stream.writeFully(
-                        BufferFactory.Default.allocate(PAYLOAD).apply {
+                        BufferFactory.network().allocate(PAYLOAD).apply {
                             writeBytes(payload)
                             resetForRead()
                         },
