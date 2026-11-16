@@ -256,8 +256,8 @@ class TypedStreamTests {
                 stream.close()
             }) { server ->
                 val client = connectCore(server.port, loops = loops, factory = tracked.pool)
-                val before = tracked.outstanding()
-                repeat(20) { round ->
+
+                suspend fun cycle(round: Int) {
                     val stream = client.connection.openTypedStream(NoteCodec)
                     stream.send(Note(round, "hello"))
                     // A read parked on a stream that has nothing, cancelled.
@@ -268,6 +268,11 @@ class TypedStreamTests {
                     stream.close()
                     assertTrue(parked.await().isFailure, "the parked read must fail when the stream closes")
                 }
+                // The connection holds a few buffers of its own once it has sent and received; they are not the streams'.
+                cycle(WARM_UP_ID)
+                delay(200.milliseconds)
+                val before = tracked.outstanding()
+                repeat(20) { round -> cycle(round) }
                 assertTrue(
                     eventually { tracked.outstanding() == before },
                     "typed stream buffers were not returned: ${tracked.outstanding() - before} outstanding",
@@ -297,5 +302,6 @@ class TypedStreamTests {
 
     private companion object {
         const val FRAMES = 24
+        const val WARM_UP_ID = 1_000
     }
 }
