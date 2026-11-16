@@ -347,7 +347,7 @@ class SimLostEveryDatagramToThePeer:
 
 
 class PeerIdledOutWhileWeProbed:
-    """The peer's own log says it gave up on a connection after its idle timeout with requests unanswered, while a
+    """The peer's own report says it gave up on requests after its idle timeout, while a
     connection of ours had answered, heard nothing more and probed at least min_probes times, and the simulator
     corrupted or dropped at least min_lost of the datagrams we sent to one of the peer's ports: every probe of ours
     that could have re-sent the answer was lost, and the peer, which sends nothing while it waits, had nothing to
@@ -362,13 +362,12 @@ class PeerIdledOutWhileWeProbed:
         self.min_lost = positive_int(self.kind, {"min_lost": fields["min_lost"]}, "min_lost")
 
     def match(self, test_evidence, peer_role):
-        gave_up = [t for t in test_evidence.get("peer_idle_timeouts", []) if t["completed"] < t["requested"]]
+        unanswered = test_evidence.get("peer_unanswered_requests", 0)
         probing = [c for c in test_evidence.get("connections", []) if c["fin_sent_streams"] > 0 and c["tx_after_last_rx"] >= self.min_probes]
         lost = [p for p in test_evidence.get("sim_to_peer", []) if p["datagrams"] - p["delivered"] >= self.min_lost]
-        if gave_up and probing and lost:
-            t = gave_up[0]
+        if unanswered and probing and lost:
             return Matched(
-                f"peer gave up after {t['after_s']:.0f} s with {t['completed']}/{t['requested']} answered; "
+                f"peer gave up on {unanswered} request(s) after its idle timeout; "
                 f"{probing[0]['qlog']} probed {probing[0]['tx_after_last_rx']} times; the simulator lost "
                 f"{lost[0]['datagrams'] - lost[0]['delivered']} of {lost[0]['datagrams']} datagrams to port {lost[0]['port']}"
             )

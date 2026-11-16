@@ -1121,10 +1121,20 @@
       "handshake": "pass",
       "handshakecorruption": {
         "flaky": {
-          "why": "peer: the s2n-quic client acknowledges our HANDSHAKE_DONE and pings for 17 s but never sends its request (run 43612995827)",
+          "why": "peer and simulator: the s2n-quic client acknowledges our HANDSHAKE_DONE and pings for 17 s but never sends its request (run 43612995827); or its request arrives after a handshake the simulator delayed 15 s, every copy of our answer is corrupted, and the first RTT sample (6 s, from the one Handshake packet that got through) puts our next PTO 21 s out, past the client's 30 s idle timeout, which sends nothing while it waits (run 43973014575)",
           "signature": {
-            "kind": "peer-request-never-arrived",
-            "min_packets": 5
+            "kind": "any-of",
+            "signatures": [
+              {
+                "kind": "peer-request-never-arrived",
+                "min_packets": 5
+              },
+              {
+                "kind": "peer-idled-out-while-we-probed",
+                "min_probes": 2,
+                "min_lost": 5
+              }
+            ]
           }
         }
       },
