@@ -878,6 +878,33 @@ def lane_in_step(events, t0, window_end, restarts=()):
     return f"died ({reason}), NOT recovered by window end", True
 
 
+OS_STATE = re.compile(r"OS-NET state=(\S+)")
+OS_LOOKBACK_MS = 120_000
+
+
+def recovery_breakdown(events, os_net, death_t, answered_t, enabled_t=None):
+    """Where the death-to-first-echo time went, for a lane that died while the OS network was away: the OS
+    coming back (`OS-NET state=Routable...` after the last non-Routable one), the lane's reconnect starting
+    (CONNECT-ATTEMPT), the handshake finishing (CONNECTED) and the first answered echo. None when the OS never
+    reported the network leaving in the window, because then there is no OS-usable instant to measure from."""
+    states = [(t, m.group(1)) for t, b in os_net for m in [OS_STATE.match(b)] if m]
+    away = [t for t, s in states if not s.startswith("Routable") and death_t - OS_LOOKBACK_MS <= t <= answered_t]
+    if not away:
+        return None
+    usable = next((t for t, s in states if t > away[-1] and s.startswith("Routable")), None)
+    if usable is None or usable > answered_t:
+        return None
+    started = next((t for t, b in events if t >= usable and b.startswith("CONNECT-ATTEMPT")), None)
+    est = next((t for t, b in events if t >= usable and b.startswith("CONNECTED")), None)
+    echo = next((t for t, b in events if t >= usable and b.startswith(("ECHO-OK", "ECHO-LATE"))), None)
+    if started is None or est is None or echo is None:
+        return None
+    # lifecycle.sh stamps the Wi-Fi-on command (action=wifi-on); with it the OS's own reaction time is separate.
+    pre = f"wifi-on -> OS usable {(usable - enabled_t) / 1000:.1f}s | " if enabled_t is not None and enabled_t <= usable else ""
+    return (f"{pre}death -> OS usable {(usable - death_t) / 1000:.1f}s | OS usable -> reconnect started {(started - usable) / 1000:.1f}s"
+            f" | connect -> established {(est - started) / 1000:.1f}s | established -> first echo {(echo - est) / 1000:.1f}s")
+
+
 def print_lifecycle(lanes, last_t):
     run = lanes.get(RUN_LANE, [])
     steps = lifecycle_steps(run, last_t)
@@ -898,6 +925,17 @@ def print_lifecycle(lanes, last_t):
         for n in names:
             verdict, _ = lane_in_step(lanes[n], t0, window_end, restarts)
             print(f"      {n} [{engine_of(n)}]: {verdict}")
+            if verdict.startswith("died") and "recovered in" in verdict:
+                evs = lanes[n]
+                died_t = next(t for t, b in evs if t0 <= t <= window_end and death_reason(b) is not None
+                              and not b.startswith("SCOPE-EXITED"))
+                answered = sorted(t for t, b in evs if b.startswith(("ECHO-OK", "ECHO-LATE")))
+                later = bisect.bisect_right(answered, died_t)
+                on = [t for t, b in run if "phase=action" in b and "action=wifi-on" in b and t0 <= t <= window_end]
+                detail = (recovery_breakdown(evs, run, died_t, answered[later], on[0] if on else None)
+                          if later < len(answered) else None)
+                if detail:
+                    print(f"          breakdown: {detail}")
 
 
 def main():

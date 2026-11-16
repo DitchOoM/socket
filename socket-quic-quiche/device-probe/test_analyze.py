@@ -452,6 +452,29 @@ class EngineAndLifecycleTests(unittest.TestCase):
         self.assertIn("v4 [4.x]: died (ended: QuicCloseException), recovered in 11.5s", stop)
         self.assertIn("core-v4 [core]: died (ended: QuicCloseException), NOT recovered by window end", stop)
 
+    def test_a_death_with_the_network_away_is_broken_down_into_os_probe_connect_and_echo(self):
+        log = "".join(l + "\n" for l in [
+            "t=0ms lane=run START device=test targets=192.0.2.1:44433/v4 minutes=10 echoIntervalMs=1000 qlog=off",
+            "t=1ms lane=run LANES core-v4=192.0.2.1:44433 staggerMs=500",
+            "t=10ms lane=core-v4 CONNECT-ATTEMPT n=1 target=192.0.2.1:44433 family=v4",
+            "t=60ms lane=core-v4 CONNECTED session=aa wire=aa alpn=test",
+            "t=1000ms lane=core-v4 ECHO-OK seq=1 rtt=40ms pending=0B",
+            "t=10000ms lane=run LIFECYCLE step=1 name=wifi phase=begin probe=alive",
+            "t=10100ms lane=run LIFECYCLE step=1 name=wifi phase=action probe=alive action=wifi-off",
+            "t=10700ms lane=run OS-NET state=Offline v4=Absent v6=LinkLocal cell=NotReported links=lo=127.0.0.1",
+            "t=40500ms lane=core-v4 CONNECTION-DEAD seq=30 reason=local: IdleTimeout (0x-1) \u2014 leaving scope to reconnect",
+            "t=50100ms lane=run LIFECYCLE step=1 name=wifi phase=action probe=alive action=wifi-on",
+            "t=52400ms lane=run OS-NET state=Routable|Link:Wifi:1|Pending v4=SiteLocal v6=LinkLocal cell=NotReported links=wlan0=192.168.1.6",
+            "t=52450ms lane=core-v4 CONNECT-ATTEMPT n=2 target=192.0.2.1:44433 family=v4",
+            "t=52550ms lane=core-v4 CONNECTED session=bb wire=bb alpn=test",
+            "t=52760ms lane=core-v4 ECHO-OK seq=1 rtt=40ms pending=0B",
+            "t=100000ms lane=run LIFECYCLE step=1 name=wifi phase=end probe=alive",
+        ])
+        out = analyze(log)
+        self.assertIn("core-v4 [core]: died (local: IdleTimeout (0x-1)), recovered in 12.3s", out)
+        self.assertIn("breakdown: wifi-on -> OS usable 2.3s | death -> OS usable 11.9s | OS usable -> reconnect started 0.1s"
+                      " | connect -> established 0.1s | established -> first echo 0.2s", out)
+
     def test_a_force_stop_is_read_off_the_restart_because_a_killed_process_writes_no_ending(self):
         log = "".join(l + "\n" for l in [
             "t=0ms lane=run START device=test targets=192.0.2.1:44433/v4 minutes=10 echoIntervalMs=1000 qlog=off",

@@ -24,6 +24,7 @@ import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.CellularStandby
 import com.ditchoom.socket.NetworkMonitor
+import com.ditchoom.socket.NetworkState
 import com.ditchoom.socket.installAndroidApplicationContext
 import com.ditchoom.socket.quic.trace.QlogBudget
 import com.ditchoom.socket.quic.trace.QlogDirectory
@@ -74,10 +75,12 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.AssumptionViolatedException
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -399,6 +402,7 @@ class DeviceHandoffProbe {
             while (System.currentTimeMillis() < deadline) {
                 val attempt = probe.watch.nextAttempt()
                 val attemptStarted = System.currentTimeMillis()
+                val networkAtAttempt = monitor.state.value
                 laneEmit("CONNECT-ATTEMPT n=$attempt ${target.line}")
                 if (attempt > 1) status.onEnded(lane, "reconnecting (attempt $attempt)")
                 // Per CONNECTION, not per run: a reconnect negotiates a brand-new CID pool, so a pool
@@ -508,7 +512,17 @@ class DeviceHandoffProbe {
                     retryDelayMs = if (lived < SHORT_LIVED_MS) minOf(retryDelayMs * 2, RECONNECT_MAX_MS) else RECONNECT_MIN_MS
                     laneEmit("RECONNECTING in ${retryDelayMs / 1000}s (last attempt lived ${lived}ms)")
                     probe.watch.backingOff(retryDelayMs.milliseconds)
-                    delay(retryDelayMs)
+                    // The backoff is for a network that stays the same. When the OS reports a route where it had
+                    // none, that is new information: reconnect now rather than at the end of a delay that was sized
+                    // for the outage, and start the next backoff from the floor again.
+                    // Compared with the network the attempt STARTED on, so a route that came back during the attempt
+                    // itself still wakes it.
+                    val before = networkAtAttempt
+                    val woken = withTimeoutOrNull(retryDelayMs) { monitor.state.first { it != before && it is NetworkState.Routable } }
+                    if (woken != null) {
+                        laneEmit("NETWORK-WAKE reconnecting now: ${before::class.simpleName} -> ${woken::class.simpleName}")
+                        retryDelayMs = RECONNECT_MIN_MS
+                    }
                 }
             }
             probe.watch.walkOver()

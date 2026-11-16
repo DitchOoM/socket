@@ -81,7 +81,12 @@ for name in "${STEPS[@]}"; do
       act adbs shell cmd connectivity airplane-mode enable;  sleep "$DWELL"
       act adbs shell cmd connectivity airplane-mode disable; sleep "$DWELL" ;;
     wifi)
-      act adbs shell cmd -w wifi set-wifi-enabled disabled; sleep "$DWELL"
+      # WIFI_OFF_SECONDS (default: the dwell) is how long Wi-Fi stays off; below the idle timeout (30 s) the
+      # connections should survive or recover without ever dying of it. Each command is stamped on the probe's
+      # clock so analyze.py can put the OS's own reaction time next to the probe's.
+      mark "$name" action wifi-off
+      act adbs shell cmd -w wifi set-wifi-enabled disabled; sleep "${WIFI_OFF_SECONDS:-$DWELL}"
+      mark "$name" action wifi-on
       act adbs shell cmd -w wifi set-wifi-enabled enabled;  sleep "$DWELL" ;;
     *) echo "unknown step '$name'" >&2 ;;
   esac
