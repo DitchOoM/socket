@@ -89,7 +89,16 @@ internal enum class MoveAnswer {
 }
 
 /** What one serve's look at the paths found. */
-internal enum class PathStep { Steady, Migrated }
+internal enum class PathStep {
+    Steady,
+    Migrated,
+
+    /** Quiche gave up validating the probed path, or closed it. */
+    ProbeFailed,
+
+    /** A stranded endpoint was probed again. */
+    Reprobed,
+}
 
 /**
  * When a stranded endpoint is probed again after [failed] probes of its move found no path: one PTO of the path the

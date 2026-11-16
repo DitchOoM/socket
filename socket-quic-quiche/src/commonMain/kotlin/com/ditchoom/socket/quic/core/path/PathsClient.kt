@@ -158,7 +158,7 @@ internal class ClientPaths(
                         is ProbeOutcome.Probed -> Move.Probing(stranded.from, Linked(stranded.at, probed.dcidSeq), stranded.retry.failed)
                         is ProbeOutcome.Rejected -> strandedAgain(now, stranded)
                     }
-                PathStep.Steady
+                PathStep.Reprobed
             }
         }
     }
@@ -190,7 +190,7 @@ internal class ClientPaths(
             if (type == QuichePathEventType.FailedValidation || type == QuichePathEventType.Closed) {
                 val retry = q.retryAt(now, probing.failed + 1)
                 move = Move.Stranded(probing.from, probing.to.local, Unprobed.ValidationFailed, retry, LinkedId.Seq(probing.to.dcidSeq))
-                return PathStep.Steady
+                return PathStep.ProbeFailed
             }
         }
     }
