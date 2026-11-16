@@ -359,5 +359,152 @@ class NeverEstablishedTests(unittest.TestCase):
         self.assertIn("run: CONNECT-TOTALS attempts=7 established=2", out)
 
 
+def engines_and_lifecycle_log():
+    """A 4.x lane and a core lane over ten minutes. At t+120s the device hands off: the 4.x lane migrates (a 2 s
+    echo gap, no death) and the core lane dies with a typed reason and is back 7 s later. Then three lifecycle
+    steps: Doze (4.x survives, core dies idle-timed-out and recovers in 20 s), a trim-memory (both survive) and a
+    force-stop (both die with the probe, the 4.x lane recovers in 12 s, the core lane never does)."""
+    lines = []
+
+    def at(t, lane, body):
+        lines.append((t, f"t={t}ms lane={lane} {body}"))
+
+    def echoes(lane, spans):
+        for lo, hi in spans:
+            for t in range(lo, hi, 1000):
+                at(t, lane, f"ECHO-OK seq={t} rtt=40ms pending=0B")
+
+    at(0, "run", "START device=test targets=192.0.2.1:44433/v4 minutes=10 echoIntervalMs=1000 qlog=off")
+    at(1, "run", "LANES v4=192.0.2.1:44433 core-v4=192.0.2.1:44433 staggerMs=500")
+    for lane in ("v4", "core-v4"):
+        at(10, lane, "CONNECT-ATTEMPT n=1 target=192.0.2.1:44433 family=v4")
+        at(60, lane, "CONNECTED session=aa wire=aa alpn=test")
+    # handoff at t+120s
+    at(120_000, "v4", "PATH Probing")
+    at(120_040, "v4", "PATH Migrated")
+    echoes("v4", [(1_000, 119_000), (122_000, 300_000)])
+    echoes("core-v4", [(1_000, 119_000)])
+    at(120_100, "core-v4", "CONNECTION-DEAD seq=120 reason=local: IdleTimeout (0x-1) \u2014 leaving scope to reconnect")
+    at(120_200, "core-v4", "CONNECT-ATTEMPT n=2 target=192.0.2.1:44433 family=v4")
+    at(126_900, "core-v4", "CONNECTED session=bb wire=bb alpn=test")
+    echoes("core-v4", [(127_000, 300_000)])
+    # step 1: doze, 300s..400s. 4.x lane keeps echoing; core lane dies at 310s, back at 330s.
+    at(300_000, "run", "LIFECYCLE step=1 name=doze phase=begin probe=alive")
+    echoes("v4", [(300_000, 400_000)])
+    at(310_000, "core-v4", "CONNECTION-DEAD seq=300 reason=local: IdleTimeout (0x-1) \u2014 leaving scope to reconnect")
+    at(310_100, "core-v4", "CONNECT-ATTEMPT n=3 target=192.0.2.1:44433 family=v4")
+    at(329_000, "core-v4", "CONNECTED session=cc wire=cc alpn=test")
+    echoes("core-v4", [(330_000, 400_000)])
+    at(400_000, "run", "LIFECYCLE step=1 name=doze phase=end probe=alive")
+    # step 2: trim-memory, 410s..420s: nothing happens.
+    at(410_000, "run", "LIFECYCLE step=2 name=trim-memory phase=begin probe=alive")
+    echoes("v4", [(400_000, 500_000)])
+    echoes("core-v4", [(400_000, 500_000)])
+    at(420_000, "run", "LIFECYCLE step=2 name=trim-memory phase=end probe=alive")
+    # step 3: force-stop at 500s; the restart brings the 4.x lane back at 512s, the core lane never.
+    at(500_000, "run", "LIFECYCLE step=3 name=force-stop phase=begin probe=alive")
+    at(500_500, "v4", "CONNECTION-ENDED err=QuicCloseException msg=process killed")
+    at(500_900, "core-v4", "CONNECTION-ENDED err=QuicCloseException msg=process killed")
+    at(505_000, "run", "LIFECYCLE step=3 name=force-stop phase=end probe=dead")
+    at(511_000, "v4", "CONNECT-ATTEMPT n=2 target=192.0.2.1:44433 family=v4")
+    at(511_500, "v4", "CONNECTED session=dd wire=dd alpn=test")
+    echoes("v4", [(512_000, 600_000)])
+    at(600_000, "run", "DONE attempts=5 lanes=2 log=/sdcard/quic-handoff-probe.log")
+    return "".join(l + "\n" for _, l in sorted(lines, key=lambda e: e[0]))
+
+
+class EngineAndLifecycleTests(unittest.TestCase):
+    """The core has no migration, so the report has to put its deaths and reconnect times next to the 4.x lane's,
+    and say per lifecycle step what each lane did."""
+
+    def setUp(self):
+        self.out = analyze(engines_and_lifecycle_log())
+        self.comparison = self.out[self.out.index("engine comparison"):self.out.index("lifecycle steps")]
+        self.lifecycle = self.out[self.out.index("lifecycle steps"):]
+
+    def test_deaths_are_counted_per_lane_by_typed_reason(self):
+        self.assertIn("lane v4 [4.x]: deaths=1 by reason: ended: QuicCloseException=1", self.comparison)
+        self.assertIn("lane core-v4 [core]: deaths=3 by reason: local: IdleTimeout (0x-1)=2,ended: QuicCloseException=1", self.comparison)
+
+    def test_reconnect_time_is_death_to_first_answered_echo(self):
+        core = self.comparison[self.comparison.index("lane core-v4"):]
+        # 120.1s -> 127.0s, 310.0s -> 330.0s, and the force-stop one never recovers.
+        self.assertIn("reconnect (death -> first answered echo): p50=20.0s max=20.0s (1 never recovered)", core)
+        v4 = self.comparison[self.comparison.index("lane v4"):self.comparison.index("lane core-v4")]
+        self.assertIn("reconnect (death -> first answered echo): p50=11.5s max=11.5s", v4)
+
+    def test_echo_gap_per_handoff_is_reported_for_each_engine(self):
+        v4 = self.comparison[self.comparison.index("lane v4"):self.comparison.index("lane core-v4")]
+        self.assertRegex(v4, r"echo gap per handoff \(3\): 4\.0s 1\.0s 13\.0s")
+        self.assertRegex(self.comparison, r"core-v4 \[core\].*\n.*\n.*echo gap per handoff \(3\): 9\.0s")
+        self.assertIn("4.x overall:", self.comparison)
+        self.assertIn("core overall:", self.comparison)
+
+    def test_each_lifecycle_step_says_what_each_lane_did(self):
+        doze = self.lifecycle[self.lifecycle.index("step 1 doze"):self.lifecycle.index("step 2")]
+        self.assertIn("v4 [4.x]: survived", doze)
+        self.assertIn("core-v4 [core]: died (local: IdleTimeout (0x-1)), recovered in 20.0s", doze)
+        trim = self.lifecycle[self.lifecycle.index("step 2 trim-memory"):self.lifecycle.index("step 3")]
+        self.assertIn("v4 [4.x]: survived", trim)
+        self.assertIn("core-v4 [core]: survived", trim)
+        stop = self.lifecycle[self.lifecycle.index("step 3 force-stop"):]
+        self.assertIn("probe=alive", stop)
+        self.assertIn("v4 [4.x]: died (ended: QuicCloseException), recovered in 11.5s", stop)
+        self.assertIn("core-v4 [core]: died (ended: QuicCloseException), NOT recovered by window end", stop)
+
+    def test_a_death_with_the_network_away_is_broken_down_into_os_probe_connect_and_echo(self):
+        log = "".join(l + "\n" for l in [
+            "t=0ms lane=run START device=test targets=192.0.2.1:44433/v4 minutes=10 echoIntervalMs=1000 qlog=off",
+            "t=1ms lane=run LANES core-v4=192.0.2.1:44433 staggerMs=500",
+            "t=10ms lane=core-v4 CONNECT-ATTEMPT n=1 target=192.0.2.1:44433 family=v4",
+            "t=60ms lane=core-v4 CONNECTED session=aa wire=aa alpn=test",
+            "t=1000ms lane=core-v4 ECHO-OK seq=1 rtt=40ms pending=0B",
+            "t=10000ms lane=run LIFECYCLE step=1 name=wifi phase=begin probe=alive",
+            "t=10100ms lane=run LIFECYCLE step=1 name=wifi phase=action probe=alive action=wifi-off",
+            "t=10700ms lane=run OS-NET state=Offline v4=Absent v6=LinkLocal cell=NotReported links=lo=127.0.0.1",
+            "t=40500ms lane=core-v4 CONNECTION-DEAD seq=30 reason=local: IdleTimeout (0x-1) \u2014 leaving scope to reconnect",
+            "t=50100ms lane=run LIFECYCLE step=1 name=wifi phase=action probe=alive action=wifi-on",
+            "t=52400ms lane=run OS-NET state=Routable|Link:Wifi:1|Pending v4=SiteLocal v6=LinkLocal cell=NotReported links=wlan0=192.168.1.6",
+            "t=52450ms lane=core-v4 CONNECT-ATTEMPT n=2 target=192.0.2.1:44433 family=v4",
+            "t=52550ms lane=core-v4 CONNECTED session=bb wire=bb alpn=test",
+            "t=52760ms lane=core-v4 ECHO-OK seq=1 rtt=40ms pending=0B",
+            "t=100000ms lane=run LIFECYCLE step=1 name=wifi phase=end probe=alive",
+        ])
+        out = analyze(log)
+        self.assertIn("core-v4 [core]: died (local: IdleTimeout (0x-1)), recovered in 12.3s", out)
+        self.assertIn("breakdown: wifi-on -> OS usable 2.3s | death -> OS usable 11.9s | OS usable -> reconnect started 0.1s"
+                      " | connect -> established 0.1s | established -> first echo 0.2s", out)
+
+    def test_a_force_stop_is_read_off_the_restart_because_a_killed_process_writes_no_ending(self):
+        log = "".join(l + "\n" for l in [
+            "t=0ms lane=run START device=test targets=192.0.2.1:44433/v4 minutes=10 echoIntervalMs=1000 qlog=off",
+            "t=1ms lane=run LANES v4=192.0.2.1:44433 core-v4=192.0.2.1:44433 staggerMs=500",
+            "t=10ms lane=v4 CONNECT-ATTEMPT n=1 target=192.0.2.1:44433 family=v4",
+            "t=60ms lane=v4 CONNECTED session=aa wire=aa alpn=test",
+            "t=10ms lane=core-v4 CONNECT-ATTEMPT n=1 target=192.0.2.1:44433 family=v4",
+            "t=60ms lane=core-v4 CONNECTED session=aa wire=aa alpn=test",
+            "t=1000ms lane=v4 ECHO-OK seq=1 rtt=40ms pending=0B",
+            "t=1000ms lane=core-v4 ECHO-OK seq=1 rtt=40ms pending=0B",
+            "t=50000ms lane=run LIFECYCLE step=1 name=force-stop phase=begin probe=alive",
+            "t=55000ms lane=run LIFECYCLE step=1 name=force-stop phase=end probe=dead action=stopped",
+            "t=56000ms lane=run PREVIOUS-RUN none \u2014 resuming this walk in place",
+            "t=56100ms lane=v4 CONNECT-ATTEMPT n=1 target=192.0.2.1:44433 family=v4",
+            "t=56200ms lane=core-v4 CONNECT-ATTEMPT n=1 target=192.0.2.1:44433 family=v4",
+            "t=58000ms lane=v4 ECHO-OK seq=1 rtt=40ms pending=0B",
+            "t=62000ms lane=core-v4 ECHO-OK seq=1 rtt=40ms pending=0B",
+            "t=90000ms lane=run DONE attempts=2 lanes=2 log=/sdcard/quic-handoff-probe.log",
+        ])
+        out = analyze(log)
+
+        self.assertIn("step 1 force-stop t+50s..t+55s probe=alive>dead", out)
+        self.assertIn("v4 [4.x]: killed with the process, recovered in 8.0s", out)
+        self.assertIn("core-v4 [core]: killed with the process, recovered in 12.0s", out)
+
+    def test_a_log_with_one_engine_prints_no_comparison(self):
+        out = analyze(two_lane_log()[0])
+        self.assertNotIn("engine comparison", out)
+        self.assertNotIn("lifecycle steps", out)
+
+
 if __name__ == "__main__":
     unittest.main()

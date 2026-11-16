@@ -219,6 +219,23 @@ reports how many connection endings had an `OS-NET` change within ±30 s of them
 Committed fixtures of the states above live in `OsNetworkFixtures` (`:socket-testkit`), so an
 analysis of "registered, roaming, no bearer" can be written and tested with no device.
 
+## Core lanes and lifecycle steps
+
+`start.sh` adds a `core-<family>` lane per target by default (`CORE=0 ./start.sh ...` drops them): the
+run-to-completion core client against the same server as the 4.x lane of that family (`core-v4` beside `v4`,
+`core-v6` beside `v6`), same log grammar. The core has no connection migration yet, so a handoff ends its
+connection: the lane logs `CONNECTION-DEAD ... reason=<typed>` and reconnects with the lane's usual backoff.
+`analyze.py` then ends with an *engine comparison*: per lane the deaths by typed reason, the reconnect time
+(death to first answered echo) and the echo gap at each handoff. The lane code is `ProbeEngines.kt`; the core's
+edge API it calls is listed in its KDoc.
+
+`lifecycle.sh` is for LOCAL runs only (an emulator or a spare device, never the phone on a walk): while a probe
+runs it cycles Doze, standby buckets, trim-memory, background kill, force-stop + resume, airplane mode and a
+Wi-Fi toggle, writing `LIFECYCLE step=... phase=begin|end` markers into the probe's log. `analyze.py` reports per
+step what each lane did (survived, died with its typed reason, recovered in Xs).
+
+    SERIAL=<device> ./start.sh 30 1000 && SERIAL=<device> ./lifecycle.sh 45
+
 ## Dry run (about 15 minutes)
 
 ```bash

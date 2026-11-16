@@ -74,10 +74,12 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.AssumptionViolatedException
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -119,6 +121,10 @@ import kotlin.time.TimeSource
  * the device crosses. Every line names its lane (`lane=v6 ECHO-OK …`), or `lane=run` for the run's
  * own. Lanes, and why a lane never falls back to another family: see [WalkTargets].
  *
+ * `-e probeCore 1` adds a `core-<family>` lane per target on the run-to-completion core client, beside the 4.x
+ * lane of the same target (see [ProbeEngine]). The core has no connection migration yet: a handoff ends its
+ * connection, the lane logs `CONNECTION-DEAD reason=<typed>` and reconnects.
+ *
  * What the OS said about the device's network — the radio, the links, their address families — is
  * recorded once for the whole run, under `lane=run`: see [OsNetWatch].
  */
@@ -143,7 +149,12 @@ class DeviceHandoffProbe {
                     throw AssumptionViolatedException(
                         "hand-driven probe — pass -e probeHost <ip>[,<ip>] to run it (see class KDoc)",
                     )
-                is WalkTargetsParse.Parsed -> parsed.targets.copy(pinned = WalkTargets.radios(arg("probePinned", "")))
+                is WalkTargetsParse.Parsed ->
+                    parsed.targets.copy(
+                        pinned = WalkTargets.radios(arg("probePinned", "")),
+                        core =
+                            arg("probeCore", "") == "1",
+                    )
             }
         val ctx = InstrumentationRegistry.getInstrumentation().targetContext
         val dir = ctx.getExternalFilesDir(null) ?: ctx.filesDir
@@ -390,6 +401,7 @@ class DeviceHandoffProbe {
             while (System.currentTimeMillis() < deadline) {
                 val attempt = probe.watch.nextAttempt()
                 val attemptStarted = System.currentTimeMillis()
+                val reachAtAttempt = osNet.reach.value
                 laneEmit("CONNECT-ATTEMPT n=$attempt ${target.line}")
                 if (attempt > 1) status.onEnded(lane, "reconnecting (attempt $attempt)")
                 // Per CONNECTION, not per run: a reconnect negotiates a brand-new CID pool, so a pool
@@ -405,7 +417,7 @@ class DeviceHandoffProbe {
                         // `TimeoutCancellationException: Timed out waiting for 15000 ms` while echoes were
                         // flowing fine. So it has to cover the whole walk, not the handshake.
                         val established =
-                            withQuicConnection(target.host, target.port, options, timeout = (minutes + 2).minutes) {
+                            lane.engine.probeEngine().connect(target.host, target.port, options, timeout = (minutes + 2).minutes) {
                                 laneEmit("CONNECTED session=${identity.session} wire=${identity.wire} alpn=$negotiatedAlpn")
                                 // What is still owed when it ends is what failed on it, and how long it went
                                 // without an answered echo is its own verdict.
@@ -499,7 +511,18 @@ class DeviceHandoffProbe {
                     retryDelayMs = if (lived < SHORT_LIVED_MS) minOf(retryDelayMs * 2, RECONNECT_MAX_MS) else RECONNECT_MIN_MS
                     laneEmit("RECONNECTING in ${retryDelayMs / 1000}s (last attempt lived ${lived}ms)")
                     probe.watch.backingOff(retryDelayMs.milliseconds)
-                    delay(retryDelayMs)
+                    // The backoff is for a network that stays the same. When the OS reports a route and an address of
+                    // THIS lane's family where it had none, that is new information: reconnect now rather than at the
+                    // end of a delay sized for the outage, and start the next backoff from the floor again. Compared
+                    // with what the OS said when the attempt STARTED, so a route that came back during the attempt
+                    // itself still wakes it. A v6 lane is not woken by Wi-Fi returning with only a link-local v6
+                    // address: its route arrives with the router advertisement, and that is its own change.
+                    val before = reachAtAttempt
+                    val woken = withTimeoutOrNull(retryDelayMs) { osNet.reach.first { it != before && it.carries(target.family) } }
+                    if (woken != null) {
+                        laneEmit("NETWORK-WAKE reconnecting now: v4=${woken.v4} v6=${woken.v6}")
+                        retryDelayMs = RECONNECT_MIN_MS
+                    }
                 }
             }
             probe.watch.walkOver()
