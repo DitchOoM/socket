@@ -5726,6 +5726,7 @@ val stageCoreAndroidTests =
                 "testing/EchoQuiche.kt",
                 "testing/NioEcho.kt",
                 "testing/SocketView.kt",
+                "testing/NativeStackRequired.kt",
                 "udp/NativeIoTests.kt",
                 "ready/NativePollerTests.kt",
                 "edge/JvmCoreTestSupport.kt",
