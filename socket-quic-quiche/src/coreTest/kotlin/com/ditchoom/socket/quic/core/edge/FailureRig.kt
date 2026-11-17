@@ -113,14 +113,21 @@ internal class RefusingIo(
 
 internal fun onTheLoop(): Boolean = currentThreadName().startsWith(LOOP_THREAD)
 
-/** Answers every allocation by throwing what it was given: a read's attempt throws inside the connection. */
+/** Answers every allocation with a real buffer whose limit throws what it was given: a read's attempt throws inside the connection. */
 internal class ThrowingFactory(
     private val planted: Exception,
 ) : BufferFactory by BufferFactory.network() {
     override fun allocate(
         size: Int,
         byteOrder: ByteOrder,
-    ): PlatformBuffer = throw planted
+    ): PlatformBuffer = ThrowingBuffer(planted, BufferFactory.network().allocate(size, byteOrder))
+}
+
+private class ThrowingBuffer(
+    private val planted: Exception,
+    real: PlatformBuffer,
+) : PlatformBuffer by real {
+    override fun limit(): Int = throw planted
 }
 
 internal class ThrowingLoopWork(

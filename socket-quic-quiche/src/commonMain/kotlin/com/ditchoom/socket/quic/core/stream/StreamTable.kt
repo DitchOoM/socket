@@ -44,9 +44,6 @@ internal class StreamTable(
 
     private val entries = LongObjectMap<StreamEntry>()
 
-    /** The buffer a read that ended without handing one to its caller leaves for the next read. */
-    val idle = IdleBuffer()
-
     /** Entries of spent streams, kept for the next streams. */
     private val spare = ArrayList<StreamEntry>()
 
@@ -181,7 +178,7 @@ internal class StreamTable(
      */
     fun tryOpen(): Opened {
         val id = QuicStreamId(nextBidi)
-        if (io.send(id, 0L, 0, WriteEnd.More).result == QUICHE_ERR_STREAM_LIMIT) return Opened.AtLimit
+        if (io.send(id, 0L, 0, WriteEnd.More).code() == QUICHE_ERR_STREAM_LIMIT) return Opened.AtLimit
         nextBidi += STREAM_ID_STEP
         entry(id)
         opened = id.id
@@ -220,7 +217,6 @@ internal class StreamTable(
     fun endAll(end: ConnEnd) {
         if (state is Streams.Ended) return
         state = Streams.Ended(end)
-        idle.free()
         entries.forEachValue { it.endWaiters(end) }
         while (opens.isNotEmpty()) opens.removeFirst().connectionEnded(end)
     }

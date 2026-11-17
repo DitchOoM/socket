@@ -225,6 +225,18 @@ interface QuicheApi {
     ): StreamSendResult
 
     /**
+     * [connStreamSend] as a primitive: a stream write on the core's hot path allocates no result object. Backends
+     * override it to decode quiche's answer straight into the [StreamSendStep].
+     */
+    fun connStreamSendStep(
+        conn: QuicheConn,
+        streamId: QuicStreamId,
+        buf: Long,
+        bufLen: Int,
+        fin: Boolean,
+    ): StreamSendStep = StreamSendStep.of(connStreamSend(conn, streamId, buf, bufLen, fin))
+
+    /**
      * Bytes [streamId] can take right now (`quiche_conn_stream_capacity`): > 0 when a write would be
      * accepted, 0 when flow control is full, negative quiche error when the stream can no longer be written
      * (finished, stopped, reset).

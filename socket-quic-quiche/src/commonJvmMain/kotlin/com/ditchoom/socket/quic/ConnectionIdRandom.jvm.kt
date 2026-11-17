@@ -37,3 +37,6 @@ internal class SecureJvmRandom(
 }
 
 internal actual val connectionIdRandom: Random = SecureJvmRandom()
+
+/** A `SecureRandom` of its own: `SecureRandom` synchronises its draws, and only its owner takes that lock. */
+internal actual fun newConnectionIdRandom(): Random = SecureJvmRandom()

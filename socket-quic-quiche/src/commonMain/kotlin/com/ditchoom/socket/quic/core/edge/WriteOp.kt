@@ -2,7 +2,6 @@ package com.ditchoom.socket.quic.core.edge
 
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.BytesWritten
-import com.ditchoom.socket.quic.QuicAppErrorCode
 import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicStreamId
 import com.ditchoom.socket.quic.core.conn.CallerPlace
@@ -19,6 +18,8 @@ import com.ditchoom.socket.quic.core.stream.StreamTable
 import com.ditchoom.socket.quic.core.stream.Streams
 import com.ditchoom.socket.quic.core.stream.Waiter
 import com.ditchoom.socket.quic.core.stream.WriteEnd
+import com.ditchoom.socket.quic.core.stream.code
+import com.ditchoom.socket.quic.core.stream.peer
 import kotlinx.coroutines.isActive
 import kotlin.coroutines.CoroutineContext
 import kotlin.time.Duration
@@ -130,12 +131,12 @@ internal class WriteOp(
                     val at = source.buffer.position()
                     val length = source.buffer.remaining()
                     table.io.send(stream, source.address + at, length, WriteEnd.More).also {
-                        if (it.result > 0) source.buffer.position(at + it.result)
+                        if (it.code() > 0) source.buffer.position(at + it.code())
                     }
                 }
                 is WriteSource.FinOnly -> table.io.send(stream, 0L, 0, WriteEnd.Finish)
             }
-        val taken = answer.result
+        val taken = answer.code()
         return when {
             taken > 0 -> written()
             taken == 0 && source is WriteSource.FinOnly -> {
@@ -147,7 +148,7 @@ internal class WriteOp(
                 Retry.Again
             }
             else -> {
-                val peer = answer.errorCode ?: UNKNOWN_PEER_CODE
+                val peer = answer.peer()
                 if (taken == QUICHE_ERR_STREAM_STOPPED) table.stopped(stream)
                 settle(WriteAnswer.Failed(Raised.WriteRefused(stream, taken, peer), QuicCloseCircumstance.Ended))
                 Retry.Settled
@@ -187,10 +188,5 @@ internal class WriteOp(
         }
 
         override fun gone(end: ConnEnd) = settle(WriteAnswer.Cancelled)
-    }
-
-    private companion object {
-        /** The peer's code when the backend does not report it. */
-        val UNKNOWN_PEER_CODE = QuicAppErrorCode(0L)
     }
 }

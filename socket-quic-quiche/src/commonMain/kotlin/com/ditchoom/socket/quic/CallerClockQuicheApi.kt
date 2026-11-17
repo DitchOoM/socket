@@ -133,6 +133,14 @@ internal class CallerClockQuicheApi(
         fin: Boolean,
     ): StreamSendResult = synced { delegate.connStreamSend(conn, streamId, buf, bufLen, fin) }
 
+    override fun connStreamSendStep(
+        conn: QuicheConn,
+        streamId: QuicStreamId,
+        buf: Long,
+        bufLen: Int,
+        fin: Boolean,
+    ): StreamSendStep = synced { delegate.connStreamSendStep(conn, streamId, buf, bufLen, fin) }
+
     override fun connStreamShutdown(
         conn: QuicheConn,
         streamId: QuicStreamId,

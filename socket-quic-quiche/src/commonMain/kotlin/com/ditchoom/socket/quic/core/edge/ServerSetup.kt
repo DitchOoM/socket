@@ -16,7 +16,6 @@ import com.ditchoom.socket.quic.QuicheConfig
 import com.ditchoom.socket.quic.UdpBatching
 import com.ditchoom.socket.quic.applyQuicOptions
 import com.ditchoom.socket.quic.applySessionTicketKeys
-import com.ditchoom.socket.quic.connectionIdRandom
 import com.ditchoom.socket.quic.core.conn.FlightArena
 import com.ditchoom.socket.quic.core.conn.LoopMemory
 import com.ditchoom.socket.quic.core.conn.SlotRules
@@ -65,6 +64,7 @@ import com.ditchoom.socket.quic.core.udp.SocketPeer
 import com.ditchoom.socket.quic.core.udp.SocketReport
 import com.ditchoom.socket.quic.encodeAlpnList
 import com.ditchoom.socket.quic.encodeToNative
+import com.ditchoom.socket.quic.newConnectionIdRandom
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.channels.Channel
@@ -182,11 +182,13 @@ internal class ServerSetup(
     ): CoreServer {
         val localKey = socket.local()
         val local = localKey.encodeToNative(factory)
+        // The loop alone draws from it: a shared source's lock would let a client thread hold up the receive phase.
+        val ids = newConnectionIdRandom()
         val tokens =
             when (val validation = config.addressValidation) {
                 is AddressValidation.Off -> Tokens.None
                 is AddressValidation.Retry ->
-                    Tokens.Of(AddressTokens(factory, connectionIdRandom, validation.lifetime.inWholeNanoseconds))
+                    Tokens.Of(AddressTokens(factory, ids, validation.lifetime.inWholeNanoseconds))
             }
         val hold =
             MemoryHold(
@@ -240,8 +242,8 @@ internal class ServerSetup(
                 local,
                 localKey,
             )
-        val admission = Admission(api, config.admission, backlog, parts, edge.hooks, hold, connectionIdRandom, counts)
-        val demux = Demux(api, admission, Stateless(api, tokens, connectionIdRandom, localKey, counts), scratch, loop.port, clock, counts)
+        val admission = Admission(api, config.admission, backlog, parts, edge.hooks, hold, ids, counts)
+        val demux = Demux(api, admission, Stateless(api, tokens, ids, localKey, counts), scratch, loop.port, clock, counts)
         val stopped = CompletableDeferred<Unit>()
         val finished =
             Runnable {

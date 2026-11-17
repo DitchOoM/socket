@@ -254,6 +254,18 @@ object JniQuicheApi : QuicheApi {
         return StreamSendResult(result, code)
     }
 
+    override fun connStreamSendStep(
+        conn: QuicheConn,
+        streamId: QuicStreamId,
+        buf: Long,
+        bufLen: Int,
+        fin: Boolean,
+    ): StreamSendStep {
+        val scratch = errorCodeScratch.get()
+        val result = nConnStreamSend(conn.handle, streamId.id, buf, bufLen, fin, scratch.nativeMemoryAccess!!.nativeAddress.toLong())
+        return StreamSendStep.of(result) { QuicAppErrorCode(scratch.readErrorCode()) }
+    }
+
     /** The 8 bytes the C shim wrote big-endian, read by absolute index: no position bookkeeping. */
     private fun PlatformBuffer.readErrorCode(): Long {
         var v = 0L

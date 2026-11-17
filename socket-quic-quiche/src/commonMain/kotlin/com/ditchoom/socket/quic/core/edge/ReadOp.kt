@@ -10,7 +10,9 @@ import com.ditchoom.socket.quic.core.conn.Conn
 import com.ditchoom.socket.quic.core.conn.ConnWork
 import com.ditchoom.socket.quic.core.conn.Inside
 import com.ditchoom.socket.quic.core.life.ConnEnd
+import com.ditchoom.socket.quic.core.observe.CallerSide
 import com.ditchoom.socket.quic.core.observe.Confined
+import com.ditchoom.socket.quic.core.stream.ReadChunk
 import com.ditchoom.socket.quic.core.stream.Retry
 import com.ditchoom.socket.quic.core.stream.Side
 import com.ditchoom.socket.quic.core.stream.StreamEntry
@@ -21,20 +23,38 @@ import com.ditchoom.socket.quic.core.udp.NativeBytes
 import kotlinx.coroutines.currentCoroutineContext
 import kotlin.time.Duration
 
-/** The buffer a read that found nothing keeps for its retry, already made into the answer the bytes will be: [ReadAnswer.Data]. */
+/**
+ * The buffer a read holds until it hands it to its caller, already made into the answer the bytes will be:
+ * [ReadAnswer.Data]; [None] once handed over or freed.
+ */
 internal sealed interface Spare {
     data object None : Spare
 }
 
+/** How many bytes a stream's next read asks for. Its reader's: a stream has one reader at a time. */
+@CallerSide
+internal class ReadSizing {
+    var chunk: ReadChunk = ReadChunk.Initial
+        private set
+
+    /** A read that [asked] for its chunk got [got] bytes: the next read's size follows [ReadChunk.after]. */
+    fun read(
+        asked: ReadChunk,
+        got: Int,
+    ) {
+        chunk = asked.after(asked.bytes, got)
+    }
+}
+
 /**
- * Reads the next chunk into a buffer from the caller's factory, sized by the stream's read chunk; the caller owns a
- * returned buffer. First runs as work inside the connection, then waits parked on its stream until data, its deadline,
- * its caller's cancellation or the connection's end.
+ * Reads the next chunk, sized by [sizing], into a buffer the caller's thread takes from [idle] or [factory] when it makes
+ * the read; the caller owns a returned buffer. First runs as work inside the connection, then waits parked on its
+ * stream until data, its deadline, its caller's cancellation or the connection's end.
  *
- * The connection lands the answer in the read's [Hand] and the caller makes the [ReadResult] on its own thread, so a
- * parked read is answered without allocating. The caller's job is watched while it waits: a cancellation that comes
- * first resumes the caller at once and hands the read back to the connection, and a caller whose job is cancelled after
- * the answer frees the buffer it never returned.
+ * Whoever runs the read, the loop included, allocates nothing: the buffer and its answer come with the read. The
+ * connection lands the answer in the read's [Hand] and the caller makes the [ReadResult] on its own thread. The caller's
+ * job is watched while it waits: a cancellation that comes first resumes the caller at once and hands the read back to
+ * the connection, and a caller whose job is cancelled after the answer frees the buffer it never returned.
  *
  * Inside the connection only, except [answer] (the caller) and the job watch.
  */
@@ -44,11 +64,14 @@ internal class ReadOp(
     private val bound: Duration,
     private val deadlines: OpDeadlines,
     private val conn: Conn,
-    private val factory: BufferFactory,
+    private val idle: IdleRead,
+    factory: BufferFactory,
+    private val sizing: ReadSizing,
 ) : ConnWork(),
     Waiter,
     Bounded {
-    private var spare: Spare = Spare.None
+    private val asked = sizing.chunk
+    private var spare: Spare = idle.take(asked.bytes, factory)
     private var lease: Lease = Lease.None
     private val hand = Hand<ReadAnswer>()
 
@@ -60,7 +83,9 @@ internal class ReadOp(
      */
     suspend fun answer(): ReadResult {
         val context = currentCoroutineContext()
-        return resultOf(hand.await(context) { cancelled() }, context)
+        val answer = hand.await(context) { cancelled() }
+        if (answer is ReadAnswer.Data) sizing.read(asked, answer.buffer.remaining())
+        return resultOf(answer, context)
     }
 
     /** The cancelling thread: a read not answered yet is answered Cancelled and handed back to the connection. */
@@ -81,6 +106,7 @@ internal class ReadOp(
             }
             if (hand.landed(ReadAnswer.Cancelled)) return release()
             if (inside.streams.isSpent(stream)) {
+                release()
                 settle(ReadAnswer.End)
                 return
             }
@@ -122,18 +148,11 @@ internal class ReadOp(
             release()
             return settle(ReadAnswer.End)
         }
-        // A retry keeps the buffer the park holds; only a settled read lets it go.
+        // The read holds its buffer until it settles; one that settled holds none and is not run again.
         val into =
-            when (val kept = spare) {
-                is Spare.None ->
-                    ReadAnswer.Data(
-                        table.idle.take(entry.chunk.bytes) { factory.allocate(entry.chunk.bytes) }.also {
-                            // A pooled factory may return a larger buffer than asked for; the read asks for the chunk, not the buffer.
-                            it.position(0)
-                            it.setLimit(entry.chunk.bytes)
-                        },
-                    )
-                is ReadAnswer.Data -> kept
+            when (val held = spare) {
+                is Spare.None -> return Retry.Settled
+                is ReadAnswer.Data -> held
             }
         val buffer = into.buffer
         val address =
@@ -142,13 +161,13 @@ internal class ReadOp(
                 spare = Spare.None
                 return settle(ReadAnswer.Failed(Raised.NotNative(stream, buffer), QuicCloseCircumstance.Ended))
             }
-        val asked = buffer.limit()
+        val room = buffer.limit()
         val answer =
-            table.io.recv(stream, address, asked).fold(
-                more = { read -> if (read == 0) hold(into) else data(entry, into, asked, read) },
+            table.io.recv(stream, address, room).fold(
+                more = { read -> if (read == 0) hold(into) else data(into, read) },
                 last = { read ->
                     entry.finished()
-                    if (read == 0) discard(table, into, ReadAnswer.End) else data(entry, into, asked, read)
+                    if (read == 0) discard(ReadAnswer.End) else data(into, read)
                 },
                 nothingYet = { hold(into) },
                 gone = {
@@ -157,7 +176,7 @@ internal class ReadOp(
                 },
                 reset = {
                     entry.receiveEnded(Side.Reset)
-                    discard(table, into, ReadAnswer.Reset)
+                    discard(ReadAnswer.Reset)
                 },
                 error = { code ->
                     buffer.freeNativeMemory()
@@ -169,12 +188,9 @@ internal class ReadOp(
     }
 
     private fun data(
-        entry: StreamEntry,
         into: ReadAnswer.Data,
-        asked: Int,
         read: Int,
     ): Retry {
-        entry.read(asked, read)
         into.buffer.position(0)
         into.buffer.setLimit(read)
         return settle(into)
@@ -186,13 +202,9 @@ internal class ReadOp(
         return Retry.Again
     }
 
-    /** Ends the read with [result], keeping the buffer for the connection's next read: handing it back to a pool allocates. */
-    private fun discard(
-        table: StreamTable,
-        into: ReadAnswer.Data,
-        result: ReadAnswer,
-    ): Retry {
-        table.idle.keep(into.buffer)
+    /** Ends the read with [result], its buffer unused. */
+    private fun discard(result: ReadAnswer): Retry {
+        release()
         return settle(result)
     }
 
@@ -209,10 +221,11 @@ internal class ReadOp(
         return Retry.Settled
     }
 
+    /** Lets go of the buffer the read holds, unused: the connection keeps it for its next read, since handing it back to a pool allocates. */
     private fun release() {
-        when (val kept = spare) {
+        when (val held = spare) {
             is Spare.None -> Unit
-            is ReadAnswer.Data -> kept.buffer.freeNativeMemory()
+            is ReadAnswer.Data -> idle.keep(held)
         }
         spare = Spare.None
     }

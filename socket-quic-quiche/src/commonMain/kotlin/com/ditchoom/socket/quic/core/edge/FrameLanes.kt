@@ -12,9 +12,8 @@ import com.ditchoom.socket.quic.core.stream.ShutdownSide
 import com.ditchoom.socket.quic.core.stream.Side
 import com.ditchoom.socket.quic.core.stream.StreamTable
 import com.ditchoom.socket.quic.core.stream.WriteEnd
-
-/** The peer's code when the backend does not report one. */
-private val UNKNOWN_PEER_CODE = QuicAppErrorCode(0L)
+import com.ditchoom.socket.quic.core.stream.code
+import com.ditchoom.socket.quic.core.stream.peer
 
 /** What one attempt of a lane did. */
 internal sealed interface Moved {
@@ -98,7 +97,7 @@ internal class Outbound(
         while (true) {
             val remaining = length - sent
             val answer = table.io.send(stream, from.address() + sent, remaining, end)
-            val taken = answer.result
+            val taken = answer.code()
             when {
                 taken > 0 -> {
                     sent += taken
@@ -111,7 +110,7 @@ internal class Outbound(
                 }
                 else -> {
                     if (taken == QUICHE_ERR_STREAM_STOPPED) table.stopped(stream)
-                    return Moved.Refused(Raised.WriteRefused(stream, taken, answer.errorCode ?: UNKNOWN_PEER_CODE))
+                    return Moved.Refused(Raised.WriteRefused(stream, taken, answer.peer()))
                 }
             }
         }

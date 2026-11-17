@@ -69,6 +69,9 @@ internal class EdgeState(
     /** A client's: the session ticket its server issued. */
     val ticket = MutableStateFlow<QuicSessionTicketState>(QuicSessionTicketState.NotIssued)
 
+    /** The connection's idle read buffer; freed once the connection ends. */
+    val reads = IdleRead()
+
     fun end(): EdgeEnd = endCell.load()
 
     override fun established(report: ConnectReport) {
@@ -120,6 +123,7 @@ internal class EdgeState(
      */
     override fun ended(end: ConnEnd) {
         endCell.store(EdgeEnd.Ended(end))
+        reads.close()
         val reason = closeReasonOf(end)
         publish(QuicConnectionState.Closed(reason))
         start.compareAndSet(HandlerStart.NotYet, HandlerStart.Never)

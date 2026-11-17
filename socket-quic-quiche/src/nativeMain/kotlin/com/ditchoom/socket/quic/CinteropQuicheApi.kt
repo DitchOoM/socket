@@ -403,6 +403,28 @@ internal object CinteropQuicheApi : QuicheApi, QuicheRandomPin {
         }
     }
 
+    override fun connStreamSendStep(
+        conn: QuicheConn,
+        streamId: QuicStreamId,
+        buf: Long,
+        bufLen: Int,
+        fin: Boolean,
+    ): StreamSendStep =
+        memScoped {
+            val errorCode = alloc<ULongVar>()
+            val result =
+                quiche_conn_stream_send(
+                    conn.handle.toCPointer()!!,
+                    streamId.id.convert(),
+                    if (bufLen > 0) buf.toCPointer<UByteVar>() else null,
+                    bufLen.convert(),
+                    fin,
+                    errorCode.ptr,
+                ).toInt()
+            // quiche fills out_error_code only on STREAM_STOPPED / STREAM_RESET, and it is read only then.
+            StreamSendStep.of(result) { QuicAppErrorCode(errorCode.value.toLong()) }
+        }
+
     override fun connStreamCapacity(
         conn: QuicheConn,
         streamId: QuicStreamId,

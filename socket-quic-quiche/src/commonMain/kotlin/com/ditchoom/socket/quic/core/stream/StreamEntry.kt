@@ -31,7 +31,7 @@ internal sealed interface Side {
 }
 
 /**
- * One stream: its parked reader and writer, how far each side got, and its read size. Reused for a later stream once
+ * One stream: its parked reader and writer, and how far each side got. Reused for a later stream once
  * this one is spent, so a new stream allocates no entry.
  */
 @Confined
@@ -46,8 +46,6 @@ internal class StreamEntry(
         private set
     var received: Side = Side.Open
         private set
-    var chunk: ReadChunk = ReadChunk.Initial
-        private set
     var sent: Side = Side.Open
         private set
 
@@ -57,7 +55,6 @@ internal class StreamEntry(
         reader = Nobody
         writer = Nobody
         received = Side.Open
-        chunk = ReadChunk.Initial
         sent = Side.Open
         return this
     }
@@ -92,14 +89,6 @@ internal class StreamEntry(
     }
 
     fun finished() = receiveEnded(Side.Finished)
-
-    /** A read that [asked] for that many bytes got [got]: the next read's size follows [ReadChunk.after]. */
-    fun read(
-        asked: Int,
-        got: Int,
-    ) {
-        chunk = chunk.after(asked, got)
-    }
 
     /** Retries a parked reader; it stays parked while it answers [Retry.Again]. */
     fun wakeReader(table: StreamTable) {

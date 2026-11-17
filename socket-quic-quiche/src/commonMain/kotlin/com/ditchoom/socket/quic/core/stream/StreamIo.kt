@@ -1,8 +1,9 @@
 package com.ditchoom.socket.quic.core.stream
 
+import com.ditchoom.socket.quic.QuicAppErrorCode
 import com.ditchoom.socket.quic.QuicStreamId
 import com.ditchoom.socket.quic.StreamRecvStep
-import com.ditchoom.socket.quic.StreamSendResult
+import com.ditchoom.socket.quic.StreamSendStep
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 
 /** Whether a write ends our side of the stream. */
@@ -16,21 +17,27 @@ internal class StreamIo(
     private val q: QuicheConnRef,
 ) {
     /**
-     * Sends on [stream]. quiche answers Done both when it can take nothing now and when it already let the stream go:
-     * a stream our side has not ended is let go only once the peer stopped it, so that answer is [STOPPED].
+     * Sends on [stream], allocating nothing. quiche answers Done both when it can take nothing now and when it already
+     * let the stream go: a stream our side has not ended is let go only once the peer stopped it, so that answer is
+     * [STOPPED].
      */
     fun send(
         stream: QuicStreamId,
         address: Long,
         length: Int,
         end: WriteEnd,
-    ): StreamSendResult {
-        val sent = q.api.connStreamSend(q.handle, stream, address, length, end == WriteEnd.Finish)
-        if (sent.result != QUICHE_ERR_DONE) return sent
-        return when (capacity(stream)) {
-            QUICHE_ERR_STREAM_STOPPED.toLong(), QUICHE_ERR_INVALID_STREAM_STATE.toLong() -> STOPPED
-            else -> sent
-        }
+    ): StreamSendStep {
+        val sent = q.api.connStreamSendStep(q.handle, stream, address, length, end == WriteEnd.Finish)
+        return sent.fold(
+            took = { sent },
+            full = {
+                when (capacity(stream)) {
+                    QUICHE_ERR_STREAM_STOPPED.toLong(), QUICHE_ERR_INVALID_STREAM_STATE.toLong() -> STOPPED
+                    else -> sent
+                }
+            },
+            refused = { _, _ -> sent },
+        )
     }
 
     /**
@@ -62,6 +69,14 @@ internal class StreamIo(
 
     private companion object {
         /** A send refused because the peer stopped the stream; quiche no longer says with which code. */
-        val STOPPED = StreamSendResult(QUICHE_ERR_STREAM_STOPPED)
+        val STOPPED = StreamSendStep.stopped(QuicAppErrorCode(0L))
     }
 }
+
+/** quiche's raw answer: the bytes it took, or a negative quiche error code. */
+internal fun StreamSendStep.code(): Int = fold(took = { it }, full = { QUICHE_ERR_DONE }, refused = { code, _ -> code })
+
+/** The peer's application error code of a refused send; 0 when the peer sent none. */
+internal fun StreamSendStep.peer(): QuicAppErrorCode = fold(took = { NO_PEER_CODE }, full = { NO_PEER_CODE }, refused = { _, peer -> peer })
+
+private val NO_PEER_CODE = QuicAppErrorCode(0L)

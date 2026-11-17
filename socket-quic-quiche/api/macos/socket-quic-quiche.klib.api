@@ -154,6 +154,7 @@ abstract interface com.ditchoom.socket.quic/QuicheApi { // com.ditchoom.socket.q
     open fun connSourceId(com.ditchoom.socket.quic/QuicheConn, kotlin/Long, kotlin/Int): kotlin/Int // com.ditchoom.socket.quic/QuicheApi.connSourceId|connSourceId(com.ditchoom.socket.quic.QuicheConn;kotlin.Long;kotlin.Int){}[0]
     open fun connStats(com.ditchoom.socket.quic/QuicheConn): com.ditchoom.socket.quic/QuicConnStats? // com.ditchoom.socket.quic/QuicheApi.connStats|connStats(com.ditchoom.socket.quic.QuicheConn){}[0]
     open fun connStreamRecvStep(com.ditchoom.socket.quic/QuicheConn, com.ditchoom.socket.quic/QuicStreamId, kotlin/Long, kotlin/Int): com.ditchoom.socket.quic/StreamRecvStep // com.ditchoom.socket.quic/QuicheApi.connStreamRecvStep|connStreamRecvStep(com.ditchoom.socket.quic.QuicheConn;com.ditchoom.socket.quic.QuicStreamId;kotlin.Long;kotlin.Int){}[0]
+    open fun connStreamSendStep(com.ditchoom.socket.quic/QuicheConn, com.ditchoom.socket.quic/QuicStreamId, kotlin/Long, kotlin/Int, kotlin/Boolean): com.ditchoom.socket.quic/StreamSendStep // com.ditchoom.socket.quic/QuicheApi.connStreamSendStep|connStreamSendStep(com.ditchoom.socket.quic.QuicheConn;com.ditchoom.socket.quic.QuicStreamId;kotlin.Long;kotlin.Int;kotlin.Boolean){}[0]
     open fun connTimeoutNanos(com.ditchoom.socket.quic/QuicheConn): kotlin/Long // com.ditchoom.socket.quic/QuicheApi.connTimeoutNanos|connTimeoutNanos(com.ditchoom.socket.quic.QuicheConn){}[0]
     open fun connTraceId(com.ditchoom.socket.quic/QuicheConn, kotlin/Long, kotlin/Int): kotlin/Int // com.ditchoom.socket.quic/QuicheApi.connTraceId|connTraceId(com.ditchoom.socket.quic.QuicheConn;kotlin.Long;kotlin.Int){}[0]
     open fun sendInfoAtNanos(com.ditchoom.socket.quic/QuicheSendInfo): kotlin/Long // com.ditchoom.socket.quic/QuicheApi.sendInfoAtNanos|sendInfoAtNanos(com.ditchoom.socket.quic.QuicheSendInfo){}[0]
@@ -1450,6 +1451,40 @@ final value class com.ditchoom.socket.quic/StreamRecvStep { // com.ditchoom.sock
         final fun error(kotlin/Int): com.ditchoom.socket.quic/StreamRecvStep // com.ditchoom.socket.quic/StreamRecvStep.Companion.error|error(kotlin.Int){}[0]
         final fun of(com.ditchoom.socket.quic/StreamRecvResult): com.ditchoom.socket.quic/StreamRecvStep // com.ditchoom.socket.quic/StreamRecvStep.Companion.of|of(com.ditchoom.socket.quic.StreamRecvResult){}[0]
         final fun reset(com.ditchoom.socket.quic/QuicAppErrorCode): com.ditchoom.socket.quic/StreamRecvStep // com.ditchoom.socket.quic/StreamRecvStep.Companion.reset|reset(com.ditchoom.socket.quic.QuicAppErrorCode){}[0]
+    }
+}
+
+final value class com.ditchoom.socket.quic/StreamSendStep { // com.ditchoom.socket.quic/StreamSendStep|null[0]
+    final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/StreamSendStep.equals|equals(kotlin.Any?){}[0]
+    final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/StreamSendStep.hashCode|hashCode(){}[0]
+    final fun packed(): kotlin/Long // com.ditchoom.socket.quic/StreamSendStep.packed|packed(){}[0]
+    final fun toString(): kotlin/String // com.ditchoom.socket.quic/StreamSendStep.toString|toString(){}[0]
+    final inline fun <#A1: kotlin/Any?> fold(kotlin/Function1<kotlin/Int, #A1>, kotlin/Function0<#A1>, kotlin/Function2<kotlin/Int, com.ditchoom.socket.quic/QuicAppErrorCode, #A1>): #A1 // com.ditchoom.socket.quic/StreamSendStep.fold|fold(kotlin.Function1<kotlin.Int,0:0>;kotlin.Function0<0:0>;kotlin.Function2<kotlin.Int,com.ditchoom.socket.quic.QuicAppErrorCode,0:0>){0§<kotlin.Any?>}[0]
+
+    final object Companion { // com.ditchoom.socket.quic/StreamSendStep.Companion|null[0]
+        final const val KIND_RESET // com.ditchoom.socket.quic/StreamSendStep.Companion.KIND_RESET|{}KIND_RESET[0]
+            final fun <get-KIND_RESET>(): kotlin/Long // com.ditchoom.socket.quic/StreamSendStep.Companion.KIND_RESET.<get-KIND_RESET>|<get-KIND_RESET>(){}[0]
+        final const val KIND_SHIFT // com.ditchoom.socket.quic/StreamSendStep.Companion.KIND_SHIFT|{}KIND_SHIFT[0]
+            final fun <get-KIND_SHIFT>(): kotlin/Int // com.ditchoom.socket.quic/StreamSendStep.Companion.KIND_SHIFT.<get-KIND_SHIFT>|<get-KIND_SHIFT>(){}[0]
+        final const val KIND_STOPPED // com.ditchoom.socket.quic/StreamSendStep.Companion.KIND_STOPPED|{}KIND_STOPPED[0]
+            final fun <get-KIND_STOPPED>(): kotlin/Long // com.ditchoom.socket.quic/StreamSendStep.Companion.KIND_STOPPED.<get-KIND_STOPPED>|<get-KIND_STOPPED>(){}[0]
+        final const val KIND_TAKEN // com.ditchoom.socket.quic/StreamSendStep.Companion.KIND_TAKEN|{}KIND_TAKEN[0]
+            final fun <get-KIND_TAKEN>(): kotlin/Long // com.ditchoom.socket.quic/StreamSendStep.Companion.KIND_TAKEN.<get-KIND_TAKEN>|<get-KIND_TAKEN>(){}[0]
+        final const val PAYLOAD // com.ditchoom.socket.quic/StreamSendStep.Companion.PAYLOAD|{}PAYLOAD[0]
+            final fun <get-PAYLOAD>(): kotlin/Long // com.ditchoom.socket.quic/StreamSendStep.Companion.PAYLOAD.<get-PAYLOAD>|<get-PAYLOAD>(){}[0]
+        final const val QUICHE_ERR_DONE_CODE // com.ditchoom.socket.quic/StreamSendStep.Companion.QUICHE_ERR_DONE_CODE|{}QUICHE_ERR_DONE_CODE[0]
+            final fun <get-QUICHE_ERR_DONE_CODE>(): kotlin/Int // com.ditchoom.socket.quic/StreamSendStep.Companion.QUICHE_ERR_DONE_CODE.<get-QUICHE_ERR_DONE_CODE>|<get-QUICHE_ERR_DONE_CODE>(){}[0]
+        final const val RESET_CODE // com.ditchoom.socket.quic/StreamSendStep.Companion.RESET_CODE|{}RESET_CODE[0]
+            final fun <get-RESET_CODE>(): kotlin/Int // com.ditchoom.socket.quic/StreamSendStep.Companion.RESET_CODE.<get-RESET_CODE>|<get-RESET_CODE>(){}[0]
+        final const val STOPPED_CODE // com.ditchoom.socket.quic/StreamSendStep.Companion.STOPPED_CODE|{}STOPPED_CODE[0]
+            final fun <get-STOPPED_CODE>(): kotlin/Int // com.ditchoom.socket.quic/StreamSendStep.Companion.STOPPED_CODE.<get-STOPPED_CODE>|<get-STOPPED_CODE>(){}[0]
+
+        final fun error(kotlin/Int): com.ditchoom.socket.quic/StreamSendStep // com.ditchoom.socket.quic/StreamSendStep.Companion.error|error(kotlin.Int){}[0]
+        final fun of(com.ditchoom.socket.quic/StreamSendResult): com.ditchoom.socket.quic/StreamSendStep // com.ditchoom.socket.quic/StreamSendStep.Companion.of|of(com.ditchoom.socket.quic.StreamSendResult){}[0]
+        final fun reset(com.ditchoom.socket.quic/QuicAppErrorCode): com.ditchoom.socket.quic/StreamSendStep // com.ditchoom.socket.quic/StreamSendStep.Companion.reset|reset(com.ditchoom.socket.quic.QuicAppErrorCode){}[0]
+        final fun stopped(com.ditchoom.socket.quic/QuicAppErrorCode): com.ditchoom.socket.quic/StreamSendStep // com.ditchoom.socket.quic/StreamSendStep.Companion.stopped|stopped(com.ditchoom.socket.quic.QuicAppErrorCode){}[0]
+        final fun taken(kotlin/Int): com.ditchoom.socket.quic/StreamSendStep // com.ditchoom.socket.quic/StreamSendStep.Companion.taken|taken(kotlin.Int){}[0]
+        final inline fun of(kotlin/Int, kotlin/Function0<com.ditchoom.socket.quic/QuicAppErrorCode>): com.ditchoom.socket.quic/StreamSendStep // com.ditchoom.socket.quic/StreamSendStep.Companion.of|of(kotlin.Int;kotlin.Function0<com.ditchoom.socket.quic.QuicAppErrorCode>){}[0]
     }
 }
 
