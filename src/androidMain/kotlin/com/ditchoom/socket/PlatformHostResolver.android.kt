@@ -2,6 +2,7 @@ package com.ditchoom.socket
 
 import android.annotation.SuppressLint
 import android.net.DnsResolver
+import android.net.InetAddresses
 import android.os.Build
 import android.os.CancellationSignal
 import android.system.ErrnoException
@@ -34,7 +35,17 @@ internal sealed interface AndroidResolverStrategy {
 
 @SuppressLint("NewApi")
 private object SystemDnsResolver : HostResolver {
-    override suspend fun resolve(host: String): Resolution =
+    override suspend fun resolve(host: String): Resolution = if (InetAddresses.isNumericAddress(host)) literal(host) else query(host)
+
+    /** DnsResolver is a DNS client: it would send even 127.0.0.1 to the network's server. A literal is its own answer. */
+    private fun literal(host: String): Resolution {
+        val address = InetAddresses.parseNumericAddress(host)
+        return Resolution.Resolved(listOf(ResolvedAddress(address.hostAddress.orEmpty(), familyOf(address))))
+    }
+
+    private fun familyOf(address: InetAddress) = if (address is Inet6Address) IpFamily.V6 else IpFamily.V4
+
+    private suspend fun query(host: String): Resolution =
         suspendCancellableCoroutine { continuation ->
             val signal = CancellationSignal()
             continuation.invokeOnCancellation { signal.cancel() }
@@ -51,7 +62,7 @@ private object SystemDnsResolver : HostResolver {
                     ) {
                         val records =
                             answer.map {
-                                ResolvedAddress(it.hostAddress.orEmpty(), if (it is Inet6Address) IpFamily.V6 else IpFamily.V4)
+                                ResolvedAddress(it.hostAddress.orEmpty(), familyOf(it))
                             }
                         continuation.resume(resolvedInOrder(records, host))
                     }
