@@ -146,14 +146,15 @@ internal class Admission(
                     return refused()
                 }
             }
-        when (hold.acquire()) {
-            Hold.Held -> Unit
-            Hold.AlreadyFreed -> {
-                memory.free()
-                peerAddress.free()
-                return refused()
+        val claim =
+            when (val held = hold.acquire()) {
+                is Hold.Held -> held.claim
+                is Hold.AlreadyFreed -> {
+                    memory.free()
+                    peerAddress.free()
+                    return refused()
+                }
             }
-        }
         val handle =
             api.accept(
                 scidAddress,
@@ -169,7 +170,7 @@ internal class Admission(
         if (handle.handle == 0L) {
             memory.free()
             peerAddress.free()
-            hold.release()
+            claim.release()
             return refused()
         }
         inProgress.increment()
@@ -185,7 +186,7 @@ internal class Admission(
             )
         val build = ConnBuild(parts, QuicheConnRef(api, handle), address, memory, inProgress)
         val opened = hooks.open(AcceptedPeer(from, newCid.c0, newCid.c1), build)
-        return Accepted.Peer(ServerPeer(opened.conn, memory, peerAddress, opened, hold))
+        return Accepted.Peer(ServerPeer(opened.conn, memory, peerAddress, opened, claim))
     }
 
     private fun full(): Boolean = inProgress.value() >= bounds.inProgress

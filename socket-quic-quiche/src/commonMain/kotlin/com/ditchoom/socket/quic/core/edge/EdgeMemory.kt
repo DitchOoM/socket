@@ -15,11 +15,11 @@ internal class EdgeMemory(
     private val factory: BufferFactory,
 ) {
     private val owned = ArrayList<NativeBytes>()
-    private val holds = ArrayList<MemoryHold>()
+    private val claims = ArrayList<MemoryHold.Claim>()
 
-    /** Releases [hold], taken by the caller, with the rest of this memory. */
-    fun releasing(hold: MemoryHold) {
-        holds.add(hold)
+    /** Releases [claim], taken by the caller, with the rest of this memory. */
+    fun releasing(claim: MemoryHold.Claim) {
+        claims.add(claim)
     }
 
     fun native(size: Int): NativeBytes {
@@ -35,7 +35,7 @@ internal class EdgeMemory(
     fun freeAll() {
         for (bytes in owned) bytes.free()
         owned.clear()
-        for (hold in holds) hold.release()
-        holds.clear()
+        for (claim in claims) claim.release()
+        claims.clear()
     }
 }

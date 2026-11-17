@@ -53,18 +53,6 @@ private sealed interface Run {
     data object Stopped : Run
 }
 
-/** How a loop's stop went. Every step runs once whatever an earlier one threw; the first failure is kept. */
-private sealed interface StopOutcome {
-    data object Clean : StopOutcome
-
-    class Failed(
-        val first: Throwable,
-    ) : StopOutcome
-
-    /** It had stopped already: nothing was released. */
-    data object AlreadyStopped : StopOutcome
-}
-
 /** Runs [step]; what it throws is kept in the outcome instead of cutting the stop short. */
 private inline fun StopOutcome.then(step: () -> Unit): StopOutcome =
     try {
@@ -141,11 +129,7 @@ internal class Loop(
                     is Run.Closing -> {
                         val stopped = stop(ConnEnd.LoopStopped)
                         now.then.run()
-                        when (stopped) {
-                            is StopOutcome.Failed -> contain(stopped.first)
-                            is StopOutcome.Clean, is StopOutcome.AlreadyStopped -> Unit
-                        }
-                        return
+                        return contained(stopped)
                     }
                     is Run.Stopped -> return
                 }
@@ -159,6 +143,18 @@ internal class Loop(
             contain(failure)
         }
     }
+
+    /**
+     * The thread that drives the loop, or any thread before one has: stops it now, with no further pass. What it holds
+     * is released once by this stop; a loop that stopped already releases nothing.
+     */
+    fun stopHere() = contained(stop(ConnEnd.LoopStopped))
+
+    private fun contained(stopped: StopOutcome) =
+        when (stopped) {
+            is StopOutcome.Failed -> contain(stopped.first)
+            is StopOutcome.Clean, is StopOutcome.AlreadyStopped -> Unit
+        }
 
     /** What reached the loop tier: a process-tier failure is reported on this thread, and the rest end with the loop. */
     private fun contain(failure: Throwable) {

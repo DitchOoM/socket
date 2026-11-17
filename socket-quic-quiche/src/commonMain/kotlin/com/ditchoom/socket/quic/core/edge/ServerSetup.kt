@@ -69,9 +69,6 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.channels.Channel
 
-/** Who frees the poller and the quiche config a server's setup opened: the setup until its loop is built, then the loop. */
-private enum class SetupOwner { Setup, Loop }
-
 /** Everything [coreServe] builds, in order: memory first (so a factory without native memory fails before any socket), then the socket and the loop. */
 internal class ServerSetup(
     private val bind: PathKey,
@@ -128,13 +125,15 @@ internal class ServerSetup(
                     }
             }
         val quicheConfig = configured()
-        var owner = SetupOwner.Setup
+        var owner: SetupOwner = SetupOwner.Setup
         try {
             val socket = openStackSocket(loopIo, memory, bind, SocketPeer.Unconnected, buffers, batching, limits.maxDatagrams)
             val sends = listOf(send.storage) + List(CALLER_LANES) { lanes[it].batch.storage }
+            val socketIo = socket.ioOf(memory, sends, limits.maxDatagrams, MAX_PEERS_CACHED) { }
+            owner = SetupOwner.Opened(socketIo.io)
             return serve(
                 socket,
-                socket.ioOf(memory, sends, limits.maxDatagrams, MAX_PEERS_CACHED) { },
+                socketIo,
                 poller,
                 quicheConfig,
                 limits,
@@ -143,16 +142,26 @@ internal class ServerSetup(
                 receiveBuffers,
                 backlog,
                 scratch,
-                handedOver = Runnable { owner = SetupOwner.Loop },
-            )
+                moved = { owner = it },
+            ).also { owner = SetupOwner.Served }
         } finally {
-            // Once the loop is built its stop frees both: freeing them here too would free them twice.
-            when (owner) {
-                SetupOwner.Setup -> {
+            when (val failed = owner) {
+                is SetupOwner.Setup -> {
                     poller.close()
                     api.configFree(quicheConfig)
                 }
-                SetupOwner.Loop -> Unit
+                is SetupOwner.Opened -> {
+                    failed.socket.close()
+                    poller.close()
+                    api.configFree(quicheConfig)
+                }
+                is SetupOwner.Built -> {
+                    failed.loop.stopHere()
+                    failed.socket.close()
+                }
+                is SetupOwner.Placed -> failed.loop.stopHere()
+                is SetupOwner.Started -> failed.loop.close(Runnable { })
+                is SetupOwner.Served -> Unit
             }
         }
     }
@@ -168,8 +177,8 @@ internal class ServerSetup(
         receiveBuffers: List<ReceiveBuffer>,
         backlog: InitialBacklog,
         scratch: DemuxScratch,
-        /** Runs once the loop owns [poller] and its memory hold owns [quicheConfig]. */
-        handedOver: Runnable,
+        /** Told each time what the setup opened passes to a new owner. */
+        moved: (SetupOwner) -> Unit,
     ): CoreServer {
         val localKey = socket.local()
         val local = localKey.encodeToNative(factory)
@@ -199,9 +208,9 @@ internal class ServerSetup(
                 poller = poller,
                 clock = clock,
                 receive = ReceiveBatch(FixedPool(limits.maxDatagrams) { receiveBuffers[it] }, limits),
-                freeOnStop = Runnable { hold.release() },
+                freeOnStop = Runnable { hold.founding.release() },
             )
-        handedOver.run()
+        moved(SetupOwner.Built(loop, socketIo.io))
         val sendPort = SendPort(io, loop.port, CallerLanes.Of(lanes), SocketDiedNotice(), loop.counts, loop.callerCounts)
         val counts = ServerCounts()
         val accepted = Channel<CoreConnection>(Channel.UNLIMITED)
@@ -245,8 +254,12 @@ internal class ServerSetup(
                 LoopDriver.Caller -> Readiness.EveryPass
             }
         loop.place(Endpoint(socketIo.ref, io, sendPort, send, Route.Demux(demux), Runnable { loop.close(finished) }, readiness))
+        moved(SetupOwner.Placed(loop))
         when (driver) {
-            LoopDriver.OwnThread -> startLoop(loop, SERVER_THREAD)
+            LoopDriver.OwnThread -> {
+                startLoop(loop, SERVER_THREAD)
+                moved(SetupOwner.Started(loop))
+            }
             // The caller's first pass would place the socket only after that pass's receive: place it now.
             LoopDriver.Caller -> loop.pass(clock.now())
         }
