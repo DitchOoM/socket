@@ -62,20 +62,22 @@ internal class Egress(
         return Wrote.BatchFull
     }
 
-    /** Writes quiche's output into [out] at the pace [pacer] holds it to. */
+    /**
+     * Writes quiche's output into [out] at the pace [pacer] holds it to, judged at the time the write began: quiche's
+     * pacer reads its clock when it writes, and a starved turn can begin seconds before its write.
+     */
     fun writePaced(
         out: SendBatch,
         paths: Paths,
-        now: Nanos,
         pacer: Pacer,
         flight: ConnFlight,
     ): Wrote {
         last = LastOut.None
-        if (pacer.state(now) == PaceState.Holding) return Wrote.All
         val at = clock.now()
+        if (pacer.state(at) == PaceState.Holding) return Wrote.All
         while (out.room() == Room.Open) {
             if (one(out, paths, flight, at) <= 0) return Wrote.All
-            if (pacer.sent(q.api.sendInfoAtNanos(paths.sendInfo()), now) == PaceState.Holding) return Wrote.All
+            if (pacer.sent(q.api.sendInfoAtNanos(paths.sendInfo()), at) == PaceState.Holding) return Wrote.All
         }
         return Wrote.BatchFull
     }
