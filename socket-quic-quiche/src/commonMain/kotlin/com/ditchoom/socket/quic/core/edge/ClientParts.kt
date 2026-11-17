@@ -145,9 +145,16 @@ internal class ClientParts(
     ) = loop.move(endpoint, bind, prior)
 
     private companion object {
+        /** Datagrams the loop collects for the network in one pass. */
         const val MAX_BATCH = 64
-        const val CALLER_LANES = 4
-        const val CALLER_BATCH = 16
+
+        /**
+         * Lanes for threads that send in place, and the datagrams each holds. A thread that finds none free hands the
+         * send to the loop, so the count bounds memory, not correctness: on Android a direct buffer lives on the Java
+         * heap, so per-connection buffers decide how many connections a process holds.
+         */
+        const val CALLER_LANES = 2
+        const val CALLER_BATCH = 8
         const val MAX_ALPN = 255
     }
 }
