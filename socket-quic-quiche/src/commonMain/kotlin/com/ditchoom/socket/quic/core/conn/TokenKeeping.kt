@@ -1,21 +1,30 @@
 package com.ditchoom.socket.quic.core.conn
 
 import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.socket.quic.AddressTokenMemory
-import com.ditchoom.socket.quic.KeptToken
 import com.ditchoom.socket.quic.QUICHE_ERR_INVALID_STATE
+import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicSessionKey
-import com.ditchoom.socket.quic.QuicSessionMemory
-import com.ditchoom.socket.quic.QuicSessionStore
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.udp.Addressed
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 
 /**
- * Where a client connection's NEW_TOKEN token goes, beside its session ticket and under the same store choice: only
- * [QuicSessionStore.Default]'s memory keeps tokens; an app's own memory or cache does not yet, so its partition never
- * leaks into the shared one.
+ * Whether a client keeps the NEW_TOKEN tokens its servers issue and offers each on its next connection to that server.
+ * Independent of the session store, so a client that keeps tickets sends no token unless it asks.
  */
+internal sealed interface ClientTokens {
+    /** The default: none kept, none sent. */
+    data object NotKept : ClientTokens
+
+    /** Kept in [memory]; a store per account keeps one account's connections unlinkable to another's. */
+    class Kept(
+        val memory: AddressTokenMemory,
+    ) : ClientTokens
+}
+
+/** Where a client connection's NEW_TOKEN token comes from and goes to. */
 internal sealed interface TokenHome {
     data object NotKept : TokenHome
 
@@ -25,22 +34,22 @@ internal sealed interface TokenHome {
     ) : TokenHome
 
     companion object {
+        /** The home of a connection to [serverName]:[port] with [options], keyed as its session ticket is. */
         fun of(
-            store: QuicSessionStore,
-            key: QuicSessionKey,
+            tokens: ClientTokens,
+            serverName: String,
+            port: Int,
+            options: QuicOptions,
         ): TokenHome =
-            when (store) {
-                is QuicSessionStore.InMemory ->
-                    if (store.memory === QuicSessionMemory.Process) Memory(AddressTokenMemory.Process, key) else NotKept
-                is QuicSessionStore.NotKept, is QuicSessionStore.Supplied -> NotKept
+            when (tokens) {
+                is ClientTokens.NotKept -> NotKept
+                is ClientTokens.Kept -> Memory(tokens.memory, QuicSessionKey.of(serverName, port, options))
             }
     }
 }
 
-/** What a client offered quiche for its Initials. */
+/** Whether quiche took a client's token for its Initials. */
 internal sealed interface TokenOffer {
-    data object NoToken : TokenOffer
-
     data object Offered : TokenOffer
 
     /** quiche refused it with [quicheError]; the Initials carry none. */
@@ -49,28 +58,20 @@ internal sealed interface TokenOffer {
     ) : TokenOffer
 }
 
-/** Takes the token kept for this server and sets it on [q], created and not yet sent on. Once per connection attempt. */
-internal fun TokenHome.offer(
-    q: QuicheConnRef,
+/** Sets [token]'s remaining bytes on [q], created and not yet sent on; [token] itself is not consumed. */
+internal fun QuicheConnRef.setToken(
+    token: ReadBuffer,
     factory: BufferFactory,
 ): TokenOffer {
-    val token =
-        when (this) {
-            is TokenHome.NotKept -> return TokenOffer.NoToken
-            is TokenHome.Memory ->
-                when (val kept = memory.take(key)) {
-                    is KeptToken.None -> return TokenOffer.NoToken
-                    is KeptToken.Held -> kept.token.slice()
-                }
-        }
-    val length = token.remaining()
+    val bytes = token.slice()
+    val length = bytes.remaining()
     val buffer = factory.allocate(length)
     try {
-        buffer.write(token)
+        buffer.write(bytes)
         return when (val addressed = NativeBytes.of(buffer)) {
             is Addressed.NotAddressable -> TokenOffer.Refused(QUICHE_ERR_INVALID_STATE)
             is Addressed.Native -> {
-                val rc = q.api.connSetToken(q.handle, addressed.bytes.address, length)
+                val rc = api.connSetToken(handle, addressed.bytes.address, length)
                 if (rc < 0) TokenOffer.Refused(rc) else TokenOffer.Offered
             }
         }

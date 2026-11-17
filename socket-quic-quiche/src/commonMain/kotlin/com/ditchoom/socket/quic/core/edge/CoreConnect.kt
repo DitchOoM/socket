@@ -27,9 +27,9 @@ import com.ditchoom.socket.quic.UdpBatching
 import com.ditchoom.socket.quic.UdpSocketChannelFactory
 import com.ditchoom.socket.quic.applyQuicOptions
 import com.ditchoom.socket.quic.clientAlpnOffer
+import com.ditchoom.socket.quic.core.conn.ClientTokens
 import com.ditchoom.socket.quic.core.conn.FlightSize
 import com.ditchoom.socket.quic.core.conn.HandshakeRule
-import com.ditchoom.socket.quic.core.conn.offer
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.loop.Placement
@@ -83,6 +83,7 @@ internal suspend fun coreConnect(
     batching: UdpBatching = options.udpBatching,
     ride: ClientRide = clientRideOfThisPlatform,
     datagramSize: DatagramSize = DatagramSize.Probed,
+    tokens: ClientTokens = ClientTokens.NotKept,
 ): CoreClient {
     val peerHost = peerHostFor(host)
     return withContext(Dispatchers.IO) {
@@ -108,6 +109,7 @@ internal suspend fun coreConnect(
                 routeSource,
                 batching,
                 ride,
+                tokens,
             ).also { connected = true }
         } finally {
             if (!connected) memory.freeAll()
@@ -135,6 +137,7 @@ private suspend fun connectOnThisThread(
     routeSource: suspend (UdpSocketChannelFactory) -> RouteSource,
     batching: UdpBatching,
     ride: ClientRide,
+    tokens: ClientTokens,
 ): CoreClient {
     val peer = UdpSocket.resolve(peerHost, port)
     val peerKey = peer.toPathKey()
@@ -188,10 +191,9 @@ private suspend fun connectOnThisThread(
         )
     name.freeNativeMemory()
     scid.freeNativeMemory()
-    val plan = sessionPlan(options, serverName, port)
+    val plan = sessionPlan(options, serverName, port, tokens)
     val planned = offerPlanned(QuicheConnRef(api, handle), plan, factory)
     val offer = planned.offer
-    plan.tokens.offer(QuicheConnRef(api, handle), factory)
     val scope = CoroutineScope(SupervisorJob())
     // Until the connection starts nothing has been sent: a step that fails before then hands the ticket back.
     val (built, connection) =

@@ -8,6 +8,7 @@ import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.core.conn.ClientTokens
 import com.ditchoom.socket.quic.core.conn.FlightSize
 import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.testing.platformQuicheApi
@@ -35,6 +36,7 @@ internal suspend fun connectCore(
     factory: BufferFactory = BufferFactory.network(),
     api: com.ditchoom.socket.quic.QuicheApi = platformQuicheApi(),
     options: QuicOptions = coreTestOptions,
+    tokens: ClientTokens = ClientTokens.NotKept,
     wrapIo: (DatagramBatchIo) -> DatagramBatchIo = { it },
 ): CoreClient =
     coreConnect(
@@ -50,6 +52,7 @@ internal suspend fun connectCore(
         wrapIo = wrapIo,
         loops = loops,
         flight = TEST_FLIGHT,
+        tokens = tokens,
     )
 
 /** The flight recording of a test's client connection: a server connection's size. */
