@@ -13,9 +13,9 @@ import kotlin.random.Random
  * Android, the operating system's random source on Kotlin/Native (`/dev/urandom` on Linux,
  * `arc4random_buf` on Apple).
  *
- * **Thread-safe, with no lock of ours.** One instance is shared by every connection in the process: the
- * server's receive loop draws the SCID of each connection it accepts while every established
- * connection's driver, on another thread, draws the spare ids it announces. [Random.Default] is not safe
+ * **Thread-safe, with no lock of ours.** One instance is shared by the client connections of the process,
+ * whose ids are drawn on whichever thread connects or is inside the connection; a core server draws from
+ * one of its own ([newConnectionIdRandom]). [Random.Default] is not safe
  * for that on Kotlin/Native: its generator updates its state without synchronisation, so two threads can
  * return the same bytes. Two connections then own one id, the server routes it to whichever claimed it
  * last, and the other connection's datagrams go to a driver that cannot read them, so its handshake never
@@ -26,6 +26,12 @@ import kotlin.random.Random
  * one.
  */
 internal expect val connectionIdRandom: Random
+
+/**
+ * A source like [connectionIdRandom] that no other owner draws from: a server's loop draws every id it issues from one
+ * of these, so its receive phase never waits for a client thread that holds a shared source's lock.
+ */
+internal expect fun newConnectionIdRandom(): Random
 
 /** Why the operating system's random source could not be read. */
 internal enum class EntropyFailure {

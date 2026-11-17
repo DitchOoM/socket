@@ -27,3 +27,6 @@ internal class Arc4Random : NativeEntropyRandom() {
 }
 
 internal actual val connectionIdRandom: Random = Arc4Random()
+
+/** `arc4random_buf` takes no lock a caller can see, so the shared source serves every owner. */
+internal actual fun newConnectionIdRandom(): Random = connectionIdRandom
