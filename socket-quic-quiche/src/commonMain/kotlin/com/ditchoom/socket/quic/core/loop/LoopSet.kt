@@ -181,7 +181,10 @@ internal class LoopSet(
         for (size in List(LoopMemory.COPY_SLOTS) { MAX_DATAGRAM } + flightArenaBytes) {
             when (val a = NativeBytes.of(factory.allocate(size))) {
                 is Addressed.Native -> sharedBytes.add(a.bytes)
-                is Addressed.NotAddressable -> return freed(buffers, sharedBytes, Placement.NotJdkMemory)
+                is Addressed.NotAddressable -> {
+                    poller.close()
+                    return freed(buffers, sharedBytes + ioBytes(io), Placement.NotJdkMemory)
+                }
             }
         }
         val shared = LoopMemory(sharedBytes.subList(0, LoopMemory.COPY_SLOTS), FlightArena(sharedBytes.last()))

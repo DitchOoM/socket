@@ -26,6 +26,8 @@ class CoreServerRestartTests {
             pair.restartServer(options)
             val client = pair.reconnect(options)
             pair.runUntil { client.connection.state.value is com.ditchoom.socket.quic.QuicConnectionState.Established }
+            // The server establishes once the client's last handshake flight arrives.
+            pair.runFor(pair.oneWay * 4)
             assertTrue(pair.accept().end() is EdgeEnd.Open)
         }
 }

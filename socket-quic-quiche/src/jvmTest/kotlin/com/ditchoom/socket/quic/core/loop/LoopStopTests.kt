@@ -1,6 +1,7 @@
 package com.ditchoom.socket.quic.core.loop
 
 import com.ditchoom.socket.quic.NextDue
+import com.ditchoom.socket.quic.core.pool.FixedPool
 import com.ditchoom.socket.quic.core.ready.Poller
 import com.ditchoom.socket.quic.core.ready.ReadyTokens
 import com.ditchoom.socket.quic.core.ready.SocketRef
@@ -16,7 +17,6 @@ import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.ReceiveBuffer
 import com.ditchoom.socket.quic.core.udp.SocketClosed
-import com.ditchoom.socket.quic.core.pool.FixedPool
 import kotlinx.coroutines.Runnable
 import kotlin.test.Test
 import kotlin.test.assertEquals

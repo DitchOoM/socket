@@ -128,8 +128,12 @@ class NativePollerTests {
     fun wakesRacingACloseFreeThePollerExactlyOnceAndNeverAfterItIsFreed() {
         assumeNativeStack()
         repeat(200) {
-            val freed = java.util.concurrent.atomic.AtomicInteger()
-            val afterFree = java.util.concurrent.atomic.AtomicInteger()
+            val freed =
+                java.util.concurrent.atomic
+                    .AtomicInteger()
+            val afterFree =
+                java.util.concurrent.atomic
+                    .AtomicInteger()
             val counting =
                 object : com.ditchoom.socket.quic.NetShim by shim {
                     override fun pollerClose(poller: Long) {
@@ -144,7 +148,13 @@ class NativePollerTests {
                 }
             val poller = assertIs<PollerOpened.Opened>(NativePoller.open(counting, MonotonicClock, 16)).poller
             val start = java.util.concurrent.CountDownLatch(1)
-            val wakers = List(3) { Thread { start.await(); repeat(50) { poller.wake() } }.also(Thread::start) }
+            val wakers =
+                List(3) {
+                    Thread {
+                        start.await()
+                        repeat(50) { poller.wake() }
+                    }.also(Thread::start)
+                }
             start.countDown()
             poller.close()
             wakers.forEach(Thread::join)

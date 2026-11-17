@@ -38,7 +38,10 @@ internal class SocketClose(
     private var lanes: LaneWait = LaneWait.NotAsked
     private val wakeAtBound = Runnable { }
 
-    /** The loop asks at [now]; on [Shutdown.Quiet] the caller lets go of the socket and then calls [close]. */
+    /**
+     * The loop asks at [now]; on [Shutdown.Quiet] the caller lets go of the socket and then calls [close], and on
+     * [Shutdown.Closed] it only lets go: whoever closed it did.
+     */
     fun ask(
         now: Nanos,
         port: LoopPort,
@@ -46,7 +49,11 @@ internal class SocketClose(
         when (val wait = lanes) {
             is LaneWait.NotAsked -> {
                 val first = socket.shut(Closer.Loop)
-                if (first !is Shutdown.Quiet) lanes = LaneWait.Until(now + LANE_BOUND, port.arm(now + LANE_BOUND, wakeAtBound))
+                when (first) {
+                    is Shutdown.LanesOut, is Shutdown.Sending ->
+                        lanes = LaneWait.Until(now + LANE_BOUND, port.arm(now + LANE_BOUND, wakeAtBound))
+                    is Shutdown.Quiet, is Shutdown.Closed -> Unit
+                }
                 first
             }
             is LaneWait.Until ->
@@ -70,7 +77,7 @@ internal class SocketClose(
         disarm()
         when (socket.shut(Closer.LastLane)) {
             is Shutdown.Quiet -> io.close()
-            is Shutdown.LanesOut, is Shutdown.Sending -> Unit
+            is Shutdown.LanesOut, is Shutdown.Sending, is Shutdown.Closed -> Unit
         }
     }
 

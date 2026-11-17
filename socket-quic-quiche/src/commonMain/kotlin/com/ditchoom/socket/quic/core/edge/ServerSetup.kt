@@ -69,6 +69,9 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.channels.Channel
 
+/** Who frees the poller and the quiche config a server's setup opened: the setup until its loop is built, then the loop. */
+private enum class SetupOwner { Setup, Loop }
+
 /** Everything [coreServe] builds, in order: memory first (so a factory without native memory fails before any socket), then the socket and the loop. */
 internal class ServerSetup(
     private val bind: PathKey,
@@ -125,7 +128,7 @@ internal class ServerSetup(
                     }
             }
         val quicheConfig = configured()
-        var bound = false
+        var owner = SetupOwner.Setup
         try {
             val socket = openStackSocket(loopIo, memory, bind, SocketPeer.Unconnected, buffers, batching, limits.maxDatagrams)
             val sends = listOf(send.storage) + List(CALLER_LANES) { lanes[it].batch.storage }
@@ -140,11 +143,16 @@ internal class ServerSetup(
                 receiveBuffers,
                 backlog,
                 scratch,
-            ).also { bound = true }
+                handedOver = Runnable { owner = SetupOwner.Loop },
+            )
         } finally {
-            if (!bound) {
-                poller.close()
-                api.configFree(quicheConfig)
+            // Once the loop is built its stop frees both: freeing them here too would free them twice.
+            when (owner) {
+                SetupOwner.Setup -> {
+                    poller.close()
+                    api.configFree(quicheConfig)
+                }
+                SetupOwner.Loop -> Unit
             }
         }
     }
@@ -160,6 +168,8 @@ internal class ServerSetup(
         receiveBuffers: List<ReceiveBuffer>,
         backlog: InitialBacklog,
         scratch: DemuxScratch,
+        /** Runs once the loop owns [poller] and its memory hold owns [quicheConfig]. */
+        handedOver: Runnable,
     ): CoreServer {
         val localKey = socket.local()
         val local = localKey.encodeToNative(factory)
@@ -191,6 +201,7 @@ internal class ServerSetup(
                 receive = ReceiveBatch(FixedPool(limits.maxDatagrams) { receiveBuffers[it] }, limits),
                 freeOnStop = Runnable { hold.release() },
             )
+        handedOver.run()
         val sendPort = SendPort(io, loop.port, CallerLanes.Of(lanes), SocketDiedNotice(), loop.counts, loop.callerCounts)
         val counts = ServerCounts()
         val accepted = Channel<CoreConnection>(Channel.UNLIMITED)

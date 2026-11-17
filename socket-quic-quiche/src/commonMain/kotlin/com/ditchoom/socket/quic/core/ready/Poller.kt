@@ -27,5 +27,6 @@ internal interface Poller {
     /** Any thread. Makes the current or next [await] return. */
     fun wake()
 
+    /** Frees the poller once: a second close, and any call after it, never reaches what was freed. */
     fun close()
 }

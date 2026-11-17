@@ -6,6 +6,9 @@ import com.ditchoom.socket.quic.core.observe.Published
 import kotlin.concurrent.atomics.AtomicLong
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 
+/** Whether a cell was quiesced: a closed one never is again. */
+internal enum class Quiesced { Quiet, WasClosed }
+
 /** What replaced a descriptor: a new one, or nothing (the cell is closed). */
 internal sealed interface Swapped {
     class To(
@@ -55,21 +58,26 @@ internal class DescriptorCell(
 
     /**
      * Loop thread: stops new calls, waits out the ones in flight, then runs [swap] on the old descriptor: its successor
-     * goes live, or the cell stays closed.
+     * goes live, or the cell stays closed. A closed cell runs nothing: its descriptor number may be another socket's now.
      */
-    fun replace(swap: (old: Int) -> Swapped) {
-        val old = quiesce(REPLACING)
+    fun replace(swap: (old: Int) -> Swapped): Quiesced {
+        val quiesced = quiesce(REPLACING)
+        if (quiesced == Quiesced.WasClosed) return quiesced
+        val old = fdOf(word.load())
         when (val swapped = swap(old)) {
             is Swapped.To -> word.store(pack(swapped.fd, LIVE, 0))
             is Swapped.Gone -> word.store(pack(old, CLOSED, 0))
         }
+        return quiesced
     }
 
-    /** Loop thread: stops new calls, waits out the ones in flight, then runs [close] once on the descriptor. */
+    /**
+     * Any thread: stops new calls, waits out the ones in flight, then runs [close] on the descriptor. The move to
+     * closed is one compare-and-set from live, so of two closes, racing or not, only the one that made it runs [close].
+     */
     fun close(close: (fd: Int) -> Unit) {
-        val seen = word.load()
-        if (phaseOf(seen) == CLOSED) return
-        close(quiesce(CLOSED))
+        if (quiesce(CLOSED) == Quiesced.WasClosed) return
+        close(fdOf(word.load()))
     }
 
     @PublishedApi
@@ -86,13 +94,18 @@ internal class DescriptorCell(
         }
     }
 
-    private fun quiesce(phase: Long): Int {
+    /** Moves a live cell to [phase] and waits out the calls in flight; a replace under way is waited out first. */
+    private fun quiesce(phase: Long): Quiesced {
         while (true) {
             val seen = word.load()
+            when (phaseOf(seen)) {
+                CLOSED -> return Quiesced.WasClosed
+                REPLACING -> continue
+            }
             if (word.compareAndSet(seen, pack(fdOf(seen), phase, usersOf(seen)))) break
         }
         while (usersOf(word.load()) != 0L) Unit
-        return fdOf(word.load())
+        return Quiesced.Quiet
     }
 
     @PublishedApi

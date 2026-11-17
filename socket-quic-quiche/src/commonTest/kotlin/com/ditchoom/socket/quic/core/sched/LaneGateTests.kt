@@ -72,7 +72,17 @@ class LaneGateTests {
         assertSame(Shutdown.Sending, gate.shut(Closer.LastLane), "the loop stopped while the send was inside")
         assertEquals(LaneBack.ThisThreadCloses, gate.leaveSend())
         assertEquals(SendEntry.Cut, gate.enterSend())
-        assertSame(Shutdown.Quiet, gate.cut(Closer.Loop))
+        assertSame(Shutdown.Closed, gate.cut(Closer.Loop), "the last sender out closed it: the loop must not close it again")
+        assertSame(Shutdown.Closed, gate.shut(Closer.Loop))
+    }
+
+    @Test
+    fun aSocketTheLoopClosedIsNeverHandedToAnotherClose() {
+        val gate = LaneGate()
+        assertSame(Shutdown.Quiet, gate.shut(Closer.Loop))
+        assertSame(Shutdown.Closed, gate.shut(Closer.Loop))
+        assertSame(Shutdown.Closed, gate.shut(Closer.LastLane))
+        assertSame(Shutdown.Closed, gate.cut(Closer.Loop))
     }
 
     @Test

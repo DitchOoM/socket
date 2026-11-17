@@ -147,9 +147,13 @@ internal class Endpoint(
                 Phase.Gone -> Unit
                 Phase.Live, Phase.Dead ->
                     // With lanes out, the last thread out wakes the loop to ask again, the lane bound at the latest.
-                    if (closing.ask(now, port) is Shutdown.Quiet) {
-                        leave(poller)
-                        closing.close()
+                    when (closing.ask(now, port)) {
+                        is Shutdown.Quiet -> {
+                            leave(poller)
+                            closing.close()
+                        }
+                        is Shutdown.Closed -> leave(poller)
+                        is Shutdown.LanesOut, is Shutdown.Sending -> Unit
                     }
             }
             if (phase == Phase.Gone) {
