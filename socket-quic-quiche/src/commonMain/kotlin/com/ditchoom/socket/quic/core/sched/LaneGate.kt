@@ -25,6 +25,9 @@ internal sealed interface Shutdown {
 
     /** The lanes were cut and a thread is inside a send; the last one out finishes the close the way the [Closer] says. */
     data object Sending : Shutdown
+
+    /** The socket was closed already, by whoever was told to: nobody closes it again. */
+    data object Closed : Shutdown
 }
 
 /** What [LaneGate.reserve] answers. */
@@ -126,13 +129,13 @@ internal class LaneGate {
 
     /**
      * Loop thread: no more lanes are lent. [Shutdown.Quiet] when nothing can send any more, and then the socket counts
-     * as closed; otherwise the last thread out finishes the close as [closer] says. Asked again, it answers again.
+     * as closed; otherwise the last thread out finishes the close as [closer] says. Once closed it answers [Shutdown.Closed].
      */
     fun shut(closer: Closer): Shutdown {
         while (true) {
             val seen = word.load()
             val state = stateOf(seen)
-            if (state == CLOSED) return Shutdown.Quiet
+            if (state == CLOSED) return Shutdown.Closed
             if (state >= CUT_LOOP) return cut(closer)
             val out = seen and LANES_MASK
             // A stopped loop's close is never handed back to the loop.
@@ -145,13 +148,13 @@ internal class LaneGate {
     /**
      * Loop thread, once lanes stalled past their bound: no lane may call the socket any more, whether or not it is
      * back. [Shutdown.Quiet] when no thread is inside a send, and then the socket counts as closed; otherwise the last
-     * one out finishes the close as [closer] says. Asked again, it answers again.
+     * one out finishes the close as [closer] says. Once closed it answers [Shutdown.Closed].
      */
     fun cut(closer: Closer): Shutdown {
         while (true) {
             val seen = word.load()
             val state = stateOf(seen)
-            if (state == CLOSED) return Shutdown.Quiet
+            if (state == CLOSED) return Shutdown.Closed
             val inside = seen and SENDERS_MASK
             // A stopped loop's close is never handed back to the loop.
             val kept = if (state == SHUT_LAST || state == CUT_LAST || closer == Closer.LastLane) CUT_LAST else CUT_LOOP
