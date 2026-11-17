@@ -55,3 +55,15 @@ internal class StopWork(
 
     override fun gone(end: ConnEnd) = then.run()
 }
+
+/** How a loop's stop went. Every step runs once whatever an earlier one threw; the first failure is kept. */
+internal sealed interface StopOutcome {
+    data object Clean : StopOutcome
+
+    class Failed(
+        val first: Throwable,
+    ) : StopOutcome
+
+    /** It had stopped already: nothing was released. */
+    data object AlreadyStopped : StopOutcome
+}

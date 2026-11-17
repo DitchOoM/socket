@@ -123,7 +123,7 @@ internal class ServerPeer(
     memory: PeerMemory,
     peerAddress: EncodedSockAddr,
     opened: Opened,
-    hold: MemoryHold,
+    claim: MemoryHold.Claim,
 ) {
     var scidRoute: RouteLink<ServerPeer> = RouteLink.End
         private set
@@ -137,13 +137,13 @@ internal class ServerPeer(
     var index = 0
         private set
 
-    /** Runs on the thread that freed quiche's memory: the connection's own memory, the edge's part, the server's hold. */
+    /** Runs on the thread that freed quiche's memory: the connection's own memory, the edge's part, the server's claim on its hold. */
     val freed =
         Runnable {
             memory.free()
             peerAddress.free()
             opened.freed.run()
-            hold.release()
+            claim.release()
         }
 
     fun routed(

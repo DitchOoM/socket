@@ -46,9 +46,9 @@ internal class ClientParts(
 ) {
     init {
         // The loop's shared memory is held until this connection's memory is freed.
-        when (w.running.hold.acquire()) {
-            Hold.Held -> w.memory.releasing(w.running.hold)
-            Hold.AlreadyFreed -> raise(Raised.LoopsClosed, QuicCloseCircumstance.HandshakeFailed)
+        when (val held = w.running.hold.acquire()) {
+            is Hold.Held -> w.memory.releasing(held.claim)
+            is Hold.AlreadyFreed -> raise(Raised.LoopsClosed, QuicCloseCircumstance.HandshakeFailed)
         }
     }
 

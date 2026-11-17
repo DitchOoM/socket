@@ -201,7 +201,7 @@ internal class LoopSet(
                 freeOnStop =
                     Runnable {
                         buffers.forEach { it.bytes.free() }
-                        hold.release()
+                        hold.founding.release()
                     },
             )
         val running = RunningLoop(loop, io, shared, hold, waitsOf(stack))
