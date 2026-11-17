@@ -76,6 +76,7 @@ internal class Loop(
     private val slots = ArrayList<LoopSlot>()
     private val free = IntStack()
     private val ready = ReadyTokens(READY_TOKENS)
+    private val budget = ReceiveBudget(clock)
     private var run: Run = Run.Running
 
     /** Any thread: [endpoint] joins this loop; its connection may start once this returns. */
@@ -167,6 +168,7 @@ internal class Loop(
         val fired = clock.now().value
         // The clock is read again only after a socket gave datagrams: a pass's reads follow its work, not its connections.
         var at = Nanos(fired)
+        budget.begin(at)
         for (i in slots.indices) {
             when (val slot = slots[i]) {
                 is LoopSlot.Taken -> {
@@ -237,7 +239,7 @@ internal class Loop(
         at: Nanos,
     ) {
         try {
-            endpoint.receive(receive, counts, at)
+            endpoint.receive(receive, counts, at, budget)
         } catch (failure: Exception) {
             receive.release()
             endpoint.ioThrew(Thrown(failure))
