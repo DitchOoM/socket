@@ -114,6 +114,11 @@ internal class ClientPaths(
         }
     }
 
+    /** The OS reports another usable network under the socket: the move is followed afresh ([Move.onNewNetwork]). */
+    fun networkChanged(now: Nanos) {
+        move = move.onNewNetwork(now)
+    }
+
     /** Whether the socket's endpoint has no validated path yet: an idle end then means no usable path was found. */
     fun unsettled(): Boolean = move !is Move.Settled
 
@@ -149,13 +154,8 @@ internal class ClientPaths(
         now: Nanos,
         stranded: Move.Stranded,
     ): PathStep {
-        when (stranded.why) {
-            Unprobed.ValidationFailed ->
-                when (events.verdict(stranded.at.key)) {
-                    PathVerdict.Validated -> return migrate(now, stranded.from, stranded.at, stranded.id, stranded.retry.failed)
-                    PathVerdict.Failed, PathVerdict.Undecided, PathVerdict.Unreadable -> Unit
-                }
-            Unprobed.NoSpareId, Unprobed.MigrationRefused -> Unit
+        if (stranded.why == Unprobed.ValidationFailed && events.verdict(stranded.at.key) == PathVerdict.Validated) {
+            return migrate(now, stranded.from, stranded.at, stranded.id, stranded.retry.failed)
         }
         if (now.value < stranded.retry.due.value) return PathStep.Steady
         topUp()

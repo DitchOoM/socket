@@ -104,6 +104,18 @@ internal fun ConnParts.stepPaths(now: Nanos) =
         is Paths.Server -> paths.paths.step()
     }
 
+/**
+ * Inside: the OS reports a usable network, another one or the same one back. Quiche sends its probes at once, and a
+ * client's unfinished move is followed afresh on it: the probes that failed before say nothing of this network.
+ */
+internal fun ConnParts.networkUsable(now: Nanos) {
+    timer.nudge()
+    when (val paths = slots.paths) {
+        is Paths.Client -> paths.paths.networkChanged(now)
+        is Paths.Server -> Unit
+    }
+}
+
 /** How an end quiche reported reads: a client whose socket moved and found no validated path did not merely go idle. */
 internal fun Paths.endOf(end: ConnEnd): ConnEnd =
     when (this) {

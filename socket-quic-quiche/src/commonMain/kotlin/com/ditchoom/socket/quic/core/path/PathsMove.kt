@@ -2,9 +2,11 @@ package com.ditchoom.socket.quic.core.path
 
 import com.ditchoom.socket.quic.EncodedSockAddr
 import com.ditchoom.socket.quic.PathKey
+import com.ditchoom.socket.quic.QuicPathStats
 import com.ditchoom.socket.quic.QuicheRecvInfo
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.time.Nanos
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 
 /**
@@ -44,14 +46,28 @@ internal class Retry(
 /**
  * The timers of one validation of a path: when it is next asked for a fresh PATH_CHALLENGE, and when the validation is
  * abandoned (RFC 9000 §8.2.4) if no PATH_RESPONSE came. Quiche resends a challenge only when the packet carrying it is
- * declared lost, never when the response is, and can stop asking altogether on a path it already gave up once.
+ * declared lost, never when the response is, and can stop asking altogether on a path it already gave up once. A
+ * challenge that could not be answered before the abandonment, one new-path round trip ([newRttNanos]) later, is not
+ * asked: the abandonment falls due in its place.
  */
-internal class Cadence(
+internal class Cadence private constructor(
     val challengeDue: Nanos,
     val abandonAt: Nanos,
+    private val newRttNanos: Long,
 ) {
     /** The same validation, next challenged one [CHALLENGE_INTERVAL_NANOS] after [now]. */
-    fun challenged(now: Nanos): Cadence = Cadence(now + CHALLENGE_INTERVAL_NANOS, abandonAt)
+    fun challenged(now: Nanos): Cadence = of(now, abandonAt, newRttNanos)
+
+    companion object {
+        fun of(
+            now: Nanos,
+            abandonAt: Nanos,
+            newRttNanos: Long,
+        ): Cadence {
+            val next = now + CHALLENGE_INTERVAL_NANOS
+            return Cadence(if (next.value + newRttNanos > abandonAt.value) abandonAt else next, abandonAt, newRttNanos)
+        }
+    }
 }
 
 /** Whether a stranded endpoint's path holds a destination id. */
@@ -93,6 +109,17 @@ internal sealed interface Move {
     ) : Move
 }
 
+/**
+ * This move on another usable network: what failed on the network before says nothing of this one, so a stranded
+ * endpoint is probed again at [now] and the move backs off afresh.
+ */
+internal fun Move.onNewNetwork(now: Nanos): Move =
+    when (this) {
+        is Move.Stranded -> Move.Stranded(from, at, why, Retry(now, 0), id)
+        is Move.Probing -> Move.Probing(from, to, 0, cadence)
+        is Move.Settled -> this
+    }
+
 /** What a client asked to move answers. */
 internal enum class MoveAnswer {
     /** The new endpoint's path is being validated, or has no spare id to be. */
@@ -125,7 +152,7 @@ internal enum class PathStep {
 internal fun QuicheConnRef.retryAt(
     now: Nanos,
     failed: Int,
-): Retry = Retry(now + (currentPto() shl minOf(failed, MAX_DOUBLINGS)), failed)
+): Retry = Retry(now + (activeBasePto() shl minOf(failed, MAX_DOUBLINGS)), failed)
 
 /**
  * When a path whose validation failed [failed] times is probed again: one [CHALLENGE_INTERVAL_NANOS] after the first
@@ -139,17 +166,49 @@ internal fun validationRetryAt(
 
 /**
  * The timers of a validation starting at [now]: a fresh challenge every [CHALLENGE_INTERVAL_NANOS], abandoned at three
- * times the larger of the current path's PTO and the new path's (RFC 9000 §8.2.4).
+ * times the larger of the two paths' PTOs (RFC 9000 §8.2.4). Each PTO is RFC 9002 §6.2.1's base PTO, without the
+ * doubling for each expiry: after an outage that doubling is the outage's length, not the path's. The path being
+ * validated is the one that is neither active nor validated; until it has an RTT sample its PTO and round trip are
+ * those of kInitialRtt. Reads quiche's statistics, which allocates: once per validation.
  */
-internal fun QuicheConnRef.cadenceFrom(now: Nanos): Cadence =
-    Cadence(now + CHALLENGE_INTERVAL_NANOS, now + ABANDON_PTOS * maxOf(currentPto(), NEW_PATH_PTO_NANOS))
-
-/** RFC 9002 §6.2.1's PTO of the path the connection still has, from its RTT estimate. */
-private fun QuicheConnRef.currentPto(): Long =
-    when (val stats = api.connPathStats(handle, 0L)) {
-        null -> NEW_PATH_PTO_NANOS
-        else -> (stats.rtt + maxOf(stats.rttvar * RTTVAR_FACTOR, GRANULARITY) + MAX_ACK_DELAY).inWholeNanoseconds
+internal fun QuicheConnRef.cadenceFrom(now: Nanos): Cadence {
+    var activePto = NEW_PATH_PTO_NANOS
+    var sampledPto = 0L
+    var sampledRtt = 0L
+    var index = 0L
+    while (index < MOST_PATHS) {
+        val stats = api.connPathStats(handle, index++) ?: break
+        if (stats.active) {
+            activePto = basePto(stats)
+        } else if (stats.validationState != QUICHE_PATH_VALIDATED && stats.minRtt > Duration.ZERO) {
+            sampledPto = maxOf(sampledPto, basePto(stats))
+            sampledRtt = maxOf(sampledRtt, stats.rtt.inWholeNanoseconds)
+        }
     }
+    val newPto = if (sampledPto > 0L) sampledPto else NEW_PATH_PTO_NANOS
+    val newRtt = if (sampledRtt > 0L) sampledRtt else K_INITIAL_RTT_NANOS
+    return Cadence.of(now, now + ABANDON_PTOS * maxOf(activePto, newPto), newRtt)
+}
+
+/** The base PTO of the path the connection is active on, or kInitialRtt's when quiche reports none. */
+private fun QuicheConnRef.activeBasePto(): Long {
+    var index = 0L
+    while (index < MOST_PATHS) {
+        val stats = api.connPathStats(handle, index++) ?: break
+        if (stats.active) return basePto(stats)
+    }
+    return NEW_PATH_PTO_NANOS
+}
+
+/** RFC 9002 §6.2.1's PTO from the path's RTT estimate, before any doubling. */
+private fun basePto(stats: QuicPathStats): Long =
+    (stats.rtt + maxOf(stats.rttvar * RTTVAR_FACTOR, GRANULARITY) + MAX_ACK_DELAY).inWholeNanoseconds
+
+/** How many of quiche's paths are read: its own limit on a client's concurrent paths is far below it. */
+private const val MOST_PATHS = 16L
+
+/** `PathState::Validated`, as `quiche_path_stats.validation_state` reports it. */
+private const val QUICHE_PATH_VALIDATED = 3L
 
 private const val MAX_DOUBLINGS = 4
 private const val RTTVAR_FACTOR = 4
