@@ -60,7 +60,7 @@ class SharedClientLoopTests {
                                             async {
                                                 val stream = client.connection.openStream()
                                                 val payload = Random(index).nextBytes(PAYLOAD)
-                                                while (echoed.get(index) < ECHOES && !overBudget(began, echoed.get(index))) {
+                                                while (echoed.get(index) < ECHOES) {
                                                     val round = echoed.get(index)
                                                     assertContentEquals(payload, echoOver(stream, payload), "connection $index echo $round")
                                                     echoed.incrementAndGet(index)
@@ -286,21 +286,9 @@ class SharedClientLoopTests {
         }
     }
 
-    /**
-     * Whether a connection with [done] echoes may stop: it did [MIN_ECHOES] and the run used its [VOLUME_BUDGET]. A slow
-     * host (an older Android emulator echoes a third as fast as a newer one) then checks fewer echoes byte for byte
-     * instead of running into the bound that only a hang should reach.
-     */
-    private fun overBudget(
-        began: Long,
-        done: Int,
-    ): Boolean = done >= MIN_ECHOES && System.nanoTime() - began > VOLUME_BUDGET.inWholeNanoseconds
-
     private companion object {
         const val CONNECTIONS = 64
         const val ECHOES = 1_000
-        const val MIN_ECHOES = 200
-        val VOLUME_BUDGET = 60.seconds
         const val NANOS_PER_MILLI = 1_000_000L
         const val NANOS_PER_SECOND = 1_000_000_000L
         const val PAYLOAD = 100

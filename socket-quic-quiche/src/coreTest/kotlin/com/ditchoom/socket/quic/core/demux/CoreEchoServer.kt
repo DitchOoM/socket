@@ -6,7 +6,6 @@ import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicCloseException
-import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.ScopedRead
 import com.ditchoom.socket.quic.core.edge.CoreConnection
@@ -43,14 +42,13 @@ internal suspend fun withCoreEchoServer(
     api: QuicheApi = platformQuicheApi(),
     onAccepted: (CoreConnection) -> Unit = {},
     factory: BufferFactory = BufferFactory.network(),
-    options: QuicOptions = coreTestOptions,
     body: suspend CoroutineScope.(CoreServer) -> Unit,
 ) {
     val server =
         coreServe(
             bind = bind,
             tls = platformTlsConfig(),
-            options = options,
+            options = coreTestOptions,
             factory = factory,
             api = api,
             readPolicy = ReadPolicy.Bounded(10.seconds),

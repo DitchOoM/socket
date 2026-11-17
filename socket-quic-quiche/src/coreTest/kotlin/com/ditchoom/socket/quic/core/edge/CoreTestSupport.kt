@@ -5,7 +5,6 @@ import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.flow.writeFully
-import com.ditchoom.socket.quic.HandshakePolicy
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.ScopedRead
@@ -21,7 +20,6 @@ import kotlinx.coroutines.IO
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
-import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
 /** The options every core test connects with. */
@@ -30,24 +28,22 @@ internal val coreTestOptions = QuicOptions(alpnProtocols = listOf("test"), verif
 /** The prefix of the loop threads' names, as [coreConnect] starts them. */
 internal const val LOOP_THREAD = "quic-core-client"
 
-/** Connects to a core server; [bound] is the handshake's bound and the wait for it, as one herd's last client needs more. */
 internal suspend fun connectCore(
     port: Int,
     host: String = "127.0.0.1",
     loops: LoopSet = LoopSet.shared,
     factory: BufferFactory = BufferFactory.network(),
     api: com.ditchoom.socket.quic.QuicheApi = platformQuicheApi(),
-    bound: Duration = 10.seconds,
     wrapIo: (DatagramBatchIo) -> DatagramBatchIo = { it },
 ): CoreClient =
     coreConnect(
         host = host,
         port = port,
         serverName = "localhost",
-        options = coreTestOptions.copy(handshakePolicy = HandshakePolicy.Bounded(bound)),
+        options = coreTestOptions,
         factory = factory,
         api = api,
-        timeout = bound,
+        timeout = 10.seconds,
         readPolicy = ReadPolicy.Bounded(10.seconds),
         writePolicy = WritePolicy.Bounded(10.seconds),
         wrapIo = wrapIo,

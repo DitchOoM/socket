@@ -147,12 +147,14 @@ class HandshakeTests {
     }
 
     @Test
-    fun anEstablishedHandshakeThatIsNeverConfirmedStillPassesItsDeadline() {
+    fun anEstablishedHandshakeHasNoDeadlineWhileItIsNotConfirmed() {
         val handshake = handshake()
         stub.established = true
         handshake.step(Nanos(10 * ms))
-        assertEquals(HandshakeStep.DeadlinePassed, handshake.step(Nanos(10_000 * ms)))
-        assertEquals(HandshakeReached.EstablishedUnconfirmed, handshake.progress(Nanos(10_000 * ms), path.read()).reached)
+        assertEquals(HandshakeStep.Established, handshake.step(Nanos(10_000 * ms)))
+        val sink = WakeSink()
+        handshake.offerWake(sink)
+        assertEquals(WakeState.NotAsked, sink.state(), "the deadline is no longer offered")
     }
 
     @Test
