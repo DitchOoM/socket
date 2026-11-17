@@ -52,7 +52,9 @@ internal fun ConnParts.over(
 ): Collected {
     val linger = life.linger
     if (linger.sending()) sendClose(now, out, paths)
+    val before = out.pending
     val room = linger.answer(out)
+    for (n in before until out.pending) flight.datagramOut(now, out.storage, out.offsetOf(n), out.lengthOf(n))
     if (linger.due(now)) life.settle()
     when (linger.holds()) {
         Holding.Quiche -> rearm(now, fire)

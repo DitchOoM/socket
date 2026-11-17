@@ -115,7 +115,10 @@ internal class Turn(
         from: PathKey,
         now: Nanos,
     ) {
-        if (c.life.view() is Life.Over) return c.life.linger.late()
+        if (c.life.view() is Life.Over) {
+            c.flight.datagramIn(now, bytes, 0, length)
+            return c.life.linger.late()
+        }
         traced(TraceSection.ConnReceive) {
             try {
                 c.feed(bytes, length, from, now)

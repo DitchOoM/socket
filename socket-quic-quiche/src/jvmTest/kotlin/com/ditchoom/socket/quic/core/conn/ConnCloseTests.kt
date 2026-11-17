@@ -12,6 +12,11 @@ import com.ditchoom.socket.quic.core.stream.Waiter
 import com.ditchoom.socket.quic.core.testing.ConnRig
 import com.ditchoom.socket.quic.core.testing.nativeBytes
 import com.ditchoom.socket.quic.core.time.Nanos
+import com.ditchoom.socket.quic.trace.QuicTraceRecorder
+import com.ditchoom.socket.quic.trace.TraceCapture
+import com.ditchoom.socket.testkit.trace.TraceEvent
+import com.ditchoom.socket.testkit.trace.TraceSink
+import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
@@ -92,6 +97,31 @@ class ConnCloseTests {
         assertEquals(arrivals, api.recvArrivals.size, "no late datagram reached quiche")
         assertEquals(LATE.toLong(), rig.counts.lateDatagrams)
         assertEquals(4L, rig.counts.closesResent)
+    }
+
+    @Test
+    fun aLingeringConnectionsRecordingHoldsEveryLateDatagramAndEveryAnswerItSent() {
+        val recorded = CopyOnWriteArrayList<TraceEvent>()
+        val traced =
+            ConnRig(
+                StubQuicheApi().apply {
+                    emitOneDatagramOnClose = true
+                    connTimeout = DRAIN.nanoseconds
+                },
+                io = BoundedIo(Int.MAX_VALUE),
+                capture = TraceCapture.On(QuicTraceRecorder(TraceSink { recorded += it })),
+            )
+        val sent = traced.io as BoundedIo
+        traced.pass(0)
+        traced.conn.submit(CloseWork(QuicError.NoError))
+        traced.pass(AT)
+        for (n in 1..LATE) {
+            traced.conn.received(nativeBytes(DATAGRAM), DATAGRAM, PEER, Nanos(AT + n))
+            traced.pass(AT + n)
+        }
+        assertEquals(1 + 4, sent.sent.size)
+        assertEquals(sent.sent.size, recorded.count { it is TraceEvent.DgramOut }, "every datagram the connection sent")
+        assertEquals(LATE, recorded.count { it is TraceEvent.DgramIn }, "every datagram that arrived after the end")
     }
 
     @Test
