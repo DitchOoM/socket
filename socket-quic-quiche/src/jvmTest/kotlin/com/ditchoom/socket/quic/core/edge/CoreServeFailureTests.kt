@@ -1,0 +1,136 @@
+package com.ditchoom.socket.quic.core.edge
+
+import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.Default
+import com.ditchoom.buffer.flow.ReadPolicy
+import com.ditchoom.buffer.flow.WritePolicy
+import com.ditchoom.socket.quic.NetShim
+import com.ditchoom.socket.quic.QuicOptions
+import com.ditchoom.socket.quic.QuicheApi
+import com.ditchoom.socket.quic.QuicheConfig
+import com.ditchoom.socket.quic.core.ready.NetStack
+import com.ditchoom.socket.quic.core.ready.netStackOfThisRuntime
+import com.ditchoom.socket.quic.core.testing.assumeNativeStack
+import com.ditchoom.socket.quic.core.time.LoopClock
+import com.ditchoom.socket.quic.core.time.MonotonicClock
+import com.ditchoom.socket.quic.core.time.Nanos
+import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
+import com.ditchoom.socket.quic.core.udp.SocketClosed
+import com.ditchoom.socket.quic.core.udp.toPathKey
+import com.ditchoom.socket.quic.loadQuicheApi
+import kotlinx.coroutines.runBlocking
+import java.net.InetSocketAddress
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.time.Duration.Companion.seconds
+
+/**
+ * A serve that fails partway leaves nothing behind and frees nothing twice: whatever it opened (the poller, the quiche
+ * config, the socket) has exactly one releaser, before the loop is built and after.
+ */
+class CoreServeFailureTests {
+    @Test
+    fun aServeFailingBeforeItsLoopIsBuiltReleasesThePollerConfigAndSocketOnce() {
+        val rig = Rig()
+        assertFailsWith<InjectedFailure> { rig.serve(wrapIo = { throw InjectedFailure() }, clock = MonotonicClock) }
+        rig.assertEachReleasedOnce()
+    }
+
+    @Test
+    fun aCallerDrivenServeFailingAfterItsLoopIsBuiltReleasesThePollerConfigAndSocketOnce() {
+        val rig = Rig()
+        val clock = ArmedClock()
+        assertFailsWith<InjectedFailure> {
+            rig.serve(
+                wrapIo = { io ->
+                    // The loop is built right after this: the clock fails the serve's first pass.
+                    clock.armed = true
+                    rig.countingIo(io)
+                },
+                clock = clock,
+            )
+        }
+        rig.assertEachReleasedOnce()
+        assertEquals(1, rig.ioCloses, "the endpoint's socket is closed once")
+    }
+
+    private class Rig {
+        private val shim: NetShim
+        val api: QuicheApi = loadQuicheApi()
+        var pollerCloses = 0
+        var configFrees = 0
+        var fdCloses = 0
+        var ioCloses = 0
+
+        init {
+            assumeNativeStack()
+            shim = (netStackOfThisRuntime as NetStack.Native).shim
+        }
+
+        private val countingShim =
+            object : NetShim by shim {
+                override fun pollerClose(poller: Long) {
+                    pollerCloses++
+                    shim.pollerClose(poller)
+                }
+
+                override fun close(fd: Int): Int {
+                    fdCloses++
+                    return shim.close(fd)
+                }
+            }
+
+        private val countingApi =
+            object : QuicheApi by api {
+                override fun configFree(config: QuicheConfig) {
+                    configFrees++
+                    api.configFree(config)
+                }
+            }
+
+        fun countingIo(inner: DatagramBatchIo): DatagramBatchIo =
+            object : DatagramBatchIo by inner {
+                override fun close(): SocketClosed {
+                    ioCloses++
+                    return inner.close()
+                }
+            }
+
+        fun serve(
+            wrapIo: (DatagramBatchIo) -> DatagramBatchIo,
+            clock: LoopClock,
+        ) = runBlocking {
+            coreServe(
+                bind = InetSocketAddress("127.0.0.1", 0).toPathKey(),
+                tls = coreTlsConfig(),
+                options = options(),
+                factory = BufferFactory.Default,
+                api = countingApi,
+                readPolicy = ReadPolicy.Bounded(10.seconds),
+                writePolicy = WritePolicy.Bounded(10.seconds),
+                wrapIo = wrapIo,
+                clock = clock,
+                driver = LoopDriver.Caller,
+                stack = NetStack.Native(countingShim, (netStackOfThisRuntime as NetStack.Native).waits),
+            )
+        }
+
+        fun assertEachReleasedOnce() {
+            assertEquals(1, pollerCloses, "the poller is closed once")
+            assertEquals(1, configFrees, "the quiche config is freed once")
+            assertEquals(1, fdCloses, "the socket's descriptor is closed once")
+        }
+
+        private fun options() = QuicOptions(alpnProtocols = listOf("test"), verifyPeer = false, idleTimeout = 30.seconds)
+    }
+
+    /** A clock that fails every reading once armed. */
+    private class ArmedClock : LoopClock {
+        var armed = false
+
+        override fun now(): Nanos = if (armed) throw InjectedFailure() else MonotonicClock.now()
+    }
+
+    private class InjectedFailure : RuntimeException("injected")
+}
