@@ -61,6 +61,7 @@ class CoreServerEchoTests {
                 val connectedAfter = ConcurrentLinkedQueue<Long>()
                 val scheduled = LoopScheduling.snapshot()
                 val process = LoopScheduling.snapshotAll()
+                val collected = LoopScheduling.gcStats()
                 val started = System.nanoTime()
                 try {
                     val echoed =
@@ -83,7 +84,7 @@ class CoreServerEchoTests {
                     println(
                         "CORE-CPU $connections echo connections in ${(System.nanoTime() - started) / NANOS_PER_MILLI} ms: " +
                             "${LoopScheduling.cpuPerConnection(process, connections)}; " +
-                            "loops ${LoopScheduling.since(scheduled)}",
+                            "${LoopScheduling.gcSince(collected)}; loops ${LoopScheduling.since(scheduled)}",
                     )
                 } catch (failed: Throwable) {
                     // What the server and its socket saw, so the next occurrence names where the handshakes went.
@@ -103,6 +104,7 @@ class CoreServerEchoTests {
                             "server loop ${timing(server.loop.counts)}; client loops $clientLoops; " +
                             "scheduling ${LoopScheduling.since(scheduled)}; " +
                             "process ${LoopScheduling.cpuPerConnection(process, connections)}; " +
+                            "${LoopScheduling.gcSince(collected)}; " +
                             "a route probe (open, bind, connect, close) takes ${probeMillis(server.port)} ms on this machine",
                         failed,
                     )

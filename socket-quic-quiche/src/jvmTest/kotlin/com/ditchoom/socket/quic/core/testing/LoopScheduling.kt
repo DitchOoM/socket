@@ -76,6 +76,31 @@ internal object LoopScheduling {
             "runnable without a CPU ${spent.sumOf { it.waitNanos } / MILLI} ms); $groups"
     }
 
+    /**
+     * ART's collector counters (`android.os.Debug.getRuntimeStats`, reached by reflection so the JVM build compiles):
+     * collections and their time, so a report says how much of the CPU the collector took. Empty off Android.
+     */
+    fun gcStats(): Map<String, Long> =
+        runCatching {
+            @Suppress("UNCHECKED_CAST")
+            val stats =
+                Class
+                    .forName("android.os.Debug")
+                    .getMethod("getRuntimeStats")
+                    .invoke(null) as Map<String, String>
+            stats.mapNotNull { (key, value) -> value.toLongOrNull()?.let { key.removePrefix("art.gc.") to it } }.toMap()
+        }.getOrElse { emptyMap() }
+
+    /** The collector's counters since [before] (a [gcStats]), and the Java heap in use now. */
+    fun gcSince(before: Map<String, Long>): String {
+        val runtime = Runtime.getRuntime()
+        val heap = "heap ${(runtime.totalMemory() - runtime.freeMemory()) shr 20} of ${runtime.maxMemory() shr 20} MiB"
+        val now = gcStats()
+        if (now.isEmpty()) return heap
+        return "$heap; gc " +
+            now.keys.sorted().joinToString(", ") { key -> "$key ${now.getValue(key) - (before[key] ?: 0L)}" }
+    }
+
     private class Spent(
         val group: String,
         val runNanos: Long,
