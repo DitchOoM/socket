@@ -98,6 +98,61 @@ class NativePollerTests {
         poller.close()
     }
 
+    @Test
+    fun aSecondCloseNeverReachesNativeCodeAndNorDoesAWakeAfterTheClose() {
+        assumeNativeStack()
+        var closes = 0
+        var wakes = 0
+        val counting =
+            object : com.ditchoom.socket.quic.NetShim by shim {
+                override fun pollerClose(poller: Long) {
+                    closes++
+                    shim.pollerClose(poller)
+                }
+
+                override fun pollerWake(poller: Long): Int {
+                    wakes++
+                    return shim.pollerWake(poller)
+                }
+            }
+        val poller = assertIs<PollerOpened.Opened>(NativePoller.open(counting, MonotonicClock, 16)).poller
+        poller.wake()
+        poller.close()
+        poller.close()
+        poller.wake()
+        assertEquals(1, closes, "the native poller is freed once")
+        assertEquals(1, wakes, "a wake after the close never reaches the freed poller")
+    }
+
+    @Test
+    fun wakesRacingACloseFreeThePollerExactlyOnceAndNeverAfterItIsFreed() {
+        assumeNativeStack()
+        repeat(200) {
+            val freed = java.util.concurrent.atomic.AtomicInteger()
+            val afterFree = java.util.concurrent.atomic.AtomicInteger()
+            val counting =
+                object : com.ditchoom.socket.quic.NetShim by shim {
+                    override fun pollerClose(poller: Long) {
+                        freed.incrementAndGet()
+                        shim.pollerClose(poller)
+                    }
+
+                    override fun pollerWake(poller: Long): Int {
+                        if (freed.get() != 0) afterFree.incrementAndGet()
+                        return shim.pollerWake(poller)
+                    }
+                }
+            val poller = assertIs<PollerOpened.Opened>(NativePoller.open(counting, MonotonicClock, 16)).poller
+            val start = java.util.concurrent.CountDownLatch(1)
+            val wakers = List(3) { Thread { start.await(); repeat(50) { poller.wake() } }.also(Thread::start) }
+            start.countDown()
+            poller.close()
+            wakers.forEach(Thread::join)
+            assertEquals(1, freed.get())
+            assertEquals(0, afterFree.get())
+        }
+    }
+
     private fun open(): NativePoller {
         assumeNativeStack()
         return assertIs<PollerOpened.Opened>(NativePoller.open(shim, MonotonicClock, 16)).poller
