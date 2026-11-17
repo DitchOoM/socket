@@ -37,8 +37,16 @@ internal class StreamTable(
     /** The buffer a read that ended without handing one to its caller leaves for the next read. */
     val idle = IdleBuffer()
 
-    /** Made once: it captures nothing, so a lookup of a stream that exists allocates nothing. */
-    private val newEntry: (Long) -> StreamEntry = { id -> StreamEntry(QuicStreamId(id)) }
+    /** Entries of spent streams, kept for the next streams. */
+    private val spare = ArrayList<StreamEntry>()
+
+    /** What [unpark] finds for a stream that has no entry: nothing waits on it. */
+    private val absent = StreamEntry(QuicStreamId(0L))
+
+    /** Made once, so a lookup of a stream that exists allocates nothing, and a new stream reuses a spent one's entry. */
+    private val newEntry: (Long) -> StreamEntry = { id ->
+        if (spare.isEmpty()) StreamEntry(QuicStreamId(id)) else spare.removeAt(spare.size - 1).reuse(QuicStreamId(id))
+    }
     private val writeWaiters = LongSet()
     private val opens = ArrayDeque<Waiter>()
     private val incoming = LongQueue()
@@ -49,6 +57,50 @@ internal class StreamTable(
         private set
 
     fun entry(id: QuicStreamId): StreamEntry = entries.getOrPut(id.id, newEntry)
+
+    /** Whether [id] names a stream that is spent: one this side opened or was told of, whose entry was let go. */
+    fun isSpent(id: QuicStreamId): Boolean = !entries.containsKey(id.id) && (initiatedByPeer(id) || id.id < nextBidi)
+
+    /** Clears [waiter] from [id]'s entry, if the stream still has one. */
+    fun unpark(
+        id: QuicStreamId,
+        waiter: Waiter,
+    ) = entries.getOrDefault(id.id, absent).unpark(waiter)
+
+    /** How many streams hold an entry: the live ones. */
+    fun liveStreams(): Int = entries.size
+
+    /** The reader parked on [id], without making an entry for a stream that has none. */
+    fun readerOf(id: QuicStreamId): Waiter = entries.getOrDefault(id.id, absent).reader
+
+    /** The writer parked on [id], without making an entry for a stream that has none. */
+    fun writerOf(id: QuicStreamId): Waiter = entries.getOrDefault(id.id, absent).writer
+
+    /** [collect] for [id]'s entry, if the stream still has one. */
+    fun collect(id: QuicStreamId) = collect(entries.getOrDefault(id.id, absent))
+
+    /** Our FIN on [id] went to quiche. */
+    fun finSent(id: QuicStreamId) {
+        val entry = entries.getOrDefault(id.id, absent)
+        if (entry === absent) return
+        entry.finSent()
+        collect(entry)
+    }
+
+    /**
+     * Lets [entry] go once its stream is spent: the peer's FIN was read, ours sent (when this side sends at all), and
+     * nothing waits on it. The table then holds only live streams, so it does not grow with every stream ever opened.
+     */
+    fun collect(entry: StreamEntry) {
+        if (entry === absent || entry.reader !== Nobody || entry.writer !== Nobody) return
+        if (entry.received != Received.Finished) return
+        if (entry.sent != Sent.Finished && sends(entry.id)) return
+        entries.remove(entry.id.id)
+        spare.add(entry)
+    }
+
+    /** Whether this side sends on [id]: every bidirectional stream, and the unidirectional ones it opened. */
+    private fun sends(id: QuicStreamId): Boolean = id.id and UNI_BIT == 0L || !initiatedByPeer(id)
 
     /** Asks for [stream]'s writer to be retried once quiche says it can take bytes. */
     fun wantWritable(stream: QuicStreamId) {
@@ -153,5 +205,6 @@ internal class StreamTable(
 
     private companion object {
         const val STREAM_ID_STEP = 4L
+        const val UNI_BIT = 2L
     }
 }

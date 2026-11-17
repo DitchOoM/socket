@@ -17,9 +17,9 @@ import com.ditchoom.socket.quic.core.stream.StreamTable
 import com.ditchoom.socket.quic.core.stream.Streams
 import com.ditchoom.socket.quic.core.stream.Waiter
 import com.ditchoom.socket.quic.core.stream.WriteEnd
-import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.isActive
 import kotlin.coroutines.CoroutineContext
+import kotlin.time.Duration
 
 /** What a write hands quiche: the caller's bytes at a native address, or our FIN alone with a length of zero. */
 internal sealed interface WriteSource {
@@ -39,19 +39,21 @@ internal sealed interface WriteSource {
  * the connection after its last touch of the caller's buffer. A cancelled caller is answered once the connection has
  * taken the write back, so a caller that resumed, however it resumed, owns its buffer again.
  *
- * Inside the connection only, except [answer] (the caller), [run] (the deadline's thread) and the job watch.
+ * Inside the connection only, except [answer] (the caller) and the job watch.
  */
 @Confined
 internal class WriteOp(
     private val stream: QuicStreamId,
     private val source: WriteSource,
-    private val deadline: OpDeadline,
+    private val bound: Duration,
+    private val deadlines: OpDeadlines,
     private val conn: Conn,
     private val caller: CoroutineContext,
 ) : ConnWork(),
     Waiter,
-    Runnable {
+    Bounded {
     private val hand = Hand<WriteAnswer>()
+    private var lease: Lease = Lease.None
 
     /** Where the source stood when the caller handed it over: what quiche took is how far it moved from here. */
     private val start =
@@ -95,7 +97,7 @@ internal class WriteOp(
             if (!caller.isActive) return settle(WriteAnswer.Cancelled)
             if (attempt(inside.streams) == Retry.Again) {
                 inside.streams.entry(stream).parkWriter(this)
-                deadline.arm(inside, this)
+                lease = deadlines.arm(this, bound, inside)
             }
         }
 
@@ -103,24 +105,21 @@ internal class WriteOp(
         var answer = Retry.Settled
         guarded(::failed) {
             if (!caller.isActive) {
-                deadline.disarm()
+                lease = deadlines.disarm(lease)
                 return@guarded settle(WriteAnswer.Cancelled)
             }
             answer = attempt(table)
-            if (answer == Retry.Settled) deadline.disarm()
+            if (answer == Retry.Settled) lease = deadlines.disarm(lease)
         }
         return answer
     }
 
     override fun connectionEnded(end: ConnEnd) {
-        deadline.disarm()
+        lease = deadlines.disarm(lease)
         settle(WriteAnswer.Failed(Raised.ConnEnded(end), QuicCloseCircumstance.Ended))
     }
 
     override fun gone(end: ConnEnd) = connectionEnded(end)
-
-    /** The deadline's thread: the deadline passed; the connection expires the write from inside. */
-    override fun run() = conn.submit(Expire(), CallerPlace.HandToLoop)
 
     private fun attempt(table: StreamTable): Retry {
         val answer =
@@ -137,7 +136,10 @@ internal class WriteOp(
         val taken = answer.result
         return when {
             taken > 0 -> written()
-            taken == 0 && source is WriteSource.FinOnly -> written()
+            taken == 0 && source is WriteSource.FinOnly -> {
+                table.finSent(stream)
+                written()
+            }
             taken == 0 || taken == QUICHE_ERR_DONE -> {
                 table.wantWritable(stream)
                 Retry.Again
@@ -161,26 +163,23 @@ internal class WriteOp(
     }
 
     private fun failed(failure: Exception) {
-        deadline.disarm()
+        lease = deadlines.disarm(lease)
         settle(WriteAnswer.Failed(Raised.Thrown(failure), QuicCloseCircumstance.Ended))
     }
 
-    private inner class Expire : ConnWork() {
-        override fun run(inside: Inside) {
-            val entry = inside.streams.entry(stream)
-            if (entry.writer !== this@WriteOp) return
-            entry.unpark(this@WriteOp)
-            settle(WriteAnswer.Failed(OpFailure.DeadlinePassed(deadline.bound), QuicCloseCircumstance.Ended))
-        }
-
-        override fun gone(end: ConnEnd) = Unit
+    /** Inside: the bound passed while the write still waited parked. */
+    fun expired(inside: Inside) {
+        if (inside.streams.writerOf(stream) !== this) return
+        lease = deadlines.disarm(lease)
+        inside.streams.unpark(stream, this)
+        settle(WriteAnswer.Failed(OpFailure.DeadlinePassed(bound), QuicCloseCircumstance.Ended))
     }
 
     /** Takes back a write whose caller was cancelled, then answers it: from here the source is the caller's alone. */
     private inner class Withdraw : ConnWork() {
         override fun run(inside: Inside) {
-            inside.streams.entry(stream).unpark(this@WriteOp)
-            deadline.disarm()
+            inside.streams.unpark(stream, this@WriteOp)
+            lease = deadlines.disarm(lease)
             settle(WriteAnswer.Cancelled)
         }
 

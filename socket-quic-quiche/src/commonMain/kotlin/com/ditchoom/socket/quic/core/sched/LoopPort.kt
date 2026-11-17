@@ -2,6 +2,7 @@
 
 package com.ditchoom.socket.quic.core.sched
 
+import com.ditchoom.socket.quic.DeadlineFired
 import com.ditchoom.socket.quic.DeadlineNode
 import com.ditchoom.socket.quic.DeadlineQueue
 import com.ditchoom.socket.quic.NextDue
@@ -90,7 +91,7 @@ internal class LoopPort(
     }
 
     /** Any thread. A deadline that runs [action] on the loop, made once and re-armed in place; not armed. */
-    fun rearmable(action: Runnable): Rearmable = rearmables.make(action)
+    fun rearmable(action: DeadlineFired): Rearmable = rearmables.make(action)
 
     /** Any thread. Arms [deadline] for [due], in place of what it was armed for; allocates nothing. */
     fun arm(

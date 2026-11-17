@@ -5,7 +5,6 @@ package com.ditchoom.socket.quic
 import com.ditchoom.socket.quic.core.observe.Link
 import com.ditchoom.socket.quic.core.observe.LoopOnly
 import com.ditchoom.socket.quic.core.observe.Queue
-import kotlinx.coroutines.Runnable
 import kotlin.concurrent.atomics.AtomicLong
 import kotlin.concurrent.atomics.AtomicReference
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
@@ -56,6 +55,11 @@ internal sealed interface PostLink {
     data object End : PostLink
 }
 
+/** What a [Rearmable] runs on its loop when an arming falls due; [due] is the time that arming asked for, its epoch. */
+internal fun interface DeadlineFired {
+    fun fired(due: Long)
+}
+
 /** Whether a [Rearmable] sits in its loop's inbox. */
 private enum class Posted { No, Yes }
 
@@ -68,7 +72,7 @@ private enum class Posted { No, Yes }
 @Queue
 internal class Rearmable internal constructor(
     private val loop: Rearmables,
-    private val action: Runnable,
+    private val action: DeadlineFired,
 ) : PostLink {
     private val wanted = AtomicLong(Wanted.None.word())
     private val posted = AtomicReference(Posted.No)
@@ -112,8 +116,8 @@ internal class Rearmable internal constructor(
     /** Loop thread: takes the arming for [seen] if it is still what is wanted; false when a change landed first. */
     internal fun claim(seen: Long): Boolean = wanted.compareAndSet(seen, Wanted.None.word())
 
-    /** Loop thread, after [claim]: runs the action. One that throws is reported and the loop goes on. */
-    internal fun fire() = runGuarded { action.run() }
+    /** Loop thread, after [claim] of [seen]: runs the action. One that throws is reported and the loop goes on. */
+    internal fun fire(seen: Long) = runGuarded { action.fired(seen) }
 }
 
 /**
@@ -133,7 +137,7 @@ internal class Rearmables {
     private var orders = 0L
 
     /** Any thread: a deadline that runs [action], not armed. */
-    fun make(action: Runnable): Rearmable = Rearmable(this, action)
+    fun make(action: DeadlineFired): Rearmable = Rearmable(this, action)
 
     internal fun post(deadline: Rearmable) {
         while (true) {
@@ -161,7 +165,7 @@ internal class Rearmables {
                 top.claim(seen) -> {
                     // Out of the heap before the action runs: an action that re-arms posts, and the next pass places it.
                     removeAt(0)
-                    top.fire()
+                    top.fire(seen)
                 }
             }
         }
