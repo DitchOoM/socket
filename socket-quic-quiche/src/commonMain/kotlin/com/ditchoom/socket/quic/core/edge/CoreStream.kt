@@ -70,8 +70,14 @@ internal class CoreStream(
 
     override suspend fun close() {
         when (use.exchange(Use.Closed)) {
-            Use.Open -> finish()
-            Use.SendFinished, Use.Closed -> Unit
+            Use.Open ->
+                try {
+                    finish()
+                } finally {
+                    connection.abandon(id)
+                }
+            Use.SendFinished -> connection.abandon(id)
+            Use.Closed -> Unit
         }
     }
 

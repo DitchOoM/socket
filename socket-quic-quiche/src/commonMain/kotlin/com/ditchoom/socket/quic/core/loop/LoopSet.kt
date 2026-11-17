@@ -177,8 +177,9 @@ internal class LoopSet(
                         is PollerOpened.Refused -> return freed(buffers, ioBytes(io), Placement.PollerRefused(opened.refusal))
                     }
             }
-        val sharedBytes = ArrayList<NativeBytes>(LoopMemory.COPY_SLOTS + 1)
-        for (size in List(LoopMemory.COPY_SLOTS) { MAX_DATAGRAM } + flightArenaBytes) {
+        val sharedBytes = ArrayList<NativeBytes>(LoopMemory.COPY_SLOTS + LoopMemory.DRAIN_SLOTS + 1)
+        val sizes = List(LoopMemory.COPY_SLOTS) { MAX_DATAGRAM } + List(LoopMemory.DRAIN_SLOTS) { LoopMemory.DRAIN_BYTES }
+        for (size in sizes + flightArenaBytes) {
             when (val a = NativeBytes.of(factory.allocate(size))) {
                 is Addressed.Native -> sharedBytes.add(a.bytes)
                 is Addressed.NotAddressable -> {
@@ -187,7 +188,12 @@ internal class LoopSet(
                 }
             }
         }
-        val shared = LoopMemory(sharedBytes.subList(0, LoopMemory.COPY_SLOTS), FlightArena(sharedBytes.last()))
+        val shared =
+            LoopMemory(
+                sharedBytes.subList(0, LoopMemory.COPY_SLOTS),
+                sharedBytes.subList(LoopMemory.COPY_SLOTS, LoopMemory.COPY_SLOTS + LoopMemory.DRAIN_SLOTS),
+                FlightArena(sharedBytes.last()),
+            )
         val hold = MemoryHold(Runnable { (sharedBytes + ioBytes(io)).forEach { it.free() } })
         val id = LoopIds.next()
         val name = "$THREAD_PREFIX-$id"

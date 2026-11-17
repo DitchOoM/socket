@@ -94,6 +94,7 @@ import com.ditchoom.socket.quic.quiche.quiche_conn_stream_data_unacknowledged
 import com.ditchoom.socket.quic.quiche.quiche_conn_stream_recv
 import com.ditchoom.socket.quic.quiche.quiche_conn_stream_send
 import com.ditchoom.socket.quic.quiche.quiche_conn_stream_shutdown
+import com.ditchoom.socket.quic.quiche.quiche_conn_stream_writable_next
 import com.ditchoom.socket.quic.quiche.quiche_conn_timeout_as_nanos
 import com.ditchoom.socket.quic.quiche.quiche_conn_trace_id
 import com.ditchoom.socket.quic.quiche.quiche_conn_writable
@@ -1213,6 +1214,8 @@ internal object CinteropQuicheApi : QuicheApi, QuicheRandomPin {
         val iter = quiche_conn_writable(conn.handle.toCPointer()!!)
         return QuicheStreamIter(iter?.rawValue?.toLong() ?: 0L)
     }
+
+    override fun connStreamWritableNext(conn: QuicheConn): Long = quiche_conn_stream_writable_next(conn.handle.toCPointer()!!)
 
     override fun streamIterNext(iter: QuicheStreamIter): QuicStreamId? {
         if (iter.isExhausted) return null

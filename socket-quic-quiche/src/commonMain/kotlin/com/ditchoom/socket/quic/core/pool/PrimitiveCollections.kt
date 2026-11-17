@@ -14,6 +14,8 @@ internal class LongSet {
     /** Removes [key]; whether it was there. */
     fun remove(key: Long): Boolean = map.remove(key)
 
+    operator fun contains(key: Long): Boolean = map.containsKey(key)
+
     fun isNotEmpty(): Boolean = map.size > 0
 
     private object Present

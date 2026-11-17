@@ -770,6 +770,8 @@ object JniQuicheApi : QuicheApi {
 
     override fun connWritable(conn: QuicheConn): QuicheStreamIter = QuicheStreamIter(nConnWritable(conn.handle))
 
+    override fun connStreamWritableNext(conn: QuicheConn): Long = nConnStreamWritableNext(conn.handle)
+
     override fun streamIterNext(iter: QuicheStreamIter): QuicStreamId? {
         if (iter.isExhausted) return null
         val raw = nStreamIterNext(iter.handle)
@@ -1406,6 +1408,10 @@ object JniQuicheApi : QuicheApi {
     private external fun nConnReadable(conn: Long): Long
 
     @JvmStatic private external fun nConnWritable(conn: Long): Long
+
+    @FastNative
+    @JvmStatic
+    private external fun nConnStreamWritableNext(conn: Long): Long
 
     @FastNative
     @JvmStatic

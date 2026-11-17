@@ -220,7 +220,11 @@ internal fun replayClient(
 
 /** The copy slots and flight arena of a replay client's loop, freed with the client's memory. */
 private fun replayLoopMemory(memory: EdgeMemory): LoopMemory =
-    LoopMemory(List(LoopMemory.COPY_SLOTS) { memory.native(DATAGRAM) }, FlightArena(memory.native(LoopMemory.ARENA_BYTES)))
+    LoopMemory(
+        List(LoopMemory.COPY_SLOTS) { memory.native(DATAGRAM) },
+        List(LoopMemory.DRAIN_SLOTS) { memory.native(LoopMemory.DRAIN_BYTES) },
+        FlightArena(memory.native(LoopMemory.ARENA_BYTES)),
+    )
 
 private fun encoded(
     address: InetSocketAddress,

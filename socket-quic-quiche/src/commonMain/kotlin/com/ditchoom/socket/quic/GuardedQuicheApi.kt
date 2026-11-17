@@ -465,6 +465,11 @@ internal class GuardedQuicheApi(
         return delegate.connWritable(conn)
     }
 
+    override fun connStreamWritableNext(conn: QuicheConn): Long {
+        guard.assertOnLoop(LoopSite.Quiche)
+        return delegate.connStreamWritableNext(conn)
+    }
+
     override fun recvInfoFree(info: QuicheRecvInfo) {
         guard.assertOnLoop(LoopSite.Quiche)
         delegate.recvInfoFree(info)

@@ -127,7 +127,7 @@ internal fun buildConn(
             role = side.role(),
             life = ConnLife(q, Linger(q, rules.close, memory.factory, counts)),
             handshake = Handshake(q, rules.handshake, clock.now().value, memory.alpn),
-            streams = StreamTable(q, StreamIo(q), side.role()),
+            streams = StreamTable(q, StreamIo(q), side.role(), memory.shared.drains),
             timer = ConnTimer(q, port, WakeSink()),
             ingress = Ingress(q, memory.shared, memory.factory, counts),
             egress = Egress(q, counts),

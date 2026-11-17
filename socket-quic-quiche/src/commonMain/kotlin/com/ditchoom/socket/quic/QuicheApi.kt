@@ -929,6 +929,12 @@ interface QuicheApi {
     fun connWritable(conn: QuicheConn): QuicheStreamIter
 
     /**
+     * The next stream quiche marked writable since it was last handed out, its mark taken
+     * (`quiche_conn_stream_writable_next`), or -1 when none is marked. A stream the peer stopped is marked too.
+     */
+    fun connStreamWritableNext(conn: QuicheConn): Long
+
+    /**
      * Advance stream iterator. Returns the next [QuicStreamId], or `null` when exhausted.
      * Implementations handle the output-parameter pattern internally.
      */

@@ -1420,6 +1420,10 @@ class FfmQuicheApi private constructor(
     private val hConnWritable by lazy {
         downcall("quiche_conn_writable", FunctionDescriptor.of(JAVA_LONG, JAVA_LONG))
     }
+    private val hConnStreamWritableNext by lazy {
+        // int64_t quiche_conn_stream_writable_next(quiche_conn *conn)
+        downcall("quiche_conn_stream_writable_next", FunctionDescriptor.of(JAVA_LONG, JAVA_LONG))
+    }
     private val hStreamIterNext by lazy {
         downcall("quiche_stream_iter_next", FunctionDescriptor.of(JAVA_BOOLEAN, JAVA_LONG, JAVA_LONG))
     }
@@ -1570,6 +1574,8 @@ class FfmQuicheApi private constructor(
     override fun connReadable(conn: QuicheConn): QuicheStreamIter = QuicheStreamIter(hConnReadable.invokeExact(conn.handle) as Long)
 
     override fun connWritable(conn: QuicheConn): QuicheStreamIter = QuicheStreamIter(hConnWritable.invokeExact(conn.handle) as Long)
+
+    override fun connStreamWritableNext(conn: QuicheConn): Long = hConnStreamWritableNext.invokeExact(conn.handle) as Long
 
     override fun streamIterNext(iter: QuicheStreamIter): QuicStreamId? {
         if (iter.isExhausted) return null

@@ -213,6 +213,7 @@ internal class ServerSetup(
                 config.flight,
                 LoopMemory(
                     List(LoopMemory.COPY_SLOTS) { memory.native(MAX_DATAGRAM) },
+                    List(LoopMemory.DRAIN_SLOTS) { memory.native(LoopMemory.DRAIN_BYTES) },
                     FlightArena(memory.native(config.flightArenaBytes)),
                 ),
                 loop.port,

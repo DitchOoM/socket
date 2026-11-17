@@ -149,6 +149,9 @@ internal class CoreConnection(
     /** Tells the connection the network monitor's news. */
     fun network(change: NetworkChange) = conn.submit(NetworkWork(change), CallerPlace.HandToLoop)
 
+    /** The caller closed [stream] without reading it to the end: what still arrives is dropped. */
+    internal fun abandon(stream: QuicStreamId) = conn.submit(AbandonWork(stream), CallerPlace.HandToLoop)
+
     /** Resets both directions of [stream] with [code]. */
     internal fun resetStream(
         stream: QuicStreamId,

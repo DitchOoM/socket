@@ -4,20 +4,25 @@ package com.ditchoom.socket.quic.core.conn
 
 import com.ditchoom.socket.quic.core.observe.Published
 import com.ditchoom.socket.quic.core.pool.FixedPool
+import com.ditchoom.socket.quic.core.stream.DrainSlot
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 import kotlin.concurrent.atomics.AtomicLong
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 
 /**
  * The memory every connection on one loop shares, so a connection holds none of its own for datagrams: the slots a
- * datagram is copied into while a caller is inside its connection, and the flight recorders' payload arena. Sized per
- * loop, not per connection: a loop copies or records only what it carries, whatever the number of connections.
+ * datagram is copied into while a caller is inside its connection, the slots stream data nobody reads is dropped into,
+ * and the flight recorders' payload arena. Sized per loop, not per connection: a loop copies or records only what it
+ * carries, whatever the number of connections.
  */
 internal class LoopMemory(
     copies: List<NativeBytes>,
+    drains: List<NativeBytes>,
     val arena: FlightArena,
 ) {
     val slots = FixedPool(copies.size) { CopySlot(it, copies[it]) }
+
+    val drains = FixedPool(drains.size) { DrainSlot(it, drains[it].address, drains[it].capacity) }
 
     /** Each slot's work, made once: a slot is in at most one connection's inbox at a time. */
     private val slotWork = Array(slots.size) { SlotRecv(slots, slots[it]) }
@@ -28,6 +33,12 @@ internal class LoopMemory(
     companion object {
         /** Copy slots per loop: callers inside connections of one loop at once, each with datagrams arriving. */
         const val COPY_SLOTS = 64
+
+        /** Drain slots per loop: callers inside connections of one loop at once, each dropping a stream's data. */
+        const val DRAIN_SLOTS = 4
+
+        /** A drain slot's size: a drain reads as many times as it takes. */
+        const val DRAIN_BYTES = 4 * 1024
 
         /** Flight payload per loop: a walk's handshakes on a client loop, the recent datagrams on a server's. */
         const val ARENA_BYTES = 256 * 1024
