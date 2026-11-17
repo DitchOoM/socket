@@ -279,6 +279,9 @@ private class CaptureReplay(
 
     private enum class PeerState { Answering, Gone }
 
+    /** Whether our endpoint's timers run and its output is taken, or it is still working on what it was handed. */
+    private enum class OurEndpoint { Free, Busy }
+
     private class InFlight(
         val arrives: Duration,
         /** When the capture has it arrive: the replay's own time of arrival is never earlier. */
@@ -356,6 +359,7 @@ private class CaptureReplay(
     private var peerState = PeerState.Answering
     private var phase: Phase = Phase.OnCapture
     private var events = 0
+    private var ourWork = OurEndpoint.Free
 
     private val now: Duration get() = pair.elapsed
 
@@ -412,6 +416,7 @@ private class CaptureReplay(
      * capture's next step: our timers must not run on to produce what the capture has our endpoint doing later.
      */
     private fun expect(step: Step.OursSent) {
+        if (ourWork == OurEndpoint.Busy) answer()
         val tolerance = schedule.tolerance.after(step.at - anchor)
         val waitsUntil =
             when (step.carries) {
@@ -481,7 +486,7 @@ private class CaptureReplay(
             pair.deliver(datagrams.map { QuichePairByHand.Datagram(it, PRIMARY_ENDPOINT) }, ours)
             if (schedule.ourApp == OurApp.Reads) receipts.keys.forEach { pair.readText(ours, QuicStreamId(it)) }
             noteOurState()
-            collectOurs()
+            answer()
         }
     }
 
@@ -542,6 +547,30 @@ private class CaptureReplay(
         if (!runUntil(step.at)) return
         stepNext++
         act(step.action)
+        answer()
+    }
+
+    /**
+     * Takes what our endpoint wrote in answer to what it was just handed when the capture's endpoint sent it. quiche stamps
+     * its packets as it writes them, and a slow host writes them milliseconds after it read what they answer, so writing
+     * them sooner would move every timer armed from them. When the capture's next step is a datagram of ours, our endpoint
+     * writes at its time; when it is more input, our endpoint takes that first, as the capture's did before it sent
+     * anything. Meanwhile the network and the peer go on, and our endpoint's timers wait for its work, as a busy one's do.
+     */
+    private fun answer() {
+        when (val next = schedule.steps.drop(stepNext).firstOrNull { !(it is Step.PeerSent && it.fate == Fate.Lost) }) {
+            is Step.OursSent -> {
+                if (next.at > now) background(next.at, endpoint = OurEndpoint.Busy)
+                free()
+            }
+            is Step.PeerSent, is Step.OursDid -> ourWork = OurEndpoint.Busy
+            null -> free()
+        }
+    }
+
+    /** Our endpoint's work is done: its timers run again and what it wrote is taken. */
+    private fun free() {
+        ourWork = OurEndpoint.Free
         collectOurs()
     }
 
@@ -569,6 +598,7 @@ private class CaptureReplay(
                 is ConnectionEnd.ClosedByUs -> captured.at + schedule.tolerance.after(captured.at - anchor)
                 is ConnectionEnd.ClosedByPeer -> captured.at + schedule.tolerance.after(captured.at - anchor)
             }
+        free()
         background(until)
         if (phase != Phase.OnCapture || !nothingUncaptured()) return
         val replayed = end
@@ -591,24 +621,35 @@ private class CaptureReplay(
     /**
      * Run what happens without a step of ours asking for it, up to [until]: our endpoint's timers, the
      * captured arrivals at the peer, and the peer's captured sends. Returns early once our endpoint has
-     * written a datagram, or has ended.
+     * written a datagram, or has ended. A [OurEndpoint.Busy] endpoint's timers do not fire and its output stays in quiche.
      */
     private fun background(
         until: Duration,
         ready: () -> Boolean = { false },
+        endpoint: OurEndpoint = ourWork,
     ) {
+        val firing =
+            when (endpoint) {
+                OurEndpoint.Free -> listOf(ours)
+                OurEndpoint.Busy -> emptyList()
+            }
         while (phase == Phase.OnCapture && end == ConnectionEnd.Open && !ready()) {
             if (++events > REPLAY_EVENT_LIMIT) return leave(Divergence.NeverSettles(now))
             val arrival = nextArrival()
             val peerSend = peerSends.drop(peerNext).take(1).filterNot { awaitsOurs(it) }
             val arrivalAt = arrival.fold(Duration.INFINITE) { _, flight -> flight.arrives }
             val peerSendAt = peerSend.fold(Duration.INFINITE) { _, step -> step.at }
-            val next = minOf(arrivalAt, peerSendAt, timerAt(ours))
+            val timerAt =
+                when (endpoint) {
+                    OurEndpoint.Free -> timerAt(ours)
+                    OurEndpoint.Busy -> Duration.INFINITE
+                }
+            val next = minOf(arrivalAt, peerSendAt, timerAt)
             if (next > until) {
-                advanceTo(until, listOf(ours))
+                advanceTo(until, firing)
                 return
             }
-            advanceTo(next, listOf(ours))
+            advanceTo(next, firing)
             when (next) {
                 arrivalAt -> arrive(arrival.first())
                 peerSendAt -> {
@@ -617,8 +658,13 @@ private class CaptureReplay(
                 }
                 else -> Unit
             }
-            noteOurState()
-            collectOurs()
+            when (endpoint) {
+                OurEndpoint.Free -> {
+                    noteOurState()
+                    collectOurs()
+                }
+                OurEndpoint.Busy -> Unit
+            }
             if (written.isNotEmpty()) return
         }
     }
