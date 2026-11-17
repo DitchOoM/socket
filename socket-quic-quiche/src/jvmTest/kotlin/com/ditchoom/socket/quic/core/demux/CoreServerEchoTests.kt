@@ -90,6 +90,7 @@ class CoreServerEchoTests {
                             "datagramsIn=${server.loop.counts.datagramsIn} datagramsOut=${server.loop.counts.datagramsOut} " +
                             "receiveFailures=${server.loop.counts.receiveFailures} sendRefusals=${server.loop.counts.sendRefusals} " +
                             "socket=${server.socket.buffers.receiveBytes} B receive buffer, drops=${server.socket.drops()}; " +
+                            "heap ${heapMebibytes()}; " +
                             "server loop ${timing(server.loop.counts)}; client loops $clientLoops; " +
                             "a route probe (open, bind, connect, close) takes ${probeMillis(server.port)} ms on this machine",
                         failed,
@@ -131,6 +132,12 @@ class CoreServerEchoTests {
             }
         }
         return (System.nanoTime() - began) / probes / NANOS_PER_MILLI.toDouble()
+    }
+
+    /** The Java heap in use against its limit: an allocation at the limit waits for a collection, which stalls a loop. */
+    private fun heapMebibytes(): String {
+        val runtime = Runtime.getRuntime()
+        return "${(runtime.totalMemory() - runtime.freeMemory()) shr 20} of ${runtime.maxMemory() shr 20} MiB"
     }
 
     /** How a loop spent its time: passes against waits, and its longest pass. */
