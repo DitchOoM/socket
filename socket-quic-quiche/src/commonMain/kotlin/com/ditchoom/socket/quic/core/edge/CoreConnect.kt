@@ -27,11 +27,9 @@ import com.ditchoom.socket.quic.UdpBatching
 import com.ditchoom.socket.quic.UdpSocketChannelFactory
 import com.ditchoom.socket.quic.applyQuicOptions
 import com.ditchoom.socket.quic.clientAlpnOffer
-import com.ditchoom.socket.quic.core.conn.Conn
 import com.ditchoom.socket.quic.core.conn.FlightSize
 import com.ditchoom.socket.quic.core.conn.HandshakeRule
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
-import com.ditchoom.socket.quic.core.loop.Loop
 import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.loop.Placement
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
@@ -57,15 +55,6 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlin.time.Duration
-
-/** A connected [connection] with the [conn] and the shared [loop] under it, for what measures them. */
-internal class CoreClient(
-    val connection: CoreConnection,
-    val conn: Conn,
-    val loop: Loop,
-    /** The socket's granted buffer sizes, and its drop count on demand. */
-    val socket: SocketReport,
-)
 
 /**
  * Connects to [host]:[port] (an address literal) on the run-to-completion core and returns once the handshake
