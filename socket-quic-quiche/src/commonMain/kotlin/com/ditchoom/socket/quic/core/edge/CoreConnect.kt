@@ -187,7 +187,8 @@ private suspend fun connectOnThisThread(
         )
     name.freeNativeMemory()
     scid.freeNativeMemory()
-    val offer = offerOf(QuicheConnRef(api, handle), options.resumption, factory)
+    val plan = sessionPlan(options, serverName, port)
+    val offer = offerOf(QuicheConnRef(api, handle), plan.resumption, factory)
     val scope = CoroutineScope(SupervisorJob())
     val built =
         ClientParts(
@@ -208,6 +209,7 @@ private suspend fun connectOnThisThread(
                 handshake,
                 readiness = socket.readiness(),
                 offer = offer,
+                tickets = plan.home,
             ),
             peerSockAddr,
             localSockAddr,

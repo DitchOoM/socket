@@ -134,7 +134,11 @@ class CoreReconnectTests {
         private val keeps = Channel<QuicSessionTicket>(Channel.UNLIMITED)
         val taken: MutableList<QuicSessionTicketState> = Collections.synchronizedList(ArrayList())
 
-        override fun take(server: QuicSessionKey): QuicSessionTicketState = slot.getAndSet(QuicSessionTicketState.NotIssued).also { taken += it }
+        override fun take(server: QuicSessionKey): QuicSessionTicketState =
+            slot.getAndSet(QuicSessionTicketState.NotIssued).also {
+                taken +=
+                    it
+            }
 
         override fun keep(
             server: QuicSessionKey,

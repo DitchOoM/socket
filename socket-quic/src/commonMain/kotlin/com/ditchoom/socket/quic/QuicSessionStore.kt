@@ -87,8 +87,11 @@ class QuicSessionKey private constructor(
     )
 
     override fun equals(other: Any?): Boolean =
-        other is QuicSessionKey && serverName == other.serverName && port == other.port &&
-            alpnProtocols == other.alpnProtocols && trust == other.trust
+        other is QuicSessionKey &&
+            serverName == other.serverName &&
+            port == other.port &&
+            alpnProtocols == other.alpnProtocols &&
+            trust == other.trust
 
     override fun hashCode(): Int = ((serverName.hashCode() * 31 + port) * 31 + alpnProtocols.hashCode()) * 31 + trust.hashCode()
 

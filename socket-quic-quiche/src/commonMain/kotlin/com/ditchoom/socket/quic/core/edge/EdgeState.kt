@@ -52,6 +52,8 @@ internal class EdgeState(
     /** Where the connection copies the negotiated ALPN; read here once, at establishment. */
     private val alpn: PlatformBuffer,
     private val capture: TraceCapture,
+    /** Where a client's ticket is kept for its next connection to the same server. */
+    private val tickets: TicketHome,
 ) : ConnSink {
     private val endCell = AtomicReference<EdgeEnd>(EdgeEnd.Open)
     val state = MutableStateFlow<QuicConnectionState>(QuicConnectionState.Handshaking)
@@ -91,7 +93,10 @@ internal class EdgeState(
         incoming.trySend(PeerStream(stream.id, arrival))
     }
 
-    /** Kept with the protocol the handshake negotiated, which is what an offer of it will speak. */
+    /**
+     * Kept with the protocol the handshake negotiated, which is what an offer of it will speak; kept for the next
+     * connection before it is published, so a caller that sees it can reconnect with it kept.
+     */
     override fun ticket(
         bytes: NativeBytes,
         length: Int,
@@ -107,7 +112,9 @@ internal class EdgeState(
         val serialized = bytes.owner
         serialized.position(0)
         serialized.setLimit(length)
-        ticket.value = QuicSessionTicketState.Issued(QuicSessionTicket.restore(serialized, protocol))
+        val issued = QuicSessionTicket.restore(serialized, protocol)
+        tickets.keep(issued)
+        ticket.value = QuicSessionTicketState.Issued(issued)
     }
 
     private fun alpnOf(length: Int): String {
