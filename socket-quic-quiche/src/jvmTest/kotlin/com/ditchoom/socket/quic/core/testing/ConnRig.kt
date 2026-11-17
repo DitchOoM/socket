@@ -25,6 +25,7 @@ import com.ditchoom.socket.quic.core.conn.LoopMemory
 import com.ditchoom.socket.quic.core.conn.Offer
 import com.ditchoom.socket.quic.core.conn.Paths
 import com.ditchoom.socket.quic.core.conn.SlotRules
+import com.ditchoom.socket.quic.core.conn.TokenHome
 import com.ditchoom.socket.quic.core.conn.buildConn
 import com.ditchoom.socket.quic.core.conn.freeInfo
 import com.ditchoom.socket.quic.core.life.ConnEnd
@@ -130,7 +131,7 @@ internal fun testConn(
     buildConn(
         rules = rules,
         q = QuicheConnRef(api, QuicheConn(1L)),
-        side = ConnSide.Client(Random(1), Offer.NoTicket, nativeBytes(ClientSession.TICKET_BYTES), KeptTicket.None),
+        side = ConnSide.Client(Random(1), Offer.NoTicket, nativeBytes(ClientSession.TICKET_BYTES), KeptTicket.None, TokenHome.NotKept),
         address =
             ConnAddress(
                 SockAddr(0L, 0),

@@ -177,4 +177,8 @@ private val OURS =
         "quiche_config_set_initial_rtt",
         "quiche_conn_set_handshake_pto_ceiling",
         "quiche_conn_recv_gaps",
+        "quiche_conn_set_token",
+        "quiche_conn_take_new_token",
+        "quiche_conn_send_new_token",
+        "quiche_conn_set_peer_address_validated",
     )

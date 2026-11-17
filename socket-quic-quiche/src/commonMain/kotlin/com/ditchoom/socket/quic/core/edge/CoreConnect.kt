@@ -29,6 +29,7 @@ import com.ditchoom.socket.quic.applyQuicOptions
 import com.ditchoom.socket.quic.clientAlpnOffer
 import com.ditchoom.socket.quic.core.conn.FlightSize
 import com.ditchoom.socket.quic.core.conn.HandshakeRule
+import com.ditchoom.socket.quic.core.conn.offer
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.loop.Placement
@@ -190,6 +191,7 @@ private suspend fun connectOnThisThread(
     val plan = sessionPlan(options, serverName, port)
     val planned = offerPlanned(QuicheConnRef(api, handle), plan, factory)
     val offer = planned.offer
+    plan.tokens.offer(QuicheConnRef(api, handle), factory)
     val scope = CoroutineScope(SupervisorJob())
     // Until the connection starts nothing has been sent: a step that fails before then hands the ticket back.
     val (built, connection) =
@@ -215,6 +217,7 @@ private suspend fun connectOnThisThread(
                         offer = offer,
                         tickets = plan.home,
                         kept = planned.kept,
+                        tokens = plan.tokens,
                     ),
                     peerSockAddr,
                     localSockAddr,

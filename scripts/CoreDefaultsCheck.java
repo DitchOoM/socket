@@ -435,6 +435,8 @@ public class CoreDefaultsCheck {
         QUICHE_OWNERS.put("connProbePath|connMigrate|connMigrateSource|connNewScid|connRetireDcid|connRequeuePath|connPathEventNext|connPathStats"
             + "|recvInfoNew|sendInfoNew", List.of("path/Paths"));
         QUICHE_OWNERS.put("connSetSession|connSession|connIsResumed|connIsInEarlyData|connEarlyDataReason", List.of("conn/Resumption"));
+        QUICHE_OWNERS.put("connSetToken|connTakeNewToken", List.of("conn/Resumption", "conn/TokenKeeping"));
+        QUICHE_OWNERS.put("connSendNewToken|connSetPeerAddressValidated", List.of("demux/Stateless"));
         QUICHE_OWNERS.put("connDgramSend|connDgramRecv|connDgramRecvStep|connDgramMaxWritableLen|connDgramMaxWritableBytes|hasReadableDgram", List.of("conn/Datagrams"));
         QUICHE_OWNERS.put("connSendAckEliciting", List.of("conn/KeepAlive"));
         QUICHE_OWNERS.put("headerInfo", List.of("demux/Demux"));

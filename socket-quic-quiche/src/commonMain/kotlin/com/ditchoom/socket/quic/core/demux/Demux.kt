@@ -26,9 +26,9 @@ private enum class Mode {
 
 /**
  * A server's routing: each datagram from the one unconnected socket goes to the connection its destination id names;
- * an unsupported version is answered with Version Negotiation, a first Initial with Retry when address validation is
- * on, and otherwise an Initial starts a connection through [admission]. Serves every connection it routes to and
- * removes each one that ended. Every connection owns its peer's address and `recv_info`, built once when it is
+ * an unsupported version is answered with Version Negotiation, an Initial without a token that proves its address
+ * with Retry when address validation is on, and otherwise an Initial starts a connection through [admission]. Serves
+ * every connection it routes to and removes each one that ended. Every connection owns its peer's address and `recv_info`, built once when it is
  * accepted; no table is keyed by address. Loop thread only.
  */
 @LoopOnly
@@ -208,24 +208,40 @@ internal class Demux(
             is Tokens.Of ->
                 when (scratch.readToken(api, datagram, length)) {
                     TokenRead.Refused -> counts.unknownDropped()
-                    TokenRead.Absent -> stateless.retry(tokens.tokens, header, datagram, from, scratch, clock.now(), out)
-                    TokenRead.Present -> redeem(tokens.tokens, datagram, length, from, at)
+                    TokenRead.Absent -> unproven(tokens, datagram, length, from, out, at)
+                    TokenRead.Present -> redeem(tokens, datagram, length, from, out, at)
                 }
         }
     }
 
     private fun redeem(
-        tokens: AddressTokens,
+        tokens: Tokens.Of,
         datagram: NativeBytes,
         length: Int,
         from: PathKey,
+        out: SendBatch,
         at: Nanos,
     ) {
-        val checked = tokens.check(scratch.token.owner, scratch.tokenLength, clock.now().value, header.cid, from)
+        val checked = tokens.tokens.check(scratch.token.owner, scratch.tokenLength, clock.now().value, header.cid, from)
         when (checked) {
             is TokenCheck.Valid -> admit(Admit.Redeemed(checked), datagram, length, from, at)
+            is TokenCheck.Proven -> admit(Admit.Proven, datagram, length, from, at)
+            is TokenCheck.Unproven -> unproven(tokens, datagram, length, from, out, at)
             is TokenCheck.Malformed, is TokenCheck.Forged, is TokenCheck.Expired -> counts.tokenDropped()
         }
+    }
+
+    /** An Initial with no token that proves its address (RFC 9000 §8.1.3): a Retry if the server validates, else in. */
+    private fun unproven(
+        tokens: Tokens.Of,
+        datagram: NativeBytes,
+        length: Int,
+        from: PathKey,
+        out: SendBatch,
+        at: Nanos,
+    ) = when (tokens.validation) {
+        is AddressValidation.Off -> admit(Admit.Fresh, datagram, length, from, at)
+        is AddressValidation.Retry -> stateless.retry(tokens.tokens, header, datagram, from, scratch, clock.now(), out)
     }
 
     private fun admit(
@@ -239,14 +255,16 @@ internal class Demux(
             Mode.Receiving -> return admission.hold(datagram, length, from)
             Mode.Admitting -> Unit
         }
-        val peer =
+        val accepted =
             when (val accepted = admission.accept(how, datagram, header, from, scratch)) {
-                is Accepted.Peer -> accepted.peer
+                is Accepted.Peer -> accepted
                 is Accepted.Refused -> return
             }
+        val peer = accepted.peer
+        stateless.accepted(accepted.handle, how, from, scratch, clock.now())
         val original =
             when (how) {
-                is Admit.Fresh -> table.add(header.cid, peer)
+                is Admit.Fresh, is Admit.Proven -> table.add(header.cid, peer)
                 is Admit.Redeemed -> RouteLink.End
             }
         peer.routed(table.add(admission.newCid, peer), original)

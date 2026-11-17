@@ -81,11 +81,14 @@ import com.ditchoom.socket.quic.quiche.quiche_conn_retired_scids
 import com.ditchoom.socket.quic.quiche.quiche_conn_scids_left
 import com.ditchoom.socket.quic.quiche.quiche_conn_send
 import com.ditchoom.socket.quic.quiche.quiche_conn_send_ack_eliciting
+import com.ditchoom.socket.quic.quiche.quiche_conn_send_new_token
 import com.ditchoom.socket.quic.quiche.quiche_conn_session
 import com.ditchoom.socket.quic.quiche.quiche_conn_set_handshake_pto_ceiling
 import com.ditchoom.socket.quic.quiche.quiche_conn_set_keylog_path
+import com.ditchoom.socket.quic.quiche.quiche_conn_set_peer_address_validated
 import com.ditchoom.socket.quic.quiche.quiche_conn_set_qlog_path
 import com.ditchoom.socket.quic.quiche.quiche_conn_set_session
+import com.ditchoom.socket.quic.quiche.quiche_conn_set_token
 import com.ditchoom.socket.quic.quiche.quiche_conn_source_id
 import com.ditchoom.socket.quic.quiche.quiche_conn_source_ids
 import com.ditchoom.socket.quic.quiche.quiche_conn_stats
@@ -95,6 +98,7 @@ import com.ditchoom.socket.quic.quiche.quiche_conn_stream_recv
 import com.ditchoom.socket.quic.quiche.quiche_conn_stream_send
 import com.ditchoom.socket.quic.quiche.quiche_conn_stream_shutdown
 import com.ditchoom.socket.quic.quiche.quiche_conn_stream_writable_next
+import com.ditchoom.socket.quic.quiche.quiche_conn_take_new_token
 import com.ditchoom.socket.quic.quiche.quiche_conn_timeout_as_nanos
 import com.ditchoom.socket.quic.quiche.quiche_conn_trace_id
 import com.ditchoom.socket.quic.quiche.quiche_conn_writable
@@ -761,6 +765,26 @@ internal object CinteropQuicheApi : QuicheApi, QuicheRandomPin {
         buf: Long,
         bufLen: Int,
     ): Int = quiche_conn_set_session(conn.handle.toCPointer()!!, buf.toCPointer()!!, bufLen.convert())
+
+    override fun connSetToken(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int = quiche_conn_set_token(conn.handle.toCPointer()!!, buf.toCPointer()!!, bufLen.convert())
+
+    override fun connTakeNewToken(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int = quiche_conn_take_new_token(conn.handle.toCPointer()!!, buf.toCPointer()!!, bufLen.convert()).toInt()
+
+    override fun connSendNewToken(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int = quiche_conn_send_new_token(conn.handle.toCPointer()!!, buf.toCPointer()!!, bufLen.convert())
+
+    override fun connSetPeerAddressValidated(conn: QuicheConn): Int = quiche_conn_set_peer_address_validated(conn.handle.toCPointer()!!)
 
     override fun connSession(
         conn: QuicheConn,

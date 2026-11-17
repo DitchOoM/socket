@@ -11,6 +11,7 @@ import com.ditchoom.socket.quic.QuicSessionTicket
 import com.ditchoom.socket.quic.QuicSessionTicketState
 import com.ditchoom.socket.quic.core.conn.KeptTicket
 import com.ditchoom.socket.quic.core.conn.Offer
+import com.ditchoom.socket.quic.core.conn.TokenHome
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -50,6 +51,7 @@ internal class SessionPlan(
     val resumption: QuicResumption,
     val taken: Taken,
     val home: TicketHome,
+    val tokens: TokenHome,
 )
 
 /** What quiche took of a [SessionPlan], and the ticket it took from its store, by whether it has been sent. */
@@ -112,14 +114,14 @@ internal fun sessionPlan(
     port: Int,
 ): SessionPlan =
     when (val store = options.sessionStore) {
-        is QuicSessionStore.NotKept -> SessionPlan(options.resumption, Taken.NoneTaken, TicketHome.NotKept)
+        is QuicSessionStore.NotKept -> SessionPlan(options.resumption, Taken.NoneTaken, TicketHome.NotKept, TokenHome.NotKept)
         is QuicSessionStore.InMemory -> {
             val key = QuicSessionKey.of(serverName, port, options)
-            planned(options.resumption, store.memory.take(key), TicketHome.Memory(store.memory, key))
+            planned(options.resumption, store.memory.take(key), TicketHome.Memory(store.memory, key), TokenHome.of(store, key))
         }
         is QuicSessionStore.Supplied -> {
             val key = QuicSessionKey.of(serverName, port, options)
-            planned(options.resumption, store.cache.take(key), TicketHome.Supplied(store.cache, key))
+            planned(options.resumption, store.cache.take(key), TicketHome.Supplied(store.cache, key), TokenHome.NotKept)
         }
     }
 
@@ -127,14 +129,15 @@ private fun planned(
     own: QuicResumption,
     kept: QuicSessionTicketState,
     home: TicketHome,
+    tokens: TokenHome,
 ): SessionPlan =
     when (own) {
         is QuicResumption.None ->
             when (kept) {
-                is QuicSessionTicketState.NotIssued -> SessionPlan(QuicResumption.None, Taken.NoneTaken, home)
-                is QuicSessionTicketState.Issued -> SessionPlan(QuicResumption.Resume(kept.ticket), Taken.Offering(kept.ticket), home)
+                is QuicSessionTicketState.NotIssued -> SessionPlan(QuicResumption.None, Taken.NoneTaken, home, tokens)
+                is QuicSessionTicketState.Issued -> SessionPlan(QuicResumption.Resume(kept.ticket), Taken.Offering(kept.ticket), home, tokens)
             }
-        is QuicResumption.Resume, is QuicResumption.ResumeWithEarlyData -> SessionPlan(own, Taken.NoneTaken, home)
+        is QuicResumption.Resume, is QuicResumption.ResumeWithEarlyData -> SessionPlan(own, Taken.NoneTaken, home, tokens)
     }
 
 /** Keeps [ticket] for the next connection to its server; called on the connection's thread. */

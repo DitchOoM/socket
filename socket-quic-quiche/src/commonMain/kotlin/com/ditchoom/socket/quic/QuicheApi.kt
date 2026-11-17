@@ -381,6 +381,39 @@ interface QuicheApi {
         bufLen: Int,
     ): Int
 
+    // --- NEW_TOKEN (RFC 9000 §8.1.3), patched-in exports. Token format and crypto stay the caller's. ---
+
+    /**
+     * A client's address-validation token for every Initial of [conn] (`quiche_conn_set_token`): [bufLen] bytes at
+     * [buf]. Only before the first send. Returns 0 or a negative quiche error code.
+     */
+    fun connSetToken(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int
+
+    /**
+     * Moves the newest NEW_TOKEN token [conn] received and has not handed out into [buf] (`quiche_conn_take_new_token`).
+     * Returns its length, `QUICHE_ERR_DONE` when none waits, `QUICHE_ERR_BUFFER_TOO_SHORT` (nothing taken) when it does
+     * not fit [bufLen].
+     */
+    fun connTakeNewToken(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int
+
+    /** A server queues a NEW_TOKEN frame carrying [bufLen] bytes at [buf] (`quiche_conn_send_new_token`). */
+    fun connSendNewToken(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int
+
+    /** A server's client proved its address with a token: no anti-amplification limit (`quiche_conn_set_peer_address_validated`). */
+    fun connSetPeerAddressValidated(conn: QuicheConn): Int
+
     /** Whether the handshake resumed a session (`quiche_conn_is_resumed`). */
     fun connIsResumed(conn: QuicheConn): Boolean
 

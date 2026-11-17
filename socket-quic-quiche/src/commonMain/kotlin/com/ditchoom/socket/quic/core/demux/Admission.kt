@@ -3,6 +3,7 @@ package com.ditchoom.socket.quic.core.demux
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QUIC_ISSUED_CONN_ID_LEN
 import com.ditchoom.socket.quic.QuicheApi
+import com.ditchoom.socket.quic.QuicheConn
 import com.ditchoom.socket.quic.ReplySource
 import com.ditchoom.socket.quic.SendTarget
 import com.ditchoom.socket.quic.core.conn.ConnAddress
@@ -25,7 +26,10 @@ internal sealed interface Admit {
     /** No address validation: the server picks the id and also answers to the id the client chose. */
     data object Fresh : Admit
 
-    /** A valid token: the client already uses the id the server picked, in the packet's destination id. */
+    /** A valid NEW_TOKEN token: as [Fresh], and the client's address counts as validated (RFC 9000 §8.1.3). */
+    data object Proven : Admit
+
+    /** A valid Retry token: the client already uses the id the server picked, in the packet's destination id. */
     class Redeemed(
         val token: TokenCheck.Valid,
     ) : Admit
@@ -35,6 +39,7 @@ internal sealed interface Admit {
 internal sealed interface Accepted {
     class Peer(
         val peer: ServerPeer,
+        val handle: QuicheConn,
     ) : Accepted
 
     data object Refused : Accepted
@@ -117,7 +122,7 @@ internal class Admission(
         val odcidAddress: Long
         val odcidLength: Int
         when (how) {
-            is Admit.Fresh -> {
+            is Admit.Fresh, is Admit.Proven -> {
                 val c0 = random.nextLong()
                 val c1 = random.nextLong()
                 scratch.pickScid(c0, c1)
@@ -186,7 +191,7 @@ internal class Admission(
             )
         val build = ConnBuild(parts, QuicheConnRef(api, handle), address, memory, inProgress)
         val opened = hooks.open(AcceptedPeer(from, newCid.c0, newCid.c1), build)
-        return Accepted.Peer(ServerPeer(opened.conn, memory, peerAddress, opened, claim))
+        return Accepted.Peer(ServerPeer(opened.conn, memory, peerAddress, opened, claim), handle)
     }
 
     private fun full(): Boolean = inProgress.value() >= bounds.inProgress

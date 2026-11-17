@@ -9,6 +9,8 @@ internal class ServerCounts {
     private val backlogFull = Counter()
     private val held = Counter()
     private val token = Counter()
+    private val proven = Counter()
+    private val newTokens = Counter()
     private val runt = Counter()
     private val replies = Counter()
     private val retries = Counter()
@@ -36,6 +38,12 @@ internal class ServerCounts {
     /** Initials dropped for carrying a token that is malformed, forged or expired. */
     val droppedToken: Long get() = token.value()
 
+    /** Connections whose client proved its address with a NEW_TOKEN token, so no Retry and no amplification limit. */
+    val tokensProven: Long get() = proven.value()
+
+    /** NEW_TOKEN tokens queued, one per accepted connection when the server issues them. */
+    val newTokensQueued: Long get() = newTokens.value()
+
     /** Initials smaller than 1200 bytes, which RFC 9000 section 14.1 says to discard. */
     val droppedRunt: Long get() = runt.value()
 
@@ -62,6 +70,10 @@ internal class ServerCounts {
     fun backlogHeld() = held.increment()
 
     fun tokenDropped() = token.increment()
+
+    fun tokenProven() = proven.increment()
+
+    fun newTokenQueued() = newTokens.increment()
 
     fun runtDropped() = runt.increment()
 
