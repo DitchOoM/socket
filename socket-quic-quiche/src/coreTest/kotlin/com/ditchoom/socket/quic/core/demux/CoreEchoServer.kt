@@ -20,7 +20,6 @@ import com.ditchoom.socket.quic.read
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.IO
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlin.time.Duration.Companion.seconds
@@ -58,7 +57,8 @@ internal suspend fun withCoreEchoServer(
         )
     try {
         coroutineScope {
-            val serving = launch(Dispatchers.IO) { serveEchoes(server, onAccepted) }
+            // The echo only suspends: on IO every resumption could wake another of its up to 64 workers.
+            val serving = launch(Dispatchers.Default) { serveEchoes(server, onAccepted) }
             body(server)
             serving.cancel()
         }

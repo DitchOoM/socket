@@ -52,6 +52,11 @@ class CoreMainThreadSafetyTest {
                                 val stream = client.connection.openStream()
                                 val back = echoOver(stream, payload)
                                 client.connection.close(QuicError.NoError)
+                                // A connect from the main thread: its setup runs off it, its handshake wait parks.
+                                val second = connectCore(port)
+                                val secondBack = echoOver(second.connection.openStream(), payload)
+                                assertContentEquals(payload, secondBack, "the echo of the main thread's own connect")
+                                second.connection.close(QuicError.NoError)
                                 back
                             }
                         } finally {
