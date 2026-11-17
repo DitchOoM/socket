@@ -394,6 +394,10 @@ fun downloadQuicheSource(
     // Export quiche_conn_probe_path_with: a probe that seeds a new path's RTT from the caller's prior for its link and
     // sends its PATH_CHALLENGE past the congestion window. Idempotent, fails loudly on drift. See the KDoc.
     patchQuicheProbePathWithFfi(sourceDir)
+    // A client probe of a 4-tuple quiche holds a path the client left at forgets that path and probes a new one, so a
+    // socket the OS hands a port the connection had before can be migrated to. Applied after
+    // patchQuicheProbePathWithFfi, whose function it edits. Idempotent, fails loudly on drift. See the KDoc.
+    patchQuicheProbeReplacesLeftPath(sourceDir)
 
     // Name the patch set this tree now carries. The tree outlives the run (CI caches it with a
     // prefix fallback), so a reader that compiles it outside these tasks checks this stamp rather
@@ -2328,6 +2332,79 @@ fun patchQuicheProbePathWithFfi(sourceDir: File) {
             """.trimMargin() + "\n",
     )
     logger.lifecycle("Patched quiche source: quiche_conn_probe_path_with FFI export")
+}
+
+/**
+ * A client probe of a 4-tuple quiche still holds a path for, one nothing uses any more (no destination id, not
+ * active), forgets that path first and probes a new one there.
+ *
+ * Quiche keeps every path a client left, its destination id retired, until it evicts one to make room. A socket the OS
+ * hands a port an earlier socket of the connection had names such a path, and `probe_path` answered `InvalidState`
+ * for it, as its id is gone, every time: the client could neither probe nor migrate there, and every datagram it wrote
+ * was for a path no socket of its own held. Probing it again would not do either: a path validated before reports no
+ * new `Validated` event. Forgetting it as `make_room_for_new_path` evicts one, without its `Closed` event, which would
+ * name the 4-tuple the new path takes, makes the probe a new path's, validated afresh. What it still owed the peer is
+ * resent from the active path first ([patchQuicheRequeuePathFfi]).
+ *
+ * Reproduced by `CoreMoveBackVirtualTests`. Applied after [patchQuicheProbePathWithFfi], whose function it edits.
+ * Marker-guarded and loud: a re-run returns, a moved anchor throws.
+ */
+fun patchQuicheProbeReplacesLeftPath(sourceDir: File) {
+    val marker = "socket-probe-replaces-left-path"
+    val src = sourceDir.resolve("quiche/src")
+    val libRs = src.resolve("lib.rs")
+    if (!libRs.exists()) return
+    if (libRs.readText().contains(marker)) return
+
+    fun insertBefore(
+        file: File,
+        anchor: String,
+        insert: String,
+    ) {
+        val text = file.readText()
+        if (text.split(anchor).size != 2) {
+            throw GradleException(
+                "$marker: `${anchor.trim()}` not found exactly once in ${file.relativeTo(src)}: a quiche bump or a " +
+                    "re-fit of patchQuicheProbePathWithFfi moved it. Re-fit patchQuicheProbeReplacesLeftPath and " +
+                    "re-verify with CoreMoveBackVirtualTests.",
+            )
+        }
+        file.writeText(text.replace(anchor, insert + anchor))
+    }
+
+    insertBefore(
+        src.resolve("path.rs"),
+        "    /// Records the provided `Path` and returns its assigned identifier.\n",
+        """
+        |    // $marker: whether `addrs` names a path nothing uses (no destination id, not active).
+        |    pub(crate) fn socket_unused_at(&self, addrs: &(SocketAddr, SocketAddr)) -> bool {
+        |        self.path_id_from_addrs(addrs)
+        |            .is_some_and(|pid| self.paths[pid].unused())
+        |    }
+        |
+        |    // $marker: forgets the path of `addrs`, as `make_room_for_new_path` evicts one, with no event.
+        |    pub(crate) fn socket_forget(&mut self, addrs: &(SocketAddr, SocketAddr)) {
+        |        if let Some(pid) = self.addrs_to_paths.remove(addrs) {
+        |            self.paths.remove(pid);
+        |        }
+        |    }
+        |
+        |
+        """.trimMargin(),
+    )
+    insertBefore(
+        libRs,
+        "        let seq = self.probe_path(local, peer)?;\n",
+        """
+        |        // $marker: a path the client left at this 4-tuple is forgotten, and a new one probed.
+        |        if self.paths.socket_unused_at(&(local, peer)) {
+        |            self.socket_requeue_path(local, peer)?;
+        |            self.paths.socket_forget(&(local, peer));
+        |        }
+        |
+        """.trimMargin(),
+    )
+    logger.lifecycle("Patched quiche source: a probe replaces a path the client left at the same 4-tuple")
 }
 
 /**

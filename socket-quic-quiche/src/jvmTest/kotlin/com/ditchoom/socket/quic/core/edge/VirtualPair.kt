@@ -85,6 +85,12 @@ internal class VirtualPair private constructor(
     var clientRecvs = 0
         private set
 
+    /** The ports the client's next moves bind to, in order, as an OS may hand back a port the socket left. */
+    val movePorts = ArrayDeque<Int>()
+
+    /** The port the client's socket is bound to now. */
+    fun clientPort(): Int = clientKey.port
+
     lateinit var server: CoreServer
         private set
     lateinit var client: ReplayClient
@@ -210,9 +216,12 @@ internal class VirtualPair private constructor(
 
         override fun reopen(): Reopened = Reopened.SameEndpoint
 
-        /** The client's socket moves to the next port: the server sees its datagrams come from there. */
+        /**
+         * The client's socket moves to the next port, or to the port a test queued ([movePorts]): the server sees its
+         * datagrams come from there.
+         */
         override fun moveTo(bind: PathKey): Moved {
-            clientKey = clientKey.copy(port = clientKey.port + 1)
+            clientKey = clientKey.copy(port = movePorts.removeFirstOrNull() ?: (clientKey.port + 1))
             return Moved.To(clientKey)
         }
 
