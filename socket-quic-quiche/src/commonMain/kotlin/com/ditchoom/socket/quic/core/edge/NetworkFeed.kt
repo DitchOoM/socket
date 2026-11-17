@@ -7,7 +7,9 @@ import com.ditchoom.socket.NetworkState
 import com.ditchoom.socket.networkId
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.RouteSource
+import com.ditchoom.socket.quic.core.conn.HandshakeRule
 import com.ditchoom.socket.quic.core.conn.NetworkChange
+import com.ditchoom.socket.quic.core.time.RttPrior
 import com.ditchoom.socket.quic.toPathKey
 import com.ditchoom.socket.udp.UdpSocket
 import kotlinx.coroutines.CoroutineName
@@ -53,7 +55,7 @@ internal fun CoroutineScope.feedNetwork(
                 HomeStep.Usable -> connection.network(NetworkChange.Usable)
                 HomeStep.Gone -> connection.network(NetworkChange.Gone)
                 HomeStep.Moved -> connection.network(NetworkChange.Moved)
-                HomeStep.Migrate -> parts.migrate(bindKey(watch.host()))
+                HomeStep.Migrate -> parts.migrate(bindKey(watch.host()), RttPrior(HandshakeRule.priorOf(linkClassOf(now.networkId))))
                 HomeStep.Rehome -> parts.rehome()
             }
         }

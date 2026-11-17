@@ -735,6 +735,21 @@ JNIEXPORT jlong JNICALL JNI_FN(nConnProbePath)(
     return (jlong)rc;
 }
 
+/* quiche_conn_probe_path_with, packed as nConnProbePath: (jlong)seq on success, (jlong)rc on failure. */
+JNIEXPORT jlong JNICALL JNI_FN(nConnProbePathWith)(
+    JNIEnv *env, jclass cls,
+    jlong conn, jlong local_addr, jint local_len,
+    jlong peer_addr, jint peer_len, jlong initial_rtt_ns) {
+    uint64_t seq = 0;
+    int rc = quiche_conn_probe_path_with(
+        (quiche_conn *)(uintptr_t)conn,
+        (const struct sockaddr *)(uintptr_t)local_addr, (socklen_t)local_len,
+        (const struct sockaddr *)(uintptr_t)peer_addr, (socklen_t)peer_len,
+        (uint64_t)initial_rtt_ns, &seq);
+    if (rc == 0) return (jlong)seq;
+    return (jlong)rc;
+}
+
 JNIEXPORT jint JNICALL JNI_FN(nConnNewScid)(
     JNIEnv *env, jclass cls,
     jlong conn, jlong scid_addr, jint scid_len,

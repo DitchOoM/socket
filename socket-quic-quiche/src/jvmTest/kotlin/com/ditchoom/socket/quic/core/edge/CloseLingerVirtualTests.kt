@@ -8,6 +8,7 @@ import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.ScopedRead
 import com.ditchoom.socket.quic.core.life.ConnEnd
+import com.ditchoom.socket.quic.core.time.RttPrior
 import com.ditchoom.socket.quic.read
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -155,7 +156,7 @@ class CloseLingerVirtualTests {
     fun aCloseAskedInTheInstantTheSocketMovesEndsByTheCloseAndThePeerReadsIt() =
         VirtualPair.with(options) { pair ->
             val serverSide = pair.accept()
-            pair.client.parts.migrate(pair.client.local)
+            pair.client.parts.migrate(pair.client.local, RttPrior.CONFIGURED)
             var returned = false
             launch {
                 pair.client.connection.close(QuicError.NoError)
@@ -179,7 +180,7 @@ class CloseLingerVirtualTests {
                 returned = true
             }
             pair.runUntil { returned }
-            pair.client.parts.migrate(pair.client.local)
+            pair.client.parts.migrate(pair.client.local, RttPrior.CONFIGURED)
             pair.runUntil(within = 5.seconds) { !pair.client.scope.isActive }
             val end = assertIs<EdgeEnd.Ended>(pair.client.connection.end()).end
             assertEquals(QuicError.NoError, assertIs<ConnEnd.ByLocal>(end).error)

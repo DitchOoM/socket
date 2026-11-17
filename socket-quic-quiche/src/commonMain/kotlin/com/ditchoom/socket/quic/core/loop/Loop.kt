@@ -22,6 +22,7 @@ import com.ditchoom.socket.quic.core.sched.LoopWork
 import com.ditchoom.socket.quic.core.sched.SleepPlan
 import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.Nanos
+import com.ditchoom.socket.quic.core.time.RttPrior
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.Thrown
 import com.ditchoom.socket.quic.reportOnThisThread
@@ -88,7 +89,8 @@ internal class Loop(
     fun move(
         endpoint: Endpoint,
         bind: PathKey,
-    ) = port.submit(MoveWork(this, endpoint, bind))
+        prior: RttPrior,
+    ) = port.submit(MoveWork(this, endpoint, bind, prior))
 
     /** Any thread: the loop stops, ends every connection on it, and then runs [then]. */
     fun close(then: Runnable) = port.submit(StopWork(this, then))
@@ -180,7 +182,8 @@ internal class Loop(
     internal fun moveTo(
         endpoint: Endpoint,
         bind: PathKey,
-    ) = endpoint.move(poller, bind)
+        prior: RttPrior,
+    ) = endpoint.move(poller, bind, prior)
 
     internal fun beginClosing(then: Runnable) {
         run = Run.Closing(then)
@@ -264,8 +267,9 @@ private class MoveWork(
     private val loop: Loop,
     private val endpoint: Endpoint,
     private val bind: PathKey,
+    private val prior: RttPrior,
 ) : LoopWork() {
-    override fun run(port: LoopPort) = loop.moveTo(endpoint, bind)
+    override fun run(port: LoopPort) = loop.moveTo(endpoint, bind, prior)
 
     override fun gone(end: ConnEnd) = Unit
 }

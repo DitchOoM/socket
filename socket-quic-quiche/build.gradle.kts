@@ -391,6 +391,9 @@ fun downloadQuicheSource(
     // path had in flight now, from the active path. Applied after patchQuicheEvictedPathFramesRequeued, whose recovery
     // methods it uses. Idempotent, fails loudly on drift. See the KDoc.
     patchQuicheRequeuePathFfi(sourceDir)
+    // Export quiche_conn_probe_path_with: a probe that seeds a new path's RTT from the caller's prior for its link and
+    // sends its PATH_CHALLENGE past the congestion window. Idempotent, fails loudly on drift. See the KDoc.
+    patchQuicheProbePathWithFfi(sourceDir)
 
     // Name the patch set this tree now carries. The tree outlives the run (CI caches it with a
     // prefix fallback), so a reader that compiles it outside these tasks checks this stamp rather
@@ -2184,6 +2187,147 @@ fun patchQuicheRequeuePathFfi(sourceDir: File) {
             """.trimMargin() + "\n",
     )
     logger.lifecycle("Patched quiche source: quiche_conn_requeue_path FFI export")
+}
+
+/**
+ * Export `quiche_conn_probe_path_with`: `quiche_conn_probe_path`, and two things about the path probed.
+ *
+ * Its RTT estimate, while it has no sample, starts from `initial_rtt_ns` (zero keeps the configured one). quiche
+ * creates a path with the connection's configured initial RTT, which the client set from the link it connected on: a
+ * move from Wi-Fi to cellular probed the cellular path with a Wi-Fi round trip, and quiche forgot each challenge at
+ * that path's PTO, before a cellular answer could come.
+ *
+ * Its next packet is a probe the congestion window does not hold (RFC 9002 §6.2.4), as a PTO's is: the packet
+ * carrying the PATH_CHALLENGE. quiche counts a challenge's packet in flight until the path's loss timer declares it
+ * lost, and that timer backs off, so on a path that stayed dark the unanswered challenges filled the window and a
+ * fresh challenge asked for waited out the backed-off timer, seconds, before it left.
+ *
+ * Returns 0 and the destination id sequence number as `quiche_conn_probe_path` does, or a negative quiche error.
+ * Reproduced by `PathValidationPolicyTests` (the rehome re-probe migrates within a round trip) and
+ * `ProbePathWithTests`. Marker-guarded and loud in both directions: a re-run returns, a moved anchor throws, and an
+ * upstream that exports the same throws.
+ */
+fun patchQuicheProbePathWithFfi(sourceDir: File) {
+    val marker = "socket-probe-path-with"
+    val src = sourceDir.resolve("quiche/src")
+    val ffiRs = src.resolve("ffi.rs")
+    if (!ffiRs.exists()) return
+    if (ffiRs.readText().contains(marker)) return
+    if (ffiRs.readText().contains("quiche_conn_probe_path_with")) {
+        throw GradleException(
+            "$marker: quiche's ffi.rs already exports quiche_conn_probe_path_with. DELETE patchQuicheProbePathWithFfi " +
+                "and its call site, and check the upstream signature against libs/quiche/include/quiche.h.",
+        )
+    }
+
+    fun insertBefore(
+        file: File,
+        anchor: String,
+        insert: String,
+    ) {
+        val text = file.readText()
+        if (text.split(anchor).size != 2) {
+            throw GradleException(
+                "$marker: `${anchor.trim()}` not found exactly once in ${file.relativeTo(src)}: a quiche bump moved " +
+                    "it. Re-fit patchQuicheProbePathWithFfi and re-verify with ProbePathWithTests.",
+            )
+        }
+        file.writeText(text.replace(anchor, insert + anchor))
+    }
+
+    insertBefore(
+        src.resolve("recovery/rtt.rs"),
+        "    pub(crate) fn new(initial_rtt: Duration, max_ack_delay: Duration) -> Self {\n",
+        """
+        |    // $marker: an estimate with no sample starts again from `initial_rtt`.
+        |    pub(crate) fn socket_reseed(&mut self, initial_rtt: Duration) {
+        |        if !self.has_first_rtt_sample {
+        |            *self = RttStats::new(initial_rtt, self.max_ack_delay);
+        |        }
+        |    }
+        |
+        |
+        """.trimMargin(),
+    )
+    val timeoutDecl = "    fn on_loss_detection_timeout(\n"
+    insertBefore(
+        src.resolve("recovery/mod.rs"),
+        timeoutDecl,
+        """
+        |    // $marker: an RTT estimate with no sample starts from `initial_rtt`.
+        |    fn socket_reseed_rtt(&mut self, initial_rtt: Duration);
+        |
+        |    // $marker: the next application packet is a probe the congestion window does not hold.
+        |    fn socket_probe_past_cwnd(&mut self);
+        |
+        |
+        """.trimMargin(),
+    )
+    val impls =
+        """
+        |    // $marker: an RTT estimate with no sample starts from `initial_rtt`.
+        |    fn socket_reseed_rtt(&mut self, initial_rtt: Duration) {
+        |        self.rtt_stats.socket_reseed(initial_rtt);
+        |    }
+        |
+        |    // $marker: the next application packet is a probe the congestion window does not hold.
+        |    fn socket_probe_past_cwnd(&mut self) {
+        |        let epoch = &mut self.epochs[crate::packet::Epoch::Application];
+        |        epoch.loss_probes = epoch.loss_probes.max(1);
+        |    }
+        |
+        |
+        """.trimMargin()
+    insertBefore(src.resolve("recovery/congestion/recovery.rs"), timeoutDecl, impls)
+    insertBefore(src.resolve("recovery/gcongestion/recovery.rs"), timeoutDecl, impls)
+    insertBefore(
+        src.resolve("lib.rs"),
+        "    pub fn send_ack_eliciting(&mut self) -> Result<()> {\n",
+        """
+        |    /// $marker: `probe_path`; the path's RTT estimate, while it has no sample, starts from
+        |    /// `initial_rtt` (zero keeps the configured one), and its PATH_CHALLENGE leaves past the
+        |    /// congestion window.
+        |    pub fn socket_probe_path_with(
+        |        &mut self, local: SocketAddr, peer: SocketAddr, initial_rtt: Duration,
+        |    ) -> Result<u64> {
+        |        let seq = self.probe_path(local, peer)?;
+        |        let pid = self
+        |            .paths
+        |            .path_id_from_addrs(&(local, peer))
+        |            .ok_or(Error::InvalidState)?;
+        |        let path = self.paths.get_mut(pid)?;
+        |        if !initial_rtt.is_zero() {
+        |            path.recovery.socket_reseed_rtt(initial_rtt);
+        |        }
+        |        path.recovery.socket_probe_past_cwnd();
+        |        Ok(seq)
+        |    }
+        |
+        |
+        """.trimMargin(),
+    )
+    ffiRs.appendText(
+        "\n" +
+            """
+            |// $marker: probe_path, with the new path's initial RTT and its challenge past the congestion window.
+            |#[no_mangle]
+            |pub extern "C" fn quiche_conn_probe_path_with(
+            |    conn: &mut Connection, local: &sockaddr, local_len: socklen_t,
+            |    peer: &sockaddr, peer_len: socklen_t, initial_rtt_ns: u64, seq: *mut u64,
+            |) -> c_int {
+            |    let local = std_addr_from_c(local, local_len);
+            |    let peer = std_addr_from_c(peer, peer_len);
+            |    match conn.socket_probe_path_with(local, peer, std::time::Duration::from_nanos(initial_rtt_ns)) {
+            |        Ok(v) => {
+            |            unsafe { *seq = v }
+            |            0
+            |        },
+            |        Err(e) => e.to_c() as c_int,
+            |    }
+            |}
+            """.trimMargin() + "\n",
+    )
+    logger.lifecycle("Patched quiche source: quiche_conn_probe_path_with FFI export")
 }
 
 /**

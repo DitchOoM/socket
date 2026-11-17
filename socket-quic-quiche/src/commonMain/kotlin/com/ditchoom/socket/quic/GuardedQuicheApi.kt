@@ -353,6 +353,18 @@ internal class GuardedQuicheApi(
         return delegate.connProbePath(conn, localAddr, localLen, peerAddr, peerLen)
     }
 
+    override fun connProbePathWith(
+        conn: QuicheConn,
+        localAddr: Long,
+        localLen: Int,
+        peerAddr: Long,
+        peerLen: Int,
+        initialRttNanos: Long,
+    ): ProbeOutcome {
+        guard.assertOnLoop(LoopSite.Quiche)
+        return delegate.connProbePathWith(conn, localAddr, localLen, peerAddr, peerLen, initialRttNanos)
+    }
+
     override fun connNewScid(
         conn: QuicheConn,
         scidAddr: Long,

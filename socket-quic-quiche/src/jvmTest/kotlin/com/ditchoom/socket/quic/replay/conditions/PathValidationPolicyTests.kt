@@ -48,7 +48,9 @@ class PathValidationPolicyTests {
 
     /**
      * The new path stays dark long enough for the re-probes to back off to eight intervals; another network then comes
-     * up under the socket's address, and the path works there: it is probed at once, not when the back-off ends.
+     * up under the socket's address, and the path works there: it is probed at once, not when the back-off ends, and
+     * the probe's challenge leaves although the unanswered ones before it fill the path's congestion window, so the
+     * connection migrates one round trip after the rehome.
      */
     @Test
     fun anotherNetworkEndsTheBackOffOfTheProbesThatFailedBefore() {
@@ -73,7 +75,11 @@ class PathValidationPolicyTests {
             reprobed != null && reprobed - rehomed <= PASS,
             "rehomed ${rehomed - moved} after the move, re-probed at ${reprobed?.minus(moved)}: ${replayed.pathMarks}",
         )
-        assertTrue(replayed.moveToMigrated() != null, "never migrated: ${replayed.pathMarks}")
+        val took = replayed.moveToMigrated() ?: throw AssertionError("never migrated: ${replayed.pathMarks}")
+        assertTrue(
+            took - (rehomed - moved) <= ROUND_TRIP + PASS,
+            "migrated ${took - (rehomed - moved)} after the rehome: ${replayed.pathMarks}",
+        )
     }
 
     private fun moveTo(): List<OsEvent> =
@@ -118,5 +124,6 @@ class PathValidationPolicyTests {
 
         val SLOW_MIGRATION = 12.seconds
         val PASS = 10.milliseconds
+        val ROUND_TRIP = 160.milliseconds
     }
 }
