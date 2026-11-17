@@ -49,7 +49,10 @@ class LoopRunOpsAllocationTests {
                     println("[core loop-run allocation] loop %.2f B/echo\n%s".format(loop, where))
                     client.connection.close(QuicError.NoError)
                     main.close()
-                    assertTrue(loop <= LOOP_GATE, "the loop allocated %.2f B per echo it ran (gate %.1f), sampled from:\n%s".format(loop, LOOP_GATE, where))
+                    assertTrue(
+                        loop <= LOOP_GATE,
+                        "the loop allocated %.2f B per echo it ran (gate %.1f), sampled from:\n%s".format(loop, LOOP_GATE, where),
+                    )
                 }
             }
         }
@@ -87,17 +90,26 @@ class LoopRunOpsAllocationTests {
         from: Instant,
         loopName: String,
     ): String {
-        val dump = java.nio.file.Files.createTempFile("core-loop-run", ".jfr")
+        val dump =
+            java.nio.file.Files
+                .createTempFile("core-loop-run", ".jfr")
         recording.dump(dump)
         val sites = HashMap<String, Long>()
         allocationSamples(dump) { it == loopName }
             .filter { it.startTime >= from }
             .forEach { e ->
-                val frames = e.stackTrace?.frames.orEmpty().take(6).joinToString(" < ") { "${it.method.type.name.substringAfterLast('.')}.${it.method.name}" }
+                val frames =
+                    e.stackTrace?.frames.orEmpty().take(6).joinToString(" < ") {
+                        "${it.method.type.name.substringAfterLast('.')}.${it.method.name}"
+                    }
                 sites.merge("${e.getClass("objectClass").name} @ $frames", e.getLong("weight"), Long::plus)
             }
-        java.nio.file.Files.delete(dump)
-        return sites.entries.sortedByDescending { it.value }.take(15).joinToString("\n") { "  ${it.value / MEASURED} B/echo ${it.key}" }
+        java.nio.file.Files
+            .delete(dump)
+        return sites.entries
+            .sortedByDescending { it.value }
+            .take(15)
+            .joinToString("\n") { "  ${it.value / MEASURED} B/echo ${it.key}" }
     }
 
     /** A main dispatcher on a thread of its own, so every call it makes is handed to the loop. */

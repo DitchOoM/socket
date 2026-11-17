@@ -726,6 +726,18 @@ class FfmQuicheApi private constructor(
         return StreamSendResult(result, errorCode)
     }
 
+    override fun connStreamSendStep(
+        conn: QuicheConn,
+        streamId: QuicStreamId,
+        buf: Long,
+        bufLen: Int,
+        fin: Boolean,
+    ): StreamSendStep {
+        val errOut = outParams.get().errorCode
+        val result = (hStreamSend.invokeExact(conn.handle, streamId.id, buf, bufLen.toLong(), fin, errOut.address()) as Long).toInt()
+        return StreamSendStep.of(result) { QuicAppErrorCode(errOut.get(JAVA_LONG, 0)) }
+    }
+
     /**
      * The out-parameters of the per-packet and per-stream calls ([connStreamRecv], [connStreamSend],
      * [connPathStats], [copyConnBytes] and the connection-id iterators), one set per thread, allocated once: the same reasoning as [streamIdScratch]. A

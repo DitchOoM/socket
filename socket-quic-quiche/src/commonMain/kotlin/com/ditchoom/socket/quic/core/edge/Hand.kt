@@ -122,7 +122,8 @@ internal sealed interface ReadAnswer : HandAnswer {
     class Data(
         val buffer: PlatformBuffer,
     ) : ReadAnswer,
-        Spare
+        Spare,
+        Idle
 
     data object End : ReadAnswer
 

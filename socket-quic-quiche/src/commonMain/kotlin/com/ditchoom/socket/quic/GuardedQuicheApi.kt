@@ -74,6 +74,17 @@ internal class GuardedQuicheApi(
         return delegate.connStreamSend(conn, streamId, buf, bufLen, fin)
     }
 
+    override fun connStreamSendStep(
+        conn: QuicheConn,
+        streamId: QuicStreamId,
+        buf: Long,
+        bufLen: Int,
+        fin: Boolean,
+    ): StreamSendStep {
+        guard.assertOnLoop(LoopSite.Quiche)
+        return delegate.connStreamSendStep(conn, streamId, buf, bufLen, fin)
+    }
+
     override fun connStreamCapacity(
         conn: QuicheConn,
         streamId: QuicStreamId,
