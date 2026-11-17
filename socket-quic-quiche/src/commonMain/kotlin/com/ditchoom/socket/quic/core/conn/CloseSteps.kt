@@ -29,7 +29,7 @@ internal fun ConnParts.keepClose(
     val until = timer.drainEnds(now)
     if (egress.last() == LastOut.Dropped) {
         when (val to = slots.paths.closeRedirect()) {
-            is Outgoing.To -> egress.sendDroppedTo(out, to.target, now, flight)
+            is Outgoing.To -> egress.sendDroppedTo(out, to.target, flight)
             is Outgoing.Dropped -> Unit
         }
     }
@@ -78,6 +78,6 @@ private fun ConnParts.sendClose(
     paths: Paths,
 ) {
     timer.expire()
-    egress.write(out, paths, now, flight)
+    egress.write(out, paths, flight)
     if (keepClose(now, out) == CloseSent.No && life.observe() == LifeStep.Closed) life.linger.done()
 }

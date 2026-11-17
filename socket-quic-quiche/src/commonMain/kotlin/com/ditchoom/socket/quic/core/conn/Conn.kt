@@ -98,7 +98,7 @@ internal class Conn(
 
     /**
      * Loop thread: a datagram for this connection from [from], at the start of [bytes], read in the receive phase that
-     * began [at]; copied when a caller is inside. Datagrams of one phase share [at]: quiche has all before it sends.
+     * began [at]; copied when a caller is inside. Its recording takes the time quiche reads it.
      */
     fun received(
         bytes: NativeBytes,

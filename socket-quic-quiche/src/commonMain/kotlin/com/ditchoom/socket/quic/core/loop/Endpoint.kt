@@ -90,7 +90,7 @@ internal class Endpoint(
         }
     }
 
-    /** Reads until the socket is drained or [MAX_PER_PASS]; every datagram of this receive phase is stamped [at]. */
+    /** Reads until the socket is drained or [MAX_PER_PASS]; each datagram of this phase is handed over at [at]. */
     private fun receiveWaiting(
         batch: ReceiveBatch,
         counts: LoopCounts,
