@@ -10,6 +10,9 @@ internal class Sched(
     val waitNanos: Long,
     val sleeps: Long,
     val preemptions: Long,
+    /** Clock ticks in user mode and in the kernel, from `stat`: whether the time went to our code or to system calls. */
+    val userTicks: Long,
+    val kernelTicks: Long,
 )
 
 /**
@@ -20,16 +23,66 @@ internal class Sched(
 internal object LoopScheduling {
     private val tasks = File("/proc/self/task")
 
-    fun snapshot(): Map<String, Sched> =
+    fun snapshot(): Map<String, Sched> = snapshotOf { it.startsWith("quic") }
+
+    /** Every thread of the process: the loops, the runtime's own (GC, JIT, finalizers) and the dispatchers'. */
+    fun snapshotAll(): Map<String, Sched> = snapshotOf { true }
+
+    private fun snapshotOf(wanted: (String) -> Boolean): Map<String, Sched> =
         if (!tasks.isDirectory) {
             emptyMap()
         } else {
             tasks
                 .listFiles()
                 .orEmpty()
-                .mapNotNull { read(it) }
+                .mapNotNull { read(it, wanted) }
                 .associateBy { it.name }
         }
+
+    /**
+     * The process's CPU since [before] (a [snapshotAll]), per [connections]: the total, its user and kernel split, and
+     * the threads grouped by name without their numbers, costliest first. A passing run prints it, so API levels compare.
+     */
+    fun cpuPerConnection(
+        before: Map<String, Sched>,
+        connections: Int,
+    ): String {
+        if (!tasks.isDirectory) return "no /proc/self/task on this platform"
+        val spent =
+            snapshotAll().values.map { now ->
+                val was = before[now.name]
+                Spent(
+                    group = now.name.substringBefore('#').trimEnd { it.isDigit() || it == '-' || it == ' ' },
+                    runNanos = now.runNanos - (was?.runNanos ?: 0),
+                    waitNanos = now.waitNanos - (was?.waitNanos ?: 0),
+                    userTicks = now.userTicks - (was?.userTicks ?: 0),
+                    kernelTicks = now.kernelTicks - (was?.kernelTicks ?: 0),
+                )
+            }
+        val total = spent.sumOf { it.runNanos }
+        val groups =
+            spent
+                .groupBy { it.group }
+                .map { (group, all) -> group to all }
+                .sortedByDescending { (_, all) -> all.sumOf { it.runNanos } }
+                .take(TOP_GROUPS)
+                .joinToString(", ") { (group, all) ->
+                    "$group x${all.size} ${all.sumOf { it.runNanos } / MILLI} ms " +
+                        "(user ${all.sumOf { it.userTicks }} kernel ${all.sumOf { it.kernelTicks }} ticks, " +
+                        "runnable ${all.sumOf { it.waitNanos } / MILLI} ms)"
+                }
+        return "ran ${total / MILLI} ms = ${total / connections / MICRO} us per connection " +
+            "(user ${spent.sumOf { it.userTicks }} kernel ${spent.sumOf { it.kernelTicks }} ticks, " +
+            "runnable without a CPU ${spent.sumOf { it.waitNanos } / MILLI} ms); $groups"
+    }
+
+    private class Spent(
+        val group: String,
+        val runNanos: Long,
+        val waitNanos: Long,
+        val userTicks: Long,
+        val kernelTicks: Long,
+    )
 
     /** The loop threads' scheduling since [before], one line each; threads that started since count from zero. */
     fun since(before: Map<String, Sched>): String {
@@ -45,10 +98,13 @@ internal object LoopScheduling {
             }.ifEmpty { "no loop thread" }
     }
 
-    private fun read(task: File): Sched? =
+    private fun read(
+        task: File,
+        wanted: (String) -> Boolean,
+    ): Sched? =
         runCatching {
             val comm = File(task, "comm").readText().trim()
-            if (!comm.startsWith("quic")) return null
+            if (!wanted(comm)) return null
             val sched = File(task, "schedstat").readText().trim().split(" ")
             val status = File(task, "status").readLines()
             // stat: "pid (comm) state ..." — the comm may hold spaces, so fields count from the closing parenthesis.
@@ -65,6 +121,8 @@ internal object LoopScheduling {
                 waitNanos = sched[1].toLong(),
                 sleeps = countOf(status, "voluntary_ctxt_switches"),
                 preemptions = countOf(status, "nonvoluntary_ctxt_switches"),
+                userTicks = stat[UTIME_AFTER_COMM].toLong(),
+                kernelTicks = stat[STIME_AFTER_COMM].toLong(),
             )
         }.getOrNull()
 
@@ -79,6 +137,12 @@ internal object LoopScheduling {
             .toLong()
 
     private const val MILLI = 1_000_000L
+    private const val MICRO = 1_000L
+    private const val TOP_GROUPS = 8
+
+    /** `utime` and `stime` are fields 14 and 15 of `stat`: indices 11 and 12 counted from the state. */
+    private const val UTIME_AFTER_COMM = 11
+    private const val STIME_AFTER_COMM = 12
 
     /** `nice` is field 19 of `stat`; counted from the state, the first field after the comm, it is index 16. */
     private const val NICE_AFTER_COMM = 16
