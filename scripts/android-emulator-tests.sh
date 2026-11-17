@@ -408,6 +408,31 @@ if [ "$NETWORK_READY" = "1" ]; then
   # by this script instead of by the step timeout. Gradle's output is also kept in a file, so the
   # capture can list the connected-test tasks it had started.
   set +e
+  if [ "${CORE_HERD_PROFILE:-0}" = "1" ]; then
+    # DIAGNOSTIC (branch only): the core echo herd alone, under a system-wide simpleperf, reported inline.
+    ./gradlew :socket-quic-quiche:assembleDebugAndroidTest > emulator-diagnostics/herd-prebuild.txt 2>&1 || tail -40 emulator-diagnostics/herd-prebuild.txt
+    adb shell "rm -f /data/local/tmp/herd.data"
+    adb shell "simpleperf record -a -e cpu-clock -f 1000 -o /data/local/tmp/herd.data" > emulator-diagnostics/simpleperf-record.txt 2>&1 &
+    PERF_PID=$!
+    sleep 3
+    ./gradlew :socket-quic-quiche:connectedAndroidTest \
+      -Pandroid.testInstrumentationRunnerArguments.class=com.ditchoom.socket.quic.core.demux.CoreServerEchoTests \
+      -Pandroid.testInstrumentationRunnerArguments.deviceKind=emulator > >(tee "$GRADLE_OUT_FILE") 2>&1 &
+    GRADLE_PID=$!
+    watch_test_run "$GRADLE_PID"
+    wait "$GRADLE_PID"
+    TEST_EXIT=$?
+    adb shell "pkill -INT simpleperf" || true
+    sleep 8
+    kill "$PERF_PID" 2>/dev/null || true
+    cat emulator-diagnostics/simpleperf-record.txt || true
+    for sort in "pid,comm" "comm,dso" "comm,dso,symbol" "dso,symbol"; do
+      echo "=== HERD-PROF sort $sort (API ${API_LEVEL}) ==="
+      timeout 300 adb shell "simpleperf report -i /data/local/tmp/herd.data --sort $sort --percent-limit 0.3 2>&1" | head -150 || true
+    done
+    echo "=== end HERD-PROF ==="
+    perfetto_ring_collect "$API_LEVEL" "$PERFETTO_OUT_DIR"
+  else
   ./gradlew connectedAndroidTest :socket-quic-quiche:connectedAndroidTest \
     -Pandroid.testInstrumentationRunnerArguments.deviceKind=emulator \
     -Pandroid.testInstrumentationRunnerArguments.netCtrlHost=127.0.0.1 \
@@ -417,6 +442,7 @@ if [ "$NETWORK_READY" = "1" ]; then
   watch_test_run "$GRADLE_PID"
   wait "$GRADLE_PID"
   TEST_EXIT=$?
+  fi
   set -e
 
   # A MODULE THAT RAN NO TESTS IS A FAILURE, NOT A PASS

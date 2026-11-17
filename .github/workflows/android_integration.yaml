@@ -323,7 +323,8 @@ jobs:
           # Traced: 29 and 35. UNTRACED: 36 (an instrument has hidden the race it was built to catch
           # on this project, so the matrix always has an uninstrumented lane) and 28, which has no
           # Perfetto service and keeps logcat only.
-          PERFETTO_RING: ${{ contains(fromJSON('[29, 35]'), matrix.api-level) && '1' || '0' }}
+          PERFETTO_RING: '1'
+          CORE_HERD_PROFILE: '1'
         with:
           api-level: ${{ matrix.api-level }}
           target: default
@@ -419,7 +420,7 @@ jobs:
       # The Perfetto ring, pulled from the device by the test script only when the run failed or hung.
       # Its own artifact, 14 days: a scheduling trace is read well after the logcat of the same run.
       - name: Upload Perfetto ring on failure
-        if: ${{ (failure() || cancelled()) && hashFiles('perfetto-ring/perfetto-ring-api*.gz') != '' }}
+        if: ${{ !cancelled() && hashFiles('perfetto-ring/perfetto-ring-api*.gz') != '' }}
         continue-on-error: true # an upload hiccup must not mask the failure it was capturing
         uses: actions/upload-artifact@v7
         with:
