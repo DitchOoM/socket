@@ -46,8 +46,12 @@ internal object RecordingToSchedule {
         ourApp: OurApp = OurApp.Ignores,
         idsAtEstablishment: Int = 0,
     ): Converted {
-        val ourOut = outOf(ourRecording)
-        val ourIn = inOf(ourRecording)
+        // What our endpoint sent and received after it recorded closing is its linger's (RFC 9000 §10.2.1): copies of its
+        // close, and datagrams quiche never saw. The schedule's ClosedByUs stands for all of it.
+        val closedState = closedState(ourRecording)
+        val connection = closedState?.let { closed -> ourRecording.filter { it.at <= closed.at } } ?: ourRecording
+        val ourOut = outOf(connection)
+        val ourIn = inOf(connection)
         val peerOut = outOf(peerRecording)
         val peerIn = inOf(peerRecording)
         val shared = ourOut.filter { sent -> peerIn.any { it.hex == sent.hex } }
@@ -85,7 +89,7 @@ internal object RecordingToSchedule {
             steps += at to Step.OursDid(at, recorded.action)
         }
         // Our endpoint closing is in its recording: the connection state, and the datagram that carried the close.
-        val closedAt = ourClose(ourRecording, ourOut)?.let { it.at - start }
+        val closedAt = closedState?.let { state -> ourOut.lastOrNull { it.at <= state.at } }?.let { it.at - start }
         if (closedAt != null) steps += closedAt to Step.OursDid(closedAt, OurAction.Close)
         val ordered = steps.sortedWith(compareBy({ it.first }, { orderOf(it.second) })).map { it.second }
         val established =
@@ -117,17 +121,11 @@ internal object RecordingToSchedule {
     )
 
     /**
-     * The datagram our endpoint sent last at or before it recorded closing the connection itself, when it did: the
-     * close travelled in that datagram.
+     * Where our endpoint recorded closing the connection itself, when it did. The close travelled in the last datagram
+     * it sent at or before then.
      */
-    private fun ourClose(
-        recording: List<TraceEvent>,
-        sent: List<Datagram>,
-    ): Datagram? {
-        val closed =
-            recording.filterIsInstance<TraceEvent.State>().firstOrNull { it.name.endsWith(CLOSED) && it.detail?.startsWith(LOCAL) == true }
-        return closed?.let { state -> sent.lastOrNull { it.at <= state.at } }
-    }
+    private fun closedState(recording: List<TraceEvent>): TraceEvent.State? =
+        recording.filterIsInstance<TraceEvent.State>().firstOrNull { it.name.endsWith(CLOSED) && it.detail?.startsWith(LOCAL) == true }
 
     /** Takes each recorded datagram once, oldest first, by its bytes. */
     private class Matcher(

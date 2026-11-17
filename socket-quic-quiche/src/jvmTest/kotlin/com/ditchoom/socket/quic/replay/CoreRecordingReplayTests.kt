@@ -266,6 +266,48 @@ class CoreRecordingReplayTests {
             }
         }
 
+    /**
+     * A client that closed lingers (RFC 9000 §10.2.1): a datagram the server sent late reaches it, and it answers with
+     * its CONNECTION_CLOSE again, byte for byte, which the server, already gone, never records. Its recording holds
+     * both; the schedule is the connection's alone, the same as without them, and its replay still follows it whole.
+     * CI found this: the answer's bytes matched the close's first arrival, which moved the clocks' alignment by the
+     * linger's length.
+     */
+    @Test
+    fun whatAClosedClientSentAndReceivedWhileLingeringIsNotInItsSchedule() =
+        runBlocking {
+            skipOnMissingNativeLib(CoreRecordingReplayTests::class) {
+                val recorded = recordAnEcho()
+                val closedAt =
+                    recorded.client
+                        .filterIsInstance<TraceEvent.State>()
+                        .first { it.name.endsWith(".Closed") && it.detail?.startsWith("local") == true }
+                        .at
+                val close = recorded.client.filterIsInstance<TraceEvent.DgramOut>().last { it.at <= closedAt }
+                val late = recorded.server.filterIsInstance<TraceEvent.DgramOut>().last()
+                val serverEnd = recorded.server.maxOf { it.at }
+                val lateSent = late.copy(at = serverEnd + LINGER_STEP)
+                val clientEnd = recorded.client.maxOf { it.at }
+                val lingered =
+                    recorded.client +
+                        listOf(
+                            TraceEvent.DgramIn(clientEnd + LINGER_STEP, late.len, late.path, late.payloadHex),
+                            close.copy(at = clientEnd + LINGER_STEP),
+                        )
+                val without = scheduleOf(recorded).steps
+                val with = scheduleOf(recorded, lingered, recorded.server + lateSent).steps
+                assertEquals(
+                    without.filterIsInstance<Step.OursSent>(),
+                    with.filterIsInstance<Step.OursSent>(),
+                    "the linger's answer is not the connection's, and every delivery keeps its time",
+                )
+                // The server's late datagram reached only the linger, never quiche: to the connection it was lost.
+                assertEquals(without + (with - without.toSet()), with)
+                assertEquals(Fate.Lost, assertIs<Step.PeerSent>((with - without.toSet()).single()).fate)
+                assertFollowedWholeTwice(scheduleOf(recorded, lingered, recorded.server + lateSent))
+            }
+        }
+
     /** The client's application wrote the payload on its first stream when its first datagram carrying data left. */
     private fun writeOf(recording: List<TraceEvent>): RecordingToSchedule.RecordedAction {
         val first =
@@ -298,6 +340,7 @@ class CoreRecordingReplayTests {
         const val SPARE_IDS = 7
         const val MOVED_PORT = 40_000
         const val MOVED_ADDRESS = 0x7f000002L
+        val LINGER_STEP = 100.milliseconds
         val BIG = FlightSize(records = 4096)
     }
 }
