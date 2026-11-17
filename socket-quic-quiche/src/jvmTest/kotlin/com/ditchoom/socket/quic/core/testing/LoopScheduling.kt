@@ -101,6 +101,29 @@ internal object LoopScheduling {
             now.keys.sorted().joinToString(", ") { key -> "$key ${now.getValue(key) - (before[key] ?: 0L)}" }
     }
 
+    private val dumped =
+        java.util.concurrent.atomic
+            .AtomicBoolean(false)
+
+    /**
+     * DIAGNOSTIC: once per process, when the instrumentation argument `herdHeapDump` is set (Android only), writes an
+     * hprof of the heap to the test APK's cache directory as `herd.hprof`. Elsewhere it does nothing.
+     */
+    fun dumpHeapOnce() {
+        runCatching {
+            val registry = Class.forName("androidx.test.platform.app.InstrumentationRegistry")
+            val arguments = registry.getMethod("getArguments").invoke(null)
+            val wanted = arguments.javaClass.getMethod("getString", String::class.java).invoke(arguments, "herdHeapDump")
+            if (wanted == null || !dumped.compareAndSet(false, true)) return
+            val instrumentation = registry.getMethod("getInstrumentation").invoke(null)
+            val context = instrumentation.javaClass.getMethod("getContext").invoke(instrumentation)
+            val cache = context.javaClass.getMethod("getCacheDir").invoke(context) as File
+            val path = File(cache, "herd.hprof").absolutePath
+            Class.forName("android.os.Debug").getMethod("dumpHprofData", String::class.java).invoke(null, path)
+            println("CORE-CPU heap dump written to $path")
+        }.onFailure { println("CORE-CPU heap dump failed: $it") }
+    }
+
     private class Spent(
         val group: String,
         val runNanos: Long,

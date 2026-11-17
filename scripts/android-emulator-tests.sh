@@ -417,6 +417,7 @@ if [ "$NETWORK_READY" = "1" ]; then
     sleep 3
     ./gradlew :socket-quic-quiche:connectedAndroidTest \
       -Pandroid.testInstrumentationRunnerArguments.class=com.ditchoom.socket.quic.core.demux.CoreServerEchoTests \
+      -Pandroid.testInstrumentationRunnerArguments.herdHeapDump=1 \
       -Pandroid.testInstrumentationRunnerArguments.deviceKind=emulator > >(tee "$GRADLE_OUT_FILE") 2>&1 &
     GRADLE_PID=$!
     watch_test_run "$GRADLE_PID"
@@ -431,6 +432,17 @@ if [ "$NETWORK_READY" = "1" ]; then
       timeout 300 adb shell "simpleperf report -i /data/local/tmp/herd.data --sort $sort --percent-limit 0.3 2>&1" | head -150 || true
     done
     echo "=== end HERD-PROF ==="
+    mkdir -p "$PERFETTO_OUT_DIR"
+    HPROF_DEV=/data/data/com.ditchoom.socket.quic.quiche.test/cache/herd.hprof
+    if timeout 120 adb pull "$HPROF_DEV" "emulator-diagnostics/herd-raw.hprof" >/dev/null 2>&1; then
+      HPROF_CONV="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}/platform-tools/hprof-conv"
+      "$HPROF_CONV" "emulator-diagnostics/herd-raw.hprof" "$PERFETTO_OUT_DIR/herd-api${API_LEVEL}.hprof" ||
+        cp "emulator-diagnostics/herd-raw.hprof" "$PERFETTO_OUT_DIR/herd-api${API_LEVEL}.hprof"
+      gzip -6 -f "$PERFETTO_OUT_DIR/herd-api${API_LEVEL}.hprof"
+      ls -la "$PERFETTO_OUT_DIR"
+    else
+      echo "no herd heap dump at $HPROF_DEV"
+    fi
     perfetto_ring_collect "$API_LEVEL" "$PERFETTO_OUT_DIR"
   else
   ./gradlew connectedAndroidTest :socket-quic-quiche:connectedAndroidTest \

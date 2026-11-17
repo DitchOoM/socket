@@ -70,6 +70,7 @@ class CoreServerEchoTests {
                                 async(Dispatchers.IO) {
                                     val client = connectCore(server.port, loops = loops)
                                     connectedAfter.add((System.nanoTime() - started) / NANOS_PER_MILLI)
+                                    if (connectedAfter.size == connections * 3 / 4) LoopScheduling.dumpHeapOnce()
                                     try {
                                         val payload = Random(n).nextBytes(1_024)
                                         payload to echoOver(client.connection.openStream(), payload)
