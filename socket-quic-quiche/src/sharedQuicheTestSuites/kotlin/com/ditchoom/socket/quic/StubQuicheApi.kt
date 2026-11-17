@@ -656,6 +656,9 @@ internal class StubQuicheApi : QuicheApi {
 
     override fun connWritable(conn: QuicheConn) = if (writableStreams.isEmpty()) QuicheStreamIter(0L) else QuicheStreamIter(WRITABLE_ITER)
 
+    /** Hands out [writableStreams] one at a time, as quiche hands out its writable marks. */
+    override fun connStreamWritableNext(conn: QuicheConn): Long = writableStreams.removeFirstOrNull() ?: -1L
+
     // The handle tells the two iterators apart, so a test can arm both without their ids crossing over.
     override fun streamIterNext(iter: QuicheStreamIter): QuicStreamId? =
         when (iter.handle) {

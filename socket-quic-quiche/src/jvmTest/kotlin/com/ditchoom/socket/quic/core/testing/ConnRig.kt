@@ -107,7 +107,12 @@ internal fun loopOver(
 internal fun testLoopMemory(
     copies: Int = 4,
     arenaBytes: Int = 64 * 1024,
-): LoopMemory = LoopMemory(List(copies) { nativeBytes(1500) }, FlightArena(nativeBytes(arenaBytes)))
+): LoopMemory =
+    LoopMemory(
+        List(copies) { nativeBytes(1500) },
+        List(LoopMemory.DRAIN_SLOTS) { nativeBytes(LoopMemory.DRAIN_BYTES) },
+        FlightArena(nativeBytes(arenaBytes)),
+    )
 
 /** A connection built the way a connect builds one, on [loop], sending through [socket]. */
 internal fun testConn(

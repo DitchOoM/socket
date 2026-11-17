@@ -241,6 +241,7 @@ internal class TypedQuicStream<T : Any>(
         } finally {
             conn.submit(reader.closing(), CallerPlace.HandToLoop)
             conn.submit(writer.closing(), CallerPlace.HandToLoop)
+            connection.abandon(id)
         }
     }
 

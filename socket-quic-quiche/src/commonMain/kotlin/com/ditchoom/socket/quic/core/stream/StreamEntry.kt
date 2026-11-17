@@ -19,6 +19,15 @@ internal sealed interface Side {
 
     /** Receiving: we told the peer to stop sending. Sending: the peer told us to. */
     data object Stopped : Ended
+
+    /** Receiving only: quiche refused a read of a stream nobody reads; nothing more arrives. */
+    data object Refused : Ended
+
+    /**
+     * Receiving only: the caller closed without reading to the end. What still arrives is read and dropped, so the
+     * peer's writes go on and its credit comes back, until the peer's FIN or reset ends this direction.
+     */
+    data object Abandoned : Side
 }
 
 /**
@@ -60,7 +69,12 @@ internal class StreamEntry(
 
     /** The peer's side ended [how] for us; an earlier ending stays. */
     fun receiveEnded(how: Side.Ended) {
-        if (received is Side.Open) received = how
+        if (received !is Side.Ended) received = how
+    }
+
+    /** The caller will read no more; an ended direction stays ended. */
+    fun abandonReceive() {
+        if (received is Side.Open) received = Side.Abandoned
     }
 
     fun parkReader(waiter: Waiter) {

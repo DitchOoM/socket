@@ -1031,6 +1031,10 @@ JNIEXPORT jlong JNICALL JNI_FN(nConnWritable)(JNIEnv *env, jclass cls, jlong con
     return (jlong)(uintptr_t)quiche_conn_writable((const quiche_conn *)(uintptr_t)conn);
 }
 
+JNIEXPORT jlong JNICALL JNI_FN(nConnStreamWritableNext)(JNIEnv *env, jclass cls, jlong conn) {
+    return (jlong)quiche_conn_stream_writable_next((quiche_conn *)(uintptr_t)conn);
+}
+
 JNIEXPORT jlong JNICALL JNI_FN(nStreamIterNext)(
     JNIEnv *env, jclass cls, jlong iter) {
     uint64_t stream_id;

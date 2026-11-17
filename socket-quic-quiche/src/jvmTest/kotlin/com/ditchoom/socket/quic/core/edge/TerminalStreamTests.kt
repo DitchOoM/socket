@@ -65,6 +65,42 @@ class TerminalStreamTests {
             assertLiveAtMost(client)
         }
 
+    @Test
+    fun streamsClosedWhileThePeerStillWritesDropWhatArrivesAndLeaveTheTable() {
+        val failures =
+            java.util.concurrent.atomic
+                .AtomicInteger()
+        val finished =
+            java.util.concurrent.atomic
+                .AtomicInteger()
+        withServer(handle = { stream ->
+            try {
+                stream.read(10.seconds) { }
+                repeat(PEER_WRITES) { stream.write(payload(), 10.seconds) }
+                stream.close()
+                finished.incrementAndGet()
+            } catch (failure: Exception) {
+                failures.incrementAndGet()
+                throw failure
+            }
+        }) { client ->
+            repeat(STREAMS) {
+                val stream = client.connection.openStream()
+                stream.write(payload(), 10.seconds)
+                (stream as HalfCloseable).shutdownSend()
+                // Closed with the peer's answer unread, while the peer is still writing it.
+                stream.close()
+            }
+            assertLiveAtMost(client)
+            val giveUp = System.nanoTime() + 10.seconds.inWholeNanoseconds
+            while (finished.get() + failures.get() < STREAMS && System.nanoTime() < giveUp) Thread.sleep(20)
+            assertTrue(
+                failures.get() == 0 && finished.get() == STREAMS,
+                "peer writes: ${finished.get()} finished, ${failures.get()} failed of $STREAMS",
+            )
+        }
+    }
+
     private fun assertLiveAtMost(client: CoreClient) {
         // The peer's frames for the last streams may still be in flight: wait until the count settles under the bound.
         val giveUp = System.nanoTime() + 10.seconds.inWholeNanoseconds
@@ -132,6 +168,7 @@ class TerminalStreamTests {
         const val PAYLOAD = 32
         const val PEER_CODE = 7L
         const val OUR_CODE = 9L
+        const val PEER_WRITES = 64
 
         suspend fun echo(stream: QuicByteStream) {
             while (stream.read(10.seconds) { stream.writeFully(it, 10.seconds) } is ScopedRead.Data<*>) Unit

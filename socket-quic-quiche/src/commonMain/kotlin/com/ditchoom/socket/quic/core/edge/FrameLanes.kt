@@ -110,7 +110,7 @@ internal class Outbound(
                     return Moved.Again
                 }
                 else -> {
-                    if (taken == QUICHE_ERR_STREAM_STOPPED) table.stopped(stream, answer.errorCode ?: UNKNOWN_PEER_CODE)
+                    if (taken == QUICHE_ERR_STREAM_STOPPED) table.stopped(stream)
                     return Moved.Refused(Raised.WriteRefused(stream, taken, answer.errorCode ?: UNKNOWN_PEER_CODE))
                 }
             }
@@ -151,6 +151,15 @@ internal class ResetWork(
         inside.streams.io.shutdown(stream, ShutdownSide.Write, code.value)
         inside.streams.sendEnded(stream, Side.Reset)
     }
+
+    override fun gone(end: ConnEnd) = Unit
+}
+
+/** Abandons the receiving direction of a stream its caller closed: what still arrives is dropped. */
+internal class AbandonWork(
+    private val stream: QuicStreamId,
+) : ConnWork() {
+    override fun run(inside: Inside) = inside.streams.abandon(stream)
 
     override fun gone(end: ConnEnd) = Unit
 }

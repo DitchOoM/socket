@@ -7,6 +7,7 @@ import com.ditchoom.socket.quic.QuicheStreamIter
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.observe.Confined
+import com.ditchoom.socket.quic.core.pool.FixedPool
 import com.ditchoom.socket.quic.core.pool.LongObjectMap
 import com.ditchoom.socket.quic.core.pool.LongQueue
 import com.ditchoom.socket.quic.core.pool.LongSet
@@ -26,13 +27,21 @@ internal enum class Opened { Opened, AtLimit }
 /**
  * A connection's streams: entries by id, operations waiting to write, opens waiting for the peer's stream credit, and
  * the streams the peer opened that nobody has been told of yet. Inside the connection only.
+ *
+ * quiche lets a stream go only once the application touches it after both directions are over: a read that meets
+ * the peer's FIN or reset, or a write or capacity query on a stream the peer stopped. Until then the peer's stream
+ * credit stays spent, so every stream quiche reports readable or writable is touched here, whether or not a caller
+ * waits on it; what arrives on a stream nobody will read is read into a loop's [DrainSlot] and dropped.
  */
 @Confined
 internal class StreamTable(
     private val q: QuicheConnRef,
     val io: StreamIo,
     private val role: QuicRole,
+    drains: FixedPool<DrainSlot>,
 ) {
+    private val drain = StreamDrain(io, drains)
+
     private val entries = LongObjectMap<StreamEntry>()
 
     /** The buffer a read that ended without handing one to its caller leaves for the next read. */
@@ -51,6 +60,8 @@ internal class StreamTable(
     private val writeWaiters = LongSet()
     private val opens = ArrayDeque<Waiter>()
     private val incoming = LongQueue()
+    private val peerBidi = PeerStreamIds(if (role == QuicRole.Client) 1L else 0L)
+    private val peerUni = PeerStreamIds(if (role == QuicRole.Client) 3L else 2L)
     private var nextBidi: Long = if (role == QuicRole.Client) 0L else 1L
     private var opened: Long = 0L
 
@@ -73,19 +84,10 @@ internal class StreamTable(
     }
 
     /**
-     * The peer told us to stop sending on [id] with [code]: our side is reset with the same code, as RFC 9000 §3.5
-     * asks, so the peer's stream completes and its credit comes back.
+     * The peer told us to stop sending on [id]: our side ended. quiche answered the STOP_SENDING with the RESET_STREAM
+     * RFC 9000 §3.5 asks for when it read it, so nothing is sent here.
      */
-    fun stopped(
-        id: QuicStreamId,
-        code: QuicAppErrorCode,
-    ) {
-        val entry = entries.getOrDefault(id.id, absent)
-        if (entry === absent || entry.sent !is Side.Open) return
-        io.shutdown(id, ShutdownSide.Write, code.value)
-        entry.sendEnded(Side.Stopped)
-        collect(entry)
-    }
+    fun stopped(id: QuicStreamId) = sendEnded(id, Side.Stopped)
 
     /** Stops reading [id] with [code] unless the peer's side ended already: the peer is told to stop sending. */
     fun stopReading(
@@ -139,8 +141,8 @@ internal class StreamTable(
      */
     fun collect(entry: StreamEntry) {
         if (entry === absent || entry.reader !== Nobody || entry.writer !== Nobody) return
-        if (entry.received is Side.Open) return
-        if (entry.sent is Side.Open && sends(entry.id)) return
+        if (entry.received !is Side.Ended) return
+        if (entry.sent !is Side.Ended && sends(entry.id)) return
         entries.remove(entry.id.id)
         spare.add(entry)
     }
@@ -193,7 +195,7 @@ internal class StreamTable(
     fun wake() {
         val readable = q.api.connReadable(q.handle)
         if (!readable.isExhausted) wakeReaders(readable)
-        if (writeWaiters.isNotEmpty()) wakeWriters()
+        wakeWriters()
         while (opens.isNotEmpty() && q.api.connPeerStreamsLeftBidi(q.handle) > 0) {
             if (opens.first().retry(this) == Retry.Again) return
             opens.removeFirst()
@@ -224,27 +226,62 @@ internal class StreamTable(
     }
 
     private fun readable(id: QuicStreamId): Boolean {
-        if (!entries.containsKey(id.id) && initiatedByPeer(id)) {
-            entry(id)
-            incoming.addLast(id.id)
+        val entry = entries.getOrDefault(id.id, absent)
+        when {
+            entry !== absent -> arrived(entry)
+            initiatedByPeer(id) && !peerIds(id).seen(id.id) -> {
+                peerIds(id).see(id.id)
+                entry(id)
+                incoming.addLast(id.id)
+            }
+            // A spent stream quiche still holds: what arrived after its entry went (the peer's reset after we stopped
+            // reading it) is read, so quiche lets it go.
+            else -> drain.drop(id)
         }
-        entry(id).wakeReader(this)
         return true
     }
 
+    /** Something arrived on [entry]'s stream: its reader takes it, or, when nobody will read it, it is dropped. */
+    private fun arrived(entry: StreamEntry) {
+        if (entry.reader !== Nobody || entry.received is Side.Open) return entry.wakeReader(this)
+        when (val side = drain.drop(entry.id)) {
+            is Side.Ended -> entry.receiveEnded(side)
+            is Side.Open, is Side.Abandoned -> Unit
+        }
+        collect(entry)
+    }
+
+    private fun peerIds(id: QuicStreamId): PeerStreamIds = if (id.id and UNI_BIT == 0L) peerBidi else peerUni
+
+    /**
+     * The caller closed [id] without reading it to the end: what arrived is read and dropped now, and what arrives
+     * later as it comes, until the peer's FIN or reset; the peer is not told to stop.
+     */
+    fun abandon(id: QuicStreamId) {
+        val entry = entries.getOrDefault(id.id, absent)
+        if (entry === absent) return
+        entry.abandonReceive()
+        arrived(entry)
+    }
+
+    /**
+     * Hands out every stream quiche marked writable: a parked writer retries; a stream nobody writes is asked its
+     * capacity, which is how a stream the peer stopped ends our side and, once over, leaves quiche.
+     */
     private fun wakeWriters() {
-        val writable = q.api.connWritable(q.handle)
-        if (writable.isExhausted) return
-        try {
-            while (q.api.streamIterNextId(writable).fold(end = { false }, stream = { writable(it) })) Unit
-        } finally {
-            q.api.streamIterFree(writable)
+        while (true) {
+            val next = q.api.connStreamWritableNext(q.handle)
+            if (next < 0L) return
+            writable(QuicStreamId(next))
         }
     }
 
-    private fun writable(id: QuicStreamId): Boolean {
-        if (writeWaiters.remove(id.id)) entry(id).wakeWriter(this)
-        return true
+    private fun writable(id: QuicStreamId) {
+        if (writeWaiters.remove(id.id)) return entry(id).wakeWriter(this)
+        when (io.capacity(id)) {
+            QUICHE_ERR_STREAM_STOPPED.toLong() -> stopped(id)
+            else -> Unit
+        }
     }
 
     private fun initiatedByPeer(id: QuicStreamId): Boolean = (id.id and 1L == 1L) == (role == QuicRole.Client)

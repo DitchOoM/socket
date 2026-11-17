@@ -148,7 +148,7 @@ internal class WriteOp(
             }
             else -> {
                 val peer = answer.errorCode ?: UNKNOWN_PEER_CODE
-                if (taken == QUICHE_ERR_STREAM_STOPPED) table.stopped(stream, answer.errorCode ?: UNKNOWN_PEER_CODE)
+                if (taken == QUICHE_ERR_STREAM_STOPPED) table.stopped(stream)
                 settle(WriteAnswer.Failed(Raised.WriteRefused(stream, taken, peer), QuicCloseCircumstance.Ended))
                 Retry.Settled
             }
