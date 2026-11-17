@@ -30,7 +30,15 @@ internal sealed interface Paths {
 }
 
 internal sealed interface Resumption {
-    data object None : Resumption
+    /** A client: the session it offered, its first flight's gate, and the ticket its server issues. */
+    class Client(
+        val session: ClientSession,
+    ) : Resumption
+
+    /** A server: whether it accepted the client's 0-RTT, and how its handshake used the client's ticket. */
+    class Server(
+        val session: ServerSession,
+    ) : Resumption
 }
 
 internal sealed interface Datagrams {

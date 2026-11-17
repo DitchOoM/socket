@@ -66,6 +66,14 @@ internal class StreamTable(
 
     fun opensWaiting(): Int = opens.size
 
+    /** Whether an operation is parked until the peer answers: an open at its stream limit, a read, or a write. */
+    fun waitsOnPeer(): Boolean {
+        if (opens.isNotEmpty() || writeWaiters.isNotEmpty()) return true
+        var parked = false
+        entries.forEachValue { parked = parked || it.reader !== Nobody || it.writer !== Nobody }
+        return parked
+    }
+
     /**
      * Opens the next bidirectional stream: a zero-length send makes quiche create it (a read on a stream quiche has
      * not created answers INVALID_STREAM_STATE), which is also where the peer's limit shows. At the limit the id is

@@ -7,17 +7,22 @@ import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.flow.WritePolicy
+import com.ditchoom.socket.quic.EarlyDataAcceptance
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicCapabilities
 import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicConnection
 import com.ditchoom.socket.quic.QuicConnectionIdentity
 import com.ditchoom.socket.quic.QuicConnectionState
+import com.ditchoom.socket.quic.QuicEngineSpi
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicPathState
+import com.ditchoom.socket.quic.QuicResumptionOutcome
+import com.ditchoom.socket.quic.QuicSessionTicketState
 import com.ditchoom.socket.quic.QuicStreamId
+import com.ditchoom.socket.quic.QuicStreamOrigin
 import com.ditchoom.socket.quic.QuicUnreadAtClose
-import com.ditchoom.socket.quic.QuicheDriver
+import com.ditchoom.socket.quic.core.conn.Arrival
 import com.ditchoom.socket.quic.core.conn.CallerPlace
 import com.ditchoom.socket.quic.core.conn.Conn
 import com.ditchoom.socket.quic.core.conn.ConnWork
@@ -69,8 +74,25 @@ internal class CoreConnection(
     CoroutineScope by scope {
     override val state: StateFlow<QuicConnectionState> = edge.state
     override val unreadAtClose: StateFlow<QuicUnreadAtClose> = MutableStateFlow(QuicUnreadAtClose.ConnectionOpen)
-    override val capabilities: QuicCapabilities get() = QuicheDriver.capabilities
+    override val capabilities: QuicCapabilities get() = CORE_CAPABILITIES
     override val pathState: StateFlow<QuicPathState> = MutableStateFlow(QuicPathState.Original)
+    override val sessionTicket: StateFlow<QuicSessionTicketState> = edge.ticket
+
+    /** A server that accepted 0-RTT knows the protocol before its handshake completes. */
+    override val negotiatedAlpn: String
+        get() =
+            when (val early = edge.earlyData.value) {
+                is EarlyDataAcceptance.Accepted -> early.negotiatedAlpn
+                EarlyDataAcceptance.None -> super.negotiatedAlpn
+            }
+
+    /** A server that accepted 0-RTT knows how the handshake used the ticket before it completes. */
+    override val resumption: QuicResumptionOutcome
+        get() =
+            when (val early = edge.earlyData.value) {
+                is EarlyDataAcceptance.Accepted -> early.resumption
+                EarlyDataAcceptance.None -> super.resumption
+            }
 
     /** How the connection stands: open, or ended and how. */
     fun end(): EdgeEnd = edge.end()
@@ -90,7 +112,7 @@ internal class CoreConnection(
         return streamFor(open.answer())
     }
 
-    override suspend fun acceptStream(): QuicByteStream = streamFor(edge.incoming.receive())
+    override suspend fun acceptStream(): QuicByteStream = peerStream(edge.incoming.receive())
 
     /** Opens the next bidirectional stream as one carrying values of [T] framed by [codec]. */
     internal suspend fun <T : Any> openTypedStream(
@@ -102,7 +124,7 @@ internal class CoreConnection(
     internal suspend fun <T : Any> acceptTypedStream(
         codec: Codec<T>,
         config: TypedStreamConfig = TypedStreamConfig(),
-    ): TypedQuicStream<T> = typed(QuicStreamId(edge.incoming.receive()), codec, config)
+    ): TypedQuicStream<T> = typed(QuicStreamId(edge.incoming.receive().id), codec, config)
 
     private fun <T : Any> typed(
         id: QuicStreamId,
@@ -110,7 +132,7 @@ internal class CoreConnection(
         config: TypedStreamConfig,
     ): TypedQuicStream<T> = TypedQuicStream(this, conn, id, codec, config, readPolicy, writePolicy, bufferFactory)
 
-    override fun streams(): Flow<QuicByteStream> = edge.incoming.consumeAsFlow().map { streamFor(it) }
+    override fun streams(): Flow<QuicByteStream> = edge.incoming.consumeAsFlow().map { peerStream(it) }
 
     override suspend fun close(error: QuicError) {
         if (!edge.closed.isCompleted) conn.submit(CloseWork(error), CallerPlace.HandToLoop)
@@ -148,11 +170,36 @@ internal class CoreConnection(
     }
 
     private fun streamFor(id: Long): QuicByteStream =
-        QuicByteStream(QuicStreamId(id), CoreStream(this, QuicStreamId(id), readPolicy, writePolicy))
+        QuicByteStream(QuicStreamId(id), CoreStream(this, QuicStreamId(id), readPolicy, writePolicy), QuicStreamOrigin.Confirmed)
+
+    /** A stream that arrived in 0-RTT is read only once the handshake completes, unless it is marked replay-safe. */
+    @OptIn(QuicEngineSpi::class)
+    private fun peerStream(peer: PeerStream): QuicByteStream =
+        QuicByteStream(
+            QuicStreamId(peer.id),
+            CoreStream(this, QuicStreamId(peer.id), readPolicy, writePolicy),
+            when (peer.arrival) {
+                Arrival.Confirmed -> QuicStreamOrigin.Confirmed
+                Arrival.Early -> QuicStreamOrigin.Early(::established)
+            },
+        )
+
+    /** Lets a client's first flight, held for 0-RTT, leave. */
+    fun releaseFirstFlight() = conn.submit(ReleaseFlight(), CallerPlace.HandToLoop)
 
     /** A caller on a main dispatcher never makes system calls; any other may. */
     internal fun placeOf(context: CoroutineContext): CallerPlace =
         if (context[ContinuationInterceptor] is MainCoroutineDispatcher) CallerPlace.HandToLoop else CallerPlace.MayEnter
+}
+
+/** What every core connection requires of a caller's buffers: an address quiche reads in place. */
+private val CORE_CAPABILITIES = QuicCapabilities(requiresNativeMemoryBuffers = true)
+
+/** Lets a client's held first flight leave. */
+private class ReleaseFlight : ConnWork() {
+    override fun run(inside: Inside) = inside.releaseFirstFlight()
+
+    override fun gone(end: ConnEnd) = Unit
 }
 
 /** Starts the connection's close inside it. */

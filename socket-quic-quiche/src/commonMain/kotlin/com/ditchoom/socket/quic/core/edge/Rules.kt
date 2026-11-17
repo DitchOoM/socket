@@ -6,6 +6,7 @@ import com.ditchoom.socket.quic.LinkClass
 import com.ditchoom.socket.quic.QuicCloseLinger
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.RttPrior
+import com.ditchoom.socket.quic.core.conn.EarlyDataRule
 import com.ditchoom.socket.quic.core.conn.HandshakeBound
 import com.ditchoom.socket.quic.core.conn.HandshakeRule
 import com.ditchoom.socket.quic.core.conn.PtoRule
@@ -33,6 +34,10 @@ internal fun closeRuleOf(options: QuicOptions): CloseRule =
         is QuicCloseLinger.UntilAcknowledged -> CloseRule.UntilAcknowledged(options.idleTimeout.inWholeNanoseconds)
         is QuicCloseLinger.UntilPeerDone -> CloseRule.UntilPeerDone(linger.bound.inWholeNanoseconds)
     }
+
+/** Whether a server accepts 0-RTT, from [QuicOptions.enableEarlyData]. */
+internal fun earlyDataRuleOf(options: QuicOptions): EarlyDataRule =
+    if (options.enableEarlyData) EarlyDataRule.Accepted else EarlyDataRule.Refused
 
 /** The link class of a network the monitor identified; a VPN, another kind or no identity is [LinkClass.Unknown]. */
 internal fun linkClassOf(id: NetworkId): LinkClass =
