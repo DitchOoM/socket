@@ -1,7 +1,6 @@
 package com.ditchoom.socket.quic.core.demux
 
 import com.ditchoom.socket.quic.PathKey
-import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.core.conn.Collected
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.Life
@@ -26,14 +25,13 @@ private enum class Mode {
 
 /**
  * A server's routing: each datagram from the one unconnected socket goes to the connection its destination id names;
- * an unsupported version is answered with Version Negotiation, a first Initial with Retry when address validation is
- * on, and otherwise an Initial starts a connection through [admission]. Serves every connection it routes to and
- * removes each one that ended. Every connection owns its peer's address and `recv_info`, built once when it is
- * accepted; no table is keyed by address. Loop thread only.
+ * an unsupported version is answered with Version Negotiation, an Initial without a token that proves its address
+ * with Retry when address validation is on, and otherwise an Initial starts a connection through [admission]. Serves
+ * every connection it routes to and removes each one that ended. Every connection owns its peer's address and
+ * `recv_info`, built once when it is accepted; no table is keyed by address. Loop thread only.
  */
 @LoopOnly
 internal class Demux(
-    private val api: QuicheApi,
     private val admission: Admission,
     private val stateless: Stateless,
     private val scratch: DemuxScratch,
@@ -206,25 +204,10 @@ internal class Demux(
         when (val tokens = stateless.tokens) {
             is Tokens.None -> admit(Admit.Fresh, datagram, length, from, at)
             is Tokens.Of ->
-                when (scratch.readToken(api, datagram, length)) {
-                    TokenRead.Refused -> counts.unknownDropped()
-                    TokenRead.Absent -> stateless.retry(tokens.tokens, header, datagram, from, scratch, clock.now(), out)
-                    TokenRead.Present -> redeem(tokens.tokens, datagram, length, from, at)
+                when (val screened = stateless.screen(tokens, header, datagram, length, from, scratch, clock.now(), out)) {
+                    is Screened.Start -> admit(screened.how, datagram, length, from, at)
+                    is Screened.Answered -> Unit
                 }
-        }
-    }
-
-    private fun redeem(
-        tokens: AddressTokens,
-        datagram: NativeBytes,
-        length: Int,
-        from: PathKey,
-        at: Nanos,
-    ) {
-        val checked = tokens.check(scratch.token.owner, scratch.tokenLength, clock.now().value, header.cid, from)
-        when (checked) {
-            is TokenCheck.Valid -> admit(Admit.Redeemed(checked), datagram, length, from, at)
-            is TokenCheck.Malformed, is TokenCheck.Forged, is TokenCheck.Expired -> counts.tokenDropped()
         }
     }
 
@@ -239,14 +222,16 @@ internal class Demux(
             Mode.Receiving -> return admission.hold(datagram, length, from)
             Mode.Admitting -> Unit
         }
-        val peer =
+        val accepted =
             when (val accepted = admission.accept(how, datagram, header, from, scratch)) {
-                is Accepted.Peer -> accepted.peer
+                is Accepted.Peer -> accepted
                 is Accepted.Refused -> return
             }
+        val peer = accepted.peer
+        stateless.accepted(accepted.handle, how, from, scratch, clock.now())
         val original =
             when (how) {
-                is Admit.Fresh -> table.add(header.cid, peer)
+                is Admit.Fresh, is Admit.Proven -> table.add(header.cid, peer)
                 is Admit.Redeemed -> RouteLink.End
             }
         peer.routed(table.add(admission.newCid, peer), original)

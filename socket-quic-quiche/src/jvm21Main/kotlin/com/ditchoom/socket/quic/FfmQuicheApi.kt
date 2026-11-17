@@ -224,6 +224,22 @@ class FfmQuicheApi private constructor(
         // void quiche_conn_session(const quiche_conn *conn, const uint8_t **out, size_t *out_len)
         downcall("quiche_conn_session", FunctionDescriptor.ofVoid(JAVA_LONG, JAVA_LONG, JAVA_LONG))
     }
+    private val hSetToken by lazy {
+        // int quiche_conn_set_token(quiche_conn *conn, const uint8_t *token, size_t token_len) — patched-in export
+        downcall("quiche_conn_set_token", FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_LONG))
+    }
+    private val hTakeNewToken by lazy {
+        // ssize_t quiche_conn_take_new_token(quiche_conn *conn, uint8_t *out, size_t out_len) — patched-in export
+        downcall("quiche_conn_take_new_token", FunctionDescriptor.of(JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG))
+    }
+    private val hSendNewToken by lazy {
+        // int quiche_conn_send_new_token(quiche_conn *conn, const uint8_t *token, size_t token_len) — patched-in export
+        downcall("quiche_conn_send_new_token", FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_LONG))
+    }
+    private val hSetPeerAddressValidated by lazy {
+        // int quiche_conn_set_peer_address_validated(quiche_conn *conn) — patched-in export
+        downcall("quiche_conn_set_peer_address_validated", FunctionDescriptor.of(JAVA_INT, JAVA_LONG))
+    }
     private val hIsResumed by lazy {
         downcall("quiche_conn_is_resumed", FunctionDescriptor.of(JAVA_BOOLEAN, JAVA_LONG))
     }
@@ -1077,6 +1093,26 @@ class FfmQuicheApi private constructor(
         buf: Long,
         bufLen: Int,
     ): Int = copyConnBytes(hConnSession, conn, buf, bufLen)
+
+    override fun connSetToken(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int = hSetToken.invokeExact(conn.handle, buf, bufLen.toLong()) as Int
+
+    override fun connTakeNewToken(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int = (hTakeNewToken.invokeExact(conn.handle, buf, bufLen.toLong()) as Long).toInt()
+
+    override fun connSendNewToken(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int = hSendNewToken.invokeExact(conn.handle, buf, bufLen.toLong()) as Int
+
+    override fun connSetPeerAddressValidated(conn: QuicheConn): Int = hSetPeerAddressValidated.invokeExact(conn.handle) as Int
 
     override fun connIsResumed(conn: QuicheConn): Boolean = hIsResumed.invokeExact(conn.handle) as Boolean
 

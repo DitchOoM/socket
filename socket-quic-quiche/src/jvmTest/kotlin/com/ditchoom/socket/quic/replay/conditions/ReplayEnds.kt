@@ -212,6 +212,7 @@ internal fun replayClient(
             offer,
             plan.home,
             planned.kept,
+            plan.tokens,
         )
     val parts = ClientParts(wiring, peer, localAddress)
     val connection =

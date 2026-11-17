@@ -418,6 +418,26 @@ object JniQuicheApi : QuicheApi {
         bufLen: Int,
     ): Int = nConnSession(conn.handle, buf, bufLen)
 
+    override fun connSetToken(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int = nConnSetToken(conn.handle, buf, bufLen)
+
+    override fun connTakeNewToken(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int = nConnTakeNewToken(conn.handle, buf, bufLen)
+
+    override fun connSendNewToken(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int = nConnSendNewToken(conn.handle, buf, bufLen)
+
+    override fun connSetPeerAddressValidated(conn: QuicheConn): Int = nConnSetPeerAddressValidated(conn.handle)
+
     override fun connIsResumed(conn: QuicheConn): Boolean = nConnIsResumed(conn.handle)
 
     override fun connIsInEarlyData(conn: QuicheConn): Boolean = nConnIsInEarlyData(conn.handle)
@@ -1181,6 +1201,26 @@ object JniQuicheApi : QuicheApi {
         buf: Long,
         bufLen: Int,
     ): Int
+
+    @JvmStatic private external fun nConnSetToken(
+        conn: Long,
+        buf: Long,
+        bufLen: Int,
+    ): Int
+
+    @JvmStatic private external fun nConnTakeNewToken(
+        conn: Long,
+        buf: Long,
+        bufLen: Int,
+    ): Int
+
+    @JvmStatic private external fun nConnSendNewToken(
+        conn: Long,
+        buf: Long,
+        bufLen: Int,
+    ): Int
+
+    @JvmStatic private external fun nConnSetPeerAddressValidated(conn: Long): Int
 
     @JvmStatic private external fun nConnIsResumed(conn: Long): Boolean
 

@@ -27,6 +27,7 @@ import com.ditchoom.socket.quic.UdpBatching
 import com.ditchoom.socket.quic.UdpSocketChannelFactory
 import com.ditchoom.socket.quic.applyQuicOptions
 import com.ditchoom.socket.quic.clientAlpnOffer
+import com.ditchoom.socket.quic.core.conn.ClientTokens
 import com.ditchoom.socket.quic.core.conn.FlightSize
 import com.ditchoom.socket.quic.core.conn.HandshakeRule
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
@@ -82,6 +83,7 @@ internal suspend fun coreConnect(
     batching: UdpBatching = options.udpBatching,
     ride: ClientRide = clientRideOfThisPlatform,
     datagramSize: DatagramSize = DatagramSize.Probed,
+    tokens: ClientTokens = ClientTokens.NotKept,
 ): CoreClient {
     val peerHost = peerHostFor(host)
     return withContext(Dispatchers.IO) {
@@ -107,6 +109,7 @@ internal suspend fun coreConnect(
                 routeSource,
                 batching,
                 ride,
+                tokens,
             ).also { connected = true }
         } finally {
             if (!connected) memory.freeAll()
@@ -134,6 +137,7 @@ private suspend fun connectOnThisThread(
     routeSource: suspend (UdpSocketChannelFactory) -> RouteSource,
     batching: UdpBatching,
     ride: ClientRide,
+    tokens: ClientTokens,
 ): CoreClient {
     val peer = UdpSocket.resolve(peerHost, port)
     val peerKey = peer.toPathKey()
@@ -187,7 +191,7 @@ private suspend fun connectOnThisThread(
         )
     name.freeNativeMemory()
     scid.freeNativeMemory()
-    val plan = sessionPlan(options, serverName, port)
+    val plan = sessionPlan(options, serverName, port, tokens)
     val planned = offerPlanned(QuicheConnRef(api, handle), plan, factory)
     val offer = planned.offer
     val scope = CoroutineScope(SupervisorJob())
@@ -215,6 +219,7 @@ private suspend fun connectOnThisThread(
                         offer = offer,
                         tickets = plan.home,
                         kept = planned.kept,
+                        tokens = plan.tokens,
                     ),
                     peerSockAddr,
                     localSockAddr,

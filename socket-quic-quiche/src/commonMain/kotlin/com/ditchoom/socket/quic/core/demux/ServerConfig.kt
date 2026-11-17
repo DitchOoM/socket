@@ -3,6 +3,7 @@ package com.ditchoom.socket.quic.core.demux
 import com.ditchoom.socket.quic.core.conn.FlightSize
 import com.ditchoom.socket.quic.core.conn.LoopMemory
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.seconds
 
 /** Whether the server makes a client prove it owns its address before the server spends state on it. */
@@ -14,6 +15,19 @@ internal sealed interface AddressValidation {
     class Retry(
         val lifetime: Duration = 10.seconds,
     ) : AddressValidation
+}
+
+/**
+ * Whether the server hands each client a NEW_TOKEN token (RFC 9000 §8.1.3) for its next connection. A client that
+ * presents a valid one skips the Retry round trip and lifts the 3x anti-amplification limit from its first flight.
+ */
+internal sealed interface FutureTokens {
+    data object NotIssued : FutureTokens
+
+    /** One token per connection, good for [lifetime] from the client's IP address. */
+    class Issued(
+        val lifetime: Duration = 24.hours,
+    ) : FutureTokens
 }
 
 /**
@@ -41,6 +55,7 @@ internal class AdmissionBounds(
 /** What a server is configured with besides its certificate and transport options. */
 internal class ServerConfig(
     val addressValidation: AddressValidation = AddressValidation.Off,
+    val futureTokens: FutureTokens = FutureTokens.NotIssued,
     val admission: AdmissionBounds = AdmissionBounds.Default,
     /** Each accepted connection's flight recording: small by default, a server holds many. */
     val flight: FlightSize = FlightSize(records = 256),

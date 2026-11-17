@@ -39,13 +39,15 @@ internal class ConnMemory(
 internal sealed interface ConnSide {
     /**
      * A client draws the ids it hands its peer from [ids], offered quiche [offer] before its first flight, and copies
-     * its server's session ticket into [ticket]; a [kept] ticket it took from its store goes back if it never sent.
+     * its server's session ticket into [ticket]; what it took from its stores, [kept], goes back if it never sent; its
+     * server's NEW_TOKEN token goes to [tokens].
      */
     class Client(
         val ids: Random,
         val offer: Offer,
         val ticket: NativeBytes,
         val kept: KeptTicket,
+        val tokens: TokenHome,
     ) : ConnSide
 
     /** A server hands its peer the ids its loop routes to it. */
@@ -118,7 +120,7 @@ internal fun buildConn(
                 },
             resumption =
                 when (side) {
-                    is ConnSide.Client -> Resumption.Client(ClientSession(q, side.offer, side.ticket, side.kept))
+                    is ConnSide.Client -> Resumption.Client(ClientSession(q, side.offer, side.ticket, side.kept, side.tokens))
                     is ConnSide.Server -> Resumption.Server(ServerSession(q, rules.earlyData))
                 },
             datagrams =

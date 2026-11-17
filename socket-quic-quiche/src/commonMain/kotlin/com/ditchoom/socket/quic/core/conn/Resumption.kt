@@ -54,32 +54,32 @@ internal fun offerSession(
 internal enum class FlightGate { Open, Held }
 
 /**
- * A ticket a client took from its store and offered, by whether it may have been sent: privacy asks only that a ticket
- * never goes out twice (RFC 8446 §C.4), so one that never left goes back.
+ * What a client took from its stores and offered (a session ticket, a NEW_TOKEN token, or both), by whether it may have
+ * been sent: privacy asks only that neither goes out twice (RFC 8446 §C.4, RFC 9000 §8.1.3), so what never left goes back.
  */
 internal sealed interface KeptTicket {
-    /** The connection offered none from a store: the caller's own, or nothing. */
+    /** The connection offered nothing from a store: the caller's own ticket, or nothing. */
     data object None : KeptTicket
 
-    /** No datagram of the connection has been written yet; [back] hands the ticket back to its store. */
+    /** No datagram of the connection has been written yet; [back] hands what was taken back to its stores. */
     class Unsent(
         val back: Runnable,
     ) : KeptTicket
 
-    /** A datagram was written, so the ticket may be on the wire: it stays used. */
+    /** A datagram was written, so what was taken may be on the wire: it stays used. */
     data object Sent : KeptTicket
 
     /** Handed back to its store. */
     data object Returned : KeptTicket
 }
 
-/** Whether a client's first session ticket has been handed up, or was too large for its scratch to take. */
+/** Whether a client's first session ticket (or NEW_TOKEN token) was taken, or was too large for its scratch. */
 private enum class TicketSeen { NotYet, Taken }
 
 /**
  * A client connection's resumption: what it offered, whether its first flight is held for 0-RTT, and the first session
- * ticket its server issues after the handshake, copied into [scratch] and handed up once. A session larger than the
- * scratch is not kept: the scratch bounds what a ticket may hold.
+ * ticket its server issues after the handshake, copied into [scratch] and handed up once; likewise the first NEW_TOKEN
+ * token, kept in [tokens]. A session larger than the scratch is not kept: the scratch bounds what a ticket may hold.
  */
 @Confined
 internal class ClientSession(
@@ -87,6 +87,7 @@ internal class ClientSession(
     private val offer: Offer,
     private val scratch: NativeBytes,
     private var kept: KeptTicket,
+    private val tokens: TokenHome,
 ) {
     private var gate =
         when (offer) {
@@ -98,6 +99,11 @@ internal class ClientSession(
             is Offer.NoTicket, is Offer.Unusable -> FlightGate.Open
         }
     private var seen = TicketSeen.NotYet
+    private var tokenSeen =
+        when (tokens) {
+            is TokenHome.NotKept -> TicketSeen.Taken
+            is TokenHome.Memory -> TicketSeen.NotYet
+        }
 
     fun gate(): FlightGate = gate
 
@@ -143,6 +149,15 @@ internal class ClientSession(
         seen = TicketSeen.Taken
         if (length > scratch.capacity) return
         if (q.api.connSession(q.handle, scratch.address, length) == length) sink.ticket(scratch, length)
+    }
+
+    /** Established: the first NEW_TOKEN token the server sends is kept for the next connection, once. */
+    fun takeToken() {
+        if (tokenSeen == TicketSeen.Taken) return
+        val length = q.api.connTakeNewToken(q.handle, scratch.address, scratch.capacity)
+        if (length <= 0) return
+        tokenSeen = TicketSeen.Taken
+        tokens.keep(scratch, length)
     }
 
     companion object {

@@ -398,6 +398,9 @@ fun downloadQuicheSource(
     // socket the OS hands a port the connection had before can be migrated to. Applied after
     // patchQuicheProbePathWithFfi, whose function it edits. Idempotent, fails loudly on drift. See the KDoc.
     patchQuicheProbeReplacesLeftPath(sourceDir)
+    // NEW_TOKEN on both sides (RFC 9000 §8.1.3): a client keeps and sends tokens, a server sends them and lifts the
+    // anti-amplification limit for a client that presented a valid one. Idempotent, fails loudly on drift. See the KDoc.
+    patchQuicheNewTokenFfi(sourceDir)
 
     // Name the patch set this tree now carries. The tree outlives the run (CI caches it with a
     // prefix fallback), so a reader that compiles it outside these tasks checks this stamp rather
@@ -2405,6 +2408,250 @@ fun patchQuicheProbeReplacesLeftPath(sourceDir: File) {
         """.trimMargin(),
     )
     logger.lifecycle("Patched quiche source: a probe replaces a path the client left at the same 4-tuple")
+}
+
+/**
+ * NEW_TOKEN (RFC 9000 §8.1.3, §19.7) on both sides, with the token's format and crypto left to the application.
+ * quiche 0.30 parses and checks the frame (non-empty, 1-RTT only, never from a client) but a client drops it ("TODO:
+ * implement stateless retry"), a server never sends one, and the C API can neither put a token in a client's Initial
+ * nor tell a server that a token validated its client's address. Four exports:
+ *  - `quiche_conn_set_token`: a client's token for every Initial of the connection, until a Retry replaces it; only
+ *    before the first packet is sent.
+ *  - `quiche_conn_take_new_token`: a client takes the newest NEW_TOKEN token it received and has not taken. At most
+ *    [4] are held, a repeat of a held one (a server repairing a loss) is dropped, so a hostile server cannot grow it.
+ *  - `quiche_conn_send_new_token`: a server queues a NEW_TOKEN frame, sent in 1-RTT once its handshake is complete,
+ *    and queued again when the packet carrying it is declared lost (RFC 9000 §13.3).
+ *  - `quiche_conn_set_peer_address_validated`: a server whose client presented a valid NEW_TOKEN token lifts the
+ *    3x anti-amplification limit on the active path, as a Retry does (RFC 9000 §8.1).
+ *
+ * Inert until called: nothing a peer sends changes behaviour beyond a client holding up to four tokens.
+ * Marker-guarded and loud in both directions: a re-run returns, a moved anchor throws, and an upstream that exports
+ * any of the four throws, telling you to delete this patch.
+ */
+fun patchQuicheNewTokenFfi(sourceDir: File) {
+    val marker = "socket-new-token"
+    val src = sourceDir.resolve("quiche/src")
+    val libRs = src.resolve("lib.rs")
+    val ffiRs = src.resolve("ffi.rs")
+    if (!ffiRs.exists()) return
+    if (ffiRs.readText().contains(marker)) return
+    for (name in listOf("quiche_conn_set_token", "quiche_conn_take_new_token", "quiche_conn_send_new_token")) {
+        if (ffiRs.readText().contains(name)) {
+            throw GradleException(
+                "$marker: quiche's ffi.rs already exports $name — upstream added NEW_TOKEN. DELETE patchQuicheNewTokenFfi " +
+                    "and its call site, and check the upstream signatures against libs/quiche/include/quiche.h.",
+            )
+        }
+    }
+
+    fun replaceOnce(
+        anchor: String,
+        replacement: String,
+    ) {
+        val text = libRs.readText()
+        if (text.split(anchor).size != 2) {
+            throw GradleException(
+                "$marker: `${anchor.trim().lines().first()}` not found exactly once in lib.rs — a quiche bump or an " +
+                    "earlier patch moved it. Re-fit patchQuicheNewTokenFfi and re-verify with CoreNewTokenTests.",
+            )
+        }
+        libRs.writeText(text.replace(anchor, replacement))
+    }
+
+    fun insertBefore(
+        anchor: String,
+        insert: String,
+    ) = replaceOnce(anchor, insert + anchor)
+
+    insertBefore(
+        "    did_retry: bool,\n",
+        """
+        |    // $marker: a client's NEW_TOKEN tokens not yet taken, newest last.
+        |    socket_new_tokens: VecDeque<Vec<u8>>,
+        |
+        |    // $marker: a server's NEW_TOKEN frames waiting for a 1-RTT packet.
+        |    socket_tokens_to_send: VecDeque<Vec<u8>>,
+        |
+        |
+        """.trimMargin(),
+    )
+    insertBefore(
+        "            did_retry: false,\n",
+        """
+        |            socket_new_tokens: VecDeque::new(),
+        |            socket_tokens_to_send: VecDeque::new(),
+        |
+        """.trimMargin(),
+    )
+    replaceOnce(
+        """
+        |            // TODO: implement stateless retry
+        |            frame::Frame::NewToken { .. } =>
+        |                if self.is_server {
+        |                    return Err(Error::InvalidPacket);
+        |                },
+        |
+        """.trimMargin(),
+        """
+        |            // $marker: a client holds the token for the application; a server never receives one.
+        |            frame::Frame::NewToken { token } => {
+        |                if self.is_server {
+        |                    return Err(Error::InvalidPacket);
+        |                }
+        |                if !self.socket_new_tokens.contains(&token) {
+        |                    if self.socket_new_tokens.len() == 4 {
+        |                        self.socket_new_tokens.pop_front();
+        |                    }
+        |                    self.socket_new_tokens.push_back(token);
+        |                }
+        |            },
+        |
+        """.trimMargin(),
+    )
+    replaceOnce(
+        """
+        |                    // NewToken frames are never sent by quiche; they are not
+        |                    // implemented.
+        |                    frame::Frame::NewToken { .. } => {
+        |                        debug_panic!(
+        |                            "Unexpected frame lost: NewToken. quiche used to \
+        |                             not implement NewToken frames, retransmission of \
+        |                             these frames is not implemented."
+        |                        );
+        |                    },
+        |
+        """.trimMargin(),
+        """
+        |                    // $marker: a lost NEW_TOKEN is sent again (RFC 9000 §13.3).
+        |                    frame::Frame::NewToken { token } =>
+        |                        self.socket_tokens_to_send.push_back(token),
+        |
+        """.trimMargin(),
+    )
+    insertBefore(
+        "            // Create MAX_STREAMS_BIDI frame.\n",
+        """
+        |            // $marker: the queued NEW_TOKEN frames, once the server's handshake is complete.
+        |            if self.is_server && self.handshake_completed {
+        |                while let Some(token) = self.socket_tokens_to_send.front() {
+        |                    let frame = frame::Frame::NewToken {
+        |                        token: token.clone(),
+        |                    };
+        |                    if push_frame_to_pkt!(b, frames, frame, left) {
+        |                        self.socket_tokens_to_send.pop_front();
+        |                        ack_eliciting = true;
+        |                        in_flight = true;
+        |                    } else {
+        |                        break;
+        |                    }
+        |                }
+        |            }
+        |
+        |
+        """.trimMargin(),
+    )
+    insertBefore(
+        "                self.should_send_max_streams_bidi ||\n",
+        "                (self.is_server && !self.socket_tokens_to_send.is_empty()) ||\n",
+    )
+    insertBefore(
+        "    pub fn send_ack_eliciting(&mut self) -> Result<()> {\n",
+        """
+        |    /// $marker: a client's token for every Initial of this connection; only before the first packet is sent.
+        |    pub fn socket_set_token(&mut self, token: &[u8]) -> Result<()> {
+        |        if self.is_server || self.sent_count > 0 || self.did_retry || token.is_empty() {
+        |            return Err(Error::InvalidState);
+        |        }
+        |        self.token = Some(token.to_vec());
+        |        Ok(())
+        |    }
+        |
+        |    /// $marker: moves the newest NEW_TOKEN token not yet taken into `out`; its length.
+        |    pub fn socket_take_new_token(&mut self, out: &mut [u8]) -> Result<usize> {
+        |        let len = match self.socket_new_tokens.back() {
+        |            Some(token) => token.len(),
+        |            None => return Err(Error::Done),
+        |        };
+        |        if len > out.len() {
+        |            return Err(Error::BufferTooShort);
+        |        }
+        |        if let Some(token) = self.socket_new_tokens.pop_back() {
+        |            out[..len].copy_from_slice(&token);
+        |        }
+        |        Ok(len)
+        |    }
+        |
+        |    /// $marker: a server queues a NEW_TOKEN frame carrying `token`.
+        |    pub fn socket_send_new_token(&mut self, token: &[u8]) -> Result<()> {
+        |        if !self.is_server || token.is_empty() {
+        |            return Err(Error::InvalidState);
+        |        }
+        |        self.socket_tokens_to_send.push_back(token.to_vec());
+        |        Ok(())
+        |    }
+        |
+        |    /// $marker: a server's client proved its address with a token: no anti-amplification limit.
+        |    pub fn socket_set_peer_address_validated(&mut self) -> Result<()> {
+        |        if !self.is_server {
+        |            return Err(Error::InvalidState);
+        |        }
+        |        self.paths.get_active_mut()?.verified_peer_address = true;
+        |        Ok(())
+        |    }
+        |
+        |
+        """.trimMargin(),
+    )
+    ffiRs.appendText(
+        "\n" +
+            """
+            |// $marker: a client's token for every Initial; before the first packet only.
+            |#[no_mangle]
+            |pub extern "C" fn quiche_conn_set_token(
+            |    conn: &mut Connection, token: *const u8, token_len: size_t,
+            |) -> c_int {
+            |    let token = unsafe { slice::from_raw_parts(token, token_len) };
+            |    match conn.socket_set_token(token) {
+            |        Ok(()) => 0,
+            |        Err(e) => e.to_c() as c_int,
+            |    }
+            |}
+            |
+            |// $marker: the newest NEW_TOKEN token the client has not taken, moved into `out`.
+            |#[no_mangle]
+            |pub extern "C" fn quiche_conn_take_new_token(
+            |    conn: &mut Connection, out: *mut u8, out_len: size_t,
+            |) -> ssize_t {
+            |    let out = unsafe { slice::from_raw_parts_mut(out, out_len) };
+            |    match conn.socket_take_new_token(out) {
+            |        Ok(len) => len as ssize_t,
+            |        Err(e) => e.to_c(),
+            |    }
+            |}
+            |
+            |// $marker: a server queues a NEW_TOKEN frame.
+            |#[no_mangle]
+            |pub extern "C" fn quiche_conn_send_new_token(
+            |    conn: &mut Connection, token: *const u8, token_len: size_t,
+            |) -> c_int {
+            |    let token = unsafe { slice::from_raw_parts(token, token_len) };
+            |    match conn.socket_send_new_token(token) {
+            |        Ok(()) => 0,
+            |        Err(e) => e.to_c() as c_int,
+            |    }
+            |}
+            |
+            |// $marker: a server's client proved its address with a token.
+            |#[no_mangle]
+            |pub extern "C" fn quiche_conn_set_peer_address_validated(conn: &mut Connection) -> c_int {
+            |    match conn.socket_set_peer_address_validated() {
+            |        Ok(()) => 0,
+            |        Err(e) => e.to_c() as c_int,
+            |    }
+            |}
+            """.trimMargin() + "\n",
+    )
+    logger.lifecycle("Patched quiche source: NEW_TOKEN on client and server")
 }
 
 /**

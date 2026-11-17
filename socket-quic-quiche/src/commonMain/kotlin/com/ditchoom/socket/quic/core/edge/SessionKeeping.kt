@@ -1,6 +1,7 @@
 package com.ditchoom.socket.quic.core.edge
 
 import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.socket.quic.KeptToken
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicResumption
 import com.ditchoom.socket.quic.QuicSessionCache
@@ -9,8 +10,12 @@ import com.ditchoom.socket.quic.QuicSessionMemory
 import com.ditchoom.socket.quic.QuicSessionStore
 import com.ditchoom.socket.quic.QuicSessionTicket
 import com.ditchoom.socket.quic.QuicSessionTicketState
+import com.ditchoom.socket.quic.core.conn.ClientTokens
 import com.ditchoom.socket.quic.core.conn.KeptTicket
 import com.ditchoom.socket.quic.core.conn.Offer
+import com.ditchoom.socket.quic.core.conn.TokenHome
+import com.ditchoom.socket.quic.core.conn.TokenOffer
+import com.ditchoom.socket.quic.core.conn.setToken
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -45,22 +50,24 @@ internal sealed interface Taken {
     ) : Taken
 }
 
-/** What a client connection offers, the ticket it took for that, and where its own ticket goes. */
+/** What a client connection offers, the ticket it took for that, where its own ticket goes, and its token's home. */
 internal class SessionPlan(
     val resumption: QuicResumption,
     val taken: Taken,
     val home: TicketHome,
+    val tokens: TokenHome,
 )
 
-/** What quiche took of a [SessionPlan], and the ticket it took from its store, by whether it has been sent. */
+/** What quiche took of a [SessionPlan], and what it took from its stores (ticket, token), by whether it has been sent. */
 internal class Planned(
     val offer: Offer,
     val kept: KeptTicket,
 )
 
 /**
- * Offers [plan]'s session on [q], a client connection not yet sent on. A ticket quiche refused is dropped; one it took is
- * [KeptTicket.Unsent] until the connection writes a datagram. If the offer throws, the ticket goes back at once.
+ * Offers [plan]'s session and kept token on [q], a client connection not yet sent on. A ticket quiche refused is dropped;
+ * one it took, and a token, are [KeptTicket.Unsent] until the connection writes a datagram. If the offer throws, both go
+ * back at once; a token quiche refused goes back too, since no datagram can carry it.
  */
 internal fun offerPlanned(
     q: QuicheConnRef,
@@ -78,8 +85,43 @@ internal fun offerPlanned(
             is Offer.Offered -> unsent
             is Offer.Unusable, is Offer.NoTicket -> KeptTicket.None
         }
-    return Planned(offer, kept)
+    return Planned(offer, plan.tokens.offered(q, factory, kept))
 }
+
+/** [ticket] and, if this home keeps a token for the server, that token set on [q]: what goes back if never sent. */
+private fun TokenHome.offered(
+    q: QuicheConnRef,
+    factory: BufferFactory,
+    ticket: KeptTicket,
+): KeptTicket =
+    when (this) {
+        is TokenHome.NotKept -> ticket
+        is TokenHome.Memory ->
+            when (val taken = memory.take(key)) {
+                is KeptToken.None -> ticket
+                is KeptToken.Held -> {
+                    val back = Runnable { memory.restore(key, taken.token) }
+                    val both = ticket.and(back)
+                    when (both.backIfThrows { q.setToken(taken.token, factory) }) {
+                        is TokenOffer.Offered -> both
+                        is TokenOffer.Refused -> ticket.also { back.run() }
+                    }
+                }
+            }
+    }
+
+/** This and [back]: one [KeptTicket.Unsent] whose hand-back runs both. Only before the connection starts. */
+private fun KeptTicket.and(back: Runnable): KeptTicket =
+    when (this) {
+        is KeptTicket.Unsent ->
+            KeptTicket.Unsent(
+                Runnable {
+                    this.back.run()
+                    back.run()
+                },
+            )
+        is KeptTicket.None, is KeptTicket.Sent, is KeptTicket.Returned -> KeptTicket.Unsent(back)
+    }
 
 /** How far a step of the connect before its connection starts got. */
 private enum class StartStep { Running, Returned }
@@ -110,31 +152,41 @@ internal fun sessionPlan(
     options: QuicOptions,
     serverName: String,
     port: Int,
-): SessionPlan =
-    when (val store = options.sessionStore) {
-        is QuicSessionStore.NotKept -> SessionPlan(options.resumption, Taken.NoneTaken, TicketHome.NotKept)
+    tokens: ClientTokens = ClientTokens.NotKept,
+): SessionPlan {
+    val tokenHome = TokenHome.of(tokens, serverName, port, options)
+    return when (val store = options.sessionStore) {
+        is QuicSessionStore.NotKept -> SessionPlan(options.resumption, Taken.NoneTaken, TicketHome.NotKept, tokenHome)
         is QuicSessionStore.InMemory -> {
             val key = QuicSessionKey.of(serverName, port, options)
-            planned(options.resumption, store.memory.take(key), TicketHome.Memory(store.memory, key))
+            planned(options.resumption, store.memory.take(key), TicketHome.Memory(store.memory, key), tokenHome)
         }
         is QuicSessionStore.Supplied -> {
             val key = QuicSessionKey.of(serverName, port, options)
-            planned(options.resumption, store.cache.take(key), TicketHome.Supplied(store.cache, key))
+            planned(options.resumption, store.cache.take(key), TicketHome.Supplied(store.cache, key), tokenHome)
         }
     }
+}
 
 private fun planned(
     own: QuicResumption,
     kept: QuicSessionTicketState,
     home: TicketHome,
+    tokens: TokenHome,
 ): SessionPlan =
     when (own) {
         is QuicResumption.None ->
             when (kept) {
-                is QuicSessionTicketState.NotIssued -> SessionPlan(QuicResumption.None, Taken.NoneTaken, home)
-                is QuicSessionTicketState.Issued -> SessionPlan(QuicResumption.Resume(kept.ticket), Taken.Offering(kept.ticket), home)
+                is QuicSessionTicketState.NotIssued -> SessionPlan(QuicResumption.None, Taken.NoneTaken, home, tokens)
+                is QuicSessionTicketState.Issued ->
+                    SessionPlan(
+                        QuicResumption.Resume(kept.ticket),
+                        Taken.Offering(kept.ticket),
+                        home,
+                        tokens,
+                    )
             }
-        is QuicResumption.Resume, is QuicResumption.ResumeWithEarlyData -> SessionPlan(own, Taken.NoneTaken, home)
+        is QuicResumption.Resume, is QuicResumption.ResumeWithEarlyData -> SessionPlan(own, Taken.NoneTaken, home, tokens)
     }
 
 /** Keeps [ticket] for the next connection to its server; called on the connection's thread. */

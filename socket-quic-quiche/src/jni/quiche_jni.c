@@ -580,6 +580,30 @@ JNIEXPORT jint JNICALL JNI_FN(nConnSession)(
     return copy_conn_bytes(quiche_conn_session, conn, buf, buf_len);
 }
 
+/* --- NEW_TOKEN (patched-in exports, RFC 9000 §8.1.3) --- */
+
+JNIEXPORT jint JNICALL JNI_FN(nConnSetToken)(
+    JNIEnv *env, jclass cls, jlong conn, jlong buf, jint buf_len) {
+    return (jint)quiche_conn_set_token(
+        (quiche_conn *)(uintptr_t)conn, (const uint8_t *)(uintptr_t)buf, (size_t)buf_len);
+}
+
+JNIEXPORT jint JNICALL JNI_FN(nConnTakeNewToken)(
+    JNIEnv *env, jclass cls, jlong conn, jlong buf, jint buf_len) {
+    return (jint)quiche_conn_take_new_token(
+        (quiche_conn *)(uintptr_t)conn, (uint8_t *)(uintptr_t)buf, (size_t)buf_len);
+}
+
+JNIEXPORT jint JNICALL JNI_FN(nConnSendNewToken)(
+    JNIEnv *env, jclass cls, jlong conn, jlong buf, jint buf_len) {
+    return (jint)quiche_conn_send_new_token(
+        (quiche_conn *)(uintptr_t)conn, (const uint8_t *)(uintptr_t)buf, (size_t)buf_len);
+}
+
+JNIEXPORT jint JNICALL JNI_FN(nConnSetPeerAddressValidated)(JNIEnv *env, jclass cls, jlong conn) {
+    return (jint)quiche_conn_set_peer_address_validated((quiche_conn *)(uintptr_t)conn);
+}
+
 JNIEXPORT jboolean JNICALL JNI_FN(nConnIsResumed)(JNIEnv *env, jclass cls, jlong conn) {
     return (jboolean)quiche_conn_is_resumed((const quiche_conn *)(uintptr_t)conn);
 }
