@@ -45,6 +45,7 @@ internal class Demux(
     private val table = RouteTable<ServerPeer>()
     private val spares = SpareRoutes(table, admission)
     private val peers = ArrayList<ServerPeer>()
+    private val ended = EndedIds(ENDED_IDS)
     private val life = ServerLife()
     private val tick = PassTick()
     private var mode = Mode.Receiving
@@ -159,7 +160,11 @@ internal class Demux(
             Wire.InitialV1 ->
                 when (val route = table.find(header.cid)) {
                     is Route<ServerPeer> -> deliverTo(route.owner, datagram, length, from, at)
-                    is RouteLink.End -> start(datagram, length, from, out, at)
+                    is RouteLink.End ->
+                        when (ended.find(header.cid)) {
+                            is Route<EndedId> -> counts.unknownDropped()
+                            is RouteLink.End -> start(datagram, length, from, out, at)
+                        }
                 }
             Wire.UnsupportedVersion ->
                 if (length < MIN_INITIAL) counts.runtDropped() else stateless.negotiate(header, datagram, from, out)
@@ -257,7 +262,10 @@ internal class Demux(
             is RouteLink.End -> Unit
         }
         when (val route = peer.originalRoute) {
-            is Route<ServerPeer> -> table.remove(route)
+            is Route<ServerPeer> -> {
+                table.remove(route)
+                ended.remember(route)
+            }
             is RouteLink.End -> Unit
         }
         peer.spareRoutes { table.remove(it) }
@@ -278,5 +286,8 @@ internal class Demux(
     private companion object {
         /** RFC 9000 section 14.1: a client's first datagram is at least this large. */
         const val MIN_INITIAL = 1200
+
+        /** Ended connections whose first destination id a stale Initial still finds: the default backlog's size. */
+        const val ENDED_IDS = AdmissionBounds.DEFAULT_BACKLOG
     }
 }

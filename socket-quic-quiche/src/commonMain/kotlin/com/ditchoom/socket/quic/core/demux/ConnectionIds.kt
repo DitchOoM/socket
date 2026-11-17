@@ -116,6 +116,9 @@ internal class Route<T>(
     fun linkTo(following: RouteLink<T>) = chain.linkTo(following)
 
     fun matches(cid: CidRead): Boolean = length == cid.length && c0 == cid.c0 && c1 == cid.c1 && c2 == cid.c2
+
+    /** The same id, routed to [to]. */
+    fun <U> retargeted(to: U): Route<U> = Route(hash, c0, c1, c2, length, to)
 }
 
 /**
@@ -142,10 +145,12 @@ internal class RouteTable<T> {
     fun add(
         cid: CidRead,
         owner: T,
-    ): Route<T> {
-        val route = Route(cid.hash, cid.c0, cid.c1, cid.c2, cid.length, owner)
-        route.linkTo(table.getOrDefault(cid.hash, RouteLink.End))
-        table[cid.hash] = route
+    ): Route<T> = insert(Route(cid.hash, cid.c0, cid.c1, cid.c2, cid.length, owner))
+
+    /** Routes [route]'s id; it must not be routed already. */
+    fun insert(route: Route<T>): Route<T> {
+        route.linkTo(table.getOrDefault(route.hash, RouteLink.End))
+        table[route.hash] = route
         return route
     }
 
