@@ -46,7 +46,7 @@ class CoreFailureTierTests {
 
             val failure =
                 assertFailsWith<IllegalStateException> {
-                    val op = ReadOp(broken.streamId, OpDeadline(Duration.INFINITE), rig.conn, ThrowingFactory(planted))
+                    val op = ReadOp(broken.streamId, Duration.INFINITE, connection.deadlines, rig.conn, ThrowingFactory(planted))
                     rig.conn.submit(op)
                     op.answer()
                 }

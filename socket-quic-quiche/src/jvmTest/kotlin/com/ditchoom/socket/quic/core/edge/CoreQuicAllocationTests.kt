@@ -182,7 +182,7 @@ class CoreQuicAllocationTests {
     }
 
     /** An echo server that finishes its side of a stream once the client finishes its own, so streams are released. */
-    private suspend fun withClosingEchoServer(body: suspend CoroutineScope.(port: Int) -> Unit) {
+    internal suspend fun withClosingEchoServer(body: suspend CoroutineScope.(port: Int) -> Unit) {
         withQuicServer(port = 0, tlsConfig = coreTlsConfig(), quicOptions = coreTestOptions) {
             coroutineScope {
                 val server =

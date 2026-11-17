@@ -72,6 +72,9 @@ internal class CoreConnection(
     override val capabilities: QuicCapabilities get() = QuicheDriver.capabilities
     override val pathState: StateFlow<QuicPathState> = MutableStateFlow(QuicPathState.Original)
 
+    /** The deadlines of this connection's operations that park with a bound, lent from inside. */
+    internal val deadlines = OpDeadlines(conn)
+
     /** How the connection stands: open, or ended and how. */
     fun end(): EdgeEnd = edge.end()
 
@@ -131,7 +134,7 @@ internal class CoreConnection(
         stream: QuicStreamId,
         deadline: Duration,
     ): ReadResult {
-        val op = ReadOp(stream, OpDeadline(deadline), conn, bufferFactory)
+        val op = ReadOp(stream, deadline, deadlines, conn, bufferFactory)
         conn.submit(op, placeOf(currentCoroutineContext()))
         return op.answer()
     }
@@ -142,7 +145,7 @@ internal class CoreConnection(
         deadline: Duration,
     ): BytesWritten {
         val caller = currentCoroutineContext()
-        val op = WriteOp(stream, source, OpDeadline(deadline), conn, caller)
+        val op = WriteOp(stream, source, deadline, deadlines, conn, caller)
         conn.submit(op, placeOf(caller))
         return op.answer()
     }

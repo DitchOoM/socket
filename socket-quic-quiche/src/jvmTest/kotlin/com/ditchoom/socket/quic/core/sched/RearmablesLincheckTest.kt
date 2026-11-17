@@ -1,9 +1,9 @@
 package com.ditchoom.socket.quic.core.sched
 
+import com.ditchoom.socket.quic.DeadlineFired
 import com.ditchoom.socket.quic.LincheckBudget
 import com.ditchoom.socket.quic.Rearmables
 import com.ditchoom.socket.quic.Wanted
-import kotlinx.coroutines.Runnable
 import org.jetbrains.lincheck.datastructures.ModelCheckingOptions
 import org.jetbrains.lincheck.datastructures.Operation
 import java.util.concurrent.atomic.AtomicInteger
@@ -35,9 +35,10 @@ class RearmablesLincheckTest {
 
     private val deadline =
         loop.make(
-            Runnable {
+            DeadlineFired { due ->
                 fires.incrementAndGet()
-                if (earliest.get() > now) violations.incrementAndGet()
+                // The arming that fell due was asked for, and its time has come.
+                if (earliest.get() > now || due > now) violations.incrementAndGet()
             },
         )
 
