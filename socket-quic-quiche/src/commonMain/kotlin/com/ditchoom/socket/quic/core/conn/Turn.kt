@@ -121,7 +121,7 @@ internal class Turn(
         }
         traced(TraceSection.ConnReceive) {
             try {
-                c.feed(bytes, length, from, now)
+                c.feed(bytes, length, from)
                 c.slots.keepAlive.touched(now)
                 c.slots.datagrams.received()
             } catch (failure: Exception) {
@@ -232,7 +232,7 @@ internal class Turn(
         if (c.firstFlight() == FlightGate.Held) return Collected.Everything
         val wrote =
             when (val pacing = c.slots.pacing) {
-                is Pacing.Unpaced -> c.egress.write(out, paths, now, c.flight)
+                is Pacing.Unpaced -> c.egress.write(out, paths, c.flight)
                 is Pacing.ByQuiche -> c.egress.writePaced(out, paths, now, pacing.pacer, c.flight)
             }
         c.wrote(now)

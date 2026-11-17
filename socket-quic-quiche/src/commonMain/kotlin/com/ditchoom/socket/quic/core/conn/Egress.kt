@@ -7,6 +7,7 @@ import com.ditchoom.socket.quic.core.observe.ConnCounts
 import com.ditchoom.socket.quic.core.path.Outgoing
 import com.ditchoom.socket.quic.core.path.Sorting
 import com.ditchoom.socket.quic.core.path.Window
+import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.udp.Room
 import com.ditchoom.socket.quic.core.udp.SendBatch
@@ -21,12 +22,14 @@ internal enum class LastOut { None, Kept, Dropped }
  * Datagrams out: the only file that asks quiche for output and reads its send infos. Each datagram goes where the
  * connection's [Paths] say: all to one target, or each by the address quiche wrote it for; one for a path no socket
  * of ours holds is dropped. Remembers what became of the last datagram of its last write: the write that makes quiche
- * drain ends with its CONNECTION_CLOSE.
+ * drain ends with its CONNECTION_CLOSE. Each datagram is recorded at the time quiche was asked for it, read from [clock]:
+ * the turn's time can be well before then, as the turn runs its work first, and a replay sends at the recorded time.
  */
 @Confined
 internal class Egress(
     private val q: QuicheConnRef,
     private val counts: ConnCounts,
+    private val clock: LoopClock,
 ) {
     private var last = LastOut.None
     private var lastOffset = 0
@@ -48,12 +51,11 @@ internal class Egress(
     fun write(
         out: SendBatch,
         paths: Paths,
-        now: Nanos,
         flight: ConnFlight,
     ): Wrote {
         last = LastOut.None
         while (out.room() == Room.Open) {
-            if (one(out, paths, now, flight) <= 0) return Wrote.All
+            if (one(out, paths, flight) <= 0) return Wrote.All
         }
         return Wrote.BatchFull
     }
@@ -69,7 +71,7 @@ internal class Egress(
         last = LastOut.None
         if (pacer.state(now) == PaceState.Holding) return Wrote.All
         while (out.room() == Room.Open) {
-            if (one(out, paths, now, flight) <= 0) return Wrote.All
+            if (one(out, paths, flight) <= 0) return Wrote.All
             if (pacer.sent(q.api.sendInfoAtNanos(paths.sendInfo()), now) == PaceState.Holding) return Wrote.All
         }
         return Wrote.BatchFull
@@ -78,12 +80,12 @@ internal class Egress(
     private fun one(
         out: SendBatch,
         paths: Paths,
-        now: Nanos,
         flight: ConnFlight,
     ): Int {
         val offset = out.nextOffset()
         val info = paths.sendInfo()
         val window = paths.window(Window(out.limits.maxDatagramSize))
+        val at = clock.now()
         val written = q.api.connSend(q.handle, out.storage.address + offset, window.bytes, info)
         if (written <= 0) return written
         val to =
@@ -102,7 +104,7 @@ internal class Egress(
                 last = LastOut.Kept
                 lastTarget = to.target
                 out.commit(written, to.target)
-                flight.datagramOut(now, out.storage, offset, written)
+                flight.datagramOut(at, out.storage, offset, written)
             }
             is Outgoing.Dropped -> {
                 last = LastOut.Dropped
@@ -119,12 +121,11 @@ internal class Egress(
     fun sendDroppedTo(
         out: SendBatch,
         target: SendTarget,
-        now: Nanos,
         flight: ConnFlight,
     ) {
         last = LastOut.Kept
         lastTarget = target
         out.commit(lastLength, target)
-        flight.datagramOut(now, out.storage, lastOffset, lastLength)
+        flight.datagramOut(clock.now(), out.storage, lastOffset, lastLength)
     }
 }

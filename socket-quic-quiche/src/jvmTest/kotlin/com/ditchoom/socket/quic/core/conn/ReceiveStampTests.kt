@@ -17,13 +17,15 @@ import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.testkit.trace.TraceSink
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.time.Duration.Companion.nanoseconds
 
 /**
- * A recording's datagram-in time is when its socket's receive phase of the pass began, not when quiche got to the
- * datagram: everything one receive phase reads reaches quiche before the connection sends, so it is one receive pass,
- * and a replay groups a pass by time. CoreRecordingReplayTests failed on every CI lane because quiche's ~300 µs on the
- * server's first handshake datagram pushed the second one past the replay's 250 µs pass window: read with it on
- * macOS and Linux, and by the next read of the same phase on Windows.
+ * A recording's datagram-in time is when quiche read the datagram, not when its socket's receive phase began: quiche
+ * measures round trips to that time, and a replay delivers the datagram then. CoreRecordingReplayTests left the
+ * recording under load ("our datagram 2 [Handshake] is one more than the capture holds"): stamped at the phase's start,
+ * the replay's round trip was shorter than the recorded client's, and its Handshake probe fell due before the server's
+ * answer. Datagrams of one phase that quiche reads apart are still taken before our endpoint answers: the replay
+ * holds our endpoint's output until the recording's next send.
  */
 class ReceiveStampTests {
     /** Returns the [reads] in order, one per receive call, then nothing. */
@@ -42,12 +44,12 @@ class ReceiveStampTests {
     }
 
     @Test
-    fun datagramsOneReadReturnedAreRecordedAtOneTime() = assertOnePass(Reads(2))
+    fun datagramsOneReadReturnedAreRecordedWhenQuicheReadEach() = assertReadByQuiche(Reads(2))
 
     @Test
-    fun datagramsTwoReadsOfOneReceivePhaseReturnedAreRecordedAtOneTime() = assertOnePass(Reads(1, 1))
+    fun datagramsTwoReadsOfOneReceivePhaseReturnedAreRecordedWhenQuicheReadEach() = assertReadByQuiche(Reads(1, 1))
 
-    private fun assertOnePass(io: DatagramBatchIo) {
+    private fun assertReadByQuiche(io: DatagramBatchIo) {
         val api = StubQuicheApi()
         val rig = ConnRig(api, io = io)
         api.onConnRecv = { rig.clock.at = Nanos(rig.clock.at.value + QUICHE_TAKES) }
@@ -59,7 +61,11 @@ class ReceiveStampTests {
         rig.pass(rig.clock.at.value)
         val ins = recorded.filterIsInstance<TraceEvent.DgramIn>()
         assertEquals(2, ins.size, "recorded: $recorded")
-        assertEquals(ins[0].at, ins[1].at, "both datagrams of the receive phase are stamped with one time: $ins")
+        assertEquals(
+            QUICHE_TAKES.nanoseconds,
+            ins[1].at - ins[0].at,
+            "the second datagram is stamped when quiche got to it, after its work on the first: $ins",
+        )
     }
 
     private class Dump(

@@ -30,9 +30,8 @@ internal fun ConnParts.feed(
     bytes: NativeBytes,
     length: Int,
     from: PathKey,
-    now: Nanos,
 ) = when (val info = slots.paths.recvFrom(from)) {
-    is RecvFrom.Info -> ingress.direct(bytes, length, info.recvInfo, now, flight)
+    is RecvFrom.Info -> ingress.direct(bytes, length, info.recvInfo, flight)
     is RecvFrom.TooManyAddresses -> ingress.refused()
 }
 

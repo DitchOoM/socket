@@ -8,6 +8,9 @@ import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicRole
+import com.ditchoom.socket.quic.QuicheApi
+import com.ditchoom.socket.quic.QuicheConn
+import com.ditchoom.socket.quic.QuicheRecvInfo
 import com.ditchoom.socket.quic.ScopedRead
 import com.ditchoom.socket.quic.core.conn.FlightSize
 import com.ditchoom.socket.quic.core.demux.ServerConfig
@@ -63,6 +66,7 @@ class CoreRecordingReplayTests {
     /** Loses the client's first datagram after the handshake's that is at least [DATA] bytes; sends the rest itself. */
     private class LossyLink(
         private val real: DatagramBatchIo,
+        private val host: ClientHost,
     ) : DatagramBatchIo by real {
         private var ordinal = 0
         val dropped = CopyOnWriteArrayList<Int>()
@@ -74,7 +78,11 @@ class CoreRecordingReplayTests {
         val received = CopyOnWriteArrayList<Int>()
 
         override fun receive(into: ReceiveBatch): ReceiveBatchResult =
-            real.receive(into).also { if (it is ReceiveBatchResult.Got) received += into.count }
+            real.receive(into).also {
+                if (it is ReceiveBatchResult.Got) received += into.count
+                // A slow host reaches quiche well after its socket read returned.
+                if (host == ClientHost.SlowToRead && into.count > 0) Thread.sleep(SLOW.inWholeMilliseconds)
+            }
 
         /** One single-datagram batch per lane: each datagram the link keeps goes to the real socket on its own. */
         private val single = java.util.concurrent.ConcurrentHashMap<Int, SendBatch>()
@@ -106,8 +114,19 @@ class CoreRecordingReplayTests {
         val lost: Int,
     )
 
-    /** An echo of [PAYLOAD] bytes between a core client and a core server, as the two of them recorded it. */
-    private suspend fun recordAnEcho(): Recorded {
+    /** How the client's host treats it. */
+    private enum class ClientHost {
+        Fast,
+
+        /** It reaches quiche [SLOW] after each socket read that returned datagrams. */
+        SlowToRead,
+
+        /** It holds its thread for [SLOW] after quiche read each datagram, before it can answer. */
+        SlowToAnswer,
+    }
+
+    /** An echo of [PAYLOAD] bytes between a core client and a core server on [host], as the two of them recorded it. */
+    private suspend fun recordAnEcho(host: ClientHost = ClientHost.Fast): Recorded {
         val clientRecording = CopyOnWriteArrayList<TraceEvent>()
         val serverRecording = CopyOnWriteArrayList<TraceEvent>()
         val server =
@@ -144,11 +163,15 @@ class CoreRecordingReplayTests {
                     serverName = "localhost",
                     options = coreTestOptions.copy(trace = QuicTraceCapture(TraceSink { clientRecording += it })),
                     factory = BufferFactory.Default,
-                    api = loadQuicheApi(),
+                    api =
+                        when (host) {
+                            ClientHost.SlowToAnswer -> SlowToAnswer(loadQuicheApi())
+                            ClientHost.Fast, ClientHost.SlowToRead -> loadQuicheApi()
+                        },
                     timeout = 10.seconds,
                     readPolicy = ReadPolicy.Bounded(10.seconds),
                     writePolicy = WritePolicy.Bounded(10.seconds),
-                    wrapIo = { real -> LossyLink(real).also { link[0] = it } },
+                    wrapIo = { real -> LossyLink(real, host).also { link[0] = it } },
                     flight = BIG,
                     datagramSize = DatagramSize.Configured,
                 )
@@ -160,6 +183,12 @@ class CoreRecordingReplayTests {
             // close() returns once the CONNECTION_CLOSE is sent; its record reaches the sink off the loop after that.
             withTimeoutOrNull(5.seconds) {
                 while (clientRecording.count { it is TraceEvent.DgramOut } < link[0]!!.sent) delay(10.milliseconds)
+            }
+            // The server closing first would never read the client's close, and the conversion would have it lost: the
+            // server closes once it has recorded it. Seen under a loaded full suite: "expected:<1> but was:<2>".
+            val close = clientRecording.filterIsInstance<TraceEvent.DgramOut>().last().payloadHex
+            withTimeoutOrNull(5.seconds) {
+                while (serverRecording.none { it is TraceEvent.DgramIn && it.payloadHex == close }) delay(10.milliseconds)
             }
         } finally {
             echo.cancel()
@@ -224,6 +253,46 @@ class CoreRecordingReplayTests {
                 assertFollowedWholeTwice(scheduleOf(recordAnEcho()))
             }
         }
+
+    /**
+     * A slow host: the client takes [SLOW] over each datagram it receives before it can answer, as a loaded runner's
+     * did with its handshake and its write (CI: 26 ms between a turn's start and quiche writing). The recording has each
+     * answer leave that long after what it answers was read, and the server's two handshake datagrams read by quiche
+     * [SLOW] apart; the replay's client takes both before it answers, and answers when the recording's did, so every
+     * timer quiche arms from those packets falls due when the recording's did.
+     */
+    @Test
+    fun aRunWhoseClientWasSlowToAnswerIsFollowedWholeByItsReplayTwice() =
+        runBlocking {
+            skipOnMissingNativeLib(CoreRecordingReplayTests::class) {
+                assertFollowedWholeTwice(scheduleOf(recordAnEcho(ClientHost.SlowToAnswer)))
+            }
+        }
+
+    /**
+     * A slow host: the client reaches quiche [SLOW] after each socket read. quiche measures its round trips to when it
+     * read the server's datagrams, so the recording has them arrive then, and the replay's client times its probes as the
+     * recording's did. Recorded at the read, the replay's round trip was [SLOW] shorter and its probes fell due early.
+     */
+    @Test
+    fun aRunWhoseClientWasSlowToReadIsFollowedWholeByItsReplayTwice() =
+        runBlocking {
+            skipOnMissingNativeLib(CoreRecordingReplayTests::class) {
+                assertFollowedWholeTwice(scheduleOf(recordAnEcho(ClientHost.SlowToRead)))
+            }
+        }
+
+    /** quiche that, after each datagram it reads, holds its thread for [SLOW]: the host's work before quiche answers. */
+    private class SlowToAnswer(
+        private val real: QuicheApi,
+    ) : QuicheApi by real {
+        override fun connRecv(
+            conn: QuicheConn,
+            buf: Long,
+            bufLen: Int,
+            recvInfo: QuicheRecvInfo,
+        ): Int = real.connRecv(conn, buf, bufLen, recvInfo).also { Thread.sleep(SLOW.inWholeMilliseconds) }
+    }
 
     /**
      * The walk failure class: the client's four-tuple changes mid-connection. Both recordings say so (the client's
@@ -341,6 +410,9 @@ class CoreRecordingReplayTests {
         const val MOVED_PORT = 40_000
         const val MOVED_ADDRESS = 0x7f000002L
         val LINGER_STEP = 100.milliseconds
+
+        /** Longer than the replay's tolerance of a send's time: a replay that answers at once leaves the recording. */
+        val SLOW = 15.milliseconds
         val BIG = FlightSize(records = 4096)
     }
 }

@@ -10,7 +10,7 @@ import com.ditchoom.socket.quic.core.observe.ConnCounts
 import com.ditchoom.socket.quic.core.pool.FixedPool
 import com.ditchoom.socket.quic.core.pool.Pooled
 import com.ditchoom.socket.quic.core.pool.Taken
-import com.ditchoom.socket.quic.core.time.Nanos
+import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.udp.Addressed
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 
@@ -54,16 +54,20 @@ internal class Ingress(
     private val shared: LoopMemory,
     private val factory: BufferFactory,
     private val counts: ConnCounts,
+    private val clock: LoopClock,
 ) {
-    /** Inside: quiche reads the datagram of [length] bytes at the start of [bytes] now, as [info] describes it. */
+    /**
+     * Inside: quiche reads the datagram of [length] bytes at the start of [bytes] now, as [info] describes it. It is
+     * recorded at the time quiche reads it, which its acknowledgements' round trips are measured to, read from [clock]: a
+     * slow host reaches quiche well after its socket read, and a replay delivers the datagram at the recorded time.
+     */
     fun direct(
         bytes: NativeBytes,
         length: Int,
         info: QuicheRecvInfo,
-        now: Nanos,
         flight: ConnFlight,
     ) {
-        flight.datagramIn(now, bytes, 0, length)
+        flight.datagramIn(clock.now(), bytes, 0, length)
         q.api.connRecv(q.handle, bytes.address, length, info)
     }
 
