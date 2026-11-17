@@ -584,6 +584,18 @@ internal class CidAuditQuicheApi(
         delegate.connProbePath(conn, localAddr, localLen, peerAddr, peerLen).also {
             probeCalls += delegate.decodePathKey(localAddr) to it
         }
+
+    override fun connProbePathWith(
+        conn: QuicheConn,
+        localAddr: Long,
+        localLen: Int,
+        peerAddr: Long,
+        peerLen: Int,
+        initialRttNanos: Long,
+    ): ProbeOutcome =
+        delegate.connProbePathWith(conn, localAddr, localLen, peerAddr, peerLen, initialRttNanos).also {
+            probeCalls += delegate.decodePathKey(localAddr) to it
+        }
 }
 
 /**

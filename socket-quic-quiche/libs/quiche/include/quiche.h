@@ -1346,6 +1346,16 @@ ssize_t quiche_conn_requeue_path(quiche_conn *conn,
                                  const struct sockaddr *local, socklen_t local_len,
                                  const struct sockaddr *peer, socklen_t peer_len);
 
+// socket-probe-path-with: quiche_conn_probe_path, and the path's RTT estimate, while it has no sample, starts from
+// initial_rtt_ns (zero keeps the configured initial RTT); its next packet, the one carrying the PATH_CHALLENGE, is a
+// probe the congestion window does not hold. Returns 0 and the destination id sequence number in seq, or a negative
+// quiche error. Added by the marker-guarded source patch in socket-quic-quiche/build.gradle.kts
+// (patchQuicheProbePathWithFfi).
+int quiche_conn_probe_path_with(quiche_conn *conn,
+                                const struct sockaddr *local, socklen_t local_len,
+                                const struct sockaddr *peer, socklen_t peer_len,
+                                uint64_t initial_rtt_ns, uint64_t *seq);
+
 // socket-handshake-pto-ceiling: the RTT quiche assumes before its first sample, in nanoseconds (quiche's Rust
 // Config::set_initial_rtt, which its C API lacks); and the longest PTO interval while the handshake is unconfirmed,
 // in nanoseconds, 0 for none. Setting the ceiling re-arms the loss-detection timer. Added by the marker-guarded

@@ -188,6 +188,15 @@ internal class CallerClockQuicheApi(
         peerLen: Int,
     ): ProbeOutcome = synced { delegate.connProbePath(conn, localAddr, localLen, peerAddr, peerLen) }
 
+    override fun connProbePathWith(
+        conn: QuicheConn,
+        localAddr: Long,
+        localLen: Int,
+        peerAddr: Long,
+        peerLen: Int,
+        initialRttNanos: Long,
+    ): ProbeOutcome = synced { delegate.connProbePathWith(conn, localAddr, localLen, peerAddr, peerLen, initialRttNanos) }
+
     override fun connMigrate(
         conn: QuicheConn,
         localAddr: Long,

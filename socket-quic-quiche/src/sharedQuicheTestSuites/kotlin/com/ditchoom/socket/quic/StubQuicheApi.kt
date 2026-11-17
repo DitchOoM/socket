@@ -803,6 +803,21 @@ internal class StubQuicheApi : QuicheApi {
         return ProbeOutcome.Probed(seq)
     }
 
+    /** The initial RTT of every [connProbePathWith] call, in order. */
+    val probeInitialRtts: MutableList<Long> = mutableListOf()
+
+    override fun connProbePathWith(
+        conn: QuicheConn,
+        localAddr: Long,
+        localLen: Int,
+        peerAddr: Long,
+        peerLen: Int,
+        initialRttNanos: Long,
+    ): ProbeOutcome {
+        probeInitialRtts += initialRttNanos
+        return connProbePath(conn, localAddr, localLen, peerAddr, peerLen)
+    }
+
     /** The local sockaddr of every [connProbePath] call, in order — which path each probe named. */
     val probedSockAddrs: MutableList<Long> = mutableListOf()
 
