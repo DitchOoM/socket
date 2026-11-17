@@ -203,7 +203,6 @@ internal class ServerRig(
         )
     val demux =
         Demux(
-            api,
             admission,
             Stateless(api, tokens, kotlin.random.Random(2), LOCAL, counts),
             DemuxScratch(nativeBytes(DemuxScratch.FIELDS_BYTES), nativeBytes(256), nativeBytes(256), nativeBytes(16)),

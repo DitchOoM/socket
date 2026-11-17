@@ -1,7 +1,6 @@
 package com.ditchoom.socket.quic.core.demux
 
 import com.ditchoom.socket.quic.PathKey
-import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.core.conn.Collected
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.Life
@@ -28,12 +27,11 @@ private enum class Mode {
  * A server's routing: each datagram from the one unconnected socket goes to the connection its destination id names;
  * an unsupported version is answered with Version Negotiation, an Initial without a token that proves its address
  * with Retry when address validation is on, and otherwise an Initial starts a connection through [admission]. Serves
- * every connection it routes to and removes each one that ended. Every connection owns its peer's address and `recv_info`, built once when it is
- * accepted; no table is keyed by address. Loop thread only.
+ * every connection it routes to and removes each one that ended. Every connection owns its peer's address and
+ * `recv_info`, built once when it is accepted; no table is keyed by address. Loop thread only.
  */
 @LoopOnly
 internal class Demux(
-    private val api: QuicheApi,
     private val admission: Admission,
     private val stateless: Stateless,
     private val scratch: DemuxScratch,
@@ -206,42 +204,11 @@ internal class Demux(
         when (val tokens = stateless.tokens) {
             is Tokens.None -> admit(Admit.Fresh, datagram, length, from, at)
             is Tokens.Of ->
-                when (scratch.readToken(api, datagram, length)) {
-                    TokenRead.Refused -> counts.unknownDropped()
-                    TokenRead.Absent -> unproven(tokens, datagram, length, from, out, at)
-                    TokenRead.Present -> redeem(tokens, datagram, length, from, out, at)
+                when (val screened = stateless.screen(tokens, header, datagram, length, from, scratch, clock.now(), out)) {
+                    is Screened.Start -> admit(screened.how, datagram, length, from, at)
+                    is Screened.Answered -> Unit
                 }
         }
-    }
-
-    private fun redeem(
-        tokens: Tokens.Of,
-        datagram: NativeBytes,
-        length: Int,
-        from: PathKey,
-        out: SendBatch,
-        at: Nanos,
-    ) {
-        val checked = tokens.tokens.check(scratch.token.owner, scratch.tokenLength, clock.now().value, header.cid, from)
-        when (checked) {
-            is TokenCheck.Valid -> admit(Admit.Redeemed(checked), datagram, length, from, at)
-            is TokenCheck.Proven -> admit(Admit.Proven, datagram, length, from, at)
-            is TokenCheck.Unproven -> unproven(tokens, datagram, length, from, out, at)
-            is TokenCheck.Malformed, is TokenCheck.Forged, is TokenCheck.Expired -> counts.tokenDropped()
-        }
-    }
-
-    /** An Initial with no token that proves its address (RFC 9000 §8.1.3): a Retry if the server validates, else in. */
-    private fun unproven(
-        tokens: Tokens.Of,
-        datagram: NativeBytes,
-        length: Int,
-        from: PathKey,
-        out: SendBatch,
-        at: Nanos,
-    ) = when (tokens.validation) {
-        is AddressValidation.Off -> admit(Admit.Fresh, datagram, length, from, at)
-        is AddressValidation.Retry -> stateless.retry(tokens.tokens, header, datagram, from, scratch, clock.now(), out)
     }
 
     private fun admit(

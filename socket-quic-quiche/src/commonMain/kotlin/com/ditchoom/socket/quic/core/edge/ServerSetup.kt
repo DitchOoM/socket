@@ -236,7 +236,7 @@ internal class ServerSetup(
                 localKey,
             )
         val admission = Admission(api, config.admission, backlog, parts, edge.hooks, hold, ids, counts)
-        val demux = Demux(api, admission, Stateless(api, tokens, ids, localKey, counts), scratch, loop.port, clock, counts)
+        val demux = Demux(admission, Stateless(api, tokens, ids, localKey, counts), scratch, loop.port, clock, counts)
         val stopped = CompletableDeferred<Unit>()
         val finished =
             Runnable {

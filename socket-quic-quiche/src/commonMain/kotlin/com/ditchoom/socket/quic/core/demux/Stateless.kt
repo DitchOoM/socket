@@ -52,6 +52,15 @@ internal sealed interface Tokens {
     }
 }
 
+/** What an Initial's token says: start a connection [how], or the Initial was answered or dropped. */
+internal sealed interface Screened {
+    class Start(
+        val how: Admit,
+    ) : Screened
+
+    data object Answered : Screened
+}
+
 /**
  * Version Negotiation and Retry: the packets a server answers with before it has a connection, and the NEW_TOKEN
  * tokens it hands a connection it accepted. quiche writes each reply straight into the loop's send batch, which the
@@ -88,8 +97,53 @@ internal class Stateless(
         counts.negotiationSent()
     }
 
+    /**
+     * Checks the token of the version 1 Initial at [datagram], read into [header]. A failed Retry token is dropped; an
+     * absent or unproven NEW_TOKEN token is no token: a Retry when the server validates, else a fresh start.
+     */
+    fun screen(
+        tokens: Tokens.Of,
+        header: PacketHeader,
+        datagram: NativeBytes,
+        length: Int,
+        from: PathKey,
+        scratch: DemuxScratch,
+        now: Nanos,
+        out: SendBatch,
+    ): Screened {
+        when (scratch.readToken(api, datagram, length)) {
+            TokenRead.Refused -> counts.unknownDropped()
+            TokenRead.Absent -> return unproven(tokens, header, datagram, from, scratch, now, out)
+            TokenRead.Present -> {
+                val checked = tokens.tokens.check(scratch.token.owner, scratch.tokenLength, now.value, header.cid, from)
+                when (checked) {
+                    is TokenCheck.Valid -> return Screened.Start(Admit.Redeemed(checked))
+                    is TokenCheck.Proven -> return Screened.Start(Admit.Proven)
+                    is TokenCheck.Unproven -> return unproven(tokens, header, datagram, from, scratch, now, out)
+                    is TokenCheck.Malformed, is TokenCheck.Forged, is TokenCheck.Expired -> counts.tokenDropped()
+                }
+            }
+        }
+        return Screened.Answered
+    }
+
+    /** An Initial with no token that proves its address (RFC 9000 §8.1.3): a Retry if the server validates, else in. */
+    private fun unproven(
+        tokens: Tokens.Of,
+        header: PacketHeader,
+        datagram: NativeBytes,
+        from: PathKey,
+        scratch: DemuxScratch,
+        now: Nanos,
+        out: SendBatch,
+    ): Screened =
+        when (tokens.validation) {
+            is AddressValidation.Off -> Screened.Start(Admit.Fresh)
+            is AddressValidation.Retry -> Screened.Answered.also { retry(tokens.tokens, header, datagram, from, scratch, now, out) }
+        }
+
     /** Answers the version 1 Initial at [datagram], which carries no token, with a Retry that carries one. */
-    fun retry(
+    private fun retry(
         tokens: AddressTokens,
         header: PacketHeader,
         datagram: NativeBytes,
