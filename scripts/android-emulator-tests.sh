@@ -414,21 +414,6 @@ if [ "$NETWORK_READY" = "1" ]; then
     adb shell "rm -f /data/local/tmp/herd.data"
     adb shell "simpleperf record -a -e cpu-clock -f 1000 -o /data/local/tmp/herd.data" > emulator-diagnostics/simpleperf-record.txt 2>&1 &
     PERF_PID=$!
-    # The test APK is uninstalled when the run ends, its cache with it: copy the dump out while the test runs.
-    HPROF_DEV=/data/data/com.ditchoom.socket.quic.quiche.test/cache/herd.hprof
-    (
-      last=-1
-      for _ in $(seq 1 600); do
-        size=$(adb shell "stat -c %s $HPROF_DEV 2>/dev/null || echo -1" | tr -d '\r\n ')
-        if [ "${size:--1}" -gt 0 ] && [ "$size" = "$last" ]; then
-          adb shell "cp $HPROF_DEV /data/local/tmp/herd.hprof" && echo "herd heap dump copied ($size bytes)"
-          break
-        fi
-        last=$size
-        sleep 1
-      done
-    ) &
-    HPROF_WATCH=$!
     sleep 3
     ./gradlew :socket-quic-quiche:connectedAndroidTest \
       -Pandroid.testInstrumentationRunnerArguments.class=com.ditchoom.socket.quic.core.demux.CoreServerEchoTests \
@@ -448,8 +433,8 @@ if [ "$NETWORK_READY" = "1" ]; then
     done
     echo "=== end HERD-PROF ==="
     mkdir -p "$PERFETTO_OUT_DIR"
-    kill "$HPROF_WATCH" 2>/dev/null || true
-    if timeout 120 adb pull /data/local/tmp/herd.hprof "emulator-diagnostics/herd-raw.hprof" >/dev/null 2>&1; then
+    HPROF_DEV=/data/data/com.ditchoom.socket.quic.quiche.test/cache/herd.hprof
+    if timeout 120 adb pull "$HPROF_DEV" "emulator-diagnostics/herd-raw.hprof" >/dev/null 2>&1; then
       HPROF_CONV="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}/platform-tools/hprof-conv"
       "$HPROF_CONV" "emulator-diagnostics/herd-raw.hprof" "$PERFETTO_OUT_DIR/herd-api${API_LEVEL}.hprof" ||
         cp "emulator-diagnostics/herd-raw.hprof" "$PERFETTO_OUT_DIR/herd-api${API_LEVEL}.hprof"
