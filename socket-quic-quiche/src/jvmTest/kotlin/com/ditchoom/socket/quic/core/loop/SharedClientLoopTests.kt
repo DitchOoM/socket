@@ -14,6 +14,7 @@ import com.ditchoom.socket.quic.core.edge.coreConnect
 import com.ditchoom.socket.quic.core.edge.coreTestOptions
 import com.ditchoom.socket.quic.core.edge.echoOver
 import com.ditchoom.socket.quic.core.edge.withEchoServer
+import com.ditchoom.socket.quic.core.testing.LoopScheduling
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.ReceiveBatchResult
@@ -54,6 +55,7 @@ class SharedClientLoopTests {
                         assertEquals(2, perLoop.size, "the connections spread over both loops: $perLoop")
                         assertTrue(perLoop.values.all { it == CONNECTIONS / 2 }, "an even spread: $perLoop")
                         val echoed = AtomicIntegerArray(CONNECTIONS)
+                        val scheduled = LoopScheduling.snapshot()
                         val began = System.nanoTime()
                         try {
                             withTimeout(120.seconds) {
@@ -81,10 +83,15 @@ class SharedClientLoopTests {
                                     "loops ${loops.countsOfStarted().joinToString {
                                         "[${it.passes} passes took ${it.passNanos / NANOS_PER_MILLI} ms, " +
                                             "${it.waits} waits took ${it.waitNanos / NANOS_PER_MILLI} ms, ${it.datagramsIn} in, ${it.datagramsOut} out]"
-                                    }}",
+                                    }}; scheduling ${LoopScheduling.since(scheduled)}",
                                 timedOut,
                             )
                         }
+                        println(
+                            "[shared client loops] ${CONNECTIONS * ECHOES} echoes took " +
+                                "${(System.nanoTime() - began) / NANOS_PER_MILLI} ms; " +
+                                "scheduling ${LoopScheduling.since(scheduled)}",
+                        )
                         // Together: each close waits out its closing period (three PTOs), which one after another
                         // took 4 s of the test on an API 29 emulator.
                         withContext(Dispatchers.Default) {

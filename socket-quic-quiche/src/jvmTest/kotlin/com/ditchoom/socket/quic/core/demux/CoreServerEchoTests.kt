@@ -6,6 +6,7 @@ import com.ditchoom.socket.quic.core.edge.coreTestOptions
 import com.ditchoom.socket.quic.core.edge.echoOver
 import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.observe.LoopCounts
+import com.ditchoom.socket.quic.core.testing.LoopScheduling
 import com.ditchoom.socket.quic.core.udp.buffers
 import com.ditchoom.socket.quic.withQuicConnection
 import kotlinx.coroutines.Dispatchers
@@ -58,6 +59,7 @@ class CoreServerEchoTests {
         runBlocking {
             withCoreEchoServer(ServerConfig(admission = AdmissionBounds(perPass = 256, inProgress = 2_048))) { server ->
                 val connectedAfter = ConcurrentLinkedQueue<Long>()
+                val scheduled = LoopScheduling.snapshot()
                 val started = System.nanoTime()
                 try {
                     val echoed =
@@ -92,6 +94,7 @@ class CoreServerEchoTests {
                             "socket=${server.socket.buffers.receiveBytes} B receive buffer, drops=${server.socket.drops()}; " +
                             "heap ${heapMebibytes()}; " +
                             "server loop ${timing(server.loop.counts)}; client loops $clientLoops; " +
+                            "scheduling ${LoopScheduling.since(scheduled)}; " +
                             "a route probe (open, bind, connect, close) takes ${probeMillis(server.port)} ms on this machine",
                         failed,
                     )

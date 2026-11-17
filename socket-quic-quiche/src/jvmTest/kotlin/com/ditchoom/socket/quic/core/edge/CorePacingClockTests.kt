@@ -9,6 +9,7 @@ import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.QuicheConn
 import com.ditchoom.socket.quic.QuicheSendInfo
+import com.ditchoom.socket.quic.core.testing.LoopScheduling
 import com.ditchoom.socket.quic.loadQuicheApi
 import com.ditchoom.socket.quic.skipOnMissingNativeLib
 import kotlinx.coroutines.coroutineScope
@@ -30,6 +31,7 @@ class CorePacingClockTests {
         runBlocking {
             skipOnMissingNativeLib(CorePacingClockTests::class) {
                 val api = RecordingApi(loadQuicheApi())
+                val scheduled = LoopScheduling.snapshot()
                 // The client's own pacer times: the core server is step 4, and every sent datagram is timed alike.
                 withEchoServer { port ->
                     val client = connectCore(port, api = api)
@@ -63,7 +65,8 @@ class CorePacingClockTests {
                 val bound = 1_000_000_000L + 2 * api.largestRttNanos.get()
                 assertTrue(
                     api.latest.get() < bound,
-                    "a due time is within a second plus two round trips of now: ${api.latest.get()} ns, largest round trip ${api.largestRttNanos.get()} ns",
+                    "a due time is within a second plus two round trips of now: ${api.latest.get()} ns, largest round trip " +
+                        "${api.largestRttNanos.get()} ns; scheduling ${LoopScheduling.since(scheduled)}",
                 )
             }
         }
