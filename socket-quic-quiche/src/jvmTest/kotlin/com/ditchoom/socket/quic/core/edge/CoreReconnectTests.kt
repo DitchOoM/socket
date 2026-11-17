@@ -3,9 +3,6 @@ package com.ditchoom.socket.quic.core.edge
 import com.ditchoom.socket.quic.HandshakePolicy
 import com.ditchoom.socket.quic.QuicConnectionState
 import com.ditchoom.socket.quic.QuicError
-import com.ditchoom.socket.quic.QuicheApi
-import com.ditchoom.socket.quic.QuicheConn
-import com.ditchoom.socket.quic.QuicheSendInfo
 import com.ditchoom.socket.quic.QuicFullHandshakeReason
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicResumption
@@ -16,6 +13,9 @@ import com.ditchoom.socket.quic.QuicSessionMemory
 import com.ditchoom.socket.quic.QuicSessionStore
 import com.ditchoom.socket.quic.QuicSessionTicket
 import com.ditchoom.socket.quic.QuicSessionTicketState
+import com.ditchoom.socket.quic.QuicheApi
+import com.ditchoom.socket.quic.QuicheConn
+import com.ditchoom.socket.quic.QuicheSendInfo
 import com.ditchoom.socket.quic.core.conn.FirstFlight
 import com.ditchoom.socket.quic.core.conn.Offer
 import kotlinx.coroutines.channels.Channel

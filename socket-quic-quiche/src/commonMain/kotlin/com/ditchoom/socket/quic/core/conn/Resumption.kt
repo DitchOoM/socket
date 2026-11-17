@@ -8,6 +8,7 @@ import com.ditchoom.socket.quic.SessionOffer
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.observe.Confined
 import com.ditchoom.socket.quic.core.udp.NativeBytes
+import kotlinx.coroutines.Runnable
 
 /** When a client's first flight may leave. */
 internal enum class FirstFlight {
@@ -52,6 +53,26 @@ internal fun offerSession(
 /** What a client's [ClientSession] says of its first flight. */
 internal enum class FlightGate { Open, Held }
 
+/**
+ * A ticket a client took from its store and offered, by whether it may have been sent: privacy asks only that a ticket
+ * never goes out twice (RFC 8446 §C.4), so one that never left goes back.
+ */
+internal sealed interface KeptTicket {
+    /** The connection offered none from a store: the caller's own, or nothing. */
+    data object None : KeptTicket
+
+    /** No datagram of the connection has been written yet; [back] hands the ticket back to its store. */
+    class Unsent(
+        val back: Runnable,
+    ) : KeptTicket
+
+    /** A datagram was written, so the ticket may be on the wire: it stays used. */
+    data object Sent : KeptTicket
+
+    /** Handed back to its store. */
+    data object Returned : KeptTicket
+}
+
 /** Whether a client's first session ticket has been handed up, or was too large for its scratch to take. */
 private enum class TicketSeen { NotYet, Taken }
 
@@ -65,6 +86,7 @@ internal class ClientSession(
     private val q: QuicheConnRef,
     private val offer: Offer,
     private val scratch: NativeBytes,
+    private var kept: KeptTicket,
 ) {
     private var gate =
         when (offer) {
@@ -97,6 +119,21 @@ internal class ClientSession(
                 },
             )
         }
+
+    /** The connection ended having written [out]: a kept ticket no datagram carried goes back to its store. */
+    fun ended(out: FirstOut) {
+        when (val now = kept) {
+            is KeptTicket.Unsent ->
+                when (out) {
+                    FirstOut.NotYet -> {
+                        kept = KeptTicket.Returned
+                        now.back.run()
+                    }
+                    FirstOut.Written -> kept = KeptTicket.Sent
+                }
+            is KeptTicket.None, is KeptTicket.Sent, is KeptTicket.Returned -> Unit
+        }
+    }
 
     /** Established: the first session ticket quiche holds goes to [sink], once. One length read per serve until then. */
     fun takeTicket(sink: ConnSink) {

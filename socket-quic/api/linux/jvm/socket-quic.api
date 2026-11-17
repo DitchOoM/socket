@@ -2021,6 +2021,7 @@ public final class com/ditchoom/socket/quic/QuicServer$DefaultImpls {
 
 public abstract interface class com/ditchoom/socket/quic/QuicSessionCache {
 	public abstract fun keep (Lcom/ditchoom/socket/quic/QuicSessionKey;Lcom/ditchoom/socket/quic/QuicSessionTicket;)V
+	public abstract fun restore (Lcom/ditchoom/socket/quic/QuicSessionKey;Lcom/ditchoom/socket/quic/QuicSessionTicket;)V
 	public abstract fun take (Lcom/ditchoom/socket/quic/QuicSessionKey;)Lcom/ditchoom/socket/quic/QuicSessionTicketState;
 }
 
@@ -2056,6 +2057,7 @@ public final class com/ditchoom/socket/quic/QuicSessionMemory : com/ditchoom/soc
 	public fun <init> (Lkotlin/time/TimeSource;)V
 	public synthetic fun <init> (Lkotlin/time/TimeSource;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public fun keep (Lcom/ditchoom/socket/quic/QuicSessionKey;Lcom/ditchoom/socket/quic/QuicSessionTicket;)V
+	public fun restore (Lcom/ditchoom/socket/quic/QuicSessionKey;Lcom/ditchoom/socket/quic/QuicSessionTicket;)V
 	public fun take (Lcom/ditchoom/socket/quic/QuicSessionKey;)Lcom/ditchoom/socket/quic/QuicSessionTicketState;
 }
 

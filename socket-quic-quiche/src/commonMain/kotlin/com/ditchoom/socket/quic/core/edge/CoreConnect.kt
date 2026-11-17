@@ -188,39 +188,41 @@ private suspend fun connectOnThisThread(
     name.freeNativeMemory()
     scid.freeNativeMemory()
     val plan = sessionPlan(options, serverName, port)
-    val offer = offerOf(QuicheConnRef(api, handle), plan.resumption, factory)
+    val planned = offerPlanned(QuicheConnRef(api, handle), plan, factory)
+    val offer = planned.offer
     val scope = CoroutineScope(SupervisorJob())
-    val built =
-        ClientParts(
-            ClientWiring(
-                api,
-                handle,
-                config,
-                options,
-                memory,
-                running,
-                socket,
-                wrapIo,
-                peerKey,
-                readPolicy,
-                writePolicy,
-                scope,
-                flight,
-                handshake,
-                readiness = socket.readiness(),
-                offer = offer,
-                tickets = plan.home,
-            ),
-            peerSockAddr,
-            localSockAddr,
-        )
-    val connection =
-        built.connection(
-            factory,
-            peer,
-            QuicConnectionIdentity(QuicSessionId(scidHex), QuicWireConnectionId.Known(scidHex)),
-        )
-    wireClientConnectivityTap(options, built.capture, connection, monitor)
+    // Until the connection starts nothing has been sent: a step that fails before then hands the ticket back.
+    val (built, connection) =
+        planned.kept.backIfThrows {
+            val parts =
+                ClientParts(
+                    ClientWiring(
+                        api,
+                        handle,
+                        config,
+                        options,
+                        memory,
+                        running,
+                        socket,
+                        wrapIo,
+                        peerKey,
+                        readPolicy,
+                        writePolicy,
+                        scope,
+                        flight,
+                        handshake,
+                        readiness = socket.readiness(),
+                        offer = offer,
+                        tickets = plan.home,
+                        kept = planned.kept,
+                    ),
+                    peerSockAddr,
+                    localSockAddr,
+                )
+            val made = parts.connection(factory, peer, QuicConnectionIdentity(QuicSessionId(scidHex), QuicWireConnectionId.Known(scidHex)))
+            wireClientConnectivityTap(options, parts.capture, made, monitor)
+            parts to made
+        }
     built.start()
     scope.feedNetwork(monitor, connection, built, { routeSource(route) }, local.hostLiteral(), onMoveOf(options.migration))
     var established = false
