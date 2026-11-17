@@ -312,6 +312,21 @@ internal class VirtualPair private constructor(
 
     private var seeds = 1L
 
+    /** The server's loop runs its stop now, as a restart's first half does; the pair stops it again at its end. */
+    fun stopServer() {
+        server.loop.close(Runnable { })
+        server.loop.run()
+    }
+
+    /** The server stops and a new one, with [options], takes its place on the link; the client must reconnect. */
+    suspend fun restartServer(options: QuicOptions) {
+        stopServer()
+        loseInFlight(End.Server)
+        loseInFlight(End.Client)
+        server = replayServer(api, options, BufferFactory.Default, Socket(End.Server), clock, coreTlsConfig())
+        serverKey = InetSocketAddress(LOCALHOST, server.port).toPathKey()
+    }
+
     /** The server's accepted connection: it is offered from a thread of the server's own, so awaited on the wall clock. */
     suspend fun accept(): CoreConnection = withTimeout(10.seconds) { server.accept() }
 

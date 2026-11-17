@@ -395,6 +395,25 @@ internal class QuichePairByHand private constructor(
             api.connProbePath(client, clientAddrs[endpoint].address, clientAddrs[endpoint].length, serverAddr.address, serverAddr.length)
         }
 
+    /**
+     * The client probes the path from its [endpoint] with `quiche_conn_probe_path_with`: the path assumes
+     * [initialRttNanos] until it has a sample, and its challenge leaves past the congestion window.
+     */
+    fun probeWith(
+        endpoint: Int,
+        initialRttNanos: Long,
+    ): ProbeOutcome =
+        at(lead(client)) {
+            api.connProbePathWith(
+                client,
+                clientAddrs[endpoint].address,
+                clientAddrs[endpoint].length,
+                serverAddr.address,
+                serverAddr.length,
+                initialRttNanos,
+            )
+        }
+
     /** The client moves onto the path from its [endpoint]. */
     fun migrate(endpoint: Int): MigrateOutcome =
         at(lead(client)) {

@@ -50,8 +50,8 @@ internal class Inside(
 
     fun network(change: NetworkChange) = turn.network(clock.now(), change)
 
-    /** The client's socket now leaves from [local]. */
-    fun moved(local: PathKey) = turn.moved(clock.now(), local)
+    /** The client's socket now leaves from [to]. */
+    fun moved(to: MoveTo) = turn.moved(clock.now(), to)
 
     /** A client's first flight, held for its 0-RTT, may leave. */
     fun releaseFirstFlight() = turn.releaseFirstFlight()

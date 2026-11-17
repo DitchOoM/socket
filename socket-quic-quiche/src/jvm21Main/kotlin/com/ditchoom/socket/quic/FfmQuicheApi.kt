@@ -357,6 +357,12 @@ class FfmQuicheApi private constructor(
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_LONG),
         )
     }
+    private val hConnProbePathWith by lazy {
+        downcall(
+            "quiche_conn_probe_path_with",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_LONG, JAVA_LONG),
+        )
+    }
     private val hConnNewScid by lazy {
         downcall(
             "quiche_conn_new_scid",
@@ -1159,6 +1165,29 @@ class FfmQuicheApi private constructor(
                     localLen,
                     peerAddr,
                     peerLen,
+                    seqOut.address(),
+                ) as Int
+            if (rc >= 0) ProbeOutcome.Probed(seqOut.get(JAVA_LONG, 0)) else ProbeOutcome.Rejected(rc)
+        }
+
+    override fun connProbePathWith(
+        conn: QuicheConn,
+        localAddr: Long,
+        localLen: Int,
+        peerAddr: Long,
+        peerLen: Int,
+        initialRttNanos: Long,
+    ): ProbeOutcome =
+        Arena.ofConfined().use { arena ->
+            val seqOut = arena.allocate(JAVA_LONG)
+            val rc =
+                hConnProbePathWith.invokeExact(
+                    conn.handle,
+                    localAddr,
+                    localLen,
+                    peerAddr,
+                    peerLen,
+                    initialRttNanos,
                     seqOut.address(),
                 ) as Int
             if (rc >= 0) ProbeOutcome.Probed(seqOut.get(JAVA_LONG, 0)) else ProbeOutcome.Rejected(rc)

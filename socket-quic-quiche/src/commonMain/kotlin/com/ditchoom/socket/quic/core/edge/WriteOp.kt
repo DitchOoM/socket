@@ -12,7 +12,9 @@ import com.ditchoom.socket.quic.core.conn.Inside
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.observe.Confined
 import com.ditchoom.socket.quic.core.stream.QUICHE_ERR_DONE
+import com.ditchoom.socket.quic.core.stream.QUICHE_ERR_STREAM_STOPPED
 import com.ditchoom.socket.quic.core.stream.Retry
+import com.ditchoom.socket.quic.core.stream.Side
 import com.ditchoom.socket.quic.core.stream.StreamTable
 import com.ditchoom.socket.quic.core.stream.Streams
 import com.ditchoom.socket.quic.core.stream.Waiter
@@ -137,7 +139,7 @@ internal class WriteOp(
         return when {
             taken > 0 -> written()
             taken == 0 && source is WriteSource.FinOnly -> {
-                table.finSent(stream)
+                table.sendEnded(stream, Side.Finished)
                 written()
             }
             taken == 0 || taken == QUICHE_ERR_DONE -> {
@@ -146,6 +148,7 @@ internal class WriteOp(
             }
             else -> {
                 val peer = answer.errorCode ?: UNKNOWN_PEER_CODE
+                if (taken == QUICHE_ERR_STREAM_STOPPED) table.stopped(stream, answer.errorCode ?: UNKNOWN_PEER_CODE)
                 settle(WriteAnswer.Failed(Raised.WriteRefused(stream, taken, peer), QuicCloseCircumstance.Ended))
                 Retry.Settled
             }

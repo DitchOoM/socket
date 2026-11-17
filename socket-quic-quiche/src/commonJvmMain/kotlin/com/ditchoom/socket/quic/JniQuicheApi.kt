@@ -611,6 +611,18 @@ object JniQuicheApi : QuicheApi {
         return if (raw >= 0) ProbeOutcome.Probed(raw) else ProbeOutcome.Rejected(raw.toInt())
     }
 
+    override fun connProbePathWith(
+        conn: QuicheConn,
+        localAddr: Long,
+        localLen: Int,
+        peerAddr: Long,
+        peerLen: Int,
+        initialRttNanos: Long,
+    ): ProbeOutcome {
+        val raw = nConnProbePathWith(conn.handle, localAddr, localLen, peerAddr, peerLen, initialRttNanos)
+        return if (raw >= 0) ProbeOutcome.Probed(raw) else ProbeOutcome.Rejected(raw.toInt())
+    }
+
     override fun connNewScid(
         conn: QuicheConn,
         scidAddr: Long,
@@ -1236,6 +1248,15 @@ object JniQuicheApi : QuicheApi {
         localLen: Int,
         peerAddr: Long,
         peerLen: Int,
+    ): Long
+
+    @JvmStatic private external fun nConnProbePathWith(
+        conn: Long,
+        localAddr: Long,
+        localLen: Int,
+        peerAddr: Long,
+        peerLen: Int,
+        initialRttNanos: Long,
     ): Long
 
     @JvmStatic private external fun nConnNewScid(

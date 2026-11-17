@@ -55,18 +55,23 @@ internal class NativeSocket internal constructor(
     fun reopen(): Reopened {
         copyRecord(spec, SpecLayout.LOCAL, SpecLayout.BIND)
         var answer: Reopened = Reopened.SameEndpoint
-        cell.replace { old ->
-            shim.close(old)
-            val fd = shim.udpOpenSocket(spec.address)
-            if (fd >= 0) {
-                options.store(applyOptions(shim, fd, spec.intAt(SpecLayout.BIND), request))
-                Swapped.To(fd)
-            } else {
-                answer = Reopened.Refused(Thrown(NativeSocketRefusal(SocketRefusal.of(-fd))))
-                Swapped.Gone
+        val replaced =
+            cell.replace { old ->
+                shim.close(old)
+                val fd = shim.udpOpenSocket(spec.address)
+                if (fd >= 0) {
+                    options.store(applyOptions(shim, fd, spec.intAt(SpecLayout.BIND), request))
+                    Swapped.To(fd)
+                } else {
+                    answer = Reopened.Refused(Thrown(NativeSocketRefusal(SocketRefusal.of(-fd))))
+                    Swapped.Gone
+                }
             }
+        return when (replaced) {
+            Quiesced.Quiet -> answer
+            // Closed already: nothing was closed or opened, and the number it held is not this socket's any more.
+            Quiesced.WasClosed -> Reopened.Refused(Thrown(NativeSocketRefusal(SocketRefusal.EBadF)))
         }
-        return answer
     }
 
     /**
@@ -76,19 +81,23 @@ internal class NativeSocket internal constructor(
     fun moveTo(bind: PathKey): Moved {
         putRecord(spec, SpecLayout.BIND, PathKey(bind.family, 0, bind.hi, bind.lo))
         var answer: Moved = Moved.Unsupported
-        cell.replace { old ->
-            val fd = shim.udpOpenSocket(spec.address)
-            if (fd >= 0) {
-                options.store(applyOptions(shim, fd, spec.intAt(SpecLayout.BIND), request))
-                shim.close(old)
-                answer = Moved.To(recordAt(spec, SpecLayout.LOCAL))
-                Swapped.To(fd)
-            } else {
-                answer = Moved.Refused(Thrown(NativeSocketRefusal(SocketRefusal.of(-fd))))
-                Swapped.To(old)
+        val replaced =
+            cell.replace { old ->
+                val fd = shim.udpOpenSocket(spec.address)
+                if (fd >= 0) {
+                    options.store(applyOptions(shim, fd, spec.intAt(SpecLayout.BIND), request))
+                    shim.close(old)
+                    answer = Moved.To(recordAt(spec, SpecLayout.LOCAL))
+                    Swapped.To(fd)
+                } else {
+                    answer = Moved.Refused(Thrown(NativeSocketRefusal(SocketRefusal.of(-fd))))
+                    Swapped.To(old)
+                }
             }
+        return when (replaced) {
+            Quiesced.Quiet -> answer
+            Quiesced.WasClosed -> Moved.Refused(Thrown(NativeSocketRefusal(SocketRefusal.EBadF)))
         }
-        return answer
     }
 
     companion object {

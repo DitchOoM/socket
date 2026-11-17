@@ -7,7 +7,9 @@ import com.ditchoom.socket.quic.core.conn.Inside
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.observe.Confined
 import com.ditchoom.socket.quic.core.stream.QUICHE_ERR_DONE
+import com.ditchoom.socket.quic.core.stream.QUICHE_ERR_STREAM_STOPPED
 import com.ditchoom.socket.quic.core.stream.ShutdownSide
+import com.ditchoom.socket.quic.core.stream.Side
 import com.ditchoom.socket.quic.core.stream.StreamTable
 import com.ditchoom.socket.quic.core.stream.WriteEnd
 
@@ -55,6 +57,7 @@ internal class Inbound(
             nothingYet = { Moved.Again },
             gone = { Moved.Refused(Raised.ConnEnded(ConnEnd.Released)) },
             reset = {
+                entry.receiveEnded(Side.Reset)
                 into.peerReset()
                 Moved.Done
             },
@@ -106,7 +109,10 @@ internal class Outbound(
                     table.wantWritable(stream)
                     return Moved.Again
                 }
-                else -> return Moved.Refused(Raised.WriteRefused(stream, taken, answer.errorCode ?: UNKNOWN_PEER_CODE))
+                else -> {
+                    if (taken == QUICHE_ERR_STREAM_STOPPED) table.stopped(stream, answer.errorCode ?: UNKNOWN_PEER_CODE)
+                    return Moved.Refused(Raised.WriteRefused(stream, taken, answer.errorCode ?: UNKNOWN_PEER_CODE))
+                }
             }
         }
     }
@@ -117,7 +123,7 @@ internal class Outbound(
         stream: QuicStreamId,
     ): Moved {
         when (end) {
-            WriteEnd.Finish -> table.finSent(stream)
+            WriteEnd.Finish -> table.sendEnded(stream, Side.Finished)
             WriteEnd.More -> Unit
         }
         return Moved.Done
@@ -128,7 +134,10 @@ internal class Outbound(
         inside: Inside,
         stream: QuicStreamId,
     ) {
-        if (sent > 0 && sent < from.length) inside.streams.io.shutdown(stream, ShutdownSide.Write, abandonedCode.value)
+        if (sent > 0 && sent < from.length) {
+            inside.streams.io.shutdown(stream, ShutdownSide.Write, abandonedCode.value)
+            inside.streams.sendEnded(stream, Side.Reset)
+        }
     }
 }
 
@@ -138,8 +147,9 @@ internal class ResetWork(
     private val code: QuicAppErrorCode,
 ) : ConnWork() {
     override fun run(inside: Inside) {
-        inside.streams.io.shutdown(stream, ShutdownSide.Read, code.value)
+        inside.streams.stopReading(stream, code)
         inside.streams.io.shutdown(stream, ShutdownSide.Write, code.value)
+        inside.streams.sendEnded(stream, Side.Reset)
     }
 
     override fun gone(end: ConnEnd) = Unit

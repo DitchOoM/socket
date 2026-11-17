@@ -70,6 +70,7 @@ import com.ditchoom.socket.quic.quiche.quiche_conn_peer_streams_left_uni
 import com.ditchoom.socket.quic.quiche.quiche_conn_peer_transport_params
 import com.ditchoom.socket.quic.quiche.quiche_conn_probe_now
 import com.ditchoom.socket.quic.quiche.quiche_conn_probe_path
+import com.ditchoom.socket.quic.quiche.quiche_conn_probe_path_with
 import com.ditchoom.socket.quic.quiche.quiche_conn_readable
 import com.ditchoom.socket.quic.quiche.quiche_conn_recv
 import com.ditchoom.socket.quic.quiche.quiche_conn_recv_gaps
@@ -857,6 +858,29 @@ internal object CinteropQuicheApi : QuicheApi, QuicheRandomPin {
                     localLen.convert(),
                     peerAddr.toCPointer()!!,
                     peerLen.convert(),
+                    seqOut.ptr,
+                )
+            if (rc >= 0) ProbeOutcome.Probed(seqOut.value.toLong()) else ProbeOutcome.Rejected(rc)
+        }
+
+    override fun connProbePathWith(
+        conn: QuicheConn,
+        localAddr: Long,
+        localLen: Int,
+        peerAddr: Long,
+        peerLen: Int,
+        initialRttNanos: Long,
+    ): ProbeOutcome =
+        memScoped {
+            val seqOut = alloc<ULongVar>()
+            val rc =
+                quiche_conn_probe_path_with(
+                    conn.handle.toCPointer()!!,
+                    localAddr.toCPointer()!!,
+                    localLen.convert(),
+                    peerAddr.toCPointer()!!,
+                    peerLen.convert(),
+                    initialRttNanos.toULong(),
                     seqOut.ptr,
                 )
             if (rc >= 0) ProbeOutcome.Probed(seqOut.value.toLong()) else ProbeOutcome.Rejected(rc)

@@ -12,8 +12,8 @@ import com.ditchoom.socket.quic.connPeerMigrationPermission
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.observe.Confined
 import com.ditchoom.socket.quic.core.time.Nanos
+import com.ditchoom.socket.quic.core.time.RttPrior
 import com.ditchoom.socket.quic.core.time.WakeSink
-import com.ditchoom.socket.quic.core.udp.SockAddr
 import com.ditchoom.socket.quic.decodePathKey
 import com.ditchoom.socket.quic.encodeToNative
 import kotlin.random.Random
@@ -35,7 +35,10 @@ internal class ClientPaths(
 ) {
     private val toPeer = Outgoing.To(first.target)
     private val fixed = Sorting.Fixed(toPeer)
-    private var move: Move = Move.Settled(Linked(LocalAddr(q.api.decodePathKey(first.local.address), first.recvInfo, Made.ByEdge), 0L))
+    private var move: Move =
+        Move.Settled(
+            Linked(LocalAddr(q.api.decodePathKey(first.local.address), first.recvInfo, Made.ByEdge, RttPrior.CONFIGURED), 0L),
+        )
     private val events = PathEvents(q, factory)
     private val peer = TowardPeer(q, first)
     private var previous: Previous = Previous.None
@@ -69,10 +72,11 @@ internal class ClientPaths(
     /** The connection is established: the peer is given the spare ids a move needs. */
     fun established(): Issued = ids.issueAll(q, random)
 
-    /** The socket now leaves from [local]: the path from it is probed, and an earlier unfinished move is dropped. */
+    /** The socket now leaves from [local], its round trip assumed [prior]: its path is probed, an earlier move dropped. */
     fun move(
         now: Nanos,
         local: PathKey,
+        prior: RttPrior,
     ): MoveAnswer {
         when (q.api.connPeerMigrationPermission(q.handle)) {
             is PeerMigrationPermission.Permitted -> Unit
@@ -80,10 +84,10 @@ internal class ClientPaths(
         }
         topUp()
         val sockAddr = local.encodeToNative(factory)
-        val at = LocalAddr(q.api.decodePathKey(sockAddr.address), peer.recvInfoAt(sockAddr), Made.Here(sockAddr))
+        val at = LocalAddr(q.api.decodePathKey(sockAddr.address), peer.recvInfoAt(sockAddr), Made.Here(sockAddr), prior)
         val from = abandon()
         move =
-            when (val probed = peer.probe(SockAddr(sockAddr.address, sockAddr.length))) {
+            when (val probed = peer.probe(at)) {
                 is ProbeOutcome.Probed -> Move.Probing(from, Linked(at, probed.dcidSeq), 0, q.cadenceFrom(now))
                 is ProbeOutcome.Rejected -> Move.Stranded(from, at, Unprobed.NoSpareId, q.retryAt(now, 0), LinkedId.None)
             }

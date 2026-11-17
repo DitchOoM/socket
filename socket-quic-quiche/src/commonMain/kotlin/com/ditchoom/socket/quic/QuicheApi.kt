@@ -694,6 +694,20 @@ interface QuicheApi {
     ): ProbeOutcome
 
     /**
+     * [connProbePath] (`quiche_conn_probe_path_with`, a patched-in export), and two things about the path probed: its
+     * RTT estimate, while it has no sample, starts from [initialRttNanos] (zero keeps the configured one), and its
+     * next packet, the one carrying the PATH_CHALLENGE, is a probe the congestion window does not hold.
+     */
+    fun connProbePathWith(
+        conn: QuicheConn,
+        localAddr: Long,
+        localLen: Int,
+        peerAddr: Long,
+        peerLen: Int,
+        initialRttNanos: Long,
+    ): ProbeOutcome
+
+    /**
      * Supply a spare source connection ID to the peer (`quiche_conn_new_scid`). quiche does
      * not auto-issue CIDs — without this the peer never gets a NEW_CONNECTION_ID and has no
      * spare destination CID to migrate to. [scidAddr] points at a [scidLen]-byte CID,

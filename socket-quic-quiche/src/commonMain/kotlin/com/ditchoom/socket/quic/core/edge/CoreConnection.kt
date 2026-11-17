@@ -10,6 +10,7 @@ import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.socket.quic.EarlyDataAcceptance
+import com.ditchoom.socket.quic.QuicAppErrorCode
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicCapabilities
 import com.ditchoom.socket.quic.QuicCloseCircumstance
@@ -157,6 +158,12 @@ internal class CoreConnection(
 
     /** Tells the connection the network monitor's news. */
     fun network(change: NetworkChange) = conn.submit(NetworkWork(change), CallerPlace.HandToLoop)
+
+    /** Resets both directions of [stream] with [code]. */
+    internal fun resetStream(
+        stream: QuicStreamId,
+        code: QuicAppErrorCode,
+    ) = conn.submit(ResetWork(stream, code), CallerPlace.HandToLoop)
 
     /** Writes the connection's flight recording, in the trace grammar, into [sink]. */
     suspend fun dumpFlight(sink: TraceSink): FlightDump =

@@ -151,11 +151,11 @@ internal class Turn(
         }
     }
 
-    /** Inside: a client's socket now leaves from [local]; a connection that cannot follow it ends ([follow]). */
+    /** Inside: a client's socket now leaves from [to]; a connection that cannot follow it ends ([follow]). */
     fun moved(
         now: Nanos,
-        local: PathKey,
-    ) = when (c.follow(now, local)) {
+        to: MoveTo,
+    ) = when (c.follow(now, to)) {
         MoveAnswer.Following -> Unit
         MoveAnswer.Refused -> finish(now, ConnEnd.LocalAddressGone)
     }

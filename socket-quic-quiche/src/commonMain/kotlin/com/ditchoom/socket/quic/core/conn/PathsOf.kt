@@ -129,7 +129,7 @@ internal fun Paths.endOf(end: ConnEnd): ConnEnd =
  */
 internal fun ConnParts.follow(
     now: Nanos,
-    local: PathKey,
+    to: MoveTo,
 ): MoveAnswer {
     val client =
         when (val paths = slots.paths) {
@@ -140,7 +140,7 @@ internal fun ConnParts.follow(
     val answer =
         when (handshake.confirmation()) {
             Confirmation.Pending -> MoveAnswer.Refused
-            Confirmation.Confirmed -> client.move(now, local)
+            Confirmation.Confirmed -> client.move(now, to.local, to.prior)
         }
     flight.path(
         now,

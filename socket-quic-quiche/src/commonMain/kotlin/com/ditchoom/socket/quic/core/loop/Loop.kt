@@ -18,10 +18,10 @@ import com.ditchoom.socket.quic.core.pool.IntStack
 import com.ditchoom.socket.quic.core.ready.Poller
 import com.ditchoom.socket.quic.core.ready.ReadyTokens
 import com.ditchoom.socket.quic.core.sched.LoopPort
-import com.ditchoom.socket.quic.core.sched.LoopWork
 import com.ditchoom.socket.quic.core.sched.SleepPlan
 import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.Nanos
+import com.ditchoom.socket.quic.core.time.RttPrior
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.Thrown
 import com.ditchoom.socket.quic.reportOnThisThread
@@ -48,7 +48,37 @@ private sealed interface Run {
     class Closing(
         val then: Runnable,
     ) : Run
+
+    /** The stop began: what it releases is never released again, and the loop never runs another pass. */
+    data object Stopped : Run
 }
+
+/** How a loop's stop went. Every step runs once whatever an earlier one threw; the first failure is kept. */
+private sealed interface StopOutcome {
+    data object Clean : StopOutcome
+
+    class Failed(
+        val first: Throwable,
+    ) : StopOutcome
+
+    /** It had stopped already: nothing was released. */
+    data object AlreadyStopped : StopOutcome
+}
+
+/** Runs [step]; what it throws is kept in the outcome instead of cutting the stop short. */
+private inline fun StopOutcome.then(step: () -> Unit): StopOutcome =
+    try {
+        step()
+        this
+    } catch (failure: Throwable) {
+        when (this) {
+            is StopOutcome.Failed -> {
+                first.addSuppressed(failure)
+                this
+            }
+            is StopOutcome.Clean, is StopOutcome.AlreadyStopped -> StopOutcome.Failed(failure)
+        }
+    }
 
 /**
  * One platform thread's run-to-completion loop over its sockets. A pass: fire due deadlines, receive from every socket
@@ -88,13 +118,15 @@ internal class Loop(
     fun move(
         endpoint: Endpoint,
         bind: PathKey,
-    ) = port.submit(MoveWork(this, endpoint, bind))
+        prior: RttPrior,
+    ) = port.submit(MoveWork(this, endpoint, bind, prior))
 
     /** Any thread: the loop stops, ends every connection on it, and then runs [then]. */
     fun close(then: Runnable) = port.submit(StopWork(this, then))
 
-    /** Loop thread only, until stopped: the body of the loop's thread. */
+    /** Loop thread only: the body of the loop's thread. A loop that stopped returns at once. */
     fun run() {
+        if (run is Run.Stopped) return
         try {
             while (true) {
                 val began = clock.now()
@@ -107,22 +139,41 @@ internal class Loop(
                         counts.timedWait(clock.now().value - ended.value)
                     }
                     is Run.Closing -> {
-                        stop(ConnEnd.LoopStopped)
-                        return now.then.run()
+                        val stopped = stop(ConnEnd.LoopStopped)
+                        now.then.run()
+                        when (stopped) {
+                            is StopOutcome.Failed -> contain(stopped.first)
+                            is StopOutcome.Clean, is StopOutcome.AlreadyStopped -> Unit
+                        }
+                        return
                     }
+                    is Run.Stopped -> return
                 }
             }
         } catch (failure: Throwable) {
-            stop(ConnEnd.LoopFailed(Thrown(failure)))
-            when (Tiers.of(failure)) {
-                Tier.Connection -> Unit
-                Tier.Process -> reportOnThisThread(failure)
+            // Only a stop that never began runs here: one that began, failed or not, is not run again.
+            when (val stopped = stop(ConnEnd.LoopFailed(Thrown(failure)))) {
+                is StopOutcome.Failed -> failure.addSuppressed(stopped.first)
+                is StopOutcome.Clean, is StopOutcome.AlreadyStopped -> Unit
             }
+            contain(failure)
         }
     }
 
-    /** One pass at [now]. Returns when the loop next needs to run without input. */
-    fun pass(now: Nanos): NextDue = traced(TraceSection.LoopPass) { passInside(now) }
+    /** What reached the loop tier: a process-tier failure is reported on this thread, and the rest end with the loop. */
+    private fun contain(failure: Throwable) {
+        when (Tiers.of(failure)) {
+            Tier.Connection -> Unit
+            Tier.Process -> reportOnThisThread(failure)
+        }
+    }
+
+    /** One pass at [now]. Returns when the loop next needs to run without input; a stopped loop needs nothing. */
+    fun pass(now: Nanos): NextDue =
+        when (run) {
+            is Run.Stopped -> NextDue.None
+            is Run.Running, is Run.Closing -> traced(TraceSection.LoopPass) { passInside(now) }
+        }
 
     private fun passInside(now: Nanos): NextDue {
         counts.passed()
@@ -180,10 +231,15 @@ internal class Loop(
     internal fun moveTo(
         endpoint: Endpoint,
         bind: PathKey,
-    ) = endpoint.move(poller, bind)
+        prior: RttPrior,
+    ) = endpoint.move(poller, bind, prior)
 
     internal fun beginClosing(then: Runnable) {
-        run = Run.Closing(then)
+        when (run) {
+            is Run.Running -> run = Run.Closing(then)
+            // A second close in the same pass: the port answers it as gone once the loop stopped, running [then].
+            is Run.Closing, is Run.Stopped -> port.submit(StopWork(this, then))
+        }
     }
 
     private fun receiveOn(endpoint: Endpoint) {
@@ -212,70 +268,31 @@ internal class Loop(
         port.endSleep()
     }
 
-    /** Connections first, so their own requests are queued before the port shuts and answers them as gone. */
-    private fun stop(end: ConnEnd) {
+    /**
+     * Connections first, so their own requests are queued before the port shuts and answers them as gone. Runs once:
+     * it moves to [Run.Stopped] before it releases anything, and takes each endpoint off its slot before ending it, so
+     * a step that throws is not repeated and the steps after it still run.
+     */
+    private fun stop(end: ConnEnd): StopOutcome {
+        if (run is Run.Stopped) return StopOutcome.AlreadyStopped
+        run = Run.Stopped
         life.stopped()
+        var outcome: StopOutcome = StopOutcome.Clean
         for (i in slots.indices) {
-            when (val slot = slots[i]) {
-                is LoopSlot.Taken -> slot.endpoint.loopEnded(end, poller)
+            val slot = slots[i]
+            slots[i] = LoopSlot.Empty
+            when (slot) {
+                is LoopSlot.Taken -> outcome = outcome.then { slot.endpoint.loopEnded(end, poller) }
                 is LoopSlot.Empty -> Unit
             }
         }
         slots.clear()
-        poller.close()
-        port.stop(end)
-        freeOnStop.run()
+        outcome = outcome.then { poller.close() }
+        outcome = outcome.then { port.stop(end) }
+        return outcome.then { freeOnStop.run() }
     }
 
     private companion object {
         const val READY_TOKENS = 256
     }
-}
-
-/** Wakes the loop when a socket died on another thread: the next pass sees the socket's health. One per socket. */
-internal class SocketDiedNotice : LoopWork() {
-    override fun run(port: LoopPort) = Unit
-
-    override fun gone(end: ConnEnd) = Unit
-}
-
-/** Loop work: a new connection's socket joins the loop. */
-private class PlaceWork(
-    private val loop: Loop,
-    private val endpoint: Endpoint,
-) : LoopWork() {
-    override fun run(port: LoopPort) = loop.attach(endpoint)
-
-    override fun gone(end: ConnEnd) = endpoint.unplaced(end)
-}
-
-/** Loop work: a socket is reopened on a changed network. */
-private class RehomeWork(
-    private val loop: Loop,
-    private val endpoint: Endpoint,
-) : LoopWork() {
-    override fun run(port: LoopPort) = loop.reopen(endpoint)
-
-    override fun gone(end: ConnEnd) = Unit
-}
-
-/** Loop work: a socket is moved to a new local address. */
-private class MoveWork(
-    private val loop: Loop,
-    private val endpoint: Endpoint,
-    private val bind: PathKey,
-) : LoopWork() {
-    override fun run(port: LoopPort) = loop.moveTo(endpoint, bind)
-
-    override fun gone(end: ConnEnd) = Unit
-}
-
-/** Loop work: the loop's owner stops it. */
-private class StopWork(
-    private val loop: Loop,
-    private val then: Runnable,
-) : LoopWork() {
-    override fun run(port: LoopPort) = loop.beginClosing(then)
-
-    override fun gone(end: ConnEnd) = then.run()
 }
