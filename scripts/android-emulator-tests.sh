@@ -553,6 +553,18 @@ if [ "$LOGCAT_LINES" = "0" ]; then
   echo "::warning::logcat capture is EMPTY — the Android H3Loopback failure-diagnostics transport is broken"
 fi
 
+# Per-connection CPU of the core's concurrent echo test (CoreServerEchoTests prints it on pass and fail), inline so
+# API levels compare from one run's job logs.
+echo "=== core CPU per connection (API ${API_LEVEL}) ==="
+grep -F "CORE-CPU" "$LOGCAT_FILE" || echo "(no CORE-CPU line)"
+echo "=== end core CPU per connection ==="
+# The guest's clocksource and what the kernel logged about it: on an HPET clocksource (the API 28/29 images) every
+# clock read traps to the host. Apps may not read it, so the script prints it.
+echo "=== guest clocksource (API ${API_LEVEL}) ==="
+timeout 20 adb shell "cat /sys/devices/system/clocksource/clocksource0/current_clocksource /sys/devices/system/clocksource/clocksource0/available_clocksource" || true
+timeout 20 adb shell "dmesg 2>/dev/null | grep -iE 'clocksource|tsc' | tail -40" || true
+echo "=== end guest clocksource ==="
+
 if [ "$TEST_EXIT" != "0" ]; then
   # Inline in the job log too — a failure should be readable without downloading artifacts.
   echo "=== H3Loopback failure diagnostics (logcat, API ${API_LEVEL}) ==="

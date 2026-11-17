@@ -8,6 +8,7 @@ import com.ditchoom.socket.quic.core.sched.LoopPort
 import com.ditchoom.socket.quic.core.sched.LoopWork
 import com.ditchoom.socket.quic.core.testing.ConnRig
 import com.ditchoom.socket.quic.core.testing.EchoQuiche
+import com.ditchoom.socket.quic.core.testing.VirtualClock
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.udp.ArrivedOn
 import com.ditchoom.socket.quic.core.udp.BatchCapability
@@ -26,6 +27,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertSame
+import kotlin.test.assertTrue
 
 /**
  * One pass of [Loop] as a function of its inputs and the time: a fake socket, a connection whose quiche echoes every
@@ -125,6 +127,25 @@ class LoopPassTests {
 
         rig.loop.pass(Nanos(1))
         assertEquals(1500L, rig.loop.counts.datagramsIn)
+    }
+
+    @Test
+    fun anEchoedDatagramCostsOneClockReadWhenQuicheReadsItAndNoneWhenItIsWritten() {
+        // On a device whose clocksource is the HPET a read of the clock traps to the host: a pass reads it per datagram
+        // only where the stamp needs it, when quiche reads a datagram; a write's datagrams share one reading.
+        fun readsToEcho(datagrams: Int): Long {
+            val clock = VirtualClock()
+            val io = ScriptedIo()
+            repeat(datagrams) { io.arrive(byteArrayOf(it.toByte()), peer(it)) }
+            val rig = ConnRig(EchoQuiche(), io = io, clock = clock)
+            clock.reads = 0
+            rig.loop.pass(Nanos(0))
+            assertEquals(datagrams, io.sent.size, "every datagram was echoed")
+            return clock.reads
+        }
+        val one = readsToEcho(1)
+        val twenty = readsToEcho(20)
+        assertTrue(twenty - one <= 19, "clock reads: $one to echo 1 datagram, $twenty to echo 20")
     }
 
     @Test

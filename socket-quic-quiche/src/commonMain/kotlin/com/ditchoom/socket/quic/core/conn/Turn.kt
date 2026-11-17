@@ -241,7 +241,7 @@ internal class Turn(
         val wrote =
             when (val pacing = c.slots.pacing) {
                 is Pacing.Unpaced -> c.egress.write(out, paths, c.flight)
-                is Pacing.ByQuiche -> c.egress.writePaced(out, paths, now, pacing.pacer, c.flight)
+                is Pacing.ByQuiche -> c.egress.writePaced(out, paths, pacing.pacer, c.flight)
             }
         c.wrote(now)
         if (c.life.linger.sending() && c.keepClose(now, out) == CloseSent.Yes) {

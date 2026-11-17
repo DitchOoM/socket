@@ -60,6 +60,9 @@ class CoreServerEchoTests {
             withCoreEchoServer(ServerConfig(admission = AdmissionBounds(perPass = 256, inProgress = 2_048))) { server ->
                 val connectedAfter = ConcurrentLinkedQueue<Long>()
                 val scheduled = LoopScheduling.snapshot()
+                val process = LoopScheduling.snapshotAll()
+                val collected = LoopScheduling.gcStats()
+                val clockBefore = LoopScheduling.clockReport()
                 val started = System.nanoTime()
                 try {
                     val echoed =
@@ -78,6 +81,16 @@ class CoreServerEchoTests {
                             }.awaitAll()
                     echoed.forEachIndexed { n, (sent, back) -> assertContentEquals(sent, back, "connection $n") }
                     assertEquals(connections.toLong(), server.counts.accepted)
+                    // Passing runs too, so the per-connection cost compares across runtimes (CI greps CORE-CPU).
+                    println(
+                        "CORE-CPU $connections echo connections in ${(System.nanoTime() - started) / NANOS_PER_MILLI} ms: " +
+                            "${LoopScheduling.cpuPerConnection(process, connections)}; " +
+                            "clock before: $clockBefore, after: ${LoopScheduling.clockReport()}; " +
+                            "${LoopScheduling.gcSince(collected)}; server socket ${server.socket.buffers.receiveBytes} B " +
+                            "receive buffer, drops=${server.socket.drops()}, " +
+                            "${server.loop.counts.datagramsIn} in over ${server.loop.counts.passes} passes; " +
+                            "server loop ${timing(server.loop.counts)}; loops ${LoopScheduling.since(scheduled)}",
+                    )
                 } catch (failed: Throwable) {
                     // What the server and its socket saw, so the next occurrence names where the handshakes went.
                     val times = connectedAfter.sorted()
@@ -95,6 +108,9 @@ class CoreServerEchoTests {
                             "heap ${heapMebibytes()}; " +
                             "server loop ${timing(server.loop.counts)}; client loops $clientLoops; " +
                             "scheduling ${LoopScheduling.since(scheduled)}; " +
+                            "process ${LoopScheduling.cpuPerConnection(process, connections)}; " +
+                            "clock before: $clockBefore, after: ${LoopScheduling.clockReport()}; " +
+                            "${LoopScheduling.gcSince(collected)}; " +
                             "a route probe (open, bind, connect, close) takes ${probeMillis(server.port)} ms on this machine",
                         failed,
                     )

@@ -97,8 +97,8 @@ internal class Admission(
     /** After a chunk: whether this pass may still start more. */
     fun afterChunk(): Admitted = if (backlog.size > 0 && startedThisPass < bounds.perPass && !full()) Admitted.More else Admitted.Done
 
-    /** Whether held Initials wait for a later pass only because this pass started all it may. */
-    fun owesPass(): Boolean = backlog.size > 0 && startedThisPass >= bounds.perPass
+    /** Whether held Initials wait for a later pass that may start them: this pass's count or receive time ran out. */
+    fun owesPass(): Boolean = backlog.size > 0 && !full()
 
     /** Starts a connection for the Initial at [datagram], read into [header]; its id is left in [newCid]. */
     fun accept(

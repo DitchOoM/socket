@@ -25,8 +25,9 @@ internal enum class FirstOut { NotYet, Written }
  * Datagrams out: the only file that asks quiche for output and reads its send infos. Each datagram goes where the
  * connection's [Paths] say: all to one target, or each by the address quiche wrote it for; one for a path no socket
  * of ours holds is dropped and recorded ([DropWhy.NoSocketForPath]). Remembers what became of the last datagram of its
- * last write: the write that makes quiche drain ends with its CONNECTION_CLOSE. Each datagram is recorded at the time quiche was asked for it, read from [clock]:
- * the turn's time can be well before then, as the turn runs its work first, and a replay sends at the recorded time.
+ * last write: the write that makes quiche drain ends with its CONNECTION_CLOSE. A write's datagrams are recorded at the time
+ * the write began, read from [clock] once: the turn's time can be well before then, as the turn runs its work first, and
+ * a replay sends at the recorded time. They leave together, in one batch.
  */
 @Confined
 internal class Egress(
@@ -61,25 +62,29 @@ internal class Egress(
         flight: ConnFlight,
     ): Wrote {
         last = LastOut.None
+        val at = clock.now()
         while (out.room() == Room.Open) {
-            if (one(out, paths, flight) <= 0) return Wrote.All
+            if (one(out, paths, flight, at) <= 0) return Wrote.All
         }
         return Wrote.BatchFull
     }
 
-    /** Writes quiche's output into [out] at the pace [pacer] holds it to. */
+    /**
+     * Writes quiche's output into [out] at the pace [pacer] holds it to, judged at the time the write began: quiche's
+     * pacer reads its clock when it writes, and a starved turn can begin seconds before its write.
+     */
     fun writePaced(
         out: SendBatch,
         paths: Paths,
-        now: Nanos,
         pacer: Pacer,
         flight: ConnFlight,
     ): Wrote {
         last = LastOut.None
-        if (pacer.state(now) == PaceState.Holding) return Wrote.All
+        val at = clock.now()
+        if (pacer.state(at) == PaceState.Holding) return Wrote.All
         while (out.room() == Room.Open) {
-            if (one(out, paths, flight) <= 0) return Wrote.All
-            if (pacer.sent(q.api.sendInfoAtNanos(paths.sendInfo()), now) == PaceState.Holding) return Wrote.All
+            if (one(out, paths, flight, at) <= 0) return Wrote.All
+            if (pacer.sent(q.api.sendInfoAtNanos(paths.sendInfo()), at) == PaceState.Holding) return Wrote.All
         }
         return Wrote.BatchFull
     }
@@ -88,11 +93,11 @@ internal class Egress(
         out: SendBatch,
         paths: Paths,
         flight: ConnFlight,
+        at: Nanos,
     ): Int {
         val offset = out.nextOffset()
         val info = paths.sendInfo()
         val window = paths.window(Window(out.limits.maxDatagramSize))
-        val at = clock.now()
         val written = q.api.connSend(q.handle, out.storage.address + offset, window.bytes, info)
         if (written <= 0) return written
         first = FirstOut.Written

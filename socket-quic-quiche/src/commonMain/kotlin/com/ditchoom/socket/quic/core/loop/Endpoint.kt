@@ -62,13 +62,15 @@ internal class Endpoint(
     fun hasBacklog(): Boolean = phase == Phase.Live && input == ReceiveInput.Backlog
 
     /**
-     * Receives up to [MAX_PER_PASS] datagrams and hands them to the route. A server then starts held handshakes a
-     * chunk at a time, reading the socket again after each chunk so its buffer never fills while they start.
+     * Receives up to [MAX_PER_PASS] datagrams and hands them to the route. A server then starts held handshakes a chunk
+     * at a time while [budget] lasts, reading the socket again after each chunk so its buffer never fills while they start;
+     * reading is never cut by the budget, so nothing waits in the kernel to be read stale.
      */
     fun receive(
         batch: ReceiveBatch,
         counts: LoopCounts,
         at: Nanos,
+        budget: ReceiveBudget,
     ) {
         if (phase != Phase.Live) return
         when (route) {
@@ -82,7 +84,7 @@ internal class Endpoint(
             is Route.Demux -> {
                 route.demux.passBegins()
                 receiveWaiting(batch, counts, at)
-                while (route.demux.admitSome(send) == Admitted.More) {
+                while (budget.state() == Budget.Left && route.demux.admitSome(send) == Admitted.More) {
                     input = ReceiveInput.Maybe
                     receiveWaiting(batch, counts, at)
                 }
@@ -268,12 +270,7 @@ internal class Endpoint(
     ) {
         when (route) {
             is Route.Fixed -> for (i in 0 until batch.count) {
-                route.conn.received(
-                    batch.bufferAt(i).bytes,
-                    batch.lengthAt(i),
-                    batch.fromAt(i),
-                    at,
-                )
+                route.conn.received(batch.bufferAt(i).bytes, batch.lengthAt(i), batch.fromAt(i), at)
             }
             is Route.Demux -> traced(TraceSection.Demux) { route.demux.route(batch, send, at) }
         }
