@@ -7,6 +7,7 @@ import com.ditchoom.buffer.unwrapFully
 import com.ditchoom.socket.quic.LinkClass
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicOptions
+import com.ditchoom.socket.quic.QuicTlsConfig
 import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.QuicheConn
 import com.ditchoom.socket.quic.QuicheRecvInfo
@@ -243,13 +244,14 @@ internal class VirtualPair private constructor(
         fun with(
             options: QuicOptions,
             oneWay: Duration = 30.milliseconds,
+            tls: QuicTlsConfig = coreTlsConfig(),
             body: suspend CoroutineScope.(VirtualPair) -> Unit,
         ) = runBlocking {
             val api = loadQuicheApi()
             val pair = VirtualPair(oneWay, api)
             api.setThreadVirtualTimeNanos(ORIGIN)
             try {
-                pair.server = replayServer(api, options, BufferFactory.Default, pair.Socket(End.Server), pair.clock)
+                pair.server = replayServer(api, options, BufferFactory.Default, pair.Socket(End.Server), pair.clock, tls)
                 pair.serverKey = InetSocketAddress(LOCALHOST, pair.server.port).toPathKey()
                 pair.client =
                     replayClient(
@@ -278,6 +280,37 @@ internal class VirtualPair private constructor(
             }
         }
     }
+
+    /**
+     * The client closes and a new one, with [options], takes its place on the link from a port of its own. Its first
+     * flight goes out in the next pass; [ReplayClient.offer] says whether it waits for 0-RTT.
+     */
+    suspend fun reconnect(options: QuicOptions): ReplayClient {
+        val old = client
+        old.connection.closeNow(com.ditchoom.socket.quic.QuicError.NoError)
+        runUntil { old.connection.end() is EdgeEnd.Ended }
+        old.loop.close(Runnable { })
+        old.loop.run()
+        old.scope.cancel()
+        loseInFlight(End.Server)
+        loseInFlight(End.Client)
+        client =
+            replayClient(
+                CountingClientApi(api),
+                options,
+                BufferFactory.Default,
+                Socket(End.Client),
+                clock,
+                server.port,
+                ++seeds,
+                LinkClass.Ethernet,
+            )
+        clientKey = client.local
+        client.parts.start()
+        return client
+    }
+
+    private var seeds = 1L
 
     /** The server's accepted connection: it is offered from a thread of the server's own, so awaited on the wall clock. */
     suspend fun accept(): CoreConnection = withTimeout(10.seconds) { server.accept() }

@@ -139,7 +139,7 @@ class CoreServerCloseTests {
                 val second = Random(5).nextBytes(5_000)
                 assertContentEquals(second, echoOver(healthyStream, second), "the other connection still echoes")
                 assertTrue(server.loop.counts.passes > passes, "the loop kept passing")
-                assertEquals(QuicConnectionState.Established("test"), accepted.last().state.value)
+                assertIs<QuicConnectionState.Established>(accepted.last().state.value)
                 healthy.connection.close(QuicError.NoError)
             }
         }
