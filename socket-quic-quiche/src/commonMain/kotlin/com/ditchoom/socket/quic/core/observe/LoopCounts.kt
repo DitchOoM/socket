@@ -31,7 +31,10 @@ internal class LoopCounts {
         if (nanos > longestPassNanos) longestPassNanos = nanos
     }
 
-    /** How the longest pass so far split: deadlines and readiness, receiving, handed-over work, serving; and the longest single serve. */
+    /**
+     * How the longest pass so far split: deadlines and readiness, receiving, handed-over work, serving; and the longest
+     * single serve, timed from the end of the last serve that sent to the end of the next one, so idle serves read no clock.
+     */
     var longestFire = 0L
         private set
     var longestReceive = 0L

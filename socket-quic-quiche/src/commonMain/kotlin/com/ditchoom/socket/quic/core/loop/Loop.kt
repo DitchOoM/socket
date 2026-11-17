@@ -1,5 +1,3 @@
-@file:OptIn(ExperimentalAtomicApi::class)
-
 package com.ditchoom.socket.quic.core.loop
 
 import com.ditchoom.socket.quic.NextDue
@@ -11,7 +9,6 @@ import com.ditchoom.socket.quic.core.observe.CallerCounts
 import com.ditchoom.socket.quic.core.observe.Counter
 import com.ditchoom.socket.quic.core.observe.LoopCounts
 import com.ditchoom.socket.quic.core.observe.LoopOnly
-import com.ditchoom.socket.quic.core.observe.Published
 import com.ditchoom.socket.quic.core.observe.TraceSection
 import com.ditchoom.socket.quic.core.observe.traced
 import com.ditchoom.socket.quic.core.pool.IntStack
@@ -26,32 +23,6 @@ import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.Thrown
 import com.ditchoom.socket.quic.reportOnThisThread
 import kotlinx.coroutines.Runnable
-import kotlin.concurrent.atomics.AtomicReference
-import kotlin.concurrent.atomics.ExperimentalAtomicApi
-
-/** Whether a loop runs, as any thread may read it. */
-internal enum class LoopLife { Alive, Stopped }
-
-/** A loop's life, written once by the loop when it stops. */
-@Published
-internal class LoopLifeCell {
-    private val state = AtomicReference(LoopLife.Alive)
-
-    fun load(): LoopLife = state.load()
-
-    fun stopped() = state.store(LoopLife.Stopped)
-}
-
-private sealed interface Run {
-    data object Running : Run
-
-    class Closing(
-        val then: Runnable,
-    ) : Run
-
-    /** The stop began: what it releases is never released again, and the loop never runs another pass. */
-    data object Stopped : Run
-}
 
 /** Runs [step]; what it throws is kept in the outcome instead of cutting the stop short. */
 private inline fun StopOutcome.then(step: () -> Unit): StopOutcome =
@@ -67,6 +38,17 @@ private inline fun StopOutcome.then(step: () -> Unit): StopOutcome =
             is StopOutcome.Clean, is StopOutcome.AlreadyStopped -> StopOutcome.Failed(failure)
         }
     }
+
+private sealed interface Run {
+    data object Running : Run
+
+    class Closing(
+        val then: Runnable,
+    ) : Run
+
+    /** The stop began: what it releases is never released again, and the loop never runs another pass. */
+    data object Stopped : Run
+}
 
 /**
  * One platform thread's run-to-completion loop over its sockets. A pass: fire due deadlines, receive from every socket
@@ -183,9 +165,15 @@ internal class Loop(
         }
         ready.clear()
         val fired = clock.now().value
+        // The clock is read again only after a socket gave datagrams: a pass's reads follow its work, not its connections.
+        var at = Nanos(fired)
         for (i in slots.indices) {
             when (val slot = slots[i]) {
-                is LoopSlot.Taken -> receiveOn(slot.endpoint)
+                is LoopSlot.Taken -> {
+                    val before = counts.datagramsIn
+                    receiveOn(slot.endpoint, at)
+                    if (counts.datagramsIn != before) at = clock.now()
+                }
                 is LoopSlot.Empty -> Unit
             }
         }
@@ -194,15 +182,21 @@ internal class Loop(
         val worked = clock.now().value
         var backlog = false
         var slowest = 0L
+        // A serve is timed only when it sent, from the end of the last one that did: idle serves read no clock.
+        var lastSent = worked
         for (i in slots.indices) {
             when (val slot = slots[i]) {
                 is LoopSlot.Taken -> {
-                    val serveBegan = clock.now().value
+                    val before = counts.datagramsOut
                     when (slot.endpoint.serve(poller, now, port)) {
                         Stay.Left -> vacate(slot.endpoint)
                         Stay.Stays -> if (slot.endpoint.hasBacklog()) backlog = true
                     }
-                    slowest = maxOf(slowest, clock.now().value - serveBegan)
+                    if (counts.datagramsOut != before) {
+                        val sent = clock.now().value
+                        slowest = maxOf(slowest, sent - lastSent)
+                        lastSent = sent
+                    }
                 }
                 is LoopSlot.Empty -> Unit
             }
@@ -238,9 +232,12 @@ internal class Loop(
         }
     }
 
-    private fun receiveOn(endpoint: Endpoint) {
+    private fun receiveOn(
+        endpoint: Endpoint,
+        at: Nanos,
+    ) {
         try {
-            endpoint.receive(receive, counts, clock.now())
+            endpoint.receive(receive, counts, at)
         } catch (failure: Exception) {
             receive.release()
             endpoint.ioThrew(Thrown(failure))
