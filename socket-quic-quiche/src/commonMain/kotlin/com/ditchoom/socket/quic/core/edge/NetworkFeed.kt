@@ -14,8 +14,6 @@ import com.ditchoom.socket.quic.toPathKey
 import com.ditchoom.socket.udp.UdpSocket
 import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.IO
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.drop
@@ -28,8 +26,9 @@ import kotlin.coroutines.CoroutineContext
  * same address on another network reopens the socket there ([ClientParts.rehome]) and the connection sends from it in
  * that pass; a usable network back on the same one has it send at once; a route from another address moves the socket
  * there and the connection migrates ([ClientParts.migrate]), or ends under [OnMove.End]; no usable network is ridden
- * out, bounded by the idle timeout. It runs on [context]: an IO thread, or the thread of a test that drives the loop on
- * virtual time, which also reads the address to move to without leaving that thread ([bindKey]).
+ * out, bounded by the idle timeout. It runs on [context]: the [setupLane], as its route probes and socket moves block,
+ * or the thread of a test that drives the loop on virtual time, which also reads the address to move to without
+ * leaving that thread ([bindKey]).
  */
 internal fun CoroutineScope.feedNetwork(
     monitor: NetworkMonitor,
@@ -38,7 +37,7 @@ internal fun CoroutineScope.feedNetwork(
     routeSource: suspend () -> RouteSource,
     boundHost: String,
     onMove: OnMove,
-    context: CoroutineContext = Dispatchers.IO,
+    context: CoroutineContext = setupLane,
     bindKey: suspend (String) -> PathKey = { host -> UdpSocket.resolve(host, 0).toPathKey() },
 ): Job =
     launch(context + CoroutineName("quic-core/network")) {

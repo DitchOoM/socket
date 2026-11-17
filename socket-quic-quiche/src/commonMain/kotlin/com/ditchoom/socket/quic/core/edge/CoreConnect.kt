@@ -15,7 +15,6 @@ import com.ditchoom.socket.quic.NativeSocketRefusal
 import com.ditchoom.socket.quic.QUIC_ISSUED_CONN_ID_LEN
 import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicConnectionIdentity
-import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicRole
 import com.ditchoom.socket.quic.QuicSessionId
@@ -49,8 +48,6 @@ import com.ditchoom.socket.quic.wireClientConnectivityTap
 import com.ditchoom.socket.udp.SocketAddressCodec
 import com.ditchoom.socket.udp.UdpSocket
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.IO
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
@@ -58,9 +55,10 @@ import kotlin.time.Duration
 
 /**
  * Connects to [host]:[port] (an address literal) on the run-to-completion core and returns once the handshake
- * completed. Setup that opens files, sockets and native libraries runs off the caller's thread, so a caller on a main
- * dispatcher is never blocked. The connection owns its socket, bound to the address the route to the peer leaves
- * from, and shares a loop thread, the one of [loops] with the fewest connections; the socket ends with the connection.
+ * completed. Setup that opens files, sockets and native libraries runs on the [setupLane], off the caller's thread, so a
+ * caller on a main dispatcher is never blocked; the handshake wait parks on the caller's own context. The connection
+ * owns its socket, bound to the address the route to the peer leaves from, and shares a loop thread, the one of [loops]
+ * with the fewest connections; the socket ends with the connection.
  * [wrapIo] may wrap the socket's batch interface, which a test uses to see which thread sends and receives;
  * [routeSource] answers where the route to the peer leaves from, which a test uses to move it.
  */
@@ -84,38 +82,49 @@ internal suspend fun coreConnect(
     datagramSize: DatagramSize = DatagramSize.Probed,
 ): CoreClient {
     val peerHost = peerHostFor(host)
-    return withContext(Dispatchers.IO) {
-        val memory = EdgeMemory(factory)
-        var connected = false
-        try {
-            connectOnThisThread(
-                host,
-                peerHost,
-                port,
-                serverName,
-                options.sizedBy(datagramSize),
-                memory,
-                factory,
-                api,
-                timeout,
-                readPolicy,
-                writePolicy,
-                wrapIo,
-                loops,
-                buffers,
-                flight,
-                routeSource,
-                batching,
-                ride,
-            ).also { connected = true }
-        } finally {
-            if (!connected) memory.freeAll()
+    val memory = EdgeMemory(factory)
+    val sized = options.sizedBy(datagramSize)
+    // Read once the lane is left: a caller cancelled meanwhile never sees the started client, but must end it.
+    var setup: ClientSetup = ClientSetup.Unstarted
+    var connected = false
+    try {
+        val started =
+            withContext(setupLane) {
+                connectOnLane(
+                    host,
+                    peerHost,
+                    port,
+                    serverName,
+                    sized,
+                    memory,
+                    factory,
+                    api,
+                    timeout,
+                    readPolicy,
+                    writePolicy,
+                    wrapIo,
+                    loops,
+                    buffers,
+                    flight,
+                    routeSource,
+                    batching,
+                    ride,
+                ).also { setup = ClientSetup.Started(it) }
+            }
+        return started.established(sized.resumption, timeout).also { connected = true }
+    } finally {
+        if (!connected) {
+            when (val reached = setup) {
+                is ClientSetup.Started -> reached.started.abandon()
+                is ClientSetup.Unstarted -> Unit
+            }
+            memory.freeAll()
         }
     }
 }
 
-/** Everything [coreConnect] does that opens a socket, a file or a native library, off the caller's thread. */
-private suspend fun connectOnThisThread(
+/** Everything [coreConnect] does that opens a socket, a file or a native library, on the [setupLane]. */
+private suspend fun connectOnLane(
     host: String,
     peerHost: String,
     port: Int,
@@ -134,7 +143,7 @@ private suspend fun connectOnThisThread(
     routeSource: suspend (UdpSocketChannelFactory) -> RouteSource,
     batching: UdpBatching,
     ride: ClientRide,
-): CoreClient {
+): StartedClient {
     val peer = UdpSocket.resolve(peerHost, port)
     val peerKey = peer.toPathKey()
     val codec = SocketAddressCodec(hostSockAddrLayout)
@@ -225,14 +234,7 @@ private suspend fun connectOnThisThread(
         }
     built.start()
     scope.feedNetwork(monitor, connection, built, { routeSource(route) }, local.hostLiteral(), onMoveOf(options.migration))
-    var established = false
-    try {
-        connection.runEarlyData(options.resumption, offer) { withTimeout(timeout) { connection.established() } }
-        established = true
-    } finally {
-        if (!established) connection.closeNow(QuicError.NoError)
-    }
-    return CoreClient(connection, built.conn, running.loop, SocketReport(socket.granted(), local.port))
+    return StartedClient(CoreClient(connection, built.conn, running.loop, SocketReport(socket.granted(), local.port)), offer)
 }
 
 /** A client config with the caller's ALPN, options, handshake rule and trust anchors applied. */

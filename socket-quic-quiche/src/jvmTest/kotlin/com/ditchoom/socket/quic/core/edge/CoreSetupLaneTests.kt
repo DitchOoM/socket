@@ -11,10 +11,10 @@ import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.testing.platformQuicheApi
 import com.ditchoom.socket.quic.network
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.withContext
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentLinkedQueue

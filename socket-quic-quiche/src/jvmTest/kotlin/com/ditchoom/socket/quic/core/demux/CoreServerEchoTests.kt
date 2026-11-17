@@ -68,7 +68,8 @@ class CoreServerEchoTests {
                     val echoed =
                         (0 until connections)
                             .map { n ->
-                                async(Dispatchers.IO) {
+                                // Default: a client only suspends, and IO would wake a worker per client.
+                                async(Dispatchers.Default) {
                                     val client = connectCore(server.port, loops = loops)
                                     connectedAfter.add((System.nanoTime() - started) / NANOS_PER_MILLI)
                                     try {

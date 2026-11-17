@@ -26,8 +26,6 @@ import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 import com.ditchoom.socket.quic.core.udp.SocketBuffers
 import com.ditchoom.socket.quic.core.udp.SocketReport
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.IO
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.consumeAsFlow
@@ -106,8 +104,8 @@ private class ShutServer(
 
 /**
  * Binds [bind] and serves on it with the certificate of [tls]. Setup that touches files, sockets and native libraries
- * runs off the caller's thread. [wrapIo] may wrap the socket's batch interface, which a test uses to see what the loop
- * sends and receives.
+ * runs on the [setupLane], off the caller's thread. [wrapIo] may wrap the socket's batch interface, which a test uses
+ * to see what the loop sends and receives.
  */
 internal suspend fun coreServe(
     bind: PathKey,
@@ -126,7 +124,7 @@ internal suspend fun coreServe(
     batching: UdpBatching = options.udpBatching,
     datagramSize: DatagramSize = DatagramSize.Probed,
 ): CoreServer =
-    withContext(Dispatchers.IO) {
+    withContext(setupLane) {
         val memory = EdgeMemory(factory)
         var built = false
         try {
