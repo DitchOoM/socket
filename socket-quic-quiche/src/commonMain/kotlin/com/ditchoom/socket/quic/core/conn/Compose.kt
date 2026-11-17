@@ -37,9 +37,14 @@ internal class ConnMemory(
 
 /** Which end of a connection this is, with what that end alone needs. */
 internal sealed interface ConnSide {
-    /** A client draws the ids it hands its peer from [ids]. */
+    /**
+     * A client draws the ids it hands its peer from [ids], offered quiche [offer] before its first flight, and copies
+     * its server's session ticket into [ticket].
+     */
     class Client(
         val ids: Random,
+        val offer: Offer,
+        val ticket: NativeBytes,
     ) : ConnSide
 
     /** A server hands its peer the ids its loop routes to it. */
@@ -110,7 +115,11 @@ internal fun buildConn(
                             ),
                         )
                 },
-            resumption = Resumption.None,
+            resumption =
+                when (side) {
+                    is ConnSide.Client -> Resumption.Client(ClientSession(q, side.offer, side.ticket))
+                    is ConnSide.Server -> Resumption.Server(ServerSession(q, rules.earlyData))
+                },
             datagrams =
                 when (val r = rules.datagrams) {
                     is DatagramRule.Off -> Datagrams.Off

@@ -145,7 +145,7 @@ internal class Turn(
     ) {
         c.flight.network(now, change.ordinal)
         when (c.network.changed(change)) {
-            NetworkStep.Nudge -> c.timer.nudge()
+            NetworkStep.Nudge -> c.networkUsable(now)
             NetworkStep.Wait -> Unit
             NetworkStep.End -> finish(now, ConnEnd.LocalAddressGone)
         }
@@ -159,6 +159,9 @@ internal class Turn(
         MoveAnswer.Following -> Unit
         MoveAnswer.Refused -> finish(now, ConnEnd.LocalAddressGone)
     }
+
+    /** Inside: a client's first flight, held for 0-RTT, may leave. */
+    fun releaseFirstFlight() = c.releaseFirstFlight()
 
     /** Inside: the ids the loop routed to this server connection go to quiche. */
     fun issue(spare: List<SpareId>) = c.slots.paths.issue(spare)
@@ -205,14 +208,8 @@ internal class Turn(
         now: Nanos,
         out: SendBatch,
     ): Collected {
-        when (c.handshake.step(now)) {
-            HandshakeStep.Handshaking -> Unit
-            HandshakeStep.JustEstablished -> {
-                paths.established()
-                c.sink.established(c.handshake.report(now, paths.read()))
-                c.wakeEstablished(now)
-            }
-            HandshakeStep.Established -> c.wakeEstablished(now)
+        when (c.handshakeStep(now, paths)) {
+            HandshakeStep.Handshaking, HandshakeStep.JustEstablished, HandshakeStep.Established -> Unit
             HandshakeStep.DeadlinePassed -> {
                 val end = ConnEnd.HandshakeTimedOut(c.handshake.progress(now, paths.read()))
                 c.life.close(QuicError.NoError, end, CloseHow.Now, now)
@@ -229,6 +226,7 @@ internal class Turn(
             }
         }
         c.stepPaths(now)
+        if (c.firstFlight() == FlightGate.Held) return Collected.Everything
         val wrote =
             when (val pacing = c.slots.pacing) {
                 is Pacing.Unpaced -> c.egress.write(out, paths, now, c.flight)

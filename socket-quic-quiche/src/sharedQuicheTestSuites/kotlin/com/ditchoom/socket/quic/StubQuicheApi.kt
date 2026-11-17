@@ -396,7 +396,10 @@ internal class StubQuicheApi : QuicheApi {
     override fun connIsEstablished(conn: QuicheConn) = established
 
     // A stub's handshake confirms the moment it completes, as a server's does.
-    override fun connIsHandshakeConfirmed(conn: QuicheConn) = established
+    override fun connIsHandshakeConfirmed(conn: QuicheConn) = established && !withholdConfirmation
+
+    /** When true, an established stub is never confirmed: the peer's HANDSHAKE_DONE does not arrive. */
+    var withholdConfirmation = false
 
     /**
      * When true, [connIsClosed] also reports closed once [connClose] has been called, so a test's own

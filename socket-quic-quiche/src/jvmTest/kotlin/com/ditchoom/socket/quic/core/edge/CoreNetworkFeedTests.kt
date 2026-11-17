@@ -39,6 +39,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TimeSource
 
@@ -79,6 +80,13 @@ class CoreNetworkFeedTests {
             reopens++
             return reopened
         }
+    }
+
+    /** The path marks of [client]'s flight recording, in order. */
+    private suspend fun marksOf(client: CoreClient): List<String> {
+        val recorded = ArrayList<TraceEvent>()
+        client.connection.dumpFlight(TraceSink { recorded += it })
+        return recorded.filterIsInstance<TraceEvent.PathState>().map { it.phase }
     }
 
     private suspend fun connectWatched(
@@ -146,7 +154,8 @@ class CoreNetworkFeedTests {
     /**
      * On real sockets: the route to the peer leaves from another address, so the client's socket moves there, on a port
      * of its own, the path from it is validated, and the connection migrates and echoes over it. The wildcard stands
-     * in for a second interface address, which loopback alone does not have on every platform.
+     * in for a second interface address, which loopback alone does not have on every platform. The route to it is
+     * answered [ROUTE_ANSWER] late, as a real route probe is: the move happens off the test's thread, after it.
      */
     @Test
     fun aRouteFromAnotherAddressMovesTheSocketAndTheConnectionEchoesFromIt() =
@@ -162,23 +171,26 @@ class CoreNetworkFeedTests {
                             port,
                             monitor,
                             wrapIo = { DeadAfterOutage(it).also { wrapped -> io = wrapped } },
-                            routeSource = { source },
+                            routeSource = {
+                                if (source == WILDCARD) delay(ROUTE_ANSWER)
+                                source
+                            },
                         )
                     val socket = SocketView.of(io.real)
                     val bound = socket.local()
                     val warm = Random(1).nextBytes(500)
                     assertContentEquals(warm, echoOver(client.connection.openStream(), warm))
 
-                    source = RouteSource.Resolved("0.0.0.0")
+                    source = WILDCARD
                     monitor.state.value = WIFI_AFTER
+                    // The echo crosses the move only once the socket moved: one sent before it is answered on the old path.
+                    withTimeout(5.seconds) { while ("Moved" !in marksOf(client)) delay(5) }
                     val payload = Random(7).nextBytes(2_000)
                     val echoed = withTimeout(5.seconds) { echoOver(client.connection.openStream(), payload) }
 
                     assertContentEquals(payload, echoed)
                     assertTrue(socket.local() != bound, "the socket moved to a new local endpoint: ${socket.local()}")
-                    val recorded = ArrayList<TraceEvent>()
-                    client.connection.dumpFlight(TraceSink { recorded += it })
-                    val marks = recorded.filterIsInstance<TraceEvent.PathState>().map { it.phase }
+                    val marks = marksOf(client)
                     assertTrue("Moved" in marks && "Migrated" in marks, "the flight recording shows the move: $marks")
                     client.connection.close(QuicError.NoError)
                 }
@@ -235,6 +247,9 @@ class CoreNetworkFeedTests {
         }
 
     private companion object {
+        val WILDCARD = RouteSource.Resolved("0.0.0.0")
+        val ROUTE_ANSWER = 100.milliseconds
+
         val UP: NetworkState = NetworkState.Routable(NetworkId.Unidentified, InternetAccess.Unobserved)
         val BEFORE = NetworkId.Link(NetworkKind.Wifi, 518_801_772_557L)
         val AFTER = NetworkId.Link(NetworkKind.Wifi, 523_096_739_853L)

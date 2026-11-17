@@ -342,6 +342,10 @@ fun downloadQuicheSource(
     // complete, so a client whose Finished is lost re-sends it at every PTO instead of every other one.
     // Idempotent, fails loudly on drift OR on an upstream fix. See the KDoc.
     patchQuichePtoWaitsForConfirmation(sourceDir)
+    // Read a peer's key update once the handshake is complete rather than only once it is confirmed, so a
+    // client whose HANDSHAKE_DONE was lost can still read the server's later packets. Idempotent, fails
+    // loudly on drift OR on an upstream fix. See the KDoc.
+    patchQuichePeerKeyUpdateReadBeforeConfirmation(sourceDir)
     // Make every PTO probe in the Initial and Handshake spaces carry the oldest unacknowledged CRYPTO
     // bytes instead of a bare PING, so a lost ClientHello or Finished is not stranded behind one lucky
     // datagram. Idempotent, fails loudly on drift. See the KDoc.
@@ -1206,6 +1210,50 @@ fun patchQuichePtoWaitsForConfirmation(sourceDir: File) {
         ),
     )
     logger.lifecycle("Patched quiche source: the Application Data PTO waits for handshake confirmation")
+}
+
+/**
+ * Read a peer's key update as soon as the handshake is **complete**, not only once it is confirmed.
+ *
+ * **Why.** quiche derives the next 1-RTT keys for a packet whose key phase differs from its own only when
+ * `handshake_confirmed` is set, and a client sets that only when HANDSHAKE_DONE arrives. RFC 9001 §6.1 lets a
+ * server update its keys as soon as it has completed the handshake and holds an acknowledgement in the
+ * current phase. Lose the HANDSHAKE_DONE packet and a server that updates (quinn does) re-sends it, and the
+ * response with it, in the new phase: every such packet fails to decrypt and is dropped silently, the client
+ * never confirms, and it idles out. The quic-interop-runner's `handshakeloss` against quinn: the client's
+ * trace holds nine datagrams from quinn after its last decrypted one, all in the flipped key phase.
+ *
+ * A packet that decrypts under the derived keys proves the peer holds them, so reading it before
+ * confirmation weakens nothing.
+ *
+ * **Idempotent and loud in both directions** (the [patchQuicheForCallerClock] discipline).
+ */
+fun patchQuichePeerKeyUpdateReadBeforeConfirmation(sourceDir: File) {
+    val marker = "socket-peer-key-update-before-confirmation"
+    val libRs = sourceDir.resolve("quiche/src/lib.rs")
+    if (!libRs.exists()) return
+    val text = libRs.readText()
+    if (text.contains(marker)) return
+    val anchor =
+        "        if self.handshake_confirmed &&\n            hdr.ty != Type::ZeroRTT &&\n" +
+            "            hdr.key_phase != self.key_phase\n"
+    if (text.split(anchor).size != 2) {
+        throw GradleException(
+            "$marker: the peer key-update check was not found exactly once in quiche's lib.rs — a quiche " +
+                "bump moved it, or upstream now reads a key update before confirmation. If so, DELETE " +
+                "patchQuichePeerKeyUpdateReadBeforeConfirmation; otherwise re-fit the anchor.",
+        )
+    }
+    libRs.writeText(
+        text.replace(
+            anchor,
+            "        // $marker: a peer may update its keys once its handshake is complete (RFC 9001 §6.1).\n" +
+                "        if (self.handshake_confirmed || self.is_established()) &&\n" +
+                "            hdr.ty != Type::ZeroRTT &&\n" +
+                "            hdr.key_phase != self.key_phase\n",
+        ),
+    )
+    logger.lifecycle("Patched quiche source: a peer's key update is read once the handshake is complete")
 }
 
 /**

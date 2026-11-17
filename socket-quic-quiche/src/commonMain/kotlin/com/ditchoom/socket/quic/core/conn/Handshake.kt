@@ -1,6 +1,7 @@
 package com.ditchoom.socket.quic.core.conn
 
 import com.ditchoom.socket.quic.PtoCeiling
+import com.ditchoom.socket.quic.QuicResumptionOutcome
 import com.ditchoom.socket.quic.core.life.HandshakeProgress
 import com.ditchoom.socket.quic.core.life.HandshakeReached
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
@@ -49,8 +50,9 @@ private sealed interface Deadline {
 
 /**
  * The handshake's phase, its PTO ceiling, its deadline and the report of its end. Until the handshake is confirmed the
- * ceiling starts at the rule's first and grows 3× with each of quiche's PTO expiries, and the deadline ends the
- * connection; at confirmation the ceiling is removed and quiche's recovery runs unmodified.
+ * ceiling starts at the rule's first and grows 3× with each of quiche's PTO expiries; at confirmation the ceiling is
+ * removed and quiche's recovery runs unmodified. The deadline ends the connection only while the handshake is
+ * incomplete: once it completes the caller holds the connection, and the idle timeout owns a confirmation that is late.
  */
 @Confined
 internal class Handshake(
@@ -99,7 +101,7 @@ internal class Handshake(
             confirm()
             return just
         }
-        if (passed(now)) return HandshakeStep.DeadlinePassed
+        if (reached == Progress.Handshaking && passed(now)) return HandshakeStep.DeadlinePassed
         return when (reached) {
             Progress.Handshaking -> HandshakeStep.Handshaking
             Progress.Established -> just
@@ -125,8 +127,12 @@ internal class Handshake(
         }
     }
 
-    /** Offers the deadline while the handshake is unconfirmed; offers nothing otherwise. */
+    /** Offers the deadline while the handshake is incomplete; offers nothing otherwise. */
     fun offerWake(sink: WakeSink) {
+        when (pending.progress) {
+            Progress.Established -> return
+            Progress.Handshaking -> Unit
+        }
         when (phase) {
             is Phase.Confirmed -> return
             is Phase.Pending -> Unit
@@ -137,26 +143,31 @@ internal class Handshake(
         }
     }
 
+    /** The negotiated ALPN, copied into its scratch; its length. */
+    fun alpn(): Int = q.api.connApplicationProto(q.handle, alpn.address, alpn.capacity)
+
     /** Once, after [step] answered [HandshakeStep.JustEstablished]: the negotiated ALPN is copied into its scratch. */
     fun report(
         now: Nanos,
         read: PathRead,
+        resumption: QuicResumptionOutcome,
     ): ConnectReport {
         val sample = sampleOf(read)
         val probes = probesOf(read)
         val took = now.value - startedNanos
         return ConnectReport(
             handshakeNanos = took,
-            alpnLength = q.api.connApplicationProto(q.handle, alpn.address, alpn.capacity),
+            alpnLength = alpn(),
             firstSample = sample,
             priorNanos = rule.priorNanos(),
             link = rule.link,
             probes = probes,
             pace = paceOf(sample, probes, took),
+            resumption = resumption,
         )
     }
 
-    /** Once, after [step] answered [HandshakeStep.DeadlinePassed]: how far the handshake got. */
+    /** Once, after [step] answered [HandshakeStep.DeadlinePassed], so the handshake never completed: what the peer answered. */
     fun progress(
         now: Nanos,
         read: PathRead,
@@ -168,13 +179,9 @@ internal class Handshake(
             link = rule.link,
             probes = probesOf(read),
             reached =
-                when (pending.progress) {
-                    Progress.Established -> HandshakeReached.EstablishedUnconfirmed
-                    Progress.Handshaking ->
-                        when (read) {
-                            is PathRead.Unread -> HandshakeReached.NothingReceived
-                            is PathRead.Read -> if (read.received > 0) HandshakeReached.PeerAnswered else HandshakeReached.NothingReceived
-                        }
+                when (read) {
+                    is PathRead.Unread -> HandshakeReached.NothingReceived
+                    is PathRead.Read -> if (read.received > 0) HandshakeReached.PeerAnswered else HandshakeReached.NothingReceived
                 },
         )
 

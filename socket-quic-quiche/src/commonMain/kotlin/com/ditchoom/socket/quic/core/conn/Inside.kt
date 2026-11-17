@@ -1,8 +1,9 @@
 package com.ditchoom.socket.quic.core.conn
 
-import com.ditchoom.socket.quic.DeadlineNode
+import com.ditchoom.socket.quic.DeadlineFired
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicError
+import com.ditchoom.socket.quic.Rearmable
 import com.ditchoom.socket.quic.core.life.CloseHow
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.ConnLife
@@ -14,7 +15,6 @@ import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 import com.ditchoom.socket.testkit.trace.TraceSink
-import kotlinx.coroutines.Runnable
 
 /** What work running inside a connection may reach. One per connection, handed only to work that is inside. */
 internal class Inside(
@@ -36,11 +36,14 @@ internal class Inside(
     /** Starts the close its server asks for, with no error and no flush. */
     fun closeForServer() = life.close(QuicError.NoError, ConnEnd.ServerClosed, CloseHow.Now, clock.now())
 
-    /** Any deadline an operation needs, on the connection's loop. */
+    /** A deadline on the connection's loop that runs [action] when an arming falls due; made once, re-armed in place. */
+    fun rearmable(action: DeadlineFired): Rearmable = port.rearmable(action)
+
+    /** Arms [deadline] for [due], in place of what it was armed for; allocates nothing. */
     fun arm(
+        deadline: Rearmable,
         due: Nanos,
-        action: Runnable,
-    ): DeadlineNode = port.arm(due, action)
+    ) = port.arm(deadline, due)
 
     /** Ends the connection with [end], now. */
     fun end(end: ConnEnd) = turn.finish(clock.now(), end)
@@ -49,6 +52,9 @@ internal class Inside(
 
     /** The client's socket now leaves from [local]. */
     fun moved(local: PathKey) = turn.moved(clock.now(), local)
+
+    /** A client's first flight, held for its 0-RTT, may leave. */
+    fun releaseFirstFlight() = turn.releaseFirstFlight()
 
     /** The ids the loop routed to this server connection. */
     fun issue(spare: List<SpareId>) = turn.issue(spare)

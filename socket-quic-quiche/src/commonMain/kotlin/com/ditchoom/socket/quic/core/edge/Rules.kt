@@ -7,6 +7,7 @@ import com.ditchoom.socket.quic.QuicCloseLinger
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.RttPrior
 import com.ditchoom.socket.quic.core.conn.DatagramRule
+import com.ditchoom.socket.quic.core.conn.EarlyDataRule
 import com.ditchoom.socket.quic.core.conn.HandshakeBound
 import com.ditchoom.socket.quic.core.conn.HandshakeRule
 import com.ditchoom.socket.quic.core.conn.KeepAliveRule
@@ -43,6 +44,9 @@ internal fun datagramRuleOf(options: QuicOptions): DatagramRule =
 /** Whether idle connections of an endpoint are pinged, from [QuicOptions.keepAliveInterval]. */
 internal fun keepAliveRuleOf(options: QuicOptions): KeepAliveRule =
     options.keepAliveInterval?.let { KeepAliveRule.Every(it.inWholeNanoseconds) } ?: KeepAliveRule.Off
+/** Whether a server accepts 0-RTT, from [QuicOptions.enableEarlyData]. */
+internal fun earlyDataRuleOf(options: QuicOptions): EarlyDataRule =
+    if (options.enableEarlyData) EarlyDataRule.Accepted else EarlyDataRule.Refused
 
 /** The link class of a network the monitor identified; a VPN, another kind or no identity is [LinkClass.Unknown]. */
 internal fun linkClassOf(id: NetworkId): LinkClass =

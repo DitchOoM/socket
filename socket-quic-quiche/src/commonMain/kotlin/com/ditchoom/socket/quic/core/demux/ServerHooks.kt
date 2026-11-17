@@ -4,12 +4,15 @@ package com.ditchoom.socket.quic.core.demux
 import com.ditchoom.socket.quic.EncodedSockAddr
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicStreamId
+import com.ditchoom.socket.quic.core.conn.Arrival
 import com.ditchoom.socket.quic.core.conn.Conn
 import com.ditchoom.socket.quic.core.conn.ConnSink
 import com.ditchoom.socket.quic.core.conn.ConnectReport
+import com.ditchoom.socket.quic.core.conn.EarlyReport
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.observe.Confined
 import com.ditchoom.socket.quic.core.observe.Counter
+import com.ditchoom.socket.quic.core.udp.NativeBytes
 import kotlinx.coroutines.Runnable
 
 /** A peer's address as quiche reads it, or that it has no form quiche takes. */
@@ -62,7 +65,17 @@ internal class HandshakeSink(
         inner.established(report)
     }
 
-    override fun incoming(stream: QuicStreamId) = inner.incoming(stream)
+    override fun earlyData(report: EarlyReport) = inner.earlyData(report)
+
+    override fun incoming(
+        stream: QuicStreamId,
+        arrival: Arrival,
+    ) = inner.incoming(stream, arrival)
+
+    override fun ticket(
+        bytes: NativeBytes,
+        length: Int,
+    ) = inner.ticket(bytes, length)
 
     override fun ended(end: ConnEnd) {
         finish()

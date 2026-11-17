@@ -12,11 +12,24 @@ internal enum class Received {
     Finished,
 }
 
-/** One stream: its parked reader and writer, how far the peer's side got, and its read size. */
+/** What our side of a stream has sent so far. */
+internal enum class Sent {
+    Open,
+
+    /** Our FIN went to quiche. */
+    Finished,
+}
+
+/**
+ * One stream: its parked reader and writer, how far each side got, and its read size. Reused for a later stream once
+ * this one is spent, so a new stream allocates no entry.
+ */
 @Confined
 internal class StreamEntry(
-    val id: QuicStreamId,
+    id: QuicStreamId,
 ) {
+    var id: QuicStreamId = id
+        private set
     var reader: Waiter = Nobody
         private set
     var writer: Waiter = Nobody
@@ -25,6 +38,23 @@ internal class StreamEntry(
         private set
     var chunk: ReadChunk = ReadChunk.Initial
         private set
+    var sent: Sent = Sent.Open
+        private set
+
+    /** The entry, at rest, becomes [stream]'s. */
+    fun reuse(stream: QuicStreamId): StreamEntry {
+        id = stream
+        reader = Nobody
+        writer = Nobody
+        received = Received.Open
+        chunk = ReadChunk.Initial
+        sent = Sent.Open
+        return this
+    }
+
+    fun finSent() {
+        sent = Sent.Finished
+    }
 
     fun parkReader(waiter: Waiter) {
         reader = waiter
@@ -56,11 +86,13 @@ internal class StreamEntry(
     fun wakeReader(table: StreamTable) {
         val now = reader
         if (now.retry(table) == Retry.Settled && reader === now) reader = Nobody
+        table.collect(this)
     }
 
     fun wakeWriter(table: StreamTable) {
         val now = writer
         if (now.retry(table) == Retry.Settled && writer === now) writer = Nobody
+        table.collect(this)
     }
 
     fun endWaiters(end: ConnEnd) {

@@ -6,7 +6,7 @@ import platform.posix.F_OK
 import platform.posix.access
 
 /** Linux K/Native member of [EarlyDataServerTestSuite]. */
-class LinuxEarlyDataServerTests : EarlyDataServerTestSuite() {
+class LinuxEarlyDataServerTests : SharedQuicheEarlyDataServerTestSuite() {
     private fun certPath(name: String): String {
         val candidates = listOf("testcerts/$name", "socket-quic-quiche/testcerts/$name")
         return candidates.firstOrNull { access(it, F_OK) == 0 }

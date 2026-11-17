@@ -52,6 +52,11 @@ class PathChallengeCadenceTests {
         assertTrue(abandoned <= FIRST_ABANDON, "the first validation was abandoned $abandoned after the move: ${replayed.pathMarks}")
         val probes = replayed.clientSends.indices.count { replayed.clientSends[it] >= MOVE_AT && replayed.clientSizes[it] == PATH_PROBE }
         assertTrue(probes <= MOST_PROBES, "$probes path probes over the $IDLE the dead path was tried: ${replayed.pathMarks}")
+        val failed = replayed.pathMarks.filter { it.phase == "ProbeFailed" }.map { it.at }
+        for (challenge in replayed.pathMarks.filter { it.phase == "Challenged" }.map { it.at }) {
+            val tooLate = failed.firstOrNull { it >= challenge && it - challenge < INITIAL_RTT }
+            assertTrue(tooLate == null, "a challenge at $challenge could not be answered before the abandonment at $tooLate")
+        }
     }
 
     private fun flowingAfterMove(): List<LinkWindow> =
@@ -103,5 +108,8 @@ class PathChallengeCadenceTests {
 
         /** About one probe per two seconds over the idle timeout: the cadence of a validation, then backed-off retries. */
         const val MOST_PROBES = 20
+
+        /** RFC 9002's kInitialRtt: the round trip of a path with no sample. */
+        val INITIAL_RTT = 333.milliseconds
     }
 }

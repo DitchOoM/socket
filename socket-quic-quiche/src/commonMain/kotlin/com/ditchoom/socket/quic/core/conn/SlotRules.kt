@@ -15,6 +15,9 @@ internal sealed interface PacingRule {
     ) : PacingRule
 }
 
+/** Whether a server accepts a resuming client's 0-RTT. A client's offer is its own connection's. */
+internal enum class EarlyDataRule { Refused, Accepted }
+
 internal sealed interface AckRule {
     data object Immediate : AckRule
 }
@@ -47,6 +50,7 @@ internal class SlotRules(
     val close: CloseRule,
     val datagrams: DatagramRule = DatagramRule.Off,
     val keepAlive: KeepAliveRule = KeepAliveRule.Off,
+    val earlyData: EarlyDataRule = EarlyDataRule.Refused,
 ) {
     companion object {
         /**
@@ -70,6 +74,7 @@ internal class SlotRules(
             close: CloseRule,
             datagrams: DatagramRule = DatagramRule.Off,
             keepAlive: KeepAliveRule = KeepAliveRule.Off,
+            earlyData: EarlyDataRule = EarlyDataRule.Refused,
         ) = SlotRules(
             PacingRule.ByQuiche(allowanceNanos = waits.nanos, limitNanos = 1_000_000_000L),
             AckRule.Immediate,
@@ -77,6 +82,7 @@ internal class SlotRules(
             close,
             datagrams,
             keepAlive,
+            earlyData,
         )
 
         private const val DEFAULT_IDLE_NANOS = 30_000_000_000L

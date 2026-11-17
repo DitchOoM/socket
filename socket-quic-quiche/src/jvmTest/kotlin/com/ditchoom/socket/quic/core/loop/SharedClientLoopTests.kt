@@ -8,6 +8,7 @@ import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicError
+import com.ditchoom.socket.quic.core.demux.withCoreEchoServer
 import com.ditchoom.socket.quic.core.edge.CoreClient
 import com.ditchoom.socket.quic.core.edge.coreConnect
 import com.ditchoom.socket.quic.core.edge.coreTestOptions
@@ -19,11 +20,13 @@ import com.ditchoom.socket.quic.core.udp.ReceiveBatchResult
 import com.ditchoom.socket.quic.loadQuicheApi
 import com.ditchoom.socket.quic.skipOnMissingNativeLib
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import java.util.concurrent.atomic.AtomicIntegerArray
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.random.Random
 import kotlin.test.Test
@@ -37,30 +40,50 @@ import kotlin.time.Duration.Companion.seconds
 
 /** Client connections that share loop threads: placement, byte-exact echoes, and the failure tiers on one loop. */
 class SharedClientLoopTests {
+    /** Against the core's own server: a 4.x server in this process would be what the 64,000 echoes measure. */
     @Test
     fun sixtyFourConnectionsOnTwoLoopsEachEchoAThousandTimesByteExact() =
         runBlocking {
             skipOnMissingNativeLib(SharedClientLoopTests::class) {
-                withEchoServer { port ->
+                withCoreEchoServer { server ->
+                    val port = server.port
                     val loops = LoopSet(2)
                     try {
                         val clients = withContext(Dispatchers.IO) { List(CONNECTIONS) { connect(port, loops) } }
                         val perLoop = clients.groupingBy { it.loop.name }.eachCount()
                         assertEquals(2, perLoop.size, "the connections spread over both loops: $perLoop")
                         assertTrue(perLoop.values.all { it == CONNECTIONS / 2 }, "an even spread: $perLoop")
-                        withTimeout(120.seconds) {
-                            withContext(Dispatchers.Default) {
-                                clients
-                                    .mapIndexed { index, client ->
-                                        async {
-                                            val stream = client.connection.openStream()
-                                            val payload = Random(index).nextBytes(PAYLOAD)
-                                            repeat(
-                                                ECHOES,
-                                            ) { assertContentEquals(payload, echoOver(stream, payload), "connection $index echo $it") }
-                                        }
-                                    }.awaitAll()
+                        val echoed = AtomicIntegerArray(CONNECTIONS)
+                        val began = System.nanoTime()
+                        try {
+                            withTimeout(120.seconds) {
+                                withContext(Dispatchers.Default) {
+                                    clients
+                                        .mapIndexed { index, client ->
+                                            async {
+                                                val stream = client.connection.openStream()
+                                                val payload = Random(index).nextBytes(PAYLOAD)
+                                                while (echoed.get(index) < ECHOES) {
+                                                    val round = echoed.get(index)
+                                                    assertContentEquals(payload, echoOver(stream, payload), "connection $index echo $round")
+                                                    echoed.incrementAndGet(index)
+                                                }
+                                            }
+                                        }.awaitAll()
+                                }
                             }
+                        } catch (timedOut: TimeoutCancellationException) {
+                            // Whether the echoes were still advancing, and what the loops did, when the bound ran out.
+                            val counts = (0 until CONNECTIONS).map { echoed.get(it) }
+                            throw AssertionError(
+                                "echoes done per connection: min ${counts.min()}, max ${counts.max()}, total ${counts.sum()} of " +
+                                    "${CONNECTIONS * ECHOES} after ${(System.nanoTime() - began) / NANOS_PER_SECOND} s; " +
+                                    "loops ${loops.countsOfStarted().joinToString {
+                                        "[${it.passes} passes took ${it.passNanos / NANOS_PER_MILLI} ms, " +
+                                            "${it.waits} waits took ${it.waitNanos / NANOS_PER_MILLI} ms, ${it.datagramsIn} in, ${it.datagramsOut} out]"
+                                    }}",
+                                timedOut,
+                            )
                         }
                         // Together: each close waits out its closing period (three PTOs), which one after another
                         // took 4 s of the test on an API 29 emulator.
@@ -269,6 +292,8 @@ class SharedClientLoopTests {
     private companion object {
         const val CONNECTIONS = 64
         const val ECHOES = 1_000
+        const val NANOS_PER_MILLI = 1_000_000L
+        const val NANOS_PER_SECOND = 1_000_000_000L
         const val PAYLOAD = 100
         val NOT_PLANTED = IllegalStateException()
     }

@@ -203,6 +203,7 @@ internal class ServerSetup(
                     closeRuleOf(options),
                     datagramRuleOf(options),
                     keepAliveRuleOf(options),
+                    earlyDataRuleOf(options),
                 ),
                 factory,
                 config.flight,

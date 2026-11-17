@@ -56,6 +56,23 @@ class HandshakeDeadlineConnTests {
         assertEquals(listOf<QuicError>(QuicError.NoError), api.closeErrors, "the peer is told")
     }
 
+    /** The bound is for the handshake, as the caller sees it complete: a withheld HANDSHAKE_DONE is silence, which the idle timeout owns. */
+    @Test
+    fun aHandshakeThatCompletedIsNotEndedByTheBoundWhileItsConfirmationIsWithheld() {
+        val rig = rig(HandshakeBound.Bounded(10_000 * ms))
+        api.connTimeout = 500.milliseconds
+        api.withholdConfirmation = true
+        rig.pass(0)
+        api.established = true
+        var now = 0L
+        while (now < 30_000 * ms) {
+            now += 100 * ms
+            rig.pass(now)
+        }
+        assertEquals(1, rig.sink.established.size)
+        assertEquals(emptyList(), rig.sink.ended, "the connection the caller holds stays open past the bound")
+    }
+
     @Test
     fun theDeadlineWakesTheConnectionWhenNothingElseWould() {
         val rig = rig(HandshakeBound.Bounded(10_000 * ms))

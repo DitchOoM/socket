@@ -8,15 +8,10 @@ import com.ditchoom.socket.quic.core.udp.Room
 import com.ditchoom.socket.quic.core.udp.SendBatch
 import kotlinx.coroutines.Runnable
 
-/**
- * Retries the streams quiche lets go on, hands up the ones the peer opened, moves arrived datagrams to their receives,
- * and pings an idle connection.
- */
-internal fun ConnParts.wakeEstablished(now: Nanos) {
+/** Retries the streams quiche lets go on, and hands up the ones the peer opened, as [arrival]. */
+internal fun ConnParts.wakeStreams(arrival: Arrival) {
     streams.wake()
-    streams.takeIncoming { sink.incoming(it) }
-    slots.datagrams.wake()
-    slots.keepAlive.step(now)
+    streams.takeIncoming { sink.incoming(it, arrival) }
 }
 
 /** Whether a write carried the close's CONNECTION_CLOSE. */

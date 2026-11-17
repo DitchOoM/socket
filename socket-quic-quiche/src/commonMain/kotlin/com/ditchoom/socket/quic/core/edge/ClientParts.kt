@@ -7,6 +7,7 @@ import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicConnectionIdentity
 import com.ditchoom.socket.quic.SendTarget
+import com.ditchoom.socket.quic.core.conn.ClientSession
 import com.ditchoom.socket.quic.core.conn.Conn
 import com.ditchoom.socket.quic.core.conn.ConnAddress
 import com.ditchoom.socket.quic.core.conn.ConnMemory
@@ -81,7 +82,7 @@ internal class ClientParts(
                     keepAliveRuleOf(w.options),
                 ),
             q = QuicheConnRef(w.api, w.handle),
-            side = ConnSide.Client(w.ids),
+            side = ConnSide.Client(w.ids, w.offer, w.memory.native(ClientSession.TICKET_BYTES)),
             address =
                 ConnAddress(
                     SockAddr(peerSockAddr.address, peerSockAddr.length),
