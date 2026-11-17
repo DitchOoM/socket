@@ -70,7 +70,7 @@ internal class ConnTimer(
     private fun made(fire: Runnable): Rearmable =
         when (val d = deadline) {
             is TimerDeadline.Made -> d.deadline
-            is TimerDeadline.Unmade -> port.rearmable(fire).also { deadline = TimerDeadline.Made(it) }
+            is TimerDeadline.Unmade -> port.rearmable { fire.run() }.also { deadline = TimerDeadline.Made(it) }
         }
 
     /** When quiche's draining ends, seen at [now]: its timer once it sent a close, or [now] when it has none. */

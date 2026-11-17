@@ -18,8 +18,8 @@ import com.ditchoom.socket.quic.core.stream.StreamTable
 import com.ditchoom.socket.quic.core.stream.Streams
 import com.ditchoom.socket.quic.core.stream.Waiter
 import com.ditchoom.socket.quic.core.udp.NativeBytes
-import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.currentCoroutineContext
+import kotlin.time.Duration
 
 /** The buffer a read that found nothing keeps for its retry, already made into the answer the bytes will be: [ReadAnswer.Data]. */
 internal sealed interface Spare {
@@ -36,18 +36,20 @@ internal sealed interface Spare {
  * first resumes the caller at once and hands the read back to the connection, and a caller whose job is cancelled after
  * the answer frees the buffer it never returned.
  *
- * Inside the connection only, except [answer] (the caller) and [run] (the deadline's thread).
+ * Inside the connection only, except [answer] (the caller) and the job watch.
  */
 @Confined
 internal class ReadOp(
     private val stream: QuicStreamId,
-    private val deadline: OpDeadline,
+    private val bound: Duration,
+    private val deadlines: OpDeadlines,
     private val conn: Conn,
     private val factory: BufferFactory,
 ) : ConnWork(),
     Waiter,
-    Runnable {
+    Bounded {
     private var spare: Spare = Spare.None
+    private var lease: Lease = Lease.None
     private val hand = Hand<ReadAnswer>()
 
     // ---- the caller's side ----
@@ -78,10 +80,16 @@ internal class ReadOp(
                 is Streams.Open -> Unit
             }
             if (hand.landed(ReadAnswer.Cancelled)) return release()
+            if (inside.streams.isSpent(stream)) {
+                settle(ReadAnswer.End)
+                return
+            }
             val entry = inside.streams.entry(stream)
             if (attempt(inside.streams, entry) == Retry.Again) {
                 entry.parkReader(this)
-                deadline.arm(inside, this)
+                lease = deadlines.arm(this, bound, inside)
+            } else {
+                inside.streams.collect(entry)
             }
         }
 
@@ -89,25 +97,22 @@ internal class ReadOp(
         var answer = Retry.Settled
         guarded(::failed) {
             if (hand.landed(ReadAnswer.Cancelled)) {
-                deadline.disarm()
+                lease = deadlines.disarm(lease)
                 return@guarded release()
             }
             answer = attempt(table, table.entry(stream))
-            if (answer == Retry.Settled) deadline.disarm()
+            if (answer == Retry.Settled) lease = deadlines.disarm(lease)
         }
         return answer
     }
 
     override fun connectionEnded(end: ConnEnd) {
-        deadline.disarm()
+        lease = deadlines.disarm(lease)
         release()
         settle(ReadAnswer.Failed(Raised.ConnEnded(end), QuicCloseCircumstance.Ended))
     }
 
     override fun gone(end: ConnEnd) = connectionEnded(end)
-
-    /** The deadline's thread: the deadline passed; the connection expires the read from inside. */
-    override fun run() = conn.submit(Expire(), CallerPlace.HandToLoop)
 
     private fun attempt(
         table: StreamTable,
@@ -210,28 +215,26 @@ internal class ReadOp(
     }
 
     private fun failed(failure: Exception) {
-        deadline.disarm()
+        lease = deadlines.disarm(lease)
         release()
         settle(ReadAnswer.Failed(Raised.Thrown(failure), QuicCloseCircumstance.Ended))
     }
 
-    private fun unpark(table: StreamTable) = table.entry(stream).unpark(this)
+    private fun unpark(table: StreamTable) = table.unpark(stream, this)
 
-    private inner class Expire : ConnWork() {
-        override fun run(inside: Inside) {
-            if (inside.streams.entry(stream).reader !== this@ReadOp) return
-            unpark(inside.streams)
-            release()
-            settle(ReadAnswer.Failed(OpFailure.DeadlinePassed(deadline.bound), QuicCloseCircumstance.Ended))
-        }
-
-        override fun gone(end: ConnEnd) = Unit
+    /** Inside: the bound passed while the read still waited parked. */
+    fun expired(inside: Inside) {
+        if (inside.streams.readerOf(stream) !== this) return
+        lease = deadlines.disarm(lease)
+        unpark(inside.streams)
+        release()
+        settle(ReadAnswer.Failed(OpFailure.DeadlinePassed(bound), QuicCloseCircumstance.Ended))
     }
 
     private inner class Withdraw : ConnWork() {
         override fun run(inside: Inside) {
             unpark(inside.streams)
-            deadline.disarm()
+            lease = deadlines.disarm(lease)
             release()
         }
 

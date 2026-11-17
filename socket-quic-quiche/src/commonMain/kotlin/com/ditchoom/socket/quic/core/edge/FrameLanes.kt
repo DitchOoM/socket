@@ -99,9 +99,9 @@ internal class Outbound(
             when {
                 taken > 0 -> {
                     sent += taken
-                    if (sent >= length) return Moved.Done
+                    if (sent >= length) return done(table, stream)
                 }
-                taken == 0 && remaining == 0 -> return Moved.Done
+                taken == 0 && remaining == 0 -> return done(table, stream)
                 taken == 0 || taken == QUICHE_ERR_DONE -> {
                     table.wantWritable(stream)
                     return Moved.Again
@@ -109,6 +109,18 @@ internal class Outbound(
                 else -> return Moved.Refused(Raised.WriteRefused(stream, taken, answer.errorCode ?: UNKNOWN_PEER_CODE))
             }
         }
+    }
+
+    /** All of the frame went out, and our FIN after it when this send ends our side. */
+    private fun done(
+        table: StreamTable,
+        stream: QuicStreamId,
+    ): Moved {
+        when (end) {
+            WriteEnd.Finish -> table.finSent(stream)
+            WriteEnd.More -> Unit
+        }
+        return Moved.Done
     }
 
     /** The frame was abandoned after part of it went out: the peer would read half a frame, so the stream is reset. */

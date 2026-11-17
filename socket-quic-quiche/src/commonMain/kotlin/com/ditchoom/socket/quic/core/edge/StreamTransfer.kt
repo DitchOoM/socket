@@ -17,11 +17,11 @@ import kotlinx.coroutines.CompletionHandler
 import kotlinx.coroutines.InternalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonDisposableHandle
-import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.intrinsics.suspendCoroutineUninterceptedOrReturn
+import kotlin.time.Duration
 
 /**
  * One direction of one typed stream: a single operation, made once and reused for every message, that moves bytes
@@ -39,15 +39,17 @@ import kotlin.coroutines.intrinsics.suspendCoroutineUninterceptedOrReturn
 @Confined
 internal class StreamTransfer(
     private val stream: QuicStreamId,
-    private val deadline: OpDeadline,
+    private val bound: Duration,
+    private val deadlines: OpDeadlines,
     private val conn: Conn,
     private val lane: Lane,
 ) : ConnWork(),
-    Waiter {
+    Waiter,
+    Bounded {
     private val phase = PhaseCell()
     private val waiting = WaiterCell()
     private var outcome: Outcome = Outcome.Ok
-    private var generation = 0
+    private var lease: Lease = Lease.None
     private val onCancel: CompletionHandler = { _ -> abandon() }
     private val withdraw = Withdraw()
     private val release = Release()
@@ -147,16 +149,17 @@ internal class StreamTransfer(
             }
             // The caller left before the operation ran: the withdraw takes it back.
             if (phase.load() !is Phase.Armed) return
-            generation++
             if (attempt(inside.streams) == Retry.Again) {
                 park(inside.streams)
-                if (deadline.bound.isFinite()) deadline.arm(inside, Expiry(generation))
+                lease = deadlines.arm(this, bound, inside)
+            } else {
+                inside.streams.collect(stream)
             }
         }
 
     override fun retry(table: StreamTable): Retry {
         if (phase.load() !is Phase.Armed) {
-            deadline.disarm()
+            lease = deadlines.disarm(lease)
             return Retry.Settled
         }
         var answer = Retry.Settled
@@ -212,10 +215,9 @@ internal class StreamTransfer(
         return Retry.Settled
     }
 
-    /** The parking is over: its deadline is disarmed, and an expiry handed over already finds a later generation. */
+    /** The parking is over: its deadline slot goes back, and an expiry already handed over finds it stale. */
     private fun endParking() {
-        deadline.disarm()
-        generation++
+        lease = deadlines.disarm(lease)
     }
 
     private fun failed(failure: Exception) {
@@ -230,7 +232,7 @@ internal class StreamTransfer(
         }
     }
 
-    private fun unpark(table: StreamTable) = table.entry(stream).unpark(this)
+    private fun unpark(table: StreamTable) = table.unpark(stream, this)
 
     /** Inside: takes back an abandoned operation and tells whoever waits for that. */
     private inner class Withdraw : ConnWork() {
@@ -248,22 +250,12 @@ internal class StreamTransfer(
         }
     }
 
-    /** The deadline of one parking of the operation. */
-    private inner class Expiry(
-        private val parked: Int,
-    ) : ConnWork(),
-        Runnable {
-        /** The deadline's thread: hands the expiry to the connection. */
-        override fun run() = conn.submit(this, CallerPlace.HandToLoop)
-
-        override fun run(inside: Inside) {
-            if (parked != generation || phase.load() !is Phase.Armed) return
-            unpark(inside.streams)
-            takenBack(inside)
-            settle(Outcome.Failed(OpFailure.DeadlinePassed(deadline.bound)))
-        }
-
-        override fun gone(end: ConnEnd) = Unit
+    /** Inside: the bound passed while the operation still waited parked. */
+    fun expired(inside: Inside) {
+        if (phase.load() !is Phase.Armed) return
+        unpark(inside.streams)
+        takenBack(inside)
+        settle(Outcome.Failed(OpFailure.DeadlinePassed(bound)))
     }
 
     /** Inside: frees the buffer once no caller or operation can touch it. */
@@ -284,7 +276,7 @@ internal class StreamTransfer(
                     is Phase.Abandoned ->
                         if (phase.moves(now, Phase.Freed)) {
                             unparkIt()
-                            deadline.disarm()
+                            lease = deadlines.disarm(lease)
                             freeBuffer()
                             return waiting.resumeWaiting()
                         }

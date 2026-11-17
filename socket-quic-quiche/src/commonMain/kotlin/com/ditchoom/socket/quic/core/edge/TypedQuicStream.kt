@@ -64,9 +64,9 @@ internal class TypedQuicStream<T : Any>(
     private val bound = config.maxFrameBytes
     private val accumulator = FrameAccumulator(factory, bound)
     private val scratch = FrameScratch(factory, bound)
-    private val reader = StreamTransfer(id, OpDeadline(deadlineOf(readPolicy)), conn, Inbound(accumulator))
+    private val reader = StreamTransfer(id, deadlineOf(readPolicy), connection.deadlines, conn, Inbound(accumulator))
     private val outbound = Outbound(scratch, config.malformedFrameCode)
-    private val writer = StreamTransfer(id, OpDeadline(deadlineOf(writePolicy)), conn, outbound)
+    private val writer = StreamTransfer(id, deadlineOf(writePolicy), connection.deadlines, conn, outbound)
 
     /** The one message a step decoded and nobody has taken; a list made once, so keeping and taking allocate nothing. */
     private val decoded = ArrayList<T>(1)
