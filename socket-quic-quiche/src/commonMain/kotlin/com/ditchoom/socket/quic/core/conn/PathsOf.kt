@@ -32,7 +32,7 @@ internal fun ConnParts.feed(
     from: PathKey,
 ) = when (val info = slots.paths.recvFrom(from)) {
     is RecvFrom.Info -> ingress.direct(bytes, length, info.recvInfo, flight)
-    is RecvFrom.TooManyAddresses -> ingress.refused()
+    is RecvFrom.TooManyAddresses -> ingress.refused(length, from, flight)
 }
 
 /**
@@ -43,6 +43,13 @@ internal fun Paths.closeRedirect(): Outgoing =
     when (this) {
         is Paths.Client -> paths.fromSocket()
         is Paths.Server -> Outgoing.Dropped
+    }
+
+/** Where a datagram quiche wrote for the path [address] names goes: a client's own address, a server's peer's. */
+internal fun Paths.outgoing(address: Long): Outgoing =
+    when (this) {
+        is Paths.Client -> paths.outgoing(address)
+        is Paths.Server -> paths.outgoing(address)
     }
 
 internal fun Paths.sendInfo(): QuicheSendInfo =

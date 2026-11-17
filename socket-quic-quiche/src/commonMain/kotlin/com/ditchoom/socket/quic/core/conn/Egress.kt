@@ -21,8 +21,8 @@ internal enum class LastOut { None, Kept, Dropped }
 /**
  * Datagrams out: the only file that asks quiche for output and reads its send infos. Each datagram goes where the
  * connection's [Paths] say: all to one target, or each by the address quiche wrote it for; one for a path no socket
- * of ours holds is dropped. Remembers what became of the last datagram of its last write: the write that makes quiche
- * drain ends with its CONNECTION_CLOSE. Each datagram is recorded at the time quiche was asked for it, read from [clock]:
+ * of ours holds is dropped and recorded ([DropWhy.NoSocketForPath]). Remembers what became of the last datagram of its
+ * last write: the write that makes quiche drain ends with its CONNECTION_CLOSE. Each datagram is recorded at the time quiche was asked for it, read from [clock]:
  * the turn's time can be well before then, as the turn runs its work first, and a replay sends at the recorded time.
  */
 @Confined
@@ -88,30 +88,52 @@ internal class Egress(
         val at = clock.now()
         val written = q.api.connSend(q.handle, out.storage.address + offset, window.bytes, info)
         if (written <= 0) return written
-        val to =
-            when (val sorting = paths.sorting()) {
-                is Sorting.Fixed -> sorting.to
-                is Sorting.ByAddress ->
-                    when (paths) {
-                        is Paths.Client -> paths.paths.outgoing(q.api.sendInfoFromAddr(info))
-                        is Paths.Server -> paths.paths.outgoing(q.api.sendInfoToAddr(info))
-                    }
-            }
         lastOffset = offset
         lastLength = written
-        when (to) {
-            is Outgoing.To -> {
-                last = LastOut.Kept
-                lastTarget = to.target
-                out.commit(written, to.target)
-                flight.datagramOut(at, out.storage, offset, written)
-            }
-            is Outgoing.Dropped -> {
-                last = LastOut.Dropped
-                counts.datagramDropped()
+        when (val sorting = paths.sorting()) {
+            is Sorting.Fixed -> kept(out, sorting.to, at, flight)
+            is Sorting.ByAddress -> {
+                // The address that names the datagram's path: a client's own, the peer's for a server.
+                val address =
+                    when (paths) {
+                        is Paths.Client -> q.api.sendInfoFromAddr(info)
+                        is Paths.Server -> q.api.sendInfoToAddr(info)
+                    }
+                when (val to = paths.outgoing(address)) {
+                    is Outgoing.To -> kept(out, to, at, flight)
+                    is Outgoing.Dropped -> dropped(address, at, flight)
+                }
             }
         }
         return written
+    }
+
+    private fun kept(
+        out: SendBatch,
+        to: Outgoing.To,
+        at: Nanos,
+        flight: ConnFlight,
+    ) {
+        last = LastOut.Kept
+        lastTarget = to.target
+        out.commit(lastLength, to.target)
+        flight.datagramOut(at, out.storage, lastOffset, lastLength)
+    }
+
+    /** The datagram is for a path no socket of ours holds: it is counted, and recorded with the address naming that path. */
+    private fun dropped(
+        address: Long,
+        at: Nanos,
+        flight: ConnFlight,
+    ) {
+        last = LastOut.Dropped
+        counts.datagramDropped()
+        val api = q.api
+        val family = api.sockAddrFamily(address)
+        val port = api.sockAddrPort(address)
+        val hi = if (family == V4) 0L else api.sockAddrV6Hi(address)
+        val lo = if (family == V4) api.sockAddrV4(address) else api.sockAddrV6Lo(address)
+        flight.dropped(at, DropWhy.NoSocketForPath, lastLength, family, port, hi, lo)
     }
 
     /**
@@ -129,3 +151,6 @@ internal class Egress(
         flight.datagramOut(clock.now(), out.storage, lastOffset, lastLength)
     }
 }
+
+/** `AF_INET`'s family as the sockaddr readers report it. */
+private const val V4 = 4

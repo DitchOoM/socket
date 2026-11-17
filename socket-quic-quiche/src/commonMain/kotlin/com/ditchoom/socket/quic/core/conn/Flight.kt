@@ -37,6 +37,21 @@ internal enum class PathMark {
     Challenged,
 }
 
+/** Why a connection dropped a datagram, as its flight recording names it: a trace line `DROP <type> <detail>`. */
+internal enum class DropWhy {
+    /** Quiche wrote it for a path no socket of ours holds: a client's own address that is gone, or a server's unknown peer. */
+    NoSocketForPath,
+
+    /** It came from a peer address beyond the most a server connection follows. */
+    TooManyPeerAddresses,
+    ;
+
+    /** The trace's [TraceEvent.Drop.type]: this reason's qualified name. */
+    val type: String get() = DROP_TYPE_PREFIX + name
+}
+
+private const val DROP_TYPE_PREFIX = "com.ditchoom.socket.quic.core.conn.DropWhy."
+
 /** How many records a connection's flight recording holds; their payload is kept in its loop's [FlightArena]. */
 internal class FlightSize(
     val records: Int,
@@ -87,6 +102,17 @@ internal class ConnFlight(
         now: Nanos,
         code: Int,
     ) = ring.event(FlightKind.NetworkEvent, now.value, code, 0, peerId, 0L, 0L)
+
+    /** A datagram of [length] bytes, for or from the address [family]/[port]/[hi]/[lo], was dropped for [why]. */
+    fun dropped(
+        now: Nanos,
+        why: DropWhy,
+        length: Int,
+        family: Int,
+        port: Int,
+        hi: Long,
+        lo: Long,
+    ) = ring.put(FlightKind.DatagramDropped, now.value, why.ordinal, ring.bindAddress(family, port, hi, lo), peerId, length, 0L, 0L)
 
     /** The connection's deadline fell due and quiche's timeout runs at [now]. */
     fun timerFired(now: Nanos) = ring.event(FlightKind.TimerFire, now.value, 0, 0, peerId, 0L, 0L)
@@ -174,6 +200,10 @@ internal class ConnFlight(
                 emit.emit(TraceEvent.PathState(sinceOrigin(i), PathMark.entries[ring.subAt(i)].name, null, 0))
                 continue
             }
+            if (kind == FlightKind.DatagramDropped) {
+                emit.emit(droppedAt(i))
+                continue
+            }
             if (kind != FlightKind.DatagramIn && kind != FlightKind.DatagramOut) continue
             val at = ring.aAt(i)
             val length = ring.lengthAt(i)
@@ -185,6 +215,14 @@ internal class ConnFlight(
             emitDatagram(kind, i, length, hex, emit)
         }
         return total
+    }
+
+    private fun droppedAt(i: Int): TraceEvent.Drop {
+        val id = ring.localAt(i)
+        val hi = ring.hiOf(id).toULong().toString(HEX_RADIX)
+        val lo = ring.loOf(id).toULong().toString(HEX_RADIX)
+        val address = "${ring.familyOf(id)}:${ring.portOf(id)}:$hi:$lo"
+        return TraceEvent.Drop(sinceOrigin(i), DropWhy.entries[ring.subAt(i)].type, "${ring.lengthAt(i)} bytes, address $address")
     }
 
     private fun sinceOrigin(i: Int) = (ring.nanosAt(i) - originNanos).nanoseconds
@@ -221,5 +259,6 @@ internal class ConnFlight(
 
     private companion object {
         const val HEX = "0123456789abcdef"
+        const val HEX_RADIX = 16
     }
 }

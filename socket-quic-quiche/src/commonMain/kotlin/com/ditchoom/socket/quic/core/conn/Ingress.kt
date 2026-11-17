@@ -71,8 +71,15 @@ internal class Ingress(
         q.api.connRecv(q.handle, bytes.address, length, info)
     }
 
-    /** Inside: a datagram from an address the connection does not follow is dropped. */
-    fun refused() = counts.datagramDropped()
+    /** Inside: a datagram of [length] bytes [from] an address the connection does not follow is dropped, and recorded. */
+    fun refused(
+        length: Int,
+        from: PathKey,
+        flight: ConnFlight,
+    ) {
+        counts.datagramDropped()
+        flight.dropped(clock.now(), DropWhy.TooManyPeerAddresses, length, from.family, from.port, from.hi, from.lo)
+    }
 
     /** Loop thread, with a caller inside: copies the datagram that came [from] into work for the thread inside. */
     fun copy(
