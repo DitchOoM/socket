@@ -59,11 +59,16 @@ internal class FakePoller : Poller {
     override fun close() = Unit
 }
 
-/** Time that moves only when a test says so. */
+/** Time that moves only when a test says so; counts how often it was read. */
 internal class VirtualClock(
     var at: Nanos = Nanos(0L),
 ) : LoopClock {
-    override fun now(): Nanos = at
+    var reads = 0L
+
+    override fun now(): Nanos {
+        reads++
+        return at
+    }
 }
 
 /** A [DatagramBatchIo] whose answer to each send is scripted by the test; it never takes a datagram itself. */

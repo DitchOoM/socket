@@ -130,6 +130,25 @@ class LoopPassTests {
     }
 
     @Test
+    fun anEchoedDatagramCostsOneClockReadWhenQuicheReadsItAndNoneWhenItIsWritten() {
+        // On a device whose clocksource is the HPET a read of the clock traps to the host: a pass reads it per datagram
+        // only where the stamp needs it, when quiche reads a datagram; a write's datagrams share one reading.
+        fun readsToEcho(datagrams: Int): Long {
+            val clock = VirtualClock()
+            val io = ScriptedIo()
+            repeat(datagrams) { io.arrive(byteArrayOf(it.toByte()), peer(it)) }
+            val rig = ConnRig(EchoQuiche(), io = io, clock = clock)
+            clock.reads = 0
+            rig.loop.pass(Nanos(0))
+            assertEquals(datagrams, io.sent.size, "every datagram was echoed")
+            return clock.reads
+        }
+        val one = readsToEcho(1)
+        val twenty = readsToEcho(20)
+        assertTrue(twenty - one <= 19, "clock reads: $one to echo 1 datagram, $twenty to echo 20")
+    }
+
+    @Test
     fun aSocketThatNeverEmptiesLetsThePassServeOnceItsReceiveTimeIsSpent() {
         // Each read takes a millisecond of the loop's time: a pass must stop reading after its receive budget and serve
         // what it took, instead of reading up to the per-pass count while every connection waits for its output.
