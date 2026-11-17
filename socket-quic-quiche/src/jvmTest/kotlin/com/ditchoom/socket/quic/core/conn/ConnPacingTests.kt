@@ -59,6 +59,23 @@ class ConnPacingTests {
         assertEquals(NextDue.at(7 * ms), next)
     }
 
+    /**
+     * The hold is measured from when quiche wrote the datagram, not from when the turn began. A starved loop's turn on the
+     * API 35 emulator began over a second before its write: a datagram due 300 ms after it was written looked more than a
+     * second ahead, was taken for another clock's reading and not obeyed, and quiche's pacer ran 2.3 s ahead of now.
+     */
+    @Test
+    fun aDatagramDueSoonAfterAWriteThatCameLongAfterTheTurnBeganIsStillHeld() {
+        val written = 1_500 * ms
+        val rig = Rig(dueTimes = longArrayOf(written + 300 * ms, written + 310 * ms))
+        rig.conn.conn.submit(SlowWork(rig, written))
+
+        val next = rig.pass(now = 0)
+
+        assertEquals(1, rig.sent, "the first datagram is written when its time is read; the second waits for it")
+        assertEquals(NextDue.at(written + 300 * ms), next, "the loop wakes at the held datagram's time")
+    }
+
     @Test
     fun aTimeThatIsNotPacingIsNotObeyed() {
         // A reading of some other clock, hours ahead: the datagrams go at once.
@@ -103,6 +120,18 @@ class ConnPacingTests {
         }
         assertEquals(datagrams, sent, "every datagram left by ${now / ms} ms")
         assertTrue(now <= SCHEDULE_ENDS + tick, "the flight scheduled to end at ${SCHEDULE_ENDS / ms} ms left by ${now / ms} ms")
+    }
+
+    /** Work inside the turn that moves the loop's clock to [to], as a turn starved of its CPU does. */
+    private class SlowWork(
+        private val rig: Rig,
+        private val to: Long,
+    ) : ConnWork() {
+        override fun run(inside: Inside) {
+            rig.conn.clock.at = Nanos(to)
+        }
+
+        override fun gone(end: ConnEnd) = Unit
     }
 
     private object NoWork : ConnWork() {
