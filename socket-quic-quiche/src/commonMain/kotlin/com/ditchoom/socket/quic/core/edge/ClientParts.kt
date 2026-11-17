@@ -24,6 +24,7 @@ import com.ditchoom.socket.quic.core.sched.CallerLanes
 import com.ditchoom.socket.quic.core.sched.CallerSend
 import com.ditchoom.socket.quic.core.sched.Entrant
 import com.ditchoom.socket.quic.core.sched.SendPort
+import com.ditchoom.socket.quic.core.time.RttPrior
 import com.ditchoom.socket.quic.core.udp.BatchLimits
 import com.ditchoom.socket.quic.core.udp.MAX_CACHED_TARGETS
 import com.ditchoom.socket.quic.core.udp.SendBatch
@@ -126,8 +127,14 @@ internal class ClientParts(
     /** Any thread, after [start]: the socket is reopened on the network that carries its address now. */
     fun rehome() = loop.rehome(endpoint)
 
-    /** Any thread, after [start]: the socket moves to [bind]'s address, and the connection migrates with it. */
-    fun migrate(bind: PathKey) = loop.move(endpoint, bind)
+    /**
+     * Any thread, after [start]: the socket moves to [bind]'s address, on a network assumed to have a round trip of
+     * [prior], and the connection migrates with it.
+     */
+    fun migrate(
+        bind: PathKey,
+        prior: RttPrior,
+    ) = loop.move(endpoint, bind, prior)
 
     private companion object {
         const val MAX_BATCH = 64

@@ -6,17 +6,20 @@ import com.ditchoom.socket.quic.QuicPathStats
 import com.ditchoom.socket.quic.QuicheRecvInfo
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.time.Nanos
+import com.ditchoom.socket.quic.core.time.RttPrior
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 
 /**
  * One local endpoint of a client: its address as quiche reads it ([key]), and the receive info for datagrams that
- * arrive on it. [made] says whose its sockaddr and receive info are, and so who frees them.
+ * arrive on it. [made] says whose its sockaddr and receive info are, and so who frees them; [prior] is the round trip
+ * quiche assumes for the path from here until it has a sample.
  */
 internal class LocalAddr(
     val key: PathKey,
     val recvInfo: QuicheRecvInfo,
     val made: Made,
+    val prior: RttPrior,
 ) {
     val info = RecvFrom.Info(recvInfo)
 }

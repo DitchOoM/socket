@@ -18,6 +18,7 @@ import com.ditchoom.socket.quic.core.sched.SendPort
 import com.ditchoom.socket.quic.core.sched.Shutdown
 import com.ditchoom.socket.quic.core.sched.SocketHealth
 import com.ditchoom.socket.quic.core.time.Nanos
+import com.ditchoom.socket.quic.core.time.RttPrior
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.ReceiveBatchResult
@@ -46,7 +47,7 @@ internal class Endpoint(
     private var input = ReceiveInput.Maybe
     private var phase = Phase.Live
     private var interest = WriteInterest.None
-    private var relocating = Relocating.No
+    private var relocating: Relocating = Relocating.No
     private val closing = SocketClose(io, socket)
 
     fun placed(token: Int) {
@@ -72,7 +73,10 @@ internal class Endpoint(
         if (phase != Phase.Live) return
         when (route) {
             is Route.Fixed -> {
-                if (relocating == Relocating.Yes) relocating = route.answered(io.settleMove())
+                when (val moving = relocating) {
+                    is Relocating.Yes -> relocating = route.answered(io.settleMove(), moving.prior)
+                    is Relocating.No -> Unit
+                }
                 receiveWaiting(batch, counts, at)
             }
             is Route.Demux -> {
@@ -194,6 +198,7 @@ internal class Endpoint(
     fun move(
         poller: Poller,
         bind: PathKey,
+        prior: RttPrior,
     ) {
         val fixed =
             when (route) {
@@ -206,7 +211,7 @@ internal class Endpoint(
         poller.add(socketRef, token)
         interest = WriteInterest.None
         input = ReceiveInput.Maybe
-        relocating = fixed.answered(moved)
+        relocating = fixed.answered(moved, prior)
     }
 
     /** The io threw: this socket's connection ends with it, and no other. */

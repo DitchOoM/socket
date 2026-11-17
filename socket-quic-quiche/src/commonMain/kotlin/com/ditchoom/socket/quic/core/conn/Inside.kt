@@ -46,8 +46,8 @@ internal class Inside(
 
     fun network(change: NetworkChange) = turn.network(clock.now(), change)
 
-    /** The client's socket now leaves from [local]. */
-    fun moved(local: PathKey) = turn.moved(clock.now(), local)
+    /** The client's socket now leaves from [to]. */
+    fun moved(to: MoveTo) = turn.moved(clock.now(), to)
 
     /** The ids the loop routed to this server connection. */
     fun issue(spare: List<SpareId>) = turn.issue(spare)
