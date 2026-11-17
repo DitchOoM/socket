@@ -200,6 +200,7 @@ public final class com/ditchoom/socket/quic/JniQuicheApi : com/ditchoom/socket/q
 	public fun connPeerTransportParams-ObL0uzk (J)Lcom/ditchoom/socket/quic/PeerTransportParams;
 	public fun connProbeNow-ObL0uzk (J)I
 	public fun connProbePath-oJNOU9g (JJIJI)Lcom/ditchoom/socket/quic/ProbeOutcome;
+	public fun connProbePathWith-KE9HG-0 (JJIJIJ)Lcom/ditchoom/socket/quic/ProbeOutcome;
 	public fun connReadSourceIds-RTtnfzo (JJI)I
 	public fun connReadable-pauv0Lc (J)J
 	public fun connRecv-LflwuVw (JJIJ)I
@@ -223,6 +224,7 @@ public final class com/ditchoom/socket/quic/JniQuicheApi : com/ditchoom/socket/q
 	public fun connStreamRecvStep-CtlJxC8 (JJJI)J
 	public fun connStreamSend-AGE4KGY (JJJIZ)Lcom/ditchoom/socket/quic/StreamSendResult;
 	public fun connStreamShutdown-OTKbAR0 (JJIJ)I
+	public fun connStreamWritableNext-ObL0uzk (J)J
 	public fun connTimeout-DIP9Sao (J)Lkotlin/time/Duration;
 	public fun connTimeoutNanos-ObL0uzk (J)J
 	public fun connTraceId-RTtnfzo (JJI)I
@@ -705,6 +707,7 @@ public abstract interface class com/ditchoom/socket/quic/QuicheApi {
 	public abstract fun connPeerTransportParams-ObL0uzk (J)Lcom/ditchoom/socket/quic/PeerTransportParams;
 	public abstract fun connProbeNow-ObL0uzk (J)I
 	public abstract fun connProbePath-oJNOU9g (JJIJI)Lcom/ditchoom/socket/quic/ProbeOutcome;
+	public abstract fun connProbePathWith-KE9HG-0 (JJIJIJ)Lcom/ditchoom/socket/quic/ProbeOutcome;
 	public fun connReadSourceIds-RTtnfzo (JJI)I
 	public abstract fun connReadable-pauv0Lc (J)J
 	public abstract fun connRecv-LflwuVw (JJIJ)I
@@ -728,6 +731,7 @@ public abstract interface class com/ditchoom/socket/quic/QuicheApi {
 	public fun connStreamRecvStep-CtlJxC8 (JJJI)J
 	public abstract fun connStreamSend-AGE4KGY (JJJIZ)Lcom/ditchoom/socket/quic/StreamSendResult;
 	public abstract fun connStreamShutdown-OTKbAR0 (JJIJ)I
+	public abstract fun connStreamWritableNext-ObL0uzk (J)J
 	public abstract fun connTimeout-DIP9Sao (J)Lkotlin/time/Duration;
 	public fun connTimeoutNanos-ObL0uzk (J)J
 	public fun connTraceId-RTtnfzo (JJI)I
