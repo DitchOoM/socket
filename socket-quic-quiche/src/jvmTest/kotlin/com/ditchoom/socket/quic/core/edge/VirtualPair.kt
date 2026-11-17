@@ -88,6 +88,12 @@ internal class VirtualPair private constructor(
     /** The ports the client's next moves bind to, in order, as an OS may hand back a port the socket left. */
     val movePorts = ArrayDeque<Int>()
 
+    /** The client's quiche handle, seen with its first datagram. */
+    private var clientConn = QuicheConn(1L)
+
+    /** Destination connection ids the client's quiche holds for paths it has not used. */
+    fun clientSpareIds(): Long = api.connAvailableDcids(clientConn)
+
     /** The port the client's socket is bound to now. */
     fun clientPort(): Int = clientKey.port
 
@@ -239,6 +245,7 @@ internal class VirtualPair private constructor(
             info: QuicheRecvInfo,
         ): Int {
             clientRecvs++
+            clientConn = conn
             return inner.connRecv(conn, buf, bufLen, info)
         }
     }

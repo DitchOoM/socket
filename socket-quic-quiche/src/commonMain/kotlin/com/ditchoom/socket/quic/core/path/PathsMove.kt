@@ -130,6 +130,9 @@ internal enum class MoveAnswer {
 
     /** The peer forbade migration: the connection cannot follow its socket. */
     Refused,
+
+    /** The peer gave no spare id and is silent, so none can come: the connection cannot follow its socket. */
+    NoUsablePath,
 }
 
 /** What one serve's look at the paths found. */
@@ -145,7 +148,49 @@ internal enum class PathStep {
 
     /** The path being validated was asked for a fresh PATH_CHALLENGE. */
     Challenged,
+
+    /** A stranded endpoint has no spare id and the peer is silent, so none can come: the connection ends. */
+    NoUsablePath,
 }
+
+/** Hands [each] every endpoint this move holds. */
+internal fun Move.locals(each: (LocalAddr) -> Unit) {
+    when (this) {
+        is Move.Settled -> each(on.local)
+        is Move.Probing -> {
+            each(from.local)
+            each(to.local)
+        }
+        is Move.Stranded -> {
+            each(from.local)
+            each(at)
+        }
+    }
+}
+
+/** The endpoint the socket leaves from while this move stands. */
+internal fun Move.socketAt(): LocalAddr =
+    when (this) {
+        is Move.Settled -> on.local
+        is Move.Probing -> to.local
+        is Move.Stranded -> at
+    }
+
+/**
+ * The endpoint a datagram that arrives is read on: the socket's. While a move waits for a spare id, quiche has no path
+ * for the socket's endpoint, so the datagram is read on the old path, which can carry the id the peer sends.
+ */
+internal fun Move.receivesAt(): LocalAddr =
+    when (this) {
+        is Move.Stranded -> if (why == Unprobed.NoSpareId) from.local else at
+        is Move.Settled, is Move.Probing -> socketAt()
+    }
+
+/** This stranded move after another probe found no path: retried at the next backoff step. */
+internal fun Move.Stranded.again(
+    q: QuicheConnRef,
+    now: Nanos,
+): Move.Stranded = Move.Stranded(from, at, why, q.retryAt(now, retry.failed + 1), id)
 
 /**
  * When a stranded endpoint is probed again after [failed] probes of its move found no path: one PTO of the path the
@@ -194,7 +239,7 @@ internal fun QuicheConnRef.cadenceFrom(now: Nanos): Cadence {
 }
 
 /** The base PTO of the path the connection is active on, or kInitialRtt's when quiche reports none. */
-private fun QuicheConnRef.activeBasePto(): Long {
+internal fun QuicheConnRef.activeBasePto(): Long {
     var index = 0L
     while (index < MOST_PATHS) {
         val stats = api.connPathStats(handle, index++) ?: break
@@ -208,14 +253,14 @@ private fun basePto(stats: QuicPathStats): Long =
     (stats.rtt + maxOf(stats.rttvar * RTTVAR_FACTOR, GRANULARITY) + MAX_ACK_DELAY).inWholeNanoseconds
 
 /** How many of quiche's paths are read: its own limit on a client's concurrent paths is far below it. */
-private const val MOST_PATHS = 16L
+internal const val MOST_PATHS = 16L
 
 /** `PathState::Validated`, as `quiche_path_stats.validation_state` reports it. */
 private const val QUICHE_PATH_VALIDATED = 3L
 
 private const val MAX_DOUBLINGS = 4
 private const val RTTVAR_FACTOR = 4
-private const val ABANDON_PTOS = 3
+internal const val ABANDON_PTOS = 3
 private val GRANULARITY = 1.milliseconds
 private val MAX_ACK_DELAY = 25.milliseconds
 

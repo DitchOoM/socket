@@ -15,6 +15,7 @@ import com.ditchoom.socket.quic.core.life.flightCode
 import com.ditchoom.socket.quic.core.observe.TraceSection
 import com.ditchoom.socket.quic.core.observe.traced
 import com.ditchoom.socket.quic.core.path.MoveAnswer
+import com.ditchoom.socket.quic.core.path.PathStep
 import com.ditchoom.socket.quic.core.sched.LoopPort
 import com.ditchoom.socket.quic.core.sched.Pushed
 import com.ditchoom.socket.quic.core.time.LoopClock
@@ -166,6 +167,7 @@ internal class Turn(
     ) = when (c.follow(now, to)) {
         MoveAnswer.Following -> Unit
         MoveAnswer.Refused -> finish(now, ConnEnd.LocalAddressGone)
+        MoveAnswer.NoUsablePath -> finish(now, ConnEnd.NoUsablePath)
     }
 
     /** Inside: a client's first flight, held for 0-RTT, may leave. */
@@ -185,10 +187,7 @@ internal class Turn(
 
     fun dump(sink: TraceSink) = c.flight.dump(sink)
 
-    /**
-     * Inside: the connection ends with [end], once. The deadline is disarmed and the sink publishes the end first, so a
-     * caller resumed by it can read how the connection ended; then queued work is told, and waiting operations fail.
-     */
+    /** Inside: the connection ends with [end], once. The sink publishes the end first, so a resumed caller can read it; then work fails. */
     fun finish(
         now: Nanos,
         end: ConnEnd,
@@ -234,7 +233,10 @@ internal class Turn(
                 return Collected.Everything
             }
         }
-        c.stepPaths(now)
+        if (c.stepPaths(now) == PathStep.NoUsablePath) {
+            finish(now, ConnEnd.NoUsablePath)
+            return Collected.Everything
+        }
         if (c.firstFlight() == FlightGate.Held) return Collected.Everything
         val wrote =
             when (val pacing = c.slots.pacing) {

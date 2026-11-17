@@ -42,14 +42,16 @@ internal class ClientPaths(
     private val events = PathEvents(q, factory)
     private val peer = TowardPeer(q, first)
     private var previous: Previous = Previous.None
+    private var heard = Heard(0L, Nanos(0L))
+    private var arrived = 0L
     private val retiredIds = RetiredReader(factory)
 
     val sendInfo get() = first.sendInfo
 
     fun read(): PathRead = first.read()
 
-    /** What quiche is told about a datagram that arrived: it came on the socket's endpoint of now. */
-    fun recvFrom(): RecvFrom = socket().info
+    /** What quiche is told about a datagram that arrived: it came on the endpoint [Move.receivesAt] names. */
+    fun recvFrom(): RecvFrom = move.receivesAt().info.also { arrived++ }
 
     fun window(full: Window): Window =
         when (move) {
@@ -83,15 +85,21 @@ internal class ClientPaths(
             is PeerMigrationPermission.Forbidden, is PeerMigrationPermission.NotYetNegotiated -> return MoveAnswer.Refused
         }
         topUp()
+        val hearing = q.hearing(heard, arrived, now)
+        heard = heard.observe(arrived, now)
         val sockAddr = local.encodeToNative(factory)
         val at = LocalAddr(q.api.decodePathKey(sockAddr.address), peer.recvInfoAt(sockAddr), Made.Here(sockAddr), prior)
         val from = abandon()
-        move =
-            when (val probed = peer.probe(at)) {
-                is ProbeOutcome.Probed -> Move.Probing(from, Linked(at, probed.dcidSeq), 0, q.cadenceFrom(now))
-                is ProbeOutcome.Rejected -> Move.Stranded(from, at, Unprobed.NoSpareId, q.retryAt(now, 0), LinkedId.None)
+        return when (val probed = peer.probe(at)) {
+            is ProbeOutcome.Probed -> {
+                move = Move.Probing(from, Linked(at, probed.dcidSeq), 0, q.cadenceFrom(now))
+                MoveAnswer.Following
             }
-        return MoveAnswer.Following
+            is ProbeOutcome.Rejected -> {
+                move = Move.Stranded(from, at, Unprobed.NoSpareId, q.retryAt(now, 0), LinkedId.None)
+                if (probed.endsMove(hearing)) MoveAnswer.NoUsablePath else MoveAnswer.Following
+            }
+        }
     }
 
     /**
@@ -119,9 +127,7 @@ internal class ClientPaths(
     }
 
     /** The OS reports another usable network under the socket: the move is followed afresh ([Move.onNewNetwork]). */
-    fun networkChanged(now: Nanos) {
-        move = move.onNewNetwork(now)
-    }
+    fun networkChanged(now: Nanos) = run { move = move.onNewNetwork(now) }
 
     /** Whether the socket's endpoint has no validated path yet: an idle end then means no usable path was found. */
     fun unsettled(): Boolean = move !is Move.Settled
@@ -132,17 +138,7 @@ internal class ClientPaths(
             is Previous.Held -> each(held.local)
             is Previous.None -> Unit
         }
-        when (val now = move) {
-            is Move.Settled -> each(now.on.local)
-            is Move.Probing -> {
-                each(now.from.local)
-                each(now.to.local)
-            }
-            is Move.Stranded -> {
-                each(now.from.local)
-                each(now.at)
-            }
-        }
+        move.locals(each)
         events.free()
         ids.free()
         retiredIds.free()
@@ -163,6 +159,8 @@ internal class ClientPaths(
         }
         if (now.value < stranded.retry.due.value) return PathStep.Steady
         topUp()
+        val hearing = q.hearing(heard, arrived, now)
+        heard = heard.observe(arrived, now)
         return when (stranded.why) {
             Unprobed.MigrationRefused -> migrate(now, stranded.from, stranded.at, LinkedId.None, stranded.retry.failed)
             Unprobed.NoSpareId, Unprobed.ValidationFailed -> {
@@ -170,17 +168,15 @@ internal class ClientPaths(
                     when (val probed = peer.probe(stranded.at)) {
                         is ProbeOutcome.Probed ->
                             Move.Probing(stranded.from, Linked(stranded.at, probed.dcidSeq), stranded.retry.failed, q.cadenceFrom(now))
-                        is ProbeOutcome.Rejected -> strandedAgain(now, stranded)
+                        is ProbeOutcome.Rejected -> {
+                            if (stranded.why == Unprobed.NoSpareId && probed.endsMove(hearing)) return PathStep.NoUsablePath
+                            stranded.again(q, now)
+                        }
                     }
                 PathStep.Reprobed
             }
         }
     }
-
-    private fun strandedAgain(
-        now: Nanos,
-        stranded: Move.Stranded,
-    ): Move.Stranded = Move.Stranded(stranded.from, stranded.at, stranded.why, q.retryAt(now, stranded.retry.failed + 1), stranded.id)
 
     private fun follow(
         now: Nanos,
@@ -286,12 +282,7 @@ internal class ClientPaths(
         previous = Previous.Held(local)
     }
 
-    private fun socket(): LocalAddr =
-        when (val now = move) {
-            is Move.Settled -> now.on.local
-            is Move.Probing -> now.to.local
-            is Move.Stranded -> now.at
-        }
+    private fun socket(): LocalAddr = move.socketAt()
 
     private fun retire(seq: Long) {
         // A refusal leaves the id with quiche until the connection ends; no path uses it.

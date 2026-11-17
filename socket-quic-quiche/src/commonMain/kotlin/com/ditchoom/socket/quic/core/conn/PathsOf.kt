@@ -91,11 +91,12 @@ internal fun Paths.established() =
  * Inside, each serve: reads the paths' news. A client that just migrated has quiche send its probes on the new path
  * at once, so what the old path lost is resent now rather than at its next timer.
  */
-internal fun ConnParts.stepPaths(now: Nanos) =
+internal fun ConnParts.stepPaths(now: Nanos): PathStep =
     when (val paths = slots.paths) {
-        is Paths.Client ->
-            when (paths.paths.step(now)) {
-                PathStep.Steady -> Unit
+        is Paths.Client -> {
+            val step = paths.paths.step(now)
+            when (step) {
+                PathStep.Steady, PathStep.NoUsablePath -> Unit
                 PathStep.ProbeFailed -> flight.path(now, PathMark.ProbeFailed)
                 PathStep.Challenged -> flight.path(now, PathMark.Challenged)
                 PathStep.Reprobed -> {
@@ -107,7 +108,12 @@ internal fun ConnParts.stepPaths(now: Nanos) =
                     timer.nudge()
                 }
             }
-        is Paths.Server -> paths.paths.step()
+            step
+        }
+        is Paths.Server -> {
+            paths.paths.step()
+            PathStep.Steady
+        }
     }
 
 /**
@@ -152,7 +158,7 @@ internal fun ConnParts.follow(
         now,
         when (answer) {
             MoveAnswer.Following -> PathMark.Moved
-            MoveAnswer.Refused -> PathMark.Refused
+            MoveAnswer.Refused, MoveAnswer.NoUsablePath -> PathMark.Refused
         },
     )
     return answer
