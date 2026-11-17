@@ -12,6 +12,7 @@ import com.ditchoom.socket.quic.QuichePairByHand
 import com.ditchoom.socket.quic.migrationSimOptions
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.microseconds
+import kotlin.time.Duration.Companion.milliseconds
 
 /**
  * What happens once the replay has no capture left to follow: the capture ran out, or the fresh
@@ -215,7 +216,7 @@ internal class ReplayReport(
 /**
  * Put a fresh quiche pair through [schedule] on a virtual clock.
  *
- * Our endpoint runs as it would anywhere: its timers fire when they fall due, and each datagram it
+ * Our endpoint runs as it would anywhere: its timers fire as [CaptureSchedule.ourTimers] says, and each datagram it
  * sends is checked against the capture's next one for our direction, by the packet types it coalesces
  * and by its time. A match takes the captured datagram's fate. The first mismatch is the replay's
  * [Divergence], and from there no captured fate is applied to anything.
@@ -628,11 +629,6 @@ private class CaptureReplay(
         ready: () -> Boolean = { false },
         endpoint: OurEndpoint = ourWork,
     ) {
-        val firing =
-            when (endpoint) {
-                OurEndpoint.Free -> listOf(ours)
-                OurEndpoint.Busy -> emptyList()
-            }
         while (phase == Phase.OnCapture && end == ConnectionEnd.Open && !ready()) {
             if (++events > REPLAY_EVENT_LIMIT) return leave(Divergence.NeverSettles(now))
             val arrival = nextArrival()
@@ -641,22 +637,23 @@ private class CaptureReplay(
             val peerSendAt = peerSend.fold(Duration.INFINITE) { _, step -> step.at }
             val timerAt =
                 when (endpoint) {
-                    OurEndpoint.Free -> timerAt(ours)
+                    OurEndpoint.Free -> ourTimerFires()
                     OurEndpoint.Busy -> Duration.INFINITE
                 }
             val next = minOf(arrivalAt, peerSendAt, timerAt)
             if (next > until) {
-                advanceTo(until, firing)
+                advanceTo(until, emptyList())
                 return
             }
-            advanceTo(next, firing)
+            advanceTo(next, emptyList())
             when (next) {
                 arrivalAt -> arrive(arrival.first())
                 peerSendAt -> {
                     peerNext++
                     peerSends(peerSend.first(), peerNext - 1)
                 }
-                else -> Unit
+                // quiche's timeout runs now for each of our timers that has fallen due.
+                else -> pair.elapse(Duration.ZERO, listOf(ours))
             }
             when (endpoint) {
                 OurEndpoint.Free -> {
@@ -720,6 +717,18 @@ private class CaptureReplay(
 
     /** The datagram in flight that arrives first, if any is in flight. */
     private fun nextArrival(): List<InFlight> = inFlight.sortedWith(compareBy<InFlight> { it.arrives }.thenBy { it.order }).take(1)
+
+    /**
+     * When our endpoint's next timer fires: when it falls due, or when the capture's host next ran from then on. A wake
+     * within [TIMER_PRECISION] before it is the one the capture's timer fired at, a hair before the replay's falls due.
+     */
+    private fun ourTimerFires(): Duration {
+        val due = timerAt(ours)
+        return when (val timers = schedule.ourTimers) {
+            OurTimers.WhenDue -> due
+            is OurTimers.AsRecorded -> maxOf(due, timers.wakes.firstOrNull { it >= due - TIMER_PRECISION } ?: due)
+        }
+    }
 
     /** When [conn]'s next timer falls due; never, when none is armed. */
     private fun timerAt(conn: QuicheConn): Duration =
@@ -946,6 +955,12 @@ private class CaptureReplay(
 
     private companion object {
         const val PRIMARY_ENDPOINT = 0
+
+        /**
+         * How far the replay's deadlines may stand from the capture's: its modelled peer's acknowledgement delays and
+         * quiche's own clock reads differ from the capture's by microseconds; a host's stall lasts milliseconds.
+         */
+        val TIMER_PRECISION = 1.milliseconds
 
         /** Datagrams that reach our endpoint this close together are one receive pass: it takes what is queued. */
         val RECEIVE_PASS = 250.microseconds

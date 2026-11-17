@@ -39,6 +39,8 @@ internal class CaptureSchedule(
     val tolerance: SendTimeTolerance,
     /** Spare connection ids our endpoint hands its peer in the pass its handshake completes, before it writes again. */
     val idsAtEstablishment: Int = 0,
+    /** When our endpoint's timers fire. */
+    val ourTimers: OurTimers = OurTimers.WhenDue,
 ) {
     /**
      * This schedule up to [at], with the connection still open there: what a peer that had not gone
@@ -60,6 +62,7 @@ internal class CaptureSchedule(
             runsFor = at,
             tolerance = tolerance,
             idsAtEstablishment = idsAtEstablishment,
+            ourTimers = ourTimers,
         )
 
     /**
@@ -85,8 +88,24 @@ internal class CaptureSchedule(
             runsFor = runsFor,
             tolerance = tolerance,
             idsAtEstablishment = idsAtEstablishment,
+            ourTimers = ourTimers,
         )
     }
+}
+
+/** When our endpoint's timers fire in a replay. */
+internal sealed interface OurTimers {
+    /** When quiche says they fall due: a capture that does not say when its host ran them. */
+    data object WhenDue : OurTimers
+
+    /**
+     * At the first of [wakes], the times the capture's host was running our endpoint (a timer, a datagram in or out),
+     * at or after quiche says one falls due: a host that stalled ran the timer when it next ran at all, and every timer
+     * armed after that one moves with it. Past the last, when due.
+     */
+    data class AsRecorded(
+        val wakes: List<Duration>,
+    ) : OurTimers
 }
 
 /** A packet's type as its unprotected header gives it (RFC 9000 §17), which is also its packet number space. */
