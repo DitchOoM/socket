@@ -154,7 +154,7 @@ internal class DatagramReceiveOp(
 
     /** The receive's answer; a caller cancelled meanwhile frees what arrived and raises. */
     suspend fun answer(): ReceiveAnswer {
-        val answer = hand.await(caller) { conn.submit(Withdraw(), CallerPlace.HandToLoop) }
+        val answer = hand.await(caller) { cancelled() }
         val context = currentCoroutineContext()
         return when (answer) {
             is ReceiveAnswer.Arrived -> {
@@ -169,6 +169,14 @@ internal class DatagramReceiveOp(
         }
     }
 
+    /** The cancelling thread: a receive not answered yet is answered Cancelled and handed back to the connection. */
+    private fun cancelled() {
+        when (hand.answer(ReceiveAnswer.Cancelled)) {
+            Landed.First -> conn.submit(Withdraw(), CallerPlace.HandToLoop)
+            Landed.Late -> Unit
+        }
+    }
+
     override fun run(inside: Inside) =
         guarded(::failed) {
             when (val datagrams = inside.datagrams) {
@@ -176,9 +184,10 @@ internal class DatagramReceiveOp(
                 is Datagrams.On ->
                     when (interest()) {
                         Interest.Withdrawn -> discard()
-                        Interest.Wanted -> when (datagrams.box.receive(this)) {
-                            Receipt.Delivered, Receipt.Parked -> Unit
-                        }
+                        Interest.Wanted ->
+                            when (datagrams.box.receive(this)) {
+                                Receipt.Delivered, Receipt.Parked -> Unit
+                            }
                     }
             }
         }

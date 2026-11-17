@@ -169,8 +169,10 @@ public final class com/ditchoom/socket/quic/JniQuicheApi : com/ditchoom/socket/q
 	public fun connApplicationProto-RTtnfzo (JJI)I
 	public fun connAvailableDcids-ObL0uzk (J)J
 	public fun connClose-7TBY80c (JLcom/ditchoom/socket/quic/QuicError;)I
+	public fun connDgramMaxWritableBytes-ObL0uzk (J)I
 	public fun connDgramMaxWritableLen-ObL0uzk (J)Lcom/ditchoom/socket/quic/MaxDatagramSize;
 	public fun connDgramRecv-RTtnfzo (JJI)Lcom/ditchoom/socket/quic/StreamRecvResult;
+	public fun connDgramRecvStep-19tTNE0 (JJI)J
 	public fun connDgramSend-RTtnfzo (JJI)I
 	public fun connDrainRetiredScids-RTtnfzo (JJI)I
 	public fun connEarlyDataReason-ObL0uzk (J)I
@@ -672,8 +674,10 @@ public abstract interface class com/ditchoom/socket/quic/QuicheApi {
 	public fun connApplicationProto-RTtnfzo (JJI)I
 	public abstract fun connAvailableDcids-ObL0uzk (J)J
 	public abstract fun connClose-7TBY80c (JLcom/ditchoom/socket/quic/QuicError;)I
+	public fun connDgramMaxWritableBytes-ObL0uzk (J)I
 	public abstract fun connDgramMaxWritableLen-ObL0uzk (J)Lcom/ditchoom/socket/quic/MaxDatagramSize;
 	public abstract fun connDgramRecv-RTtnfzo (JJI)Lcom/ditchoom/socket/quic/StreamRecvResult;
+	public fun connDgramRecvStep-19tTNE0 (JJI)J
 	public abstract fun connDgramSend-RTtnfzo (JJI)I
 	public fun connDrainRetiredScids-RTtnfzo (JJI)I
 	public abstract fun connEarlyDataReason-ObL0uzk (J)I
@@ -758,6 +762,8 @@ public final class com/ditchoom/socket/quic/QuicheApi$DefaultImpls {
 	public static fun configLogKeys-N7TAlBc (Lcom/ditchoom/socket/quic/QuicheApi;J)V
 	public static fun connActiveScids-ObL0uzk (Lcom/ditchoom/socket/quic/QuicheApi;J)I
 	public static fun connApplicationProto-RTtnfzo (Lcom/ditchoom/socket/quic/QuicheApi;JJI)I
+	public static fun connDgramMaxWritableBytes-ObL0uzk (Lcom/ditchoom/socket/quic/QuicheApi;J)I
+	public static fun connDgramRecvStep-19tTNE0 (Lcom/ditchoom/socket/quic/QuicheApi;JJI)J
 	public static fun connDrainRetiredScids-RTtnfzo (Lcom/ditchoom/socket/quic/QuicheApi;JJI)I
 	public static fun connLocalError-ObL0uzk (Lcom/ditchoom/socket/quic/QuicheApi;J)Lcom/ditchoom/socket/quic/QuicError;
 	public static fun connPathStats-7TBY80c (Lcom/ditchoom/socket/quic/QuicheApi;JJ)Lcom/ditchoom/socket/quic/QuicPathStats;
@@ -777,6 +783,7 @@ public final class com/ditchoom/socket/quic/QuicheApi$DefaultImpls {
 }
 
 public final class com/ditchoom/socket/quic/QuicheApiKt {
+	public static final field NO_DATAGRAM_ROOM I
 	public static final field NO_TIMEOUT_NANOS J
 	public static final field RETIRED_SCID_SLOT_BYTES I
 }

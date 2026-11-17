@@ -44,6 +44,7 @@ internal fun datagramRuleOf(options: QuicOptions): DatagramRule =
 /** Whether idle connections of an endpoint are pinged, from [QuicOptions.keepAliveInterval]. */
 internal fun keepAliveRuleOf(options: QuicOptions): KeepAliveRule =
     options.keepAliveInterval?.let { KeepAliveRule.Every(it.inWholeNanoseconds) } ?: KeepAliveRule.Off
+
 /** Whether a server accepts 0-RTT, from [QuicOptions.enableEarlyData]. */
 internal fun earlyDataRuleOf(options: QuicOptions): EarlyDataRule =
     if (options.enableEarlyData) EarlyDataRule.Accepted else EarlyDataRule.Refused

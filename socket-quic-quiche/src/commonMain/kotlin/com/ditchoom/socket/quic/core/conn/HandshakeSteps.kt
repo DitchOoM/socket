@@ -18,6 +18,8 @@ internal fun ConnParts.handshakeStep(
         HandshakeStep.Handshaking -> early()
         HandshakeStep.JustEstablished -> {
             paths.established()
+            // Before the caller is told: it may read the datagram room the moment it resumes.
+            slots.datagrams.wake()
             sink.established(handshake.report(now, paths.read(), outcome()))
             established(now)
         }

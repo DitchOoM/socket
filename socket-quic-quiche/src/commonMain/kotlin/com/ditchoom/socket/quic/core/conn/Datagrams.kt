@@ -261,7 +261,6 @@ internal class DatagramBox(
     private enum class Pulled { Got, Nothing }
 
     private enum class Kept { One, None }
-
 }
 
 /** Inside: the datagram work of an established connection, for each variant of its slot. */

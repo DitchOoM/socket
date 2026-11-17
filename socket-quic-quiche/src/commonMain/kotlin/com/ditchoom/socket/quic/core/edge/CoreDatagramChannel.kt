@@ -16,12 +16,12 @@ import com.ditchoom.buffer.flow.LocalAddress
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.socket.quic.DatagramRefusal
 import com.ditchoom.socket.quic.QuicCloseCircumstance
+import com.ditchoom.socket.quic.QuicCloseReason
 import com.ditchoom.socket.quic.QuicDatagramRefused
 import com.ditchoom.socket.quic.QuicDatagramTooLarge
+import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicNativeMemoryRequiredException
 import com.ditchoom.socket.quic.QuicWriteTarget
-import com.ditchoom.socket.quic.QuicCloseReason
-import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicheDriver
 import com.ditchoom.socket.quic.core.conn.Conn
 import com.ditchoom.socket.quic.core.conn.DATAGRAM_ROOM
@@ -65,7 +65,12 @@ internal class CoreDatagramChannel(
                 when (val at = NativeBytes.addressOf(payload)) {
                     is ReadAddress.At -> at.address + payload.position()
                     is ReadAddress.NotAddressable -> {
-                        val refused = QuicNativeMemoryRequiredException.forBuffer(QuicWriteTarget.Datagram, payload, QuicheDriver.capabilities)
+                        val refused =
+                            QuicNativeMemoryRequiredException.forBuffer(
+                                QuicWriteTarget.Datagram,
+                                payload,
+                                QuicheDriver.capabilities,
+                            )
                         raise(Raised.Thrown(refused), QuicCloseCircumstance.Ended)
                     }
                 }

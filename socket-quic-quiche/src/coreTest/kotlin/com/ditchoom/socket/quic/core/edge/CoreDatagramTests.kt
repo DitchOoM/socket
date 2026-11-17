@@ -43,6 +43,16 @@ class CoreDatagramTests {
     fun closeLoops() = loops.close()
 
     @Test
+    fun aConnectionWithDatagramsOnClosesCleanlyWithNoneSent() =
+        coreTest("CoreDatagramTests.aConnectionWithDatagramsOnClosesCleanlyWithNoneSent") {
+            withCoreServer(options = on, onConnection = { delay(HOLD) }) { server ->
+                val client = connectCore(server.port, loops = loops, options = on)
+                assertTrue(client.connection.datagramChannel().maxWritableSize > 0)
+                client.connection.close(QuicError.NoError)
+            }
+        }
+
+    @Test
     fun datagramsEchoInBothDirectionsByteExact() =
         coreTest("CoreDatagramTests.datagramsEchoInBothDirectionsByteExact") {
             withCoreServer(options = on, onConnection = { connection ->
@@ -149,7 +159,11 @@ class CoreDatagramTests {
                     }
                     assertEquals((SENT - QUEUE).toLong(), client.connection.datagramsOverflowed(), "everything past the bound is counted")
                     val kept = (0 until QUEUE).map { receive(channel) }
-                    assertEquals((SENT - QUEUE + 1..SENT).toList(), kept.map { it[1].toInt() and 0xFF }, "the newest datagrams are kept, in order")
+                    assertEquals(
+                        (SENT - QUEUE + 1..SENT).toList(),
+                        kept.map { it[1].toInt() and 0xFF },
+                        "the newest datagrams are kept, in order",
+                    )
                     assertFailsWith<TimeoutCancellationException> { withTimeout(QUIET) { channel.receive() } }
                 } finally {
                     client.connection.close(QuicError.NoError)
