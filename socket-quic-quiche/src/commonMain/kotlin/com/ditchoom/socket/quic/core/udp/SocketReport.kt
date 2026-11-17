@@ -2,12 +2,12 @@ package com.ditchoom.socket.quic.core.udp
 
 /** The datagrams the operating system dropped for one socket because its receive buffer was full. */
 internal sealed interface SocketDrops {
-    class Counted(
+    data class Counted(
         val datagrams: Long,
     ) : SocketDrops
 
     /** The operating system keeps no per-socket count here, or it could not be read. */
-    object NotAvailable : SocketDrops
+    data object NotAvailable : SocketDrops
 }
 
 /** One UDP socket's granted buffers, and its drop count read on demand; nothing is read until [drops] is called. */

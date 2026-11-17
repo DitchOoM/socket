@@ -50,8 +50,9 @@ private sealed interface Deadline {
 
 /**
  * The handshake's phase, its PTO ceiling, its deadline and the report of its end. Until the handshake is confirmed the
- * ceiling starts at the rule's first and grows 3× with each of quiche's PTO expiries, and the deadline ends the
- * connection; at confirmation the ceiling is removed and quiche's recovery runs unmodified.
+ * ceiling starts at the rule's first and grows 3× with each of quiche's PTO expiries; at confirmation the ceiling is
+ * removed and quiche's recovery runs unmodified. The deadline ends the connection only while the handshake is
+ * incomplete: once it completes the caller holds the connection, and the idle timeout owns a confirmation that is late.
  */
 @Confined
 internal class Handshake(
@@ -100,7 +101,7 @@ internal class Handshake(
             confirm()
             return just
         }
-        if (passed(now)) return HandshakeStep.DeadlinePassed
+        if (reached == Progress.Handshaking && passed(now)) return HandshakeStep.DeadlinePassed
         return when (reached) {
             Progress.Handshaking -> HandshakeStep.Handshaking
             Progress.Established -> just
@@ -126,8 +127,12 @@ internal class Handshake(
         }
     }
 
-    /** Offers the deadline while the handshake is unconfirmed; offers nothing otherwise. */
+    /** Offers the deadline while the handshake is incomplete; offers nothing otherwise. */
     fun offerWake(sink: WakeSink) {
+        when (pending.progress) {
+            Progress.Established -> return
+            Progress.Handshaking -> Unit
+        }
         when (phase) {
             is Phase.Confirmed -> return
             is Phase.Pending -> Unit
@@ -162,7 +167,7 @@ internal class Handshake(
         )
     }
 
-    /** Once, after [step] answered [HandshakeStep.DeadlinePassed]: how far the handshake got. */
+    /** Once, after [step] answered [HandshakeStep.DeadlinePassed], so the handshake never completed: what the peer answered. */
     fun progress(
         now: Nanos,
         read: PathRead,
@@ -174,13 +179,9 @@ internal class Handshake(
             link = rule.link,
             probes = probesOf(read),
             reached =
-                when (pending.progress) {
-                    Progress.Established -> HandshakeReached.EstablishedUnconfirmed
-                    Progress.Handshaking ->
-                        when (read) {
-                            is PathRead.Unread -> HandshakeReached.NothingReceived
-                            is PathRead.Read -> if (read.received > 0) HandshakeReached.PeerAnswered else HandshakeReached.NothingReceived
-                        }
+                when (read) {
+                    is PathRead.Unread -> HandshakeReached.NothingReceived
+                    is PathRead.Read -> if (read.received > 0) HandshakeReached.PeerAnswered else HandshakeReached.NothingReceived
                 },
         )
 

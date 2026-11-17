@@ -22,4 +22,4 @@ internal sealed interface RttSample {
     ) : RttSample
 }
 
-internal enum class HandshakeReached { NothingReceived, PeerAnswered, EstablishedUnconfirmed }
+internal enum class HandshakeReached { NothingReceived, PeerAnswered }

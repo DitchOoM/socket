@@ -146,7 +146,7 @@ internal class Turn(
     ) {
         c.flight.network(now, change.ordinal)
         when (c.network.changed(change)) {
-            NetworkStep.Nudge -> c.timer.nudge()
+            NetworkStep.Nudge -> c.networkUsable(now)
             NetworkStep.Wait -> Unit
             NetworkStep.End -> finish(now, ConnEnd.LocalAddressGone)
         }
