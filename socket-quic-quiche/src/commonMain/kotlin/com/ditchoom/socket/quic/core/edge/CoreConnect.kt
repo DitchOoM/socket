@@ -29,6 +29,7 @@ import com.ditchoom.socket.quic.applyQuicOptions
 import com.ditchoom.socket.quic.clientAlpnOffer
 import com.ditchoom.socket.quic.core.conn.FlightSize
 import com.ditchoom.socket.quic.core.conn.HandshakeRule
+import com.ditchoom.socket.quic.core.conn.offer
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.loop.Placement
@@ -189,6 +190,7 @@ private suspend fun connectOnThisThread(
     scid.freeNativeMemory()
     val plan = sessionPlan(options, serverName, port)
     val offer = offerOf(QuicheConnRef(api, handle), plan.resumption, factory)
+    plan.tokens.offer(QuicheConnRef(api, handle), factory)
     val scope = CoroutineScope(SupervisorJob())
     val built =
         ClientParts(
@@ -210,6 +212,7 @@ private suspend fun connectOnThisThread(
                 readiness = socket.readiness(),
                 offer = offer,
                 tickets = plan.home,
+                tokens = plan.tokens,
             ),
             peerSockAddr,
             localSockAddr,

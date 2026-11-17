@@ -8,6 +8,7 @@ import com.ditchoom.socket.quic.QuicSessionMemory
 import com.ditchoom.socket.quic.QuicSessionStore
 import com.ditchoom.socket.quic.QuicSessionTicket
 import com.ditchoom.socket.quic.QuicSessionTicketState
+import com.ditchoom.socket.quic.core.conn.TokenHome
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -34,6 +35,7 @@ internal sealed interface TicketHome {
 internal class SessionPlan(
     val resumption: QuicResumption,
     val home: TicketHome,
+    val tokens: TokenHome,
 )
 
 /**
@@ -47,14 +49,15 @@ internal fun sessionPlan(
     port: Int,
 ): SessionPlan =
     when (val store = options.sessionStore) {
-        is QuicSessionStore.NotKept -> SessionPlan(options.resumption, TicketHome.NotKept)
+        is QuicSessionStore.NotKept -> SessionPlan(options.resumption, TicketHome.NotKept, TokenHome.NotKept)
         is QuicSessionStore.InMemory -> {
             val key = QuicSessionKey.of(serverName, port, options)
-            SessionPlan(offered(options.resumption, store.memory.take(key)), TicketHome.Memory(store.memory, key))
+            val kept = offered(options.resumption, store.memory.take(key))
+            SessionPlan(kept, TicketHome.Memory(store.memory, key), TokenHome.of(store, key))
         }
         is QuicSessionStore.Supplied -> {
             val key = QuicSessionKey.of(serverName, port, options)
-            SessionPlan(offered(options.resumption, store.cache.take(key)), TicketHome.Supplied(store.cache, key))
+            SessionPlan(offered(options.resumption, store.cache.take(key)), TicketHome.Supplied(store.cache, key), TokenHome.NotKept)
         }
     }
 

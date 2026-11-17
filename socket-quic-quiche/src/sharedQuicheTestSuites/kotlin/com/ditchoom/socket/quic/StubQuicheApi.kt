@@ -484,6 +484,27 @@ internal class StubQuicheApi : QuicheApi {
         return 0
     }
 
+    /** No token is ever set, received, sent or proven: the stub's peer never issues NEW_TOKEN. */
+    override fun connSetToken(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ) = 0
+
+    override fun connTakeNewToken(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ) = -1 // QUICHE_ERR_DONE
+
+    override fun connSendNewToken(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ) = 0
+
+    override fun connSetPeerAddressValidated(conn: QuicheConn) = 0
+
     /** How many times [connProbeNow] was called. */
     @Volatile var probeNowCount = 0
 

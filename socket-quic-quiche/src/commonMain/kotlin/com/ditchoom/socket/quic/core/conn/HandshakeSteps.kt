@@ -72,7 +72,10 @@ private fun ConnParts.established(now: Nanos) {
     slots.keepAlive.step(now)
     when (val r = slots.resumption) {
         is Resumption.Server -> Unit
-        is Resumption.Client -> r.session.takeTicket(sink)
+        is Resumption.Client -> {
+            r.session.takeTicket(sink)
+            r.session.takeToken()
+        }
     }
 }
 

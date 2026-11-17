@@ -19,8 +19,6 @@ import com.ditchoom.socket.quic.applySessionTicketKeys
 import com.ditchoom.socket.quic.core.conn.FlightArena
 import com.ditchoom.socket.quic.core.conn.LoopMemory
 import com.ditchoom.socket.quic.core.conn.SlotRules
-import com.ditchoom.socket.quic.core.demux.AddressTokens
-import com.ditchoom.socket.quic.core.demux.AddressValidation
 import com.ditchoom.socket.quic.core.demux.Admission
 import com.ditchoom.socket.quic.core.demux.Demux
 import com.ditchoom.socket.quic.core.demux.DemuxScratch
@@ -184,12 +182,7 @@ internal class ServerSetup(
         val local = localKey.encodeToNative(factory)
         // The loop alone draws from it: a shared source's lock would let a client thread hold up the receive phase.
         val ids = newConnectionIdRandom()
-        val tokens =
-            when (val validation = config.addressValidation) {
-                is AddressValidation.Off -> Tokens.None
-                is AddressValidation.Retry ->
-                    Tokens.Of(AddressTokens(factory, ids, validation.lifetime.inWholeNanoseconds))
-            }
+        val tokens = Tokens.of(config, factory, ids)
         val hold =
             MemoryHold(
                 Runnable {

@@ -11,6 +11,7 @@ import com.ditchoom.socket.quic.connectionIdRandom
 import com.ditchoom.socket.quic.core.conn.FlightSize
 import com.ditchoom.socket.quic.core.conn.HandshakeRule
 import com.ditchoom.socket.quic.core.conn.Offer
+import com.ditchoom.socket.quic.core.conn.TokenHome
 import com.ditchoom.socket.quic.core.loop.Readiness
 import com.ditchoom.socket.quic.core.loop.RunningLoop
 import com.ditchoom.socket.quic.core.time.LoopClock
@@ -48,4 +49,6 @@ internal class ClientWiring(
     val offer: Offer = Offer.NoTicket,
     /** Where the ticket the server issues is kept for the next connection to it. */
     val tickets: TicketHome = TicketHome.NotKept,
+    /** Where the NEW_TOKEN token the server issues is kept for the next connection to it. */
+    val tokens: TokenHome = TokenHome.NotKept,
 )

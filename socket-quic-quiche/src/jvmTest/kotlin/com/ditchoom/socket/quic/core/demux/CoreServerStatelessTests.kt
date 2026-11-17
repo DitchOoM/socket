@@ -88,11 +88,12 @@ class CoreServerStatelessTests {
         }
 
     @Test
-    fun anInitialWithAForgedTokenIsDroppedAndCreatesNoConnection() =
+    fun anInitialWithAForgedRetryTokenIsDroppedAndCreatesNoConnection() =
         runBlocking {
             withCoreEchoServer(ServerConfig(addressValidation = AddressValidation.Retry())) { server ->
-                val forged =
-                    initial(version = 1, dcid = Random(1).nextBytes(16), scid = Random(2).nextBytes(8), token = Random(3).nextBytes(45))
+                // A Retry token says so in its first byte; one that fails its check is dropped (RFC 9000 §8.1.2).
+                val token = Random(3).nextBytes(45).also { it[0] = 0x52 }
+                val forged = initial(version = 1, dcid = Random(1).nextBytes(16), scid = Random(2).nextBytes(8), token = token)
                 DatagramChannel.open().use { socket ->
                     socket.send(ByteBuffer.wrap(forged), InetSocketAddress("127.0.0.1", server.port))
                 }
@@ -100,6 +101,23 @@ class CoreServerStatelessTests {
                 assertEquals(1L, server.counts.droppedToken)
                 assertEquals(0L, server.counts.accepted)
                 assertEquals(0L, server.counts.retriesSent)
+            }
+        }
+
+    @Test
+    fun anInitialWithATokenThatIsNotARetryTokenIsAnsweredWithRetryAsIfItHadNone() =
+        runBlocking {
+            withCoreEchoServer(ServerConfig(addressValidation = AddressValidation.Retry())) { server ->
+                // RFC 9000 §8.1.3: an unusable NEW_TOKEN token (another server's, a lost key's) must not cost the connection.
+                val token = Random(3).nextBytes(45).also { it[0] = 0x4E }
+                val reply =
+                    exchange(
+                        server.port,
+                        initial(version = 1, dcid = Random(1).nextBytes(16), scid = Random(2).nextBytes(8), token = token),
+                    )
+                assertEquals(0xF0, reply.get(0).toInt() and 0xF0, "a Retry came back")
+                assertEquals(1L, server.counts.retriesSent)
+                assertEquals(0L, server.counts.droppedToken)
             }
         }
 

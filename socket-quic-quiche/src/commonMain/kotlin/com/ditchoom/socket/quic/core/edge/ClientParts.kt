@@ -84,7 +84,7 @@ internal class ClientParts(
                     keepAliveRuleOf(w.options),
                 ),
             q = QuicheConnRef(w.api, w.handle),
-            side = ConnSide.Client(w.ids, w.offer, w.memory.native(ClientSession.TICKET_BYTES)),
+            side = ConnSide.Client(w.ids, w.offer, w.memory.native(ClientSession.TICKET_BYTES), w.tokens),
             address =
                 ConnAddress(
                     SockAddr(peerSockAddr.address, peerSockAddr.length),

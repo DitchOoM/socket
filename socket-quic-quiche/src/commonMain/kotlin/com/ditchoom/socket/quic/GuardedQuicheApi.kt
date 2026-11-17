@@ -227,6 +227,38 @@ internal class GuardedQuicheApi(
         delegate.connSetHandshakePtoCeiling(conn, ceiling)
     }
 
+    override fun connSetToken(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int {
+        guard.assertOnLoop(LoopSite.Quiche)
+        return delegate.connSetToken(conn, buf, bufLen)
+    }
+
+    override fun connTakeNewToken(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int {
+        guard.assertOnLoop(LoopSite.Quiche)
+        return delegate.connTakeNewToken(conn, buf, bufLen)
+    }
+
+    override fun connSendNewToken(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int {
+        guard.assertOnLoop(LoopSite.Quiche)
+        return delegate.connSendNewToken(conn, buf, bufLen)
+    }
+
+    override fun connSetPeerAddressValidated(conn: QuicheConn): Int {
+        guard.assertOnLoop(LoopSite.Quiche)
+        return delegate.connSetPeerAddressValidated(conn)
+    }
+
     override fun connProbeNow(conn: QuicheConn): Int {
         guard.assertOnLoop(LoopSite.Quiche)
         return delegate.connProbeNow(conn)

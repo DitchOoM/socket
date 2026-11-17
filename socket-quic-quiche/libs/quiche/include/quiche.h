@@ -1338,6 +1338,22 @@ bool quiche_conn_is_handshake_confirmed(const quiche_conn *conn);
 // socket-quic-quiche/build.gradle.kts (patchQuicheProbeNowFfi).
 ssize_t quiche_conn_probe_now(quiche_conn *conn);
 
+// socket-new-token (RFC 9000 §8.1.3), added by patchQuicheNewTokenFfi in socket-quic-quiche/build.gradle.kts.
+// Client: the token for every Initial of this connection, until a Retry replaces it. Only before the first packet
+// is sent; QUICHE_ERR_INVALID_STATE otherwise, on a server, or for an empty token.
+int quiche_conn_set_token(quiche_conn *conn, const uint8_t *token, size_t token_len);
+
+// Client: moves the newest NEW_TOKEN token received and not yet taken into out; returns its length,
+// QUICHE_ERR_DONE when there is none, QUICHE_ERR_BUFFER_TOO_SHORT (nothing taken) when out_len is too small.
+ssize_t quiche_conn_take_new_token(quiche_conn *conn, uint8_t *out, size_t out_len);
+
+// Server: queues a NEW_TOKEN frame carrying token, sent once the handshake is complete and again if lost.
+int quiche_conn_send_new_token(quiche_conn *conn, const uint8_t *token, size_t token_len);
+
+// Server: the client's address is validated (it presented a valid NEW_TOKEN token): lifts the anti-amplification
+// limit on the active path.
+int quiche_conn_set_peer_address_validated(quiche_conn *conn);
+
 // socket-requeue-path: the path at local/peer carries nothing more (a client's socket moved away from it); every
 // frame it still owes the peer is queued for retransmission on the active path now. Returns the number of frames
 // moved, or a negative quiche error (QUICHE_ERR_INVALID_STATE for the active path or no path at the 4-tuple). Added
