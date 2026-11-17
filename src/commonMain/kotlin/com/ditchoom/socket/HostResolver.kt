@@ -28,11 +28,31 @@ sealed interface Resolution {
         val host: String,
     ) : Resolution
 
-    /** The resolver could not answer. */
+    /** The resolver could not answer, for [why]. */
     data class Failed(
         val host: String,
-        val cause: Throwable,
+        val why: ResolveFailure,
     ) : Resolution
+}
+
+/** Why a [HostResolver] could not answer. A caller's own cancellation is not one: it cancels the caller. */
+sealed interface ResolveFailure {
+    /** The resolver answered that the name does not exist. */
+    data object NotFound : ResolveFailure
+
+    /** The device has no route to a resolver. */
+    data object NoNetwork : ResolveFailure
+
+    /** The resolver did not answer within its own bound, or reported a temporary failure. */
+    data object TimedOut : ResolveFailure
+
+    /** This platform has no resolver (a browser). */
+    data object Unsupported : ResolveFailure
+
+    /** The OS resolver failed with [code], which none of the cases above names. */
+    data class Os(
+        val code: Int,
+    ) : ResolveFailure
 }
 
 /** Turns a name into every address it stands for. */
@@ -106,6 +126,6 @@ suspend fun NameResolution.candidatesFor(host: String): List<ResolvedAddress> {
     return when (val answer = resolver.resolve(host)) {
         is Resolution.Resolved -> answer.candidates
         is Resolution.NoAddress -> throw SocketUnknownHostException(host, "the name has no address")
-        is Resolution.Failed -> throw SocketUnknownHostException(host, cause = answer.cause)
+        is Resolution.Failed -> throw SocketUnknownHostException(host, "the name did not resolve: ${answer.why}")
     }
 }

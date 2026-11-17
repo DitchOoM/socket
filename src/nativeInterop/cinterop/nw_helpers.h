@@ -211,6 +211,28 @@ void nw_helper_ws_send(
 NSNumber * _Nonnull nw_helper_is_port_available(int32_t port);
 
 // ============================================================
+// Asynchronous name resolution (DNS-SD)
+// ============================================================
+
+// status: 0 answered, 1 no such name, 2 timed out, 3 another DNS-SD error (its code in raw).
+// addresses are numeric literals, a link-local scope included; nil unless status is 0.
+typedef void (^nw_helper_resolve_handler_t)(
+    NSArray<NSString *> * _Nullable addresses,
+    int32_t status,
+    int32_t raw);
+
+// Starts DNSServiceGetAddrInfo on a private serial queue and calls handler exactly once, unless the
+// query is cancelled first, in which case never. No thread waits for the answer. The result is the
+// query's handle: pass it to nw_helper_resolve_cancel.
+NSArray * _Nonnull nw_helper_resolve_start(
+    const char * _Nonnull host,
+    int32_t timeout_ms,
+    nw_helper_resolve_handler_t _Nonnull handler);
+
+// Returns at once; the lookup is torn down on its own queue and its handler is dropped.
+void nw_helper_resolve_cancel(NSArray * _Nonnull query);
+
+// ============================================================
 // Network awareness — MOVED OUT (issue #269)
 // ============================================================
 //

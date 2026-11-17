@@ -91,13 +91,15 @@ internal suspend fun coreConnect(
     batching: UdpBatching = options.udpBatching,
     ride: ClientRide = clientRideOfThisPlatform,
     datagramSize: DatagramSize = DatagramSize.Probed,
-): CoreClient =
-    withContext(Dispatchers.IO) {
+): CoreClient {
+    val peerHost = peerHostFor(host)
+    return withContext(Dispatchers.IO) {
         val memory = EdgeMemory(factory)
         var connected = false
         try {
             connectOnThisThread(
                 host,
+                peerHost,
                 port,
                 serverName,
                 options.sizedBy(datagramSize),
@@ -119,10 +121,12 @@ internal suspend fun coreConnect(
             if (!connected) memory.freeAll()
         }
     }
+}
 
 /** Everything [coreConnect] does that opens a socket, a file or a native library, off the caller's thread. */
 private suspend fun connectOnThisThread(
     host: String,
+    peerHost: String,
     port: Int,
     serverName: String,
     options: QuicOptions,
@@ -140,7 +144,7 @@ private suspend fun connectOnThisThread(
     batching: UdpBatching,
     ride: ClientRide,
 ): CoreClient {
-    val peer = UdpSocket.resolve(host, port)
+    val peer = UdpSocket.resolve(peerHost, port)
     val peerKey = peer.toPathKey()
     val codec = SocketAddressCodec(hostSockAddrLayout)
     val route = UdpSocketChannelFactory(peer, codec, factory, factory, MAX_DATAGRAM, LocalEndpointSupport.Bindable)

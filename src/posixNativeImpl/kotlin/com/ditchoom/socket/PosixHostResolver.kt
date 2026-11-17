@@ -17,16 +17,18 @@ import kotlinx.cinterop.sizeOf
 import kotlinx.cinterop.toKString
 import kotlinx.cinterop.value
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.IO
 import platform.posix.AF_INET
 import platform.posix.AF_INET6
 import platform.posix.AF_UNSPEC
+import platform.posix.EAI_AGAIN
+import platform.posix.EAI_NONAME
 import platform.posix.NI_MAXHOST
 import platform.posix.NI_NUMERICHOST
 import platform.posix.SOCK_STREAM
 import platform.posix.addrinfo
 import platform.posix.freeaddrinfo
-import platform.posix.gai_strerror
 import platform.posix.getaddrinfo
 import platform.posix.getnameinfo
 import platform.posix.memset
@@ -37,9 +39,19 @@ import platform.posix.socklen_t
  * The POSIX resolver: `getaddrinfo`, every record, on a blocking-IO thread the caller can cancel its wait
  * for (see [BlockingHostResolver]). A link-local scope is not carried.
  */
-internal val PosixHostResolver: HostResolver = BlockingHostResolver(Dispatchers.IO, PosixLookup::lookup)
+@OptIn(ExperimentalCoroutinesApi::class)
+internal val PosixHostResolver: HostResolver =
+    BlockingHostResolver(Dispatchers.IO.limitedParallelism(RESOLVER_PARALLELISM), PosixLookup::lookup)
 
 private object PosixLookup {
+    /** `EAI_NONAME` is a name that does not exist; `EAI_AGAIN` is the resolver failing to answer, which a retry may cure. */
+    private fun failureOf(code: Int): ResolveFailure =
+        when (code) {
+            EAI_NONAME -> ResolveFailure.NotFound
+            EAI_AGAIN -> ResolveFailure.TimedOut
+            else -> ResolveFailure.Os(code)
+        }
+
     fun lookup(host: String): Resolution =
         memScoped {
             val hints = alloc<addrinfo>()
@@ -49,8 +61,7 @@ private object PosixLookup {
             val result = allocPointerTo<addrinfo>()
             val ret = getaddrinfo(host, null, hints.ptr, result.ptr)
             if (ret != 0) {
-                val reason = gai_strerror(ret)?.toKString() ?: "getaddrinfo returned $ret"
-                return@memScoped Resolution.Failed(host, SocketUnknownHostException(host, reason))
+                return@memScoped Resolution.Failed(host, failureOf(ret))
             }
             val head = result.value ?: return@memScoped Resolution.NoAddress(host)
             try {

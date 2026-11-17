@@ -273,7 +273,7 @@ private suspend fun singleCandidate(url: InteropUrl): QuicPeer {
         when (val resolution = HostResolver.platform().resolve(url.host)) {
             is Resolution.Resolved -> resolution.candidates.first()
             is Resolution.NoAddress -> throw IllegalStateException("${url.host} has no address")
-            is Resolution.Failed -> throw resolution.cause
+            is Resolution.Failed -> throw IllegalStateException("${url.host} did not resolve: ${resolution.why}")
         }
     return QuicPeer.Candidates(listOf(QuicEndpoint(address, url.port)), serverName = url.host)
 }

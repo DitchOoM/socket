@@ -8,12 +8,12 @@ internal actual fun platformHostResolver(): HostResolver = NodeHostResolver
 /** Node's `dns.lookup` with every record; a browser has no resolver to offer. */
 internal object NodeHostResolver : HostResolver {
     override suspend fun resolve(host: String): Resolution {
-        if (!isNodeJs) return Resolution.Failed(host, UnsupportedOperationException("a browser exposes no resolver"))
+        if (!isNodeJs) return Resolution.Failed(host, ResolveFailure.Unsupported)
         return suspendCancellableCoroutine { cont ->
             lookupAll(host) { error, records ->
                 if (cont.isCompleted) return@lookupAll
                 if (error != null) {
-                    cont.resume(Resolution.Failed(host, RuntimeException(error.toString())))
+                    cont.resume(Resolution.Failed(host, failureOf(error.code as? String)))
                 } else {
                     val list =
                         (records as Array<dynamic>).map {
@@ -34,6 +34,15 @@ internal object NodeHostResolver : HostResolver {
         }
     }
 }
+
+/** Node's `dns` error codes: ENOTFOUND and ENODATA say the name has no address; the rest are failures of the lookup. */
+private fun failureOf(code: String?): ResolveFailure =
+    when (code) {
+        "ENOTFOUND", "ENODATA" -> ResolveFailure.NotFound
+        "ETIMEOUT", "ETIMEDOUT", "EAI_AGAIN" -> ResolveFailure.TimedOut
+        "ECONNREFUSED", "ENETUNREACH" -> ResolveFailure.NoNetwork
+        else -> ResolveFailure.Os(-1)
+    }
 
 @Suppress("UNUSED_PARAMETER")
 private fun lookupAll(

@@ -2,8 +2,10 @@ package com.ditchoom.socket
 
 import com.ditchoom.data.readString
 import com.ditchoom.data.writeString
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -70,6 +72,35 @@ class HostResolverTests {
         runTestNoTimeSkipping {
             val answer = HostResolver.platform().resolve("this.host.does.not.exist.invalid")
             assertTrue(answer is Resolution.Failed || answer is Resolution.NoAddress, "got $answer")
+            if (answer is Resolution.Failed) {
+                val expected =
+                    if (tcpAvailable()) {
+                        listOf(ResolveFailure.NotFound, ResolveFailure.TimedOut, ResolveFailure.NoNetwork)
+                    } else {
+                        listOf(ResolveFailure.Unsupported)
+                    }
+                assertTrue(answer.why in expected, "a name that does not exist is a typed failure, got ${answer.why}")
+            }
+        }
+
+    @Test
+    fun cancellingALookupReturnsWithinAMillisecondOfWork() =
+        runTestNoTimeSkipping(timeout = 60.seconds) {
+            if (!tcpAvailable()) return@runTestNoTimeSkipping
+            val taken = ArrayList<Long>()
+            repeat(30) { round ->
+                val lookup =
+                    launch(start = CoroutineStart.UNDISPATCHED) {
+                        HostResolver.platform().resolve("cancel-$round.lookup.invalid")
+                    }
+                val start = TimeSource.Monotonic.markNow()
+                lookup.cancelAndJoin()
+                taken += start.elapsedNow().inWholeMicroseconds
+            }
+            val measured = taken.drop(10).sorted()
+            println("resolver cancel latency (us), sorted after warm-up: $measured")
+            assertTrue(measured[measured.size / 2] < 1_000, "median cancel latency ${measured[measured.size / 2]} us")
+            assertTrue(measured.last() < 20_000, "worst cancel latency ${measured.last()} us")
         }
 
     @Test
