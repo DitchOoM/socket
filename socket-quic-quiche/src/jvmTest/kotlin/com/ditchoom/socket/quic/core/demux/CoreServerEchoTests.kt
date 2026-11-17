@@ -62,6 +62,7 @@ class CoreServerEchoTests {
                 val scheduled = LoopScheduling.snapshot()
                 val process = LoopScheduling.snapshotAll()
                 val collected = LoopScheduling.gcStats()
+                val clockBefore = LoopScheduling.clockReport()
                 val started = System.nanoTime()
                 try {
                     val echoed =
@@ -85,7 +86,11 @@ class CoreServerEchoTests {
                     println(
                         "CORE-CPU $connections echo connections in ${(System.nanoTime() - started) / NANOS_PER_MILLI} ms: " +
                             "${LoopScheduling.cpuPerConnection(process, connections)}; " +
-                            "${LoopScheduling.gcSince(collected)}; loops ${LoopScheduling.since(scheduled)}",
+                            "clock before: $clockBefore, after: ${LoopScheduling.clockReport()}; " +
+                            "${LoopScheduling.gcSince(collected)}; server socket ${server.socket.buffers.receiveBytes} B " +
+                            "receive buffer, drops=${server.socket.drops()}, " +
+                            "${server.loop.counts.datagramsIn} in over ${server.loop.counts.passes} passes; " +
+                            "server loop ${timing(server.loop.counts)}; loops ${LoopScheduling.since(scheduled)}",
                     )
                 } catch (failed: Throwable) {
                     // What the server and its socket saw, so the next occurrence names where the handshakes went.
@@ -105,6 +110,7 @@ class CoreServerEchoTests {
                             "server loop ${timing(server.loop.counts)}; client loops $clientLoops; " +
                             "scheduling ${LoopScheduling.since(scheduled)}; " +
                             "process ${LoopScheduling.cpuPerConnection(process, connections)}; " +
+                            "clock before: $clockBefore, after: ${LoopScheduling.clockReport()}; " +
                             "${LoopScheduling.gcSince(collected)}; " +
                             "a route probe (open, bind, connect, close) takes ${probeMillis(server.port)} ms on this machine",
                         failed,

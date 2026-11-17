@@ -124,6 +124,22 @@ internal object LoopScheduling {
         }.onFailure { println("CORE-CPU heap dump failed: $it") }
     }
 
+    /**
+     * The kernel's clocksource and what one `System.nanoTime()` costs now: a guest whose watchdog dropped the TSC reads
+     * the clock with a trap to the host, and the loops read it per connection per pass.
+     */
+    fun clockReport(): String {
+        val source =
+            runCatching {
+                File("/sys/devices/system/clocksource/clocksource0/current_clocksource").readText().trim()
+            }.getOrElse { "unknown" }
+        val reads = 20_000
+        val began = System.nanoTime()
+        repeat(reads) { System.nanoTime() }
+        val each = (System.nanoTime() - began) / reads
+        return "clocksource $source, nanoTime $each ns"
+    }
+
     private class Spent(
         val group: String,
         val runNanos: Long,

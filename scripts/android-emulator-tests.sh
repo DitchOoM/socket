@@ -596,6 +596,12 @@ fi
 echo "=== core CPU per connection (API ${API_LEVEL}) ==="
 grep -F "CORE-CPU" "$LOGCAT_FILE" || echo "(no CORE-CPU line)"
 echo "=== end core CPU per connection ==="
+# The guest's clocksource now, and every change the kernel logged: a clocksource the watchdog switched away from TSC
+# makes each clock read a trap to the host, which the core's loops pay per connection per pass.
+echo "=== guest clocksource (API ${API_LEVEL}) ==="
+timeout 20 adb shell "cat /sys/devices/system/clocksource/clocksource0/current_clocksource /sys/devices/system/clocksource/clocksource0/available_clocksource" || true
+timeout 20 adb shell "dmesg 2>/dev/null | grep -iE 'clocksource|tsc' | tail -40" || true
+echo "=== end guest clocksource ==="
 
 if [ "$TEST_EXIT" != "0" ]; then
   # Inline in the job log too — a failure should be readable without downloading artifacts.
