@@ -86,7 +86,10 @@ sealed interface QuicSessionTicketState {
  * ```
  */
 sealed interface QuicResumption {
-    /** Offer nothing: a full handshake. */
+    /**
+     * Offer no ticket of the app's own: a full handshake, unless [QuicOptions.sessionStore] kept a ticket for this
+     * server, which the run-to-completion core then offers as [Resume].
+     */
     data object None : QuicResumption
 
     /**
