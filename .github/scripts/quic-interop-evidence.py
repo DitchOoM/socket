@@ -32,7 +32,8 @@ EMPTY_DOWNLOAD = re.compile(r"doesn't match\. Original: \d+ bytes, downloaded: 0
 SIM_DATAGRAM = re.compile(r"\b(Forwarding|Corrupting|Dropping) \d+ bytes [\d.]+:(\d+) -> ([\d.]+):(\d+)")
 OUR_ADDRESS = {"client": "193.167.0.100", "server": "193.167.100.100"}
 MIGRATION_SUMMARY = re.compile(r"MIGRATION-SUMMARY attempted=(\d+) succeeded=(\d+)(?:.*?firstUnmoved=move \d+: (\w+))?")
-PEER_IDLE_TIMEOUT = re.compile(r"connection timed out after ([\d.]+)s and only completed (\d+)/(\d+) requests")
+PEER_IDLE_TIMEOUT = re.compile(r"connection timed out after [\d.]+s and only completed (\d+)/(\d+) requests")
+PEER_IDLE_REQUEST_FAILED = re.compile(r"Request \S+ failed: .*IdleTimerExpired")
 TRANSPORT_SPACE = "transport"
 
 
@@ -162,17 +163,20 @@ def connection_facts(path, side):
     return facts
 
 
-def peer_idle_timeouts(log_txt):
-    """What the stock quiche client's own log says about each connection it gave up on: the seconds it waited and
-    how many of its requests were answered."""
-    timeouts = []
+def peer_idle_timeouts(log_txt, output_txt):
+    """How many requests the peer's own report says it gave up on after its idle timeout: the stock quiche client
+    counts them in its log, the s2n-quic client names each one in the runner's output."""
+    unanswered = 0
     if os.path.exists(log_txt):
         with open(log_txt, errors="replace") as f:
             for line in f:
                 m = PEER_IDLE_TIMEOUT.search(line)
                 if m:
-                    timeouts.append({"after_s": float(m.group(1)), "completed": int(m.group(2)), "requested": int(m.group(3))})
-    return timeouts
+                    unanswered += int(m.group(2)) - int(m.group(1))
+    if os.path.exists(output_txt):
+        with open(output_txt, errors="replace") as f:
+            unanswered += sum(1 for line in f if PEER_IDLE_REQUEST_FAILED.search(line))
+    return unanswered
 
 
 def runner_output(output_txt, side):
@@ -237,7 +241,9 @@ def evidence(logs, direction, peer):
             "sim_to_us": to_us,
             "sim_to_peer": to_peer,
             "sim_from_peer": from_peer,
-            "peer_idle_timeouts": peer_idle_timeouts(os.path.join(test_dir, "client" if side == "server" else "server", "log.txt")),
+            "peer_unanswered_requests": peer_idle_timeouts(
+                os.path.join(test_dir, "client" if side == "server" else "server", "log.txt"), os.path.join(test_dir, "output.txt")
+            ),
         }
     return tests
 
