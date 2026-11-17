@@ -99,12 +99,12 @@ internal sealed interface OurTimers {
     data object WhenDue : OurTimers
 
     /**
-     * At the first of [wakes], the times the capture's host was running our endpoint (a timer, a datagram in or out),
-     * at or after quiche says one falls due: a host that stalled ran the timer when it next ran at all, and every timer
-     * armed after that one moves with it. Past the last, when due.
+     * At the first of [firings], the times the capture's host ran quiche's timeout, at or after quiche says one falls
+     * due. A host runs a timer only when its loop starts a pass: one that stalled, mid-pass or between passes, ran it
+     * when it next did, and every timer armed after that one moves with it. Past the last, when due.
      */
     data class AsRecorded(
-        val wakes: List<Duration>,
+        val firings: List<Duration>,
     ) : OurTimers
 }
 

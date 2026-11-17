@@ -78,11 +78,18 @@ class CoreRecordingReplayTests {
         /** How many datagrams each receive call returned, in order. */
         val received = CopyOnWriteArrayList<Int>()
 
+        /** Where a [ClientHost.StalledAroundConfirmation] host's two stalls stand. */
+        @Volatile private var stall = Stall.Ahead
+
         override fun receive(into: ReceiveBatch): ReceiveBatchResult =
             real.receive(into).also {
                 if (it is ReceiveBatchResult.Got) received += into.count
                 // A slow host reaches quiche well after its socket read returned.
                 if (host == ClientHost.SlowToRead && into.count > 0) Thread.sleep(SLOW.inWholeMilliseconds)
+                if (host == ClientHost.StalledAroundConfirmation && stall == Stall.Ahead && dropped.isNotEmpty() && into.count > 0) {
+                    stall = Stall.ReadLate
+                    Thread.sleep(PAST_THE_PROBE.inWholeMilliseconds)
+                }
             }
 
         /** One single-datagram batch per lane: each datagram the link keeps goes to the real socket on its own. */
@@ -105,6 +112,11 @@ class CoreRecordingReplayTests {
                 real.send(one)
                 one.took(one.pending)
             }
+            // The host stalls again after sending its answer, before its loop's next pass.
+            if (stall == Stall.ReadLate) {
+                stall = Stall.Over
+                Thread.sleep(LATE.inWholeMilliseconds)
+            }
             return SendBatchResult.AllTaken
         }
     }
@@ -114,6 +126,8 @@ class CoreRecordingReplayTests {
         val server: List<TraceEvent>,
         val lost: Int,
     )
+
+    private enum class Stall { Ahead, ReadLate, Over }
 
     /** How the client's host treats it. */
     private enum class ClientHost {
@@ -127,6 +141,12 @@ class CoreRecordingReplayTests {
 
         /** It wakes [LATE] after each of the client's timers falls due. */
         LateForTimers,
+
+        /**
+         * After its payload is lost, it reads the server's next datagrams [PAST_THE_PROBE] late, past when the probe for
+         * the payload falls due, then stalls [LATE] after sending its answer, before its loop runs again.
+         */
+        StalledAroundConfirmation,
     }
 
     /** An echo of [PAYLOAD] bytes between a core client and a core server on [host], as the two of them recorded it. */
@@ -171,7 +191,7 @@ class CoreRecordingReplayTests {
                         when (host) {
                             ClientHost.SlowToAnswer -> SlowToAnswer(loadQuicheApi())
                             ClientHost.LateForTimers -> LateForTimers(loadQuicheApi())
-                            ClientHost.Fast, ClientHost.SlowToRead -> loadQuicheApi()
+                            ClientHost.Fast, ClientHost.SlowToRead, ClientHost.StalledAroundConfirmation -> loadQuicheApi()
                         },
                     timeout = 10.seconds,
                     readPolicy = ReadPolicy.Bounded(10.seconds),
@@ -298,6 +318,20 @@ class CoreRecordingReplayTests {
         runBlocking {
             skipOnMissingNativeLib(CoreRecordingReplayTests::class) {
                 assertFollowedWholeTwice(scheduleOf(recordAnEcho(ClientHost.LateForTimers)))
+            }
+        }
+
+    /**
+     * A host that confirmed its handshake only after its probe fell due learns of the probe when it next re-arms, after
+     * the turn that answers the server, and runs it when its loop next runs, here [LATE] later. The replay's client,
+     * told by quiche the probe is overdue as it reads the server's datagram, fired it at once (CI: "our datagram 4
+     * [OneRtt] was sent at 344.071 ms, the capture's at 362.326 ms" in the slow-to-answer run).
+     */
+    @Test
+    fun aRunWhoseClientRanAnOverdueTimerOnlyAfterItsNextStallIsFollowedWholeByItsReplayTwice() =
+        runBlocking {
+            skipOnMissingNativeLib(CoreRecordingReplayTests::class) {
+                assertFollowedWholeTwice(scheduleOf(recordAnEcho(ClientHost.StalledAroundConfirmation)))
             }
         }
 
@@ -446,6 +480,9 @@ class CoreRecordingReplayTests {
 
         /** Longer than the replay's tolerance of a send's time: a replay that fires when due leaves the recording. */
         val LATE = 20.milliseconds
+
+        /** Longer than the probe for the lost payload takes to fall due on loopback (about 30 ms). */
+        val PAST_THE_PROBE = 60.milliseconds
         val BIG = FlightSize(records = 4096)
     }
 }
