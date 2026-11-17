@@ -32,6 +32,34 @@ class SessionMemoryTests {
     }
 
     @Test
+    fun aTicketHandedBackUnsentIsTakenAgainWithItsAge() {
+        val time = TestTimeSource()
+        val memory = QuicSessionMemory(time)
+        val first = ticket(1)
+        memory.keep(key, first)
+        assertEquals(QuicSessionTicketState.Issued(first), memory.take(key))
+        assertEquals(QuicSessionTicketState.NotIssued, memory.take(key), "a lent ticket is not taken twice")
+        memory.restore(key, first)
+        assertEquals(QuicSessionTicketState.Issued(first), memory.take(key), "the unsent ticket came back")
+        memory.restore(key, first)
+        time += QuicSessionMemory.MAX_AGE + 1.milliseconds
+        assertEquals(QuicSessionTicketState.NotIssued, memory.take(key), "it came back as old as it was")
+    }
+
+    @Test
+    fun aTicketHandedBackAfterANewerWasKeptIsDropped() {
+        val memory = QuicSessionMemory()
+        val first = ticket(1)
+        memory.keep(key, first)
+        memory.take(key)
+        memory.keep(key, ticket(2))
+        memory.restore(key, first)
+        assertEquals(QuicSessionTicketState.Issued(ticket(2)), memory.take(key))
+        memory.restore(key, ticket(2).let { QuicSessionTicket.restore(it.serialized(), it.protocol) })
+        assertEquals(QuicSessionTicketState.NotIssued, memory.take(key), "only the very ticket lent goes back")
+    }
+
+    @Test
     fun aTicketPastItsAgeIsDroppedNotTaken() {
         val time = TestTimeSource()
         val memory = QuicSessionMemory(time)

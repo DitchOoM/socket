@@ -12,9 +12,10 @@ import kotlin.time.TimeSource
  * resumes the session (RFC 8446 §2.2): one round trip, no certificate chain on the wire, with nothing for the app to do.
  *
  * A kept ticket is offered as [QuicResumption.Resume] — never with 0-RTT, which only a
- * [QuicResumption.ResumeWithEarlyData] the app writes sends. Each ticket is offered at most once, because a ticket sent
+ * [QuicResumption.ResumeWithEarlyData] the app writes sends. Each ticket is sent at most once, because a ticket sent
  * twice lets an observer link the two connections (RFC 8446 §C.4); the ticket the resumed connection receives replaces
- * it. A connection that offers a ticket of the app's own discards the one kept for its server.
+ * it. A connect that fails before any of its datagrams left hands its ticket back, so the next one still resumes. A
+ * connection that offers a ticket of the app's own discards the one kept for its server.
  *
  * ```kotlin
  * // The default: tickets live in this process's memory.
@@ -36,7 +37,7 @@ sealed interface QuicSessionStore {
 
     /**
      * Tickets are kept in the app's [cache]. [QuicSessionCache.take] runs on the connecting coroutine and
-     * [QuicSessionCache.keep] on a background dispatcher, never on a connection's thread.
+     * [QuicSessionCache.keep] and [QuicSessionCache.restore] on a background dispatcher, never on a connection's thread.
      */
     class Supplied(
         val cache: QuicSessionCache,
@@ -61,6 +62,15 @@ interface QuicSessionCache {
 
     /** Keeps [ticket] for [server] in place of any older one. */
     fun keep(
+        server: QuicSessionKey,
+        ticket: QuicSessionTicket,
+    )
+
+    /**
+     * Hands back [ticket], which [take] returned for [server] and no connection sent: its connect failed before any
+     * datagram left. Keep it as it was, age included, unless a ticket was kept for [server] since.
+     */
+    fun restore(
         server: QuicSessionKey,
         ticket: QuicSessionTicket,
     )
@@ -122,30 +132,44 @@ class QuicSessionKey private constructor(
 
 /**
  * The library's ticket store: one ticket per server, newest wins, at most [SERVERS] servers (the least recently kept
- * leaves first), none older than [MAX_AGE]. Lock-free: every change publishes a new immutable snapshot. A ticket the
+ * leaves first), none older than [MAX_AGE]. A taken ticket stays lent until a newer one replaces it, so [restore] can
+ * hand it back with its age. Lock-free: every change publishes a new immutable snapshot. A ticket the
  * server issued for less than [MAX_AGE] is not offered after its own lifetime either: TLS checks it before offering.
  * [timeSource] measures a ticket's age.
  */
 class QuicSessionMemory(
     private val timeSource: TimeSource = TimeSource.Monotonic,
 ) : QuicSessionCache {
-    private class Held(
-        val ticket: QuicSessionTicket,
-        val at: TimeMark,
-    )
+    /** A server's ticket: [Held] to be taken, or [Lent] to a connection, which may hand it back unsent. */
+    private sealed interface Entry {
+        val ticket: QuicSessionTicket
+        val at: TimeMark
 
-    private val held = AtomicReference<Map<QuicSessionKey, Held>>(emptyMap())
+        class Held(
+            override val ticket: QuicSessionTicket,
+            override val at: TimeMark,
+        ) : Entry
+
+        class Lent(
+            override val ticket: QuicSessionTicket,
+            override val at: TimeMark,
+        ) : Entry
+    }
+
+    private val held = AtomicReference<Map<QuicSessionKey, Entry>>(emptyMap())
 
     override fun take(server: QuicSessionKey): QuicSessionTicketState {
         while (true) {
             val now = held.load()
-            val found = now[server] ?: return QuicSessionTicketState.NotIssued
-            if (held.compareAndSet(now, now - server)) {
-                return if (found.at.elapsedNow() > MAX_AGE) {
-                    QuicSessionTicketState.NotIssued
-                } else {
-                    QuicSessionTicketState.Issued(found.ticket)
+            val found =
+                when (val entry = now[server]) {
+                    is Entry.Held -> entry
+                    is Entry.Lent, null -> return QuicSessionTicketState.NotIssued
                 }
+            val fresh = found.at.elapsedNow() <= MAX_AGE
+            val next = if (fresh) now.replacing(server, Entry.Lent(found.ticket, found.at)) else now - server
+            if (held.compareAndSet(now, next)) {
+                return if (fresh) QuicSessionTicketState.Issued(found.ticket) else QuicSessionTicketState.NotIssued
             }
         }
     }
@@ -154,16 +178,37 @@ class QuicSessionMemory(
         server: QuicSessionKey,
         ticket: QuicSessionTicket,
     ) {
-        val entry = Held(ticket, timeSource.markNow())
+        val entry = Entry.Held(ticket, timeSource.markNow())
         while (true) {
             val now = held.load()
-            val next = LinkedHashMap<QuicSessionKey, Held>(now)
+            val next = LinkedHashMap<QuicSessionKey, Entry>(now)
             next.remove(server)
             next[server] = entry
             if (next.size > SERVERS) next.remove(next.keys.first())
             if (held.compareAndSet(now, next)) return
         }
     }
+
+    override fun restore(
+        server: QuicSessionKey,
+        ticket: QuicSessionTicket,
+    ) {
+        while (true) {
+            val now = held.load()
+            val lent =
+                when (val entry = now[server]) {
+                    is Entry.Lent -> if (entry.ticket === ticket) entry else return
+                    is Entry.Held, null -> return
+                }
+            if (held.compareAndSet(now, now.replacing(server, Entry.Held(lent.ticket, lent.at)))) return
+        }
+    }
+
+    /** A copy with [server]'s entry replaced in place, so the order of keeping is unchanged. */
+    private fun Map<QuicSessionKey, Entry>.replacing(
+        server: QuicSessionKey,
+        entry: Entry,
+    ): Map<QuicSessionKey, Entry> = LinkedHashMap(this).also { it[server] = entry }
 
     companion object {
         /** The longest a ticket may be used (RFC 8446 §4.6.1). */

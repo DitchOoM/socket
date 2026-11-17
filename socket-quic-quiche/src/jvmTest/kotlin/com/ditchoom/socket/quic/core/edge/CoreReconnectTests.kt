@@ -1,6 +1,11 @@
 package com.ditchoom.socket.quic.core.edge
 
+import com.ditchoom.socket.quic.HandshakePolicy
 import com.ditchoom.socket.quic.QuicConnectionState
+import com.ditchoom.socket.quic.QuicError
+import com.ditchoom.socket.quic.QuicheApi
+import com.ditchoom.socket.quic.QuicheConn
+import com.ditchoom.socket.quic.QuicheSendInfo
 import com.ditchoom.socket.quic.QuicFullHandshakeReason
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicResumption
@@ -126,7 +131,54 @@ class CoreReconnectTests {
         }
     }
 
+    @Test
+    fun aConnectQuicheNeverLetSendHandsItsTicketBack() {
+        val options = base.copy(sessionStore = QuicSessionStore.InMemory(QuicSessionMemory()))
+        VirtualPair.with(options) { pair ->
+            ticketOf(pair)
+            assertEquals(0, endedBeforeItsFirstFlight(pair, options), "the failed connect sent nothing")
+            assertIs<QuicResumptionOutcome.Resumed>(connected(pair, options).connection.resumption, "the next connect resumed")
+        }
+    }
+
+    @Test
+    fun anAppCacheGetsBackTheVeryTicketAConnectNeverSent() {
+        val cache = RecordingCache()
+        val options = base.copy(sessionStore = QuicSessionStore.Supplied(cache))
+        VirtualPair.with(options) { pair ->
+            val kept = cache.kept()
+            endedBeforeItsFirstFlight(pair, options)
+            assertEquals(kept, cache.restored())
+            assertIs<QuicResumptionOutcome.Resumed>(connected(pair, options).connection.resumption)
+        }
+    }
+
+    @Test
+    fun aTicketWhoseFirstFlightLeftStaysUsedThoughTheConnectFailed() {
+        val options = base.copy(sessionStore = QuicSessionStore.InMemory(QuicSessionMemory()))
+        VirtualPair.with(options) { pair ->
+            ticketOf(pair)
+            val client = pair.reconnect(options)
+            pair.lose(End.Client, LOST)
+            val before = pair.sentBy(End.Client).size
+            pair.runUntil { pair.sentBy(End.Client).size > before }
+            client.connection.closeNow(QuicError.NoError)
+            pair.runUntil { client.connection.end() is EdgeEnd.Ended }
+            pair.lose(End.Client, 0)
+            assertEquals(
+                QuicResumptionOutcome.FullHandshake(QuicFullHandshakeReason.NoTicketOffered),
+                connected(pair, options).connection.resumption,
+                "a ticket that may be on the wire is never offered again",
+            )
+        }
+    }
+
     // ---- harness ----
+
+    private companion object {
+        const val LOST = 1_000
+        const val QUICHE_DONE = -1
+    }
 
     /** A store of one ticket whatever the server, which records what it hands out. */
     private class RecordingCache : QuicSessionCache {
@@ -148,8 +200,47 @@ class CoreReconnectTests {
             keeps.trySend(ticket)
         }
 
+        override fun restore(
+            server: QuicSessionKey,
+            ticket: QuicSessionTicket,
+        ) {
+            slot.compareAndSet(QuicSessionTicketState.NotIssued, QuicSessionTicketState.Issued(ticket))
+            restores.trySend(ticket)
+        }
+
+        private val restores = Channel<QuicSessionTicket>(Channel.UNLIMITED)
+
         /** The next ticket kept; keeping runs off the connection's thread, so it is awaited on the wall clock. */
         suspend fun kept(): QuicSessionTicket = withTimeout(10.seconds) { keeps.receive() }
+
+        /** The next ticket handed back, awaited as [kept] is. */
+        suspend fun restored(): QuicSessionTicket = withTimeout(10.seconds) { restores.receive() }
+    }
+
+    /** quiche gives this client nothing to send. */
+    private class NothingToSend(
+        private val inner: QuicheApi,
+    ) : QuicheApi by inner {
+        override fun connSend(
+            conn: QuicheConn,
+            buf: Long,
+            bufLen: Int,
+            sendInfo: QuicheSendInfo,
+        ): Int = QUICHE_DONE
+    }
+
+    /**
+     * A new client with [options] in place of the last, which quiche never lets send, run until its handshake timed out;
+     * how many datagrams it sent.
+     */
+    private suspend fun endedBeforeItsFirstFlight(
+        pair: VirtualPair,
+        options: QuicOptions,
+    ): Int {
+        val client = pair.reconnect(options.copy(handshakePolicy = HandshakePolicy.Bounded(1.seconds)), ::NothingToSend)
+        val before = pair.sentBy(End.Client).size
+        pair.runUntil { client.connection.end() is EdgeEnd.Ended }
+        return pair.sentBy(End.Client).size - before
     }
 
     private suspend fun ticketOf(pair: VirtualPair): QuicSessionTicket {

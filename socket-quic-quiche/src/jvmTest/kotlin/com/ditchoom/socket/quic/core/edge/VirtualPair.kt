@@ -294,7 +294,10 @@ internal class VirtualPair private constructor(
      * The client closes and a new one, with [options], takes its place on the link from a port of its own. Its first
      * flight goes out in the next pass; [ReplayClient.offer] says whether it waits for 0-RTT.
      */
-    suspend fun reconnect(options: QuicOptions): ReplayClient {
+    suspend fun reconnect(
+        options: QuicOptions,
+        wrapApi: (QuicheApi) -> QuicheApi = { it },
+    ): ReplayClient {
         val old = client
         old.connection.closeNow(com.ditchoom.socket.quic.QuicError.NoError)
         runUntil { old.connection.end() is EdgeEnd.Ended }
@@ -305,7 +308,7 @@ internal class VirtualPair private constructor(
         loseInFlight(End.Client)
         client =
             replayClient(
-                CountingClientApi(api),
+                wrapApi(CountingClientApi(api)),
                 options,
                 BufferFactory.Default,
                 Socket(End.Client),
