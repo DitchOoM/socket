@@ -53,18 +53,12 @@ class HostResolverTests {
     }
 
     @Test
-    fun thePlatformResolverAnswersLocalhostWithALoopbackLiteral() =
+    fun localhostIsLoopbackWithoutAQueryIPv4First() =
         runTestNoTimeSkipping {
-            val answer = HostResolver.platform().resolve("localhost")
-            if (!tcpAvailable()) {
-                assertIs<Resolution.Failed>(answer, "a browser has no resolver, and says so as an answer")
-                return@runTestNoTimeSkipping
+            val loopback = listOf(ResolvedAddress("127.0.0.1", IpFamily.V4), ResolvedAddress("::1", IpFamily.V6))
+            for (name in listOf("localhost", "LocalHost.", "api.localhost")) {
+                assertEquals(loopback, assertIs<Resolution.Resolved>(HostResolver.platform().resolve(name), name).candidates, name)
             }
-            val resolved = assertIs<Resolution.Resolved>(answer)
-            assertTrue(
-                resolved.candidates.any { it.ip == "127.0.0.1" || it.ip == "::1" },
-                "localhost resolves to a loopback literal: ${resolved.candidates}",
-            )
         }
 
     @Test
@@ -73,7 +67,10 @@ class HostResolverTests {
             if (!tcpAvailable()) return@runTestNoTimeSkipping
             for ((literal, family) in listOf("127.0.0.1" to IpFamily.V4, "::1" to IpFamily.V6, "192.0.2.7" to IpFamily.V4)) {
                 val resolved = assertIs<Resolution.Resolved>(HostResolver.platform().resolve(literal), literal)
-                assertEquals(listOf(ResolvedAddress(literal, family)), resolved.candidates, literal)
+                val answer = resolved.candidates.single()
+                assertEquals(family, answer.family, literal)
+                // The JDK writes ::1 out in full; any spelling of the same address is itself.
+                assertTrue(answer.ip == literal || (literal == "::1" && answer.ip == "0:0:0:0:0:0:0:1"), "$literal answered ${answer.ip}")
             }
         }
 

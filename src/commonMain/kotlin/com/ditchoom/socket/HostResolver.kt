@@ -60,8 +60,20 @@ fun interface HostResolver {
     suspend fun resolve(host: String): Resolution
 
     companion object {
-        /** This platform's own resolver: every record it returns, in [happyEyeballsOrder]. */
-        fun platform(): HostResolver = platformHostResolver()
+        /**
+         * This platform's own resolver: every record it returns, in [happyEyeballsOrder]. `localhost` and `*.localhost`
+         * are loopback without a query (RFC 6761 §6.3), IPv4 first, as most local servers listen there.
+         */
+        fun platform(): HostResolver = LoopbackForLocalhost
+    }
+}
+
+private object LoopbackForLocalhost : HostResolver {
+    private val loopback = Resolution.Resolved(listOf(ResolvedAddress("127.0.0.1", IpFamily.V4), ResolvedAddress("::1", IpFamily.V6)))
+
+    override suspend fun resolve(host: String): Resolution {
+        val name = host.lowercase().removeSuffix(".")
+        return if (name == "localhost" || name.endsWith(".localhost")) loopback else platformHostResolver().resolve(host)
     }
 }
 
