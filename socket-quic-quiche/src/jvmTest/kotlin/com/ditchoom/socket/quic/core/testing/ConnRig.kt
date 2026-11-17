@@ -20,6 +20,7 @@ import com.ditchoom.socket.quic.core.conn.ConnectReport
 import com.ditchoom.socket.quic.core.conn.EarlyReport
 import com.ditchoom.socket.quic.core.conn.FlightArena
 import com.ditchoom.socket.quic.core.conn.FlightSize
+import com.ditchoom.socket.quic.core.conn.KeptTicket
 import com.ditchoom.socket.quic.core.conn.LoopMemory
 import com.ditchoom.socket.quic.core.conn.Offer
 import com.ditchoom.socket.quic.core.conn.Paths
@@ -129,7 +130,7 @@ internal fun testConn(
     buildConn(
         rules = rules,
         q = QuicheConnRef(api, QuicheConn(1L)),
-        side = ConnSide.Client(Random(1), Offer.NoTicket, nativeBytes(ClientSession.TICKET_BYTES)),
+        side = ConnSide.Client(Random(1), Offer.NoTicket, nativeBytes(ClientSession.TICKET_BYTES), KeptTicket.None),
         address =
             ConnAddress(
                 SockAddr(0L, 0),

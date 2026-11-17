@@ -18,6 +18,9 @@ internal enum class Wrote { All, BatchFull }
 /** What became of the last datagram quiche wrote: none was written, it is in the batch, or no socket of ours took it. */
 internal enum class LastOut { None, Kept, Dropped }
 
+/** Whether quiche has written any datagram of the connection yet: once it has, what it carried may be on the wire. */
+internal enum class FirstOut { NotYet, Written }
+
 /**
  * Datagrams out: the only file that asks quiche for output and reads its send infos. Each datagram goes where the
  * connection's [Paths] say: all to one target, or each by the address quiche wrote it for; one for a path no socket
@@ -35,6 +38,10 @@ internal class Egress(
     private var lastOffset = 0
     private var lastLength = 0
     private var lastTarget: SendTarget = SendTarget.ConnectedPeer
+    private var first = FirstOut.NotYet
+
+    /** Whether quiche has written any datagram of this connection, kept or dropped. */
+    fun firstOut(): FirstOut = first
 
     /** What became of the last datagram quiche wrote in the last write. */
     fun last(): LastOut = last
@@ -88,6 +95,7 @@ internal class Egress(
         val at = clock.now()
         val written = q.api.connSend(q.handle, out.storage.address + offset, window.bytes, info)
         if (written <= 0) return written
+        first = FirstOut.Written
         lastOffset = offset
         lastLength = written
         when (val sorting = paths.sorting()) {

@@ -195,6 +195,7 @@ internal class Turn(
     ) {
         if (c.life.end(end) == Ending.Already) return
         c.timer.disarm()
+        c.ticketAtEnd()
         c.flight.ended(now, end.flightCode(), end.errorCode())
         c.flight.keepEnded(c.role)
         c.sink.ended(end)

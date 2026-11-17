@@ -205,6 +205,7 @@ abstract interface com.ditchoom.socket.quic/QuicServer { // com.ditchoom.socket.
 
 abstract interface com.ditchoom.socket.quic/QuicSessionCache { // com.ditchoom.socket.quic/QuicSessionCache|null[0]
     abstract fun keep(com.ditchoom.socket.quic/QuicSessionKey, com.ditchoom.socket.quic/QuicSessionTicket) // com.ditchoom.socket.quic/QuicSessionCache.keep|keep(com.ditchoom.socket.quic.QuicSessionKey;com.ditchoom.socket.quic.QuicSessionTicket){}[0]
+    abstract fun restore(com.ditchoom.socket.quic/QuicSessionKey, com.ditchoom.socket.quic/QuicSessionTicket) // com.ditchoom.socket.quic/QuicSessionCache.restore|restore(com.ditchoom.socket.quic.QuicSessionKey;com.ditchoom.socket.quic.QuicSessionTicket){}[0]
     abstract fun take(com.ditchoom.socket.quic/QuicSessionKey): com.ditchoom.socket.quic/QuicSessionTicketState // com.ditchoom.socket.quic/QuicSessionCache.take|take(com.ditchoom.socket.quic.QuicSessionKey){}[0]
 }
 
@@ -3090,6 +3091,7 @@ final class com.ditchoom.socket.quic/QuicSessionMemory : com.ditchoom.socket.qui
     constructor <init>(kotlin.time/TimeSource = ...) // com.ditchoom.socket.quic/QuicSessionMemory.<init>|<init>(kotlin.time.TimeSource){}[0]
 
     final fun keep(com.ditchoom.socket.quic/QuicSessionKey, com.ditchoom.socket.quic/QuicSessionTicket) // com.ditchoom.socket.quic/QuicSessionMemory.keep|keep(com.ditchoom.socket.quic.QuicSessionKey;com.ditchoom.socket.quic.QuicSessionTicket){}[0]
+    final fun restore(com.ditchoom.socket.quic/QuicSessionKey, com.ditchoom.socket.quic/QuicSessionTicket) // com.ditchoom.socket.quic/QuicSessionMemory.restore|restore(com.ditchoom.socket.quic.QuicSessionKey;com.ditchoom.socket.quic.QuicSessionTicket){}[0]
     final fun take(com.ditchoom.socket.quic/QuicSessionKey): com.ditchoom.socket.quic/QuicSessionTicketState // com.ditchoom.socket.quic/QuicSessionMemory.take|take(com.ditchoom.socket.quic.QuicSessionKey){}[0]
 
     final object Companion { // com.ditchoom.socket.quic/QuicSessionMemory.Companion|null[0]

@@ -10,6 +10,7 @@ import com.ditchoom.socket.quic.QuicheConn
 import com.ditchoom.socket.quic.connectionIdRandom
 import com.ditchoom.socket.quic.core.conn.FlightSize
 import com.ditchoom.socket.quic.core.conn.HandshakeRule
+import com.ditchoom.socket.quic.core.conn.KeptTicket
 import com.ditchoom.socket.quic.core.conn.Offer
 import com.ditchoom.socket.quic.core.loop.Readiness
 import com.ditchoom.socket.quic.core.loop.RunningLoop
@@ -48,4 +49,6 @@ internal class ClientWiring(
     val offer: Offer = Offer.NoTicket,
     /** Where the ticket the server issues is kept for the next connection to it. */
     val tickets: TicketHome = TicketHome.NotKept,
+    /** The ticket [offer] took from that store, which goes back if the connection never sends. */
+    val kept: KeptTicket = KeptTicket.None,
 )

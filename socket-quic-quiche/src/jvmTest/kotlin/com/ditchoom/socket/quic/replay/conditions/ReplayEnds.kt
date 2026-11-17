@@ -37,7 +37,7 @@ import com.ditchoom.socket.quic.core.edge.addressOf
 import com.ditchoom.socket.quic.core.edge.clientHandshakeRule
 import com.ditchoom.socket.quic.core.edge.coreServe
 import com.ditchoom.socket.quic.core.edge.coreTlsConfig
-import com.ditchoom.socket.quic.core.edge.offerOf
+import com.ditchoom.socket.quic.core.edge.offerPlanned
 import com.ditchoom.socket.quic.core.edge.sessionPlan
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.loop.JdkViewsMade
@@ -179,7 +179,8 @@ internal fun replayClient(
     name.freeNativeMemory()
     scid.freeNativeMemory()
     val plan = sessionPlan(options, SERVER_NAME, serverPort)
-    val offer = offerOf(QuicheConnRef(api, handle), plan.resumption, factory)
+    val planned = offerPlanned(QuicheConnRef(api, handle), plan, factory)
+    val offer = planned.offer
     val scope = CoroutineScope(SupervisorJob())
     val loopIo = LoopIo.Jdk((jdkViewsOf(jdkStackOfThisRuntime(), buffers) as JdkViewsMade.Made).views)
     val wiring =
@@ -210,6 +211,7 @@ internal fun replayClient(
             Random(seed.inv()),
             offer,
             plan.home,
+            planned.kept,
         )
     val parts = ClientParts(wiring, peer, localAddress)
     val connection =

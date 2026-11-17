@@ -52,6 +52,13 @@ internal fun ConnParts.releaseFirstFlight() =
         is Resumption.Client -> r.session.release()
     }
 
+/** At the end: a client's kept ticket goes back to its store if no datagram of the connection was ever written. */
+internal fun ConnParts.ticketAtEnd() =
+    when (val r = slots.resumption) {
+        is Resumption.Server -> Unit
+        is Resumption.Client -> r.session.ended(egress.firstOut())
+    }
+
 private fun ConnParts.early() =
     when (val r = slots.resumption) {
         is Resumption.Client -> Unit
