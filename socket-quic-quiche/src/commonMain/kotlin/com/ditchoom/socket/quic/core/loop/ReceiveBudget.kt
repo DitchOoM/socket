@@ -7,9 +7,10 @@ import com.ditchoom.socket.quic.core.time.Nanos
 internal enum class Budget { Left, Spent }
 
 /**
- * How long one pass may receive before it serves. A socket that never empties, or a server starting handshakes, would
- * otherwise keep every connection on the loop waiting for its output; what is left is read in the next pass. The clock
- * is read once per batch taken or chunk of handshakes started, never per connection.
+ * How long one pass may start handshakes before it serves. A server starting a pass's whole bound of them on a slow
+ * device kept every connection on the loop waiting for its output for over a second; what is held is started in the
+ * next pass. Reading the socket is not budgeted: a datagram left in the kernel is read stale. The clock is read once
+ * per chunk of handshakes started, never per connection.
  */
 @LoopOnly
 internal class ReceiveBudget(
@@ -26,7 +27,7 @@ internal class ReceiveBudget(
     fun state(): Budget = if (clock.now().value >= until) Budget.Spent else Budget.Left
 
     private companion object {
-        /** Two milliseconds: a full per-pass count of datagrams on a fast device, a few batches on a starved one. */
+        /** Two milliseconds: a pass's whole bound of handshakes on a fast device, a chunk on a starved one. */
         const val RECEIVE_NANOS = 2_000_000L
     }
 }

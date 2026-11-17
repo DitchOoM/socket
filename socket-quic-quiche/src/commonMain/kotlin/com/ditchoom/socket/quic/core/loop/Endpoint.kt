@@ -62,8 +62,9 @@ internal class Endpoint(
     fun hasBacklog(): Boolean = phase == Phase.Live && input == ReceiveInput.Backlog
 
     /**
-     * Receives up to [MAX_PER_PASS] datagrams, within [budget], and hands them to the route. A server then starts held
-     * handshakes a chunk at a time, reading the socket again after each chunk so its buffer never fills while they start.
+     * Receives up to [MAX_PER_PASS] datagrams and hands them to the route. A server then starts held handshakes a chunk
+     * at a time while [budget] lasts, reading the socket again after each chunk so its buffer never fills while they start;
+     * reading is never cut by the budget, so nothing waits in the kernel to be read stale.
      */
     fun receive(
         batch: ReceiveBatch,
@@ -78,25 +79,24 @@ internal class Endpoint(
                     is Relocating.Yes -> relocating = route.answered(io.settleMove(), moving.prior)
                     is Relocating.No -> Unit
                 }
-                receiveWaiting(batch, counts, at, budget)
+                receiveWaiting(batch, counts, at)
             }
             is Route.Demux -> {
                 route.demux.passBegins()
-                receiveWaiting(batch, counts, at, budget)
+                receiveWaiting(batch, counts, at)
                 while (budget.state() == Budget.Left && route.demux.admitSome(send) == Admitted.More) {
                     input = ReceiveInput.Maybe
-                    receiveWaiting(batch, counts, at, budget)
+                    receiveWaiting(batch, counts, at)
                 }
             }
         }
     }
 
-    /** Reads until the socket is drained, [MAX_PER_PASS] or [budget] is spent; each datagram is handed over at [at]. */
+    /** Reads until the socket is drained or [MAX_PER_PASS]; each datagram of this phase is handed over at [at]. */
     private fun receiveWaiting(
         batch: ReceiveBatch,
         counts: LoopCounts,
         at: Nanos,
-        budget: ReceiveBudget,
     ) {
         if (input == ReceiveInput.Drained && readiness == Readiness.Polled) return
         var taken = 0
@@ -106,7 +106,6 @@ internal class Endpoint(
                     input = if (got is ReceiveBatchResult.GotWithBacklog) ReceiveInput.Backlog else ReceiveInput.Maybe
                     taken += batch.count
                     deliver(batch, at)
-                    if (budget.state() == Budget.Spent) break
                 }
                 is ReceiveBatchResult.Nothing -> {
                     input = ReceiveInput.Drained

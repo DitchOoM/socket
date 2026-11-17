@@ -149,23 +149,6 @@ class LoopPassTests {
     }
 
     @Test
-    fun aSocketThatNeverEmptiesLetsThePassServeOnceItsReceiveTimeIsSpent() {
-        // Each read takes a millisecond of the loop's time: a pass must stop reading after its receive budget and serve
-        // what it took, instead of reading up to the per-pass count while every connection waits for its output.
-        val clock = VirtualClock()
-        val io = ScriptedIo()
-        io.onRead = { clock.at = Nanos(clock.at.value + 1_000_000L) }
-        repeat(1500) { io.arrive(byteArrayOf(1), peer(it)) }
-        val rig = ConnRig(EchoQuiche(), io = io, clock = clock)
-
-        rig.loop.pass(Nanos(0))
-
-        val taken = rig.loop.counts.datagramsIn
-        assertTrue(taken in 64L..256L, "a pass whose reads take a millisecond each took $taken datagrams")
-        assertEquals(taken, io.sent.size.toLong(), "and served every one of them in the same pass")
-    }
-
-    @Test
     fun datagramsTheIoHoldsAreReadWithoutWaitingForAnotherOne() {
         // Whole messages waiting inside the io are invisible to the poller: a pass cut short by the per-pass bound must
         // leave the loop's next pass due at once, and that pass must finish the backlog with nothing new arriving.
@@ -258,11 +241,7 @@ private class ScriptedIo : DatagramBatchIo {
         return SendBatchResult.AllTaken
     }
 
-    /** Runs at each read: a test moves its clock here, as a read that takes time does. */
-    var onRead: () -> Unit = {}
-
     override fun receive(into: ReceiveBatch): ReceiveBatchResult {
-        onRead()
         var got = 0
         while (arrivals.isNotEmpty()) {
             val buffer = into.take()
