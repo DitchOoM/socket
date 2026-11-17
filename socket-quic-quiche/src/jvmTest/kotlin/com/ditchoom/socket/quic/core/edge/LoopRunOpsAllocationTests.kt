@@ -69,7 +69,8 @@ class LoopRunOpsAllocationTests {
                 .getAllStackTraces()
                 .keys
                 .first { it.name == client.loop.name }
-                .threadId()
+                // id, not threadId() (JDK 19): the allocation lanes include JDK 17.
+                .id
         val handedBefore = client.conn.counts.handedToLoop
         val recording = jdk.jfr.Recording()
         recording.enable("jdk.ObjectAllocationSample").with("throttle", "off").withStackTrace()
