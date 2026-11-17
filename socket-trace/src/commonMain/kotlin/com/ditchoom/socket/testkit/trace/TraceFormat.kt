@@ -140,6 +140,7 @@ internal fun encodeTraceLine(event: TraceEvent): String =
                 append("TRAFFIC_SECRETS_REFUSED ")
                 append(flattenLine(event.path))
             }
+            is TraceEvent.TimerFired -> append("TIMER_FIRED")
         }
     }
 
@@ -262,6 +263,8 @@ internal fun decodeTraceLine(line: String): TraceEvent {
         // rather than mis-parsing.
         "QLOG_REFUSED" -> TraceEvent.QlogRefused(at, fields)
         "TRAFFIC_SECRETS_REFUSED" -> TraceEvent.TrafficSecretsRefused(at, fields)
+        // `v1` still: TIMER_FIRED is a new line kind in the existing version, as QLOG_REFUSED was; it has no fields.
+        "TIMER_FIRED" -> TraceEvent.TimerFired(at)
         else -> throw IllegalArgumentException("unknown trace event '$eventName': $line")
     }
 }

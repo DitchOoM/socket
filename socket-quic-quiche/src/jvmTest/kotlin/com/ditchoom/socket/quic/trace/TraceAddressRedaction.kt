@@ -44,7 +44,7 @@ internal object TraceAddressRedaction {
             is TraceEvent.Drop -> literalsIn(event.message)
             is TraceEvent.StreamLoss, is TraceEvent.State, is TraceEvent.Migration, is TraceEvent.Silence,
             is TraceEvent.Stats, is TraceEvent.Net, is TraceEvent.NetGap, is TraceEvent.NetCapability,
-            is TraceEvent.Liveness, is TraceEvent.QlogRefused, is TraceEvent.TrafficSecretsRefused,
+            is TraceEvent.Liveness, is TraceEvent.QlogRefused, is TraceEvent.TrafficSecretsRefused, is TraceEvent.TimerFired,
             -> emptyList()
         }
 
@@ -81,7 +81,7 @@ internal object TraceAddressRedaction {
                 is TraceEvent.Drop -> event.copy(message = rewriteText(event.message))
                 is TraceEvent.StreamLoss, is TraceEvent.State, is TraceEvent.Migration, is TraceEvent.Silence,
                 is TraceEvent.Stats, is TraceEvent.Net, is TraceEvent.NetGap, is TraceEvent.NetCapability,
-                is TraceEvent.Liveness, is TraceEvent.QlogRefused, is TraceEvent.TrafficSecretsRefused,
+                is TraceEvent.Liveness, is TraceEvent.QlogRefused, is TraceEvent.TrafficSecretsRefused, is TraceEvent.TimerFired,
                 -> event
             }
 

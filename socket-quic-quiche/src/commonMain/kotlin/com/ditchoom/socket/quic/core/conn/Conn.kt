@@ -181,7 +181,7 @@ internal class Conn(
 
     internal fun timerFiredInside() {
         timerQueued.store(IDLE)
-        turn.expire()
+        turn.expire(clock.now())
     }
 
     /** Loop thread: the deadline of a connection that ended fell due: the loop serves it, which steps its linger. */
