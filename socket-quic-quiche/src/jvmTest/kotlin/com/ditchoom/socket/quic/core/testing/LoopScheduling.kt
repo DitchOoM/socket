@@ -101,43 +101,15 @@ internal object LoopScheduling {
             now.keys.sorted().joinToString(", ") { key -> "$key ${now.getValue(key) - (before[key] ?: 0L)}" }
     }
 
-    private val dumped =
-        java.util.concurrent.atomic
-            .AtomicBoolean(false)
-
     /**
-     * DIAGNOSTIC: once per process, when the instrumentation argument `herdHeapDump` is set (Android only), writes an
-     * hprof of the heap to the test APK's cache directory as `herd.hprof`. Elsewhere it does nothing.
-     */
-    fun dumpHeapOnce() {
-        runCatching {
-            val registry = Class.forName("androidx.test.platform.app.InstrumentationRegistry")
-            val arguments = registry.getMethod("getArguments").invoke(null)
-            val wanted = arguments.javaClass.getMethod("getString", String::class.java).invoke(arguments, "herdHeapDump")
-            if (wanted == null || !dumped.compareAndSet(false, true)) return
-            val instrumentation = registry.getMethod("getInstrumentation").invoke(null)
-            val context = instrumentation.javaClass.getMethod("getContext").invoke(instrumentation)
-            val cache = context.javaClass.getMethod("getCacheDir").invoke(context) as File
-            val path = File(cache, "herd.hprof").absolutePath
-            Class.forName("android.os.Debug").getMethod("dumpHprofData", String::class.java).invoke(null, path)
-            println("CORE-CPU heap dump written to $path")
-        }.onFailure { println("CORE-CPU heap dump failed: $it") }
-    }
-
-    /**
-     * The kernel's clocksource and what one `System.nanoTime()` costs now: a guest whose watchdog dropped the TSC reads
-     * the clock with a trap to the host, and the loops read it per connection per pass.
+     * What one `System.nanoTime()` costs now. On a guest whose clocksource is the HPET (the Android 9 and 10 emulators)
+     * a read traps to the host; the kernel's clocksource is printed by the CI script, as apps may not read it.
      */
     fun clockReport(): String {
-        val source =
-            runCatching {
-                File("/sys/devices/system/clocksource/clocksource0/current_clocksource").readText().trim()
-            }.getOrElse { "unknown" }
         val reads = 20_000
         val began = System.nanoTime()
         repeat(reads) { System.nanoTime() }
-        val each = (System.nanoTime() - began) / reads
-        return "clocksource $source, nanoTime $each ns"
+        return "nanoTime ${(System.nanoTime() - began) / reads} ns"
     }
 
     private class Spent(

@@ -420,7 +420,7 @@ jobs:
       # The Perfetto ring, pulled from the device by the test script only when the run failed or hung.
       # Its own artifact, 14 days: a scheduling trace is read well after the logcat of the same run.
       - name: Upload Perfetto ring on failure
-        if: ${{ !cancelled() && hashFiles('perfetto-ring/*.gz') != '' }}
+        if: ${{ !cancelled() && hashFiles('perfetto-ring/perfetto-ring-api*.gz') != '' }}
         continue-on-error: true # an upload hiccup must not mask the failure it was capturing
         uses: actions/upload-artifact@v7
         with:
