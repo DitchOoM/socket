@@ -657,6 +657,24 @@ NSArray * _Nonnull nw_helper_resolve_start(
         }
     };
 
+    // DNS-SD answers a numeric literal NoSuchName: a literal is its own answer, and never reaches DNS.
+    struct addrinfo numericOnly = {0};
+    numericOnly.ai_flags = AI_NUMERICHOST;
+    struct addrinfo *literal = NULL;
+    if (getaddrinfo(host, NULL, &numericOnly, &literal) == 0) {
+        for (struct addrinfo *it = literal; it != NULL; it = it->ai_next) {
+            char text[NI_MAXHOST];
+            if (getnameinfo(it->ai_addr, it->ai_addrlen, text, sizeof(text), NULL, 0, NI_NUMERICHOST) == 0
+                && ![addresses containsObject:[NSString stringWithUTF8String:text]]) {
+                [addresses addObject:[NSString stringWithUTF8String:text]];
+            }
+        }
+        freeaddrinfo(literal);
+        dispatch_async(queue, ^{ finish(addresses.count > 0 ? 0 : 1, 0); });
+        dispatch_block_t cancelLiteral = ^{ dispatch_async(queue, ^{ if (!done) { pending = nil; teardown(); } }); };
+        return @[[cancelLiteral copy]];
+    }
+
     dispatch_async(queue, ^{
         if (done) return;
         context = CFBridgingRetain(onResult);

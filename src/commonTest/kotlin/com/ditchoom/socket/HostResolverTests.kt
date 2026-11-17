@@ -68,6 +68,16 @@ class HostResolverTests {
         }
 
     @Test
+    fun theResolverAnswersAnAddressLiteralWithItselfWithoutAskingDns() =
+        runTestNoTimeSkipping {
+            if (!tcpAvailable()) return@runTestNoTimeSkipping
+            for ((literal, family) in listOf("127.0.0.1" to IpFamily.V4, "::1" to IpFamily.V6, "192.0.2.7" to IpFamily.V4)) {
+                val resolved = assertIs<Resolution.Resolved>(HostResolver.platform().resolve(literal), literal)
+                assertEquals(listOf(ResolvedAddress(literal, family)), resolved.candidates, literal)
+            }
+        }
+
+    @Test
     fun aNameThatDoesNotExistIsAnAnswerNotAnException() =
         runTestNoTimeSkipping {
             val answer = HostResolver.platform().resolve("this.host.does.not.exist.invalid")
