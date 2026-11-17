@@ -52,7 +52,7 @@ class ConnTimerAllocationTests {
         repeat(WARM_UP) { cycle() }
         val firedBefore = fired
         val threads = ManagementFactory.getThreadMXBean() as com.sun.management.ThreadMXBean
-        val self = Thread.currentThread().threadId()
+        val self = Thread.currentThread().id
         val before = threads.getThreadAllocatedBytes(self)
         repeat(CYCLES) { cycle() }
         val perCycle = (threads.getThreadAllocatedBytes(self) - before).toDouble() / CYCLES
