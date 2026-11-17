@@ -5,7 +5,6 @@ import com.ditchoom.data.writeString
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
-import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -90,24 +89,35 @@ class HostResolverTests {
             }
         }
 
+    /**
+     * Cancelling never waits for the lookup: `cancel()` only posts the teardown to the query's own queue (about 3 us),
+     * and the join is one dispatcher hop (about 70 us, measured on the iOS simulator even with 100 busy loops on 36
+     * cores). A cancel that did wait would wait for DNS, so EVERY sample would take a lookup's time; one scheduler
+     * stall (CI tvOS run 134236838626 saw a lone 33.9 ms on a 3-vCPU runner) hits one sample. So this asserts the
+     * median, not the worst, and prints every sample on failure.
+     */
     @Test
     fun cancellingALookupReturnsWithinAMillisecondOfWork() =
         runTestNoTimeSkipping(timeout = 60.seconds) {
             if (!tcpAvailable()) return@runTestNoTimeSkipping
-            val taken = ArrayList<Long>()
+            val cancelCall = ArrayList<Long>()
+            val joined = ArrayList<Long>()
             repeat(30) { round ->
                 val lookup =
                     launch(start = CoroutineStart.UNDISPATCHED) {
                         HostResolver.platform().resolve("cancel-$round.lookup.invalid")
                     }
                 val start = TimeSource.Monotonic.markNow()
-                lookup.cancelAndJoin()
-                taken += start.elapsedNow().inWholeMicroseconds
+                lookup.cancel()
+                cancelCall += start.elapsedNow().inWholeMicroseconds
+                lookup.join()
+                joined += start.elapsedNow().inWholeMicroseconds
             }
-            val measured = taken.drop(10).sorted()
-            println("resolver cancel latency (us), sorted after warm-up: $measured")
-            assertTrue(measured[measured.size / 2] < 1_000, "median cancel latency ${measured[measured.size / 2]} us")
-            assertTrue(measured.last() < 20_000, "worst cancel latency ${measured.last()} us")
+            val calls = cancelCall.drop(10).sorted()
+            val joins = joined.drop(10).sorted()
+            val detail = "sorted after warm-up, us: cancel() calls=$calls; cancel+join=$joins"
+            assertTrue(calls[calls.size / 2] < 1_000, "median cancel() call ${calls[calls.size / 2]} us; $detail")
+            assertTrue(joins[joins.size / 2] < 1_000, "median cancel+join ${joins[joins.size / 2]} us; $detail")
         }
 
     @Test
