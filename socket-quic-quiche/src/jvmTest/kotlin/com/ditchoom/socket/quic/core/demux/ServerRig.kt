@@ -87,7 +87,14 @@ internal class BoundedIo(
         return SendBatchResult.AllTaken
     }
 
+    /** Runs at each read: a test moves its clock here, as a read that takes time does. */
+    var onRead: () -> Unit = {}
+
+    /** Datagrams the socket holds that the server has not read. */
+    val unread: Int get() = waiting.size
+
     override fun receive(into: ReceiveBatch): ReceiveBatchResult {
+        onRead()
         var got = 0
         while (waiting.isNotEmpty()) {
             val buffer = into.take()
