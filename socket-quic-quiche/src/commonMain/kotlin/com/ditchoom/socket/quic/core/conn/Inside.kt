@@ -23,6 +23,7 @@ internal class Inside(
     private val clock: LoopClock,
     private val port: LoopPort,
     private val turn: Turn,
+    val datagrams: Datagrams,
 ) {
     fun now(): Nanos = clock.now()
 

@@ -208,7 +208,14 @@ internal class ServerSetup(
         val edge = ServerEdge(options, factory, readPolicy, writePolicy, accepted)
         val parts =
             ServerParts(
-                SlotRules.forWaits(waitsOf(stack), handshake, closeRuleOf(options), earlyDataRuleOf(options)),
+                SlotRules.forWaits(
+                    waitsOf(stack),
+                    handshake,
+                    closeRuleOf(options),
+                    datagramRuleOf(options),
+                    keepAliveRuleOf(options),
+                    earlyDataRuleOf(options),
+                ),
                 factory,
                 config.flight,
                 LoopMemory(

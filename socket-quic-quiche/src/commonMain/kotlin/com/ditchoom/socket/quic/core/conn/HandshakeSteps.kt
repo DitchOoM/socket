@@ -18,10 +18,12 @@ internal fun ConnParts.handshakeStep(
         HandshakeStep.Handshaking -> early()
         HandshakeStep.JustEstablished -> {
             paths.established()
+            // Before the caller is told: it may read the datagram room the moment it resumes.
+            slots.datagrams.wake()
             sink.established(handshake.report(now, paths.read(), outcome()))
-            established()
+            established(now)
         }
-        HandshakeStep.Established -> established()
+        HandshakeStep.Established -> established(now)
         HandshakeStep.DeadlinePassed -> Unit
     }
     return step
@@ -64,8 +66,10 @@ private fun ConnParts.early() =
             }
     }
 
-private fun ConnParts.established() {
+private fun ConnParts.established(now: Nanos) {
     wakeStreams(Arrival.Confirmed)
+    slots.datagrams.wake()
+    slots.keepAlive.step(now)
     when (val r = slots.resumption) {
         is Resumption.Server -> Unit
         is Resumption.Client -> r.session.takeTicket(sink)

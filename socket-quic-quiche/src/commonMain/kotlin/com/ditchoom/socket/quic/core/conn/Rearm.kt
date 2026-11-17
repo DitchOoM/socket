@@ -12,6 +12,7 @@ internal fun ConnParts.rearm(
         is Pacing.Unpaced -> Unit
         is Pacing.ByQuiche -> pacing.pacer.offerWake(timer.sink)
     }
+    slots.keepAlive.offerWake(timer.sink)
     handshake.offerWake(timer.sink)
     life.linger.offerWake(timer.sink)
     slots.paths.offerWake(timer.sink)

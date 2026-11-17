@@ -59,10 +59,7 @@ internal class Conn(
     /** Any thread: whether the connection has ended, and how. */
     fun life(): Life = turn.life()
 
-    /**
-     * Loop thread: the server closes this connection with NO_ERROR. Whoever is inside runs the close, and the thread
-     * that leaves after collecting its CONNECTION_CLOSE marks it out; a caller that does wakes the loop.
-     */
+    /** Loop thread: the server closes this connection with NO_ERROR; the thread that collects its CONNECTION_CLOSE marks it out. */
     fun closeForServer() {
         serverClose.ask()
         submit(ServerCloseWork(serverClose), CallerPlace.HandToLoop)
@@ -101,8 +98,7 @@ internal class Conn(
 
     /**
      * Loop thread: a datagram for this connection from [from], at the start of [bytes], read in the receive phase that
-     * began [at]; copied when a caller is inside. Every datagram of one phase shares [at], so a recording keeps them one receive
-     * pass: quiche has all of them before the connection sends.
+     * began [at]; copied when a caller is inside. Datagrams of one phase share [at]: quiche has all before it sends.
      */
     fun received(
         bytes: NativeBytes,
@@ -115,6 +111,9 @@ internal class Conn(
             LoopHold.Out -> copyForHolder(bytes, length, from)
         }
     }
+
+    /** Any thread: the bytes one datagram may carry as of the connection's last turn, or 0. */
+    fun datagramMaxBytes(): Int = turn.datagramMaxBytes()
 
     /** Any thread: how many new connection ids the loop should route to this connection, taken once. */
     fun idsWanted(): Int = turn.idsWanted()

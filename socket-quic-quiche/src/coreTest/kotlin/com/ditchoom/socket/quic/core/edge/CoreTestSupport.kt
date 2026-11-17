@@ -34,13 +34,14 @@ internal suspend fun connectCore(
     loops: LoopSet = LoopSet.shared,
     factory: BufferFactory = BufferFactory.network(),
     api: com.ditchoom.socket.quic.QuicheApi = platformQuicheApi(),
+    options: QuicOptions = coreTestOptions,
     wrapIo: (DatagramBatchIo) -> DatagramBatchIo = { it },
 ): CoreClient =
     coreConnect(
         host = host,
         port = port,
         serverName = "localhost",
-        options = coreTestOptions,
+        options = options,
         factory = factory,
         api = api,
         timeout = 10.seconds,

@@ -43,6 +43,20 @@ internal sealed interface Resumption {
 
 internal sealed interface Datagrams {
     data object Off : Datagrams
+
+    /** RFC 9221 datagrams are carried: [box] holds what arrives and sends what is handed it. */
+    class On(
+        val box: DatagramBox,
+    ) : Datagrams
+}
+
+internal sealed interface KeepAlive {
+    data object Off : KeepAlive
+
+    /** An idle connection is pinged by [timer]. */
+    class Every(
+        val timer: KeepAliveTimer,
+    ) : KeepAlive
 }
 
 /** What one connection holds: exactly one variant of each concern. */
@@ -52,4 +66,5 @@ internal class ConnSlots(
     val paths: Paths,
     val resumption: Resumption,
     val datagrams: Datagrams,
+    val keepAlive: KeepAlive,
 )

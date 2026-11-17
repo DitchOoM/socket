@@ -363,6 +363,20 @@ object JniQuicheApi : QuicheApi {
         }
     }
 
+    override fun connDgramRecvStep(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): StreamRecvStep {
+        val raw = nConnDgramRecv(conn.handle, buf, bufLen)
+        return if (raw >= 0) StreamRecvStep.data(raw.toInt(), false) else StreamRecvStep.error(raw.toInt())
+    }
+
+    override fun connDgramMaxWritableBytes(conn: QuicheConn): Int {
+        val raw = nConnDgramMaxWritableLen(conn.handle)
+        return if (raw < 0) NO_DATAGRAM_ROOM else raw.toInt()
+    }
+
     override fun hasReadableDgram(conn: QuicheConn): Boolean = nConnDgramRecvFrontLen(conn.handle) >= 0
 
     override fun connDgramMaxWritableLen(conn: QuicheConn): MaxDatagramSize {

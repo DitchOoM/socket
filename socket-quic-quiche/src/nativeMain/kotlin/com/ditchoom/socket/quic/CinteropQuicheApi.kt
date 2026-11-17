@@ -702,6 +702,20 @@ internal object CinteropQuicheApi : QuicheApi, QuicheRandomPin {
         }
     }
 
+    override fun connDgramRecvStep(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): StreamRecvStep {
+        val result = quiche_conn_dgram_recv(conn.handle.toCPointer()!!, buf.toCPointer<UByteVar>()!!, bufLen.convert())
+        return if (result >= 0) StreamRecvStep.data(result.toInt(), false) else StreamRecvStep.error(result.toInt())
+    }
+
+    override fun connDgramMaxWritableBytes(conn: QuicheConn): Int {
+        val raw = quiche_conn_dgram_max_writable_len(conn.handle.toCPointer()!!)
+        return if (raw < 0) NO_DATAGRAM_ROOM else raw.toInt()
+    }
+
     override fun hasReadableDgram(conn: QuicheConn): Boolean = quiche_conn_dgram_recv_front_len(conn.handle.toCPointer()!!) >= 0
 
     override fun connDgramMaxWritableLen(conn: QuicheConn): MaxDatagramSize {

@@ -120,7 +120,16 @@ internal fun buildConn(
                     is ConnSide.Client -> Resumption.Client(ClientSession(q, side.offer, side.ticket))
                     is ConnSide.Server -> Resumption.Server(ServerSession(q, rules.earlyData))
                 },
-            datagrams = Datagrams.Off,
+            datagrams =
+                when (val r = rules.datagrams) {
+                    is DatagramRule.Off -> Datagrams.Off
+                    is DatagramRule.On -> Datagrams.On(DatagramBox(q, r.bound, memory.factory, counts))
+                },
+            keepAlive =
+                when (val r = rules.keepAlive) {
+                    is KeepAliveRule.Off -> KeepAlive.Off
+                    is KeepAliveRule.Every -> KeepAlive.Every(KeepAliveTimer(q, r.intervalNanos))
+                },
         )
     val parts =
         ConnParts(

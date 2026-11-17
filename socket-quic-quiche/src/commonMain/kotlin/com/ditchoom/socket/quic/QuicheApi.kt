@@ -288,6 +288,26 @@ interface QuicheApi {
         bufLen: Int,
     ): StreamRecvResult
 
+    /**
+     * [connDgramRecv] as a primitive: a datagram read on the core's hot path allocates no result object. The answer is
+     * [StreamRecvStep.fold]'s `more` with the datagram's length, or `nothingYet` when none is queued.
+     */
+    fun connDgramRecvStep(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): StreamRecvStep = StreamRecvStep.of(connDgramRecv(conn, buf, bufLen))
+
+    /**
+     * [connDgramMaxWritableLen] as a primitive: the bytes one datagram may carry now, or [NO_DATAGRAM_ROOM] when
+     * datagrams cannot be sent.
+     */
+    fun connDgramMaxWritableBytes(conn: QuicheConn): Int =
+        when (val max = connDgramMaxWritableLen(conn)) {
+            is MaxDatagramSize.Bytes -> max.bytes
+            is MaxDatagramSize.Unavailable -> NO_DATAGRAM_ROOM
+        }
+
     /** True when at least one datagram is queued for receive. (Wraps `dgram_recv_front_len`.) */
     fun hasReadableDgram(conn: QuicheConn): Boolean
 
@@ -1003,6 +1023,9 @@ interface QuicheApi {
 
 /** What [QuicheApi.connTimeoutNanos] answers when quiche has no timer armed. */
 const val NO_TIMEOUT_NANOS = -1L
+
+/** What [QuicheApi.connDgramMaxWritableBytes] answers when datagrams cannot be sent. */
+const val NO_DATAGRAM_ROOM = -1
 
 /**
  * Slot width for [QuicheApi.connDrainRetiredScids]'s output buffer: one length byte followed by the

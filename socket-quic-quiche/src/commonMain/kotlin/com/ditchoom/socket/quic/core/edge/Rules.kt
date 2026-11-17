@@ -6,9 +6,11 @@ import com.ditchoom.socket.quic.LinkClass
 import com.ditchoom.socket.quic.QuicCloseLinger
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.RttPrior
+import com.ditchoom.socket.quic.core.conn.DatagramRule
 import com.ditchoom.socket.quic.core.conn.EarlyDataRule
 import com.ditchoom.socket.quic.core.conn.HandshakeBound
 import com.ditchoom.socket.quic.core.conn.HandshakeRule
+import com.ditchoom.socket.quic.core.conn.KeepAliveRule
 import com.ditchoom.socket.quic.core.conn.PtoRule
 import com.ditchoom.socket.quic.core.life.CloseRule
 import com.ditchoom.socket.transport.NetworkId
@@ -34,6 +36,14 @@ internal fun closeRuleOf(options: QuicOptions): CloseRule =
         is QuicCloseLinger.UntilAcknowledged -> CloseRule.UntilAcknowledged(options.idleTimeout.inWholeNanoseconds)
         is QuicCloseLinger.UntilPeerDone -> CloseRule.UntilPeerDone(linger.bound.inWholeNanoseconds)
     }
+
+/** Whether connections of an endpoint carry RFC 9221 datagrams, from [QuicOptions.datagrams]. */
+internal fun datagramRuleOf(options: QuicOptions): DatagramRule =
+    options.datagrams?.let { DatagramRule.On(it.recvQueueLen) } ?: DatagramRule.Off
+
+/** Whether idle connections of an endpoint are pinged, from [QuicOptions.keepAliveInterval]. */
+internal fun keepAliveRuleOf(options: QuicOptions): KeepAliveRule =
+    options.keepAliveInterval?.let { KeepAliveRule.Every(it.inWholeNanoseconds) } ?: KeepAliveRule.Off
 
 /** Whether a server accepts 0-RTT, from [QuicOptions.enableEarlyData]. */
 internal fun earlyDataRuleOf(options: QuicOptions): EarlyDataRule =
