@@ -12,6 +12,7 @@ package com.ditchoom.socket.quic.core.observe
  * | [NetworkEvent] | address ids | 0 | event code | detail | detail |
  * | [QuichePathEvent] | the path's address ids | 0 | quiche's event type | detail | detail |
  * | [ConnEnd] | 0 | 0 | the end's kind | error code | 0 |
+ * | [DatagramDropped] | the address it was for or from, the peer's | datagram bytes | why it was dropped | 0 | 0 |
  */
 internal enum class FlightKind {
     DatagramIn,
@@ -23,4 +24,5 @@ internal enum class FlightKind {
     NetworkEvent,
     QuichePathEvent,
     ConnEnd,
+    DatagramDropped,
 }
