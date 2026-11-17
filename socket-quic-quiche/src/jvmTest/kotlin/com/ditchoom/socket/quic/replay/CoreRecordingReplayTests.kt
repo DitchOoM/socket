@@ -22,6 +22,9 @@ import com.ditchoom.socket.quic.core.edge.coreServe
 import com.ditchoom.socket.quic.core.edge.coreTestOptions
 import com.ditchoom.socket.quic.core.edge.coreTlsConfig
 import com.ditchoom.socket.quic.core.edge.echoOver
+import com.ditchoom.socket.quic.core.testing.flightDirectory
+import com.ditchoom.socket.quic.core.testing.makeDirectories
+import com.ditchoom.socket.quic.core.testing.writeTextFile
 import com.ditchoom.socket.quic.core.udp.Addressed
 import com.ditchoom.socket.quic.core.udp.BatchLimits
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
@@ -121,6 +124,37 @@ class CoreRecordingReplayTests {
         }
     }
 
+    /** The recordings this test last made or converted: written where CI keeps them when the test fails. */
+    private var recordings = Recorded(emptyList(), emptyList(), 0)
+
+    /**
+     * Runs the replay test [test] (its method's name). When it fails, both recordings it last made or converted are
+     * written under the flight directory, as `<class>/<test>.client.trace` and `.server.trace`, and the failure names them.
+     */
+    private fun replayTest(
+        test: String,
+        body: suspend () -> Unit,
+    ) = runBlocking {
+        skipOnMissingNativeLib(CoreRecordingReplayTests::class) {
+            try {
+                body()
+            } catch (failed: AssertionError) {
+                throw AssertionError("${failed.message}\n${writeRecordings(test)}", failed)
+            }
+        }
+    }
+
+    /** Writes [recordings] for [test]; says where they went, or that they could not be written. */
+    private fun writeRecordings(test: String): String {
+        val directory = flightDirectory() + "/" + CoreRecordingReplayTests::class.simpleName
+        if (!makeDirectories(directory)) return "recordings: could not write under $directory"
+        val client = writeTextFile("$directory/$test.client.trace", linesOf(recordings.client))
+        val server = writeTextFile("$directory/$test.server.trace", linesOf(recordings.server))
+        return if (client && server) "recordings: $directory/$test.*.trace" else "recordings: could not write under $directory"
+    }
+
+    private fun linesOf(recording: List<TraceEvent>): String = recording.joinToString(separator = "\n", postfix = "\n")
+
     private class Recorded(
         val client: List<TraceEvent>,
         val server: List<TraceEvent>,
@@ -219,6 +253,7 @@ class CoreRecordingReplayTests {
             echo.cancel()
             server.close()
         }
+        recordings = Recorded(clientRecording.toList(), serverRecording.toList(), link[0]!!.dropped.size)
         assertEquals(1, link[0]!!.dropped.size, "the link lost the client's data datagram")
         assertEquals(
             link[0]!!.sent,
@@ -233,6 +268,7 @@ class CoreRecordingReplayTests {
         client: List<TraceEvent> = recorded.client,
         server: List<TraceEvent> = recorded.server,
     ): CaptureSchedule {
+        recordings = Recorded(client, server, recorded.lost)
         val converted =
             RecordingToSchedule.convert(
                 name = "core client and core server over a lossy link",
@@ -273,10 +309,8 @@ class CoreRecordingReplayTests {
 
     @Test
     fun aLossyCoreToCoreRunIsFollowedWholeByItsReplayTwice() =
-        runBlocking {
-            skipOnMissingNativeLib(CoreRecordingReplayTests::class) {
-                assertFollowedWholeTwice(scheduleOf(recordAnEcho()))
-            }
+        replayTest("aLossyCoreToCoreRunIsFollowedWholeByItsReplayTwice") {
+            assertFollowedWholeTwice(scheduleOf(recordAnEcho()))
         }
 
     /**
@@ -288,10 +322,8 @@ class CoreRecordingReplayTests {
      */
     @Test
     fun aRunWhoseClientWasSlowToAnswerIsFollowedWholeByItsReplayTwice() =
-        runBlocking {
-            skipOnMissingNativeLib(CoreRecordingReplayTests::class) {
-                assertFollowedWholeTwice(scheduleOf(recordAnEcho(ClientHost.SlowToAnswer)))
-            }
+        replayTest("aRunWhoseClientWasSlowToAnswerIsFollowedWholeByItsReplayTwice") {
+            assertFollowedWholeTwice(scheduleOf(recordAnEcho(ClientHost.SlowToAnswer)))
         }
 
     /**
@@ -301,10 +333,8 @@ class CoreRecordingReplayTests {
      */
     @Test
     fun aRunWhoseClientWasSlowToReadIsFollowedWholeByItsReplayTwice() =
-        runBlocking {
-            skipOnMissingNativeLib(CoreRecordingReplayTests::class) {
-                assertFollowedWholeTwice(scheduleOf(recordAnEcho(ClientHost.SlowToRead)))
-            }
+        replayTest("aRunWhoseClientWasSlowToReadIsFollowedWholeByItsReplayTwice") {
+            assertFollowedWholeTwice(scheduleOf(recordAnEcho(ClientHost.SlowToRead)))
         }
 
     /**
@@ -315,10 +345,8 @@ class CoreRecordingReplayTests {
      */
     @Test
     fun aRunWhoseClientWokeLateForItsTimersIsFollowedWholeByItsReplayTwice() =
-        runBlocking {
-            skipOnMissingNativeLib(CoreRecordingReplayTests::class) {
-                assertFollowedWholeTwice(scheduleOf(recordAnEcho(ClientHost.LateForTimers)))
-            }
+        replayTest("aRunWhoseClientWokeLateForItsTimersIsFollowedWholeByItsReplayTwice") {
+            assertFollowedWholeTwice(scheduleOf(recordAnEcho(ClientHost.LateForTimers)))
         }
 
     /**
@@ -329,10 +357,8 @@ class CoreRecordingReplayTests {
      */
     @Test
     fun aRunWhoseClientRanAnOverdueTimerOnlyAfterItsNextStallIsFollowedWholeByItsReplayTwice() =
-        runBlocking {
-            skipOnMissingNativeLib(CoreRecordingReplayTests::class) {
-                assertFollowedWholeTwice(scheduleOf(recordAnEcho(ClientHost.StalledAroundConfirmation)))
-            }
+        replayTest("aRunWhoseClientRanAnOverdueTimerOnlyAfterItsNextStallIsFollowedWholeByItsReplayTwice") {
+            assertFollowedWholeTwice(scheduleOf(recordAnEcho(ClientHost.StalledAroundConfirmation)))
         }
 
     /** quiche whose every timer the host is asked to run [LATE] after it falls due. */
@@ -364,39 +390,37 @@ class CoreRecordingReplayTests {
      */
     @Test
     fun aRunWhoseClientChangedFourTupleMidConnectionIsFollowedWholeByItsReplayTwice() =
-        runBlocking {
-            skipOnMissingNativeLib(CoreRecordingReplayTests::class) {
-                val recorded = recordAnEcho()
-                val changedAt = writeOf(recorded.client).at
-                val moved = TracePath(family = 4, port = MOVED_PORT, hi = 0, lo = MOVED_ADDRESS)
+        replayTest("aRunWhoseClientChangedFourTupleMidConnectionIsFollowedWholeByItsReplayTwice") {
+            val recorded = recordAnEcho()
+            val changedAt = writeOf(recorded.client).at
+            val moved = TracePath(family = 4, port = MOVED_PORT, hi = 0, lo = MOVED_ADDRESS)
 
-                fun List<TraceEvent>.movedAfter(at: Duration): List<TraceEvent> =
-                    map {
-                        when {
-                            it is TraceEvent.DgramOut && it.at >= at -> it.copy(path = moved)
-                            it is TraceEvent.DgramIn && it.at >= at -> it.copy(path = moved)
-                            else -> it
-                        }
+            fun List<TraceEvent>.movedAfter(at: Duration): List<TraceEvent> =
+                map {
+                    when {
+                        it is TraceEvent.DgramOut && it.at >= at -> it.copy(path = moved)
+                        it is TraceEvent.DgramIn && it.at >= at -> it.copy(path = moved)
+                        else -> it
                     }
-                val client = recorded.client.movedAfter(changedAt)
-                // The two recordings keep clocks of their own: the server sees the move once it is established.
-                val server =
-                    recorded.server.movedAfter(
-                        recorded.server
-                            .filterIsInstance<TraceEvent.State>()
-                            .first { it.name.endsWith(".Established") }
-                            .at,
-                    )
-                assertTrue(
-                    client
-                        .filterIsInstance<TraceEvent.DgramOut>()
-                        .map { it.path }
-                        .distinct()
-                        .size > 1,
-                    "the client's path changed",
+                }
+            val client = recorded.client.movedAfter(changedAt)
+            // The two recordings keep clocks of their own: the server sees the move once it is established.
+            val server =
+                recorded.server.movedAfter(
+                    recorded.server
+                        .filterIsInstance<TraceEvent.State>()
+                        .first { it.name.endsWith(".Established") }
+                        .at,
                 )
-                assertFollowedWholeTwice(scheduleOf(recorded, client, server))
-            }
+            assertTrue(
+                client
+                    .filterIsInstance<TraceEvent.DgramOut>()
+                    .map { it.path }
+                    .distinct()
+                    .size > 1,
+                "the client's path changed",
+            )
+            assertFollowedWholeTwice(scheduleOf(recorded, client, server))
         }
 
     /**
@@ -408,37 +432,35 @@ class CoreRecordingReplayTests {
      */
     @Test
     fun whatAClosedClientSentAndReceivedWhileLingeringIsNotInItsSchedule() =
-        runBlocking {
-            skipOnMissingNativeLib(CoreRecordingReplayTests::class) {
-                val recorded = recordAnEcho()
-                val closedAt =
-                    recorded.client
-                        .filterIsInstance<TraceEvent.State>()
-                        .first { it.name.endsWith(".Closed") && it.detail?.startsWith("local") == true }
-                        .at
-                val close = recorded.client.filterIsInstance<TraceEvent.DgramOut>().last { it.at <= closedAt }
-                val late = recorded.server.filterIsInstance<TraceEvent.DgramOut>().last()
-                val serverEnd = recorded.server.maxOf { it.at }
-                val lateSent = late.copy(at = serverEnd + LINGER_STEP)
-                val clientEnd = recorded.client.maxOf { it.at }
-                val lingered =
-                    recorded.client +
-                        listOf(
-                            TraceEvent.DgramIn(clientEnd + LINGER_STEP, late.len, late.path, late.payloadHex),
-                            close.copy(at = clientEnd + LINGER_STEP),
-                        )
-                val without = scheduleOf(recorded).steps
-                val with = scheduleOf(recorded, lingered, recorded.server + lateSent).steps
-                assertEquals(
-                    without.filterIsInstance<Step.OursSent>(),
-                    with.filterIsInstance<Step.OursSent>(),
-                    "the linger's answer is not the connection's, and every delivery keeps its time",
-                )
-                // The server's late datagram reached only the linger, never quiche: to the connection it was lost.
-                assertEquals(without + (with - without.toSet()), with)
-                assertEquals(Fate.Lost, assertIs<Step.PeerSent>((with - without.toSet()).single()).fate)
-                assertFollowedWholeTwice(scheduleOf(recorded, lingered, recorded.server + lateSent))
-            }
+        replayTest("whatAClosedClientSentAndReceivedWhileLingeringIsNotInItsSchedule") {
+            val recorded = recordAnEcho()
+            val closedAt =
+                recorded.client
+                    .filterIsInstance<TraceEvent.State>()
+                    .first { it.name.endsWith(".Closed") && it.detail?.startsWith("local") == true }
+                    .at
+            val close = recorded.client.filterIsInstance<TraceEvent.DgramOut>().last { it.at <= closedAt }
+            val late = recorded.server.filterIsInstance<TraceEvent.DgramOut>().last()
+            val serverEnd = recorded.server.maxOf { it.at }
+            val lateSent = late.copy(at = serverEnd + LINGER_STEP)
+            val clientEnd = recorded.client.maxOf { it.at }
+            val lingered =
+                recorded.client +
+                    listOf(
+                        TraceEvent.DgramIn(clientEnd + LINGER_STEP, late.len, late.path, late.payloadHex),
+                        close.copy(at = clientEnd + LINGER_STEP),
+                    )
+            val without = scheduleOf(recorded).steps
+            val with = scheduleOf(recorded, lingered, recorded.server + lateSent).steps
+            assertEquals(
+                without.filterIsInstance<Step.OursSent>(),
+                with.filterIsInstance<Step.OursSent>(),
+                "the linger's answer is not the connection's, and every delivery keeps its time",
+            )
+            // The server's late datagram reached only the linger, never quiche: to the connection it was lost.
+            assertEquals(without + (with - without.toSet()), with)
+            assertEquals(Fate.Lost, assertIs<Step.PeerSent>((with - without.toSet()).single()).fate)
+            assertFollowedWholeTwice(scheduleOf(recorded, lingered, recorded.server + lateSent))
         }
 
     /** The client's application wrote the payload on its first stream when its first datagram carrying data left. */
