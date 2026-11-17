@@ -96,8 +96,16 @@ class WriteCancellationTests {
             val job = Job()
             job.cancel()
             val small = buffer(PAYLOAD)
-            CoroutineScope(HeldDispatcher() + job).launch(start = CoroutineStart.UNDISPATCHED) {
+            val caller = HeldDispatcher()
+            CoroutineScope(caller + job).launch(start = CoroutineStart.UNDISPATCHED) {
                 outcome.complete(runCatching { stream.write(small, 10.seconds) })
+            }
+            // The write enters the connection on the caller's thread only when the loop is not inside it; else the loop
+            // takes it back and the caller resumes on its own dispatcher, whose tasks this test runs.
+            val giveUp = System.nanoTime() + 10.seconds.inWholeNanoseconds
+            while (!outcome.isCompleted) {
+                if (System.nanoTime() > giveUp) fail("a write whose caller was already cancelled never resumed its caller")
+                caller.next(20.milliseconds)?.run()
             }
             assertIs<CancellationException>(outcome.await().exceptionOrNull())
             assertEquals(0, small.position(), "a write cancelled before it ran sent bytes")

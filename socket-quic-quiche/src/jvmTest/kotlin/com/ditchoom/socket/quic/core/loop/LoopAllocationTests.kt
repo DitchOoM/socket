@@ -55,8 +55,7 @@ class LoopAllocationTests {
                     Running(nio.loop, nio.thread)
                 }
                 Stack.Native -> {
-                    val native = NativeEcho("core-loop-alloc")
-                    assertTrue(native.descriptor > 127, "the echo socket's descriptor ${native.descriptor} sits above 127")
+                    val native = nativeEchoAbove127()
                     client.connect(native.address)
                     native.start(client.localAddress as InetSocketAddress)
                     Running(native.loop, native.thread)
@@ -137,7 +136,34 @@ class LoopAllocationTests {
         )
     }
 
+    /**
+     * A native echo whose socket's descriptor is above 127. [withDescriptorsAbove127] fills every free number below its
+     * own when it opens, but a descriptor another thread closes afterwards (an earlier test's socket released late)
+     * frees a low number again, and the echo takes it (112 on a JDK 17 lane). An echo that lands low is started toward
+     * a discard address and stopped, so its loop releases its socket, once a fresh echo holds a number above 127.
+     */
+    private fun nativeEchoAbove127(): NativeEcho {
+        val low = ArrayList<NativeEcho>()
+        var echo = NativeEcho("core-loop-alloc")
+        while (echo.descriptor <= 127) {
+            System.err.println("LoopAllocationTests: the echo socket took freed descriptor ${echo.descriptor}; opening another")
+            low += echo
+            assertTrue(low.size < LOW_DESCRIPTOR_RETRIES, "the echo socket took a descriptor at or below 127 $LOW_DESCRIPTOR_RETRIES times")
+            echo = NativeEcho("core-loop-alloc")
+        }
+        low.forEach { spare ->
+            spare.start(InetSocketAddress("127.0.0.1", DISCARD_PORT))
+            val stopped = CompletableFuture<Unit>()
+            spare.loop.close { stopped.complete(Unit) }
+            stopped.get(5, TimeUnit.SECONDS)
+            spare.thread.join(5_000)
+        }
+        return echo
+    }
+
     private companion object {
+        const val LOW_DESCRIPTOR_RETRIES = 16
+        const val DISCARD_PORT = 9
         const val BOXED_INTEGER_BYTES = 16
         const val BOXED_KEY = "java.lang.Integer @ Integer.valueOf"
         const val SELECTOR_FRAME = "SelectorImpl.process"
