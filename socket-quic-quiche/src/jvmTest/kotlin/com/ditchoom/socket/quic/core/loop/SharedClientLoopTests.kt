@@ -8,6 +8,7 @@ import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicError
+import com.ditchoom.socket.quic.core.demux.withCoreEchoServer
 import com.ditchoom.socket.quic.core.edge.CoreClient
 import com.ditchoom.socket.quic.core.edge.coreConnect
 import com.ditchoom.socket.quic.core.edge.coreTestOptions
@@ -39,11 +40,13 @@ import kotlin.time.Duration.Companion.seconds
 
 /** Client connections that share loop threads: placement, byte-exact echoes, and the failure tiers on one loop. */
 class SharedClientLoopTests {
+    /** Against the core's own server: a 4.x server in this process would be what the 64,000 echoes measure. */
     @Test
     fun sixtyFourConnectionsOnTwoLoopsEachEchoAThousandTimesByteExact() =
         runBlocking {
             skipOnMissingNativeLib(SharedClientLoopTests::class) {
-                withEchoServer { port ->
+                withCoreEchoServer { server ->
+                    val port = server.port
                     val loops = LoopSet(2)
                     try {
                         val clients = withContext(Dispatchers.IO) { List(CONNECTIONS) { connect(port, loops) } }
