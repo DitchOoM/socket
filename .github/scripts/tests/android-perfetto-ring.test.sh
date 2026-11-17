@@ -55,6 +55,7 @@ grep -q 'sched/sched_switch' "$tmp/device/config" && grep -q 'sched/sched_wakeup
   && grep -q 'atrace_categories: "network"' "$tmp/device/config" && grep -q 'atrace_apps: "com.ditchoom.socket.quic.quiche.test"' "$tmp/device/config" \
   && grep -q RING_BUFFER "$tmp/device/config" && grep -q 'linux.process_stats' "$tmp/device/config"; check "the config is scheduling + process stats + ss/am/network atrace for the test APKs, as a ring" $?
 ! grep -q 'compact_sched\|COMPRESSION_TYPE_DEFLATE' "$tmp/device/config"; check "API 29 gets no field its perfetto would refuse" $?
+grep -q 'sched/sched_waking' "$tmp/device/config" && grep -q 'atrace_categories: "dalvik"' "$tmp/device/config"; check "the config names wakers and ART's lock-contention slices" $?
 
 # green: discard writes nothing
 perfetto_ring_discard 29 >"$tmp/log" 2>&1
