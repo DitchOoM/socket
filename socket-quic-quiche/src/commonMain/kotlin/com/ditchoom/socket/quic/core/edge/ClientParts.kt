@@ -72,7 +72,7 @@ internal class ClientParts(
     private val socket = SendPort(io, loop.port, CallerLanes.Of(lanes), SocketDiedNotice(), loop.counts, loop.callerCounts)
     private val alpn = w.memory.native(MAX_ALPN)
     val capture: TraceCapture = traceRecorderFor(w.options)
-    private val edge = EdgeState(alpn.owner, capture)
+    private val edge = EdgeState(alpn.owner, capture, w.tickets)
     val conn: Conn =
         buildConn(
             rules =

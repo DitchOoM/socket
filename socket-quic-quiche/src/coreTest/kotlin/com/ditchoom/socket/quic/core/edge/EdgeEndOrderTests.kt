@@ -25,7 +25,7 @@ class EdgeEndOrderTests {
     @Test
     fun aParkedAcceptWokenByTheEndSeesTheEndAlreadyPublished() =
         runBlocking {
-            val edge = EdgeState(BufferFactory.network().allocate(ALPN), TraceCapture.Off)
+            val edge = EdgeState(BufferFactory.network().allocate(ALPN), TraceCapture.Off, TicketHome.NotKept)
             val accept =
                 async(Dispatchers.Unconfined, CoroutineStart.UNDISPATCHED) {
                     try {

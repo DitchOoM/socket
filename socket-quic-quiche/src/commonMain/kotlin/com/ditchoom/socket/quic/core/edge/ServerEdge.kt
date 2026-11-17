@@ -56,7 +56,7 @@ internal class ServerEdge(
         build: ConnBuild,
     ): Opened {
         val capture = traceRecorderFor(options)
-        val edge = EdgeState(build.alpn, capture)
+        val edge = EdgeState(build.alpn, capture, TicketHome.NotKept)
         val conn = build.build(edge, capture)
         val scope = CoroutineScope(SupervisorJob())
         val id = hex(peer.scid0) + hex(peer.scid1)

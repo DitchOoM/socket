@@ -46,4 +46,6 @@ internal class ClientWiring(
     val ids: Random = connectionIdRandom,
     /** The session ticket offered before the first flight, and whether that flight waits for 0-RTT. */
     val offer: Offer = Offer.NoTicket,
+    /** Where the ticket the server issues is kept for the next connection to it. */
+    val tickets: TicketHome = TicketHome.NotKept,
 )

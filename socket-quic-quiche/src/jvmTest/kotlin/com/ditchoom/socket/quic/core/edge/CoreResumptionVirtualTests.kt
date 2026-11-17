@@ -13,6 +13,7 @@ import com.ditchoom.socket.quic.QuicFullHandshakeReason
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicResumption
 import com.ditchoom.socket.quic.QuicResumptionOutcome
+import com.ditchoom.socket.quic.QuicSessionStore
 import com.ditchoom.socket.quic.QuicSessionTicket
 import com.ditchoom.socket.quic.QuicSessionTicketKeys
 import com.ditchoom.socket.quic.QuicSessionTicketState
@@ -47,6 +48,8 @@ class CoreResumptionVirtualTests {
             idleTimeout = 30.seconds,
             enablePmtuDiscovery = false,
             enableEarlyData = true,
+            // Each test offers the tickets it means to: a fresh connection here is one that offers none.
+            sessionStore = QuicSessionStore.NotKept,
         )
 
     @Test
@@ -256,38 +259,6 @@ class CoreResumptionVirtualTests {
         return out
     }
 
-    /** Whether a datagram holds a QUIC v1 0-RTT packet: the first packet of a coalesced datagram is long-header. */
-    private fun carriesZeroRtt(bytes: ByteArray): Boolean {
-        var at = 0
-        while (at < bytes.size) {
-            val first = bytes[at].toInt() and 0xff
-            if (first and 0x80 == 0) return false
-            val type = (first shr 4) and 0x03
-            if (type == ZERO_RTT) return true
-            var cursor = at + 5
-            cursor += 1 + (bytes[cursor].toInt() and 0xff)
-            cursor += 1 + (bytes[cursor].toInt() and 0xff)
-            if (type == INITIAL) {
-                val (token, width) = varInt(bytes, cursor)
-                cursor += width + token.toInt()
-            }
-            val (length, width) = varInt(bytes, cursor)
-            at = cursor + width + length.toInt()
-        }
-        return false
-    }
-
-    private fun varInt(
-        bytes: ByteArray,
-        at: Int,
-    ): Pair<Long, Int> {
-        val first = bytes[at].toInt() and 0xff
-        val width = 1 shl (first shr 6)
-        var value = (first and 0x3f).toLong()
-        for (i in 1 until width) value = (value shl 8) or (bytes[at + i].toLong() and 0xff)
-        return value to width
-    }
-
     private fun keyMaterial(): ReadBuffer {
         val key = BufferFactory.managed().allocate(QuicSessionTicketKeys.Shared.KEY_BYTES)
         repeat(QuicSessionTicketKeys.Shared.KEY_BYTES) { key.writeByte((it * 7 + 3).toByte()) }
@@ -299,7 +270,5 @@ class CoreResumptionVirtualTests {
         const val REQUEST = "early-hello"
         const val RTT_NANOS = 60_000_000L
         const val SLACK_NANOS = 10_000_000L
-        const val INITIAL = 0
-        const val ZERO_RTT = 1
     }
 }

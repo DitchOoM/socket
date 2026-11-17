@@ -5,11 +5,17 @@ import com.ditchoom.buffer.flow.HalfCloseable
 import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicError
+import com.ditchoom.socket.quic.QuicFullHandshakeReason
+import com.ditchoom.socket.quic.QuicResumptionOutcome
+import com.ditchoom.socket.quic.QuicSessionMemory
+import com.ditchoom.socket.quic.QuicSessionStore
+import com.ditchoom.socket.quic.QuicSessionTicketState
 import com.ditchoom.socket.quic.ScopedRead
 import com.ditchoom.socket.quic.core.demux.withCoreEchoServer
 import com.ditchoom.socket.quic.core.edge.EdgeEnd
 import com.ditchoom.socket.quic.core.edge.ReceivedBytes
 import com.ditchoom.socket.quic.core.edge.connectCore
+import com.ditchoom.socket.quic.core.edge.coreTestOptions
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.testing.coreTest
@@ -17,11 +23,13 @@ import com.ditchoom.socket.quic.network
 import com.ditchoom.socket.quic.read
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeout
 import kotlin.random.Random
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
+import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.time.Duration.Companion.seconds
@@ -62,6 +70,21 @@ class CoreClientServerTests {
                 client.connection.close(QuicError.NoError)
                 assertIs<ConnEnd.ByLocal>((client.connection.end() as EdgeEnd.Ended).end, "the connection ended by our close")
                 assertFailsWith<QuicCloseException> { withTimeout(5.seconds) { client.connection.openStream() } }
+            }
+        }
+
+    @Test
+    fun aSecondConnectToTheSameServerResumesWithNoTicketFromTheCaller() =
+        coreTest("CoreClientServerTests.aSecondConnectToTheSameServerResumesWithNoTicketFromTheCaller") {
+            withCoreEchoServer { server ->
+                val options = coreTestOptions.copy(sessionStore = QuicSessionStore.InMemory(QuicSessionMemory()))
+                val first = connectCore(server.port, loops = loops, options = options)
+                assertEquals(QuicResumptionOutcome.FullHandshake(QuicFullHandshakeReason.NoTicketOffered), first.connection.resumption)
+                withTimeout(10.seconds) { first.connection.sessionTicket.first { it is QuicSessionTicketState.Issued } }
+                first.connection.close(QuicError.NoError)
+                val second = connectCore(server.port, loops = loops, options = options)
+                assertIs<QuicResumptionOutcome.Resumed>(second.connection.resumption, "the reconnect resumed the first session")
+                second.connection.close(QuicError.NoError)
             }
         }
 

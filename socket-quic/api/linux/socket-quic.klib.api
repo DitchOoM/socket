@@ -203,6 +203,11 @@ abstract interface com.ditchoom.socket.quic/QuicServer { // com.ditchoom.socket.
     abstract suspend fun connections(kotlin.coroutines/SuspendFunction1<com.ditchoom.socket.quic/QuicScope, kotlin/Unit>) // com.ditchoom.socket.quic/QuicServer.connections|connections(kotlin.coroutines.SuspendFunction1<com.ditchoom.socket.quic.QuicScope,kotlin.Unit>){}[0]
 }
 
+abstract interface com.ditchoom.socket.quic/QuicSessionCache { // com.ditchoom.socket.quic/QuicSessionCache|null[0]
+    abstract fun keep(com.ditchoom.socket.quic/QuicSessionKey, com.ditchoom.socket.quic/QuicSessionTicket) // com.ditchoom.socket.quic/QuicSessionCache.keep|keep(com.ditchoom.socket.quic.QuicSessionKey;com.ditchoom.socket.quic.QuicSessionTicket){}[0]
+    abstract fun take(com.ditchoom.socket.quic/QuicSessionKey): com.ditchoom.socket.quic/QuicSessionTicketState // com.ditchoom.socket.quic/QuicSessionCache.take|take(com.ditchoom.socket.quic.QuicSessionKey){}[0]
+}
+
 sealed interface <#A: out kotlin/Any?> com.ditchoom.socket.quic/ScopedRead { // com.ditchoom.socket.quic/ScopedRead|null[0]
     final class <#A1: out kotlin/Any?> Data : com.ditchoom.socket.quic/ScopedRead<#A1> { // com.ditchoom.socket.quic/ScopedRead.Data|null[0]
         constructor <init>(#A1) // com.ditchoom.socket.quic/ScopedRead.Data.<init>|<init>(1:0){}[0]
@@ -2067,6 +2072,33 @@ sealed interface com.ditchoom.socket.quic/QuicResumptionOutcome { // com.ditchoo
     }
 }
 
+sealed interface com.ditchoom.socket.quic/QuicSessionStore { // com.ditchoom.socket.quic/QuicSessionStore|null[0]
+    final class InMemory : com.ditchoom.socket.quic/QuicSessionStore { // com.ditchoom.socket.quic/QuicSessionStore.InMemory|null[0]
+        constructor <init>(com.ditchoom.socket.quic/QuicSessionMemory) // com.ditchoom.socket.quic/QuicSessionStore.InMemory.<init>|<init>(com.ditchoom.socket.quic.QuicSessionMemory){}[0]
+
+        final val memory // com.ditchoom.socket.quic/QuicSessionStore.InMemory.memory|{}memory[0]
+            final fun <get-memory>(): com.ditchoom.socket.quic/QuicSessionMemory // com.ditchoom.socket.quic/QuicSessionStore.InMemory.memory.<get-memory>|<get-memory>(){}[0]
+    }
+
+    final class Supplied : com.ditchoom.socket.quic/QuicSessionStore { // com.ditchoom.socket.quic/QuicSessionStore.Supplied|null[0]
+        constructor <init>(com.ditchoom.socket.quic/QuicSessionCache) // com.ditchoom.socket.quic/QuicSessionStore.Supplied.<init>|<init>(com.ditchoom.socket.quic.QuicSessionCache){}[0]
+
+        final val cache // com.ditchoom.socket.quic/QuicSessionStore.Supplied.cache|{}cache[0]
+            final fun <get-cache>(): com.ditchoom.socket.quic/QuicSessionCache // com.ditchoom.socket.quic/QuicSessionStore.Supplied.cache.<get-cache>|<get-cache>(){}[0]
+    }
+
+    final object Companion { // com.ditchoom.socket.quic/QuicSessionStore.Companion|null[0]
+        final val Default // com.ditchoom.socket.quic/QuicSessionStore.Companion.Default|{}Default[0]
+            final fun <get-Default>(): com.ditchoom.socket.quic/QuicSessionStore // com.ditchoom.socket.quic/QuicSessionStore.Companion.Default.<get-Default>|<get-Default>(){}[0]
+    }
+
+    final object NotKept : com.ditchoom.socket.quic/QuicSessionStore { // com.ditchoom.socket.quic/QuicSessionStore.NotKept|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicSessionStore.NotKept.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicSessionStore.NotKept.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicSessionStore.NotKept.toString|toString(){}[0]
+    }
+}
+
 sealed interface com.ditchoom.socket.quic/QuicSessionTicketKeys { // com.ditchoom.socket.quic/QuicSessionTicketKeys|null[0]
     final class Shared : com.ditchoom.socket.quic/QuicSessionTicketKeys { // com.ditchoom.socket.quic/QuicSessionTicketKeys.Shared|null[0]
         constructor <init>(com.ditchoom.buffer/ReadBuffer) // com.ditchoom.socket.quic/QuicSessionTicketKeys.Shared.<init>|<init>(com.ditchoom.buffer.ReadBuffer){}[0]
@@ -2907,7 +2939,7 @@ final class com.ditchoom.socket.quic/QuicNativeMemoryRequiredException : kotlin/
 }
 
 final class com.ditchoom.socket.quic/QuicOptions { // com.ditchoom.socket.quic/QuicOptions|null[0]
-    constructor <init>(kotlin.collections/List<kotlin/String>, com.ditchoom.socket.quic/FlowControl = ..., com.ditchoom.socket.quic/CongestionControl = ..., com.ditchoom.socket.quic/Pacing = ..., kotlin.time/Duration = ..., kotlin.time/Duration? = ..., kotlin/Boolean = ..., com.ditchoom.socket.quic/StreamOpenPolicy = ..., com.ditchoom.socket.quic/QuicCloseLinger = ..., kotlin/Int = ..., kotlin/Long? = ..., com.ditchoom.socket.quic/MigrationPolicy = ..., com.ditchoom.socket.quic/NetworkMonitorSource = ..., kotlin/Long = ..., kotlin/Boolean = ..., kotlin.collections/List<kotlin/String> = ..., kotlin.collections/List<com.ditchoom.socket.quic/CertificateHash> = ..., com.ditchoom.socket.quic/CertificateHashVerification = ..., kotlin/Boolean = ..., kotlin/Boolean = ..., kotlin/Boolean = ..., com.ditchoom.socket.quic/DatagramOptions? = ..., com.ditchoom.socket.quic/DatagramStreamConflictPolicy = ..., kotlin/Boolean = ..., com.ditchoom.socket.quic.trace/QuicTraceCapture? = ..., com.ditchoom.socket.quic/QuicResumption = ..., com.ditchoom.socket.quic/StandbyLink = ..., kotlin.collections/List<com.ditchoom.socket.quic/ServerCertVerifier> = ..., com.ditchoom.socket.quic/AppleTrustSource = ..., com.ditchoom.socket.quic/HandshakePacing = ..., com.ditchoom.socket.quic/HandshakePolicy = ..., com.ditchoom.socket.quic/UdpBatching = ...) // com.ditchoom.socket.quic/QuicOptions.<init>|<init>(kotlin.collections.List<kotlin.String>;com.ditchoom.socket.quic.FlowControl;com.ditchoom.socket.quic.CongestionControl;com.ditchoom.socket.quic.Pacing;kotlin.time.Duration;kotlin.time.Duration?;kotlin.Boolean;com.ditchoom.socket.quic.StreamOpenPolicy;com.ditchoom.socket.quic.QuicCloseLinger;kotlin.Int;kotlin.Long?;com.ditchoom.socket.quic.MigrationPolicy;com.ditchoom.socket.quic.NetworkMonitorSource;kotlin.Long;kotlin.Boolean;kotlin.collections.List<kotlin.String>;kotlin.collections.List<com.ditchoom.socket.quic.CertificateHash>;com.ditchoom.socket.quic.CertificateHashVerification;kotlin.Boolean;kotlin.Boolean;kotlin.Boolean;com.ditchoom.socket.quic.DatagramOptions?;com.ditchoom.socket.quic.DatagramStreamConflictPolicy;kotlin.Boolean;com.ditchoom.socket.quic.trace.QuicTraceCapture?;com.ditchoom.socket.quic.QuicResumption;com.ditchoom.socket.quic.StandbyLink;kotlin.collections.List<com.ditchoom.socket.quic.ServerCertVerifier>;com.ditchoom.socket.quic.AppleTrustSource;com.ditchoom.socket.quic.HandshakePacing;com.ditchoom.socket.quic.HandshakePolicy;com.ditchoom.socket.quic.UdpBatching){}[0]
+    constructor <init>(kotlin.collections/List<kotlin/String>, com.ditchoom.socket.quic/FlowControl = ..., com.ditchoom.socket.quic/CongestionControl = ..., com.ditchoom.socket.quic/Pacing = ..., kotlin.time/Duration = ..., kotlin.time/Duration? = ..., kotlin/Boolean = ..., com.ditchoom.socket.quic/StreamOpenPolicy = ..., com.ditchoom.socket.quic/QuicCloseLinger = ..., kotlin/Int = ..., kotlin/Long? = ..., com.ditchoom.socket.quic/MigrationPolicy = ..., com.ditchoom.socket.quic/NetworkMonitorSource = ..., kotlin/Long = ..., kotlin/Boolean = ..., kotlin.collections/List<kotlin/String> = ..., kotlin.collections/List<com.ditchoom.socket.quic/CertificateHash> = ..., com.ditchoom.socket.quic/CertificateHashVerification = ..., kotlin/Boolean = ..., kotlin/Boolean = ..., kotlin/Boolean = ..., com.ditchoom.socket.quic/DatagramOptions? = ..., com.ditchoom.socket.quic/DatagramStreamConflictPolicy = ..., kotlin/Boolean = ..., com.ditchoom.socket.quic.trace/QuicTraceCapture? = ..., com.ditchoom.socket.quic/QuicResumption = ..., com.ditchoom.socket.quic/StandbyLink = ..., kotlin.collections/List<com.ditchoom.socket.quic/ServerCertVerifier> = ..., com.ditchoom.socket.quic/AppleTrustSource = ..., com.ditchoom.socket.quic/HandshakePacing = ..., com.ditchoom.socket.quic/HandshakePolicy = ..., com.ditchoom.socket.quic/UdpBatching = ..., com.ditchoom.socket.quic/QuicSessionStore = ...) // com.ditchoom.socket.quic/QuicOptions.<init>|<init>(kotlin.collections.List<kotlin.String>;com.ditchoom.socket.quic.FlowControl;com.ditchoom.socket.quic.CongestionControl;com.ditchoom.socket.quic.Pacing;kotlin.time.Duration;kotlin.time.Duration?;kotlin.Boolean;com.ditchoom.socket.quic.StreamOpenPolicy;com.ditchoom.socket.quic.QuicCloseLinger;kotlin.Int;kotlin.Long?;com.ditchoom.socket.quic.MigrationPolicy;com.ditchoom.socket.quic.NetworkMonitorSource;kotlin.Long;kotlin.Boolean;kotlin.collections.List<kotlin.String>;kotlin.collections.List<com.ditchoom.socket.quic.CertificateHash>;com.ditchoom.socket.quic.CertificateHashVerification;kotlin.Boolean;kotlin.Boolean;kotlin.Boolean;com.ditchoom.socket.quic.DatagramOptions?;com.ditchoom.socket.quic.DatagramStreamConflictPolicy;kotlin.Boolean;com.ditchoom.socket.quic.trace.QuicTraceCapture?;com.ditchoom.socket.quic.QuicResumption;com.ditchoom.socket.quic.StandbyLink;kotlin.collections.List<com.ditchoom.socket.quic.ServerCertVerifier>;com.ditchoom.socket.quic.AppleTrustSource;com.ditchoom.socket.quic.HandshakePacing;com.ditchoom.socket.quic.HandshakePolicy;com.ditchoom.socket.quic.UdpBatching;com.ditchoom.socket.quic.QuicSessionStore){}[0]
 
     final val activeConnectionIdLimit // com.ditchoom.socket.quic/QuicOptions.activeConnectionIdLimit|{}activeConnectionIdLimit[0]
         final fun <get-activeConnectionIdLimit>(): kotlin/Long // com.ditchoom.socket.quic/QuicOptions.activeConnectionIdLimit.<get-activeConnectionIdLimit>|<get-activeConnectionIdLimit>(){}[0]
@@ -2961,6 +2993,8 @@ final class com.ditchoom.socket.quic/QuicOptions { // com.ditchoom.socket.quic/Q
         final fun <get-serverCertVerifiers>(): kotlin.collections/List<com.ditchoom.socket.quic/ServerCertVerifier> // com.ditchoom.socket.quic/QuicOptions.serverCertVerifiers.<get-serverCertVerifiers>|<get-serverCertVerifiers>(){}[0]
     final val serverCertificateHashes // com.ditchoom.socket.quic/QuicOptions.serverCertificateHashes|{}serverCertificateHashes[0]
         final fun <get-serverCertificateHashes>(): kotlin.collections/List<com.ditchoom.socket.quic/CertificateHash> // com.ditchoom.socket.quic/QuicOptions.serverCertificateHashes.<get-serverCertificateHashes>|<get-serverCertificateHashes>(){}[0]
+    final val sessionStore // com.ditchoom.socket.quic/QuicOptions.sessionStore|{}sessionStore[0]
+        final fun <get-sessionStore>(): com.ditchoom.socket.quic/QuicSessionStore // com.ditchoom.socket.quic/QuicOptions.sessionStore.<get-sessionStore>|<get-sessionStore>(){}[0]
     final val standbyLink // com.ditchoom.socket.quic/QuicOptions.standbyLink|{}standbyLink[0]
         final fun <get-standbyLink>(): com.ditchoom.socket.quic/StandbyLink // com.ditchoom.socket.quic/QuicOptions.standbyLink.<get-standbyLink>|<get-standbyLink>(){}[0]
     final val streamOpenPolicy // com.ditchoom.socket.quic/QuicOptions.streamOpenPolicy|{}streamOpenPolicy[0]
@@ -3000,13 +3034,14 @@ final class com.ditchoom.socket.quic/QuicOptions { // com.ditchoom.socket.quic/Q
     final fun component30(): com.ditchoom.socket.quic/HandshakePacing // com.ditchoom.socket.quic/QuicOptions.component30|component30(){}[0]
     final fun component31(): com.ditchoom.socket.quic/HandshakePolicy // com.ditchoom.socket.quic/QuicOptions.component31|component31(){}[0]
     final fun component32(): com.ditchoom.socket.quic/UdpBatching // com.ditchoom.socket.quic/QuicOptions.component32|component32(){}[0]
+    final fun component33(): com.ditchoom.socket.quic/QuicSessionStore // com.ditchoom.socket.quic/QuicOptions.component33|component33(){}[0]
     final fun component4(): com.ditchoom.socket.quic/Pacing // com.ditchoom.socket.quic/QuicOptions.component4|component4(){}[0]
     final fun component5(): kotlin.time/Duration // com.ditchoom.socket.quic/QuicOptions.component5|component5(){}[0]
     final fun component6(): kotlin.time/Duration? // com.ditchoom.socket.quic/QuicOptions.component6|component6(){}[0]
     final fun component7(): kotlin/Boolean // com.ditchoom.socket.quic/QuicOptions.component7|component7(){}[0]
     final fun component8(): com.ditchoom.socket.quic/StreamOpenPolicy // com.ditchoom.socket.quic/QuicOptions.component8|component8(){}[0]
     final fun component9(): com.ditchoom.socket.quic/QuicCloseLinger // com.ditchoom.socket.quic/QuicOptions.component9|component9(){}[0]
-    final fun copy(kotlin.collections/List<kotlin/String> = ..., com.ditchoom.socket.quic/FlowControl = ..., com.ditchoom.socket.quic/CongestionControl = ..., com.ditchoom.socket.quic/Pacing = ..., kotlin.time/Duration = ..., kotlin.time/Duration? = ..., kotlin/Boolean = ..., com.ditchoom.socket.quic/StreamOpenPolicy = ..., com.ditchoom.socket.quic/QuicCloseLinger = ..., kotlin/Int = ..., kotlin/Long? = ..., com.ditchoom.socket.quic/MigrationPolicy = ..., com.ditchoom.socket.quic/NetworkMonitorSource = ..., kotlin/Long = ..., kotlin/Boolean = ..., kotlin.collections/List<kotlin/String> = ..., kotlin.collections/List<com.ditchoom.socket.quic/CertificateHash> = ..., com.ditchoom.socket.quic/CertificateHashVerification = ..., kotlin/Boolean = ..., kotlin/Boolean = ..., kotlin/Boolean = ..., com.ditchoom.socket.quic/DatagramOptions? = ..., com.ditchoom.socket.quic/DatagramStreamConflictPolicy = ..., kotlin/Boolean = ..., com.ditchoom.socket.quic.trace/QuicTraceCapture? = ..., com.ditchoom.socket.quic/QuicResumption = ..., com.ditchoom.socket.quic/StandbyLink = ..., kotlin.collections/List<com.ditchoom.socket.quic/ServerCertVerifier> = ..., com.ditchoom.socket.quic/AppleTrustSource = ..., com.ditchoom.socket.quic/HandshakePacing = ..., com.ditchoom.socket.quic/HandshakePolicy = ..., com.ditchoom.socket.quic/UdpBatching = ...): com.ditchoom.socket.quic/QuicOptions // com.ditchoom.socket.quic/QuicOptions.copy|copy(kotlin.collections.List<kotlin.String>;com.ditchoom.socket.quic.FlowControl;com.ditchoom.socket.quic.CongestionControl;com.ditchoom.socket.quic.Pacing;kotlin.time.Duration;kotlin.time.Duration?;kotlin.Boolean;com.ditchoom.socket.quic.StreamOpenPolicy;com.ditchoom.socket.quic.QuicCloseLinger;kotlin.Int;kotlin.Long?;com.ditchoom.socket.quic.MigrationPolicy;com.ditchoom.socket.quic.NetworkMonitorSource;kotlin.Long;kotlin.Boolean;kotlin.collections.List<kotlin.String>;kotlin.collections.List<com.ditchoom.socket.quic.CertificateHash>;com.ditchoom.socket.quic.CertificateHashVerification;kotlin.Boolean;kotlin.Boolean;kotlin.Boolean;com.ditchoom.socket.quic.DatagramOptions?;com.ditchoom.socket.quic.DatagramStreamConflictPolicy;kotlin.Boolean;com.ditchoom.socket.quic.trace.QuicTraceCapture?;com.ditchoom.socket.quic.QuicResumption;com.ditchoom.socket.quic.StandbyLink;kotlin.collections.List<com.ditchoom.socket.quic.ServerCertVerifier>;com.ditchoom.socket.quic.AppleTrustSource;com.ditchoom.socket.quic.HandshakePacing;com.ditchoom.socket.quic.HandshakePolicy;com.ditchoom.socket.quic.UdpBatching){}[0]
+    final fun copy(kotlin.collections/List<kotlin/String> = ..., com.ditchoom.socket.quic/FlowControl = ..., com.ditchoom.socket.quic/CongestionControl = ..., com.ditchoom.socket.quic/Pacing = ..., kotlin.time/Duration = ..., kotlin.time/Duration? = ..., kotlin/Boolean = ..., com.ditchoom.socket.quic/StreamOpenPolicy = ..., com.ditchoom.socket.quic/QuicCloseLinger = ..., kotlin/Int = ..., kotlin/Long? = ..., com.ditchoom.socket.quic/MigrationPolicy = ..., com.ditchoom.socket.quic/NetworkMonitorSource = ..., kotlin/Long = ..., kotlin/Boolean = ..., kotlin.collections/List<kotlin/String> = ..., kotlin.collections/List<com.ditchoom.socket.quic/CertificateHash> = ..., com.ditchoom.socket.quic/CertificateHashVerification = ..., kotlin/Boolean = ..., kotlin/Boolean = ..., kotlin/Boolean = ..., com.ditchoom.socket.quic/DatagramOptions? = ..., com.ditchoom.socket.quic/DatagramStreamConflictPolicy = ..., kotlin/Boolean = ..., com.ditchoom.socket.quic.trace/QuicTraceCapture? = ..., com.ditchoom.socket.quic/QuicResumption = ..., com.ditchoom.socket.quic/StandbyLink = ..., kotlin.collections/List<com.ditchoom.socket.quic/ServerCertVerifier> = ..., com.ditchoom.socket.quic/AppleTrustSource = ..., com.ditchoom.socket.quic/HandshakePacing = ..., com.ditchoom.socket.quic/HandshakePolicy = ..., com.ditchoom.socket.quic/UdpBatching = ..., com.ditchoom.socket.quic/QuicSessionStore = ...): com.ditchoom.socket.quic/QuicOptions // com.ditchoom.socket.quic/QuicOptions.copy|copy(kotlin.collections.List<kotlin.String>;com.ditchoom.socket.quic.FlowControl;com.ditchoom.socket.quic.CongestionControl;com.ditchoom.socket.quic.Pacing;kotlin.time.Duration;kotlin.time.Duration?;kotlin.Boolean;com.ditchoom.socket.quic.StreamOpenPolicy;com.ditchoom.socket.quic.QuicCloseLinger;kotlin.Int;kotlin.Long?;com.ditchoom.socket.quic.MigrationPolicy;com.ditchoom.socket.quic.NetworkMonitorSource;kotlin.Long;kotlin.Boolean;kotlin.collections.List<kotlin.String>;kotlin.collections.List<com.ditchoom.socket.quic.CertificateHash>;com.ditchoom.socket.quic.CertificateHashVerification;kotlin.Boolean;kotlin.Boolean;kotlin.Boolean;com.ditchoom.socket.quic.DatagramOptions?;com.ditchoom.socket.quic.DatagramStreamConflictPolicy;kotlin.Boolean;com.ditchoom.socket.quic.trace.QuicTraceCapture?;com.ditchoom.socket.quic.QuicResumption;com.ditchoom.socket.quic.StandbyLink;kotlin.collections.List<com.ditchoom.socket.quic.ServerCertVerifier>;com.ditchoom.socket.quic.AppleTrustSource;com.ditchoom.socket.quic.HandshakePacing;com.ditchoom.socket.quic.HandshakePolicy;com.ditchoom.socket.quic.UdpBatching;com.ditchoom.socket.quic.QuicSessionStore){}[0]
     final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicOptions.equals|equals(kotlin.Any?){}[0]
     final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicOptions.hashCode|hashCode(){}[0]
     final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicOptions.toString|toString(){}[0]
@@ -3032,6 +3067,40 @@ final class com.ditchoom.socket.quic/QuicSessionId { // com.ditchoom.socket.quic
     final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicSessionId.equals|equals(kotlin.Any?){}[0]
     final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicSessionId.hashCode|hashCode(){}[0]
     final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicSessionId.toString|toString(){}[0]
+}
+
+final class com.ditchoom.socket.quic/QuicSessionKey { // com.ditchoom.socket.quic/QuicSessionKey|null[0]
+    final val alpnProtocols // com.ditchoom.socket.quic/QuicSessionKey.alpnProtocols|{}alpnProtocols[0]
+        final fun <get-alpnProtocols>(): kotlin.collections/List<kotlin/String> // com.ditchoom.socket.quic/QuicSessionKey.alpnProtocols.<get-alpnProtocols>|<get-alpnProtocols>(){}[0]
+    final val port // com.ditchoom.socket.quic/QuicSessionKey.port|{}port[0]
+        final fun <get-port>(): kotlin/Int // com.ditchoom.socket.quic/QuicSessionKey.port.<get-port>|<get-port>(){}[0]
+    final val serverName // com.ditchoom.socket.quic/QuicSessionKey.serverName|{}serverName[0]
+        final fun <get-serverName>(): kotlin/String // com.ditchoom.socket.quic/QuicSessionKey.serverName.<get-serverName>|<get-serverName>(){}[0]
+
+    final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicSessionKey.equals|equals(kotlin.Any?){}[0]
+    final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicSessionKey.hashCode|hashCode(){}[0]
+    final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicSessionKey.toString|toString(){}[0]
+
+    final object Companion { // com.ditchoom.socket.quic/QuicSessionKey.Companion|null[0]
+        final fun of(kotlin/String, kotlin/Int, com.ditchoom.socket.quic/QuicOptions): com.ditchoom.socket.quic/QuicSessionKey // com.ditchoom.socket.quic/QuicSessionKey.Companion.of|of(kotlin.String;kotlin.Int;com.ditchoom.socket.quic.QuicOptions){}[0]
+    }
+}
+
+final class com.ditchoom.socket.quic/QuicSessionMemory : com.ditchoom.socket.quic/QuicSessionCache { // com.ditchoom.socket.quic/QuicSessionMemory|null[0]
+    constructor <init>(kotlin.time/TimeSource = ...) // com.ditchoom.socket.quic/QuicSessionMemory.<init>|<init>(kotlin.time.TimeSource){}[0]
+
+    final fun keep(com.ditchoom.socket.quic/QuicSessionKey, com.ditchoom.socket.quic/QuicSessionTicket) // com.ditchoom.socket.quic/QuicSessionMemory.keep|keep(com.ditchoom.socket.quic.QuicSessionKey;com.ditchoom.socket.quic.QuicSessionTicket){}[0]
+    final fun take(com.ditchoom.socket.quic/QuicSessionKey): com.ditchoom.socket.quic/QuicSessionTicketState // com.ditchoom.socket.quic/QuicSessionMemory.take|take(com.ditchoom.socket.quic.QuicSessionKey){}[0]
+
+    final object Companion { // com.ditchoom.socket.quic/QuicSessionMemory.Companion|null[0]
+        final const val SERVERS // com.ditchoom.socket.quic/QuicSessionMemory.Companion.SERVERS|{}SERVERS[0]
+            final fun <get-SERVERS>(): kotlin/Int // com.ditchoom.socket.quic/QuicSessionMemory.Companion.SERVERS.<get-SERVERS>|<get-SERVERS>(){}[0]
+
+        final val MAX_AGE // com.ditchoom.socket.quic/QuicSessionMemory.Companion.MAX_AGE|{}MAX_AGE[0]
+            final fun <get-MAX_AGE>(): kotlin.time/Duration // com.ditchoom.socket.quic/QuicSessionMemory.Companion.MAX_AGE.<get-MAX_AGE>|<get-MAX_AGE>(){}[0]
+        final val Process // com.ditchoom.socket.quic/QuicSessionMemory.Companion.Process|{}Process[0]
+            final fun <get-Process>(): com.ditchoom.socket.quic/QuicSessionMemory // com.ditchoom.socket.quic/QuicSessionMemory.Companion.Process.<get-Process>|<get-Process>(){}[0]
+    }
 }
 
 final class com.ditchoom.socket.quic/QuicSessionTicket { // com.ditchoom.socket.quic/QuicSessionTicket|null[0]

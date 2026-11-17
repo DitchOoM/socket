@@ -439,8 +439,8 @@ data class QuicOptions(
      */
     val trace: QuicTraceCapture? = null,
     /**
-     * **Client-side**: the session this connection offers — [QuicResumption.None] for a full
-     * handshake, or a ticket an earlier connection received ([QuicScope.sessionTicket]), resumed with
+     * **Client-side**: the session this connection offers — [QuicResumption.None] for none of the
+     * app's own (the run-to-completion core then offers one [sessionStore] kept), or a ticket an earlier connection received ([QuicScope.sessionTicket]), resumed with
      * ([QuicResumption.ResumeWithEarlyData]) or without ([QuicResumption.Resume]) 0-RTT data. The
      * handshake's answer is [QuicScope.resumption].
      *
@@ -474,6 +474,12 @@ data class QuicOptions(
     val handshakePolicy: HandshakePolicy = HandshakePolicy.Bounded(10.seconds),
     /** How many datagrams one system call of the run-to-completion core's sockets may carry. */
     val udpBatching: UdpBatching = UdpBatching.Newest,
+    /**
+     * **Client-side, run-to-completion core**: where the tickets servers issue are kept, so a reconnect to a server
+     * this process has talked to before resumes on its own while [resumption] is [QuicResumption.None]. This
+     * process's memory by default; [QuicSessionStore.NotKept] opts out. Ignored for the server role.
+     */
+    val sessionStore: QuicSessionStore = QuicSessionStore.Default,
 ) {
     init {
         require(alpnProtocols.isNotEmpty()) { "QUIC requires at least one ALPN protocol" }
