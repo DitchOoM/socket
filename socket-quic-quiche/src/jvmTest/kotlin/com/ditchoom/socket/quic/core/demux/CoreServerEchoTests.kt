@@ -1,5 +1,6 @@
 package com.ditchoom.socket.quic.core.demux
 
+import com.ditchoom.socket.quic.HandshakePolicy
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.core.edge.connectCore
 import com.ditchoom.socket.quic.core.edge.coreTestOptions
@@ -22,6 +23,8 @@ import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.nanoseconds
 import kotlin.time.Duration.Companion.seconds
 
 /** The JVM-only rows of the core client against the core server: 1,024 connections, a wildcard server, the 4.x client. */
@@ -56,7 +59,10 @@ class CoreServerEchoTests {
 
     private fun concurrentEchoes(connections: Int) =
         runBlocking {
-            withCoreEchoServer(ServerConfig(admission = AdmissionBounds(perPass = 256, inProgress = 2_048))) { server ->
+            val bound = handshakeBound(connections)
+            val options = coreTestOptions.copy(handshakePolicy = HandshakePolicy.Bounded(bound))
+            val config = ServerConfig(admission = AdmissionBounds(perPass = 256, inProgress = 2_048))
+            withCoreEchoServer(config, options = options) { server ->
                 val connectedAfter = ConcurrentLinkedQueue<Long>()
                 val started = System.nanoTime()
                 try {
@@ -64,7 +70,7 @@ class CoreServerEchoTests {
                         (0 until connections)
                             .map { n ->
                                 async(Dispatchers.IO) {
-                                    val client = connectCore(server.port, loops = loops)
+                                    val client = connectCore(server.port, loops = loops, bound = bound)
                                     connectedAfter.add((System.nanoTime() - started) / NANOS_PER_MILLI)
                                     try {
                                         val payload = Random(n).nextBytes(1_024)
@@ -79,12 +85,12 @@ class CoreServerEchoTests {
                 } catch (failed: Throwable) {
                     // What the server and its socket saw, so the next occurrence names where the handshakes went.
                     val times = connectedAfter.sorted()
+                    val median = times.getOrNull(times.size / 2)
                     val counts = server.counts
                     val clientLoops = loops.countsOfStarted().joinToString { timing(it) }
                     throw AssertionError(
-                        "$connections connections, ${times.size} connected after ${times.lastOrNull()} ms (median ${times.getOrNull(
-                            times.size / 2,
-                        )}): " +
+                        "$connections connections (handshake bound $bound), " +
+                            "${times.size} connected after ${times.lastOrNull()} ms (median $median): " +
                             "accepted=${counts.accepted} routed=${counts.routed} droppedAdmission=${counts.droppedAdmission} " +
                             "droppedUnknown=${counts.droppedUnknown} loopPasses=${server.loop.counts.passes} " +
                             "datagramsIn=${server.loop.counts.datagramsIn} datagramsOut=${server.loop.counts.datagramsOut} " +
@@ -97,6 +103,22 @@ class CoreServerEchoTests {
                 }
             }
         }
+
+    /**
+     * How long [connections] handshakes may take together on this host. One server loop serves every handshake in turn,
+     * so the last of a herd waits for the rest: the bound is [HERD_MARGIN] times what [CALIBRATION] concurrent
+     * handshakes measured here, per handshake, times [connections], and never under the default.
+     */
+    private suspend fun handshakeBound(connections: Int): Duration {
+        var took = Duration.ZERO
+        withCoreEchoServer { server ->
+            val began = System.nanoTime()
+            val clients = (0 until CALIBRATION).map { async(Dispatchers.IO) { connectCore(server.port, loops = loops) } }.awaitAll()
+            took = (System.nanoTime() - began).nanoseconds
+            clients.forEach { it.connection.close(QuicError.NoError) }
+        }
+        return maxOf(DEFAULT_BOUND, took / CALIBRATION * connections * HERD_MARGIN)
+    }
 
     @Test
     fun aWildcardServerAnswersIPv4AndIPv6Clients() =
@@ -146,6 +168,9 @@ class CoreServerEchoTests {
 
     private companion object {
         const val NANOS_PER_MILLI = 1_000_000L
+        const val CALIBRATION = 32
+        const val HERD_MARGIN = 3
+        val DEFAULT_BOUND = 10.seconds
     }
 
     private fun hasIPv6Loopback(): Boolean =

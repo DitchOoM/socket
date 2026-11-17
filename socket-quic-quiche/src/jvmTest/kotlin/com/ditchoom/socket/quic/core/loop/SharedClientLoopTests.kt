@@ -19,11 +19,13 @@ import com.ditchoom.socket.quic.core.udp.ReceiveBatchResult
 import com.ditchoom.socket.quic.loadQuicheApi
 import com.ditchoom.socket.quic.skipOnMissingNativeLib
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import java.util.concurrent.atomic.AtomicIntegerArray
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.random.Random
 import kotlin.test.Test
@@ -48,19 +50,37 @@ class SharedClientLoopTests {
                         val perLoop = clients.groupingBy { it.loop.name }.eachCount()
                         assertEquals(2, perLoop.size, "the connections spread over both loops: $perLoop")
                         assertTrue(perLoop.values.all { it == CONNECTIONS / 2 }, "an even spread: $perLoop")
-                        withTimeout(120.seconds) {
-                            withContext(Dispatchers.Default) {
-                                clients
-                                    .mapIndexed { index, client ->
-                                        async {
-                                            val stream = client.connection.openStream()
-                                            val payload = Random(index).nextBytes(PAYLOAD)
-                                            repeat(
-                                                ECHOES,
-                                            ) { assertContentEquals(payload, echoOver(stream, payload), "connection $index echo $it") }
-                                        }
-                                    }.awaitAll()
+                        val echoed = AtomicIntegerArray(CONNECTIONS)
+                        val began = System.nanoTime()
+                        try {
+                            withTimeout(120.seconds) {
+                                withContext(Dispatchers.Default) {
+                                    clients
+                                        .mapIndexed { index, client ->
+                                            async {
+                                                val stream = client.connection.openStream()
+                                                val payload = Random(index).nextBytes(PAYLOAD)
+                                                while (echoed.get(index) < ECHOES && !overBudget(began, echoed.get(index))) {
+                                                    val round = echoed.get(index)
+                                                    assertContentEquals(payload, echoOver(stream, payload), "connection $index echo $round")
+                                                    echoed.incrementAndGet(index)
+                                                }
+                                            }
+                                        }.awaitAll()
+                                }
                             }
+                        } catch (timedOut: TimeoutCancellationException) {
+                            // Whether the echoes were still advancing, and what the loops did, when the bound ran out.
+                            val counts = (0 until CONNECTIONS).map { echoed.get(it) }
+                            throw AssertionError(
+                                "echoes done per connection: min ${counts.min()}, max ${counts.max()}, total ${counts.sum()} of " +
+                                    "${CONNECTIONS * ECHOES} after ${(System.nanoTime() - began) / NANOS_PER_SECOND} s; " +
+                                    "loops ${loops.countsOfStarted().joinToString {
+                                        "[${it.passes} passes took ${it.passNanos / NANOS_PER_MILLI} ms, " +
+                                            "${it.waits} waits took ${it.waitNanos / NANOS_PER_MILLI} ms, ${it.datagramsIn} in, ${it.datagramsOut} out]"
+                                    }}",
+                                timedOut,
+                            )
                         }
                         // Together: each close waits out its closing period (three PTOs), which one after another
                         // took 4 s of the test on an API 29 emulator.
@@ -266,9 +286,23 @@ class SharedClientLoopTests {
         }
     }
 
+    /**
+     * Whether a connection with [done] echoes may stop: it did [MIN_ECHOES] and the run used its [VOLUME_BUDGET]. A slow
+     * host (an older Android emulator echoes a third as fast as a newer one) then checks fewer echoes byte for byte
+     * instead of running into the bound that only a hang should reach.
+     */
+    private fun overBudget(
+        began: Long,
+        done: Int,
+    ): Boolean = done >= MIN_ECHOES && System.nanoTime() - began > VOLUME_BUDGET.inWholeNanoseconds
+
     private companion object {
         const val CONNECTIONS = 64
         const val ECHOES = 1_000
+        const val MIN_ECHOES = 200
+        val VOLUME_BUDGET = 60.seconds
+        const val NANOS_PER_MILLI = 1_000_000L
+        const val NANOS_PER_SECOND = 1_000_000_000L
         const val PAYLOAD = 100
         val NOT_PLANTED = IllegalStateException()
     }
