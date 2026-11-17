@@ -9,15 +9,19 @@ import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.QuicheConn
 import com.ditchoom.socket.quic.SendTarget
 import com.ditchoom.socket.quic.StubQuicheApi
+import com.ditchoom.socket.quic.core.conn.Arrival
+import com.ditchoom.socket.quic.core.conn.ClientSession
 import com.ditchoom.socket.quic.core.conn.Conn
 import com.ditchoom.socket.quic.core.conn.ConnAddress
 import com.ditchoom.socket.quic.core.conn.ConnMemory
 import com.ditchoom.socket.quic.core.conn.ConnSide
 import com.ditchoom.socket.quic.core.conn.ConnSink
 import com.ditchoom.socket.quic.core.conn.ConnectReport
+import com.ditchoom.socket.quic.core.conn.EarlyReport
 import com.ditchoom.socket.quic.core.conn.FlightArena
 import com.ditchoom.socket.quic.core.conn.FlightSize
 import com.ditchoom.socket.quic.core.conn.LoopMemory
+import com.ditchoom.socket.quic.core.conn.Offer
 import com.ditchoom.socket.quic.core.conn.Paths
 import com.ditchoom.socket.quic.core.conn.SlotRules
 import com.ditchoom.socket.quic.core.conn.buildConn
@@ -41,6 +45,7 @@ import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.udp.BatchLimits
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
+import com.ditchoom.socket.quic.core.udp.NativeBytes
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.ReceiveBuffer
 import com.ditchoom.socket.quic.core.udp.SendBatch
@@ -60,9 +65,19 @@ internal class RecordingSink : ConnSink {
         established += report
     }
 
-    override fun incoming(stream: QuicStreamId) {
+    override fun earlyData(report: EarlyReport) = Unit
+
+    override fun incoming(
+        stream: QuicStreamId,
+        arrival: Arrival,
+    ) {
         incoming += stream.id
     }
+
+    override fun ticket(
+        bytes: NativeBytes,
+        length: Int,
+    ) = Unit
 
     override fun ended(end: ConnEnd) {
         ended += end
@@ -109,7 +124,7 @@ internal fun testConn(
     buildConn(
         rules = rules,
         q = QuicheConnRef(api, QuicheConn(1L)),
-        side = ConnSide.Client(Random(1)),
+        side = ConnSide.Client(Random(1), Offer.NoTicket, nativeBytes(ClientSession.TICKET_BYTES)),
         address =
             ConnAddress(
                 SockAddr(0L, 0),

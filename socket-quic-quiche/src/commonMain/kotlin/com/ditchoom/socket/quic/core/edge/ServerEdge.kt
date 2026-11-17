@@ -7,9 +7,9 @@ import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.flow.WritePolicy
+import com.ditchoom.socket.quic.HandlerStart
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicConnectionIdentity
-import com.ditchoom.socket.quic.QuicConnectionState
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicSessionId
 import com.ditchoom.socket.quic.QuicWireConnectionId
@@ -22,6 +22,8 @@ import com.ditchoom.socket.quic.encodeToNative
 import com.ditchoom.socket.quic.toSocketAddress
 import com.ditchoom.socket.quic.traceRecorderFor
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -31,8 +33,8 @@ import kotlinx.coroutines.launch
 
 /**
  * The caller-facing side of the connections a server accepts: each gets its own trace capture, the same
- * [CoreConnection] a client uses, and is offered on [accepted] once its handshake completes. Runs on the server's
- * loop; nothing here blocks.
+ * [CoreConnection] a client uses, and is offered on [accepted] once its handshake completes or its client's 0-RTT is
+ * accepted. Runs on the server's loop; nothing here blocks.
  */
 internal class ServerEdge(
     private val options: QuicOptions,
@@ -69,10 +71,13 @@ internal class ServerEdge(
                 writePolicy,
                 scope,
             )
-        // Offered once established; a connection that ends first is never offered.
-        scope.launch {
-            val settled = connection.state.first { it is QuicConnectionState.Established || it is QuicConnectionState.Closed }
-            if (settled is QuicConnectionState.Established) accepted.trySend(connection)
+        // Offered once established, or once its 0-RTT is accepted; a connection that ends first is never offered. The offer
+        // is made on the thread that decided it, the loop, with no hop: it only hands the connection to the acceptor.
+        scope.launch(Dispatchers.Unconfined, CoroutineStart.UNDISPATCHED) {
+            when (edge.start.first { it is HandlerStart.Decided }) {
+                HandlerStart.Now -> accepted.trySend(connection)
+                HandlerStart.Never, HandlerStart.NotYet -> Unit
+            }
         }
         return Opened(conn, Runnable { scope.cancel() })
     }

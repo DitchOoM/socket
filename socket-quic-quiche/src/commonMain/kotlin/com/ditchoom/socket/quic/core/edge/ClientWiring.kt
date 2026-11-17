@@ -10,6 +10,7 @@ import com.ditchoom.socket.quic.QuicheConn
 import com.ditchoom.socket.quic.connectionIdRandom
 import com.ditchoom.socket.quic.core.conn.FlightSize
 import com.ditchoom.socket.quic.core.conn.HandshakeRule
+import com.ditchoom.socket.quic.core.conn.Offer
 import com.ditchoom.socket.quic.core.loop.Readiness
 import com.ditchoom.socket.quic.core.loop.RunningLoop
 import com.ditchoom.socket.quic.core.time.LoopClock
@@ -43,4 +44,6 @@ internal class ClientWiring(
     val readiness: Readiness = Readiness.Polled,
     /** Where the ids the connection hands its peer for a new path are drawn from. */
     val ids: Random = connectionIdRandom,
+    /** The session ticket offered before the first flight, and whether that flight waits for 0-RTT. */
+    val offer: Offer = Offer.NoTicket,
 )

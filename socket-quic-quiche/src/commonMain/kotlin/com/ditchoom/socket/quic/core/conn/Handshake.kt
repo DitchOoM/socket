@@ -1,6 +1,7 @@
 package com.ditchoom.socket.quic.core.conn
 
 import com.ditchoom.socket.quic.PtoCeiling
+import com.ditchoom.socket.quic.QuicResumptionOutcome
 import com.ditchoom.socket.quic.core.life.HandshakeProgress
 import com.ditchoom.socket.quic.core.life.HandshakeReached
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
@@ -142,22 +143,27 @@ internal class Handshake(
         }
     }
 
+    /** The negotiated ALPN, copied into its scratch; its length. */
+    fun alpn(): Int = q.api.connApplicationProto(q.handle, alpn.address, alpn.capacity)
+
     /** Once, after [step] answered [HandshakeStep.JustEstablished]: the negotiated ALPN is copied into its scratch. */
     fun report(
         now: Nanos,
         read: PathRead,
+        resumption: QuicResumptionOutcome,
     ): ConnectReport {
         val sample = sampleOf(read)
         val probes = probesOf(read)
         val took = now.value - startedNanos
         return ConnectReport(
             handshakeNanos = took,
-            alpnLength = q.api.connApplicationProto(q.handle, alpn.address, alpn.capacity),
+            alpnLength = alpn(),
             firstSample = sample,
             priorNanos = rule.priorNanos(),
             link = rule.link,
             probes = probes,
             pace = paceOf(sample, probes, took),
+            resumption = resumption,
         )
     }
 

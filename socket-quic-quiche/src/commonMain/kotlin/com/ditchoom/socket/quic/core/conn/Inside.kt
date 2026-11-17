@@ -52,6 +52,9 @@ internal class Inside(
     /** The client's socket now leaves from [local]. */
     fun moved(local: PathKey) = turn.moved(clock.now(), local)
 
+    /** A client's first flight, held for its 0-RTT, may leave. */
+    fun releaseFirstFlight() = turn.releaseFirstFlight()
+
     /** The ids the loop routed to this server connection. */
     fun issue(spare: List<SpareId>) = turn.issue(spare)
 

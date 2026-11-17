@@ -3,7 +3,7 @@ package com.ditchoom.socket.quic
 import java.io.File
 
 /** JVM member of [EarlyDataServerTestSuite]: JNI by default, FFM with `-PquicheJvmBackend=ffm`. */
-class JvmEarlyDataServerTests : EarlyDataServerTestSuite() {
+class JvmEarlyDataServerTests : SharedQuicheEarlyDataServerTestSuite() {
     private fun certPath(name: String): String {
         val url = this::class.java.classLoader.getResource("certs/$name") ?: error("Test cert not found: certs/$name")
         return File(url.toURI()).absolutePath

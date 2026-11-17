@@ -26,9 +26,11 @@ import com.ditchoom.socket.quic.RouteSource
 import com.ditchoom.socket.quic.UdpBatching
 import com.ditchoom.socket.quic.UdpSocketChannelFactory
 import com.ditchoom.socket.quic.applyQuicOptions
+import com.ditchoom.socket.quic.clientAlpnOffer
 import com.ditchoom.socket.quic.core.conn.Conn
 import com.ditchoom.socket.quic.core.conn.FlightSize
 import com.ditchoom.socket.quic.core.conn.HandshakeRule
+import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.loop.Loop
 import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.loop.Placement
@@ -192,6 +194,7 @@ private suspend fun connectOnThisThread(
         )
     name.freeNativeMemory()
     scid.freeNativeMemory()
+    val offer = offerOf(QuicheConnRef(api, handle), options.resumption, factory)
     val scope = CoroutineScope(SupervisorJob())
     val built =
         ClientParts(
@@ -211,6 +214,7 @@ private suspend fun connectOnThisThread(
                 flight,
                 handshake,
                 readiness = socket.readiness(),
+                offer = offer,
             ),
             peerSockAddr,
             localSockAddr,
@@ -226,7 +230,7 @@ private suspend fun connectOnThisThread(
     scope.feedNetwork(monitor, connection, built, { routeSource(route) }, local.hostLiteral(), onMoveOf(options.migration))
     var established = false
     try {
-        withTimeout(timeout) { connection.established() }
+        connection.runEarlyData(options.resumption, offer) { withTimeout(timeout) { connection.established() } }
         established = true
     } finally {
         if (!established) connection.closeNow(QuicError.NoError)
@@ -242,7 +246,7 @@ private fun configured(
     handshake: HandshakeRule,
 ): QuicheConfig {
     val config = api.configNew(QUIC_V1)
-    val alpn = encodeAlpnList(options.alpnProtocols, factory)
+    val alpn = encodeAlpnList(clientAlpnOffer(options), factory)
     api.configSetApplicationProtos(config, addressOf(alpn), alpn.remaining())
     alpn.freeNativeMemory()
     applyQuicOptions(options, ApiQuicConfigCalls(api, config), QuicRole.Client)

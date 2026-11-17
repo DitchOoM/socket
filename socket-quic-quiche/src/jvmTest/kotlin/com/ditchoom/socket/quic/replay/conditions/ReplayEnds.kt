@@ -14,11 +14,14 @@ import com.ditchoom.socket.quic.QuicConnectionIdentity
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicRole
 import com.ditchoom.socket.quic.QuicSessionId
+import com.ditchoom.socket.quic.QuicTlsConfig
 import com.ditchoom.socket.quic.QuicWireConnectionId
 import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.applyQuicOptions
+import com.ditchoom.socket.quic.clientAlpnOffer
 import com.ditchoom.socket.quic.core.conn.FlightArena
 import com.ditchoom.socket.quic.core.conn.LoopMemory
+import com.ditchoom.socket.quic.core.conn.Offer
 import com.ditchoom.socket.quic.core.edge.ClientParts
 import com.ditchoom.socket.quic.core.edge.ClientWiring
 import com.ditchoom.socket.quic.core.edge.CoreConnection
@@ -34,6 +37,8 @@ import com.ditchoom.socket.quic.core.edge.addressOf
 import com.ditchoom.socket.quic.core.edge.clientHandshakeRule
 import com.ditchoom.socket.quic.core.edge.coreServe
 import com.ditchoom.socket.quic.core.edge.coreTlsConfig
+import com.ditchoom.socket.quic.core.edge.offerOf
+import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.loop.JdkViewsMade
 import com.ditchoom.socket.quic.core.loop.Loop
 import com.ditchoom.socket.quic.core.loop.LoopIds
@@ -73,6 +78,8 @@ internal class ReplayClient(
     val scope: CoroutineScope,
     /** The client socket's address, as the server sees it. */
     val local: PathKey,
+    /** The session ticket the client offered, and whether its first flight waits for 0-RTT. */
+    val offer: Offer,
 )
 
 /** Reads and writes wait at most this long: on virtual time, as long as any replay runs. */
@@ -93,10 +100,11 @@ internal suspend fun replayServer(
     factory: BufferFactory,
     io: DatagramBatchIo,
     clock: VirtualClock,
+    tls: QuicTlsConfig = coreTlsConfig(),
 ): CoreServer =
     coreServe(
         bind = InetSocketAddress(LOCALHOST, 0).toPathKey(),
-        tls = coreTlsConfig(),
+        tls = tls,
         options = options,
         factory = factory,
         api = api,
@@ -141,7 +149,7 @@ internal fun replayClient(
     channel.configureBlocking(false)
     val local = channel.localAddress as InetSocketAddress
     val config = api.configNew(QUIC_V1)
-    encodeAlpnList(options.alpnProtocols, factory).let { api.configSetApplicationProtos(config, addressOf(it), it.remaining()) }
+    encodeAlpnList(clientAlpnOffer(options), factory).let { api.configSetApplicationProtos(config, addressOf(it), it.remaining()) }
     applyQuicOptions(options, ApiQuicConfigCalls(api, config), QuicRole.Client)
     val handshake = clientHandshakeRule(options, link)
     handshake.applyTo(api, config)
@@ -169,6 +177,7 @@ internal fun replayClient(
         )
     name.freeNativeMemory()
     scid.freeNativeMemory()
+    val offer = offerOf(QuicheConnRef(api, handle), options.resumption, factory)
     val scope = CoroutineScope(SupervisorJob())
     val loopIo = LoopIo.Jdk((jdkViewsOf(jdkStackOfThisRuntime(), buffers) as JdkViewsMade.Made).views)
     val wiring =
@@ -197,6 +206,7 @@ internal fun replayClient(
             Readiness.EveryPass,
             // Not the stream the client's first id came from: the ids it hands out must differ from it.
             Random(seed.inv()),
+            offer,
         )
     val parts = ClientParts(wiring, peer, localAddress)
     val connection =
@@ -205,7 +215,7 @@ internal fun replayClient(
             SocketAddress.ofLiteral(LOCALHOST, serverPort),
             QuicConnectionIdentity(QuicSessionId(hex), QuicWireConnectionId.Known(hex)),
         )
-    return ReplayClient(connection, parts, loop, scope, local.toPathKey())
+    return ReplayClient(connection, parts, loop, scope, local.toPathKey(), offer)
 }
 
 /** The copy slots and flight arena of a replay client's loop, freed with the client's memory. */

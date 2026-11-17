@@ -2,7 +2,9 @@ package com.ditchoom.socket.quic.core.conn
 
 import com.ditchoom.socket.quic.LinkClass
 import com.ditchoom.socket.quic.PtoCeiling
+import com.ditchoom.socket.quic.QuicFullHandshakeReason
 import com.ditchoom.socket.quic.QuicPathStats
+import com.ditchoom.socket.quic.QuicResumptionOutcome
 import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.QuicheConn
 import com.ditchoom.socket.quic.SendTarget
@@ -67,7 +69,7 @@ class HandshakeTests {
         confirmed = true
         assertEquals(HandshakeStep.JustEstablished, handshake.step(Nanos(300L)))
         assertEquals(HandshakeStep.Established, handshake.step(Nanos(400L)))
-        assertEquals(400L, handshake.report(Nanos(500L), path.read()).handshakeNanos)
+        assertEquals(400L, handshake.report(Nanos(500L), path.read(), FULL).handshakeNanos)
     }
 
     /**
@@ -180,7 +182,7 @@ class HandshakeTests {
             val handshake = handshake()
             handshake.step(Nanos(tookMs * ms))
             quicheSays(probes, rtt, received = 4)
-            return handshake.report(Nanos(tookMs * ms), path.read()).pace
+            return handshake.report(Nanos(tookMs * ms), path.read(), FULL).pace
         }
         assertIs<ConnectPace.AsExpected>(reportAfter(tookMs = 30, probes = 0, rtt = 20.milliseconds))
         assertEquals(SlowConnect.RttAbovePrior, assertIs<ConnectPace.Slow>(reportAfter(2_100, 0, 2.seconds)).why)
@@ -214,3 +216,5 @@ class HandshakeTests {
         deliveryRate = 0,
     )
 }
+
+private val FULL = QuicResumptionOutcome.FullHandshake(QuicFullHandshakeReason.NoTicketOffered)

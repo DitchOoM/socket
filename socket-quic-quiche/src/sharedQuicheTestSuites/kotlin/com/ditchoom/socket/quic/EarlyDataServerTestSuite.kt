@@ -40,16 +40,8 @@ import kotlin.time.Duration.Companion.seconds
 abstract class EarlyDataServerTestSuite {
     abstract fun testTlsConfig(): QuicTlsConfig
 
-    /** Build a server on [binding] whose quiche backend is [api]; each platform names its own build function. */
-    internal abstract suspend fun buildServer(
-        binding: QuicPortBinding,
-        tlsConfig: QuicTlsConfig,
-        options: QuicOptions,
-        api: QuicheApi,
-    ): SharedQuicheServer
-
-    /** The backend a member wraps. */
-    protected abstract fun platformQuicheApi(): QuicheApi
+    /** A server under test with [options], whose inbound Handshake datagrams its [HeldServer.hold] can drop. */
+    internal abstract suspend fun heldServer(options: QuicOptions): HeldServer
 
     /** JVM/Android members turn a missing native into a typed skip. */
     protected open suspend fun wrapTestBody(block: suspend () -> Unit): Unit = block()
@@ -81,11 +73,11 @@ abstract class EarlyDataServerTestSuite {
                     val seen = Channel<Seen>(Channel.UNLIMITED)
                     val serving =
                         serve(server) {
-                            val stateAtStart = quicheDriver().state.value
+                            val stateAtStart = server.stateOf(this)
                             val stream = acceptStream()
                             stream.markReplaySafe()
                             val payload = stream.readToEnd()
-                            seen.send(Seen(stateAtStart, stream.origin, payload, quicheDriver().state.value, channel.holding))
+                            seen.send(Seen(stateAtStart, stream.origin, payload, server.stateOf(this), channel.holding))
                             stream.writeFullyAndShutdownSend(text("ack:$payload"), STREAM_DEADLINE)
                         }
                     try {
@@ -131,11 +123,11 @@ abstract class EarlyDataServerTestSuite {
                     val accepted = Channel<Pair<QuicConnectionState, QuicStreamOrigin>>(Channel.UNLIMITED)
                     val serving =
                         serve(server) {
-                            val stateAtStart = quicheDriver().state.value
+                            val stateAtStart = server.stateOf(this)
                             val stream = acceptStream()
-                            accepted.send(quicheDriver().state.value to stream.origin)
+                            accepted.send(server.stateOf(this) to stream.origin)
                             val payload = stream.readToEnd()
-                            seen.send(Seen(stateAtStart, stream.origin, payload, quicheDriver().state.value, channel.holding))
+                            seen.send(Seen(stateAtStart, stream.origin, payload, server.stateOf(this), channel.holding))
                             stream.writeFullyAndShutdownSend(text("ack:$payload"), STREAM_DEADLINE)
                         }
                     try {
@@ -182,7 +174,7 @@ abstract class EarlyDataServerTestSuite {
                     val outcomes = Channel<HandlerOutcome>(Channel.UNLIMITED)
                     val serving =
                         serve(server) {
-                            val stateAtStart = quicheDriver().state.value
+                            val stateAtStart = server.stateOf(this)
                             try {
                                 val stream = acceptStream()
                                 val payload = stream.readToEnd()
@@ -265,30 +257,20 @@ abstract class EarlyDataServerTestSuite {
 
     private suspend fun withHeldServer(
         options: QuicOptions = serverOptions,
-        block: suspend CoroutineScope.(SharedQuicheServer, HandshakeHoldChannel) -> Unit,
+        block: suspend CoroutineScope.(HeldServer, HandshakeHold) -> Unit,
     ) {
-        val socket =
-            UdpSocket.bind(
-                "127.0.0.1",
-                0,
-                receiveBufferSize = QuicheDriver.MAX_DATAGRAM_SIZE,
-                bufferFactory = BufferFactory.network(),
-            )
-        val channel = HandshakeHoldChannel(socket)
-        val server = buildServer(QuicPortBinding.Shared(channel), testTlsConfig(), options, platformQuicheApi())
+        val server = heldServer(options)
         try {
-            coroutineScope { block(server, channel) }
+            coroutineScope { block(server, server.hold) }
         } finally {
             server.close()
         }
     }
 
     private fun CoroutineScope.serve(
-        server: SharedQuicheServer,
+        server: HeldServer,
         handler: suspend QuicScope.() -> Unit,
-    ): Job = launch { server.connections(handler) }
-
-    private fun QuicScope.quicheDriver(): QuicheDriver = (this as QuicheBackedConnection).quicheDriver
+    ): Job = server.serve(this, handler)
 
     private suspend fun firstConnection(port: Int): QuicSessionTicket =
         withQuicConnection("127.0.0.1", port, clientOptions, timeout = STEP) {
@@ -352,5 +334,62 @@ abstract class EarlyDataServerTestSuite {
 
         /** The idle timeout that ends the held handshake in the failure test. */
         val SHORT_IDLE: Duration = 2.seconds
+    }
+}
+
+/** A server an [EarlyDataServerTestSuite] member runs: its port, its handshake hold, and how it serves. */
+internal interface HeldServer {
+    val port: Int
+    val hold: HandshakeHold
+
+    /** Runs [handler] for every connection the server starts, in [scope]. */
+    fun serve(
+        scope: CoroutineScope,
+        handler: suspend QuicScope.() -> Unit,
+    ): Job
+
+    /** The state of [connection], one this server serves. */
+    fun stateOf(connection: QuicScope): QuicConnectionState
+
+    suspend fun close()
+}
+
+/** The members whose server is a [SharedQuicheServer], held on its demultiplexed channel. */
+abstract class SharedQuicheEarlyDataServerTestSuite : EarlyDataServerTestSuite() {
+    /** Build a server on [binding] whose quiche backend is [api]; each platform names its own build function. */
+    internal abstract suspend fun buildServer(
+        binding: QuicPortBinding,
+        tlsConfig: QuicTlsConfig,
+        options: QuicOptions,
+        api: QuicheApi,
+    ): SharedQuicheServer
+
+    /** The backend a member wraps. */
+    protected abstract fun platformQuicheApi(): QuicheApi
+
+    internal override suspend fun heldServer(options: QuicOptions): HeldServer {
+        val socket =
+            UdpSocket.bind(
+                "127.0.0.1",
+                0,
+                receiveBufferSize = QuicheDriver.MAX_DATAGRAM_SIZE,
+                bufferFactory = BufferFactory.network(),
+            )
+        val channel = HandshakeHoldChannel(socket)
+        val server = buildServer(QuicPortBinding.Shared(channel), testTlsConfig(), options, platformQuicheApi())
+        return object : HeldServer {
+            override val port: Int get() = server.port
+            override val hold: HandshakeHold = channel
+
+            override fun serve(
+                scope: CoroutineScope,
+                handler: suspend QuicScope.() -> Unit,
+            ): Job = scope.launch { server.connections(handler) }
+
+            override fun stateOf(connection: QuicScope): QuicConnectionState =
+                (connection as QuicheBackedConnection).quicheDriver.state.value
+
+            override suspend fun close() = server.close()
+        }
     }
 }
