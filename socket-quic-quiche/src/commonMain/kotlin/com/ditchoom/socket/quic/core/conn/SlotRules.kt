@@ -19,12 +19,34 @@ internal sealed interface AckRule {
     data object Immediate : AckRule
 }
 
+/** Whether a connection carries RFC 9221 datagrams. */
+internal sealed interface DatagramRule {
+    data object Off : DatagramRule
+
+    /** Datagrams that arrive while no receive waits are kept, [bound] at most, the oldest dropped first. */
+    class On(
+        val bound: Int,
+    ) : DatagramRule
+}
+
+/** Whether an idle connection is pinged. */
+internal sealed interface KeepAliveRule {
+    data object Off : KeepAliveRule
+
+    /** After [intervalNanos] with nothing received or sent. */
+    class Every(
+        val intervalNanos: Long,
+    ) : KeepAliveRule
+}
+
 /** The rules every connection of an endpoint is built with; immutable and shared. */
 internal class SlotRules(
     val pacing: PacingRule,
     val ack: AckRule,
     val handshake: HandshakeRule,
     val close: CloseRule,
+    val datagrams: DatagramRule = DatagramRule.Off,
+    val keepAlive: KeepAliveRule = KeepAliveRule.Off,
 ) {
     companion object {
         /**
@@ -46,11 +68,15 @@ internal class SlotRules(
             waits: WaitResolution,
             handshake: HandshakeRule,
             close: CloseRule,
+            datagrams: DatagramRule = DatagramRule.Off,
+            keepAlive: KeepAliveRule = KeepAliveRule.Off,
         ) = SlotRules(
             PacingRule.ByQuiche(allowanceNanos = waits.nanos, limitNanos = 1_000_000_000L),
             AckRule.Immediate,
             handshake,
             close,
+            datagrams,
+            keepAlive,
         )
 
         private const val DEFAULT_IDLE_NANOS = 30_000_000_000L

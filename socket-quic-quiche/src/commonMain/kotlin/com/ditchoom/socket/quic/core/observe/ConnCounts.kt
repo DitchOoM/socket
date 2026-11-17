@@ -9,6 +9,7 @@ internal class ConnCounts {
     private val dropped = Counter()
     private val late = Counter()
     private val resent = Counter()
+    private val overflowed = Counter()
 
     /** Times a caller entered a free connection and served it on its own thread. */
     val enteredInPlace: Long get() = entered.value()
@@ -31,6 +32,9 @@ internal class ConnCounts {
     /** Times a lingering connection answered a late datagram with its CONNECTION_CLOSE again. */
     val closesResent: Long get() = resent.value()
 
+    /** Received RFC 9221 datagrams dropped because the connection's receive queue was full and nobody was receiving. */
+    val datagramsOverflowed: Long get() = overflowed.value()
+
     fun enteredInPlace() = entered.increment()
 
     fun leftForHolder() = busy.increment()
@@ -44,4 +48,6 @@ internal class ConnCounts {
     fun lateDatagram() = late.increment()
 
     fun closeResent() = resent.increment()
+
+    fun datagramOverflowed() = overflowed.increment()
 }

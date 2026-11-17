@@ -9,8 +9,6 @@ import com.ditchoom.socket.quic.core.life.Life
 import com.ditchoom.socket.quic.core.life.LifeStep
 import com.ditchoom.socket.quic.core.life.RetiredId
 import com.ditchoom.socket.quic.core.life.SpareId
-import com.ditchoom.socket.quic.core.life.Tier
-import com.ditchoom.socket.quic.core.life.Tiers
 import com.ditchoom.socket.quic.core.life.endOf
 import com.ditchoom.socket.quic.core.life.errorCode
 import com.ditchoom.socket.quic.core.life.flightCode
@@ -24,7 +22,6 @@ import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 import com.ditchoom.socket.quic.core.udp.SendBatch
 import com.ditchoom.socket.quic.core.udp.Thrown
-import com.ditchoom.socket.quic.reportOnThisThread
 import com.ditchoom.socket.testkit.trace.TraceSink
 import kotlinx.coroutines.Runnable
 
@@ -41,7 +38,7 @@ internal class Turn(
     clock: LoopClock,
     port: LoopPort,
 ) {
-    private val inside = Inside(c.streams, c.life, clock, port, this)
+    private val inside = Inside(c.streams, c.life, clock, port, this, c.slots.datagrams)
     private val runWork: (ConnWork) -> Unit = { runOne(it) }
     private val paths: Paths = c.slots.paths
 
@@ -122,6 +119,8 @@ internal class Turn(
         traced(TraceSection.ConnReceive) {
             try {
                 c.feed(bytes, length, from, now)
+                c.slots.keepAlive.touched(now)
+                c.slots.datagrams.received()
             } catch (failure: Exception) {
                 fail(now, failure)
             }
@@ -170,6 +169,9 @@ internal class Turn(
     /** Any thread: the ids this connection's peer retired, taken once. */
     fun idsRetired(): List<RetiredId> = c.slots.paths.idsRetired()
 
+    /** Any thread: the bytes one datagram may carry as of the connection's last turn, or 0. */
+    fun datagramMaxBytes(): Int = c.slots.datagrams.maxBytes()
+
     fun dump(sink: TraceSink) = c.flight.dump(sink)
 
     /**
@@ -187,6 +189,7 @@ internal class Turn(
         c.sink.ended(end)
         c.inbox.shut(end) { it.gone(end) }
         c.streams.endAll(end)
+        c.slots.datagrams.endAll(end)
         c.flight.toTrace()
     }
 
@@ -207,9 +210,9 @@ internal class Turn(
             HandshakeStep.JustEstablished -> {
                 paths.established()
                 c.sink.established(c.handshake.report(now, paths.read()))
-                c.wakeStreams()
+                c.wakeEstablished(now)
             }
-            HandshakeStep.Established -> c.wakeStreams()
+            HandshakeStep.Established -> c.wakeEstablished(now)
             HandshakeStep.DeadlinePassed -> {
                 val end = ConnEnd.HandshakeTimedOut(c.handshake.progress(now, paths.read()))
                 c.life.close(QuicError.NoError, end, CloseHow.Now, now)
@@ -231,6 +234,7 @@ internal class Turn(
                 is Pacing.Unpaced -> c.egress.write(out, paths, now, c.flight)
                 is Pacing.ByQuiche -> c.egress.writePaced(out, paths, now, pacing.pacer, c.flight)
             }
+        c.wrote(now)
         if (c.life.linger.sending() && c.keepClose(now, out) == CloseSent.Yes) {
             when (val life = c.life.view()) {
                 is Life.Closing -> finish(now, life.end)
@@ -270,7 +274,7 @@ internal class Turn(
     }
 
     /** Ends the connection because processing it threw [failure]; closes it on the wire where quiche still lets us. */
-    private fun fail(
+    internal fun fail(
         now: Nanos,
         failure: Throwable,
     ) {
@@ -282,19 +286,5 @@ internal class Turn(
             failure.addSuppressed(late)
         }
         finish(now, end)
-    }
-
-    /** A caller's thread threw inside: the connection ends with it, and what it cannot contain is reported. */
-    private fun abandon(
-        now: Nanos,
-        thrown: Throwable,
-    ) {
-        when (Tiers.of(thrown)) {
-            Tier.Connection -> fail(now, thrown)
-            Tier.Process -> {
-                finish(now, ConnEnd.CallerFailed(Thrown(thrown)))
-                reportOnThisThread(thrown)
-            }
-        }
     }
 }

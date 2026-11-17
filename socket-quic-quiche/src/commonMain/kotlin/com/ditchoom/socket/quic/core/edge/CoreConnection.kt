@@ -3,6 +3,8 @@ package com.ditchoom.socket.quic.core.edge
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.codec.Codec
 import com.ditchoom.buffer.flow.BytesWritten
+import com.ditchoom.buffer.flow.ConnectedDatagramChannel
+import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.SocketAddress
@@ -71,6 +73,14 @@ internal class CoreConnection(
     override val unreadAtClose: StateFlow<QuicUnreadAtClose> = MutableStateFlow(QuicUnreadAtClose.ConnectionOpen)
     override val capabilities: QuicCapabilities get() = QuicheDriver.capabilities
     override val pathState: StateFlow<QuicPathState> = MutableStateFlow(QuicPathState.Original)
+
+    private val datagrams = CoreDatagramChannel(this, conn, edge, bufferFactory, remoteAddress)
+
+    @OptIn(ExperimentalDatagramApi::class)
+    override fun datagramChannel(): ConnectedDatagramChannel = datagrams
+
+    /** Received datagrams dropped because the receive queue was full and nobody was receiving; any thread. */
+    fun datagramsOverflowed(): Long = conn.counts.datagramsOverflowed
 
     /** How the connection stands: open, or ended and how. */
     fun end(): EdgeEnd = edge.end()

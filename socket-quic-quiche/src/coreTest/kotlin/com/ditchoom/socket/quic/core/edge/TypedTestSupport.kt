@@ -20,6 +20,7 @@ import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.buffer.stream.StreamProcessor
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicCloseException
+import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.core.demux.ServerConfig
 import com.ditchoom.socket.quic.core.demux.loopbackV4
@@ -195,6 +196,7 @@ internal suspend fun withCoreServer(
     config: ServerConfig = ServerConfig(),
     bind: PathKey = loopbackV4(),
     api: QuicheApi = platformQuicheApi(),
+    options: QuicOptions = coreTestOptions,
     onConnection: suspend CoroutineScope.(CoreConnection) -> Unit,
     body: suspend CoroutineScope.(CoreServer) -> Unit,
 ) {
@@ -202,7 +204,7 @@ internal suspend fun withCoreServer(
         coreServe(
             bind = bind,
             tls = platformTlsConfig(),
-            options = coreTestOptions,
+            options = options,
             factory = BufferFactory.network(),
             api = api,
             readPolicy = ReadPolicy.Bounded(10.seconds),

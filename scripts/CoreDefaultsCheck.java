@@ -382,6 +382,7 @@ public class CoreDefaultsCheck {
         SEAMS.put("LoopWork", "sched");
         SEAMS.put("ConnWork", "conn");
         SEAMS.put("Waiter", "stream");
+        SEAMS.put("DatagramWaiter", "conn");
         SEAMS.put("ConnSink", "conn");
         SEAMS.put("Pooled", "pool");
     }
@@ -434,7 +435,8 @@ public class CoreDefaultsCheck {
         QUICHE_OWNERS.put("connProbePath|connMigrate|connMigrateSource|connNewScid|connRetireDcid|connRequeuePath|connPathEventNext|connPathStats"
             + "|recvInfoNew|sendInfoNew", List.of("path/Paths"));
         QUICHE_OWNERS.put("connSetSession|connSession|connIsResumed|connIsInEarlyData|connEarlyDataReason", List.of("conn/Resumption"));
-        QUICHE_OWNERS.put("connDgramSend|connDgramRecv|connDgramMaxWritableLen|hasReadableDgram", List.of("conn/Datagrams"));
+        QUICHE_OWNERS.put("connDgramSend|connDgramRecv|connDgramRecvStep|connDgramMaxWritableLen|connDgramMaxWritableBytes|hasReadableDgram", List.of("conn/Datagrams"));
+        QUICHE_OWNERS.put("connSendAckEliciting", List.of("conn/KeepAlive"));
         QUICHE_OWNERS.put("headerInfo", List.of("demux/Demux"));
         QUICHE_OWNERS.put("accept", List.of("demux/Admission"));
         QUICHE_OWNERS.put("negotiateVersion", List.of("demux/Stateless"));

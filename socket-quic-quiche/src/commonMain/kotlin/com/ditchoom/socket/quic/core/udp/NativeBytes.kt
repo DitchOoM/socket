@@ -28,6 +28,12 @@ internal class NativeBytes private constructor(
         length: Int,
     ) = UnsafeMemory.copyMemory(from.address + fromOffset, address + toOffset, length.toLong())
 
+    /** Copies the first [length] bytes to the memory at [address]. Allocates nothing. */
+    fun copyOut(
+        address: Long,
+        length: Int,
+    ) = UnsafeMemory.copyMemory(this.address, address, length.toLong())
+
     /** The byte at [offset], as an unsigned value. */
     fun byteAt(offset: Int): Int = UnsafeMemory.getByte(address + offset).toInt() and BYTE_MASK
 
