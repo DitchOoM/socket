@@ -11,8 +11,8 @@ import com.ditchoom.socket.quic.core.conn.ConnWork
 import com.ditchoom.socket.quic.core.conn.Inside
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.observe.Confined
-import com.ditchoom.socket.quic.core.stream.Received
 import com.ditchoom.socket.quic.core.stream.Retry
+import com.ditchoom.socket.quic.core.stream.Side
 import com.ditchoom.socket.quic.core.stream.StreamEntry
 import com.ditchoom.socket.quic.core.stream.StreamTable
 import com.ditchoom.socket.quic.core.stream.Streams
@@ -118,7 +118,7 @@ internal class ReadOp(
         table: StreamTable,
         entry: StreamEntry,
     ): Retry {
-        if (entry.received == Received.Finished) {
+        if (entry.received is Side.Finished) {
             release()
             return settle(ReadAnswer.End)
         }
@@ -155,7 +155,10 @@ internal class ReadOp(
                     buffer.freeNativeMemory()
                     settle(ReadAnswer.Failed(Raised.ConnEnded(ConnEnd.Released), QuicCloseCircumstance.Released))
                 },
-                reset = { discard(table, into, ReadAnswer.Reset) },
+                reset = {
+                    entry.receiveEnded(Side.Reset)
+                    discard(table, into, ReadAnswer.Reset)
+                },
                 error = { code ->
                     buffer.freeNativeMemory()
                     settle(ReadAnswer.Failed(Raised.ReadRefused(stream, code), QuicCloseCircumstance.Ended))

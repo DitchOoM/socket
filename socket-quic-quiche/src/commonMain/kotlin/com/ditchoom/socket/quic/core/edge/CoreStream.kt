@@ -8,7 +8,9 @@ import com.ditchoom.buffer.flow.BytesWritten
 import com.ditchoom.buffer.flow.HalfCloseable
 import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.buffer.flow.Resettable
 import com.ditchoom.buffer.flow.WritePolicy
+import com.ditchoom.socket.quic.QuicAppErrorCode
 import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicStreamId
 import com.ditchoom.socket.quic.QuicStreamSide
@@ -37,7 +39,8 @@ internal class CoreStream(
     override val readPolicy: ReadPolicy,
     override val writePolicy: WritePolicy,
 ) : ByteStream,
-    HalfCloseable {
+    HalfCloseable,
+    Resettable {
     private val use = AtomicReference(Use.Open)
 
     override val isOpen: Boolean get() = use.load() != Use.Closed
@@ -70,6 +73,11 @@ internal class CoreStream(
             Use.Open -> finish()
             Use.SendFinished, Use.Closed -> Unit
         }
+    }
+
+    /** Resets both directions with [errorCode]: RESET_STREAM for ours, STOP_SENDING for the peer's. */
+    override suspend fun reset(errorCode: Long) {
+        if (use.exchange(Use.Closed) != Use.Closed) connection.resetStream(id, QuicAppErrorCode(errorCode))
     }
 
     private suspend fun finish() {

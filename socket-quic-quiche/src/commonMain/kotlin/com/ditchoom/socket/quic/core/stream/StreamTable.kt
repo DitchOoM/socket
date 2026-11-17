@@ -1,5 +1,6 @@
 package com.ditchoom.socket.quic.core.stream
 
+import com.ditchoom.socket.quic.QuicAppErrorCode
 import com.ditchoom.socket.quic.QuicRole
 import com.ditchoom.socket.quic.QuicStreamId
 import com.ditchoom.socket.quic.QuicheStreamIter
@@ -65,7 +66,38 @@ internal class StreamTable(
     fun unpark(
         id: QuicStreamId,
         waiter: Waiter,
-    ) = entries.getOrDefault(id.id, absent).unpark(waiter)
+    ) {
+        val entry = entries.getOrDefault(id.id, absent)
+        entry.unpark(waiter)
+        collect(entry)
+    }
+
+    /**
+     * The peer told us to stop sending on [id] with [code]: our side is reset with the same code, as RFC 9000 §3.5
+     * asks, so the peer's stream completes and its credit comes back.
+     */
+    fun stopped(
+        id: QuicStreamId,
+        code: QuicAppErrorCode,
+    ) {
+        val entry = entries.getOrDefault(id.id, absent)
+        if (entry === absent || entry.sent !is Side.Open) return
+        io.shutdown(id, ShutdownSide.Write, code.value)
+        entry.sendEnded(Side.Stopped)
+        collect(entry)
+    }
+
+    /** Stops reading [id] with [code] unless the peer's side ended already: the peer is told to stop sending. */
+    fun stopReading(
+        id: QuicStreamId,
+        code: QuicAppErrorCode,
+    ) {
+        val entry = entries.getOrDefault(id.id, absent)
+        if (entry === absent || entry.received !is Side.Open) return
+        io.shutdown(id, ShutdownSide.Read, code.value)
+        entry.receiveEnded(Side.Stopped)
+        collect(entry)
+    }
 
     /** How many streams hold an entry: the live ones. */
     fun liveStreams(): Int = entries.size
@@ -79,22 +111,36 @@ internal class StreamTable(
     /** [collect] for [id]'s entry, if the stream still has one. */
     fun collect(id: QuicStreamId) = collect(entries.getOrDefault(id.id, absent))
 
-    /** Our FIN on [id] went to quiche. */
-    fun finSent(id: QuicStreamId) {
+    /** Our side of [id] ended [how]: our FIN went, we reset it, or the peer stopped it. */
+    fun sendEnded(
+        id: QuicStreamId,
+        how: Side.Ended,
+    ) {
         val entry = entries.getOrDefault(id.id, absent)
         if (entry === absent) return
-        entry.finSent()
+        entry.sendEnded(how)
+        collect(entry)
+    }
+
+    /** The peer's side of [id] ended for us [how]: its FIN was read, it reset its side, or we stopped it. */
+    fun receiveEnded(
+        id: QuicStreamId,
+        how: Side.Ended,
+    ) {
+        val entry = entries.getOrDefault(id.id, absent)
+        if (entry === absent) return
+        entry.receiveEnded(how)
         collect(entry)
     }
 
     /**
-     * Lets [entry] go once its stream is spent: the peer's FIN was read, ours sent (when this side sends at all), and
-     * nothing waits on it. The table then holds only live streams, so it does not grow with every stream ever opened.
+     * Lets [entry] go once its stream is spent: both directions ended, however each did (a direction this side has no
+     * part in counts as ended), and nothing waits on it. The table then holds only live streams, so it does not grow with every stream ever opened.
      */
     fun collect(entry: StreamEntry) {
         if (entry === absent || entry.reader !== Nobody || entry.writer !== Nobody) return
-        if (entry.received != Received.Finished) return
-        if (entry.sent != Sent.Finished && sends(entry.id)) return
+        if (entry.received is Side.Open) return
+        if (entry.sent is Side.Open && sends(entry.id)) return
         entries.remove(entry.id.id)
         spare.add(entry)
     }

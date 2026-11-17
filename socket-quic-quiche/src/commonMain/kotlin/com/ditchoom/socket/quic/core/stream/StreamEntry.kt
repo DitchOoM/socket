@@ -4,20 +4,21 @@ import com.ditchoom.socket.quic.QuicStreamId
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.observe.Confined
 
-/** What the peer's side of a stream has told us so far. */
-internal enum class Received {
-    Open,
+/** Where one direction of a stream stands: still open, or ended, and how. The first ending stays. */
+internal sealed interface Side {
+    data object Open : Side
 
-    /** Every byte up to the peer's FIN was handed to a reader. */
-    Finished,
-}
+    /** Ended: nothing more moves this way. */
+    sealed interface Ended : Side
 
-/** What our side of a stream has sent so far. */
-internal enum class Sent {
-    Open,
+    /** Receiving: every byte up to the peer's FIN was read. Sending: our FIN went to quiche. */
+    data object Finished : Ended
 
-    /** Our FIN went to quiche. */
-    Finished,
+    /** Receiving: the peer reset its side. Sending: we reset ours. */
+    data object Reset : Ended
+
+    /** Receiving: we told the peer to stop sending. Sending: the peer told us to. */
+    data object Stopped : Ended
 }
 
 /**
@@ -34,11 +35,11 @@ internal class StreamEntry(
         private set
     var writer: Waiter = Nobody
         private set
-    var received: Received = Received.Open
+    var received: Side = Side.Open
         private set
     var chunk: ReadChunk = ReadChunk.Initial
         private set
-    var sent: Sent = Sent.Open
+    var sent: Side = Side.Open
         private set
 
     /** The entry, at rest, becomes [stream]'s. */
@@ -46,14 +47,20 @@ internal class StreamEntry(
         id = stream
         reader = Nobody
         writer = Nobody
-        received = Received.Open
+        received = Side.Open
         chunk = ReadChunk.Initial
-        sent = Sent.Open
+        sent = Side.Open
         return this
     }
 
-    fun finSent() {
-        sent = Sent.Finished
+    /** Our side ended [how]; an earlier ending stays. */
+    fun sendEnded(how: Side.Ended) {
+        if (sent is Side.Open) sent = how
+    }
+
+    /** The peer's side ended [how] for us; an earlier ending stays. */
+    fun receiveEnded(how: Side.Ended) {
+        if (received is Side.Open) received = how
     }
 
     fun parkReader(waiter: Waiter) {
@@ -70,9 +77,7 @@ internal class StreamEntry(
         if (writer === waiter) writer = Nobody
     }
 
-    fun finished() {
-        received = Received.Finished
-    }
+    fun finished() = receiveEnded(Side.Finished)
 
     /** A read that [asked] for that many bytes got [got]: the next read's size follows [ReadChunk.after]. */
     fun read(
