@@ -7,7 +7,7 @@ package com.ditchoom.socket.quic.core.observe
  * |---|---|---|---|---|---|
  * | [DatagramIn], [DatagramOut] | address ids | datagram bytes | 0 | where its payload starts in the arena | 0 |
  * | [TimerArm] | 0 | 0 | 0 | due time | 0 |
- * | [TimerFire] | 0 | 0 | 0 | the time it was due | 0 |
+ * | [TimerFire] | 0, the peer's address id | 0 | 0 | 0 | 0 |
  * | [OpSubmit], [OpComplete] | 0 | 0 | operation kind | stream id | bytes |
  * | [NetworkEvent] | address ids | 0 | event code | detail | detail |
  * | [QuichePathEvent] | the path's address ids | 0 | quiche's event type | detail | detail |

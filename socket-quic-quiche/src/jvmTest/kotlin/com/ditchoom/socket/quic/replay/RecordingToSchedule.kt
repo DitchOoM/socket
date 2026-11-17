@@ -14,7 +14,8 @@ import kotlin.time.Duration
  * keep clocks of their own; they are aligned on the first datagram both hold, as sent at the time it arrived (a
  * loopback or in-memory link). A datagram is found by its bytes wherever it travelled: the four-tuple each record carries is
  * not in the schedule, so a connection whose client changed address converts like any other, and its replay follows
- * the datagrams, not the path they took.
+ * the datagrams, not the path they took. Where our recording says when its host ran quiche's timeout, our replayed
+ * timers fire when that host next ran ([OurTimers.AsRecorded]).
  */
 internal object RecordingToSchedule {
     /** What a conversion made. */
@@ -110,6 +111,7 @@ internal object RecordingToSchedule {
                 runsFor = ordered.maxOf { it.at },
                 tolerance = SendTimeTolerance(),
                 idsAtEstablishment = idsAtEstablishment,
+                ourTimers = timersOf(connection, start),
             )
         return Converted.Schedule(schedule)
     }
@@ -126,6 +128,20 @@ internal object RecordingToSchedule {
      */
     private fun closedState(recording: List<TraceEvent>): TraceEvent.State? =
         recording.filterIsInstance<TraceEvent.State>().firstOrNull { it.name.endsWith(CLOSED) && it.detail?.startsWith(LOCAL) == true }
+
+    /**
+     * When our endpoint's host was running it, from our first datagram: each time it ran quiche's timeout or took or sent a
+     * datagram. A recording that says when its timers ran, as the core's flight recorder does, is replayed with our
+     * timers firing at those times; one that does not, with them firing when due.
+     */
+    private fun timersOf(
+        recording: List<TraceEvent>,
+        start: Duration,
+    ): OurTimers {
+        if (recording.none { it is TraceEvent.TimerFired }) return OurTimers.WhenDue
+        val wakes = recording.filter { it is TraceEvent.TimerFired || it is TraceEvent.DgramIn || it is TraceEvent.DgramOut }
+        return OurTimers.AsRecorded(wakes.map { it.at - start }.sorted())
+    }
 
     /** Takes each recorded datagram once, oldest first, by its bytes. */
     private class Matcher(

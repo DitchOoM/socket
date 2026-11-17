@@ -495,6 +495,18 @@ public final class com/ditchoom/socket/testkit/trace/TraceEvent$StreamLoss : com
 	public fun toString ()Ljava/lang/String;
 }
 
+public final class com/ditchoom/socket/testkit/trace/TraceEvent$TimerFired : com/ditchoom/socket/testkit/trace/TraceEvent {
+	public synthetic fun <init> (JLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-UwyO8pc ()J
+	public final fun copy-LRDsOJo (J)Lcom/ditchoom/socket/testkit/trace/TraceEvent$TimerFired;
+	public static synthetic fun copy-LRDsOJo$default (Lcom/ditchoom/socket/testkit/trace/TraceEvent$TimerFired;JILjava/lang/Object;)Lcom/ditchoom/socket/testkit/trace/TraceEvent$TimerFired;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getAt-UwyO8pc ()J
+	public fun hashCode ()I
+	public fun isInput ()Z
+	public fun toString ()Ljava/lang/String;
+}
+
 public final class com/ditchoom/socket/testkit/trace/TraceEvent$TrafficSecretsRefused : com/ditchoom/socket/testkit/trace/TraceEvent {
 	public synthetic fun <init> (JLjava/lang/String;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun component1-UwyO8pc ()J

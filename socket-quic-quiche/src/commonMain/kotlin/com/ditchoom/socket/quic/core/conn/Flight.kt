@@ -88,6 +88,9 @@ internal class ConnFlight(
         code: Int,
     ) = ring.event(FlightKind.NetworkEvent, now.value, code, 0, peerId, 0L, 0L)
 
+    /** The connection's deadline fell due and quiche's timeout runs at [now]. */
+    fun timerFired(now: Nanos) = ring.event(FlightKind.TimerFire, now.value, 0, 0, peerId, 0L, 0L)
+
     /** The connection's path changed as [mark] says. */
     fun path(
         now: Nanos,
@@ -161,6 +164,10 @@ internal class ConnFlight(
             val kind = ring.kindAt(i)
             if (kind == FlightKind.NetworkEvent) {
                 emit.emit(TraceEvent.PathState(sinceOrigin(i), NetworkChange.entries[ring.subAt(i)].name, null, 0))
+                continue
+            }
+            if (kind == FlightKind.TimerFire) {
+                emit.emit(TraceEvent.TimerFired(sinceOrigin(i)))
                 continue
             }
             if (kind == FlightKind.QuichePathEvent) {

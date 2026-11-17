@@ -5,6 +5,7 @@ import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.flow.writeFully
+import com.ditchoom.socket.quic.NO_TIMEOUT_NANOS
 import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicRole
@@ -123,6 +124,9 @@ class CoreRecordingReplayTests {
 
         /** It holds its thread for [SLOW] after quiche read each datagram, before it can answer. */
         SlowToAnswer,
+
+        /** It wakes [LATE] after each of the client's timers falls due. */
+        LateForTimers,
     }
 
     /** An echo of [PAYLOAD] bytes between a core client and a core server on [host], as the two of them recorded it. */
@@ -166,6 +170,7 @@ class CoreRecordingReplayTests {
                     api =
                         when (host) {
                             ClientHost.SlowToAnswer -> SlowToAnswer(loadQuicheApi())
+                            ClientHost.LateForTimers -> LateForTimers(loadQuicheApi())
                             ClientHost.Fast, ClientHost.SlowToRead -> loadQuicheApi()
                         },
                     timeout = 10.seconds,
@@ -281,6 +286,31 @@ class CoreRecordingReplayTests {
                 assertFollowedWholeTwice(scheduleOf(recordAnEcho(ClientHost.SlowToRead)))
             }
         }
+
+    /**
+     * A loaded host wakes late for a timer: the client's woke [LATE] after each fell due, so its probe for the lost
+     * payload left [LATE] after quiche wanted it to. Its recording says when each timer ran, and the replay's client runs
+     * them then. Fired when they fell due, the replay's probe left [LATE] before the recording's (CI: "our datagram 3
+     * [OneRtt] is one more than the capture holds" at 36.8 ms, where the recorded probe left at 43.6 ms).
+     */
+    @Test
+    fun aRunWhoseClientWokeLateForItsTimersIsFollowedWholeByItsReplayTwice() =
+        runBlocking {
+            skipOnMissingNativeLib(CoreRecordingReplayTests::class) {
+                assertFollowedWholeTwice(scheduleOf(recordAnEcho(ClientHost.LateForTimers)))
+            }
+        }
+
+    /** quiche whose every timer the host is asked to run [LATE] after it falls due. */
+    private class LateForTimers(
+        private val real: QuicheApi,
+    ) : QuicheApi by real {
+        override fun connTimeoutNanos(conn: QuicheConn): Long =
+            when (val wait = real.connTimeoutNanos(conn)) {
+                NO_TIMEOUT_NANOS -> wait
+                else -> wait + LATE.inWholeNanoseconds
+            }
+    }
 
     /** quiche that, after each datagram it reads, holds its thread for [SLOW]: the host's work before quiche answers. */
     private class SlowToAnswer(
@@ -413,6 +443,9 @@ class CoreRecordingReplayTests {
 
         /** Longer than the replay's tolerance of a send's time: a replay that answers at once leaves the recording. */
         val SLOW = 15.milliseconds
+
+        /** Longer than the replay's tolerance of a send's time: a replay that fires when due leaves the recording. */
+        val LATE = 20.milliseconds
         val BIG = FlightSize(records = 4096)
     }
 }

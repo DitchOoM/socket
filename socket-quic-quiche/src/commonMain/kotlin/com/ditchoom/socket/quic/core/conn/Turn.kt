@@ -137,9 +137,14 @@ internal class Turn(
         from: PathKey,
     ): Copy = c.ingress.copy(bytes, length, from)
 
-    /** Inside: the connection's deadline fell due. While unconfirmed, the handshake follows quiche's PTO expiries. */
-    fun expire() {
-        if (c.life.view() is Life.Open) c.expired(paths)
+    /**
+     * Inside, at [now]: the connection's deadline fell due. While unconfirmed, the handshake follows quiche's PTO expiries.
+     * The recording takes [now]: a replay runs quiche's timeout when this host did, however late it woke.
+     */
+    fun expire(now: Nanos) {
+        if (c.life.view() !is Life.Open) return
+        c.flight.timerFired(now)
+        c.expired(paths)
     }
 
     fun network(
