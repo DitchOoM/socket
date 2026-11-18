@@ -1963,24 +1963,25 @@ fun patchQuicheProbeNowFfi(sourceDir: File) {
 /**
  * Export `quiche_config_set_initial_rtt`, `quiche_conn_set_handshake_pto_ceiling` and
  * `quiche_conn_handshake_pto_ceiling_held`: the RTT quiche assumes before its first sample, a ceiling on the PTO
- * interval, and whether the active path still holds it.
+ * interval that grows with each PTO expiry, and whether the active path still holds it.
  *
- * `Config::set_initial_rtt` exists in Rust and has no C function. The ceiling is new. Each path's recovery holds it
- * (`SocketPtoCeiling`): `Unset`, `Held(ceiling)`, or `Released` once the path takes an RTT sample in the application
- * space with the handshake confirmed (the `completed` flag of `HandshakeStatus`, which
- * [patchQuichePtoWaitsForConfirmation] makes mean confirmed). While held, the recovery takes the smaller of its own
- * backed-off PTO and the ceiling in every packet number space, so an estimate inflated by a handshake-era sample
- * (the peer's handshake computation, or its own PTO delaying its ACK) is not held to multi-second retransmit gaps
- * before a sample of the connection proper replaces it. A released recovery ignores later ceilings. Setting it
- * re-arms each path's loss-detection timer, so a ceiling set right after a PTO expiry bounds the wait that expiry
- * armed. Zero across the C seam removes a ceiling not yet released. The policy (the ceiling's sequence) is the
- * caller's; quiche applies it and reports its release.
+ * `Config::set_initial_rtt` exists in Rust and has no C function. The ceiling is new. The caller gives its rule (a first
+ * ceiling, a growth factor per PTO expiry, a maximum); each path's recovery holds it (`SocketPtoCeiling`): `Unset`,
+ * `Held { rule, ceiling }`, or `Released` once the path takes an RTT sample in the application space with the
+ * handshake confirmed (the `completed` flag of `HandshakeStatus`, which [patchQuichePtoWaitsForConfirmation] makes
+ * mean confirmed). While held, the recovery takes the smaller of its own backed-off PTO and the ceiling in every
+ * packet number space, so an estimate inflated by a handshake-era sample (the peer's handshake computation, or its own
+ * PTO delaying its ACK) is not held to multi-second retransmit gaps before a sample of the connection proper replaces
+ * it. Each PTO expiry grows the ceiling by the rule's factor, up to its maximum; discarding a packet number space's
+ * keys starts it again from the first ceiling, as [patchQuichePtoBackoffResetsOnKeyDiscard] does the backoff (applied
+ * before this patch, whose reset it anchors on). A released recovery ignores later rules. Setting a rule re-arms each
+ * path's loss-detection timer. A first ceiling of zero across the C seam removes a ceiling not yet released.
  *
  * Marker-guarded and loud in both directions: a re-run returns, a moved anchor throws, and an upstream that exports
  * either function throws, telling you to delete this patch.
  */
 fun patchQuicheHandshakePtoCeiling(sourceDir: File) {
-    val marker = "socket-handshake-pto-ceiling-v2"
+    val marker = "socket-handshake-pto-ceiling-v3"
     val src = sourceDir.resolve("quiche/src")
     val ffiRs = src.resolve("ffi.rs")
     if (!ffiRs.exists()) return
@@ -2014,28 +2015,63 @@ fun patchQuicheHandshakePtoCeiling(sourceDir: File) {
         src.resolve("recovery/mod.rs"),
         traitDecl,
         """
+        |// $marker: how a path's ceiling on its PTO interval starts, grows per PTO expiry, and stops growing.
+        |#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        |pub struct SocketPtoRule {
+        |    first: Duration,
+        |    growth: u32,
+        |    max: Duration,
+        |}
+        |
+        |impl SocketPtoRule {
+        |    pub fn new(first: Duration, growth: u32, max: Duration) -> Self {
+        |        SocketPtoRule { first, growth: growth.max(1), max: max.max(first) }
+        |    }
+        |}
+        |
         |// $marker: a path's ceiling on its PTO interval, held until its first RTT sample in the application space
         |// with the handshake confirmed.
         |#[derive(Clone, Copy, Debug, PartialEq, Eq)]
         |pub(crate) enum SocketPtoCeiling {
         |    Unset,
-        |    Held(Duration),
+        |    Held { rule: SocketPtoRule, ceiling: Duration },
         |    Released,
         |}
         |
         |impl SocketPtoCeiling {
-        |    // A released ceiling stays released; otherwise the caller's ceiling, or none.
-        |    pub(crate) fn set(self, ceiling: Option<Duration>) -> Self {
-        |        match (self, ceiling) {
+        |    // A released ceiling stays released; otherwise the caller's rule from its first ceiling, or none.
+        |    pub(crate) fn set(self, rule: Option<SocketPtoRule>) -> Self {
+        |        match (self, rule) {
         |            (SocketPtoCeiling::Released, _) => SocketPtoCeiling::Released,
-        |            (_, Some(c)) => SocketPtoCeiling::Held(c),
+        |            (_, Some(rule)) => SocketPtoCeiling::Held { rule, ceiling: rule.first },
         |            (_, None) => SocketPtoCeiling::Unset,
+        |        }
+        |    }
+        |
+        |    // A PTO expired: the ceiling grows by the rule's factor, up to its maximum.
+        |    pub(crate) fn grown(self) -> Self {
+        |        match self {
+        |            SocketPtoCeiling::Held { rule, ceiling } => SocketPtoCeiling::Held {
+        |                rule,
+        |                ceiling: ceiling
+        |                    .checked_mul(rule.growth)
+        |                    .map_or(rule.max, |c| std::cmp::min(c, rule.max)),
+        |            },
+        |            other => other,
+        |        }
+        |    }
+        |
+        |    // A packet number space's keys were discarded: the ceiling starts again from the rule's first.
+        |    pub(crate) fn restarted(self) -> Self {
+        |        match self {
+        |            SocketPtoCeiling::Held { rule, .. } => SocketPtoCeiling::Held { rule, ceiling: rule.first },
+        |            other => other,
         |        }
         |    }
         |
         |    pub(crate) fn clamp(self, duration: Duration) -> Duration {
         |        match self {
-        |            SocketPtoCeiling::Held(c) => std::cmp::min(duration, c),
+        |            SocketPtoCeiling::Held { ceiling, .. } => std::cmp::min(duration, ceiling),
         |            SocketPtoCeiling::Unset | SocketPtoCeiling::Released => duration,
         |        }
         |    }
@@ -2049,9 +2085,9 @@ fun patchQuicheHandshakePtoCeiling(sourceDir: File) {
         src.resolve("recovery/mod.rs"),
         timeoutDecl,
         """
-        |    // $marker: bounds the PTO interval until released; re-arms the timer.
+        |    // $marker: bounds the PTO interval by the rule's ceiling until released; re-arms the timer.
         |    fn socket_set_pto_ceiling(
-        |        &mut self, ceiling: Option<Duration>, handshake_status: HandshakeStatus,
+        |        &mut self, rule: Option<SocketPtoRule>, handshake_status: HandshakeStatus,
         |        now: Instant,
         |    );
         |
@@ -2072,16 +2108,16 @@ fun patchQuicheHandshakePtoCeiling(sourceDir: File) {
         """
         |    // $marker
         |    fn socket_set_pto_ceiling(
-        |        &mut self, ceiling: Option<Duration>, handshake_status: HandshakeStatus,
-        |        now: Instant,
+        |        &mut self, rule: Option<crate::recovery::SocketPtoRule>,
+        |        handshake_status: HandshakeStatus, now: Instant,
         |    ) {
-        |        self.socket_pto_ceiling = self.socket_pto_ceiling.set(ceiling);
+        |        self.socket_pto_ceiling = self.socket_pto_ceiling.set(rule);
         |        self.set_loss_detection_timer(handshake_status, now);
         |    }
         |
         |    // $marker
         |    fn socket_pto_ceiling_held(&self) -> bool {
-        |        matches!(self.socket_pto_ceiling, crate::recovery::SocketPtoCeiling::Held(_))
+        |        matches!(self.socket_pto_ceiling, crate::recovery::SocketPtoCeiling::Held { .. })
         |    }
         |
         |
@@ -2097,6 +2133,14 @@ fun patchQuicheHandshakePtoCeiling(sourceDir: File) {
         |            }
         |
         """.trimMargin()
+    val expiry = "        self.pto_count += 1;\n"
+    val growth =
+        "\n        // $marker: each PTO expiry grows the ceiling.\n" +
+            "        self.socket_pto_ceiling = self.socket_pto_ceiling.grown();\n"
+    val discard = "        // socket-pto-backoff-resets-on-key-discard: RFC 9002 §6.2.1 and A.10.\n        self.pto_count = 0;\n"
+    val restart =
+        "        // $marker: and the ceiling starts again from its first.\n" +
+            "        self.socket_pto_ceiling = self.socket_pto_ceiling.restarted();\n"
     for (impl in listOf("recovery/congestion/recovery.rs", "recovery/gcongestion/recovery.rs")) {
         val file = src.resolve(impl)
         replaceOnce(
@@ -2112,17 +2156,21 @@ fun patchQuicheHandshakePtoCeiling(sourceDir: File) {
         replaceOnce(file, backoff, backoff + "\n" + clamp)
         replaceOnce(file, timeoutDecl, setter + timeoutDecl)
         replaceOnce(file, sampled, sampled + release)
+        replaceOnce(file, expiry, expiry + growth)
+        replaceOnce(file, discard, discard + restart)
     }
     replaceOnce(
         src.resolve("lib.rs"),
         "    pub fn send_ack_eliciting(&mut self) -> Result<()> {\n",
         """
-        |    /// $marker: a ceiling on the PTO interval of every path until it is released, or none.
-        |    pub fn socket_set_handshake_pto_ceiling(&mut self, ceiling: Option<Duration>) {
+        |    /// $marker: the rule of a ceiling on the PTO interval of every path until it is released, or none.
+        |    pub fn socket_set_handshake_pto_ceiling(
+        |        &mut self, rule: Option<crate::recovery::SocketPtoRule>,
+        |    ) {
         |        let handshake_status = self.handshake_status();
         |        let now = crate::now();
         |        for (_, p) in self.paths.iter_mut() {
-        |            p.recovery.socket_set_pto_ceiling(ceiling, handshake_status, now);
+        |            p.recovery.socket_set_pto_ceiling(rule, handshake_status, now);
         |        }
         |    }
         |
@@ -2147,15 +2195,22 @@ fun patchQuicheHandshakePtoCeiling(sourceDir: File) {
             |    config.set_initial_rtt(std::time::Duration::from_nanos(v));
             |}
             |
-            |// $marker: the longest PTO interval until released, in nanoseconds; 0 removes one not yet released.
+            |// $marker: the longest PTO interval until released, from `first` nanoseconds, times `growth` per PTO
+            |// expiry up to `max` nanoseconds; a `first` of 0 removes one not yet released.
             |#[no_mangle]
-            |pub extern "C" fn quiche_conn_set_handshake_pto_ceiling(conn: &mut Connection, v: u64) {
-            |    let ceiling = if v == 0 {
+            |pub extern "C" fn quiche_conn_set_handshake_pto_ceiling(
+            |    conn: &mut Connection, first: u64, growth: u32, max: u64,
+            |) {
+            |    let rule = if first == 0 {
             |        None
             |    } else {
-            |        Some(std::time::Duration::from_nanos(v))
+            |        Some(crate::recovery::SocketPtoRule::new(
+            |            std::time::Duration::from_nanos(first),
+            |            growth,
+            |            std::time::Duration::from_nanos(max),
+            |        ))
             |    };
-            |    conn.socket_set_handshake_pto_ceiling(ceiling);
+            |    conn.socket_set_handshake_pto_ceiling(rule);
             |}
             |
             |// $marker: whether the active path still holds a ceiling.

@@ -11,8 +11,8 @@ import kotlin.test.assertTrue
 
 /**
  * The `socket-handshake-pto-ceiling` quiche patch, against the real library on quiche's own virtual clock: the initial
- * RTT sets the first PTO, a ceiling caps every PTO interval while the handshake is unconfirmed and re-arms the timer
- * when it is set, and removing it gives quiche's own PTO back. No socket and no peer: a client's first flight arms
+ * RTT sets the first PTO, a ceiling caps every PTO interval and re-arms the timer when it is set, a growing one grows
+ * with each expiry, and removing it gives quiche's own PTO back. No socket and no peer: a client's first flight arms
  * the timer.
  */
 class HandshakePtoCeilingQuicheTests {
@@ -103,6 +103,27 @@ class HandshakePtoCeilingQuicheTests {
                 assertTrue(probes > 0, "the PTO sent a probe")
                 assertTrue(waitNanos(conn) <= 100 * ms, "expiry ${it + 1}: ${waitNanos(conn)} ns, over the ceiling")
             }
+        }
+
+    /**
+     * A growing ceiling grows by its factor with each PTO expiry, under quiche's own 2× backoff of 999 ms. No probe is
+     * sent, so each PTO stays armed from the first flight.
+     */
+    @Test
+    fun aGrowingCeilingGrowsWithEachExpiry() =
+        run {
+            val conn = firstFlight(initialRttNanos = null)
+            api.connSetHandshakePtoCeiling(conn, PtoCeiling.Growing(100 * ms, 3, 3_600_000 * ms))
+            assertEquals(100 * ms, waitNanos(conn))
+            var now = T0
+            val waits =
+                List(2) {
+                    now += waitNanos(conn)
+                    api.setThreadVirtualTimeNanos(now)
+                    api.connOnTimeout(conn)
+                    now - T0 + waitNanos(conn)
+                }
+            assertEquals(listOf(300 * ms, 900 * ms), waits, "the PTO's deadline after each expiry, from the first flight")
         }
 
     private companion object {

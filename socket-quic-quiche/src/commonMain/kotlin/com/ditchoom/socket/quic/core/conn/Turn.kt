@@ -139,7 +139,7 @@ internal class Turn(
     ): Copy = c.ingress.copy(bytes, length, from)
 
     /**
-     * Inside, at [now]: the connection's deadline fell due. The handshake follows quiche's PTO expiries while they matter to it.
+     * Inside, at [now]: the connection's deadline fell due. While unconfirmed, the handshake counts quiche's PTO expiries.
      * The recording takes [now]: a replay runs quiche's timeout when this host did, however late it woke.
      */
     fun expire(now: Nanos) {

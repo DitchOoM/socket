@@ -25,9 +25,8 @@ import kotlin.time.Duration.Companion.seconds
 
 /**
  * A client [Handshake] on a real quiche pair and the pair's virtual clock, its timer expiries followed as the core's
- * connection follows them, from the prior of an unknown link as the interop client has it. The server's answer to the
- * first flight is held 4 s while every client probe is lost, so the only handshake RTT sample is 4 s: quiche's own PTO
- * after confirmation is then about 12 s, and the ceiling has grown to 9 s over the handshake's two PTO expiries.
+ * connection follows them. The server's answer to the first flight is held 4 s while every client probe is lost, so
+ * the only handshake RTT sample is 4 s: quiche's own PTO after confirmation is then about 12 s.
  */
 class PtoCeilingPastConfirmationTests {
     private val ms = 1_000_000L
@@ -46,9 +45,14 @@ class PtoCeilingPastConfirmationTests {
             }
         }
 
-    /** An unknown link's prior, 333 ms: the first ceiling is 999 ms, grown 3× per PTO expiry. */
-    private val prior = HandshakeRule.priorOf(LinkClass.Unknown)
-    private val rule = HandshakeRule.adaptive(prior, 25 * ms, HandshakeBound.UntilClosed, LinkClass.Unknown)
+    /** The adaptive rule of [link]'s prior: an unknown link (the interop client's) starts at 999 ms, Wi-Fi at 240 ms. */
+    private fun ruleOf(link: LinkClass) = HandshakeRule.adaptive(HandshakeRule.priorOf(link), 25 * ms, HandshakeBound.UntilClosed, link)
+
+    private fun firstCeilingOf(rule: HandshakeRule): Duration =
+        when (val pto = rule.pto) {
+            is PtoRule.Adaptive -> pto.firstCeilingNanos.nanoseconds
+            is PtoRule.Rfc9002 -> Duration.INFINITE
+        }
 
     private class Client(
         val pair: QuichePairByHand,
@@ -59,9 +63,9 @@ class PtoCeilingPastConfirmationTests {
     /** What the core's connection does when the client's timer fires: [Rearm]'s `expired`. */
     private fun Client.followExpiry() =
         pair.onClock(pair.client) {
-            when (handshake.ptoFollow()) {
-                PtoFollow.Follow -> handshake.expired(path.read())
-                PtoFollow.Ignore -> Unit
+            when (handshake.confirmation()) {
+                Confirmation.Pending -> handshake.expired(path.read())
+                Confirmation.Confirmed -> Unit
             }
         }
 
@@ -90,8 +94,8 @@ class PtoCeilingPastConfirmationTests {
     }
 
     /** The client's handshake confirmed, its only RTT sample the 4 s the server's answer was held. */
-    private suspend fun confirmedAfterAnInflatedSample(): Client {
-        val pair = QuichePairByHand.open(env, configureClient = { env.api.configSetInitialRtt(it, prior) })
+    private suspend fun confirmedAfterAnInflatedSample(rule: HandshakeRule = ruleOf(LinkClass.Unknown)): Client {
+        val pair = QuichePairByHand.open(env, configureClient = { env.api.configSetInitialRtt(it, rule.priorNanos()) })
         val q = QuicheConnRef(api, pair.client)
         val client =
             Client(
@@ -130,35 +134,38 @@ class PtoCeilingPastConfirmationTests {
 
     /**
      * The interop handshakeloss failure: a request lost just after confirmation waited for quiche's PTO of an inflated
-     * handshake sample (12 s there) while the peer gave up on it. The ceiling the handshake grew to still bounds the
-     * first 1-RTT retransmission, because no RTT sample has been taken in the application space yet. quiche adds the
-     * peer's max_ack_delay to a PTO in the application space (RFC 9002 §6.2.1).
+     * handshake sample (12 s there) while the peer gave up on it. Discarding the handshake keys starts the ceiling's
+     * growth again from its first value, as it does quiche's backoff, and the ceiling still holds because no RTT sample
+     * has been taken in the application space: the first 1-RTT retransmission leaves within the first ceiling. quiche
+     * adds the peer's max_ack_delay to a PTO in the application space (RFC 9002 §6.2.1).
      */
-    @Test
-    fun aRequestLostAfterConfirmationIsResentWithinTheHandshakeCeiling() =
-        runTest {
-            val client = confirmedAfterAnInflatedSample()
-            try {
-                val held =
-                    ceilings
-                        .filterIsInstance<PtoCeiling.At>()
-                        .last()
-                        .nanos.nanoseconds
-                val resent = client.firstRetransmissionOfALostRequest()
-                assertTrue(
-                    resent <= held + MAX_ACK_DELAY,
-                    "the first 1-RTT retransmission left $resent after the request, past the ceiling of $held; " +
-                        "ceilings set: ${ceilings.map(::shown)}",
-                )
-            } finally {
-                client.pair.close()
-            }
+    private suspend fun resentWithinTheFirstCeiling(link: LinkClass) {
+        val rule = ruleOf(link)
+        val client = confirmedAfterAnInflatedSample(rule)
+        try {
+            val first = firstCeilingOf(rule)
+            val resent = client.firstRetransmissionOfALostRequest()
+            assertTrue(
+                resent <= first + MAX_ACK_DELAY,
+                "$link: the first 1-RTT retransmission left $resent after the request, past the first ceiling of " +
+                    "$first; ceilings set: ${ceilings.map(::shown)}",
+            )
+        } finally {
+            client.pair.close()
         }
+    }
+
+    @Test
+    fun aRequestLostAfterConfirmationIsResentWithinTheFirstCeilingOnAnUnknownLink() =
+        runTest { resentWithinTheFirstCeiling(LinkClass.Unknown) }
+
+    /** Wi-Fi's handshake sat through four expiries, which grew its ceiling past quiche's own PTO. */
+    @Test
+    fun aRequestLostAfterConfirmationIsResentWithinTheFirstCeilingOnWifi() = runTest { resentWithinTheFirstCeiling(LinkClass.Wifi) }
 
     /**
      * The server acknowledging a request is the first RTT sample in the application space: quiche releases the ceiling,
-     * the next expiry the connection follows removes it from every path, and a later loss waits for quiche's own PTO,
-     * of an estimate still mostly the handshake's.
+     * and a later loss waits for quiche's own PTO, of an estimate still mostly the handshake's.
      */
     @Test
     fun theFirstApplicationSampleReleasesTheCeiling() =
@@ -170,15 +177,10 @@ class PtoCeilingPastConfirmationTests {
                 assertEquals(7, pair.streamSend(pair.client, QuicStreamId(0), "request", fin = true))
                 client.carryAll()
                 assertEquals(false, env.api.connHandshakePtoCeilingHeld(pair.client), "released by the acknowledgement")
-                val held =
-                    ceilings
-                        .filterIsInstance<PtoCeiling.At>()
-                        .last()
-                        .nanos.nanoseconds
+                val first = firstCeilingOf(ruleOf(LinkClass.Unknown))
                 val resent = client.firstRetransmissionOfALostRequest(QuicStreamId(4))
-                assertTrue(resent > held + MAX_ACK_DELAY, "quiche's own PTO, past the released ceiling of $held: $resent")
-                assertEquals(PtoCeiling.None, ceilings.last(), "ceilings set: ${ceilings.map(::shown)}")
-                assertEquals(PtoFollow.Ignore, pair.onClock(pair.client) { client.handshake.ptoFollow() })
+                assertTrue(resent > first + MAX_ACK_DELAY, "quiche's own PTO, past the released ceiling: $resent")
+                assertEquals(1, ceilings.size, "the core gave quiche its ceiling once: ${ceilings.map(::shown)}")
             } finally {
                 client.pair.close()
             }
@@ -187,6 +189,7 @@ class PtoCeilingPastConfirmationTests {
     private fun shown(ceiling: PtoCeiling): String =
         when (ceiling) {
             is PtoCeiling.At -> ceiling.nanos.nanoseconds.toString()
+            is PtoCeiling.Growing -> "${ceiling.firstNanos.nanoseconds} ×${ceiling.growth} ≤ ${ceiling.maxNanos.nanoseconds}"
             is PtoCeiling.None -> "none"
         }
 
