@@ -295,13 +295,25 @@ static void gro_round_trip(int family) {
         CHECK((r & 0xffffffff) == k && ((r >> 32) & 0xffff) == 0, "gro: sent %lld of %d", (long long)(r & 0xffffffff), k);
         sent_total += k;
         if (round == 0) {
-            /* Too few free slots for the 17 the message holds: nothing is taken, the message stays. */
+            /* A message is never split across reads: with 8 free slots a read takes whole messages that fit, and the
+             * message that does not (the 17-datagram one, unless the kernel delivered it in smaller pieces) stays. */
             CHECK(wait_fd(server, POLLIN), "gro: the 17-datagram message never arrived");
             wait_queue_settled(server);
             int32_t w = 0;
             int32_t before = got;
+            (void)before;
             got = coalesced_all(server, 8, 1, lengths, got, &w);
-            CHECK(got == before, "gro: 8 free slots took %d datagrams of a 17-datagram message", got - before);
+#ifdef __linux__
+            struct qn_gro_state *st = (struct qn_gro_state *)(uintptr_t)qn_udp_gro_scratch(server);
+            int32_t taken = got - before;
+            CHECK(taken <= 8, "gro: 8 free slots took %d datagrams", taken);
+            if (st->count > 0) {
+                int32_t next = qn_gro_count(st->length[st->first], st->segment[st->first]);
+                CHECK(taken + next > 8, "gro: a waiting %d-datagram message fits the %d free slots yet stayed", next, 8 - taken);
+            } else {
+                CHECK(taken > 0, "gro: the message vanished: nothing taken, nothing waiting");
+            }
+#endif
         }
     }
     got = coalesced_all(server, 64, sent_total, lengths, got, &widest);
@@ -445,6 +457,51 @@ static long process_rss_kb(void) {
     return rss * 4;
 }
 
+/* The release policy, read straight off a fresh socket's scratch after one read: every message longer than
+ * QN_GRO_RELEASE_ABOVE has its pages given back, and one at or below it may stay resident but only for the pages its
+ * own bytes need. The kernel may deliver a segmented send as several smaller messages, so this reports whether the
+ * read held a message over the bound; a read that did not proves nothing about release. */
+static int gro_release_policy(void) {
+    int server = open_gro_server(4, 1);
+    int client = open_socket(spec_a, 4, spec_b + QN_SPEC_LOCAL);
+    int32_t want[256];
+    send_run(client, 4, QN_IO_SEGMENT, 32, 0, 1200, want, 0);
+    wait_fd(server, POLLIN);
+    wait_queue_settled(server);
+    uint8_t *scratch = (uint8_t *)(uintptr_t)qn_udp_gro_scratch(server);
+    struct qn_gro_state *st = (struct qn_gro_state *)scratch;
+    for (int i = 0; i < 64; i++) {
+        int64_t a = (int64_t)(uintptr_t)recv_bufs[i];
+        memcpy(recv_records + i * QN_RECV_RECORD, &a, 8);
+    }
+    int64_t r = qn_udp_recv_coalesced(server, (int64_t)(uintptr_t)recv_records, 64, 2048);
+    int32_t datagrams = (int32_t)(r & 0xffffffff), messages = st->first;
+    int exercised = 0;
+    if (datagrams != 32 || st->count != 0) {
+        /* Part of the send had not arrived when the read started: not a read the policy can be judged on. */
+        int32_t rest;
+        drain_calls(server, 1, &rest, 0);
+    } else {
+        for (int j = 0; j < messages; j++) {
+            int32_t length = st->length[j];
+            int64_t bytes = ((int64_t)length + 4095) & ~4095LL;
+            int64_t resident = resident_pages((int64_t)(uintptr_t)scratch + QN_GRO_HEADER_BYTES + (int64_t)j * QN_GRO_MESSAGE_BYTES,
+                                              QN_GRO_MESSAGE_BYTES);
+            if (length > QN_GRO_RELEASE_ABOVE) {
+                exercised = 1;
+                CHECK(resident == 0, "a delivered %d-byte message (slot %d) kept %lld pages", length, j, (long long)resident);
+            } else {
+                CHECK(resident <= bytes / 4096 + 1, "a delivered %d-byte message (slot %d) holds %lld pages, its bytes need %lld",
+                      length, j, (long long)resident, (long long)(bytes / 4096));
+            }
+        }
+        printf("a 32-datagram read held %d messages%s\n", messages, exercised ? ", one over the release bound" : "");
+    }
+    qn_close(client);
+    qn_close(server);
+    return exercised;
+}
+
 /* The receive scratch costs what the kernel writes into it: a page or so per lone datagram's buffer, not its 4 MiB. */
 static void gro_resident(void) {
     int server = open_gro_server(4, 1);
@@ -476,16 +533,10 @@ static void gro_resident(void) {
     CHECK(a >= 0 && a <= 4, "open touched %lld scratch pages", (long long)a);
     CHECK(b > 0 && b <= total / 8, "10016 lone datagrams left %lld of %lld scratch pages resident", (long long)b,
           (long long)total);
-    /* A message of 32 x 1200 bytes passes the release bound: once delivered, its pages (and the lone datagram's page
-     * before it) are given back. */
-    send_run(client, 4, QN_IO_SEGMENT, 32, 0, 1200, want, 0);
-    wait_fd(server, POLLIN);
-    wait_queue_settled(server);
-    drain_calls(server, 1, &datagrams, 32);
-    CHECK(datagrams == 32, "big message delivered %d of 32 datagrams", datagrams);
-    int64_t first = resident_pages(scratch + QN_GRO_HEADER_BYTES, QN_GRO_MESSAGE_BYTES);
-    printf("a delivered 38400-byte message left %lld of its 16 pages resident\n", (long long)first);
-    CHECK(first == 0, "a delivered big message kept %lld pages", (long long)first);
+    int exercised = 0;
+    for (int attempt = 0; attempt < 8 && !exercised; attempt++) exercised = gro_release_policy();
+    CHECK(exercised, "no 32-datagram segmented send in 8 arrived as a message over %d bytes: the kernel split every one "
+                     "below the release bound, so the release path was never exercised", QN_GRO_RELEASE_ABOVE);
     (void)got;
     qn_close(client);
     qn_close(server);
