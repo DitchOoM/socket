@@ -56,10 +56,11 @@ internal class ServerEdge(
         build: ConnBuild,
     ): Opened {
         val capture = traceRecorderFor(options)
+        val id = hex(peer.scid0) + hex(peer.scid1)
+        build.nameQlog(capture, QuicSessionId(id))
         val edge = EdgeState(build.alpn, capture, TicketHome.NotKept)
         val conn = build.build(edge, capture)
         val scope = CoroutineScope(SupervisorJob())
-        val id = hex(peer.scid0) + hex(peer.scid1)
         val connection =
             CoreConnection(
                 conn,

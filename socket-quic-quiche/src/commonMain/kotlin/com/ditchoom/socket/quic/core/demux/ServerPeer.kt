@@ -4,6 +4,8 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.socket.quic.EncodedSockAddr
 import com.ditchoom.socket.quic.PathKey
+import com.ditchoom.socket.quic.QuicRole
+import com.ditchoom.socket.quic.QuicSessionId
 import com.ditchoom.socket.quic.QuicheConfig
 import com.ditchoom.socket.quic.core.conn.Conn
 import com.ditchoom.socket.quic.core.conn.ConnAddress
@@ -25,6 +27,7 @@ import com.ditchoom.socket.quic.core.sched.SendPort
 import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.udp.Addressed
 import com.ditchoom.socket.quic.core.udp.NativeBytes
+import com.ditchoom.socket.quic.nameQlog
 import com.ditchoom.socket.quic.trace.TraceCapture
 import kotlinx.coroutines.Runnable
 
@@ -88,6 +91,12 @@ internal class ConnBuild(
 ) {
     /** Where the connection copies the negotiated ALPN; the edge reads it at establishment. */
     val alpn: PlatformBuffer get() = memory.alpn.owner
+
+    /** Names the connection's qlog before quiche reads its first datagram. */
+    fun nameQlog(
+        capture: TraceCapture,
+        session: QuicSessionId,
+    ) = q.api.nameQlog(q.handle, capture, QuicRole.Server, session)
 
     fun build(
         sink: ConnSink,
