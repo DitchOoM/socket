@@ -9,7 +9,7 @@ import com.ditchoom.socket.quic.QuicAppErrorCode
 import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicCloseReason
-import com.ditchoom.socket.quic.QuicError
+import com.ditchoom.socket.quic.QuicConnectionEnd
 import com.ditchoom.socket.quic.QuicNativeMemoryRequiredException
 import com.ditchoom.socket.quic.QuicStreamAbort
 import com.ditchoom.socket.quic.QuicStreamClosedException
@@ -22,11 +22,11 @@ import com.ditchoom.socket.quic.QuicWriteTarget
 import com.ditchoom.socket.quic.QuicheDriver
 import com.ditchoom.socket.quic.RouteProbeFailure
 import com.ditchoom.socket.quic.UnresolvedRouteSourceException
+import com.ditchoom.socket.quic.closeReason
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.stream.QUICHE_ERR_INVALID_STREAM_STATE
 import com.ditchoom.socket.quic.core.stream.QUICHE_ERR_STREAM_RESET
 import com.ditchoom.socket.quic.core.stream.QUICHE_ERR_STREAM_STOPPED
-import com.ditchoom.socket.quic.core.udp.SocketFault
 import com.ditchoom.socket.quic.core.udp.SpecLayoutMismatch
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.InternalCoroutinesApi
@@ -162,20 +162,28 @@ internal fun endedWith(
     during: QuicCloseCircumstance,
 ): Throwable = closeOf(end, during)
 
-/** How [end] reads in the public close reason. */
-internal fun closeReasonOf(end: ConnEnd): QuicCloseReason =
+/** How [end] reads in the public close reason: the reason of its [publicEndOf]. */
+internal fun closeReasonOf(end: ConnEnd): QuicCloseReason = publicEndOf(end).closeReason
+
+/** The one mapping from how a connection ended to what callers are told: each [ConnEnd] to its [QuicConnectionEnd]. */
+internal fun publicEndOf(end: ConnEnd): QuicConnectionEnd =
     when (end) {
-        is ConnEnd.ByPeer -> QuicCloseReason.ByPeer(end.error)
-        is ConnEnd.ByLocal -> QuicCloseReason.ByLocal(end.error)
-        is ConnEnd.IdleTimeout -> QuicCloseReason.ByLocal(QuicError.IdleTimeout)
-        is ConnEnd.HandshakeTimedOut -> QuicCloseReason.ByLocal(QuicError.HandshakeTimeout(end.progress.waited))
-        is ConnEnd.ProcessingFailed -> QuicCloseReason.ByLocal(QuicError.ProcessingFailed)
-        is ConnEnd.ServerClosed -> QuicCloseReason.ByLocal(QuicError.NoError)
-        is ConnEnd.ServerClosedUnsettled -> QuicCloseReason.ByLocal(QuicError.ServerStoppedBeforeCloseSent)
-        is ConnEnd.NoUsablePath -> QuicCloseReason.ByLocal(QuicError.NoViablePath)
-        is ConnEnd.SocketFailed, is ConnEnd.CallerFailed, is ConnEnd.LoopFailed, is ConnEnd.LoopStopped,
-        is ConnEnd.NoErrorRecorded, is ConnEnd.Released, is ConnEnd.NetworkLost, is ConnEnd.LocalAddressGone,
-        -> QuicCloseReason.Unspecified
+        is ConnEnd.ByPeer -> QuicConnectionEnd.ByPeer(end.error)
+        is ConnEnd.ByLocal -> QuicConnectionEnd.ByLocal(end.error)
+        is ConnEnd.IdleTimeout -> QuicConnectionEnd.IdleTimeout
+        is ConnEnd.HandshakeTimedOut -> QuicConnectionEnd.HandshakeTimedOut(publicProgressOf(end.progress))
+        is ConnEnd.SocketFailed -> QuicConnectionEnd.SocketFailed(publicFaultOf(end.fault))
+        is ConnEnd.ProcessingFailed -> QuicConnectionEnd.ProcessingFailed(end.thrown.throwable)
+        is ConnEnd.CallerFailed -> QuicConnectionEnd.CallerFailed(end.thrown.throwable)
+        is ConnEnd.LoopFailed -> QuicConnectionEnd.LoopFailed(end.thrown.throwable)
+        is ConnEnd.LoopStopped -> QuicConnectionEnd.LoopStopped
+        is ConnEnd.ServerClosed -> QuicConnectionEnd.ServerClosed
+        is ConnEnd.ServerClosedUnsettled -> QuicConnectionEnd.ServerClosedUnsettled
+        is ConnEnd.NoErrorRecorded -> QuicConnectionEnd.NoErrorRecorded
+        is ConnEnd.Released -> QuicConnectionEnd.Released
+        is ConnEnd.NetworkLost -> QuicConnectionEnd.NetworkLost
+        is ConnEnd.LocalAddressGone -> QuicConnectionEnd.LocalAddressGone
+        is ConnEnd.NoUsablePath -> QuicConnectionEnd.NoUsablePath
     }
 
 private fun exceptionOf(
@@ -217,26 +225,11 @@ private fun exceptionOf(
         is Raised.NetworkRefused -> failure.refusal
     }
 
-/** The close exception for [end]: its reason, the circumstance it names, and its thrown object for the stack trace. */
+/** The close exception for [end]: its public end and the circumstance it names. */
 private fun closeOf(
     end: ConnEnd,
     during: QuicCloseCircumstance,
-): QuicCloseException =
-    when (val trace = end.trace()) {
-        is Trace.None -> QuicCloseException(end.reason(), end.circumstance(during))
-        is Trace.Of -> QuicCloseException(end.reason(), end.circumstance(during), trace.thrown)
-    }
-
-/** Whether an end carries a thrown object, kept as the exception's cause for stack traces only. */
-private sealed interface Trace {
-    data object None : Trace
-
-    class Of(
-        val thrown: Throwable,
-    ) : Trace
-}
-
-private fun ConnEnd.reason(): QuicCloseReason = closeReasonOf(this)
+): QuicCloseException = QuicCloseException(publicEndOf(end), end.circumstance(during))
 
 private fun ConnEnd.circumstance(during: QuicCloseCircumstance): QuicCloseCircumstance =
     when (this) {
@@ -248,25 +241,6 @@ private fun ConnEnd.circumstance(during: QuicCloseCircumstance): QuicCloseCircum
         is ConnEnd.SocketFailed, is ConnEnd.LoopStopped, is ConnEnd.ServerClosed, is ConnEnd.NoErrorRecorded,
         is ConnEnd.NetworkLost, is ConnEnd.LocalAddressGone, is ConnEnd.ServerClosedUnsettled, is ConnEnd.NoUsablePath,
         -> during
-    }
-
-private fun ConnEnd.trace(): Trace =
-    when (this) {
-        is ConnEnd.ProcessingFailed -> Trace.Of(thrown.throwable)
-        is ConnEnd.CallerFailed -> Trace.Of(thrown.throwable)
-        is ConnEnd.LoopFailed -> Trace.Of(thrown.throwable)
-        is ConnEnd.SocketFailed ->
-            when (val fault = fault) {
-                is SocketFault.Unnamed -> Trace.Of(fault.thrown.throwable)
-                is SocketFault.Repeated -> Trace.Of(fault.thrown.throwable)
-                is SocketFault.ReopenRefused -> Trace.Of(fault.thrown.throwable)
-                is SocketFault.MoveRefused -> Trace.Of(fault.thrown.throwable)
-                is SocketFault.Closed -> Trace.None
-            }
-        is ConnEnd.ByPeer, is ConnEnd.ByLocal, is ConnEnd.IdleTimeout, is ConnEnd.HandshakeTimedOut,
-        is ConnEnd.LoopStopped, is ConnEnd.ServerClosed, is ConnEnd.NoErrorRecorded, is ConnEnd.Released,
-        is ConnEnd.NetworkLost, is ConnEnd.LocalAddressGone, is ConnEnd.ServerClosedUnsettled, is ConnEnd.NoUsablePath,
-        -> Trace.None
     }
 
 /** The same exception a 4.x stream deadline raises, built where it is thrown from, so callers see one type. */

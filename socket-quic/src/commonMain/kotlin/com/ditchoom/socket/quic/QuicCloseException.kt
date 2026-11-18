@@ -29,11 +29,10 @@ import com.ditchoom.socket.SocketClosedException
  */
 class QuicCloseException private constructor(
     /**
-     * Why the connection ended, exhaustively — including **which side** closed it and whether the
-     * protocol explained the close at all. Match on it; do not infer the side from [quicError], which
-     * cannot express it.
+     * How the connection ended, exhaustively. An engine that records only the close reason reports
+     * [QuicConnectionEnd.ReasonOnly].
      */
-    val closeReason: QuicCloseReason,
+    val end: QuicConnectionEnd,
     /** What the local endpoint was doing when it ended; see [QuicCloseCircumstance]. */
     val circumstance: QuicCloseCircumstance,
     message: String,
@@ -44,7 +43,14 @@ class QuicCloseException private constructor(
      * [QuicCloseAttribution.Unattributed] when the throw site has no connection in hand.
      */
     val attribution: QuicCloseAttribution,
-) : SocketClosedException(withReason(message, closeReason, attribution), cause) {
+) : SocketClosedException(withReason(message, end.closeReason, attribution), cause) {
+    /**
+     * Why the connection ended — including **which side** closed it and whether the protocol explained
+     * the close at all; derived from [end]. Match on it; do not infer the side from [quicError], which
+     * cannot express it.
+     */
+    val closeReason: QuicCloseReason get() = end.closeReason
+
     /**
      * The protocol error code this close carries, for callers that want the *why* without the *who* —
      * e.g. mapping to a WebTransport failure, which has no notion of sides.
@@ -57,13 +63,23 @@ class QuicCloseException private constructor(
      */
     val quicError: QuicError get() = closeReason.errorOrNoError()
 
-    /** A close described by type: the message is derived from [circumstance] and [closeReason]. */
+    /**
+     * A close that names its [end]. The message is derived from [circumstance] and the end's reason; the cause, for
+     * stack traces only, is the end's thrown object when it has one.
+     */
+    constructor(
+        end: QuicConnectionEnd,
+        circumstance: QuicCloseCircumstance,
+        attribution: QuicCloseAttribution = QuicCloseAttribution.Unattributed,
+    ) : this(end, circumstance, circumstance.summary(), end.thrownForTrace(), attribution)
+
+    /** A close described by its reason alone: [end] is [QuicConnectionEnd.ReasonOnly]. */
     constructor(
         closeReason: QuicCloseReason,
         circumstance: QuicCloseCircumstance,
         cause: Throwable? = null,
         attribution: QuicCloseAttribution = QuicCloseAttribution.Unattributed,
-    ) : this(closeReason, circumstance, circumstance.summary(), cause, attribution)
+    ) : this(QuicConnectionEnd.ReasonOnly(closeReason), circumstance, circumstance.summary(), cause, attribution)
 
     /** A close the thrower describes in its own [message]; [circumstance] is [QuicCloseCircumstance.Unstated]. */
     constructor(
@@ -71,7 +87,7 @@ class QuicCloseException private constructor(
         message: String,
         cause: Throwable? = null,
         attribution: QuicCloseAttribution = QuicCloseAttribution.Unattributed,
-    ) : this(closeReason, QuicCloseCircumstance.Unstated, message, cause, attribution)
+    ) : this(QuicConnectionEnd.ReasonOnly(closeReason), QuicCloseCircumstance.Unstated, message, cause, attribution)
 
     /**
      * Compatibility constructor for the `QuicCloseException(error, …)` shape, for throw sites that
@@ -153,4 +169,26 @@ internal fun QuicCloseReason.errorOrNoError(): QuicError =
         is QuicCloseReason.ByPeer -> error
         is QuicCloseReason.ByLocal -> error
         QuicCloseReason.Graceful, QuicCloseReason.Unspecified -> QuicError.NoError
+    }
+
+/** The thrown object [this] end carries, kept as an exception's cause for stack traces only. */
+private fun QuicConnectionEnd.thrownForTrace(): Throwable? =
+    when (this) {
+        is QuicConnectionEnd.ProcessingFailed -> thrown
+        is QuicConnectionEnd.CallerFailed -> thrown
+        is QuicConnectionEnd.LoopFailed -> thrown
+        is QuicConnectionEnd.SocketFailed ->
+            when (val fault = fault) {
+                is QuicSocketFault.Unnamed -> fault.thrown
+                is QuicSocketFault.Repeated -> fault.thrown
+                is QuicSocketFault.ReopenRefused -> fault.thrown
+                is QuicSocketFault.MoveRefused -> fault.thrown
+                is QuicSocketFault.Closed -> null
+            }
+        is QuicConnectionEnd.ByPeer, is QuicConnectionEnd.ByLocal, is QuicConnectionEnd.IdleTimeout,
+        is QuicConnectionEnd.HandshakeTimedOut, is QuicConnectionEnd.LoopStopped, is QuicConnectionEnd.ServerClosed,
+        is QuicConnectionEnd.ServerClosedUnsettled, is QuicConnectionEnd.NoErrorRecorded, is QuicConnectionEnd.Released,
+        is QuicConnectionEnd.NetworkLost, is QuicConnectionEnd.LocalAddressGone, is QuicConnectionEnd.NoUsablePath,
+        is QuicConnectionEnd.ReasonOnly,
+        -> null
     }
