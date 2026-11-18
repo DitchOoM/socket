@@ -90,17 +90,27 @@ class HandshakeTests {
         assertEquals(listOf(240 * ms, 720 * ms, 2_160 * ms, 19_440 * ms), ceilings(), "3x per expiry, never per timer wake")
     }
 
+    /** Confirmation keeps the ceiling and its growth; quiche releasing it at its first 1-RTT sample removes it. */
     @Test
-    fun theCeilingIsRemovedOnceTheHandshakeIsConfirmedAndNotBefore() {
+    fun theCeilingOutlivesConfirmationUntilQuicheReleasesIt() {
         val handshake = handshake()
         stub.established = true
         assertEquals(HandshakeStep.JustEstablished, handshake.step(Nanos(50 * ms)))
-        assertEquals(listOf(240 * ms), ceilings(), "established but unconfirmed keeps the ceiling")
+        assertEquals(PtoFollow.Follow, handshake.ptoFollow())
         quicheSays(probes = 1)
         handshake.expired(path.read())
         confirmed = true
         assertEquals(HandshakeStep.Established, handshake.step(Nanos(80 * ms)))
-        assertEquals(listOf(240 * ms, 720 * ms, 0L), ceilings(), "confirmation removes the ceiling")
+        assertEquals(listOf(240 * ms, 720 * ms), ceilings(), "confirmation keeps the ceiling")
+        assertEquals(PtoFollow.Follow, handshake.ptoFollow(), "held until quiche's first 1-RTT sample")
+        quicheSays(probes = 2)
+        handshake.expired(path.read())
+        assertEquals(listOf(240 * ms, 720 * ms, 2_160 * ms), ceilings(), "an expiry after confirmation still grows it")
+        stub.ptoCeilingHeld = false
+        assertEquals(PtoFollow.Ignore, handshake.ptoFollow())
+        assertEquals(listOf(240 * ms, 720 * ms, 2_160 * ms, 0L), ceilings(), "released: removed from every path, once")
+        assertEquals(PtoFollow.Ignore, handshake.ptoFollow())
+        assertEquals(4, ceilings().size)
         assertEquals(Confirmation.Confirmed, handshake.confirmation())
         assertEquals(HandshakeStep.Established, handshake.step(Nanos(20_000 * ms)), "no deadline after confirmation")
         val sink = WakeSink()

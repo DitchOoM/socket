@@ -380,8 +380,9 @@ fun downloadQuicheSource(
     // Export quiche_conn_probe_now: a network that came back has the PTO's probes sent at once, past a congestion
     // window the outage's own probes filled (RFC 9002 §6.2.4). Idempotent, fails loudly on drift. See the KDoc.
     patchQuicheProbeNowFfi(sourceDir)
-    // Export quiche_config_set_initial_rtt and a ceiling on the handshake's PTO interval, so the handshake's
-    // retransmit gaps follow the caller's prior and growth rule. Idempotent, fails loudly on drift. See the KDoc.
+    // Export quiche_config_set_initial_rtt and a ceiling on the PTO interval held until the first application-space
+    // RTT sample after confirmation, so retransmit gaps follow the caller's prior and growth rule until the
+    // connection has a sample of its own. Idempotent, fails loudly on drift. See the KDoc.
     patchQuicheHandshakePtoCeiling(sourceDir)
     // A path already validated is never failed by PATH_CHALLENGEs counted lost, and a connection left with no path
     // closes with NO_VIABLE_PATH instead of no error. Applied after patchQuicheRetireDcidNoRelink, whose edit of
@@ -1960,22 +1961,26 @@ fun patchQuicheProbeNowFfi(sourceDir: File) {
 }
 
 /**
- * Export `quiche_config_set_initial_rtt` and `quiche_conn_set_handshake_pto_ceiling`: the RTT quiche assumes before
- * its first sample, and a ceiling on the PTO interval while the handshake is unconfirmed.
+ * Export `quiche_config_set_initial_rtt`, `quiche_conn_set_handshake_pto_ceiling` and
+ * `quiche_conn_handshake_pto_ceiling_held`: the RTT quiche assumes before its first sample, a ceiling on the PTO
+ * interval, and whether the active path still holds it.
  *
- * `Config::set_initial_rtt` exists in Rust and has no C function. The ceiling is new: recovery takes the smaller of
- * its own backed-off PTO and the ceiling in every packet number space while the handshake is unconfirmed (the
- * `completed` flag of `HandshakeStatus`, which [patchQuichePtoWaitsForConfirmation] makes mean confirmed), so a
- * handshake whose first RTT sample was inflated by the peer's handshake computation is not held to multi-second
- * retransmit gaps. Setting it re-arms each path's loss-detection timer, so a ceiling set right after a PTO expiry
- * bounds the wait that expiry armed. Zero across the C seam means no ceiling. The policy (the ceiling's sequence) is
- * the caller's; quiche only applies it.
+ * `Config::set_initial_rtt` exists in Rust and has no C function. The ceiling is new. Each path's recovery holds it
+ * (`SocketPtoCeiling`): `Unset`, `Held(ceiling)`, or `Released` once the path takes an RTT sample in the application
+ * space with the handshake confirmed (the `completed` flag of `HandshakeStatus`, which
+ * [patchQuichePtoWaitsForConfirmation] makes mean confirmed). While held, the recovery takes the smaller of its own
+ * backed-off PTO and the ceiling in every packet number space, so an estimate inflated by a handshake-era sample
+ * (the peer's handshake computation, or its own PTO delaying its ACK) is not held to multi-second retransmit gaps
+ * before a sample of the connection proper replaces it. A released recovery ignores later ceilings. Setting it
+ * re-arms each path's loss-detection timer, so a ceiling set right after a PTO expiry bounds the wait that expiry
+ * armed. Zero across the C seam removes a ceiling not yet released. The policy (the ceiling's sequence) is the
+ * caller's; quiche applies it and reports its release.
  *
  * Marker-guarded and loud in both directions: a re-run returns, a moved anchor throws, and an upstream that exports
  * either function throws, telling you to delete this patch.
  */
 fun patchQuicheHandshakePtoCeiling(sourceDir: File) {
-    val marker = "socket-handshake-pto-ceiling"
+    val marker = "socket-handshake-pto-ceiling-v2"
     val src = sourceDir.resolve("quiche/src")
     val ffiRs = src.resolve("ffi.rs")
     if (!ffiRs.exists()) return
@@ -2004,16 +2009,54 @@ fun patchQuicheHandshakePtoCeiling(sourceDir: File) {
         file.writeText(text.replace(anchor, replacement))
     }
 
+    val traitDecl = "#[enum_dispatch::enum_dispatch]\n/// Api for the Recovery implementation\npub trait RecoveryOps {\n"
+    replaceOnce(
+        src.resolve("recovery/mod.rs"),
+        traitDecl,
+        """
+        |// $marker: a path's ceiling on its PTO interval, held until its first RTT sample in the application space
+        |// with the handshake confirmed.
+        |#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        |pub(crate) enum SocketPtoCeiling {
+        |    Unset,
+        |    Held(Duration),
+        |    Released,
+        |}
+        |
+        |impl SocketPtoCeiling {
+        |    // A released ceiling stays released; otherwise the caller's ceiling, or none.
+        |    pub(crate) fn set(self, ceiling: Option<Duration>) -> Self {
+        |        match (self, ceiling) {
+        |            (SocketPtoCeiling::Released, _) => SocketPtoCeiling::Released,
+        |            (_, Some(c)) => SocketPtoCeiling::Held(c),
+        |            (_, None) => SocketPtoCeiling::Unset,
+        |        }
+        |    }
+        |
+        |    pub(crate) fn clamp(self, duration: Duration) -> Duration {
+        |        match self {
+        |            SocketPtoCeiling::Held(c) => std::cmp::min(duration, c),
+        |            SocketPtoCeiling::Unset | SocketPtoCeiling::Released => duration,
+        |        }
+        |    }
+        |}
+        |
+        |
+        """.trimMargin() + traitDecl,
+    )
     val timeoutDecl = "    fn on_loss_detection_timeout(\n"
     replaceOnce(
         src.resolve("recovery/mod.rs"),
         timeoutDecl,
         """
-        |    // $marker: bounds the PTO interval while the handshake is unconfirmed; re-arms the timer.
+        |    // $marker: bounds the PTO interval until released; re-arms the timer.
         |    fn socket_set_pto_ceiling(
         |        &mut self, ceiling: Option<Duration>, handshake_status: HandshakeStatus,
         |        now: Instant,
         |    );
+        |
+        |    // $marker
+        |    fn socket_pto_ceiling_held(&self) -> bool;
         |
         |
         """.trimMargin() + timeoutDecl,
@@ -2021,12 +2064,8 @@ fun patchQuicheHandshakePtoCeiling(sourceDir: File) {
     val backoff = "        let mut duration = self.pto() * 2_u32.saturating_pow(self.pto_count);\n"
     val clamp =
         """
-        |        // $marker: never wait longer than the ceiling while the handshake is unconfirmed.
-        |        if !handshake_status.completed {
-        |            if let Some(ceiling) = self.socket_pto_ceiling {
-        |                duration = std::cmp::min(duration, ceiling);
-        |            }
-        |        }
+        |        // $marker: never wait longer than a held ceiling.
+        |        duration = self.socket_pto_ceiling.clamp(duration);
         |
         """.trimMargin()
     val setter =
@@ -2036,30 +2075,63 @@ fun patchQuicheHandshakePtoCeiling(sourceDir: File) {
         |        &mut self, ceiling: Option<Duration>, handshake_status: HandshakeStatus,
         |        now: Instant,
         |    ) {
-        |        self.socket_pto_ceiling = ceiling;
+        |        self.socket_pto_ceiling = self.socket_pto_ceiling.set(ceiling);
         |        self.set_loss_detection_timer(handshake_status, now);
+        |    }
+        |
+        |    // $marker
+        |    fn socket_pto_ceiling_held(&self) -> bool {
+        |        matches!(self.socket_pto_ceiling, crate::recovery::SocketPtoCeiling::Held(_))
         |    }
         |
         |
         """.trimMargin()
+    val sampled =
+        "                Duration::from_micros(ack_delay),\n                now,\n" +
+            "                handshake_status.completed,\n            );\n"
+    val release =
+        """
+        |            // $marker: the first sample in the application space after confirmation releases the ceiling.
+        |            if epoch == crate::packet::Epoch::Application && handshake_status.completed {
+        |                self.socket_pto_ceiling = crate::recovery::SocketPtoCeiling::Released;
+        |            }
+        |
+        """.trimMargin()
     for (impl in listOf("recovery/congestion/recovery.rs", "recovery/gcongestion/recovery.rs")) {
         val file = src.resolve(impl)
-        replaceOnce(file, "    pto_count: u32,\n", "    pto_count: u32,\n\n    // $marker\n    socket_pto_ceiling: Option<Duration>,\n")
-        replaceOnce(file, "            pto_count: 0,\n", "            pto_count: 0,\n\n            socket_pto_ceiling: None,\n")
+        replaceOnce(
+            file,
+            "    pto_count: u32,\n",
+            "    pto_count: u32,\n\n    // $marker\n    socket_pto_ceiling: crate::recovery::SocketPtoCeiling,\n",
+        )
+        replaceOnce(
+            file,
+            "            pto_count: 0,\n",
+            "            pto_count: 0,\n\n            socket_pto_ceiling: crate::recovery::SocketPtoCeiling::Unset,\n",
+        )
         replaceOnce(file, backoff, backoff + "\n" + clamp)
         replaceOnce(file, timeoutDecl, setter + timeoutDecl)
+        replaceOnce(file, sampled, sampled + release)
     }
     replaceOnce(
         src.resolve("lib.rs"),
         "    pub fn send_ack_eliciting(&mut self) -> Result<()> {\n",
         """
-        |    /// $marker: a ceiling on the PTO interval of every path while the handshake is unconfirmed, or none.
+        |    /// $marker: a ceiling on the PTO interval of every path until it is released, or none.
         |    pub fn socket_set_handshake_pto_ceiling(&mut self, ceiling: Option<Duration>) {
         |        let handshake_status = self.handshake_status();
         |        let now = crate::now();
         |        for (_, p) in self.paths.iter_mut() {
         |            p.recovery.socket_set_pto_ceiling(ceiling, handshake_status, now);
         |        }
+        |    }
+        |
+        |    /// $marker: whether the active path's recovery holds a ceiling.
+        |    pub fn socket_handshake_pto_ceiling_held(&self) -> bool {
+        |        self.paths
+        |            .get_active()
+        |            .map(|p| p.recovery.socket_pto_ceiling_held())
+        |            .unwrap_or(false)
         |    }
         |
         |    pub fn send_ack_eliciting(&mut self) -> Result<()> {
@@ -2075,7 +2147,7 @@ fun patchQuicheHandshakePtoCeiling(sourceDir: File) {
             |    config.set_initial_rtt(std::time::Duration::from_nanos(v));
             |}
             |
-            |// $marker: the longest PTO interval while the handshake is unconfirmed, in nanoseconds; 0 removes it.
+            |// $marker: the longest PTO interval until released, in nanoseconds; 0 removes one not yet released.
             |#[no_mangle]
             |pub extern "C" fn quiche_conn_set_handshake_pto_ceiling(conn: &mut Connection, v: u64) {
             |    let ceiling = if v == 0 {
@@ -2085,9 +2157,18 @@ fun patchQuicheHandshakePtoCeiling(sourceDir: File) {
             |    };
             |    conn.socket_set_handshake_pto_ceiling(ceiling);
             |}
+            |
+            |// $marker: whether the active path still holds a ceiling.
+            |#[no_mangle]
+            |pub extern "C" fn quiche_conn_handshake_pto_ceiling_held(conn: &Connection) -> bool {
+            |    conn.socket_handshake_pto_ceiling_held()
+            |}
             """.trimMargin() + "\n",
     )
-    logger.lifecycle("Patched quiche source: quiche_config_set_initial_rtt and quiche_conn_set_handshake_pto_ceiling FFI exports")
+    logger.lifecycle(
+        "Patched quiche source: quiche_config_set_initial_rtt, quiche_conn_set_handshake_pto_ceiling and " +
+            "quiche_conn_handshake_pto_ceiling_held FFI exports",
+    )
 }
 
 /**

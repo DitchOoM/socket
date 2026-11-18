@@ -674,6 +674,11 @@ JNIEXPORT void JNICALL JNI_FN(nConnSetHandshakePtoCeiling)(
     quiche_conn_set_handshake_pto_ceiling((quiche_conn *)(uintptr_t)conn, (uint64_t)nanos);
 }
 
+JNIEXPORT jboolean JNICALL JNI_FN(nConnHandshakePtoCeilingHeld)(JNIEnv *env, jclass cls, jlong conn) {
+    /* patched-in export */
+    return (jboolean)quiche_conn_handshake_pto_ceiling_held((const quiche_conn *)(uintptr_t)conn);
+}
+
 JNIEXPORT jlong JNICALL JNI_FN(nConnProbeNow)(JNIEnv *env, jclass cls, jlong conn) {
     /* Queues the PTO's probes for the next send(), past the congestion window (patched-in export).
        Returns 0 on success or a negative quiche error code. */

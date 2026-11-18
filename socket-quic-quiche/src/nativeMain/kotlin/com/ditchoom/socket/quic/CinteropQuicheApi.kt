@@ -48,6 +48,7 @@ import com.ditchoom.socket.quic.quiche.quiche_conn_dgram_recv_front_len
 import com.ditchoom.socket.quic.quiche.quiche_conn_dgram_send
 import com.ditchoom.socket.quic.quiche.quiche_conn_early_data_reason
 import com.ditchoom.socket.quic.quiche.quiche_conn_free
+import com.ditchoom.socket.quic.quiche.quiche_conn_handshake_pto_ceiling_held
 import com.ditchoom.socket.quic.quiche.quiche_conn_is_closed
 import com.ditchoom.socket.quic.quiche.quiche_conn_is_draining
 import com.ditchoom.socket.quic.quiche.quiche_conn_is_established
@@ -856,6 +857,8 @@ internal object CinteropQuicheApi : QuicheApi, QuicheRandomPin {
         conn: QuicheConn,
         ceiling: PtoCeiling,
     ) = quiche_conn_set_handshake_pto_ceiling(conn.handle.toCPointer()!!, ptoCeilingNanos(ceiling).convert())
+
+    override fun connHandshakePtoCeilingHeld(conn: QuicheConn): Boolean = quiche_conn_handshake_pto_ceiling_held(conn.handle.toCPointer()!!)
 
     override fun connClose(
         conn: QuicheConn,

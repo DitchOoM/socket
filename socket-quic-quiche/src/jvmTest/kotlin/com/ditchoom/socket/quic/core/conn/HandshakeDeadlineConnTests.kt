@@ -85,7 +85,7 @@ class HandshakeDeadlineConnTests {
     }
 
     @Test
-    fun aTimerExpiryAfterAPtoGrowsTheCeilingAndConfirmationRemovesIt() {
+    fun aTimerExpiryAfterAPtoGrowsTheCeilingAndItsReleaseAfterConfirmationRemovesIt() {
         val rig = rig(HandshakeBound.UntilClosed)
         api.connTimeout = 240.milliseconds
         rig.pass(0)
@@ -93,6 +93,9 @@ class HandshakeDeadlineConnTests {
         rig.pass(240 * ms)
         api.established = true
         rig.pass(480 * ms)
+        api.ptoCeilingHeld = false
+        rig.pass(720 * ms)
+        rig.pass(960 * ms)
         assertEquals(
             listOf(240 * ms, 720 * ms, 0L),
             api.ptoCeilings.map {

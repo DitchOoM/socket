@@ -1373,11 +1373,13 @@ int quiche_conn_probe_path_with(quiche_conn *conn,
                                 uint64_t initial_rtt_ns, uint64_t *seq);
 
 // socket-handshake-pto-ceiling: the RTT quiche assumes before its first sample, in nanoseconds (quiche's Rust
-// Config::set_initial_rtt, which its C API lacks); and the longest PTO interval while the handshake is unconfirmed,
-// in nanoseconds, 0 for none. Setting the ceiling re-arms the loss-detection timer. Added by the marker-guarded
+// Config::set_initial_rtt, which its C API lacks); the longest PTO interval, in nanoseconds, 0 to remove one, held by
+// each path until its first RTT sample in the application space after confirmation releases it; and whether the
+// active path still holds one. Setting the ceiling re-arms the loss-detection timer. Added by the marker-guarded
 // source patch in socket-quic-quiche/build.gradle.kts (patchQuicheHandshakePtoCeiling).
 void quiche_config_set_initial_rtt(quiche_config *config, uint64_t v);
 void quiche_conn_set_handshake_pto_ceiling(quiche_conn *conn, uint64_t v);
+bool quiche_conn_handshake_pto_ceiling_held(const quiche_conn *conn);
 
 #if defined(__cplusplus)
 }  // extern C

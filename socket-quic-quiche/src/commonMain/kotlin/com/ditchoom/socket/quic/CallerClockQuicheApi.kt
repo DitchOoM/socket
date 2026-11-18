@@ -183,6 +183,8 @@ internal class CallerClockQuicheApi(
         ceiling: PtoCeiling,
     ) = synced { delegate.connSetHandshakePtoCeiling(conn, ceiling) }
 
+    override fun connHandshakePtoCeilingHeld(conn: QuicheConn): Boolean = synced { delegate.connHandshakePtoCeilingHeld(conn) }
+
     override fun connClose(
         conn: QuicheConn,
         error: QuicError,

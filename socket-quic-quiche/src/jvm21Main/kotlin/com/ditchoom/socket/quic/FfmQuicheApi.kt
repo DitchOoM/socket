@@ -289,6 +289,10 @@ class FfmQuicheApi private constructor(
         // void quiche_conn_set_handshake_pto_ceiling(quiche_conn *conn, uint64_t v) — patched-in export
         downcall("quiche_conn_set_handshake_pto_ceiling", FunctionDescriptor.ofVoid(JAVA_LONG, JAVA_LONG))
     }
+    private val hHandshakePtoCeilingHeld by lazy {
+        // bool quiche_conn_handshake_pto_ceiling_held(const quiche_conn *conn) — patched-in export
+        downcall("quiche_conn_handshake_pto_ceiling_held", FunctionDescriptor.of(JAVA_BOOLEAN, JAVA_LONG))
+    }
     private val hProbeNow by lazy {
         // ssize_t quiche_conn_probe_now(quiche_conn *conn) — patched-in export
         downcall("quiche_conn_probe_now", FunctionDescriptor.of(JAVA_LONG, JAVA_LONG))
@@ -1183,6 +1187,8 @@ class FfmQuicheApi private constructor(
     ) {
         hSetHandshakePtoCeiling.invokeExact(conn.handle, ptoCeilingNanos(ceiling))
     }
+
+    override fun connHandshakePtoCeilingHeld(conn: QuicheConn): Boolean = hHandshakePtoCeilingHeld.invokeExact(conn.handle) as Boolean
 
     override fun connClose(
         conn: QuicheConn,

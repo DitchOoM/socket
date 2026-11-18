@@ -177,6 +177,7 @@ public final class com/ditchoom/socket/quic/JniQuicheApi : com/ditchoom/socket/q
 	public fun connDrainRetiredScids-RTtnfzo (JJI)I
 	public fun connEarlyDataReason-ObL0uzk (J)I
 	public fun connFree-ObL0uzk (J)V
+	public fun connHandshakePtoCeilingHeld-ObL0uzk (J)Z
 	public fun connIsClosed-ObL0uzk (J)Z
 	public fun connIsDraining-ObL0uzk (J)Z
 	public fun connIsEstablished-ObL0uzk (J)Z
@@ -689,6 +690,7 @@ public abstract interface class com/ditchoom/socket/quic/QuicheApi {
 	public fun connDrainRetiredScids-RTtnfzo (JJI)I
 	public abstract fun connEarlyDataReason-ObL0uzk (J)I
 	public abstract fun connFree-ObL0uzk (J)V
+	public abstract fun connHandshakePtoCeilingHeld-ObL0uzk (J)Z
 	public abstract fun connIsClosed-ObL0uzk (J)Z
 	public abstract fun connIsDraining-ObL0uzk (J)Z
 	public abstract fun connIsEstablished-ObL0uzk (J)Z

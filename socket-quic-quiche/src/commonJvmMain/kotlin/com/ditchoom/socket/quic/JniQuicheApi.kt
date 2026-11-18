@@ -609,6 +609,8 @@ object JniQuicheApi : QuicheApi {
         ceiling: PtoCeiling,
     ) = nConnSetHandshakePtoCeiling(conn.handle, ptoCeilingNanos(ceiling))
 
+    override fun connHandshakePtoCeilingHeld(conn: QuicheConn): Boolean = nConnHandshakePtoCeilingHeld(conn.handle)
+
     override fun connClose(
         conn: QuicheConn,
         error: QuicError,
@@ -1269,6 +1271,8 @@ object JniQuicheApi : QuicheApi {
         conn: Long,
         nanos: Long,
     )
+
+    @JvmStatic private external fun nConnHandshakePtoCeilingHeld(conn: Long): Boolean
 
     @JvmStatic private external fun nConnClose(
         conn: Long,
