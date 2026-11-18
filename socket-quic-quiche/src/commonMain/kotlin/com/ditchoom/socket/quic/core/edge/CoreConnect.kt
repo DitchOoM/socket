@@ -7,6 +7,7 @@ import com.ditchoom.buffer.flow.AddressFamily
 import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.flow.WritePolicy
+import com.ditchoom.buffer.use
 import com.ditchoom.socket.networkId
 import com.ditchoom.socket.quic.LocalEndpointSupport
 import com.ditchoom.socket.quic.NativeSocketRefusal
@@ -102,16 +103,12 @@ internal suspend fun coreConnect(
                     batching,
                     ride,
                     tokens,
-                    handedOver = { setup = it },
+                    moved = { setup = it },
                 )
             }
         return started.established(sized.resumption, timeout).also { setup = ClientSetup.Established }
     } finally {
-        when (val reached = setup) {
-            is ClientSetup.Unstarted -> reached.memory.freeAll()
-            is ClientSetup.Started -> reached.started.abandon()
-            is ClientSetup.Established -> Unit
-        }
+        setup.endFailed()
     }
 }
 
@@ -136,8 +133,8 @@ private suspend fun OnSetupLane.connectOnLane(
     batching: UdpBatching,
     ride: ClientRide,
     tokens: ClientTokens,
-    /** Told once the connection, not the connect, owns [memory]: right before the connection starts. */
-    handedOver: (ClientSetup.Started) -> Unit,
+    /** Told each time what the setup made passes to a new releaser; last, right before the connection starts. */
+    moved: (ClientSetup) -> Unit,
 ): StartedClient {
     val peer = UdpSocket.resolve(peerHost, port)
     val peerKey = peer.toPathKey()
@@ -171,67 +168,71 @@ private suspend fun OnSetupLane.connectOnLane(
     val local = socket.local()
     val monitor = resolveNetworkMonitor(options.networkMonitor)
     val handshake = clientHandshakeRule(options, linkClassOf(monitor.state.value.networkId))
-    val scid = generateScid(factory)
-    val scidHex = hex(scid)
     val peerSockAddr = codec.encodeToNative(peer, factory)
+    moved(ClientSetup.PeerEncoded(memory, peerSockAddr))
     val localSockAddr = local.encodeToNative(factory)
-    val name = nullTerminated(serverName, factory)
-    val handle =
-        withClientConfig(api, options, handshake, factory) { shared ->
-            api.connect(
-                addressOf(name),
-                serverName.length,
-                addressOf(scid),
-                QUIC_ISSUED_CONN_ID_LEN,
-                localSockAddr.address,
-                localSockAddr.length,
-                peerSockAddr.address,
-                peerSockAddr.length,
-                shared.config,
-            )
+    moved(ClientSetup.Encoded(memory, peerSockAddr, localSockAddr))
+    val (scidHex, handle) =
+        generateScid(factory).use { scid ->
+            hex(scid) to
+                nullTerminated(serverName, factory).use { name ->
+                    withClientConfig(api, options, handshake, factory) { shared ->
+                        api.connect(
+                            addressOf(name),
+                            serverName.length,
+                            addressOf(scid),
+                            QUIC_ISSUED_CONN_ID_LEN,
+                            localSockAddr.address,
+                            localSockAddr.length,
+                            peerSockAddr.address,
+                            peerSockAddr.length,
+                            shared.config,
+                        )
+                    }
+                }
         }
-    name.freeNativeMemory()
-    scid.freeNativeMemory()
+    val quiche = QuicheConnRef(api, handle)
+    moved(ClientSetup.Connected(memory, peerSockAddr, localSockAddr, quiche))
     val plan = sessionPlan(options, serverName, port, tokens)
-    val planned = offerPlanned(QuicheConnRef(api, handle), plan, factory)
+    val planned = offerPlanned(quiche, plan, factory)
     val offer = planned.offer
     val scope = CoroutineScope(SupervisorJob())
-    // Until the connection starts nothing has been sent: a step that fails before then hands the ticket back.
-    val (built, connection) =
+    // Until the connection is built nothing can be sent: a step that fails before then hands the ticket back. From then on
+    // the connection's own end hands it back, if it never sent.
+    val built =
         planned.kept.backIfThrows {
-            val parts =
-                ClientParts(
-                    ClientWiring(
-                        api,
-                        handle,
-                        options,
-                        memory,
-                        running,
-                        socket,
-                        wrapIo,
-                        peerKey,
-                        readPolicy,
-                        writePolicy,
-                        scope,
-                        flight,
-                        handshake,
-                        readiness = socket.readiness(),
-                        offer = offer,
-                        tickets = plan.home,
-                        kept = planned.kept,
-                        tokens = plan.tokens,
-                    ),
-                    peerSockAddr,
-                    localSockAddr,
-                )
-            val made = parts.connection(factory, peer, QuicConnectionIdentity(QuicSessionId(scidHex), QuicWireConnectionId.Known(scidHex)))
-            wireClientConnectivityTap(options, parts.capture, made, monitor)
-            api.nameQlog(handle, parts.capture, QuicRole.Client, QuicSessionId(scidHex))
-            parts to made
+            ClientParts(
+                ClientWiring(
+                    api,
+                    handle,
+                    options,
+                    memory,
+                    running,
+                    socket,
+                    wrapIo,
+                    peerKey,
+                    readPolicy,
+                    writePolicy,
+                    scope,
+                    flight,
+                    handshake,
+                    readiness = socket.readiness(),
+                    offer = offer,
+                    tickets = plan.home,
+                    kept = planned.kept,
+                    tokens = plan.tokens,
+                ),
+                peerSockAddr,
+                localSockAddr,
+            )
         }
+    moved(ClientSetup.Built(built))
+    val connection = built.connection(factory, peer, QuicConnectionIdentity(QuicSessionId(scidHex), QuicWireConnectionId.Known(scidHex)))
+    wireClientConnectivityTap(options, built.capture, connection, monitor)
+    api.nameQlog(handle, built.capture, QuicRole.Client, QuicSessionId(scidHex))
     val started = StartedClient(CoreClient(connection, built.conn, running.loop, SocketReport(socket.granted(), local.port)), offer)
     // Placing the endpoint hands the memory to the loop, whose release of the connection frees it, whatever happens next.
-    handedOver(ClientSetup.Started(started))
+    moved(ClientSetup.Started(started))
     built.start()
     scope.feedNetwork(monitor, connection, built, { routeSource(route) }, local.hostLiteral(), onMoveOf(options.migration))
     return started

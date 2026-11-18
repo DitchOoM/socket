@@ -131,6 +131,15 @@ internal class ClientParts(
         conn.start()
     }
 
+    /**
+     * The setup's thread, only if [start] never ran: closes the socket and releases the connection here, which hands an
+     * unsent ticket back and frees quiche's connection, the sockaddrs, the scope and the memory.
+     */
+    fun releaseUnstarted() {
+        io.close()
+        released.run()
+    }
+
     /** Any thread, after [start]: the socket is reopened on the network that carries its address now. */
     fun rehome() = loop.rehome(endpoint)
 

@@ -92,31 +92,7 @@ internal class ServerSetup(
         try {
             return opened { owner = it }.also { owner = SetupOwner.Served }
         } finally {
-            when (val failed = owner) {
-                is SetupOwner.Allocating -> failed.memory.freeAll()
-                is SetupOwner.Polled -> {
-                    failed.poller.close()
-                    failed.memory.freeAll()
-                }
-                is SetupOwner.Configured -> {
-                    failed.poller.close()
-                    api.configFree(failed.config)
-                    failed.memory.freeAll()
-                }
-                is SetupOwner.Opened -> {
-                    failed.socket.close()
-                    failed.poller.close()
-                    api.configFree(failed.config)
-                    failed.memory.freeAll()
-                }
-                is SetupOwner.Built -> {
-                    failed.loop.stopHere()
-                    failed.socket.close()
-                }
-                is SetupOwner.Placed -> failed.loop.stopHere()
-                is SetupOwner.Started -> failed.loop.close(Runnable { })
-                is SetupOwner.Served -> Unit
-            }
+            owner.endFailed(api)
         }
     }
 
@@ -185,6 +161,7 @@ internal class ServerSetup(
     ): CoreServer {
         val localKey = socket.local()
         val local = localKey.encodeToNative(factory)
+        moved(SetupOwner.Addressed(memory, poller, quicheConfig, socketIo.io, local))
         // The loop alone draws from it: a shared source's lock would let a client thread hold up the receive phase.
         val ids = newConnectionIdRandom()
         val tokens = Tokens.of(config, factory, ids)
@@ -200,6 +177,7 @@ internal class ServerSetup(
                     memory.freeAll()
                 },
             )
+        moved(SetupOwner.Held(poller, socketIo.io, hold))
         val io = wrapIo(socketIo.io)
         val loop =
             Loop(

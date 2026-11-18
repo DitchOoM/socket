@@ -1,6 +1,7 @@
 package com.ditchoom.socket.quic.core.edge
 
 import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.socket.quic.EncodedSockAddr
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicResumption
@@ -8,6 +9,8 @@ import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.QuicheConfig
 import com.ditchoom.socket.quic.core.conn.HandshakeRule
 import com.ditchoom.socket.quic.core.conn.Offer
+import com.ditchoom.socket.quic.core.conn.freeUnbuilt
+import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
@@ -103,13 +106,40 @@ internal class StartedClient(
 }
 
 /**
- * How far a connect's setup got, and so who ends what it made if it fails or is cancelled. Its memory has one owner at a
- * time: the connect until the connection starts, then the connection, whose release frees it on its loop.
+ * How far a connect's setup got, and so who ends what it made if it fails or is cancelled: each thing it made has one
+ * releaser at a time. Until the connection starts that is the connect, itself and then through the connection's
+ * release; once it starts, the connection, whose release on its loop frees everything.
  */
 internal sealed interface ClientSetup {
     /** The connect frees [memory]. */
     class Unstarted(
         val memory: EdgeMemory,
+    ) : ClientSetup
+
+    /** The connect also frees the peer's address, encoded for quiche. */
+    class PeerEncoded(
+        val memory: EdgeMemory,
+        val peer: EncodedSockAddr,
+    ) : ClientSetup
+
+    /** The connect also frees its own address, encoded for quiche. */
+    class Encoded(
+        val memory: EdgeMemory,
+        val peer: EncodedSockAddr,
+        val local: EncodedSockAddr,
+    ) : ClientSetup
+
+    /** The connect also frees quiche's connection, which no connection of the core holds yet. */
+    class Connected(
+        val memory: EdgeMemory,
+        val peer: EncodedSockAddr,
+        val local: EncodedSockAddr,
+        val quiche: QuicheConnRef,
+    ) : ClientSetup
+
+    /** The connection holds all of it, unstarted: the connect releases it there, which also closes its socket. */
+    class Built(
+        val parts: ClientParts,
     ) : ClientSetup
 
     /** The connect only ends the connection; the connection frees the memory once its loop released it. */
@@ -120,3 +150,27 @@ internal sealed interface ClientSetup {
     /** The connect returned the connection to its caller. */
     data object Established : ClientSetup
 }
+
+/** Releases what a connect that failed or was cancelled at this step made, each thing once. */
+internal fun ClientSetup.endFailed() =
+    when (this) {
+        is ClientSetup.Unstarted -> memory.freeAll()
+        is ClientSetup.PeerEncoded -> {
+            peer.free()
+            memory.freeAll()
+        }
+        is ClientSetup.Encoded -> {
+            peer.free()
+            local.free()
+            memory.freeAll()
+        }
+        is ClientSetup.Connected -> {
+            quiche.freeUnbuilt()
+            peer.free()
+            local.free()
+            memory.freeAll()
+        }
+        is ClientSetup.Built -> parts.releaseUnstarted()
+        is ClientSetup.Started -> started.abandon()
+        is ClientSetup.Established -> Unit
+    }

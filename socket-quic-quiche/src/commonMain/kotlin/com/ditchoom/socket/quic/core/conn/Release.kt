@@ -65,3 +65,6 @@ internal fun QuicheConnRef.freeInfo(
         is Made.ByEdge -> Unit
     }
 }
+
+/** Frees a client connection no [Release] was ever made for: its connect failed before the connection was built. */
+internal fun QuicheConnRef.freeUnbuilt() = api.connFree(handle)
