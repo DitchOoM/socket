@@ -182,7 +182,7 @@ internal class ServerRig(
         )
     private val hooks =
         ServerHooks(
-            peerAddress = { PeerSockAddr.Encoded(sockAddr()) },
+            encode = { Encoding.Encoded(sockAddr()) },
             open = { peer, build ->
                 accepted += peer
                 val sink = RecordingSink()

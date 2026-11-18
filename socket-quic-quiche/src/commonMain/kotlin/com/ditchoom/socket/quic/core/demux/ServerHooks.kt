@@ -15,13 +15,13 @@ import com.ditchoom.socket.quic.core.observe.Counter
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 import kotlinx.coroutines.Runnable
 
-/** A peer's address as quiche reads it, or that it has no form quiche takes. */
-internal sealed interface PeerSockAddr {
+/** An address as quiche reads it, or that it has no form quiche takes. */
+internal sealed interface Encoding {
     class Encoded(
         val sockAddr: EncodedSockAddr,
-    ) : PeerSockAddr
+    ) : Encoding
 
-    data object Unencodable : PeerSockAddr
+    data object Unencodable : Encoding
 }
 
 /** Who the server accepted, told to the edge before the connection is built: its address and the id the server picked. */
@@ -38,12 +38,12 @@ internal class Opened(
 )
 
 /**
- * What a server's demux asks of the edge above it, handed down when the server is built. [peerAddress] encodes a
- * sender for quiche; [open] builds the caller-facing side of an accepted connection around the [ConnBuild] it is
- * given and returns the connection that build made.
+ * What a server's demux asks of the edge above it, handed down when the server is built. [encode] encodes a sender, or
+ * the local address its datagram arrived on, for quiche; [open] builds the caller-facing side of an accepted
+ * connection around the [ConnBuild] it is given and returns the connection that build made.
  */
 internal class ServerHooks(
-    val peerAddress: (PathKey) -> PeerSockAddr,
+    val encode: (PathKey) -> Encoding,
     val open: (AcceptedPeer, ConnBuild) -> Opened,
 )
 

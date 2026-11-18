@@ -9,6 +9,7 @@ import com.ditchoom.socket.quic.core.observe.ServerCounts
 import com.ditchoom.socket.quic.core.sched.LoopPort
 import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.Nanos
+import com.ditchoom.socket.quic.core.udp.ArrivedOn
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.Room
@@ -66,7 +67,7 @@ internal class Demux(
         out: SendBatch,
         at: Nanos,
     ) {
-        for (i in 0 until batch.count) routeOne(batch.bufferAt(i).bytes, batch.lengthAt(i), batch.fromAt(i), out, at)
+        for (i in 0 until batch.count) routeOne(batch.bufferAt(i).bytes, batch.lengthAt(i), batch.fromAt(i), batch.toAt(i), out, at)
     }
 
     /** Starts a chunk of the held Initials, oldest first; [Admitted.More] when the loop should read and come back. */
@@ -76,7 +77,7 @@ internal class Demux(
         val backlog = admission.backlog
         val at = clock.now()
         while (admission.mayTakeMore()) {
-            routeOne(backlog.oldest(), backlog.oldestLength(), backlog.oldestFrom(), out, at)
+            routeOne(backlog.oldest(), backlog.oldestLength(), backlog.oldestFrom(), backlog.oldestTo(), out, at)
             backlog.dropOldest()
         }
         mode = Mode.Receiving
@@ -150,6 +151,7 @@ internal class Demux(
         datagram: NativeBytes,
         length: Int,
         from: PathKey,
+        to: ArrivedOn,
         out: SendBatch,
         at: Nanos,
     ) {
@@ -161,11 +163,11 @@ internal class Demux(
                     is RouteLink.End ->
                         when (ended.find(header.cid)) {
                             is Route<EndedId> -> counts.unknownDropped()
-                            is RouteLink.End -> start(datagram, length, from, out, at)
+                            is RouteLink.End -> start(datagram, length, from, to, out, at)
                         }
                 }
             Wire.UnsupportedVersion ->
-                if (length < MIN_INITIAL) counts.runtDropped() else stateless.negotiate(header, datagram, from, out)
+                if (length < MIN_INITIAL) counts.runtDropped() else stateless.negotiate(header, datagram, from, to, out)
             Wire.Unroutable -> counts.unknownDropped()
         }
     }
@@ -196,16 +198,17 @@ internal class Demux(
         datagram: NativeBytes,
         length: Int,
         from: PathKey,
+        to: ArrivedOn,
         out: SendBatch,
         at: Nanos,
     ) {
         if (life.view() != ServerPhase.Running) return counts.unknownDropped()
         if (length < MIN_INITIAL) return counts.runtDropped()
         when (val tokens = stateless.tokens) {
-            is Tokens.None -> admit(Admit.Fresh, datagram, length, from, at)
+            is Tokens.None -> admit(Admit.Fresh, datagram, length, from, to, at)
             is Tokens.Of ->
-                when (val screened = stateless.screen(tokens, header, datagram, length, from, scratch, clock.now(), out)) {
-                    is Screened.Start -> admit(screened.how, datagram, length, from, at)
+                when (val screened = stateless.screen(tokens, header, datagram, length, from, to, scratch, clock.now(), out)) {
+                    is Screened.Start -> admit(screened.how, datagram, length, from, to, at)
                     is Screened.Answered -> Unit
                 }
         }
@@ -216,14 +219,15 @@ internal class Demux(
         datagram: NativeBytes,
         length: Int,
         from: PathKey,
+        to: ArrivedOn,
         at: Nanos,
     ) {
         when (mode) {
-            Mode.Receiving -> return admission.hold(datagram, length, from)
+            Mode.Receiving -> return admission.hold(datagram, length, from, to)
             Mode.Admitting -> Unit
         }
         val accepted =
-            when (val accepted = admission.accept(how, datagram, header, from, scratch)) {
+            when (val accepted = admission.accept(how, datagram, header, from, to, scratch)) {
                 is Accepted.Peer -> accepted
                 is Accepted.Refused -> return
             }

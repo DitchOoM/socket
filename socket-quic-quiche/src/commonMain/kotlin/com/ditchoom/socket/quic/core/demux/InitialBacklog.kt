@@ -2,6 +2,7 @@ package com.ditchoom.socket.quic.core.demux
 
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.core.observe.LoopOnly
+import com.ditchoom.socket.quic.core.udp.ArrivedOn
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 
 /** Whether the backlog took a datagram. */
@@ -18,23 +19,26 @@ internal class InitialBacklog(
     private val capacity = slots.size
     private val lengths = IntArray(capacity)
     private val froms = Array(capacity) { EMPTY }
+    private val tos = Array<ArrivedOn>(capacity) { ArrivedOn.Unreported }
     private var first = 0
 
     /** Datagrams held. */
     var size = 0
         private set
 
-    /** Copies the first [length] bytes of [datagram] to the back of the backlog. */
+    /** Copies the first [length] bytes of [datagram], which came [from] and arrived [to], to the back of the backlog. */
     fun hold(
         datagram: NativeBytes,
         length: Int,
         from: PathKey,
+        to: ArrivedOn,
     ): Held {
         if (size == capacity || length > slots[0].capacity) return Held.Full
         val at = (first + size) % capacity
         slots[at].copyFrom(datagram, 0, 0, length)
         lengths[at] = length
         froms[at] = from
+        tos[at] = to
         size++
         return Held.Yes
     }
@@ -46,8 +50,11 @@ internal class InitialBacklog(
 
     fun oldestFrom(): PathKey = froms[first]
 
+    fun oldestTo(): ArrivedOn = tos[first]
+
     fun dropOldest() {
         froms[first] = EMPTY
+        tos[first] = ArrivedOn.Unreported
         first = (first + 1) % capacity
         size--
     }

@@ -9,7 +9,10 @@ internal class ReceiveBuffer(
     val bytes: NativeBytes,
 ) : Pooled(index)
 
-/** The local address a datagram arrived on, when the socket reports it. */
+/**
+ * The local address a datagram arrived on, when the socket reports it: a socket bound to the wildcard does, so that a
+ * reply leaves from the address its peer sent to; a socket bound to one address has nothing else to report.
+ */
 internal sealed interface ArrivedOn {
     data object Unreported : ArrivedOn
 
@@ -17,3 +20,10 @@ internal sealed interface ArrivedOn {
         val local: PathKey,
     ) : ArrivedOn
 }
+
+/** The address a reply to the datagram leaves from: the one it arrived on, else the socket's [bound] address. */
+internal fun ArrivedOn.replyFrom(bound: PathKey): PathKey =
+    when (this) {
+        is ArrivedOn.At -> local
+        is ArrivedOn.Unreported -> bound
+    }

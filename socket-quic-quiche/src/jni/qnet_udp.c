@@ -84,7 +84,7 @@ static int32_t qn_gro_count(int32_t total, int32_t gso) {
 /* Splits one coalesced read into the slots of `recs` (QN_RECV_RECORD each: slot address in, length and source out), as
  * many datagrams as fit `count`, each copied up to `size` bytes. Returns the datagrams written. */
 static int32_t qn_gro_split(const uint8_t *data, int32_t total, int32_t gso, uint8_t *recs, int32_t count,
-                            int32_t size, const struct sockaddr_storage *from) {
+                            int32_t size, const struct sockaddr_storage *from, const uint8_t *dest) {
     int32_t n = qn_gro_count(total, gso);
     if (n > count) n = count;
     for (int32_t i = 0; i < n; i++) {
@@ -98,6 +98,7 @@ static int32_t qn_gro_split(const uint8_t *data, int32_t total, int32_t gso, uin
         memcpy(qn_at(address), data + start, (size_t)length);
         memcpy(rec + 8, &length, 4);
         qn_from_sockaddr(from, rec + 16);
+        memcpy(rec + QN_RECV_DEST, dest, 24);
     }
     return n;
 }
@@ -156,6 +157,14 @@ QN_EXPORT int32_t qn_udp_dont_fragment(int32_t fd, int32_t family_of_socket) {
 #endif
 }
 
+/* Whether the address `record` names is the wildcard. */
+static int qn_is_wildcard(const uint8_t *record) {
+    uint64_t hi, lo;
+    memcpy(&hi, record + 8, 8);
+    memcpy(&lo, record + 16, 8);
+    return hi == 0 && lo == 0;
+}
+
 QN_EXPORT int32_t qn_udp_open_socket(int64_t spec) {
     uint8_t *s = qn_at(spec);
     int32_t bind_family = qn_spec_int(spec, QN_SPEC_BIND);
@@ -175,6 +184,14 @@ QN_EXPORT int32_t qn_udp_open_socket(int64_t spec) {
     if (rcv > 0) setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcv, sizeof rcv);
     if (snd > 0) setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &snd, sizeof snd);
     if (bind(fd, (struct sockaddr *)&bind_addr, bind_len) < 0) goto failed;
+    if (qn_spec_int(spec, QN_SPEC_PEER) == 0 && qn_is_wildcard(s + QN_SPEC_BIND)) {
+        /* A wildcard socket answers on every address the host has: each datagram reports the one it was sent to, and
+         * each reply names it as its source, or the kernel picks one the peer never sent to. */
+        int on = 1;
+        int set = family == AF_INET6 ? setsockopt(fd, IPPROTO_IPV6, IPV6_RECVPKTINFO, &on, sizeof on)
+                                     : setsockopt(fd, IPPROTO_IP, IP_PKTINFO, &on, sizeof on);
+        if (set < 0) goto failed;
+    }
     if (qn_spec_int(spec, QN_SPEC_PEER) != 0) {
         socklen_t peer_len = qn_to_sockaddr(s + QN_SPEC_PEER, family, &peer_addr);
         if (peer_len == 0) {
@@ -204,7 +221,7 @@ static inline int64_t qn_result(int32_t count, int32_t code, int64_t flags) {
     return (int64_t)(uint32_t)count | ((int64_t)code << 32) | flags;
 }
 
-/* One datagram per system call. */
+/* One datagram per system call, each from the source its record names. */
 static int64_t qn_send_one(int fd, int family, uint8_t *base, int32_t stride, uint8_t *records, int32_t count) {
     for (int32_t i = 0; i < count; i++) {
         uint8_t *r = records + (size_t)i * QN_SEND_RECORD;
@@ -212,10 +229,27 @@ static int64_t qn_send_one(int fd, int family, uint8_t *base, int32_t stride, ui
         memcpy(&length, r, 4);
         struct sockaddr_storage to;
         socklen_t to_len = qn_to_sockaddr(r + 8, family, &to);
+        union {
+            char buf[QN_PKTINFO_SPACE];
+            struct cmsghdr align;
+        } control;
+        struct iovec iov = {base + (size_t)i * stride, (size_t)length};
+        struct msghdr h;
+        memset(&h, 0, sizeof h);
+        h.msg_iov = &iov;
+        h.msg_iovlen = 1;
+        if (to_len != 0) {
+            h.msg_name = &to;
+            h.msg_namelen = to_len;
+        }
+        socklen_t used = qn_put_source(control.buf, 0, r + QN_SEND_SOURCE);
+        if (used > 0) {
+            h.msg_control = control.buf;
+            h.msg_controllen = used;
+        }
         ssize_t sent;
         do {
-            sent = to_len == 0 ? send(fd, base + (size_t)i * stride, (size_t)length, 0)
-                               : sendto(fd, base + (size_t)i * stride, (size_t)length, 0, (struct sockaddr *)&to, to_len);
+            sent = sendmsg(fd, &h, 0);
         } while (sent < 0 && errno == EINTR);
         if (sent < 0) return qn_result(i, qn_code(errno), 0);
     }
@@ -223,7 +257,8 @@ static int64_t qn_send_one(int fd, int family, uint8_t *base, int32_t stride, ui
 }
 
 #if QN_EPOLL
-static int qn_same_target(const uint8_t *a, const uint8_t *b) { return memcmp(a + 8, b + 8, 24) == 0; }
+/* Same target and same source: the target record at +8 and the source record right after it. */
+static int qn_same_target(const uint8_t *a, const uint8_t *b) { return memcmp(a + 8, b + 8, 48) == 0; }
 
 /* sendmmsg, each message one datagram or (with `segments` > 1) one UDP_SEGMENT group: consecutive datagrams to the
  * same target, all of one length but the last, which may be shorter. A message the kernel took is taken whole, so
@@ -234,7 +269,7 @@ static int64_t qn_send_multi(int fd, int family, uint8_t *base, int32_t stride, 
     struct iovec iov[QN_MAX_BATCH];
     struct sockaddr_storage to[QN_MAX_BATCH];
     union {
-        char buf[CMSG_SPACE(sizeof(uint16_t))];
+        char buf[CMSG_SPACE(sizeof(uint16_t)) + QN_PKTINFO_SPACE];
         struct cmsghdr align;
     } control[QN_MAX_BATCH];
     int32_t datagrams_in[QN_MAX_BATCH];
@@ -274,15 +309,20 @@ static int64_t qn_send_multi(int fd, int family, uint8_t *base, int32_t stride, 
                 h->msg_name = &to[nmsgs];
                 h->msg_namelen = to_len;
             }
+            socklen_t used = 0;
             if (group > 1) {
-                h->msg_control = control[nmsgs].buf;
-                h->msg_controllen = sizeof control[nmsgs].buf;
-                struct cmsghdr *c = CMSG_FIRSTHDR(h);
+                struct cmsghdr *c = (struct cmsghdr *)(void *)control[nmsgs].buf;
                 c->cmsg_level = SOL_UDP;
                 c->cmsg_type = UDP_SEGMENT;
                 c->cmsg_len = CMSG_LEN(sizeof(uint16_t));
                 uint16_t gso = (uint16_t)size;
                 memcpy(CMSG_DATA(c), &gso, sizeof gso);
+                used = (socklen_t)CMSG_SPACE(sizeof(uint16_t));
+            }
+            used = qn_put_source(control[nmsgs].buf, used, first + QN_SEND_SOURCE);
+            if (used > 0) {
+                h->msg_control = control[nmsgs].buf;
+                h->msg_controllen = used;
             }
             datagrams_in[nmsgs] = group;
             used_iov += group;
@@ -343,6 +383,10 @@ QN_EXPORT int64_t qn_udp_recv(int32_t fd, int32_t mode, int64_t records, int32_t
         struct mmsghdr msgs[QN_MAX_BATCH];
         struct iovec iov[QN_MAX_BATCH];
         struct sockaddr_storage from[QN_MAX_BATCH];
+        union {
+            char buf[QN_PKTINFO_SPACE];
+            struct cmsghdr align;
+        } control[QN_MAX_BATCH];
         memset(msgs, 0, sizeof(struct mmsghdr) * (size_t)count);
         for (int32_t i = 0; i < count; i++) {
             int64_t address;
@@ -353,6 +397,8 @@ QN_EXPORT int64_t qn_udp_recv(int32_t fd, int32_t mode, int64_t records, int32_t
             msgs[i].msg_hdr.msg_iovlen = 1;
             msgs[i].msg_hdr.msg_name = &from[i];
             msgs[i].msg_hdr.msg_namelen = sizeof from[i];
+            msgs[i].msg_hdr.msg_control = control[i].buf;
+            msgs[i].msg_hdr.msg_controllen = sizeof control[i].buf;
         }
         int r;
         do {
@@ -365,6 +411,7 @@ QN_EXPORT int64_t qn_udp_recv(int32_t fd, int32_t mode, int64_t records, int32_t
             int32_t length = (int32_t)msgs[i].msg_len;
             memcpy(rec + 8, &length, 4);
             qn_from_sockaddr(&from[i], rec + 16);
+            qn_dest_of(&msgs[i].msg_hdr, rec + QN_RECV_DEST);
         }
         return qn_result(r, 0, 0);
     }
@@ -376,11 +423,23 @@ QN_EXPORT int64_t qn_udp_recv(int32_t fd, int32_t mode, int64_t records, int32_t
         int64_t address;
         memcpy(&address, rec, 8);
         struct sockaddr_storage from;
-        socklen_t from_len = sizeof from;
         memset(&from, 0, sizeof from);
+        union {
+            char buf[QN_PKTINFO_SPACE];
+            struct cmsghdr align;
+        } control;
+        struct iovec iov = {qn_at(address), (size_t)size};
+        struct msghdr h;
+        memset(&h, 0, sizeof h);
+        h.msg_name = &from;
+        h.msg_namelen = sizeof from;
+        h.msg_iov = &iov;
+        h.msg_iovlen = 1;
+        h.msg_control = control.buf;
+        h.msg_controllen = sizeof control.buf;
         ssize_t got;
         do {
-            got = recvfrom(fd, qn_at(address), (size_t)size, MSG_DONTWAIT, (struct sockaddr *)&from, &from_len);
+            got = recvmsg(fd, &h, MSG_DONTWAIT);
         } while (got < 0 && errno == EINTR);
         if (got < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) return qn_result(i, 0, 0);
@@ -389,6 +448,7 @@ QN_EXPORT int64_t qn_udp_recv(int32_t fd, int32_t mode, int64_t records, int32_t
         int32_t length = (int32_t)got;
         memcpy(rec + 8, &length, 4);
         qn_from_sockaddr(&from, rec + 16);
+        qn_dest_of(&h, rec + QN_RECV_DEST);
     }
     return qn_result(count, 0, 0);
 }
@@ -426,6 +486,7 @@ struct qn_gro_state {
     int32_t length[QN_GRO_MAX_DATAGRAMS];
     int32_t segment[QN_GRO_MAX_DATAGRAMS];
     struct sockaddr_storage from[QN_GRO_MAX_DATAGRAMS];
+    uint8_t dest[QN_GRO_MAX_DATAGRAMS][24];
 };
 
 /* Delivers the waiting messages, whole and in order, while their datagrams fit the slots left. Returns the filled total. */
@@ -436,7 +497,7 @@ static int32_t qn_gro_deliver(struct qn_gro_state *st, uint8_t *messages, uint8_
         int32_t n = qn_gro_count(st->length[j], st->segment[j]);
         if (filled + n > count) break;
         filled += qn_gro_split(messages + (size_t)j * QN_GRO_MESSAGE_BYTES, st->length[j], st->segment[j],
-                               recs + (size_t)filled * QN_RECV_RECORD, count - filled, size, &st->from[j]);
+                               recs + (size_t)filled * QN_RECV_RECORD, count - filled, size, &st->from[j], st->dest[j]);
         /* A message that took many pages gives them back once its datagrams are copied out: the buffer is free again. */
         if (st->length[j] > QN_GRO_RELEASE_ABOVE)
             madvise(messages + (size_t)j * QN_GRO_MESSAGE_BYTES, ((size_t)st->length[j] + 4095) & ~(size_t)4095, MADV_DONTNEED);
@@ -473,7 +534,7 @@ QN_EXPORT int64_t qn_udp_recv_coalesced(int32_t fd, int64_t records, int32_t cou
     struct mmsghdr msgs[QN_MAX_BATCH];
     struct iovec iov[QN_MAX_BATCH];
     union {
-        char buf[CMSG_SPACE(sizeof(int32_t))];
+        char buf[CMSG_SPACE(sizeof(int32_t)) + QN_PKTINFO_SPACE];
         struct cmsghdr align;
     } control[QN_MAX_BATCH];
     memset(msgs, 0, sizeof(struct mmsghdr) * (size_t)vlen);
@@ -499,6 +560,7 @@ QN_EXPORT int64_t qn_udp_recv_coalesced(int32_t fd, int64_t records, int32_t cou
     for (int i = 0; i < r; i++) {
         st->length[i] = (int32_t)msgs[i].msg_len;
         st->segment[i] = qn_gro_segment_size(&msgs[i].msg_hdr);
+        qn_dest_of(&msgs[i].msg_hdr, st->dest[i]);
     }
     st->first = 0;
     st->count = r;

@@ -14,6 +14,7 @@ import com.ditchoom.socket.quic.core.observe.LoopOnly
 import com.ditchoom.socket.quic.core.observe.ServerCounts
 import com.ditchoom.socket.quic.core.pool.Hold
 import com.ditchoom.socket.quic.core.pool.MemoryHold
+import com.ditchoom.socket.quic.core.udp.ArrivedOn
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 import com.ditchoom.socket.quic.core.udp.SockAddr
 import kotlin.random.Random
@@ -84,9 +85,10 @@ internal class Admission(
         datagram: NativeBytes,
         length: Int,
         from: PathKey,
+        to: ArrivedOn,
     ) {
         if (full()) return counts.admissionDropped()
-        when (backlog.hold(datagram, length, from)) {
+        when (backlog.hold(datagram, length, from, to)) {
             Held.Yes -> counts.backlogHeld()
             Held.Full -> counts.backlogDropped()
         }
@@ -105,12 +107,16 @@ internal class Admission(
     /** Whether held Initials wait for a later pass that may start them: this pass's count or receive time ran out. */
     fun owesPass(): Boolean = backlog.size > 0 && !full()
 
-    /** Starts a connection for the Initial at [datagram], read into [header]; its id is left in [newCid]. */
+    /**
+     * Starts a connection for the Initial at [datagram], read into [header], that came [from] and arrived [to]; its id is
+     * left in [newCid]. The connection's local address is the one the Initial arrived on, which every reply leaves from.
+     */
     fun accept(
         how: Admit,
         datagram: NativeBytes,
         header: PacketHeader,
         from: PathKey,
+        to: ArrivedOn,
         scratch: DemuxScratch,
     ): Accepted {
         if (full()) {
@@ -139,15 +145,28 @@ internal class Admission(
             }
         }
         val peerAddress =
-            when (val encoded = hooks.peerAddress(from)) {
-                is PeerSockAddr.Encoded -> encoded.sockAddr
-                is PeerSockAddr.Unencodable -> return refused()
+            when (val encoded = hooks.encode(from)) {
+                is Encoding.Encoded -> encoded.sockAddr
+                is Encoding.Unencodable -> return refused()
+            }
+        val local =
+            when (to) {
+                is ArrivedOn.Unreported -> ConnLocal.Bound(parts.local, parts.localKey)
+                is ArrivedOn.At ->
+                    when (val encoded = hooks.encode(to.local)) {
+                        is Encoding.Encoded -> ConnLocal.Arrived(encoded.sockAddr, to.local)
+                        is Encoding.Unencodable -> {
+                            peerAddress.free()
+                            return refused()
+                        }
+                    }
             }
         val memory =
             when (val taken = PeerMemory.of(parts.factory)) {
                 is PeerMemoryTake.Taken -> taken.memory
                 is PeerMemoryTake.NotNative -> {
                     peerAddress.free()
+                    local.free()
                     return refused()
                 }
             }
@@ -157,6 +176,7 @@ internal class Admission(
                 is Hold.AlreadyFreed -> {
                     memory.free()
                     peerAddress.free()
+                    local.free()
                     return refused()
                 }
             }
@@ -166,8 +186,8 @@ internal class Admission(
                 QUIC_ISSUED_CONN_ID_LEN,
                 odcidAddress,
                 odcidLength,
-                parts.local.address,
-                parts.local.length,
+                local.sockAddr.address,
+                local.sockAddr.length,
                 peerAddress.address,
                 peerAddress.length,
                 parts.config,
@@ -175,6 +195,7 @@ internal class Admission(
         if (handle.handle == 0L) {
             memory.free()
             peerAddress.free()
+            local.free()
             claim.release()
             return refused()
         }
@@ -184,14 +205,14 @@ internal class Admission(
         val address =
             ConnAddress(
                 SockAddr(peerAddress.address, peerAddress.length),
-                SockAddr(parts.local.address, parts.local.length),
+                SockAddr(local.sockAddr.address, local.sockAddr.length),
                 from,
-                parts.localKey,
-                SendTarget.ServerReply(to = from, from = ReplySource.Recorded(parts.localKey)),
+                local.key,
+                SendTarget.ServerReply(to = from, from = ReplySource.Recorded(local.key)),
             )
         val build = ConnBuild(parts, QuicheConnRef(api, handle), address, memory, inProgress)
         val opened = hooks.open(AcceptedPeer(from, newCid.c0, newCid.c1), build)
-        return Accepted.Peer(ServerPeer(opened.conn, memory, peerAddress, opened, claim), handle)
+        return Accepted.Peer(ServerPeer(opened.conn, memory, peerAddress, local, opened, claim), handle)
     }
 
     private fun full(): Boolean = inProgress.value() >= bounds.inProgress

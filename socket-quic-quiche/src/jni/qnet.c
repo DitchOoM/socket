@@ -18,6 +18,12 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <netinet/in.h>
+#if defined(__APPLE__) && !defined(IPV6_PKTINFO)
+/* <netinet6/in6.h> names these only under __APPLE_USE_RFC_3542, which an includer's earlier include may have skipped:
+ * the RFC 3542 numbers, not RFC 2292's IPV6_PKTINFO (19). */
+#define IPV6_RECVPKTINFO 61
+#define IPV6_PKTINFO 46
+#endif
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -153,6 +159,76 @@ static void qn_from_sockaddr(const struct sockaddr_storage *in, uint8_t *record)
     memcpy(record + 4, &port, 4);
     memcpy(record + 8, &hi, 8);
     memcpy(record + 16, &lo, 8);
+}
+
+/* Control space for the IP_PKTINFO / IPV6_PKTINFO message that reports a datagram's destination or names its source. */
+#define QN_PKTINFO_SPACE CMSG_SPACE(sizeof(struct in6_pktinfo))
+
+/* The address a received message was sent to, from its IP_PKTINFO or IPV6_PKTINFO, into `record` with port 0 (an
+ * IPv4-mapped address as IPv4); family 0 when the message reports none. */
+static void qn_dest_of(struct msghdr *h, uint8_t *record) {
+    int32_t family = 0, port = 0;
+    uint64_t hi = 0, lo = 0;
+    for (struct cmsghdr *c = CMSG_FIRSTHDR(h); c != NULL; c = CMSG_NXTHDR(h, c)) {
+        if (c->cmsg_level == IPPROTO_IP && c->cmsg_type == IP_PKTINFO) {
+            struct in_pktinfo info;
+            memcpy(&info, CMSG_DATA(c), sizeof info);
+            family = 4;
+            lo = (uint32_t)ntohl(info.ipi_addr.s_addr);
+            break;
+        }
+        if (c->cmsg_level == IPPROTO_IPV6 && c->cmsg_type == IPV6_PKTINFO) {
+            struct in6_pktinfo info;
+            memcpy(&info, CMSG_DATA(c), sizeof info);
+            const uint8_t *b = info.ipi6_addr.s6_addr;
+            if (IN6_IS_ADDR_V4MAPPED(&info.ipi6_addr)) {
+                family = 4;
+                lo = ((uint64_t)b[12] << 24) | ((uint64_t)b[13] << 16) | ((uint64_t)b[14] << 8) | b[15];
+            } else {
+                family = 6;
+                for (int i = 0; i < 8; i++) hi = (hi << 8) | b[i];
+                for (int i = 0; i < 8; i++) lo = (lo << 8) | b[8 + i];
+            }
+            break;
+        }
+    }
+    memcpy(record, &family, 4);
+    memcpy(record + 4, &port, 4);
+    memcpy(record + 8, &hi, 8);
+    memcpy(record + 16, &lo, 8);
+}
+
+/* Appends to `control`, `used` bytes in, the message that makes a datagram leave from the source `record` names:
+ * IP_PKTINFO for IPv4 (on an IPv6 socket too, which both Linux and Darwin honour for an IPv4-mapped destination, where
+ * Darwin ignores an IPv4-mapped IPV6_PKTINFO), IPV6_PKTINFO for IPv6. A record of family 0 or the wildcard names no
+ * source. Returns the bytes used. */
+static socklen_t qn_put_source(char *control, socklen_t used, const uint8_t *record) {
+    int32_t family;
+    uint64_t hi, lo;
+    memcpy(&family, record, 4);
+    memcpy(&hi, record + 8, 8);
+    memcpy(&lo, record + 16, 8);
+    if ((family != 4 && family != 6) || (hi == 0 && lo == 0)) return used;
+    struct cmsghdr *c = (struct cmsghdr *)(void *)(control + used);
+    if (family == 4) {
+        struct in_pktinfo info;
+        memset(&info, 0, sizeof info);
+        info.ipi_spec_dst.s_addr = htonl((uint32_t)lo);
+        c->cmsg_level = IPPROTO_IP;
+        c->cmsg_type = IP_PKTINFO;
+        c->cmsg_len = CMSG_LEN(sizeof info);
+        memcpy(CMSG_DATA(c), &info, sizeof info);
+        return used + (socklen_t)CMSG_SPACE(sizeof info);
+    }
+    struct in6_pktinfo info;
+    memset(&info, 0, sizeof info);
+    for (int i = 0; i < 8; i++) info.ipi6_addr.s6_addr[i] = (uint8_t)(hi >> (56 - 8 * i));
+    for (int i = 0; i < 8; i++) info.ipi6_addr.s6_addr[8 + i] = (uint8_t)(lo >> (56 - 8 * i));
+    c->cmsg_level = IPPROTO_IPV6;
+    c->cmsg_type = IPV6_PKTINFO;
+    c->cmsg_len = CMSG_LEN(sizeof info);
+    memcpy(CMSG_DATA(c), &info, sizeof info);
+    return used + (socklen_t)CMSG_SPACE(sizeof info);
 }
 
 #include "qnet_poll.c"

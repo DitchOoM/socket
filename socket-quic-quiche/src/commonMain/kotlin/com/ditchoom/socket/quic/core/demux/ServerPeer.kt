@@ -119,6 +119,43 @@ internal class ConnBuild(
         )
 }
 
+/**
+ * The local address an accepted connection's quiche reads: the socket's bound address, which the server owns, or the
+ * address the connection's first datagram arrived on, which the connection owns.
+ */
+internal sealed interface ConnLocal {
+    class Bound(
+        val sockAddr: EncodedSockAddr,
+        val key: PathKey,
+    ) : ConnLocal
+
+    class Arrived(
+        val sockAddr: EncodedSockAddr,
+        val key: PathKey,
+    ) : ConnLocal
+}
+
+internal val ConnLocal.sockAddr: EncodedSockAddr
+    get() =
+        when (this) {
+            is ConnLocal.Bound -> sockAddr
+            is ConnLocal.Arrived -> sockAddr
+        }
+
+internal val ConnLocal.key: PathKey
+    get() =
+        when (this) {
+            is ConnLocal.Bound -> key
+            is ConnLocal.Arrived -> key
+        }
+
+/** Frees the sockaddr if the connection owns it. */
+internal fun ConnLocal.free() =
+    when (this) {
+        is ConnLocal.Bound -> Unit
+        is ConnLocal.Arrived -> sockAddr.free()
+    }
+
 /** Whether a peer is in its demux's list. */
 internal enum class Listing { Listed, Unlisted }
 
@@ -131,6 +168,7 @@ internal class ServerPeer(
     val conn: Conn,
     memory: PeerMemory,
     peerAddress: EncodedSockAddr,
+    local: ConnLocal,
     opened: Opened,
     claim: MemoryHold.Claim,
 ) {
@@ -151,6 +189,7 @@ internal class ServerPeer(
         Runnable {
             memory.free()
             peerAddress.free()
+            local.free()
             opened.freed.run()
             claim.release()
         }

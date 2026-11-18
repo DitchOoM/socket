@@ -6,6 +6,8 @@
  */
 #include "../qnet.c"
 
+#include <ifaddrs.h>
+#include <net/if.h>
 #include <poll.h>
 #ifdef __linux__
 #include <linux/sock_diag.h>
@@ -210,7 +212,8 @@ static void split_case(int32_t total, int32_t gso, int32_t want_count, int32_t w
     }
     int32_t n = qn_gro_count(total, gso);
     CHECK(n == want_count, "total %d gso %d: %d datagrams, want %d", total, gso, n, want_count);
-    int32_t written = qn_gro_split(data, total, gso, recv_records, 64, 2048, &from);
+    uint8_t dest[24] = {0};
+    int32_t written = qn_gro_split(data, total, gso, recv_records, 64, 2048, &from, dest);
     CHECK(written == want_count, "total %d gso %d: wrote %d, want %d", total, gso, written, want_count);
     for (int32_t i = 0; i < written; i++) {
         int32_t length = rec_int(recv_records + i * QN_RECV_RECORD, 8);
@@ -607,8 +610,9 @@ static void dont_fragment(void) {
 /* The offsets this file and every binding read the spec block by are the ones the library was built with. */
 static void spec_layout(void) {
     uint32_t h = QN_SPEC_BYTES;
-    const int32_t fields[] = {QN_SPEC_BIND,        QN_SPEC_PEER,        QN_SPEC_RCVBUF, QN_SPEC_SNDBUF,
-                              QN_SPEC_GRANTED_RCV, QN_SPEC_GRANTED_SND, QN_SPEC_LOCAL};
+    const int32_t fields[] = {QN_SPEC_BIND,   QN_SPEC_PEER,   QN_SPEC_RCVBUF, QN_SPEC_SNDBUF, QN_SPEC_GRANTED_RCV,
+                              QN_SPEC_GRANTED_SND, QN_SPEC_LOCAL, QN_SEND_RECORD, QN_SEND_SOURCE, QN_RECV_RECORD,
+                              QN_RECV_DEST};
     for (size_t i = 0; i < sizeof fields / sizeof fields[0]; i++) h = h * 31u + (uint32_t)fields[i];
     CHECK(qn_spec_layout() == (int32_t)h, "spec layout %d, the offsets fold to %d", qn_spec_layout(), (int32_t)h);
     /* every field sits inside the block, in order, without overlap */
@@ -616,6 +620,72 @@ static void spec_layout(void) {
               QN_SPEC_GRANTED_RCV == QN_SPEC_SNDBUF + 4 && QN_SPEC_GRANTED_SND == QN_SPEC_GRANTED_RCV + 4 &&
               QN_SPEC_LOCAL == QN_SPEC_GRANTED_SND + 4 && QN_SPEC_BYTES == QN_SPEC_LOCAL + 24,
           "spec fields overlap or leave a gap");
+    CHECK(QN_SEND_SOURCE == 8 + 24 && QN_SEND_RECORD == QN_SEND_SOURCE + 24 && QN_RECV_DEST == 16 + 24 &&
+              QN_RECV_RECORD == QN_RECV_DEST + 24,
+          "record fields overlap or leave a gap");
+}
+
+
+/* An IPv4 address of this host other than 127.0.0.1, as a host-order integer: 127.0.0.2 where it can be bound (every
+ * Linux host, a Mac with the alias), else the first address of an interface that is up and neither loopback nor
+ * point-to-point; 0 when there is none. */
+static uint32_t other_local_v4(void) {
+    int probe = socket(AF_INET, SOCK_DGRAM, 0);
+    struct sockaddr_in alias;
+    memset(&alias, 0, sizeof alias);
+    alias.sin_family = AF_INET;
+    alias.sin_addr.s_addr = htonl(0x7f000002);
+    int aliased = bind(probe, (struct sockaddr *)&alias, sizeof alias) == 0;
+    close(probe);
+    if (aliased) return 0x7f000002;
+    struct ifaddrs *all;
+    uint32_t found = 0;
+    if (getifaddrs(&all) != 0) return 0;
+    for (struct ifaddrs *i = all; i != NULL && found == 0; i = i->ifa_next) {
+        if (i->ifa_addr == NULL || i->ifa_addr->sa_family != AF_INET) continue;
+        if (!(i->ifa_flags & IFF_UP) || (i->ifa_flags & (IFF_LOOPBACK | IFF_POINTOPOINT))) continue;
+        found = ntohl(((struct sockaddr_in *)i->ifa_addr)->sin_addr.s_addr);
+    }
+    freeifaddrs(all);
+    return found;
+}
+
+/* A wildcard server reports the address each datagram was sent to, and a reply that names it as its source reaches a
+ * client connected to it, though the client sends from another of the host's addresses. */
+static void reply_source(int mode) {
+    uint32_t dialed = other_local_v4();
+    if (dialed == 0) {
+        printf("SKIP reply_source: no IPv4 address but 127.0.0.1\n");
+        return;
+    }
+    memset(spec_b, 0, QN_SPEC_BYTES);
+    put_record(spec_b + QN_SPEC_BIND, 6, 0, 0, 0);
+    int server = qn_udp_open_socket((int64_t)(uintptr_t)spec_b);
+    CHECK(server >= 0, "reply_source: wildcard open %d", server);
+    uint8_t target[24];
+    put_record(target, 4, rec_int(spec_b + QN_SPEC_LOCAL, 4), 0, dialed);
+    memset(spec_a, 0, QN_SPEC_BYTES);
+    put_record(spec_a + QN_SPEC_BIND, 4, 0, 0, 0x7f000001);
+    memcpy(spec_a + QN_SPEC_PEER, target, 24);
+    int client = qn_udp_open_socket((int64_t)(uintptr_t)spec_a);
+    CHECK(client >= 0, "reply_source: client open %d", client);
+    fill(0, 100);
+    int64_t r = qn_udp_send(client, 4, QN_IO_ONE, (int64_t)(uintptr_t)send_base, STRIDE, (int64_t)(uintptr_t)send_records, 1, 1);
+    CHECK((r & 0xffffffff) == 1, "reply_source: client send refused %lld", (long long)((r >> 32) & 0xffff));
+    int32_t lengths[64];
+    CHECK(receive_all(0, server, mode, 1, lengths) == 1, "reply_source mode %d: server received nothing", mode);
+    uint8_t *dest = recv_records + QN_RECV_DEST;
+    CHECK(rec_int(dest, 0) == 4 && memcmp(dest + 16, &(uint64_t){dialed}, 8) == 0,
+          "reply_source mode %d: destination reported as family %d", mode, rec_int(dest, 0));
+    fill(0, 100);
+    memcpy(send_records + 8, recv_records + 16, 24);
+    memcpy(send_records + QN_SEND_SOURCE, dest, 24);
+    r = qn_udp_send(server, 6, mode, (int64_t)(uintptr_t)send_base, STRIDE, (int64_t)(uintptr_t)send_records, 1, 1);
+    CHECK((r & 0xffffffff) == 1, "reply_source mode %d: reply refused %lld", mode, (long long)((r >> 32) & 0xffff));
+    memset(send_records + QN_SEND_SOURCE, 0, 24);
+    CHECK(receive_all(0, client, QN_IO_ONE, 1, lengths) == 1, "reply_source mode %d: the connected client missed the reply", mode);
+    qn_close(client);
+    qn_close(server);
 }
 
 int main(void) {
@@ -632,6 +702,8 @@ int main(void) {
     caps &= (1 << QN_CAP_SEGMENTS_SHIFT) - 1;
     printf("capabilities: multi=%d gso=%d gro=%d\n", !!(caps & QN_CAP_MULTI), !!(caps & QN_CAP_GSO),
            !!(caps & QN_CAP_GRO));
+    reply_source(QN_IO_ONE);
+    if (caps & QN_CAP_MULTI) reply_source(QN_IO_MULTI);
     for (int family = 4; family <= 6; family += 2) {
         batch_round_trip(family, QN_IO_ONE, 1);
         if (caps & QN_CAP_MULTI) batch_round_trip(family, QN_IO_MULTI, 1);

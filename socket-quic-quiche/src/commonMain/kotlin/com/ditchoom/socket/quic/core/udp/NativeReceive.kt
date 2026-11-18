@@ -20,6 +20,7 @@ internal class NativeReceive(
 ) {
     private val held = ArrayList<ReceiveBuffer>(NativeIo.MAX_RECEIVE)
     private var lastFrom: Sender = Sender.None
+    private var lastAt: ArrivedOn = ArrivedOn.Unreported
 
     fun receive(into: ReceiveBatch): ReceiveBatchResult {
         held.clear()
@@ -40,7 +41,7 @@ internal class NativeReceive(
         val got = NativeResult.count(result)
         for (i in 0 until got) {
             val at = i * NativeIo.RECV_RECORD
-            into.received(held[i], receiveRecords.intAt(at + LENGTH), keyAt(at + SOURCE), ArrivedOn.Unreported)
+            into.received(held[i], receiveRecords.intAt(at + LENGTH), keyAt(at + SOURCE), arrivedAt(at + NativeIo.RECV_DEST))
         }
         for (i in got until held.size) into.giveBack(held[i])
         held.clear()
@@ -84,6 +85,26 @@ internal class NativeReceive(
         val key = PathKey(family, port, hi, lo)
         lastFrom = Sender.Seen(key)
         return key
+    }
+
+    /**
+     * The local address the datagram was sent to, on the socket's port, when `qnet` reports it (a wildcard server's
+     * socket does); built once per run of datagrams to one address.
+     */
+    private fun arrivedAt(offset: Int): ArrivedOn {
+        val family = receiveRecords.intAt(offset)
+        if (family == 0) return ArrivedOn.Unreported
+        val port = socket.local.port
+        val hi = receiveRecords.longAt(offset + 8)
+        val lo = receiveRecords.longAt(offset + 16)
+        when (val last = lastAt) {
+            is ArrivedOn.At ->
+                if (last.local.family == family && last.local.port == port && last.local.hi == hi && last.local.lo == lo) {
+                    return last
+                }
+            is ArrivedOn.Unreported -> Unit
+        }
+        return ArrivedOn.At(PathKey(family, port, hi, lo)).also { lastAt = it }
     }
 
     private sealed interface Sender {
