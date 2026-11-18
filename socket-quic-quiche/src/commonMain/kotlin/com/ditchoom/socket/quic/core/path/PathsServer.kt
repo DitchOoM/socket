@@ -4,6 +4,7 @@ package com.ditchoom.socket.quic.core.path
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.socket.quic.PathKey
+import com.ditchoom.socket.quic.QuicStatsRead
 import com.ditchoom.socket.quic.QuichePathEventType
 import com.ditchoom.socket.quic.QuicheRecvInfo
 import com.ditchoom.socket.quic.ReplySource
@@ -115,6 +116,8 @@ internal class ServerPaths(
     val sendInfo get() = first.sendInfo
 
     fun read(): PathRead = first.read()
+
+    fun stats(): QuicStatsRead = first.stats()
 
     /** What quiche is told about a datagram that came from [from]: a peer address not seen before is followed. */
     fun recvInfo(from: PathKey): RecvFrom {

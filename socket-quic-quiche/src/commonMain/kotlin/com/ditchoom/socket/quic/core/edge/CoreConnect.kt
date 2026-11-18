@@ -14,6 +14,7 @@ import com.ditchoom.socket.quic.QUIC_ISSUED_CONN_ID_LEN
 import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicConnectionIdentity
 import com.ditchoom.socket.quic.QuicOptions
+import com.ditchoom.socket.quic.QuicRole
 import com.ditchoom.socket.quic.QuicSessionId
 import com.ditchoom.socket.quic.QuicWireConnectionId
 import com.ditchoom.socket.quic.QuicheApi
@@ -33,6 +34,7 @@ import com.ditchoom.socket.quic.encodeToNative
 import com.ditchoom.socket.quic.generateScid
 import com.ditchoom.socket.quic.hostLiteral
 import com.ditchoom.socket.quic.hostSockAddrLayout
+import com.ditchoom.socket.quic.nameQlog
 import com.ditchoom.socket.quic.resolveNetworkMonitor
 import com.ditchoom.socket.quic.toPathKey
 import com.ditchoom.socket.quic.wireClientConnectivityTap
@@ -224,6 +226,7 @@ private suspend fun OnSetupLane.connectOnLane(
                 )
             val made = parts.connection(factory, peer, QuicConnectionIdentity(QuicSessionId(scidHex), QuicWireConnectionId.Known(scidHex)))
             wireClientConnectivityTap(options, parts.capture, made, monitor)
+            api.nameQlog(handle, parts.capture, QuicRole.Client, QuicSessionId(scidHex))
             parts to made
         }
     built.start()

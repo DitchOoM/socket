@@ -2,12 +2,14 @@
 
 package com.ditchoom.socket.quic.core.path
 
+import com.ditchoom.socket.quic.QuicStatsRead
 import com.ditchoom.socket.quic.QuicheRecvInfo
 import com.ditchoom.socket.quic.QuicheSendInfo
 import com.ditchoom.socket.quic.SendTarget
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.life.RttSample
 import com.ditchoom.socket.quic.core.udp.SockAddr
+import com.ditchoom.socket.quic.readStats
 import kotlin.time.Duration
 
 /**
@@ -29,6 +31,9 @@ internal class SinglePath(
         val sample = if (stats.minRtt == Duration.ZERO) RttSample.None else RttSample.Sampled(stats.rtt)
         return PathRead.Read(stats.recv, stats.totalPtoCount, sample)
     }
+
+    /** The connection's statistics and its active path's, whichever path that is now. Allocates: read on request only. */
+    fun stats(): QuicStatsRead = q.api.readStats(q.handle)
 }
 
 /** A reading of the path's statistics. */

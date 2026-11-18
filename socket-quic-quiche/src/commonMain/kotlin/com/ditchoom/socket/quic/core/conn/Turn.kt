@@ -39,7 +39,7 @@ internal class Turn(
     clock: LoopClock,
     port: LoopPort,
 ) {
-    private val inside = Inside(c.streams, c.life, clock, port, this, c.slots.datagrams)
+    private val inside = Inside(c, clock, port, this)
     private val runWork: (ConnWork) -> Unit = { runOne(it) }
     private val paths: Paths = c.slots.paths
 
