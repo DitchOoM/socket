@@ -84,8 +84,9 @@ class HandshakeDeadlineConnTests {
         assertIs<ConnEnd.HandshakeTimedOut>(rig.sink.ended.single())
     }
 
+    /** The connection gives quiche its ceiling once; its timer expiries are counted for the report until confirmation. */
     @Test
-    fun aTimerExpiryAfterAPtoGrowsTheCeilingAndItsReleaseAfterConfirmationRemovesIt() {
+    fun theConnectionGivesQuicheItsCeilingOnceAndCountsItsExpiries() {
         val rig = rig(HandshakeBound.UntilClosed)
         api.connTimeout = 240.milliseconds
         rig.pass(0)
@@ -93,18 +94,9 @@ class HandshakeDeadlineConnTests {
         rig.pass(240 * ms)
         api.established = true
         rig.pass(480 * ms)
-        api.ptoCeilingHeld = false
         rig.pass(720 * ms)
-        rig.pass(960 * ms)
-        assertEquals(
-            listOf(240 * ms, 720 * ms, 0L),
-            api.ptoCeilings.map {
-                when (it) {
-                    is PtoCeiling.At -> it.nanos
-                    is PtoCeiling.None -> 0L
-                }
-            },
-        )
+        val given = assertIs<PtoCeiling.Growing>(api.ptoCeilings.single())
+        assertEquals(listOf(240 * ms, 3L, 3_600_000 * ms), listOf(given.firstNanos, given.growth.toLong(), given.maxNanos))
         assertEquals(1, rig.sink.established.size)
         assertEquals(
             1,

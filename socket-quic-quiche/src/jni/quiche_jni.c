@@ -669,9 +669,10 @@ JNIEXPORT void JNICALL JNI_FN(nConfigSetInitialRtt)(
 }
 
 JNIEXPORT void JNICALL JNI_FN(nConnSetHandshakePtoCeiling)(
-    JNIEnv *env, jclass cls, jlong conn, jlong nanos) {
-    /* patched-in export; 0 removes the ceiling */
-    quiche_conn_set_handshake_pto_ceiling((quiche_conn *)(uintptr_t)conn, (uint64_t)nanos);
+    JNIEnv *env, jclass cls, jlong conn, jlong first_nanos, jint growth, jlong max_nanos) {
+    /* patched-in export; a first ceiling of 0 removes the ceiling */
+    quiche_conn_set_handshake_pto_ceiling(
+        (quiche_conn *)(uintptr_t)conn, (uint64_t)first_nanos, (uint32_t)growth, (uint64_t)max_nanos);
 }
 
 JNIEXPORT jboolean JNICALL JNI_FN(nConnHandshakePtoCeilingHeld)(JNIEnv *env, jclass cls, jlong conn) {

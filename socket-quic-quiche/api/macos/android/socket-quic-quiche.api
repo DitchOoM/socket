@@ -523,6 +523,13 @@ public final class com/ditchoom/socket/quic/PtoCeiling$At : com/ditchoom/socket/
 	public final fun getNanos ()J
 }
 
+public final class com/ditchoom/socket/quic/PtoCeiling$Growing : com/ditchoom/socket/quic/PtoCeiling {
+	public fun <init> (JIJ)V
+	public final fun getFirstNanos ()J
+	public final fun getGrowth ()I
+	public final fun getMaxNanos ()J
+}
+
 public final class com/ditchoom/socket/quic/PtoCeiling$None : com/ditchoom/socket/quic/PtoCeiling {
 	public static final field INSTANCE Lcom/ditchoom/socket/quic/PtoCeiling$None;
 	public fun equals (Ljava/lang/Object;)Z

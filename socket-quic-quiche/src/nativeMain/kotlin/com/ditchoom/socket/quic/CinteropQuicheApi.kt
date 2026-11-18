@@ -856,7 +856,12 @@ internal object CinteropQuicheApi : QuicheApi, QuicheRandomPin {
     override fun connSetHandshakePtoCeiling(
         conn: QuicheConn,
         ceiling: PtoCeiling,
-    ) = quiche_conn_set_handshake_pto_ceiling(conn.handle.toCPointer()!!, ptoCeilingNanos(ceiling).convert())
+    ) = quiche_conn_set_handshake_pto_ceiling(
+        conn.handle.toCPointer()!!,
+        ptoCeilingFirstNanos(ceiling).convert(),
+        ptoCeilingGrowth(ceiling).convert(),
+        ptoCeilingMaxNanos(ceiling).convert(),
+    )
 
     override fun connHandshakePtoCeilingHeld(conn: QuicheConn): Boolean = quiche_conn_handshake_pto_ceiling_held(conn.handle.toCPointer()!!)
 
