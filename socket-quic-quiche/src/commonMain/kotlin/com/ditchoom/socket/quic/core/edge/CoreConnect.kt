@@ -175,7 +175,7 @@ private suspend fun OnSetupLane.connectOnLane(
     val localSockAddr = local.encodeToNative(factory)
     val name = nullTerminated(serverName, factory)
     val handle =
-        withClientConfig(api, options, handshake, factory) { config ->
+        withClientConfig(api, options, handshake, factory) { shared ->
             api.connect(
                 addressOf(name),
                 serverName.length,
@@ -185,7 +185,7 @@ private suspend fun OnSetupLane.connectOnLane(
                 localSockAddr.length,
                 peerSockAddr.address,
                 peerSockAddr.length,
-                config,
+                shared.config,
             )
         }
     name.freeNativeMemory()

@@ -38,7 +38,7 @@ internal val setupLane: CoroutineContext = laneDispatcher
  */
 internal class OnSetupLane private constructor() {
     /** The configs kept, least recently used first. */
-    private val configs = LinkedHashMap<ConfigKey, QuicheConfig>()
+    private val configs = LinkedHashMap<ConfigKey, SharedConfig>()
 
     /** Runs [use] with the client config of [options] and [handshake] on [api], built on the first use of its plan. */
     fun <T> withClientConfig(
@@ -46,18 +46,22 @@ internal class OnSetupLane private constructor() {
         options: QuicOptions,
         handshake: HandshakeRule,
         factory: BufferFactory,
-        use: (QuicheConfig) -> T,
+        use: (SharedConfig) -> T,
     ): T {
         val key = ConfigKey(api, clientConfigPlan(options, handshake))
-        val config = configs.remove(key) ?: buildClientConfig(api, options, handshake, factory)
+        val config = configs.remove(key) ?: SharedConfig(buildClientConfig(api, options, handshake, factory))
         configs[key] = config
         while (configs.size > CONFIGS_KEPT) {
-            val oldest = configs.entries.first()
-            configs.remove(oldest.key)
-            oldest.key.api.configFree(oldest.value)
+            val oldest = configs.keys.first()
+            configs.remove(oldest)?.let { oldest.api.configFree(it.config) }
         }
         return use(config)
     }
+
+    /** A config connects share, lent to one lane block at a time. */
+    class SharedConfig(
+        val config: QuicheConfig,
+    )
 
     /** A plan on the api that built its config: a handle of one api means nothing to another. */
     private data class ConfigKey(
