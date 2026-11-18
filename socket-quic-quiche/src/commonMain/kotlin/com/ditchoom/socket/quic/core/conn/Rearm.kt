@@ -19,11 +19,11 @@ internal fun ConnParts.rearm(
     timer.rearm(now, fire)
 }
 
-/** The connection's deadline fell due: quiche's timeout runs and the handshake follows its PTO expiries while they matter to it. */
+/** The connection's deadline fell due: quiche's timeout runs and, while unconfirmed, the handshake counts its PTO expiries. */
 internal fun ConnParts.expired(paths: Paths) {
     timer.expire()
-    when (handshake.ptoFollow()) {
-        PtoFollow.Follow -> handshake.expired(paths.read())
-        PtoFollow.Ignore -> Unit
+    when (handshake.confirmation()) {
+        Confirmation.Pending -> handshake.expired(paths.read())
+        Confirmation.Confirmed -> Unit
     }
 }

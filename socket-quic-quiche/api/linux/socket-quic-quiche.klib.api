@@ -520,6 +520,17 @@ sealed interface com.ditchoom.socket.quic/PtoCeiling { // com.ditchoom.socket.qu
             final fun <get-nanos>(): kotlin/Long // com.ditchoom.socket.quic/PtoCeiling.At.nanos.<get-nanos>|<get-nanos>(){}[0]
     }
 
+    final class Growing : com.ditchoom.socket.quic/PtoCeiling { // com.ditchoom.socket.quic/PtoCeiling.Growing|null[0]
+        constructor <init>(kotlin/Long, kotlin/Int, kotlin/Long) // com.ditchoom.socket.quic/PtoCeiling.Growing.<init>|<init>(kotlin.Long;kotlin.Int;kotlin.Long){}[0]
+
+        final val firstNanos // com.ditchoom.socket.quic/PtoCeiling.Growing.firstNanos|{}firstNanos[0]
+            final fun <get-firstNanos>(): kotlin/Long // com.ditchoom.socket.quic/PtoCeiling.Growing.firstNanos.<get-firstNanos>|<get-firstNanos>(){}[0]
+        final val growth // com.ditchoom.socket.quic/PtoCeiling.Growing.growth|{}growth[0]
+            final fun <get-growth>(): kotlin/Int // com.ditchoom.socket.quic/PtoCeiling.Growing.growth.<get-growth>|<get-growth>(){}[0]
+        final val maxNanos // com.ditchoom.socket.quic/PtoCeiling.Growing.maxNanos|{}maxNanos[0]
+            final fun <get-maxNanos>(): kotlin/Long // com.ditchoom.socket.quic/PtoCeiling.Growing.maxNanos.<get-maxNanos>|<get-maxNanos>(){}[0]
+    }
+
     final object None : com.ditchoom.socket.quic/PtoCeiling { // com.ditchoom.socket.quic/PtoCeiling.None|null[0]
         final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/PtoCeiling.None.equals|equals(kotlin.Any?){}[0]
         final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/PtoCeiling.None.hashCode|hashCode(){}[0]

@@ -63,9 +63,9 @@ class PtoCeilingPastConfirmationTests {
     /** What the core's connection does when the client's timer fires: [Rearm]'s `expired`. */
     private fun Client.followExpiry() =
         pair.onClock(pair.client) {
-            when (handshake.ptoFollow()) {
-                PtoFollow.Follow -> handshake.expired(path.read())
-                PtoFollow.Ignore -> Unit
+            when (handshake.confirmation()) {
+                Confirmation.Pending -> handshake.expired(path.read())
+                Confirmation.Confirmed -> Unit
             }
         }
 
@@ -165,8 +165,7 @@ class PtoCeilingPastConfirmationTests {
 
     /**
      * The server acknowledging a request is the first RTT sample in the application space: quiche releases the ceiling,
-     * the next expiry the connection follows removes it from every path, and a later loss waits for quiche's own PTO,
-     * of an estimate still mostly the handshake's.
+     * and a later loss waits for quiche's own PTO, of an estimate still mostly the handshake's.
      */
     @Test
     fun theFirstApplicationSampleReleasesTheCeiling() =
@@ -178,15 +177,10 @@ class PtoCeilingPastConfirmationTests {
                 assertEquals(7, pair.streamSend(pair.client, QuicStreamId(0), "request", fin = true))
                 client.carryAll()
                 assertEquals(false, env.api.connHandshakePtoCeilingHeld(pair.client), "released by the acknowledgement")
-                val held =
-                    ceilings
-                        .filterIsInstance<PtoCeiling.At>()
-                        .last()
-                        .nanos.nanoseconds
+                val first = firstCeilingOf(ruleOf(LinkClass.Unknown))
                 val resent = client.firstRetransmissionOfALostRequest(QuicStreamId(4))
-                assertTrue(resent > held + MAX_ACK_DELAY, "quiche's own PTO, past the released ceiling of $held: $resent")
-                assertEquals(PtoCeiling.None, ceilings.last(), "ceilings set: ${ceilings.map(::shown)}")
-                assertEquals(PtoFollow.Ignore, pair.onClock(pair.client) { client.handshake.ptoFollow() })
+                assertTrue(resent > first + MAX_ACK_DELAY, "quiche's own PTO, past the released ceiling: $resent")
+                assertEquals(1, ceilings.size, "the core gave quiche its ceiling once: ${ceilings.map(::shown)}")
             } finally {
                 client.pair.close()
             }
@@ -195,6 +189,7 @@ class PtoCeilingPastConfirmationTests {
     private fun shown(ceiling: PtoCeiling): String =
         when (ceiling) {
             is PtoCeiling.At -> ceiling.nanos.nanoseconds.toString()
+            is PtoCeiling.Growing -> "${ceiling.firstNanos.nanoseconds} ×${ceiling.growth} ≤ ${ceiling.maxNanos.nanoseconds}"
             is PtoCeiling.None -> "none"
         }
 
