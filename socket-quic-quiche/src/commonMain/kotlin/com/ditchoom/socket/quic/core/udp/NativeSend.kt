@@ -1,13 +1,15 @@
 package com.ditchoom.socket.quic.core.udp
 
 import com.ditchoom.socket.quic.NetShim
+import com.ditchoom.socket.quic.ReplySource
 import com.ditchoom.socket.quic.SendTarget
 
 /**
- * The send half of [NativeIo]: a batch's lengths and targets go into its lane's native records ([sendRecords], one per
- * lane by [SendBatch.lane]) and `qnet` is handed the batch's own memory. Safe from any thread, one thread per lane. A device
- * that refuses segmented sends steps [mode] down to [BatchCapability.Multi] for good; a link whose MTU is below a datagram
- * size (EMSGSIZE) sends that batch without segments, and takes segments only for smaller datagrams after ([segmentLimit]).
+ * The send half of [NativeIo]: a batch's lengths, targets and reply sources go into its lane's native records
+ * ([sendRecords], one per lane by [SendBatch.lane]) and `qnet` is handed the batch's own memory. Safe from any thread, one
+ * thread per lane. A device that refuses segmented sends steps [mode] down to [BatchCapability.Multi] for good; a link
+ * whose MTU is below a datagram size (EMSGSIZE) sends that batch without segments, and takes segments only for smaller
+ * datagrams after ([segmentLimit]).
  */
 internal class NativeSend(
     private val shim: NetShim,
@@ -27,8 +29,17 @@ internal class NativeSend(
             if (length > longest) longest = length
             records.putInt(at, length)
             when (val target = batch.targetOf(n)) {
-                is SendTarget.ConnectedPeer -> records.putInt(at + TARGET, 0)
-                is SendTarget.ServerReply -> putRecord(records, at + TARGET, target.to)
+                is SendTarget.ConnectedPeer -> {
+                    records.putInt(at + TARGET, 0)
+                    records.putInt(at + NativeIo.SEND_SOURCE, 0)
+                }
+                is SendTarget.ServerReply -> {
+                    putRecord(records, at + TARGET, target.to)
+                    when (val source = target.from) {
+                        is ReplySource.Recorded -> putRecord(records, at + NativeIo.SEND_SOURCE, source.key)
+                        is ReplySource.Undecodable -> records.putInt(at + NativeIo.SEND_SOURCE, 0)
+                    }
+                }
             }
         }
         var taken = 0

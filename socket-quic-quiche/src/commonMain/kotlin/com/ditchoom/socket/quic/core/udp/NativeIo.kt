@@ -53,9 +53,11 @@ internal class NativeIo(
     }
 
     companion object {
-        /** Bytes of one send record and one receive record, as `qnet.h` lays them out. */
-        const val SEND_RECORD = 32
-        const val RECV_RECORD = 40
+        /** Bytes of one send record and one receive record, and where each holds its local address, as `qnet.h` lays them out. */
+        const val SEND_RECORD = 56
+        const val SEND_SOURCE = 32
+        const val RECV_RECORD = 64
+        const val RECV_DEST = 40
 
         /** The most datagrams one receive takes. */
         const val MAX_RECEIVE = 64

@@ -9,9 +9,11 @@ import com.ditchoom.socket.quic.ReplySource
 import com.ditchoom.socket.quic.SendTarget
 import com.ditchoom.socket.quic.core.observe.ServerCounts
 import com.ditchoom.socket.quic.core.time.Nanos
+import com.ditchoom.socket.quic.core.udp.ArrivedOn
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 import com.ditchoom.socket.quic.core.udp.Room
 import com.ditchoom.socket.quic.core.udp.SendBatch
+import com.ditchoom.socket.quic.core.udp.replyFrom
 import kotlin.random.Random
 
 /** Whether a server checks and issues address-validation tokens, and with what. */
@@ -64,14 +66,14 @@ internal sealed interface Screened {
 /**
  * Version Negotiation and Retry: the packets a server answers with before it has a connection, and the NEW_TOKEN
  * tokens it hands a connection it accepted. quiche writes each reply straight into the loop's send batch, which the
- * pass sends with the connections' output; a batch with no room drops the reply, and the client retransmits. Loop
- * thread only.
+ * pass sends with the connections' output; a batch with no room drops the reply, and the client retransmits. Each
+ * reply leaves from the address its datagram arrived on, else from the socket's [bound] address. Loop thread only.
  */
 internal class Stateless(
     private val api: QuicheApi,
     val tokens: Tokens,
     private val random: Random,
-    private val local: PathKey,
+    private val bound: PathKey,
     private val counts: ServerCounts,
 ) {
     /** Answers the unsupported-version Initial at [datagram], read into [header], with a Version Negotiation. */
@@ -79,6 +81,7 @@ internal class Stateless(
         header: PacketHeader,
         datagram: NativeBytes,
         from: PathKey,
+        to: ArrivedOn,
         out: SendBatch,
     ) {
         if (out.room() == Room.Full) return counts.replyDropped()
@@ -93,7 +96,7 @@ internal class Stateless(
                 out.limits.maxDatagramSize,
             )
         if (written <= 0) return counts.replyDropped()
-        out.commit(written, SendTarget.ServerReply(to = from, from = ReplySource.Recorded(local)))
+        out.commit(written, SendTarget.ServerReply(to = from, from = ReplySource.Recorded(to.replyFrom(bound))))
         counts.negotiationSent()
     }
 
@@ -107,19 +110,20 @@ internal class Stateless(
         datagram: NativeBytes,
         length: Int,
         from: PathKey,
+        to: ArrivedOn,
         scratch: DemuxScratch,
         now: Nanos,
         out: SendBatch,
     ): Screened {
         when (scratch.readToken(api, datagram, length)) {
             TokenRead.Refused -> counts.unknownDropped()
-            TokenRead.Absent -> return unproven(tokens, header, datagram, from, scratch, now, out)
+            TokenRead.Absent -> return unproven(tokens, header, datagram, from, to, scratch, now, out)
             TokenRead.Present -> {
                 val checked = tokens.tokens.check(scratch.token.owner, scratch.tokenLength, now.value, header.cid, from)
                 when (checked) {
                     is TokenCheck.Valid -> return Screened.Start(Admit.Redeemed(checked))
                     is TokenCheck.Proven -> return Screened.Start(Admit.Proven)
-                    is TokenCheck.Unproven -> return unproven(tokens, header, datagram, from, scratch, now, out)
+                    is TokenCheck.Unproven -> return unproven(tokens, header, datagram, from, to, scratch, now, out)
                     is TokenCheck.Malformed, is TokenCheck.Forged, is TokenCheck.Expired -> counts.tokenDropped()
                 }
             }
@@ -133,13 +137,14 @@ internal class Stateless(
         header: PacketHeader,
         datagram: NativeBytes,
         from: PathKey,
+        to: ArrivedOn,
         scratch: DemuxScratch,
         now: Nanos,
         out: SendBatch,
     ): Screened =
         when (tokens.validation) {
             is AddressValidation.Off -> Screened.Start(Admit.Fresh)
-            is AddressValidation.Retry -> Screened.Answered.also { retry(tokens.tokens, header, datagram, from, scratch, now, out) }
+            is AddressValidation.Retry -> Screened.Answered.also { retry(tokens.tokens, header, datagram, from, to, scratch, now, out) }
         }
 
     /** Answers the version 1 Initial at [datagram], which carries no token, with a Retry that carries one. */
@@ -148,6 +153,7 @@ internal class Stateless(
         header: PacketHeader,
         datagram: NativeBytes,
         from: PathKey,
+        to: ArrivedOn,
         scratch: DemuxScratch,
         now: Nanos,
         out: SendBatch,
@@ -172,7 +178,7 @@ internal class Stateless(
                 out.limits.maxDatagramSize,
             )
         if (written <= 0) return counts.replyDropped()
-        out.commit(written, SendTarget.ServerReply(to = from, from = ReplySource.Recorded(local)))
+        out.commit(written, SendTarget.ServerReply(to = from, from = ReplySource.Recorded(to.replyFrom(bound))))
         counts.retrySent()
     }
 

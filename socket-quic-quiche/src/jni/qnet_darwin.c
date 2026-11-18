@@ -90,6 +90,10 @@ static int64_t qn_recv_x(int fd, uint8_t *recs, int32_t count, int32_t size) {
     struct qn_msghdr_x msgs[QN_MAX_BATCH];
     struct iovec iov[QN_MAX_BATCH];
     struct sockaddr_storage from[QN_MAX_BATCH];
+    union {
+        char buf[QN_PKTINFO_SPACE];
+        struct cmsghdr align;
+    } control[QN_MAX_BATCH];
     memset(msgs, 0, sizeof(struct qn_msghdr_x) * (size_t)count);
     for (int32_t i = 0; i < count; i++) {
         int64_t address;
@@ -100,6 +104,8 @@ static int64_t qn_recv_x(int fd, uint8_t *recs, int32_t count, int32_t size) {
         msgs[i].msg_iovlen = 1;
         msgs[i].msg_name = &from[i];
         msgs[i].msg_namelen = sizeof from[i];
+        msgs[i].msg_control = control[i].buf;
+        msgs[i].msg_controllen = sizeof control[i].buf;
     }
     ssize_t r;
     do {
@@ -111,6 +117,11 @@ static int64_t qn_recv_x(int fd, uint8_t *recs, int32_t count, int32_t size) {
         int32_t length = (int32_t)msgs[i].msg_datalen;
         memcpy(rec + 8, &length, 4);
         qn_from_sockaddr(&from[i], rec + 16);
+        struct msghdr h;
+        memset(&h, 0, sizeof h);
+        h.msg_control = msgs[i].msg_control;
+        h.msg_controllen = msgs[i].msg_controllen;
+        qn_dest_of(&h, rec + QN_RECV_DEST);
     }
     return qn_result((int32_t)r, 0, 0);
 }

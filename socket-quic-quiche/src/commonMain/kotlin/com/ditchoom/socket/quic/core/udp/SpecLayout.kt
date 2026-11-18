@@ -17,9 +17,25 @@ internal object SpecLayout {
     const val LOCAL = 64
     const val BYTES = 88
 
-    /** `QN_SPEC_LAYOUT`: the block's size and offsets folded as `h * 31 + offset`, in the order above. */
+    /**
+     * `QN_SPEC_LAYOUT`: the block's size and offsets folded as `h * 31 + offset`, in the order above, then the send and
+     * receive records' sizes and local-address offsets ([NativeIo]).
+     */
     val FINGERPRINT: Int =
-        intArrayOf(BYTES, BIND, PEER, RCVBUF, SNDBUF, GRANTED_RCV, GRANTED_SND, LOCAL).fold(0) { h, v -> h * 31 + v }
+        intArrayOf(
+            BYTES,
+            BIND,
+            PEER,
+            RCVBUF,
+            SNDBUF,
+            GRANTED_RCV,
+            GRANTED_SND,
+            LOCAL,
+            NativeIo.SEND_RECORD,
+            NativeIo.SEND_SOURCE,
+            NativeIo.RECV_RECORD,
+            NativeIo.RECV_DEST,
+        ).fold(0) { h, v -> h * 31 + v }
 }
 
 /** The loaded `qnet`'s [reported] fingerprint is not the [expected] one: a stale or mismatched native library. */

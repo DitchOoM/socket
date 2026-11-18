@@ -77,10 +77,11 @@
 #define QN_SPEC_BYTES 88
 
 /* qn_spec_layout(): a fingerprint of the offsets above, folded as h = h * 31 + offset over QN_SPEC_BYTES, BIND, PEER, RCVBUF,
- * SNDBUF, GRANTED_RCV, GRANTED_SND, LOCAL in that order. */
+ * SNDBUF, GRANTED_RCV, GRANTED_SND, LOCAL in that order, then over the send and receive records' sizes and their
+ * source and destination offsets (QN_SEND_RECORD, QN_SEND_SOURCE, QN_RECV_RECORD, QN_RECV_DEST). */
 #define QN_SPEC_FOLD(h, offset) ((h) * 31u + (uint32_t)(offset))
 #define QN_SPEC_LAYOUT                                                                                              \
-    ((int32_t)QN_SPEC_FOLD(                                                                                          \
+    ((int32_t)QN_SPEC_FOLD(QN_SPEC_FOLD(QN_SPEC_FOLD(QN_SPEC_FOLD(QN_SPEC_FOLD(                                      \
         QN_SPEC_FOLD(                                                                                                \
             QN_SPEC_FOLD(QN_SPEC_FOLD(QN_SPEC_FOLD(QN_SPEC_FOLD(QN_SPEC_FOLD((uint32_t)QN_SPEC_BYTES, QN_SPEC_BIND), \
                                                                 QN_SPEC_PEER),                                       \
@@ -88,14 +89,18 @@
                                       QN_SPEC_SNDBUF),                                                               \
                          QN_SPEC_GRANTED_RCV),                                                                       \
             QN_SPEC_GRANTED_SND),                                                                                    \
-        QN_SPEC_LOCAL))
+        QN_SPEC_LOCAL), QN_SEND_RECORD), QN_SEND_SOURCE), QN_RECV_RECORD), QN_RECV_DEST))
 
 /* Send record, one per datagram (QN_SEND_RECORD bytes): int32 length, then the target record at +8 (family 0 =
- * the connected peer). */
-#define QN_SEND_RECORD 32
+ * the connected peer), then the source record at +32: the local address the datagram leaves from (family 0 or the
+ * wildcard = the kernel chooses). */
+#define QN_SEND_RECORD 56
+#define QN_SEND_SOURCE 32
 /* Receive record, one per slot (QN_RECV_RECORD bytes): int64 buffer address (in), int32 length (out) at +8,
- * then the source record at +16. */
-#define QN_RECV_RECORD 40
+ * then the source record at +16, then at +40 the local address the datagram was sent to, port 0 (family 0 = not
+ * reported: only an unconnected socket bound to a wildcard reports it). */
+#define QN_RECV_RECORD 64
+#define QN_RECV_DEST 40
 
 /* qn_udp_recv_coalesced's scratch block, which qnet owns (an anonymous mapping made when UDP_GRO is turned on, resident
  * only where the kernel wrote, unmapped by qn_close): a header holding the whole messages that did not fit the caller's

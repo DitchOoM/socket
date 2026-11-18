@@ -15,8 +15,8 @@ import com.ditchoom.socket.quic.QuicSessionId
 import com.ditchoom.socket.quic.QuicWireConnectionId
 import com.ditchoom.socket.quic.core.demux.AcceptedPeer
 import com.ditchoom.socket.quic.core.demux.ConnBuild
+import com.ditchoom.socket.quic.core.demux.Encoding
 import com.ditchoom.socket.quic.core.demux.Opened
-import com.ditchoom.socket.quic.core.demux.PeerSockAddr
 import com.ditchoom.socket.quic.core.demux.ServerHooks
 import com.ditchoom.socket.quic.encodeToNative
 import com.ditchoom.socket.quic.toSocketAddress
@@ -43,12 +43,12 @@ internal class ServerEdge(
     private val writePolicy: WritePolicy,
     private val accepted: SendChannel<CoreConnection>,
 ) {
-    val hooks = ServerHooks(::peerAddress, ::open)
+    val hooks = ServerHooks(::encode, ::open)
 
-    /** The sender's address as quiche reads it, in memory the accepted connection frees. */
-    private fun peerAddress(key: PathKey): PeerSockAddr {
-        if (key.family != IPV4 && key.family != IPV6) return PeerSockAddr.Unencodable
-        return PeerSockAddr.Encoded(key.encodeToNative(factory))
+    /** [key] as quiche reads it, in memory the accepted connection frees. */
+    private fun encode(key: PathKey): Encoding {
+        if (key.family != IPV4 && key.family != IPV6) return Encoding.Unencodable
+        return Encoding.Encoded(key.encodeToNative(factory))
     }
 
     private fun open(
