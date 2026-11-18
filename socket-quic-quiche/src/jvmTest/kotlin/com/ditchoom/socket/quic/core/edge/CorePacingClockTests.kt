@@ -10,6 +10,7 @@ import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.QuicheConn
 import com.ditchoom.socket.quic.QuicheSendInfo
 import com.ditchoom.socket.quic.core.testing.LoopScheduling
+import com.ditchoom.socket.quic.core.time.MonotonicClock
 import com.ditchoom.socket.quic.loadQuicheApi
 import com.ditchoom.socket.quic.skipOnMissingNativeLib
 import kotlinx.coroutines.coroutineScope
@@ -26,6 +27,19 @@ import kotlin.time.Duration.Companion.seconds
  * never a different clock's reading, which the connection would wait on or ignore.
  */
 class CorePacingClockTests {
+    /**
+     * libquiche stamps a datagram's due time on the platform's monotonic clock, as the process reads it (`System.nanoTime` here).
+     * The loop's clock is compared with those stamps, so it reads that same clock: counted from any other origin, every due
+     * time looks hours ahead, which the pacer takes for another clock's reading and sends at once.
+     */
+    @Test
+    fun theLoopsClockReadsTheClockLibquicheStampsDueTimesOn() {
+        val before = System.nanoTime()
+        val read = MonotonicClock.now().value
+        val after = System.nanoTime()
+        assertTrue(read in before..after, "the loop's clock read $read ns, the platform's monotonic clock read $before..$after ns")
+    }
+
     @Test
     fun pacerTimesOfARealTransferAreOnTheLoopsClock() =
         runBlocking {
