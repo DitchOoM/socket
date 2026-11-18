@@ -89,7 +89,8 @@ internal fun buildConn(
             ack =
                 when (val r = rules.ack) {
                     is AckRule.Immediate -> AckCadence.Immediate
-                    is AckRule.HoldForReply -> AckCadence.HoldForReply(AckHold(r))
+                    is AckRule.UntilPassEnds -> AckCadence.UntilPassEnds(SamePassHold())
+                    is AckRule.AcrossTurns -> AckCadence.AcrossTurns(AckHold(r))
                 },
             paths =
                 when (side) {

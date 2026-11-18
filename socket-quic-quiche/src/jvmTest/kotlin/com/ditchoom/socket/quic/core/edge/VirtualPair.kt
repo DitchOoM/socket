@@ -11,6 +11,7 @@ import com.ditchoom.socket.quic.QuicTlsConfig
 import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.QuicheConn
 import com.ditchoom.socket.quic.QuicheRecvInfo
+import com.ditchoom.socket.quic.core.demux.ServerConfig
 import com.ditchoom.socket.quic.core.loop.Loop
 import com.ditchoom.socket.quic.core.testing.VirtualClock
 import com.ditchoom.socket.quic.core.time.Nanos
@@ -261,13 +262,14 @@ internal class VirtualPair private constructor(
             options: QuicOptions,
             oneWay: Duration = 30.milliseconds,
             tls: QuicTlsConfig = coreTlsConfig(),
+            serverConfig: ServerConfig = ServerConfig(),
             body: suspend CoroutineScope.(VirtualPair) -> Unit,
         ) = runBlocking {
             val api = loadQuicheApi()
             val pair = VirtualPair(oneWay, api)
             api.setThreadVirtualTimeNanos(ORIGIN)
             try {
-                pair.server = replayServer(api, options, BufferFactory.Default, pair.Socket(End.Server), pair.clock, tls)
+                pair.server = replayServer(api, options, BufferFactory.Default, pair.Socket(End.Server), pair.clock, tls, serverConfig)
                 pair.serverKey = InetSocketAddress(LOCALHOST, pair.server.port).toPathKey()
                 pair.client =
                     replayClient(

@@ -17,8 +17,13 @@ internal sealed interface AckCadence {
     /** Every turn writes the ACK quiche owes. */
     data object Immediate : AckCadence
 
-    /** A turn that handed received data up may hold its ACK for the reply ([AckHold]). */
-    class HoldForReply(
+    /** A turn that handed received data up lets its ACK wait until the end of the pass ([SamePassHold]). */
+    class UntilPassEnds(
+        val hold: SamePassHold,
+    ) : AckCadence
+
+    /** A turn that handed received data up may hold its ACK across turns for the reply ([AckHold]). */
+    class AcrossTurns(
         val hold: AckHold,
     ) : AckCadence
 }

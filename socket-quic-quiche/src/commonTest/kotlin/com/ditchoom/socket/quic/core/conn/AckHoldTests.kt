@@ -1,6 +1,7 @@
 package com.ditchoom.socket.quic.core.conn
 
 import com.ditchoom.socket.quic.core.time.Nanos
+import com.ditchoom.socket.quic.core.time.WaitResolution
 import com.ditchoom.socket.quic.core.time.WakeSink
 import com.ditchoom.socket.quic.core.time.WakeState
 import kotlin.test.Test
@@ -8,7 +9,7 @@ import kotlin.test.assertEquals
 
 /** [AckHold]'s decisions over scripted turns: when it holds, how long, and how it backs off and comes back. */
 class AckHoldTests {
-    private val hold = AckHold(AckRule.HoldForReply(maxNanos = 24_000_000L, rttShare = 4))
+    private val hold = AckHold(AckRule.AcrossTurns(AckDelayCap.within(MaxAckDelay(25_000_000L), WaitResolution(1_000_000L)), rttShare = 4))
     private var now = 0L
     private var handed = 0L
     private var output = 0L
@@ -43,13 +44,13 @@ class AckHoldTests {
     }
 
     private fun miss() {
-        assertEquals(AckStep.Hold, requestTurn())
+        assertEquals(AckStep.UntilReply, requestTurn())
         assertEquals(AckStep.Write, deadlineTurn())
     }
 
     @Test
     fun aReplyEndsTheHoldAndTheHoldLastsAQuarterOfTheRtt() {
-        assertEquals(AckStep.Hold, requestTurn())
+        assertEquals(AckStep.UntilReply, requestTurn())
         val sink = WakeSink()
         hold.offerWake(sink)
         assertEquals(10_000_000L, sink.earliest().value, "a quarter of 40 ms")
@@ -80,9 +81,9 @@ class AckHoldTests {
 
     @Test
     fun workWithoutOutputKeepsTheHoldAndMoreDatagramsEndIt() {
-        assertEquals(AckStep.Hold, requestTurn())
-        assertEquals(AckStep.Hold, turn(), "a read run as work sends nothing")
-        assertEquals(AckStep.Hold, requestTurn(), "two datagrams in a hold")
+        assertEquals(AckStep.UntilReply, requestTurn())
+        assertEquals(AckStep.UntilReply, turn(), "a read run as work sends nothing")
+        assertEquals(AckStep.UntilReply, requestTurn(), "two datagrams in a hold")
         assertEquals(AckStep.Write, requestTurn(), "the third is acknowledged at once")
     }
 
@@ -97,8 +98,8 @@ class AckHoldTests {
         }
         assertEquals(AckHold.MAX_SKIP, span, "the skip stops doubling at its cap")
         repeat(span) { assertEquals(AckStep.Write, requestTurn()) }
-        assertEquals(AckStep.Hold, requestTurn(), "a trial")
+        assertEquals(AckStep.UntilReply, requestTurn(), "a trial")
         assertEquals(AckStep.Write, replyTurn(), "its reply landed")
-        assertEquals(AckStep.Hold, requestTurn(), "holding again at once")
+        assertEquals(AckStep.UntilReply, requestTurn(), "holding again at once")
     }
 }

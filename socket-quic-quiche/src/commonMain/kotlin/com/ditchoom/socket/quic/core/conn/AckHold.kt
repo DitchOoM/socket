@@ -4,8 +4,11 @@ import com.ditchoom.socket.quic.core.observe.Confined
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.time.WakeSink
 
-/** What a turn does with the ACK quiche owes: write it now, with whatever else goes, or hold it for a reply to carry. */
-internal enum class AckStep { Write, Hold }
+/**
+ * What a turn does with the ACK quiche owes: write it now, with whatever else goes; let it wait for work queued in this
+ * loop pass; or hold it across turns for a reply.
+ */
+internal enum class AckStep { Write, UntilPassEnds, UntilReply }
 
 /** Why a turn may not hold its ACK, or [Open] when it may. */
 internal enum class HoldGate {
@@ -68,14 +71,14 @@ private sealed interface HoldPhase {
  * The ACK hold of one connection. A turn that received a datagram and handed what it carried to the application holds
  * the ACK quiche owes instead of writing it alone, so the reply the application is likely to write carries it in the
  * same datagram. The hold ends at the reply, at its deadline, or at any news that needs a write; it lasts at most
- * [AckRule.HoldForReply.maxNanos], within the max_ack_delay the connection advertises, and at most a share of the
+ * [AckRule.AcrossTurns.cap], within the max_ack_delay the connection advertises, and at most a share of the
  * smoothed RTT. Adaptive: a connection whose holds end without a reply [MISSES_TO_BACK_OFF] times in a row backs off and
  * acknowledges at once, trying one hold again after a number of reply-likely turns that doubles with each trial that
  * misses; any reply that lands inside a hold restores it.
  */
 @Confined
 internal class AckHold(
-    private val rule: AckRule.HoldForReply,
+    private val rule: AckRule.AcrossTurns,
 ) {
     private val trusted = Standing.Trusted()
     private val backedOff = Standing.BackedOff()
@@ -150,7 +153,7 @@ internal class AckHold(
         when (phase) {
             is HoldPhase.AckHeld ->
                 when (gate) {
-                    HoldGate.Open -> AckStep.Hold
+                    HoldGate.Open -> AckStep.UntilReply
                     HoldGate.Handshaking, HoldGate.Closing, HoldGate.PathMoving, HoldGate.Backlogged, HoldGate.LossRecent -> {
                         ended(HoldEnd.Miss)
                         AckStep.Write
@@ -176,13 +179,13 @@ internal class AckHold(
                     return AckStep.Write
                 }
         }
-        val length = minOf(rule.maxNanos, rttNanos / rule.rttShare)
+        val length = minOf(rule.cap.nanos, rttNanos / rule.rttShare)
         if (length <= 0L) return AckStep.Write
         held.deadlineNanos = now.value + length
         held.datagrams = asking
         phase = held
         holds++
-        return AckStep.Hold
+        return AckStep.UntilReply
     }
 
     /** Offers the hold's deadline while an ACK is held. */
