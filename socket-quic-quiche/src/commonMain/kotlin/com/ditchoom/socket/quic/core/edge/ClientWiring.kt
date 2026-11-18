@@ -5,7 +5,6 @@ import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicheApi
-import com.ditchoom.socket.quic.QuicheConfig
 import com.ditchoom.socket.quic.QuicheConn
 import com.ditchoom.socket.quic.connectionIdRandom
 import com.ditchoom.socket.quic.core.conn.FlightSize
@@ -25,7 +24,6 @@ import kotlin.random.Random
 internal class ClientWiring(
     val api: QuicheApi,
     val handle: QuicheConn,
-    val config: QuicheConfig,
     val options: QuicOptions,
     val memory: EdgeMemory,
     val running: RunningLoop,
