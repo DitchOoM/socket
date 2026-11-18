@@ -18,13 +18,15 @@ internal enum class HandshakeStep { Handshaking, JustEstablished, Established, D
 /** Whether the handshake still waits for its confirmation. */
 internal enum class Confirmation { Pending, Confirmed }
 
+/** Whether quiche's PTO expiries still matter to the handshake: their count until confirmation, its ceiling until released. */
+internal enum class PtoFollow { Follow, Ignore }
+
 private enum class Progress { Handshaking, Established }
 
 private sealed interface Phase {
-    /** Not confirmed: how far it got, and quiche's PTO expiries so far. */
+    /** Not confirmed: how far it got. */
     class Pending : Phase {
         var progress = Progress.Handshaking
-        var expiries = 0L
     }
 
     data object Confirmed : Phase
@@ -32,9 +34,12 @@ private sealed interface Phase {
 
 private sealed interface PtoPace {
     /** quiche's own PTO. */
-    data object Rfc9002 : PtoPace
+    data object Uncapped : PtoPace
 
-    /** quiche's PTO capped at [ceilingNanos] until confirmation. */
+    /**
+     * quiche's PTO capped at [ceilingNanos], held until quiche releases it at the first RTT sample in the application
+     * space after confirmation.
+     */
     class Capped : PtoPace {
         var ceilingNanos = 0L
     }
@@ -49,10 +54,11 @@ private sealed interface Deadline {
 }
 
 /**
- * The handshake's phase, its PTO ceiling, its deadline and the report of its end. Until the handshake is confirmed the
- * ceiling starts at the rule's first and grows 3× with each of quiche's PTO expiries; at confirmation the ceiling is
- * removed and quiche's recovery runs unmodified. The deadline ends the connection only while the handshake is
- * incomplete: once it completes the caller holds the connection, and the idle timeout owns a confirmation that is late.
+ * The handshake's phase, its PTO ceiling, its deadline and the report of its end. The ceiling starts at the rule's first
+ * and grows 3× with each of quiche's PTO expiries. It outlives confirmation: the RTT estimate is still the handshake's
+ * until quiche takes a sample in the application space, which releases it, and from then quiche's recovery runs
+ * unmodified. The deadline ends the connection only while the handshake is incomplete: once it completes the caller
+ * holds the connection, and the idle timeout owns a confirmation that is late.
  */
 @Confined
 internal class Handshake(
@@ -64,11 +70,14 @@ internal class Handshake(
     private val pending = Phase.Pending()
     private var phase: Phase = pending
     private val capped = PtoPace.Capped()
-    private val pace: PtoPace =
+    private var pace: PtoPace =
         when (val pto = rule.pto) {
-            is PtoRule.Rfc9002 -> PtoPace.Rfc9002
+            is PtoRule.Rfc9002 -> PtoPace.Uncapped
             is PtoRule.Adaptive -> capped.also { it.ceilingNanos = pto.firstCeilingNanos }
         }
+
+    /** quiche's PTO expiries seen so far. */
+    private var expiries = 0L
     private val deadline: Deadline =
         when (val bound = rule.bound) {
             is HandshakeBound.UntilClosed -> Deadline.None
@@ -77,7 +86,7 @@ internal class Handshake(
 
     init {
         when (val p = pace) {
-            is PtoPace.Rfc9002 -> Unit
+            is PtoPace.Uncapped -> Unit
             is PtoPace.Capped -> q.api.connSetHandshakePtoCeiling(q.handle, PtoCeiling.At(p.ceilingNanos))
         }
     }
@@ -98,7 +107,7 @@ internal class Handshake(
         val reached = pending.progress
         val just = if (was == Progress.Handshaking) HandshakeStep.JustEstablished else HandshakeStep.Established
         if (reached == Progress.Established && q.api.connIsHandshakeConfirmed(q.handle)) {
-            confirm()
+            phase = Phase.Confirmed
             return just
         }
         if (reached == Progress.Handshaking && passed(now)) return HandshakeStep.DeadlinePassed
@@ -108,18 +117,37 @@ internal class Handshake(
         }
     }
 
-    /** quiche's timeout ran while the handshake is unconfirmed: the ceiling follows quiche's PTO expiries in [read]. */
+    /**
+     * quiche's timeout ran: whether [expired] follows it. Once confirmed, a ceiling quiche has released is removed from
+     * every path, and expiries are ignored from then on.
+     */
+    fun ptoFollow(): PtoFollow {
+        when (phase) {
+            is Phase.Pending -> return PtoFollow.Follow
+            is Phase.Confirmed -> Unit
+        }
+        when (pace) {
+            is PtoPace.Uncapped -> return PtoFollow.Ignore
+            is PtoPace.Capped -> Unit
+        }
+        if (q.api.connHandshakePtoCeilingHeld(q.handle)) return PtoFollow.Follow
+        pace = PtoPace.Uncapped
+        q.api.connSetHandshakePtoCeiling(q.handle, PtoCeiling.None)
+        return PtoFollow.Ignore
+    }
+
+    /** quiche's timeout ran and [ptoFollow] answered [PtoFollow.Follow]: the ceiling follows quiche's PTO expiries in [read]. */
     fun expired(read: PathRead) {
-        val expiries =
+        val seen =
             when (read) {
                 is PathRead.Unread -> return
                 is PathRead.Read -> read.probes
             }
-        val more = expiries - pending.expiries
+        val more = seen - expiries
         if (more <= 0) return
-        pending.expiries = expiries
+        expiries = seen
         when (val p = pace) {
-            is PtoPace.Rfc9002 -> Unit
+            is PtoPace.Uncapped -> Unit
             is PtoPace.Capped -> {
                 p.ceilingNanos = grown(p.ceilingNanos, more)
                 q.api.connSetHandshakePtoCeiling(q.handle, PtoCeiling.At(p.ceilingNanos))
@@ -185,14 +213,6 @@ internal class Handshake(
                 },
         )
 
-    private fun confirm() {
-        phase = Phase.Confirmed
-        when (pace) {
-            is PtoPace.Rfc9002 -> Unit
-            is PtoPace.Capped -> q.api.connSetHandshakePtoCeiling(q.handle, PtoCeiling.None)
-        }
-    }
-
     private fun passed(now: Nanos): Boolean =
         when (val d = deadline) {
             is Deadline.None -> false
@@ -221,8 +241,8 @@ internal class Handshake(
 
     private fun probesOf(read: PathRead): Int =
         when (read) {
-            is PathRead.Unread -> pending.expiries.toInt()
-            is PathRead.Read -> maxOf(read.probes, pending.expiries).toInt()
+            is PathRead.Unread -> expiries.toInt()
+            is PathRead.Read -> maxOf(read.probes, expiries).toInt()
         }
 
     private fun paceOf(

@@ -59,9 +59,9 @@ class PtoCeilingPastConfirmationTests {
     /** What the core's connection does when the client's timer fires: [Rearm]'s `expired`. */
     private fun Client.followExpiry() =
         pair.onClock(pair.client) {
-            when (handshake.confirmation()) {
-                Confirmation.Pending -> handshake.expired(path.read())
-                Confirmation.Confirmed -> Unit
+            when (handshake.ptoFollow()) {
+                PtoFollow.Follow -> handshake.expired(path.read())
+                PtoFollow.Ignore -> Unit
             }
         }
 
@@ -113,9 +113,9 @@ class PtoCeilingPastConfirmationTests {
         return client
     }
 
-    /** The client's request is lost; how long after it the client's first 1-RTT retransmission leaves. */
-    private fun Client.firstRetransmissionOfALostRequest(): Duration {
-        assertEquals(7, pair.streamSend(pair.client, QuicStreamId(0), "request", fin = true))
+    /** The client's request on [stream] is lost; how long after it the client's first 1-RTT retransmission leaves. */
+    private fun Client.firstRetransmissionOfALostRequest(stream: QuicStreamId = QuicStreamId(0)): Duration {
+        assertEquals(7, pair.streamSend(pair.client, stream, "request", fin = true))
         val lostAt = pair.elapsed
         assertTrue(pair.sends(pair.client).any { "1-RTT" in it.packetTypes }, "the request left")
         var resent: Duration = Duration.INFINITE
@@ -150,6 +150,35 @@ class PtoCeilingPastConfirmationTests {
                     "the first 1-RTT retransmission left $resent after the request, past the ceiling of $held; " +
                         "ceilings set: ${ceilings.map(::shown)}",
                 )
+            } finally {
+                client.pair.close()
+            }
+        }
+
+    /**
+     * The server acknowledging a request is the first RTT sample in the application space: quiche releases the ceiling,
+     * the next expiry the connection follows removes it from every path, and a later loss waits for quiche's own PTO,
+     * of an estimate still mostly the handshake's.
+     */
+    @Test
+    fun theFirstApplicationSampleReleasesTheCeiling() =
+        runTest {
+            val client = confirmedAfterAnInflatedSample()
+            try {
+                val pair = client.pair
+                assertTrue(env.api.connHandshakePtoCeilingHeld(pair.client), "held past confirmation")
+                assertEquals(7, pair.streamSend(pair.client, QuicStreamId(0), "request", fin = true))
+                client.carryAll()
+                assertEquals(false, env.api.connHandshakePtoCeilingHeld(pair.client), "released by the acknowledgement")
+                val held =
+                    ceilings
+                        .filterIsInstance<PtoCeiling.At>()
+                        .last()
+                        .nanos.nanoseconds
+                val resent = client.firstRetransmissionOfALostRequest(QuicStreamId(4))
+                assertTrue(resent > held + MAX_ACK_DELAY, "quiche's own PTO, past the released ceiling of $held: $resent")
+                assertEquals(PtoCeiling.None, ceilings.last(), "ceilings set: ${ceilings.map(::shown)}")
+                assertEquals(PtoFollow.Ignore, pair.onClock(pair.client) { client.handshake.ptoFollow() })
             } finally {
                 client.pair.close()
             }

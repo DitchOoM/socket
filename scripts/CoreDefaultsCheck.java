@@ -421,7 +421,7 @@ public class CoreDefaultsCheck {
             List.of("conn/Egress"));
         QUICHE_OWNERS.put("connLossEvidence|connRecvGaps", List.of("conn/AckHold", "conn/AckCadence"));
         QUICHE_OWNERS.put("connTimeout|connOnTimeout", List.of("conn/ConnTimer"));
-        QUICHE_OWNERS.put("connIsEstablished|connIsHandshakeConfirmed|connSetHandshakePtoCeiling|connApplicationProto|configSetInitialRtt",
+        QUICHE_OWNERS.put("connIsEstablished|connIsHandshakeConfirmed|connSetHandshakePtoCeiling|connHandshakePtoCeilingHeld|connApplicationProto|configSetInitialRtt",
             List.of("conn/Handshake"));
         QUICHE_OWNERS.put("connClose|connIsClosed|connIsDraining|connIsTimedOut|connPeerError|connLocalError", List.of("life/ConnLife"));
         QUICHE_OWNERS.put("connStreamDataUnacknowledged", List.of("life/Linger", "life/ConnLife"));

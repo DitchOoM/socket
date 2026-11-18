@@ -340,13 +340,20 @@ interface QuicheApi {
     fun connIsHandshakeConfirmed(conn: QuicheConn): Boolean
 
     /**
-     * Caps every PTO interval at [ceiling] while the handshake is unconfirmed, and re-arms the loss-detection timer
-     * (`quiche_conn_set_handshake_pto_ceiling`, a patched-in export). quiche's own smaller PTO still wins.
+     * Caps every PTO interval at [ceiling] and re-arms the loss-detection timer (`quiche_conn_set_handshake_pto_ceiling`,
+     * a patched-in export). quiche's own smaller PTO still wins. Each path holds the ceiling until its first RTT sample
+     * in the application space after confirmation releases it; a released path ignores later ceilings.
      */
     fun connSetHandshakePtoCeiling(
         conn: QuicheConn,
         ceiling: PtoCeiling,
     )
+
+    /**
+     * Whether the active path still holds the ceiling of [connSetHandshakePtoCeiling]
+     * (`quiche_conn_handshake_pto_ceiling_held`, a patched-in export).
+     */
+    fun connHandshakePtoCeilingHeld(conn: QuicheConn): Boolean
 
     fun connIsClosed(conn: QuicheConn): Boolean
 

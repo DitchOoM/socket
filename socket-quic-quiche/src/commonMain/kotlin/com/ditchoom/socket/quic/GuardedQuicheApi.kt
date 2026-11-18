@@ -227,6 +227,11 @@ internal class GuardedQuicheApi(
         delegate.connSetHandshakePtoCeiling(conn, ceiling)
     }
 
+    override fun connHandshakePtoCeilingHeld(conn: QuicheConn): Boolean {
+        guard.assertOnLoop(LoopSite.Quiche)
+        return delegate.connHandshakePtoCeilingHeld(conn)
+    }
+
     override fun connSetToken(
         conn: QuicheConn,
         buf: Long,
