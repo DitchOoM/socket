@@ -442,7 +442,25 @@
       "handshakecorruption": {
         "flaky": "unproven: the stock quiche server drops a request that arrives before its handshake completes (it buffers no early 1-RTT), our retransmission 15 s later (a 5 s first RTT sample) is lost, and the server idles out 30 s after its last packet (run 43612995827); the server's side is only in its own log"
       },
-      "handshakeloss": "pass",
+      "handshakeloss": {
+        "flaky": {
+          "why": "peer: the stock quiche server drops our request when it arrives before its handshake completes (it buffers no early 1-RTT), our retransmissions 12 s and 36 s later (a 4 s first RTT sample, the server's acknowledgement of our Initial having ridden its own 4 s PTO) are lost or late, and it idles out 30 s after its last packet (run 44177059008); or, its congestion window spent on Handshake packets we cannot read, it never re-sends the last 31 bytes of its ServerHello and acknowledges our Initial probes for the whole time limit (run 44177059008 retry: 2722 acknowledgements, the ServerHello stopped at byte 59 of 90)",
+          "signature": {
+            "kind": "any-of",
+            "signatures": [
+              {
+                "kind": "peer-never-acked-early-request",
+                "min_copies": 3,
+                "silence_s": 25
+              },
+              {
+                "kind": "peer-server-hello-stopped-short",
+                "min_acks": 1000
+              }
+            ]
+          }
+        }
+      },
       "ipv6": "pass",
       "longrtt": "pass",
       "multiplexing": "pass",
@@ -836,7 +854,15 @@
       "zerortt": "pass"
     },
     "msquic": {
-      "amplificationlimit": "pass",
+      "amplificationlimit": {
+        "flaky": {
+          "why": "peer and simulator: msquic's client abandons a handshake at 10 s and the drop list takes its datagrams 2 to 7, so our server, holding its full three-times budget, hears nothing more; when our whole first flight reaches msquic before it answers, it acknowledges both spaces in one datagram rather than two, and its eighth datagram, the first through, falls due on its PTO backoff at about 13.9 s, after it gave up (run 44177059008, both attempts; passing run 44124082900 sent the extra 50-byte Handshake acknowledgement and got through at 8.1 s)",
+          "signature": {
+            "kind": "peer-gave-up-while-we-were-amplification-limited",
+            "min_dropped": 6
+          }
+        }
+      },
       "blackhole": "pass",
       "goodput": "pass",
       "handshake": "pass",
