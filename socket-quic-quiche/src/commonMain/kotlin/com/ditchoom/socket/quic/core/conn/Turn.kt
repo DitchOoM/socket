@@ -251,10 +251,8 @@ internal class Turn(
                 is Life.Running, is Life.Over -> Unit
             }
         }
-        return when (wrote) {
-            Wrote.All -> Collected.Everything
-            Wrote.BatchFull -> Collected.MoreWaiting
-        }
+        if (wrote == Wrote.ClockMismatch) finish(now, c.egress.mismatchEnd())
+        return wrote.collected()
     }
 
     /** [over], where quiche may fail again while the connection is already ending: then nothing more goes out. */

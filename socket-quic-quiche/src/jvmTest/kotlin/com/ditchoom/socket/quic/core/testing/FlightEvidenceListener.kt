@@ -1,9 +1,11 @@
 package com.ditchoom.socket.quic.core.testing
 
+import com.ditchoom.socket.quic.core.conn.MismatchResponse
 import org.junit.platform.engine.TestExecutionResult
 import org.junit.platform.engine.support.descriptor.MethodSource
 import org.junit.platform.launcher.TestExecutionListener
 import org.junit.platform.launcher.TestIdentifier
+import org.junit.platform.launcher.TestPlan
 
 /**
  * Every JVM test's connections are recorded, and a failing test writes their flight recordings ([FailureEvidence]) and
@@ -12,6 +14,11 @@ import org.junit.platform.launcher.TestIdentifier
  * skipped test writes nothing.
  */
 class FlightEvidenceListener : TestExecutionListener {
+    /** A datagram due on a clock the loop does not read ends its connection, so the test that caused it fails. */
+    override fun testPlanExecutionStarted(testPlan: TestPlan) {
+        MismatchResponse.failTheTest()
+    }
+
     override fun executionStarted(testIdentifier: TestIdentifier) {
         if (testIdentifier.isTest) FailureEvidence.begin()
     }

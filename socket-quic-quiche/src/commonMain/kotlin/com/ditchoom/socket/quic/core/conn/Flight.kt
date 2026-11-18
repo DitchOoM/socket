@@ -52,6 +52,9 @@ internal enum class DropWhy {
 
 private const val DROP_TYPE_PREFIX = "com.ditchoom.socket.quic.core.conn.DropWhy."
 
+/** The trace's [TraceEvent.Error.type] for a [PacingClockMismatch]: its qualified name. */
+private const val PACING_MISMATCH_TYPE = "com.ditchoom.socket.quic.core.conn.PacingClockMismatch"
+
 /** How many records a connection's flight recording holds; their payload is kept in its loop's [FlightArena]. */
 internal class FlightSize(
     val records: Int,
@@ -113,6 +116,12 @@ internal class ConnFlight(
         hi: Long,
         lo: Long,
     ) = ring.put(FlightKind.DatagramDropped, now.value, why.ordinal, ring.bindAddress(family, port, hi, lo), peerId, length, 0L, 0L)
+
+    /** A datagram's due time was [aheadNanos] ahead of the loop's clock at [now]: another clock's reading. */
+    fun pacingClockMismatch(
+        now: Nanos,
+        aheadNanos: Long,
+    ) = ring.event(FlightKind.PacingClockMismatch, now.value, 0, 0, peerId, aheadNanos, 0L)
 
     /** The connection's deadline fell due and quiche's timeout runs at [now]. */
     fun timerFired(now: Nanos) = ring.event(FlightKind.TimerFire, now.value, 0, 0, peerId, 0L, 0L)
@@ -211,6 +220,10 @@ internal class ConnFlight(
                 emit.emit(droppedAt(i))
                 continue
             }
+            if (kind == FlightKind.PacingClockMismatch) {
+                emit.emit(TraceEvent.Error(sinceOrigin(i), PACING_MISMATCH_TYPE, mismatchText(ring.aAt(i))))
+                continue
+            }
             if (kind != FlightKind.DatagramIn && kind != FlightKind.DatagramOut) continue
             val at = ring.aAt(i)
             val length = ring.lengthAt(i)
@@ -231,6 +244,8 @@ internal class ConnFlight(
         val address = "${ring.familyOf(id)}:${ring.portOf(id)}:$hi:$lo"
         return TraceEvent.Drop(sinceOrigin(i), DropWhy.entries[ring.subAt(i)].type, "${ring.lengthAt(i)} bytes, address $address")
     }
+
+    private fun mismatchText(aheadNanos: Long) = "a due time $aheadNanos ns ahead of the loop's clock"
 
     private fun sinceOrigin(i: Int) = (ring.nanosAt(i) - originNanos).nanoseconds
 

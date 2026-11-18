@@ -81,7 +81,7 @@ class ConnPacingTests {
         // A reading of some other clock, hours ahead: the datagrams go at once.
         val rig = Rig(dueTimes = longArrayOf(3_600_000 * ms, 3_600_000 * ms, 3_600_000 * ms))
 
-        rig.pass(now = 0)
+        MismatchResponse.sendingNowDuring { rig.pass(now = 0) }
 
         assertEquals(3, rig.sent)
         assertEquals(

@@ -1,5 +1,6 @@
 package com.ditchoom.socket.quic.core.testing
 
+import com.ditchoom.socket.quic.core.conn.MismatchResponse
 import org.junit.runner.Description
 import org.junit.runner.notification.Failure
 import org.junit.runner.notification.RunListener
@@ -10,6 +11,11 @@ import org.junit.runner.notification.RunListener
  * files on its error stream.
  */
 class FlightEvidenceRunListener : RunListener() {
+    /** A datagram due on a clock the loop does not read ends its connection, so the test that caused it fails. */
+    override fun testRunStarted(description: Description) {
+        MismatchResponse.failTheTest()
+    }
+
     override fun testStarted(description: Description) = FailureEvidence.begin()
 
     override fun testFailure(failure: Failure) {
