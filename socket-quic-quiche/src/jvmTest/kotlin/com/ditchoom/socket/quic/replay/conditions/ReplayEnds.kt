@@ -176,6 +176,8 @@ internal fun replayClient(
             peer.length,
             config,
         )
+    // The connection keeps nothing of the config: quiche copied what it needs at connect.
+    api.configFree(config)
     name.freeNativeMemory()
     scid.freeNativeMemory()
     val plan = sessionPlan(options, SERVER_NAME, serverPort)
@@ -187,7 +189,6 @@ internal fun replayClient(
         ClientWiring(
             api,
             handle,
-            config,
             options,
             memory,
             RunningLoop(

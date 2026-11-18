@@ -54,7 +54,7 @@ class SharedClientConfigTests {
             withCoreEchoServer { server ->
                 val first = connectCore(server.port, api = api)
                 val firstConfig = api.last.load()
-                for (i in 1..CONFIGS_KEPT) {
+                for (i in 1..OnSetupLane.CONFIGS_KEPT) {
                     val options = coreTestOptions.copy(idleTimeout = (FIRST_PUSHING_SECONDS + i).seconds)
                     connectCore(server.port, api = api, options = options).connection.close(QuicError.NoError)
                 }
@@ -91,6 +91,5 @@ class SharedClientConfigTests {
         val IDLE_SECONDS = listOf(11, 12, 13)
         const val FIRST_PUSHING_SECONDS = 20
         const val PAYLOAD = 4096
-        const val CONFIGS_KEPT = 16
     }
 }

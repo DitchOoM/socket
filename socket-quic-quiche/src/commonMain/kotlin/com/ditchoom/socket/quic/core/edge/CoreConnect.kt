@@ -8,26 +8,20 @@ import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.socket.networkId
-import com.ditchoom.socket.quic.ApiQuicConfigCalls
 import com.ditchoom.socket.quic.LocalEndpointSupport
 import com.ditchoom.socket.quic.NativeSocketRefusal
 import com.ditchoom.socket.quic.QUIC_ISSUED_CONN_ID_LEN
 import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicConnectionIdentity
 import com.ditchoom.socket.quic.QuicOptions
-import com.ditchoom.socket.quic.QuicRole
 import com.ditchoom.socket.quic.QuicSessionId
 import com.ditchoom.socket.quic.QuicWireConnectionId
 import com.ditchoom.socket.quic.QuicheApi
-import com.ditchoom.socket.quic.QuicheConfig
 import com.ditchoom.socket.quic.RouteSource
 import com.ditchoom.socket.quic.UdpBatching
 import com.ditchoom.socket.quic.UdpSocketChannelFactory
-import com.ditchoom.socket.quic.applyQuicOptions
-import com.ditchoom.socket.quic.clientAlpnOffer
 import com.ditchoom.socket.quic.core.conn.ClientTokens
 import com.ditchoom.socket.quic.core.conn.FlightSize
-import com.ditchoom.socket.quic.core.conn.HandshakeRule
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.loop.Placement
@@ -35,12 +29,10 @@ import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 import com.ditchoom.socket.quic.core.udp.SocketBuffers
 import com.ditchoom.socket.quic.core.udp.SocketPeer
 import com.ditchoom.socket.quic.core.udp.SocketReport
-import com.ditchoom.socket.quic.encodeAlpnList
 import com.ditchoom.socket.quic.encodeToNative
 import com.ditchoom.socket.quic.generateScid
 import com.ditchoom.socket.quic.hostLiteral
 import com.ditchoom.socket.quic.hostSockAddrLayout
-import com.ditchoom.socket.quic.loadTrustAnchors
 import com.ditchoom.socket.quic.resolveNetworkMonitor
 import com.ditchoom.socket.quic.toPathKey
 import com.ditchoom.socket.quic.wireClientConnectivityTap
@@ -48,7 +40,6 @@ import com.ditchoom.socket.udp.SocketAddressCodec
 import com.ditchoom.socket.udp.UdpSocket
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlin.time.Duration
 
@@ -89,7 +80,7 @@ internal suspend fun coreConnect(
     var connected = false
     try {
         val started =
-            withContext(setupLane) {
+            OnSetupLane.run {
                 connectOnLane(
                     host,
                     peerHost,
@@ -125,7 +116,7 @@ internal suspend fun coreConnect(
 }
 
 /** Everything [coreConnect] does that opens a socket, a file or a native library, on the [setupLane]. */
-private suspend fun connectOnLane(
+private suspend fun OnSetupLane.connectOnLane(
     host: String,
     peerHost: String,
     port: Int,
@@ -178,24 +169,25 @@ private suspend fun connectOnLane(
     val local = socket.local()
     val monitor = resolveNetworkMonitor(options.networkMonitor)
     val handshake = clientHandshakeRule(options, linkClassOf(monitor.state.value.networkId))
-    val config = configured(api, options, factory, handshake)
     val scid = generateScid(factory)
     val scidHex = hex(scid)
     val peerSockAddr = codec.encodeToNative(peer, factory)
     val localSockAddr = local.encodeToNative(factory)
     val name = nullTerminated(serverName, factory)
     val handle =
-        api.connect(
-            addressOf(name),
-            serverName.length,
-            addressOf(scid),
-            QUIC_ISSUED_CONN_ID_LEN,
-            localSockAddr.address,
-            localSockAddr.length,
-            peerSockAddr.address,
-            peerSockAddr.length,
-            config,
-        )
+        withClientConfig(api, options, handshake, factory) { config ->
+            api.connect(
+                addressOf(name),
+                serverName.length,
+                addressOf(scid),
+                QUIC_ISSUED_CONN_ID_LEN,
+                localSockAddr.address,
+                localSockAddr.length,
+                peerSockAddr.address,
+                peerSockAddr.length,
+                config,
+            )
+        }
     name.freeNativeMemory()
     scid.freeNativeMemory()
     val plan = sessionPlan(options, serverName, port, tokens)
@@ -210,7 +202,6 @@ private suspend fun connectOnLane(
                     ClientWiring(
                         api,
                         handle,
-                        config,
                         options,
                         memory,
                         running,
@@ -240,23 +231,6 @@ private suspend fun connectOnLane(
     return StartedClient(CoreClient(connection, built.conn, running.loop, SocketReport(socket.granted(), local.port)), offer)
 }
 
-/** A client config with the caller's ALPN, options, handshake rule and trust anchors applied. */
-private fun configured(
-    api: QuicheApi,
-    options: QuicOptions,
-    factory: BufferFactory,
-    handshake: HandshakeRule,
-): QuicheConfig {
-    val config = api.configNew(QUIC_V1)
-    val alpn = encodeAlpnList(clientAlpnOffer(options), factory)
-    api.configSetApplicationProtos(config, addressOf(alpn), alpn.remaining())
-    alpn.freeNativeMemory()
-    applyQuicOptions(options, ApiQuicConfigCalls(api, config), QuicRole.Client)
-    handshake.applyTo(api, config)
-    loadTrustAnchors(api, config, options, factory)
-    return config
-}
-
 private fun hex(buffer: com.ditchoom.buffer.PlatformBuffer): String {
     val out = StringBuilder(buffer.remaining() * 2)
     for (i in buffer.position() until buffer.limit()) {
@@ -267,7 +241,6 @@ private fun hex(buffer: com.ditchoom.buffer.PlatformBuffer): String {
 }
 
 private const val HEX = "0123456789abcdef"
-private const val QUIC_V1 = 1
 
 /** The wildcard of [peer]'s family: an IPv6 peer needs an IPv6 socket on the native stack. */
 private fun anyHostFor(peer: SocketAddress): String = if (peer.family == AddressFamily.IPv6) "::" else "0.0.0.0"
