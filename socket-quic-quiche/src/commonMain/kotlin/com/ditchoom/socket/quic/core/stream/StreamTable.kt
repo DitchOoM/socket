@@ -21,9 +21,6 @@ internal sealed interface Streams {
     ) : Streams
 }
 
-/** Whether a write or an open waits for room the peer gives. */
-internal enum class Backlog { None, Waiting }
-
 /** What [StreamTable.tryOpen] did. */
 internal enum class Opened { Opened, AtLimit }
 
@@ -69,7 +66,8 @@ internal class StreamTable(
         private set
 
     /** Monotonic: received data handed to a parked reader, and streams the peer opened, counted as they are found. */
-    var handedUp = 0L; private set
+    var handedUp = 0L
+        private set
 
     fun entry(id: QuicStreamId): StreamEntry = entries.getOrPut(id.id, newEntry)
 

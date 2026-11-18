@@ -81,8 +81,9 @@ internal class SlotRules(
 ) {
     companion object {
         /**
-         * A loop whose waits wake within a millisecond, quiche's own RFC 9002 handshake with no deadline, and a graceful
-         * close that waits for what was written to be acknowledged, at most the default idle timeout.
+         * A loop whose waits wake within a millisecond, quiche's own RFC 9002 handshake with no deadline, a graceful
+         * close that waits for what was written to be acknowledged, at most the default idle timeout, and ACKs held for
+         * a likely reply.
          */
         val Default =
             forWaits(

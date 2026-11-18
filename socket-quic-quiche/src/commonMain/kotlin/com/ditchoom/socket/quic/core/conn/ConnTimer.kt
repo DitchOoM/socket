@@ -11,6 +11,9 @@ import com.ditchoom.socket.quic.core.time.WakeState
 import kotlinx.coroutines.Runnable
 import kotlin.time.Duration.Companion.nanoseconds
 
+/** Whether quiche's own timer has fallen due. */
+internal enum class TimerDue { Due, NotYet }
+
 /** The connection's deadline: made by the first arming, with the action every arming runs, and re-armed in place after. */
 private sealed interface TimerDeadline {
     data object Unmade : TimerDeadline
@@ -78,6 +81,12 @@ internal class ConnTimer(
     fun drainEnds(now: Nanos): Nanos {
         val wait = q.api.connTimeoutNanos(q.handle)
         return if (wait == NO_TIMEOUT_NANOS) now else now + wait
+    }
+
+    /** Whether quiche's own timer is due: a deadline that fell due for another owner leaves quiche nothing to do. */
+    fun quicheDue(): TimerDue {
+        val wait = q.api.connTimeoutNanos(q.handle)
+        return if (wait != NO_TIMEOUT_NANOS && wait <= 0L) TimerDue.Due else TimerDue.NotYet
     }
 
     /** The deadline fell due: quiche's timeout runs. */

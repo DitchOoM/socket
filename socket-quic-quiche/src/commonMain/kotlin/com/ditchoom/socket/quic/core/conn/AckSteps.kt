@@ -19,6 +19,13 @@ internal fun AckCadence.mustWrite() =
         is AckCadence.HoldForReply -> hold.mustWrite()
     }
 
+/** Whether a hold that ended left its deadline armed, taken once: the timer is armed afresh for what is due. */
+internal fun AckCadence.deadlineLeft(): Stale =
+    when (this) {
+        is AckCadence.Immediate -> Stale.No
+        is AckCadence.HoldForReply -> hold.deadlineLeft()
+    }
+
 internal fun AckCadence.offerWake(sink: WakeSink) =
     when (this) {
         is AckCadence.Immediate -> Unit

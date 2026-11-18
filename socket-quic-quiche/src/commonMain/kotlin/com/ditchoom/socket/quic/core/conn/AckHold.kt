@@ -33,6 +33,9 @@ internal enum class AckAsk { Write, Gate }
 /** How a hold ended: the reply carried its ACK, or the ACK left without one. */
 internal enum class HoldEnd { Hit, Miss }
 
+/** Whether an ended hold's deadline may still be armed. */
+internal enum class Stale { No, Yes }
+
 /** Whether a turn's own news needs a write whatever the hold says: a deadline fell due, or a path moved. */
 private enum class Forced { No, Yes }
 
@@ -84,6 +87,7 @@ internal class AckHold(
     private var seenHanded = 0L
     private var seenOutput = 0L
     private var asking = 0
+    private var stale = Stale.No
 
     /** Holds begun, and holds that ended with a reply, over the connection's life. */
     var holds = 0L
@@ -188,8 +192,12 @@ internal class AckHold(
             is HoldPhase.AckHeld -> sink.offer(Nanos(p.deadlineNanos))
         }
 
+    /** Whether a hold ended since the last call: its deadline may still be armed. */
+    fun deadlineLeft(): Stale = stale.also { stale = Stale.No }
+
     private fun ended(how: HoldEnd) {
         phase = HoldPhase.Open
+        stale = Stale.Yes
         when (how) {
             HoldEnd.Hit -> {
                 hits++

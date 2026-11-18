@@ -297,4 +297,3 @@ internal fun Datagrams.maxBytes(): Int =
         is Datagrams.Off -> 0
         is Datagrams.On -> box.maxBytes()
     }
-
