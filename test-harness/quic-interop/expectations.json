@@ -1257,9 +1257,17 @@
     "quiche": {
       "multiplexing": {
         "flaky": {
-          "why": "peer: the stock quiche client exits 0 leaving a download empty while our server answered on every connection (run 43687061738; 1 of 11 runs)",
+          "why": "peer: the stock quiche client exits 0 leaving a download empty while our server answered on every connection (run 43687061738; 1 of 11 runs); or, with its congestion window full, writes a request short (a 3-byte STREAM frame, no FIN), logs 'failed to send request Done', never resumes it and idles out with exit 254 while our server answered every request that arrived whole (run 44402991044, our-server-raised-streams: 7 of 1999)",
           "signature": {
-            "kind": "peer-left-a-download-empty"
+            "kind": "any-of",
+            "signatures": [
+              {
+                "kind": "peer-left-a-download-empty"
+              },
+              {
+                "kind": "peer-left-a-request-unfinished"
+              }
+            ]
           }
         }
       }
