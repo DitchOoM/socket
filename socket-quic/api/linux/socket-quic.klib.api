@@ -84,6 +84,17 @@ final enum class com.ditchoom.socket.quic/LinkClass : kotlin/Enum<com.ditchoom.s
     final fun values(): kotlin/Array<com.ditchoom.socket.quic/LinkClass> // com.ditchoom.socket.quic/LinkClass.values|values#static(){}[0]
 }
 
+final enum class com.ditchoom.socket.quic/QuicHandshakeReached : kotlin/Enum<com.ditchoom.socket.quic/QuicHandshakeReached> { // com.ditchoom.socket.quic/QuicHandshakeReached|null[0]
+    enum entry NothingReceived // com.ditchoom.socket.quic/QuicHandshakeReached.NothingReceived|null[0]
+    enum entry PeerAnswered // com.ditchoom.socket.quic/QuicHandshakeReached.PeerAnswered|null[0]
+
+    final val entries // com.ditchoom.socket.quic/QuicHandshakeReached.entries|#static{}entries[0]
+        final fun <get-entries>(): kotlin.enums/EnumEntries<com.ditchoom.socket.quic/QuicHandshakeReached> // com.ditchoom.socket.quic/QuicHandshakeReached.entries.<get-entries>|<get-entries>#static(){}[0]
+
+    final fun valueOf(kotlin/String): com.ditchoom.socket.quic/QuicHandshakeReached // com.ditchoom.socket.quic/QuicHandshakeReached.valueOf|valueOf#static(kotlin.String){}[0]
+    final fun values(): kotlin/Array<com.ditchoom.socket.quic/QuicHandshakeReached> // com.ditchoom.socket.quic/QuicHandshakeReached.values|values#static(){}[0]
+}
+
 final enum class com.ditchoom.socket.quic/UdpBatching : kotlin/Enum<com.ditchoom.socket.quic/UdpBatching> { // com.ditchoom.socket.quic/UdpBatching|null[0]
     enum entry Newest // com.ditchoom.socket.quic/UdpBatching.Newest|null[0]
     enum entry OneDatagramPerCall // com.ditchoom.socket.quic/UdpBatching.OneDatagramPerCall|null[0]
@@ -1429,6 +1440,142 @@ sealed interface com.ditchoom.socket.quic/QuicCloseReason { // com.ditchoom.sock
     }
 }
 
+sealed interface com.ditchoom.socket.quic/QuicConnectionEnd { // com.ditchoom.socket.quic/QuicConnectionEnd|null[0]
+    final class ByLocal : com.ditchoom.socket.quic/QuicConnectionEnd { // com.ditchoom.socket.quic/QuicConnectionEnd.ByLocal|null[0]
+        constructor <init>(com.ditchoom.socket.quic/QuicError) // com.ditchoom.socket.quic/QuicConnectionEnd.ByLocal.<init>|<init>(com.ditchoom.socket.quic.QuicError){}[0]
+
+        final val error // com.ditchoom.socket.quic/QuicConnectionEnd.ByLocal.error|{}error[0]
+            final fun <get-error>(): com.ditchoom.socket.quic/QuicError // com.ditchoom.socket.quic/QuicConnectionEnd.ByLocal.error.<get-error>|<get-error>(){}[0]
+
+        final fun component1(): com.ditchoom.socket.quic/QuicError // com.ditchoom.socket.quic/QuicConnectionEnd.ByLocal.component1|component1(){}[0]
+        final fun copy(com.ditchoom.socket.quic/QuicError = ...): com.ditchoom.socket.quic/QuicConnectionEnd.ByLocal // com.ditchoom.socket.quic/QuicConnectionEnd.ByLocal.copy|copy(com.ditchoom.socket.quic.QuicError){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicConnectionEnd.ByLocal.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicConnectionEnd.ByLocal.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicConnectionEnd.ByLocal.toString|toString(){}[0]
+    }
+
+    final class ByPeer : com.ditchoom.socket.quic/QuicConnectionEnd { // com.ditchoom.socket.quic/QuicConnectionEnd.ByPeer|null[0]
+        constructor <init>(com.ditchoom.socket.quic/QuicError) // com.ditchoom.socket.quic/QuicConnectionEnd.ByPeer.<init>|<init>(com.ditchoom.socket.quic.QuicError){}[0]
+
+        final val error // com.ditchoom.socket.quic/QuicConnectionEnd.ByPeer.error|{}error[0]
+            final fun <get-error>(): com.ditchoom.socket.quic/QuicError // com.ditchoom.socket.quic/QuicConnectionEnd.ByPeer.error.<get-error>|<get-error>(){}[0]
+
+        final fun component1(): com.ditchoom.socket.quic/QuicError // com.ditchoom.socket.quic/QuicConnectionEnd.ByPeer.component1|component1(){}[0]
+        final fun copy(com.ditchoom.socket.quic/QuicError = ...): com.ditchoom.socket.quic/QuicConnectionEnd.ByPeer // com.ditchoom.socket.quic/QuicConnectionEnd.ByPeer.copy|copy(com.ditchoom.socket.quic.QuicError){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicConnectionEnd.ByPeer.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicConnectionEnd.ByPeer.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicConnectionEnd.ByPeer.toString|toString(){}[0]
+    }
+
+    final class CallerFailed : com.ditchoom.socket.quic/QuicConnectionEnd { // com.ditchoom.socket.quic/QuicConnectionEnd.CallerFailed|null[0]
+        constructor <init>(kotlin/Throwable) // com.ditchoom.socket.quic/QuicConnectionEnd.CallerFailed.<init>|<init>(kotlin.Throwable){}[0]
+
+        final val thrown // com.ditchoom.socket.quic/QuicConnectionEnd.CallerFailed.thrown|{}thrown[0]
+            final fun <get-thrown>(): kotlin/Throwable // com.ditchoom.socket.quic/QuicConnectionEnd.CallerFailed.thrown.<get-thrown>|<get-thrown>(){}[0]
+    }
+
+    final class HandshakeTimedOut : com.ditchoom.socket.quic/QuicConnectionEnd { // com.ditchoom.socket.quic/QuicConnectionEnd.HandshakeTimedOut|null[0]
+        constructor <init>(com.ditchoom.socket.quic/QuicHandshakeProgress) // com.ditchoom.socket.quic/QuicConnectionEnd.HandshakeTimedOut.<init>|<init>(com.ditchoom.socket.quic.QuicHandshakeProgress){}[0]
+
+        final val progress // com.ditchoom.socket.quic/QuicConnectionEnd.HandshakeTimedOut.progress|{}progress[0]
+            final fun <get-progress>(): com.ditchoom.socket.quic/QuicHandshakeProgress // com.ditchoom.socket.quic/QuicConnectionEnd.HandshakeTimedOut.progress.<get-progress>|<get-progress>(){}[0]
+
+        final fun component1(): com.ditchoom.socket.quic/QuicHandshakeProgress // com.ditchoom.socket.quic/QuicConnectionEnd.HandshakeTimedOut.component1|component1(){}[0]
+        final fun copy(com.ditchoom.socket.quic/QuicHandshakeProgress = ...): com.ditchoom.socket.quic/QuicConnectionEnd.HandshakeTimedOut // com.ditchoom.socket.quic/QuicConnectionEnd.HandshakeTimedOut.copy|copy(com.ditchoom.socket.quic.QuicHandshakeProgress){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicConnectionEnd.HandshakeTimedOut.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicConnectionEnd.HandshakeTimedOut.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicConnectionEnd.HandshakeTimedOut.toString|toString(){}[0]
+    }
+
+    final class LoopFailed : com.ditchoom.socket.quic/QuicConnectionEnd { // com.ditchoom.socket.quic/QuicConnectionEnd.LoopFailed|null[0]
+        constructor <init>(kotlin/Throwable) // com.ditchoom.socket.quic/QuicConnectionEnd.LoopFailed.<init>|<init>(kotlin.Throwable){}[0]
+
+        final val thrown // com.ditchoom.socket.quic/QuicConnectionEnd.LoopFailed.thrown|{}thrown[0]
+            final fun <get-thrown>(): kotlin/Throwable // com.ditchoom.socket.quic/QuicConnectionEnd.LoopFailed.thrown.<get-thrown>|<get-thrown>(){}[0]
+    }
+
+    final class ProcessingFailed : com.ditchoom.socket.quic/QuicConnectionEnd { // com.ditchoom.socket.quic/QuicConnectionEnd.ProcessingFailed|null[0]
+        constructor <init>(kotlin/Throwable) // com.ditchoom.socket.quic/QuicConnectionEnd.ProcessingFailed.<init>|<init>(kotlin.Throwable){}[0]
+
+        final val thrown // com.ditchoom.socket.quic/QuicConnectionEnd.ProcessingFailed.thrown|{}thrown[0]
+            final fun <get-thrown>(): kotlin/Throwable // com.ditchoom.socket.quic/QuicConnectionEnd.ProcessingFailed.thrown.<get-thrown>|<get-thrown>(){}[0]
+    }
+
+    final class ReasonOnly : com.ditchoom.socket.quic/QuicConnectionEnd { // com.ditchoom.socket.quic/QuicConnectionEnd.ReasonOnly|null[0]
+        constructor <init>(com.ditchoom.socket.quic/QuicCloseReason) // com.ditchoom.socket.quic/QuicConnectionEnd.ReasonOnly.<init>|<init>(com.ditchoom.socket.quic.QuicCloseReason){}[0]
+
+        final val reason // com.ditchoom.socket.quic/QuicConnectionEnd.ReasonOnly.reason|{}reason[0]
+            final fun <get-reason>(): com.ditchoom.socket.quic/QuicCloseReason // com.ditchoom.socket.quic/QuicConnectionEnd.ReasonOnly.reason.<get-reason>|<get-reason>(){}[0]
+
+        final fun component1(): com.ditchoom.socket.quic/QuicCloseReason // com.ditchoom.socket.quic/QuicConnectionEnd.ReasonOnly.component1|component1(){}[0]
+        final fun copy(com.ditchoom.socket.quic/QuicCloseReason = ...): com.ditchoom.socket.quic/QuicConnectionEnd.ReasonOnly // com.ditchoom.socket.quic/QuicConnectionEnd.ReasonOnly.copy|copy(com.ditchoom.socket.quic.QuicCloseReason){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicConnectionEnd.ReasonOnly.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicConnectionEnd.ReasonOnly.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicConnectionEnd.ReasonOnly.toString|toString(){}[0]
+    }
+
+    final class SocketFailed : com.ditchoom.socket.quic/QuicConnectionEnd { // com.ditchoom.socket.quic/QuicConnectionEnd.SocketFailed|null[0]
+        constructor <init>(com.ditchoom.socket.quic/QuicSocketFault) // com.ditchoom.socket.quic/QuicConnectionEnd.SocketFailed.<init>|<init>(com.ditchoom.socket.quic.QuicSocketFault){}[0]
+
+        final val fault // com.ditchoom.socket.quic/QuicConnectionEnd.SocketFailed.fault|{}fault[0]
+            final fun <get-fault>(): com.ditchoom.socket.quic/QuicSocketFault // com.ditchoom.socket.quic/QuicConnectionEnd.SocketFailed.fault.<get-fault>|<get-fault>(){}[0]
+    }
+
+    final object IdleTimeout : com.ditchoom.socket.quic/QuicConnectionEnd { // com.ditchoom.socket.quic/QuicConnectionEnd.IdleTimeout|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicConnectionEnd.IdleTimeout.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicConnectionEnd.IdleTimeout.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicConnectionEnd.IdleTimeout.toString|toString(){}[0]
+    }
+
+    final object LocalAddressGone : com.ditchoom.socket.quic/QuicConnectionEnd { // com.ditchoom.socket.quic/QuicConnectionEnd.LocalAddressGone|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicConnectionEnd.LocalAddressGone.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicConnectionEnd.LocalAddressGone.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicConnectionEnd.LocalAddressGone.toString|toString(){}[0]
+    }
+
+    final object LoopStopped : com.ditchoom.socket.quic/QuicConnectionEnd { // com.ditchoom.socket.quic/QuicConnectionEnd.LoopStopped|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicConnectionEnd.LoopStopped.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicConnectionEnd.LoopStopped.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicConnectionEnd.LoopStopped.toString|toString(){}[0]
+    }
+
+    final object NetworkLost : com.ditchoom.socket.quic/QuicConnectionEnd { // com.ditchoom.socket.quic/QuicConnectionEnd.NetworkLost|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicConnectionEnd.NetworkLost.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicConnectionEnd.NetworkLost.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicConnectionEnd.NetworkLost.toString|toString(){}[0]
+    }
+
+    final object NoErrorRecorded : com.ditchoom.socket.quic/QuicConnectionEnd { // com.ditchoom.socket.quic/QuicConnectionEnd.NoErrorRecorded|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicConnectionEnd.NoErrorRecorded.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicConnectionEnd.NoErrorRecorded.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicConnectionEnd.NoErrorRecorded.toString|toString(){}[0]
+    }
+
+    final object NoUsablePath : com.ditchoom.socket.quic/QuicConnectionEnd { // com.ditchoom.socket.quic/QuicConnectionEnd.NoUsablePath|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicConnectionEnd.NoUsablePath.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicConnectionEnd.NoUsablePath.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicConnectionEnd.NoUsablePath.toString|toString(){}[0]
+    }
+
+    final object Released : com.ditchoom.socket.quic/QuicConnectionEnd { // com.ditchoom.socket.quic/QuicConnectionEnd.Released|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicConnectionEnd.Released.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicConnectionEnd.Released.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicConnectionEnd.Released.toString|toString(){}[0]
+    }
+
+    final object ServerClosed : com.ditchoom.socket.quic/QuicConnectionEnd { // com.ditchoom.socket.quic/QuicConnectionEnd.ServerClosed|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicConnectionEnd.ServerClosed.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicConnectionEnd.ServerClosed.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicConnectionEnd.ServerClosed.toString|toString(){}[0]
+    }
+
+    final object ServerClosedUnsettled : com.ditchoom.socket.quic/QuicConnectionEnd { // com.ditchoom.socket.quic/QuicConnectionEnd.ServerClosedUnsettled|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicConnectionEnd.ServerClosedUnsettled.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicConnectionEnd.ServerClosedUnsettled.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicConnectionEnd.ServerClosedUnsettled.toString|toString(){}[0]
+    }
+}
+
 sealed interface com.ditchoom.socket.quic/QuicConnectionState { // com.ditchoom.socket.quic/QuicConnectionState|null[0]
     final class Closed : com.ditchoom.socket.quic/QuicConnectionState { // com.ditchoom.socket.quic/QuicConnectionState.Closed|null[0]
         constructor <init>(com.ditchoom.socket.quic/QuicCloseReason) // com.ditchoom.socket.quic/QuicConnectionState.Closed.<init>|<init>(com.ditchoom.socket.quic.QuicCloseReason){}[0]
@@ -2073,6 +2220,27 @@ sealed interface com.ditchoom.socket.quic/QuicResumptionOutcome { // com.ditchoo
     }
 }
 
+sealed interface com.ditchoom.socket.quic/QuicRttSample { // com.ditchoom.socket.quic/QuicRttSample|null[0]
+    final class Sampled : com.ditchoom.socket.quic/QuicRttSample { // com.ditchoom.socket.quic/QuicRttSample.Sampled|null[0]
+        constructor <init>(kotlin.time/Duration) // com.ditchoom.socket.quic/QuicRttSample.Sampled.<init>|<init>(kotlin.time.Duration){}[0]
+
+        final val rtt // com.ditchoom.socket.quic/QuicRttSample.Sampled.rtt|{}rtt[0]
+            final fun <get-rtt>(): kotlin.time/Duration // com.ditchoom.socket.quic/QuicRttSample.Sampled.rtt.<get-rtt>|<get-rtt>(){}[0]
+
+        final fun component1(): kotlin.time/Duration // com.ditchoom.socket.quic/QuicRttSample.Sampled.component1|component1(){}[0]
+        final fun copy(kotlin.time/Duration = ...): com.ditchoom.socket.quic/QuicRttSample.Sampled // com.ditchoom.socket.quic/QuicRttSample.Sampled.copy|copy(kotlin.time.Duration){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicRttSample.Sampled.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicRttSample.Sampled.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicRttSample.Sampled.toString|toString(){}[0]
+    }
+
+    final object None : com.ditchoom.socket.quic/QuicRttSample { // com.ditchoom.socket.quic/QuicRttSample.None|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicRttSample.None.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicRttSample.None.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicRttSample.None.toString|toString(){}[0]
+    }
+}
+
 sealed interface com.ditchoom.socket.quic/QuicSessionStore { // com.ditchoom.socket.quic/QuicSessionStore|null[0]
     final class InMemory : com.ditchoom.socket.quic/QuicSessionStore { // com.ditchoom.socket.quic/QuicSessionStore.InMemory|null[0]
         constructor <init>(com.ditchoom.socket.quic/QuicSessionMemory) // com.ditchoom.socket.quic/QuicSessionStore.InMemory.<init>|<init>(com.ditchoom.socket.quic.QuicSessionMemory){}[0]
@@ -2138,6 +2306,44 @@ sealed interface com.ditchoom.socket.quic/QuicSessionTicketState { // com.ditcho
         final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicSessionTicketState.NotIssued.equals|equals(kotlin.Any?){}[0]
         final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicSessionTicketState.NotIssued.hashCode|hashCode(){}[0]
         final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicSessionTicketState.NotIssued.toString|toString(){}[0]
+    }
+}
+
+sealed interface com.ditchoom.socket.quic/QuicSocketFault { // com.ditchoom.socket.quic/QuicSocketFault|null[0]
+    final class MoveRefused : com.ditchoom.socket.quic/QuicSocketFault { // com.ditchoom.socket.quic/QuicSocketFault.MoveRefused|null[0]
+        constructor <init>(kotlin/Throwable) // com.ditchoom.socket.quic/QuicSocketFault.MoveRefused.<init>|<init>(kotlin.Throwable){}[0]
+
+        final val thrown // com.ditchoom.socket.quic/QuicSocketFault.MoveRefused.thrown|{}thrown[0]
+            final fun <get-thrown>(): kotlin/Throwable // com.ditchoom.socket.quic/QuicSocketFault.MoveRefused.thrown.<get-thrown>|<get-thrown>(){}[0]
+    }
+
+    final class ReopenRefused : com.ditchoom.socket.quic/QuicSocketFault { // com.ditchoom.socket.quic/QuicSocketFault.ReopenRefused|null[0]
+        constructor <init>(kotlin/Throwable) // com.ditchoom.socket.quic/QuicSocketFault.ReopenRefused.<init>|<init>(kotlin.Throwable){}[0]
+
+        final val thrown // com.ditchoom.socket.quic/QuicSocketFault.ReopenRefused.thrown|{}thrown[0]
+            final fun <get-thrown>(): kotlin/Throwable // com.ditchoom.socket.quic/QuicSocketFault.ReopenRefused.thrown.<get-thrown>|<get-thrown>(){}[0]
+    }
+
+    final class Repeated : com.ditchoom.socket.quic/QuicSocketFault { // com.ditchoom.socket.quic/QuicSocketFault.Repeated|null[0]
+        constructor <init>(kotlin/Int, kotlin/Throwable) // com.ditchoom.socket.quic/QuicSocketFault.Repeated.<init>|<init>(kotlin.Int;kotlin.Throwable){}[0]
+
+        final val count // com.ditchoom.socket.quic/QuicSocketFault.Repeated.count|{}count[0]
+            final fun <get-count>(): kotlin/Int // com.ditchoom.socket.quic/QuicSocketFault.Repeated.count.<get-count>|<get-count>(){}[0]
+        final val thrown // com.ditchoom.socket.quic/QuicSocketFault.Repeated.thrown|{}thrown[0]
+            final fun <get-thrown>(): kotlin/Throwable // com.ditchoom.socket.quic/QuicSocketFault.Repeated.thrown.<get-thrown>|<get-thrown>(){}[0]
+    }
+
+    final class Unnamed : com.ditchoom.socket.quic/QuicSocketFault { // com.ditchoom.socket.quic/QuicSocketFault.Unnamed|null[0]
+        constructor <init>(kotlin/Throwable) // com.ditchoom.socket.quic/QuicSocketFault.Unnamed.<init>|<init>(kotlin.Throwable){}[0]
+
+        final val thrown // com.ditchoom.socket.quic/QuicSocketFault.Unnamed.thrown|{}thrown[0]
+            final fun <get-thrown>(): kotlin/Throwable // com.ditchoom.socket.quic/QuicSocketFault.Unnamed.thrown.<get-thrown>|<get-thrown>(){}[0]
+    }
+
+    final object Closed : com.ditchoom.socket.quic/QuicSocketFault { // com.ditchoom.socket.quic/QuicSocketFault.Closed|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicSocketFault.Closed.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicSocketFault.Closed.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicSocketFault.Closed.toString|toString(){}[0]
     }
 }
 
@@ -2866,6 +3072,7 @@ final class com.ditchoom.socket.quic/QuicCloseContext { // com.ditchoom.socket.q
 final class com.ditchoom.socket.quic/QuicCloseException : com.ditchoom.socket/SocketClosedException { // com.ditchoom.socket.quic/QuicCloseException|null[0]
     constructor <init>(com.ditchoom.socket.quic/QuicCloseReason, com.ditchoom.socket.quic/QuicCloseCircumstance, kotlin/Throwable? = ..., com.ditchoom.socket.quic/QuicCloseAttribution = ...) // com.ditchoom.socket.quic/QuicCloseException.<init>|<init>(com.ditchoom.socket.quic.QuicCloseReason;com.ditchoom.socket.quic.QuicCloseCircumstance;kotlin.Throwable?;com.ditchoom.socket.quic.QuicCloseAttribution){}[0]
     constructor <init>(com.ditchoom.socket.quic/QuicCloseReason, kotlin/String, kotlin/Throwable? = ..., com.ditchoom.socket.quic/QuicCloseAttribution = ...) // com.ditchoom.socket.quic/QuicCloseException.<init>|<init>(com.ditchoom.socket.quic.QuicCloseReason;kotlin.String;kotlin.Throwable?;com.ditchoom.socket.quic.QuicCloseAttribution){}[0]
+    constructor <init>(com.ditchoom.socket.quic/QuicConnectionEnd, com.ditchoom.socket.quic/QuicCloseCircumstance, com.ditchoom.socket.quic/QuicCloseAttribution = ...) // com.ditchoom.socket.quic/QuicCloseException.<init>|<init>(com.ditchoom.socket.quic.QuicConnectionEnd;com.ditchoom.socket.quic.QuicCloseCircumstance;com.ditchoom.socket.quic.QuicCloseAttribution){}[0]
     constructor <init>(com.ditchoom.socket.quic/QuicError, kotlin/String, kotlin/Throwable? = ..., com.ditchoom.socket.quic/QuicCloseAttribution = ...) // com.ditchoom.socket.quic/QuicCloseException.<init>|<init>(com.ditchoom.socket.quic.QuicError;kotlin.String;kotlin.Throwable?;com.ditchoom.socket.quic.QuicCloseAttribution){}[0]
 
     final val attribution // com.ditchoom.socket.quic/QuicCloseException.attribution|{}attribution[0]
@@ -2874,6 +3081,8 @@ final class com.ditchoom.socket.quic/QuicCloseException : com.ditchoom.socket/So
         final fun <get-circumstance>(): com.ditchoom.socket.quic/QuicCloseCircumstance // com.ditchoom.socket.quic/QuicCloseException.circumstance.<get-circumstance>|<get-circumstance>(){}[0]
     final val closeReason // com.ditchoom.socket.quic/QuicCloseException.closeReason|{}closeReason[0]
         final fun <get-closeReason>(): com.ditchoom.socket.quic/QuicCloseReason // com.ditchoom.socket.quic/QuicCloseException.closeReason.<get-closeReason>|<get-closeReason>(){}[0]
+    final val end // com.ditchoom.socket.quic/QuicCloseException.end|{}end[0]
+        final fun <get-end>(): com.ditchoom.socket.quic/QuicConnectionEnd // com.ditchoom.socket.quic/QuicCloseException.end.<get-end>|<get-end>(){}[0]
     final val quicError // com.ditchoom.socket.quic/QuicCloseException.quicError|{}quicError[0]
         final fun <get-quicError>(): com.ditchoom.socket.quic/QuicError // com.ditchoom.socket.quic/QuicCloseException.quicError.<get-quicError>|<get-quicError>(){}[0]
 }
@@ -2908,6 +3117,34 @@ final class com.ditchoom.socket.quic/QuicEndpoint { // com.ditchoom.socket.quic/
     final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicEndpoint.equals|equals(kotlin.Any?){}[0]
     final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicEndpoint.hashCode|hashCode(){}[0]
     final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicEndpoint.toString|toString(){}[0]
+}
+
+final class com.ditchoom.socket.quic/QuicHandshakeProgress { // com.ditchoom.socket.quic/QuicHandshakeProgress|null[0]
+    constructor <init>(kotlin.time/Duration, com.ditchoom.socket.quic/QuicRttSample, kotlin.time/Duration, com.ditchoom.socket.quic/LinkClass, kotlin/Int, com.ditchoom.socket.quic/QuicHandshakeReached) // com.ditchoom.socket.quic/QuicHandshakeProgress.<init>|<init>(kotlin.time.Duration;com.ditchoom.socket.quic.QuicRttSample;kotlin.time.Duration;com.ditchoom.socket.quic.LinkClass;kotlin.Int;com.ditchoom.socket.quic.QuicHandshakeReached){}[0]
+
+    final val firstSample // com.ditchoom.socket.quic/QuicHandshakeProgress.firstSample|{}firstSample[0]
+        final fun <get-firstSample>(): com.ditchoom.socket.quic/QuicRttSample // com.ditchoom.socket.quic/QuicHandshakeProgress.firstSample.<get-firstSample>|<get-firstSample>(){}[0]
+    final val link // com.ditchoom.socket.quic/QuicHandshakeProgress.link|{}link[0]
+        final fun <get-link>(): com.ditchoom.socket.quic/LinkClass // com.ditchoom.socket.quic/QuicHandshakeProgress.link.<get-link>|<get-link>(){}[0]
+    final val prior // com.ditchoom.socket.quic/QuicHandshakeProgress.prior|{}prior[0]
+        final fun <get-prior>(): kotlin.time/Duration // com.ditchoom.socket.quic/QuicHandshakeProgress.prior.<get-prior>|<get-prior>(){}[0]
+    final val probes // com.ditchoom.socket.quic/QuicHandshakeProgress.probes|{}probes[0]
+        final fun <get-probes>(): kotlin/Int // com.ditchoom.socket.quic/QuicHandshakeProgress.probes.<get-probes>|<get-probes>(){}[0]
+    final val reached // com.ditchoom.socket.quic/QuicHandshakeProgress.reached|{}reached[0]
+        final fun <get-reached>(): com.ditchoom.socket.quic/QuicHandshakeReached // com.ditchoom.socket.quic/QuicHandshakeProgress.reached.<get-reached>|<get-reached>(){}[0]
+    final val waited // com.ditchoom.socket.quic/QuicHandshakeProgress.waited|{}waited[0]
+        final fun <get-waited>(): kotlin.time/Duration // com.ditchoom.socket.quic/QuicHandshakeProgress.waited.<get-waited>|<get-waited>(){}[0]
+
+    final fun component1(): kotlin.time/Duration // com.ditchoom.socket.quic/QuicHandshakeProgress.component1|component1(){}[0]
+    final fun component2(): com.ditchoom.socket.quic/QuicRttSample // com.ditchoom.socket.quic/QuicHandshakeProgress.component2|component2(){}[0]
+    final fun component3(): kotlin.time/Duration // com.ditchoom.socket.quic/QuicHandshakeProgress.component3|component3(){}[0]
+    final fun component4(): com.ditchoom.socket.quic/LinkClass // com.ditchoom.socket.quic/QuicHandshakeProgress.component4|component4(){}[0]
+    final fun component5(): kotlin/Int // com.ditchoom.socket.quic/QuicHandshakeProgress.component5|component5(){}[0]
+    final fun component6(): com.ditchoom.socket.quic/QuicHandshakeReached // com.ditchoom.socket.quic/QuicHandshakeProgress.component6|component6(){}[0]
+    final fun copy(kotlin.time/Duration = ..., com.ditchoom.socket.quic/QuicRttSample = ..., kotlin.time/Duration = ..., com.ditchoom.socket.quic/LinkClass = ..., kotlin/Int = ..., com.ditchoom.socket.quic/QuicHandshakeReached = ...): com.ditchoom.socket.quic/QuicHandshakeProgress // com.ditchoom.socket.quic/QuicHandshakeProgress.copy|copy(kotlin.time.Duration;com.ditchoom.socket.quic.QuicRttSample;kotlin.time.Duration;com.ditchoom.socket.quic.LinkClass;kotlin.Int;com.ditchoom.socket.quic.QuicHandshakeReached){}[0]
+    final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicHandshakeProgress.equals|equals(kotlin.Any?){}[0]
+    final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicHandshakeProgress.hashCode|hashCode(){}[0]
+    final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicHandshakeProgress.toString|toString(){}[0]
 }
 
 final class com.ditchoom.socket.quic/QuicLocalEndpoint { // com.ditchoom.socket.quic/QuicLocalEndpoint|null[0]
@@ -3253,6 +3490,8 @@ final val com.ditchoom.socket.quic/MAX_PINNED_CERTIFICATE_VALIDITY // com.ditcho
     final fun <get-MAX_PINNED_CERTIFICATE_VALIDITY>(): kotlin.time/Duration // com.ditchoom.socket.quic/MAX_PINNED_CERTIFICATE_VALIDITY.<get-MAX_PINNED_CERTIFICATE_VALIDITY>|<get-MAX_PINNED_CERTIFICATE_VALIDITY>(){}[0]
 final val com.ditchoom.socket.quic/PEER_CERTIFICATE_CLOCK_SKEW_ALLOWANCE // com.ditchoom.socket.quic/PEER_CERTIFICATE_CLOCK_SKEW_ALLOWANCE|{}PEER_CERTIFICATE_CLOCK_SKEW_ALLOWANCE[0]
     final fun <get-PEER_CERTIFICATE_CLOCK_SKEW_ALLOWANCE>(): kotlin.time/Duration // com.ditchoom.socket.quic/PEER_CERTIFICATE_CLOCK_SKEW_ALLOWANCE.<get-PEER_CERTIFICATE_CLOCK_SKEW_ALLOWANCE>|<get-PEER_CERTIFICATE_CLOCK_SKEW_ALLOWANCE>(){}[0]
+final val com.ditchoom.socket.quic/closeReason // com.ditchoom.socket.quic/closeReason|@com.ditchoom.socket.quic.QuicConnectionEnd{}closeReason[0]
+    final fun (com.ditchoom.socket.quic/QuicConnectionEnd).<get-closeReason>(): com.ditchoom.socket.quic/QuicCloseReason // com.ditchoom.socket.quic/closeReason.<get-closeReason>|<get-closeReason>@com.ditchoom.socket.quic.QuicConnectionEnd(){}[0]
 final val com.ditchoom.socket.quic/serverCertificateConstraintSupport // com.ditchoom.socket.quic/serverCertificateConstraintSupport|{}serverCertificateConstraintSupport[0]
     final fun <get-serverCertificateConstraintSupport>(): com.ditchoom.socket.quic/ServerCertificateConstraintSupport // com.ditchoom.socket.quic/serverCertificateConstraintSupport.<get-serverCertificateConstraintSupport>|<get-serverCertificateConstraintSupport>(){}[0]
 
