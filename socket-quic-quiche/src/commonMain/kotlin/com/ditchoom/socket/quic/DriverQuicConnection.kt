@@ -61,6 +61,8 @@ internal class DriverQuicConnection(
                 EarlyDataAcceptance.None -> super.resumption
             }
 
+    override suspend fun stats(): QuicStatsRead = driver.publicStats()
+
     /** Same driver, same binding, same answer as the client-side connections. */
     override val capabilities: QuicCapabilities get() = QuicheDriver.capabilities
 

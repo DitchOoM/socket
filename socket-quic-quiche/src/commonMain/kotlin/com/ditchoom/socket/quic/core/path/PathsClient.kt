@@ -7,6 +7,7 @@ import com.ditchoom.socket.quic.MigrateOutcome
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.PeerMigrationPermission
 import com.ditchoom.socket.quic.ProbeOutcome
+import com.ditchoom.socket.quic.QuicStatsRead
 import com.ditchoom.socket.quic.QuicheRecvInfo
 import com.ditchoom.socket.quic.connPeerMigrationPermission
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
@@ -49,6 +50,8 @@ internal class ClientPaths(
     val sendInfo get() = first.sendInfo
 
     fun read(): PathRead = first.read()
+
+    fun stats(): QuicStatsRead = first.stats()
 
     /** What quiche is told about a datagram that arrived: it came on the endpoint [Move.receivesAt] names. */
     fun recvFrom(): RecvFrom = move.receivesAt().info.also { arrived++ }
