@@ -56,8 +56,8 @@ internal class AddressTokens(
 ) {
     private val key = LongArray(KEY_WORDS) { random.nextLong() }
     private val work = factory.allocate(WORK_BYTES)
-    private val inner = factory.allocate(DIGEST_BYTES)
-    private val tag = factory.allocate(DIGEST_BYTES)
+    private val inner = freeingIfRefused(work) { factory.allocate(DIGEST_BYTES) }
+    private val tag = freeingIfRefused(work, inner) { factory.allocate(DIGEST_BYTES) }
 
     /**
      * Writes a Retry token for [original] (the destination id the client's first Initial used), to be redeemed from
@@ -231,5 +231,24 @@ internal class AddressTokens(
         const val WORK_BYTES = 256
         const val IPAD = 0x3636363636363636L
         const val OPAD = 0x5C5C5C5C5C5C5C5CL
+    }
+}
+
+/** How far an allocation of [freeingIfRefused] got. */
+private enum class Allocating { Running, Made }
+
+/** Allocates with [allocate]; if it does not return, the buffers [made] before it are freed. */
+private inline fun freeingIfRefused(
+    vararg made: PlatformBuffer,
+    allocate: () -> PlatformBuffer,
+): PlatformBuffer {
+    var step = Allocating.Running
+    try {
+        return allocate().also { step = Allocating.Made }
+    } finally {
+        when (step) {
+            Allocating.Made -> Unit
+            Allocating.Running -> made.forEach { it.freeNativeMemory() }
+        }
     }
 }

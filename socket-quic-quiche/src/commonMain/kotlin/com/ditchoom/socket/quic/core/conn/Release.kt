@@ -6,6 +6,7 @@ import com.ditchoom.socket.quic.QuicheRecvInfo
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.observe.Published
 import com.ditchoom.socket.quic.core.path.Made
+import com.ditchoom.socket.quic.core.path.SinglePath
 import kotlinx.coroutines.Runnable
 import kotlin.concurrent.atomics.AtomicReference
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
@@ -68,3 +69,25 @@ internal fun QuicheConnRef.freeInfo(
 
 /** Frees a client connection no [Release] was ever made for: its connect failed before the connection was built. */
 internal fun QuicheConnRef.freeUnbuilt() = api.connFree(handle)
+
+/** How far [composedAround] got. */
+internal enum class Composed { Partly, Whole }
+
+/** Composes a connection around [first] with [compose]; if that does not return, [first]'s infos are freed here. */
+internal inline fun QuicheConnRef.composedAround(
+    first: SinglePath,
+    compose: (SinglePath) -> Conn,
+): Conn {
+    var step = Composed.Partly
+    try {
+        return compose(first).also { step = Composed.Whole }
+    } finally {
+        when (step) {
+            Composed.Partly -> {
+                api.recvInfoFree(first.recvInfo)
+                api.sendInfoFree(first.sendInfo)
+            }
+            Composed.Whole -> Unit
+        }
+    }
+}

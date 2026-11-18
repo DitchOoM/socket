@@ -7,6 +7,8 @@ internal actual class NwSocket private constructor(
     fun never(): Nothing = impossible
 }
 
+internal actual fun closeNwSocket(socket: NwSocket): Unit = socket.never()
+
 internal actual fun nwSocketIo(
     socket: StackSocket.Network,
     wake: () -> Unit,

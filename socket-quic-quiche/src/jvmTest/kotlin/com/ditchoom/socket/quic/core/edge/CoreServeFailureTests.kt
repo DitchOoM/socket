@@ -70,7 +70,18 @@ class CoreServeFailureTests {
         assertEquals(1, rig.ioCloses, "the endpoint's socket is closed once")
     }
 
-    private class Rig {
+    @Test
+    fun aServeWhoseTokenKeysFailPartwayFreesTheKeysItMadeOnce() {
+        val rig = Rig(FreeCountingFactory.Refusal.At(FreeCountingFactory.Site.AddressTokens, nth = 3))
+        assertFailsWith<FreeCountingFactory.Refused> { rig.serve(wrapIo = { it }, clock = MonotonicClock) }
+        val made = rig.factory.edgeBuffers().count { it.site == FreeCountingFactory.Site.AddressTokens }
+        assertEquals(2, made, "the token keys' buffers made before the refused one")
+        rig.assertEachReleasedOnce()
+    }
+
+    private class Rig(
+        refusal: FreeCountingFactory.Refusal = FreeCountingFactory.Refusal.None,
+    ) {
         private val shim: NetShim
         val api: QuicheApi = loadQuicheApi()
         var pollerCloses = 0
@@ -82,6 +93,7 @@ class CoreServeFailureTests {
             FreeCountingFactory(
                 BufferFactory.Default,
                 setOf(FreeCountingFactory.Site.EdgeMemory, FreeCountingFactory.Site.SockAddr, FreeCountingFactory.Site.AddressTokens),
+                refusal,
             )
 
         init {

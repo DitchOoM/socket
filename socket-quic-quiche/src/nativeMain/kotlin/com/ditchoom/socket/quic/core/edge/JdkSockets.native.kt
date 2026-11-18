@@ -16,6 +16,8 @@ internal actual class JdkSocket private constructor(
     fun never(): Nothing = impossible
 }
 
+internal actual fun closeJdkSocket(socket: JdkSocket): Unit = socket.never()
+
 internal actual fun openJdkSocket(
     io: LoopIo.Jdk,
     bind: PathKey,

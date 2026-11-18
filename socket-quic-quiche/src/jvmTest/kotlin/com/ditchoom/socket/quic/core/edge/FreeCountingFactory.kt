@@ -18,8 +18,23 @@ import kotlin.time.TimeSource
 internal class FreeCountingFactory(
     private val inner: BufferFactory,
     private val sites: Set<Site> = setOf(Site.EdgeMemory),
+    private val refusal: Refusal = Refusal.None,
 ) : BufferFactory {
     private val edge = ConcurrentLinkedQueue<CountedBuffer>()
+    private val refusalSeen = AtomicInteger()
+
+    /** Which allocation, if any, the factory refuses. */
+    sealed interface Refusal {
+        data object None : Refusal
+
+        /** The [nth] allocation (from 1) from [site] throws [Refused]. */
+        class At(
+            val site: Site,
+            val nth: Int,
+        ) : Refusal
+    }
+
+    class Refused : RuntimeException("allocation refused")
 
     /** The buffers allocated from one of [sites], so far. */
     fun edgeBuffers(): List<CountedBuffer> = edge.toList()
@@ -38,8 +53,13 @@ internal class FreeCountingFactory(
         size: Int,
         byteOrder: ByteOrder,
     ): PlatformBuffer {
-        val made = inner.allocate(size, byteOrder)
         val stack = Throwable().stackTrace
+        when (refusal) {
+            is Refusal.None -> Unit
+            is Refusal.At ->
+                if (stack.any(refusal.site.matches) && refusalSeen.incrementAndGet() == refusal.nth) throw Refused()
+        }
+        val made = inner.allocate(size, byteOrder)
         val site = sites.firstOrNull { stack.any(it.matches) } ?: return made
         return CountedBuffer(made, site).also { edge.add(it) }
     }

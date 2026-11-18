@@ -64,6 +64,15 @@ internal fun StackSocket.granted(): Granted =
         is StackSocket.Network -> Granted.NotReported
     }
 
+/** Closes a socket whose io never reached a loop: a setup that failed before its connection started. */
+internal fun StackSocket.close() {
+    when (this) {
+        is StackSocket.Jdk -> closeJdkSocket(socket)
+        is StackSocket.Native -> socket.cell.close { fd -> loop.shim.close(fd) }
+        is StackSocket.Network -> closeNwSocket(socket)
+    }
+}
+
 /** When the loop reads this socket: when its poller says so, or every pass for one that reports by completion. */
 internal fun StackSocket.readiness(): Readiness =
     when (this) {
@@ -161,6 +170,9 @@ private fun bindKeyOf(
 /** A JDK channel and the loop that reads it: made only on a JVM. */
 internal expect class JdkSocket
 
+/** Closes a JDK channel no io was made over. */
+internal expect fun closeJdkSocket(socket: JdkSocket)
+
 /** Opens a JDK channel for a loop on the JDK stack. */
 internal expect fun openJdkSocket(
     io: LoopIo.Jdk,
@@ -180,6 +192,9 @@ internal expect fun descriptorRef(io: NativeIo): SocketRef
 
 /** A client's Network.framework connection: made only on Apple's Kotlin/Native targets. */
 internal expect class NwSocket
+
+/** Cancels a Network.framework connection no io was made over. */
+internal expect fun closeNwSocket(socket: NwSocket)
 
 internal expect fun nwSocketIo(
     socket: StackSocket.Network,

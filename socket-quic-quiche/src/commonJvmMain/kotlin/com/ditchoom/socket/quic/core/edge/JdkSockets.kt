@@ -28,6 +28,8 @@ internal actual class JdkSocket(
     val dontFragment: DontFragment = DontFragment.NotOffered,
 )
 
+internal actual fun closeJdkSocket(socket: JdkSocket) = socket.channel.close()
+
 internal actual fun openJdkSocket(
     io: LoopIo.Jdk,
     bind: PathKey,
@@ -81,6 +83,8 @@ internal actual class NwSocket private constructor(
 ) {
     fun never(): Nothing = impossible
 }
+
+internal actual fun closeNwSocket(socket: NwSocket): Unit = socket.never()
 
 internal actual fun nwSocketIo(
     socket: StackSocket.Network,

@@ -71,6 +71,11 @@ internal actual suspend fun NwConnector.connect(
     }
 }
 
+internal actual fun closeNwSocket(socket: NwSocket) {
+    socket.life.cancelled()
+    socket.connection.cancel()
+}
+
 internal actual fun nwSocketIo(
     socket: StackSocket.Network,
     wake: () -> Unit,

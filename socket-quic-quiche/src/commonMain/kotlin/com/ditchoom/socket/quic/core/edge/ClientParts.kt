@@ -132,11 +132,13 @@ internal class ClientParts(
     }
 
     /**
-     * The setup's thread, only if [start] never ran: closes the socket and releases the connection here, which hands an
-     * unsent ticket back and frees quiche's connection, the sockaddrs, the scope and the memory.
+     * The setup's thread, only if [start] never ran: closes the socket, gives back the loop's seat and releases the
+     * connection here, which hands an unsent ticket back and frees quiche's connection, the sockaddrs, the scope and the
+     * memory.
      */
     fun releaseUnstarted() {
         io.close()
+        loop.seatGivenBack()
         released.run()
     }
 

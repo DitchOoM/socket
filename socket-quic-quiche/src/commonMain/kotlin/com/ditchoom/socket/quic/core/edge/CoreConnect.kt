@@ -151,6 +151,8 @@ private suspend fun OnSetupLane.connectOnLane(
                     QuicCloseCircumstance.HandshakeFailed,
                 )
         }
+    val seated = ClientSetup.Seated(memory, running.loop)
+    moved(seated)
     val socket =
         when (ride) {
             is ClientRide.OwnSocket -> {
@@ -165,13 +167,16 @@ private suspend fun OnSetupLane.connectOnLane(
             }
             is ClientRide.NetworkFramework -> withTimeout(timeout) { ride.connector.connect(host, port) }
         }
+    val opened = ClientSetup.Opened(seated, socket)
+    moved(opened)
     val local = socket.local()
     val monitor = resolveNetworkMonitor(options.networkMonitor)
     val handshake = clientHandshakeRule(options, linkClassOf(monitor.state.value.networkId))
     val peerSockAddr = codec.encodeToNative(peer, factory)
-    moved(ClientSetup.PeerEncoded(memory, peerSockAddr))
+    moved(ClientSetup.PeerEncoded(opened, peerSockAddr))
     val localSockAddr = local.encodeToNative(factory)
-    moved(ClientSetup.Encoded(memory, peerSockAddr, localSockAddr))
+    val encoded = ClientSetup.Encoded(opened, peerSockAddr, localSockAddr)
+    moved(encoded)
     val (scidHex, handle) =
         generateScid(factory).use { scid ->
             hex(scid) to
@@ -192,7 +197,7 @@ private suspend fun OnSetupLane.connectOnLane(
                 }
         }
     val quiche = QuicheConnRef(api, handle)
-    moved(ClientSetup.Connected(memory, peerSockAddr, localSockAddr, quiche))
+    moved(ClientSetup.Connected(encoded, quiche))
     val plan = sessionPlan(options, serverName, port, tokens)
     val planned = offerPlanned(quiche, plan, factory)
     val offer = planned.offer

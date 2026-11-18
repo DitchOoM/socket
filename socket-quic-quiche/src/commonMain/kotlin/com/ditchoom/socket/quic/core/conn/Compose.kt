@@ -78,6 +78,26 @@ internal fun buildConn(
     sink: ConnSink,
     loopEntrant: Entrant,
     counts: ConnCounts,
+): Conn =
+    q.composedAround(SinglePath(q, address.peer, address.local, address.target)) { first ->
+        composed(rules, q, side, address, memory, flight, capture, port, socket, clock, sink, loopEntrant, counts, first)
+    }
+
+private fun composed(
+    rules: SlotRules,
+    q: QuicheConnRef,
+    side: ConnSide,
+    address: ConnAddress,
+    memory: ConnMemory,
+    flight: FlightSize,
+    capture: TraceCapture,
+    port: LoopPort,
+    socket: SendPort,
+    clock: LoopClock,
+    sink: ConnSink,
+    loopEntrant: Entrant,
+    counts: ConnCounts,
+    first: SinglePath,
 ): Conn {
     val chosen =
         ConnSlots(
@@ -98,7 +118,7 @@ internal fun buildConn(
                         Paths.Client(
                             ClientPaths(
                                 q,
-                                SinglePath(q, address.peer, address.local, address.target),
+                                first,
                                 memory.factory,
                                 IdIssuer(memory.factory),
                                 side.ids,
@@ -109,7 +129,7 @@ internal fun buildConn(
                         Paths.Server(
                             ServerPaths(
                                 q,
-                                SinglePath(q, address.peer, address.local, address.target),
+                                first,
                                 address.peerKey,
                                 address.localKey,
                                 memory.factory,
