@@ -474,6 +474,33 @@ class PeerLeftADownloadEmpty:
         return NotMatched()
 
 
+class PeerLeftARequestUnfinished:
+    """The peer's own report says it gave up on requests after its idle timeout, and on every connection of ours the
+    requests that never got an answer are exactly the streams the peer opened and began but never finished (data
+    arrived, no FIN, no reset) while every request that did arrive whole was answered: the peer wrote a partial
+    request, a short write it never resumed, so there was nothing complete for us to answer."""
+
+    kind = "peer-left-a-request-unfinished"
+
+    def __init__(self, fields):
+        no_fields(self.kind, fields)
+
+    def match(self, test_evidence, peer_role):
+        unanswered = test_evidence.get("peer_unanswered_requests", 0)
+        connections = test_evidence.get("connections", [])
+        unfinished = [c.get("peer_unfinished_streams", 0) for c in connections]
+        accounted = bool(connections) and all(
+            n > 0 and not c["local_closes"] and c["fin_sent_streams"] + n == c["peer_bidi_streams_opened"]
+            for c, n in zip(connections, unfinished)
+        )
+        if unanswered and accounted:
+            return Matched(
+                f"peer gave up on {unanswered} request(s) after its idle timeout; we answered the {connections[0]['fin_sent_streams']} "
+                f"that arrived whole and {unfinished[0]} more arrived without a FIN"
+            )
+        return NotMatched()
+
+
 class PeerRequestNeverArrived:
     """A connection whose handshake our server confirmed (HANDSHAKE_DONE sent), on which the peer kept sending
     packets, but no request ever arrived: the client never sent it, or never sent it again after losing it."""
@@ -630,6 +657,7 @@ SIGNATURES = {
         SimLostEveryDatagramToUs,
         SimLostEveryDatagramToThePeer,
         PeerLeftADownloadEmpty,
+        PeerLeftARequestUnfinished,
         PeerRequestNeverArrived,
         PeerServerDidNotChallengeNewPathFirst,
         PeerHandshakePacketsNeverArrived,

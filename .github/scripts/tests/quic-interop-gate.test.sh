@@ -234,6 +234,19 @@ python3 -I "$extract" "$tmp/logs" our-server x "$tmp/ev.json"
 expect_rc "the extractor runs" $? 0
 ev="$(python3 -c 'import json,sys; t=json.load(open(sys.argv[1]))["tests"]["multiplexing"]; c=t["connections"][0]; print(c["local_initial_max_streams_bidi"], c["max_streams_bidi_sent"], c["peer_bidi_streams_opened"], c["local_closes"], c["remote_disable_active_migration"], t["exits"], c["peer_source_cid_lengths"])' "$tmp/ev.json")"
 expect "the extractor reads limits, streams, one close per code and exits" "$ev" "100 90 101 [{'code': 4, 'space': 'transport'}] True {'client': 0} [0]"
+ev="$(python3 -c 'import json,sys; c=json.load(open(sys.argv[1]))["tests"]["multiplexing"]["connections"][0]; print(c["peer_unfinished_streams"])' "$tmp/ev.json")"
+expect "the extractor counts streams begun without a FIN (400 above is peer-opened, 401 is ours-to-open)" "$ev" "1"
+d2="$tmp/logs2/ditchoom_x/multiplexing"
+mkdir -p "$d2/server/qlog" "$d2/client"
+{
+  printf '{"name":"quic:packet_received","data":{"frames":[{"frame_type":"stream","stream_id":0,"offset":0,"fin":true},{"frame_type":"stream","stream_id":4,"offset":0},{"frame_type":"stream","stream_id":8,"offset":0},{"frame_type":"reset_stream","stream_id":8,"final_size":3}]}}\n'
+  printf '{"name":"quic:packet_received","data":{"frames":[{"frame_type":"stream","stream_id":4,"offset":3,"fin":true}]}}\n'
+  printf '{"name":"quic:packet_received","data":{"frames":[{"frame_type":"stream","stream_id":12,"offset":0}]}}\n'
+} >"$d2/server/qlog/quiche-server-1.sqlog"
+printf '[2026-11-18T22:04:46Z ERROR quiche_apps::common] connection timed out after 31.5s and only completed 3/4 requests\n' >"$d2/client/log.txt"
+python3 -I "$extract" "$tmp/logs2" our-server x "$tmp/ev2.json"
+ev="$(python3 -c 'import json,sys; t=json.load(open(sys.argv[1]))["tests"]["multiplexing"]; print(t["connections"][0]["peer_unfinished_streams"], t["peer_unanswered_requests"])' "$tmp/ev2.json")"
+expect "a finished, a reset and a continued stream are not unfinished; one never finished is" "$ev" "1 1"
 
 # The handshake-family kinds: each matches the evidence that shows its failure and nothing else.
 hconn() { # <qlog> <extra facts json, without braces>
@@ -300,6 +313,17 @@ check_kind "a connection that answered is not the signature" "$lostpeer" our-ser
 empty='{"kind":"peer-left-a-download-empty"}'
 check_kind "an empty download while we answered every connection" "$empty" our-server "{\"connections\":[$(hconn a),$(hconn b)],\"exits\":{\"client\":0},\"runner\":{\"empty_downloads\":1}}" Matched
 check_kind "an unanswered connection is not the signature" "$empty" our-server "{\"connections\":[$(hconn a),$(hconn b | sed 's/"fin_sent_streams":1/"fin_sent_streams":0/')],\"exits\":{\"client\":0},\"runner\":{\"empty_downloads\":1}}" NotMatched
+# Run 44402991044, our-server-raised-streams against the stock quiche client: 1999 requests opened, 1992 answered, the
+# other 7 began as short STREAM frames (3 bytes, no FIN: the client's send said Done) and were never finished; the
+# client logged "completed 1992/1999 requests" after its idle timeout and exited 254.
+unfin='"fin_sent_streams":1992,"peer_bidi_streams_opened":1999,"peer_unfinished_streams":7'
+unf='{"kind":"peer-left-a-request-unfinished"}'
+check_kind "requests begun and never finished, the rest answered" "$unf" our-server "{\"connections\":[$(hconn a "$unfin" | sed 's/"fin_sent_streams":1,//;s/"peer_bidi_streams_opened":0,//')],\"exits\":{\"client\":254},\"peer_unanswered_requests\":7}" Matched
+check_kind "the peer not reporting a gave-up request is not the signature" "$unf" our-server "{\"connections\":[$(hconn a "$unfin" | sed 's/"fin_sent_streams":1,//;s/"peer_bidi_streams_opened":0,//')],\"exits\":{\"client\":254}}" NotMatched
+check_kind "a whole request we left unanswered is not the signature" "$unf" our-server "{\"connections\":[$(hconn a "$unfin" | sed 's/"fin_sent_streams":1,//;s/"peer_bidi_streams_opened":0,//;s/"fin_sent_streams":1992/"fin_sent_streams":1991/')],\"exits\":{\"client\":254},\"peer_unanswered_requests\":7}" NotMatched
+check_kind "no unfinished stream is not the signature" "$unf" our-server "{\"connections\":[$(hconn a "$unfin" | sed 's/"fin_sent_streams":1,//;s/"peer_bidi_streams_opened":0,//;s/"peer_unfinished_streams":7/"peer_unfinished_streams":0/')],\"exits\":{\"client\":254},\"peer_unanswered_requests\":7}" NotMatched
+check_kind "a connection we closed is not the signature" "$unf" our-server "{\"connections\":[$(hconn a "$unfin" | sed 's/"fin_sent_streams":1,//;s/"peer_bidi_streams_opened":0,//;s/"local_closes":\[\]/"local_closes":[{"space":"transport","code":4}]/')],\"exits\":{\"client\":254},\"peer_unanswered_requests\":7}" NotMatched
+expect "quiche multiplexing expects the unfinished-request signature as well" "$(python3 -c 'import json,sys; s=json.load(open(sys.argv[1]))["our-server-raised-streams"]["quiche"]["multiplexing"]["flaky"]["signature"]; print(sorted(x["kind"] for x in s["signatures"]))' "$here/../../../test-harness/quic-interop/expectations.json")" "['peer-left-a-download-empty', 'peer-left-a-request-unfinished']"
 never='{"kind":"peer-request-never-arrived","min_packets":5}'
 check_kind "a confirmed connection that never got a request" "$never" our-server "{\"connections\":[$(hconn a '"handshake_done_sent_ms":35' | sed 's/"fin_sent_streams":1/"fin_sent_streams":0/;s/"rx_packets":5/"rx_packets":10/')]}" Matched
 check_kind "a connection with a request is not the signature" "$never" our-server "{\"connections\":[$(hconn a '"handshake_done_sent_ms":35,"first_request_ms":40' | sed 's/"fin_sent_streams":1/"fin_sent_streams":0/;s/"rx_packets":5/"rx_packets":10/')]}" NotMatched

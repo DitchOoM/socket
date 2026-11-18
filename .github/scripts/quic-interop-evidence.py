@@ -15,7 +15,7 @@ sources are read, both written by something this repository controls or the runn
 
 Per connection the qlog also gives what the peer sent in the handshake spaces, how many contiguous Initial
 CRYPTO bytes arrived, when we last heard from it, how the connection ended, what was still in flight then, how
-many PTO expiries passed with nothing sent, the streams we answered and how fast, when our first stream data
+many PTO expiries passed with nothing sent, the peer-opened streams that never received a FIN, the streams we answered and how fast, when our first stream data
 went out, when the peer first acknowledged it, when its HANDSHAKE_DONE arrived, and every RESET_STREAM the peer
 sent with how many copies of that stream's first bytes we had sent.
 
@@ -102,6 +102,7 @@ def connection_facts(path, side):
     }
     remainder = peer_bidi_remainder(side)
     first_rx, first_tx, fin_sent, copies = {}, {}, set(), {}
+    fin_rx, reset_rx = set(), set()
     initial_crypto = []
     stream_packets = set()
     last_tx = -1.0
@@ -139,7 +140,10 @@ def connection_facts(path, side):
                         facts["first_stream_ack_ms"] = at
                 if frame.get("frame_type") == "stream":
                     first_rx.setdefault(int(frame.get("stream_id", 0)), at)
+                    if frame.get("fin"):
+                        fin_rx.add(int(frame.get("stream_id", 0)))
                 elif frame.get("frame_type") == "reset_stream":
+                    reset_rx.add(int(frame.get("stream_id", 0)))
                     facts["peer_resets"].append(
                         {"stream_id": int(frame.get("stream_id", 0)), "final_size": int(frame.get("final_size", 0))}
                     )
@@ -189,6 +193,8 @@ def connection_facts(path, side):
                     if stream_id % 4 == remainder:
                         facts["peer_bidi_streams_opened"] = max(facts["peer_bidi_streams_opened"], stream_id // 4 + 1)
     facts["fin_sent_streams"] = len(fin_sent)
+    # Requests the peer opened and began but never finished: stream data arrived, no FIN and no RESET_STREAM ever did.
+    facts["peer_unfinished_streams"] = len([s for s in first_rx if s % 4 == remainder and s not in fin_rx and s not in reset_rx])
     if initial_crypto:
         facts["rx_initial_crypto_end"] = contiguous_end(initial_crypto)
     if first_tx:
