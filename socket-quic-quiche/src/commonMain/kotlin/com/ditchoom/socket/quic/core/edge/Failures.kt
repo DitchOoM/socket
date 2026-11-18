@@ -229,7 +229,7 @@ private fun exceptionOf(
 private fun closeOf(
     end: ConnEnd,
     during: QuicCloseCircumstance,
-): QuicCloseException = QuicCloseException(publicEndOf(end), end.circumstance(during))
+): QuicCloseException = QuicCloseException(end = publicEndOf(end), circumstance = end.circumstance(during))
 
 private fun ConnEnd.circumstance(during: QuicCloseCircumstance): QuicCloseCircumstance =
     when (this) {
