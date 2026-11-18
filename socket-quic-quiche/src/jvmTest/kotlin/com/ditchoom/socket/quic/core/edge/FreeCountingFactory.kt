@@ -13,23 +13,35 @@ import kotlin.time.TimeSource
 
 /**
  * A factory over [inner] whose buffers count their frees and keep the thread of the first, so a test can hold an
- * edge's memory to being freed exactly once, by its one owner. Only buffers an [EdgeMemory] allocated are kept.
+ * edge's memory to being freed exactly once, by its one owner. Only buffers allocated from one of [sites] are kept.
  */
 internal class FreeCountingFactory(
     private val inner: BufferFactory,
+    private val sites: Set<Site> = setOf(Site.EdgeMemory),
 ) : BufferFactory {
     private val edge = ConcurrentLinkedQueue<CountedBuffer>()
 
-    /** The buffers an [EdgeMemory] took from this factory, so far. */
+    /** The buffers allocated from one of [sites], so far. */
     fun edgeBuffers(): List<CountedBuffer> = edge.toList()
+
+    /** Where a kept buffer was allocated: a frame of its allocation's stack. */
+    enum class Site(
+        val matches: (StackTraceElement) -> Boolean,
+    ) {
+        EdgeMemory({ it.className == "com.ditchoom.socket.quic.core.edge.EdgeMemory" }),
+        SockAddr({ it.methodName == "encodeToNative" }),
+        AddressTokens({ it.className == "com.ditchoom.socket.quic.core.demux.AddressTokens" }),
+        ConnectArgs({ it.methodName == "nullTerminated" || it.methodName == "generateScid" }),
+    }
 
     override fun allocate(
         size: Int,
         byteOrder: ByteOrder,
     ): PlatformBuffer {
         val made = inner.allocate(size, byteOrder)
-        if (Throwable().stackTrace.none { it.className == EdgeMemory::class.java.name }) return made
-        return CountedBuffer(made).also { edge.add(it) }
+        val stack = Throwable().stackTrace
+        val site = sites.firstOrNull { stack.any(it.matches) } ?: return made
+        return CountedBuffer(made, site).also { edge.add(it) }
     }
 
     override fun wrap(
@@ -46,6 +58,7 @@ internal class FreeCountingFactory(
 
     class CountedBuffer(
         private val inner: PlatformBuffer,
+        val site: Site,
     ) : PlatformBuffer by inner {
         val frees = AtomicInteger()
         val firstFreedOn = AtomicReference<Thread>()
@@ -55,5 +68,7 @@ internal class FreeCountingFactory(
             frees.incrementAndGet()
             inner.freeNativeMemory()
         }
+
+        override fun toString(): String = "$site(${inner.capacity} B, freed ${frees.get()}x)"
     }
 }

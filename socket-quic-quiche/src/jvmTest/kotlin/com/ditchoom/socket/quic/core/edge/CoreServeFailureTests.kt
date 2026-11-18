@@ -8,6 +8,8 @@ import com.ditchoom.socket.quic.NetShim
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.QuicheConfig
+import com.ditchoom.socket.quic.core.demux.AddressValidation
+import com.ditchoom.socket.quic.core.demux.ServerConfig
 import com.ditchoom.socket.quic.core.ready.NetStack
 import com.ditchoom.socket.quic.core.ready.netStackOfThisRuntime
 import com.ditchoom.socket.quic.core.testing.assumeNativeStack
@@ -42,6 +44,7 @@ class CoreServeFailureTests {
         rig.assertMemoryFreedOnce()
     }
 
+    /** The socket's io is wrapped after the server's memory hold is made: its address and token keys exist by then. */
     @Test
     fun aServeFailingBeforeItsLoopIsBuiltReleasesThePollerConfigAndSocketOnce() {
         val rig = Rig()
@@ -75,7 +78,11 @@ class CoreServeFailureTests {
         var fdCloses = 0
         var ioCloses = 0
         var failConfiguring = false
-        val factory = FreeCountingFactory(BufferFactory.Default)
+        val factory =
+            FreeCountingFactory(
+                BufferFactory.Default,
+                setOf(FreeCountingFactory.Site.EdgeMemory, FreeCountingFactory.Site.SockAddr, FreeCountingFactory.Site.AddressTokens),
+            )
 
         init {
             assumeNativeStack()
@@ -131,6 +138,8 @@ class CoreServeFailureTests {
                 writePolicy = WritePolicy.Bounded(10.seconds),
                 wrapIo = wrapIo,
                 clock = clock,
+                // Address validation gives the server its token keys, which its memory hold frees with the rest.
+                config = ServerConfig(addressValidation = AddressValidation.Retry()),
                 driver = LoopDriver.Caller,
                 stack = NetStack.Native(countingShim, (netStackOfThisRuntime as NetStack.Native).waits),
             )
@@ -146,8 +155,8 @@ class CoreServeFailureTests {
         fun assertMemoryFreedOnce() {
             val buffers = factory.edgeBuffers()
             assertTrue(buffers.isNotEmpty(), "the serve took its memory through the counting factory")
-            val notOnce = buffers.filter { it.frees.get() != 1 }.map { it.capacity to it.frees.get() }
-            assertEquals(emptyList(), notOnce, "server buffers not freed exactly once, as (capacity, frees)")
+            val notOnce = buffers.filter { it.frees.get() != 1 }.map { it.toString() }.distinct()
+            assertEquals(emptyList(), notOnce, "server buffers not freed exactly once")
         }
 
         private fun options() = QuicOptions(alpnProtocols = listOf("test"), verifyPeer = false, idleTimeout = 30.seconds)
