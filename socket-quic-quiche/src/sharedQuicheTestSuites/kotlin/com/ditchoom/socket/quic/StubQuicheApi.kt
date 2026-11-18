@@ -531,10 +531,12 @@ internal class StubQuicheApi : QuicheApi {
         ptoCeilings += ceiling
     }
 
-    /** Whether the active path still holds the last ceiling: quiche releases it on its first 1-RTT sample. */
-    var ptoCeilingHeld = true
-
-    override fun connHandshakePtoCeilingHeld(conn: QuicheConn) = ptoCeilingHeld
+    /** Held while the last ceiling given is one: the stub takes no RTT sample that would release it. */
+    override fun connHandshakePtoCeilingHeld(conn: QuicheConn) =
+        when (ptoCeilings.lastOrNull()) {
+            null, is PtoCeiling.None -> false
+            is PtoCeiling.At, is PtoCeiling.Growing -> true
+        }
 
     override fun connProbeNow(conn: QuicheConn): Int {
         probeNowCount++

@@ -45,11 +45,13 @@ class HandshakeTests {
         startedNanos: Long = 0L,
     ) = Handshake(q, rule, startedNanos, nativeBytes(255))
 
-    private fun ceilings(): List<Long> =
+    /** Each ceiling quiche was given, as (first, growth, max) nanoseconds. */
+    private fun ceilings(): List<Triple<Long, Int, Long>> =
         stub.ptoCeilings.map {
             when (it) {
-                is PtoCeiling.At -> it.nanos
-                is PtoCeiling.None -> 0L
+                is PtoCeiling.None -> Triple(0L, 0, 0L)
+                is PtoCeiling.At -> Triple(it.nanos, 1, it.nanos)
+                is PtoCeiling.Growing -> Triple(it.firstNanos, it.growth, it.maxNanos)
             }
         }
 
@@ -73,44 +75,24 @@ class HandshakeTests {
     }
 
     /**
-     * A first RTT sample of 2 s (the peer's handshake computation inside it) leaves quiche's own PTO at seconds, backed
-     * off 2× per expiry. The ceiling quiche is held to is 240 ms, then 3× per PTO expiry, whatever the sample says.
+     * Wi-Fi's rule gives quiche its ceiling once, before the first flight: 240 ms, 3× per PTO expiry, at most an hour.
+     * quiche grows, restarts and releases it; expiries, establishment and confirmation never set it again.
      */
     @Test
-    fun anInflatedFirstSampleThenLossIsHeldToTheCeilingSequence() {
+    fun theAdaptiveRuleGivesQuicheItsGrowingCeilingOnce() {
         val handshake = handshake()
-        assertEquals(listOf(240 * ms), ceilings(), "the first ceiling is set before the first flight")
+        val rule = Triple(240 * ms, 3, 3_600_000 * ms)
+        assertEquals(listOf(rule), ceilings(), "the ceiling is given before the first flight")
         quicheSays(probes = 1, rtt = 2.seconds)
-        handshake.expired(path.read())
-        quicheSays(probes = 2, rtt = 2.seconds)
-        handshake.expired(path.read())
         handshake.expired(path.read())
         quicheSays(probes = 4, rtt = 2.seconds)
         handshake.expired(path.read())
-        assertEquals(listOf(240 * ms, 720 * ms, 2_160 * ms, 19_440 * ms), ceilings(), "3x per expiry, never per timer wake")
-    }
-
-    /** Confirmation keeps the ceiling and its growth; quiche releasing it at its first 1-RTT sample removes it. */
-    @Test
-    fun theCeilingOutlivesConfirmationUntilQuicheReleasesIt() {
-        val handshake = handshake()
         stub.established = true
         assertEquals(HandshakeStep.JustEstablished, handshake.step(Nanos(50 * ms)))
-        assertEquals(PtoFollow.Follow, handshake.ptoFollow())
-        quicheSays(probes = 1)
-        handshake.expired(path.read())
         confirmed = true
         assertEquals(HandshakeStep.Established, handshake.step(Nanos(80 * ms)))
-        assertEquals(listOf(240 * ms, 720 * ms), ceilings(), "confirmation keeps the ceiling")
-        assertEquals(PtoFollow.Follow, handshake.ptoFollow(), "held until quiche's first 1-RTT sample")
-        quicheSays(probes = 2)
-        handshake.expired(path.read())
-        assertEquals(listOf(240 * ms, 720 * ms, 2_160 * ms), ceilings(), "an expiry after confirmation still grows it")
-        stub.ptoCeilingHeld = false
-        assertEquals(PtoFollow.Ignore, handshake.ptoFollow())
-        assertEquals(listOf(240 * ms, 720 * ms, 2_160 * ms, 0L), ceilings(), "released: removed from every path, once")
-        assertEquals(PtoFollow.Ignore, handshake.ptoFollow())
-        assertEquals(4, ceilings().size)
+        assertEquals(listOf(rule), ceilings(), "never set again")
+        assertEquals(4, handshake.report(Nanos(90 * ms), path.read(), FULL).probes, "the expiries are counted for the report")
         assertEquals(Confirmation.Confirmed, handshake.confirmation())
         assertEquals(HandshakeStep.Established, handshake.step(Nanos(20_000 * ms)), "no deadline after confirmation")
         val sink = WakeSink()
