@@ -1851,6 +1851,15 @@ class FfmQuicheApi private constructor(
 
     override fun sockAddrV6Lo(addr: Long): Long = beLong(addr + 16)
 
+    override fun connActivePathRttNanos(conn: QuicheConn): Long {
+        val out = outParams.get().pathStats
+        var index = 0L
+        while (hConnPathStats.invokeExact(conn.handle, index++, out.address()) as Int >= 0) {
+            if (out.get(JAVA_BOOLEAN, 280)) return out.get(JAVA_LONG, 344)
+        }
+        return NO_RTT_NANOS
+    }
+
     companion object {
         /**
          * One immortal global-scope segment spanning the whole address space (`NULL.reinterpret(MAX)`), so

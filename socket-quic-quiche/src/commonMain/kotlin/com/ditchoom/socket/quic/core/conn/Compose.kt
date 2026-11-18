@@ -87,8 +87,9 @@ internal fun buildConn(
                     is PacingRule.ByQuiche -> Pacing.ByQuiche(Pacer(r))
                 },
             ack =
-                when (rules.ack) {
+                when (val r = rules.ack) {
                     is AckRule.Immediate -> AckCadence.Immediate
+                    is AckRule.HoldForReply -> AckCadence.HoldForReply(AckHold(r))
                 },
             paths =
                 when (side) {
@@ -149,6 +150,7 @@ internal fun buildConn(
             inbox = WorkInbox(),
             slots = chosen,
             sink = sink,
+            ackReads = AckHoldReads(q),
         )
     return Conn(Turn(parts, clock, port), port, socket, clock, loopEntrant, counts)
 }

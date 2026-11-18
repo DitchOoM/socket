@@ -21,6 +21,9 @@ internal sealed interface Streams {
     ) : Streams
 }
 
+/** Whether a write or an open waits for room the peer gives. */
+internal enum class Backlog { None, Waiting }
+
 /** What [StreamTable.tryOpen] did. */
 internal enum class Opened { Opened, AtLimit }
 
@@ -64,6 +67,9 @@ internal class StreamTable(
 
     var state: Streams = Streams.Open
         private set
+
+    /** Monotonic: received data handed to a parked reader, and streams the peer opened, counted as they are found. */
+    var handedUp = 0L; private set
 
     fun entry(id: QuicStreamId): StreamEntry = entries.getOrPut(id.id, newEntry)
 
@@ -163,6 +169,9 @@ internal class StreamTable(
 
     fun opensWaiting(): Int = opens.size
 
+    /** Whether a write or an open is parked until the peer gives room. */
+    fun backlog(): Backlog = if (opens.isNotEmpty() || writeWaiters.isNotEmpty()) Backlog.Waiting else Backlog.None
+
     /** Whether an operation is parked until the peer answers: an open at its stream limit, a read, or a write. */
     fun waitsOnPeer(): Boolean {
         if (opens.isNotEmpty() || writeWaiters.isNotEmpty()) return true
@@ -229,6 +238,7 @@ internal class StreamTable(
                 peerIds(id).see(id.id)
                 entry(id)
                 incoming.addLast(id.id)
+                handedUp++
             }
             // A spent stream quiche still holds: what arrived after its entry went (the peer's reset after we stopped
             // reading it) is read, so quiche lets it go.
@@ -239,6 +249,7 @@ internal class StreamTable(
 
     /** Something arrived on [entry]'s stream: its reader takes it, or, when nobody will read it, it is dropped. */
     private fun arrived(entry: StreamEntry) {
+        if (entry.reader !== Nobody) handedUp++
         if (entry.reader !== Nobody || entry.received is Side.Open) return entry.wakeReader(this)
         when (val side = drain.drop(entry.id)) {
             is Side.Ended -> entry.receiveEnded(side)

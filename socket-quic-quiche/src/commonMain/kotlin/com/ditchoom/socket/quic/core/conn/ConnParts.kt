@@ -20,4 +20,5 @@ internal class ConnParts(
     val inbox: WorkInbox<ConnWork>,
     val slots: ConnSlots,
     val sink: ConnSink,
+    val ackReads: AckHoldReads,
 )

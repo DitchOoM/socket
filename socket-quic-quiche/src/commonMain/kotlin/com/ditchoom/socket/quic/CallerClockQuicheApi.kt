@@ -239,6 +239,8 @@ internal class CallerClockQuicheApi(
     ): QuicPathStats? = synced { delegate.connPathStats(conn, pathIdx) }
 
     override fun connPeerTransportParams(conn: QuicheConn): PeerTransportParams = synced { delegate.connPeerTransportParams(conn) }
+
+    override fun connActivePathRttNanos(conn: QuicheConn): Long = synced { delegate.connActivePathRttNanos(conn) }
 }
 
 private const val CLIENT_STREAM = 0x434C49454E54L // "CLIENT"

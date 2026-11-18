@@ -5,6 +5,7 @@ import com.ditchoom.socket.quic.QuicStreamId
 import com.ditchoom.socket.quic.StreamRecvStep
 import com.ditchoom.socket.quic.StreamSendStep
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
+import com.ditchoom.socket.quic.core.observe.Confined
 
 /** Whether a write ends our side of the stream. */
 internal enum class WriteEnd { More, Finish }
@@ -13,9 +14,14 @@ internal enum class WriteEnd { More, Finish }
 internal enum class ShutdownSide { Read, Write }
 
 /** A stream's bytes: the only file that sends, receives or shuts down stream data in quiche. */
+@Confined
 internal class StreamIo(
     private val q: QuicheConnRef,
 ) {
+    /** Monotonic: sends that gave quiche bytes or a FIN, and shutdowns, each something the peer will be sent. */
+    var output = 0L
+        private set
+
     /**
      * Sends on [stream], allocating nothing. quiche answers Done both when it can take nothing now and when it already
      * let the stream go: a stream our side has not ended is let go only once the peer stopped it, so that answer is
@@ -29,7 +35,10 @@ internal class StreamIo(
     ): StreamSendStep {
         val sent = q.api.connStreamSendStep(q.handle, stream, address, length, end == WriteEnd.Finish)
         return sent.fold(
-            took = { sent },
+            took = { took ->
+                if (took > 0 || end == WriteEnd.Finish) output++
+                sent
+            },
             full = {
                 when (capacity(stream)) {
                     QUICHE_ERR_STREAM_STOPPED.toLong(), QUICHE_ERR_INVALID_STREAM_STATE.toLong() -> STOPPED
@@ -56,8 +65,9 @@ internal class StreamIo(
         stream: QuicStreamId,
         side: ShutdownSide,
         code: Long,
-    ): Int =
-        q.api.connStreamShutdown(
+    ): Int {
+        output++
+        return q.api.connStreamShutdown(
             q.handle,
             stream,
             when (side) {
@@ -66,6 +76,7 @@ internal class StreamIo(
             },
             code,
         )
+    }
 
     private companion object {
         /** A send refused because the peer stopped the stream; quiche no longer says with which code. */

@@ -13,6 +13,7 @@ internal fun ConnParts.rearm(
         is Pacing.ByQuiche -> pacing.pacer.offerWake(timer.sink)
     }
     slots.keepAlive.offerWake(timer.sink)
+    slots.ack.offerWake(timer.sink)
     handshake.offerWake(timer.sink)
     life.linger.offerWake(timer.sink)
     slots.paths.offerWake(timer.sink)
@@ -21,6 +22,7 @@ internal fun ConnParts.rearm(
 
 /** The connection's deadline fell due: quiche's timeout runs and, while unconfirmed, the handshake counts its PTO expiries. */
 internal fun ConnParts.expired(paths: Paths) {
+    slots.ack.mustWrite()
     timer.expire()
     when (handshake.confirmation()) {
         Confirmation.Pending -> handshake.expired(paths.read())

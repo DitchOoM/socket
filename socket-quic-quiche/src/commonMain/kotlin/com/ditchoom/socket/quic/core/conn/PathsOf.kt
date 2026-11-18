@@ -31,7 +31,10 @@ internal fun ConnParts.feed(
     length: Int,
     from: PathKey,
 ) = when (val info = slots.paths.recvFrom(from)) {
-    is RecvFrom.Info -> ingress.direct(bytes, length, info.recvInfo, flight)
+    is RecvFrom.Info -> {
+        slots.ack.received()
+        ingress.direct(bytes, length, info.recvInfo, flight)
+    }
     is RecvFrom.TooManyAddresses -> ingress.refused(length, from, flight)
 }
 
@@ -95,6 +98,7 @@ internal fun ConnParts.stepPaths(now: Nanos): PathStep =
     when (val paths = slots.paths) {
         is Paths.Client -> {
             val step = paths.paths.step(now)
+            if (step != PathStep.Steady) slots.ack.mustWrite()
             when (step) {
                 PathStep.Steady, PathStep.NoUsablePath -> Unit
                 PathStep.ProbeFailed -> flight.path(now, PathMark.ProbeFailed)
@@ -121,6 +125,7 @@ internal fun ConnParts.stepPaths(now: Nanos): PathStep =
  * client's unfinished move is followed afresh on it: the probes that failed before say nothing of this network.
  */
 internal fun ConnParts.networkUsable(now: Nanos) {
+    slots.ack.mustWrite()
     timer.nudge()
     when (val paths = slots.paths) {
         is Paths.Client -> paths.paths.networkChanged(now)
@@ -149,6 +154,7 @@ internal fun ConnParts.follow(
             is Paths.Server -> return MoveAnswer.Following
         }
     network.moved()
+    slots.ack.mustWrite()
     val answer =
         when (handshake.confirmation()) {
             Confirmation.Pending -> MoveAnswer.Refused
@@ -190,4 +196,17 @@ internal fun Paths.offerWake(sink: WakeSink) =
     when (this) {
         is Paths.Client -> paths.offerWake(sink)
         is Paths.Server -> Unit
+    }
+
+/** Whether a client's socket is moving, or a server's peer is on more than one address. */
+internal enum class PathCalm { Settled, Moving }
+
+internal fun Paths.calm(): PathCalm =
+    when (this) {
+        is Paths.Client -> if (paths.unsettled()) PathCalm.Moving else PathCalm.Settled
+        is Paths.Server ->
+            when (paths.sorting()) {
+                is Sorting.Fixed -> PathCalm.Settled
+                is Sorting.ByAddress -> PathCalm.Moving
+            }
     }

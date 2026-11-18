@@ -238,6 +238,7 @@ internal class Turn(
             return Collected.Everything
         }
         if (c.firstFlight() == FlightGate.Held) return Collected.Everything
+        if (c.ackStep(now) == AckStep.Hold) return Collected.Everything
         val wrote =
             when (val pacing = c.slots.pacing) {
                 is Pacing.Unpaced -> c.egress.write(out, paths, c.flight)

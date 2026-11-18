@@ -18,8 +18,35 @@ internal sealed interface PacingRule {
 /** Whether a server accepts a resuming client's 0-RTT. A client's offer is its own connection's. */
 internal enum class EarlyDataRule { Refused, Accepted }
 
+/**
+ * When a connection writes the ACK quiche owes. Every turn writes at most one: quiche puts an ACK in the first packet a
+ * write sends after an ack-eliciting packet arrived, and a turn writes once, after every datagram of its pass was read.
+ */
 internal sealed interface AckRule {
+    /** Every turn that received writes its ACK. */
     data object Immediate : AckRule
+
+    /**
+     * A turn that handed received data to the application holds its ACK for the reply, at most [maxNanos] and at most
+     * the smoothed RTT divided by [rttShare] ([AckHold]).
+     */
+    class HoldForReply(
+        val maxNanos: Long,
+        val rttShare: Int,
+    ) : AckRule
+
+    companion object {
+        /**
+         * The max_ack_delay every connection advertises: quiche's default, as no config sets it. A hold's deadline may
+         * be served one wait step late, so a hold lasts at most this less [waits].
+         */
+        const val ADVERTISED_MAX_ACK_DELAY_NANOS = 25_000_000L
+
+        /** A hold lasts at most this share of the smoothed RTT: the peer's samples move by little. */
+        const val RTT_SHARE = 4
+
+        fun holdForReply(waits: WaitResolution): AckRule = HoldForReply(ADVERTISED_MAX_ACK_DELAY_NANOS - waits.nanos, RTT_SHARE)
+    }
 }
 
 /** Whether a connection carries RFC 9221 datagrams. */
@@ -77,7 +104,7 @@ internal class SlotRules(
             earlyData: EarlyDataRule = EarlyDataRule.Refused,
         ) = SlotRules(
             PacingRule.ByQuiche(allowanceNanos = waits.nanos, limitNanos = 1_000_000_000L),
-            AckRule.Immediate,
+            AckRule.holdForReply(waits),
             handshake,
             close,
             datagrams,

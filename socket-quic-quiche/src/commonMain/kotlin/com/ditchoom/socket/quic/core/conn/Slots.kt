@@ -14,7 +14,13 @@ internal sealed interface Pacing {
 }
 
 internal sealed interface AckCadence {
+    /** Every turn writes the ACK quiche owes. */
     data object Immediate : AckCadence
+
+    /** A turn that handed received data up may hold its ACK for the reply ([AckHold]). */
+    class HoldForReply(
+        val hold: AckHold,
+    ) : AckCadence
 }
 
 internal sealed interface Paths {

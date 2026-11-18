@@ -1077,7 +1077,23 @@ interface QuicheApi {
 
     /** Low 8 bytes of the IPv6 address at [addr] — opaque identity, valid when family == 6. */
     fun sockAddrV6Lo(addr: Long): Long
+
+    /**
+     * The smoothed RTT of the connection's active path in nanoseconds (`quiche_conn_path_stats`' `rtt`), or
+     * [NO_RTT_NANOS] when no path is active. The real backends read it into a per-thread scratch and allocate nothing;
+     * this default, for test doubles, reads [connPathStats]. Same threading contract as [connStats].
+     */
+    fun connActivePathRttNanos(conn: QuicheConn): Long {
+        var index = 0L
+        while (true) {
+            val stats = connPathStats(conn, index++) ?: return NO_RTT_NANOS
+            if (stats.active) return stats.rtt.inWholeNanoseconds
+        }
+    }
 }
+
+/** What [QuicheApi.connActivePathRttNanos] answers when the connection has no active path. */
+const val NO_RTT_NANOS = -1L
 
 /** What [QuicheApi.connTimeoutNanos] answers when quiche has no timer armed. */
 const val NO_TIMEOUT_NANOS = -1L
