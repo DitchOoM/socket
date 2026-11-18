@@ -6,7 +6,12 @@
  */
 #include "../qnet.c"
 
+#include <poll.h>
+#ifdef __linux__
+#include <linux/sock_diag.h>
+#endif
 #include <stdio.h>
+#include <time.h>
 
 static int failures = 0;
 #define CHECK(cond, ...)                                                   \
@@ -21,6 +26,43 @@ static int failures = 0;
 
 #define STRIDE 70016
 #define SLOTS 32
+/* Loopback delivery is not synchronous on every kernel (WSL2 lands a datagram about a millisecond after send), so the
+ * test waits for what it expects to arrive, up to this long, rather than sleeping a fixed time. */
+#define WAIT_MS 1000
+
+static int64_t now_ms(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (int64_t)t.tv_sec * 1000 + t.tv_nsec / 1000000;
+}
+
+/* Waits until what the kernel has queued for `fd` stops growing. A segmented message reaches a receiver in pieces while
+ * the kernel is still delivering it, so a read that starts at the first piece sees the message split; the receive
+ * queue's memory (SO_MEMINFO) holding steady for a few polls means the delivery is over. Without SO_MEMINFO the
+ * caller's own wait for the expected datagrams is all there is. */
+static void wait_queue_settled(int fd) {
+#ifdef SO_MEMINFO
+    uint32_t mem[SK_MEMINFO_VARS];
+    uint32_t last = 0;
+    int stable = 0;
+    int64_t deadline = now_ms() + WAIT_MS;
+    while (stable < 4 && now_ms() < deadline) {
+        socklen_t len = sizeof mem;
+        if (getsockopt(fd, SOL_SOCKET, SO_MEMINFO, mem, &len) != 0) return;
+        stable = mem[SK_MEMINFO_RMEM_ALLOC] != 0 && mem[SK_MEMINFO_RMEM_ALLOC] == last ? stable + 1 : 0;
+        last = mem[SK_MEMINFO_RMEM_ALLOC];
+        usleep(1000);
+    }
+#else
+    (void)fd;
+#endif
+}
+
+/* Blocks until `fd` has `events` or WAIT_MS passes; returns whether it did. */
+static int wait_fd(int fd, short events) {
+    struct pollfd p = {fd, events, 0};
+    return poll(&p, 1, WAIT_MS) > 0 && (p.revents & events);
+}
 
 static uint8_t spec_a[QN_SPEC_BYTES], spec_b[QN_SPEC_BYTES];
 static uint8_t send_records[QN_SEND_RECORD * SLOTS];
@@ -62,7 +104,8 @@ static void fill(int32_t i, int32_t length) {
 static int32_t receive_all(int poller_fd_unused, int fd, int mode, int32_t expected, int32_t *lengths) {
     (void)poller_fd_unused;
     int32_t got = 0;
-    for (int attempt = 0; attempt < 200 && got < expected; attempt++) {
+    int64_t deadline = now_ms() + WAIT_MS;
+    while (got < expected && now_ms() < deadline) {
         for (int i = 0; i < 64; i++) {
             int64_t a = (int64_t)(uintptr_t)recv_bufs[i];
             memcpy(recv_records + i * QN_RECV_RECORD, &a, 8);
@@ -202,7 +245,8 @@ static void gro_split(void) {
  * `lengths`. Returns the datagrams read, and the most one call returned in `*widest`. */
 static int32_t coalesced_all(int fd, int32_t slots, int32_t expected, int32_t *lengths, int32_t got,
                              int32_t *widest) {
-    for (int attempt = 0; attempt < 200 && got < expected; attempt++) {
+    int64_t deadline = now_ms() + WAIT_MS;
+    while (got < expected && now_ms() < deadline) {
         for (int i = 0; i < 64; i++) {
             int64_t a = (int64_t)(uintptr_t)recv_bufs[i];
             memcpy(recv_records + i * QN_RECV_RECORD, &a, 8);
@@ -252,7 +296,8 @@ static void gro_round_trip(int family) {
         sent_total += k;
         if (round == 0) {
             /* Too few free slots for the 17 the message holds: nothing is taken, the message stays. */
-            usleep(20000);
+            CHECK(wait_fd(server, POLLIN), "gro: the 17-datagram message never arrived");
+            wait_queue_settled(server);
             int32_t w = 0;
             int32_t before = got;
             got = coalesced_all(server, 8, 1, lengths, got, &w);
@@ -280,9 +325,20 @@ static int32_t send_run(int client, int family, int mode, int32_t k, int32_t seq
         memset(send_base + (size_t)i * STRIDE, 'a' + ((seq + i) % 26), (size_t)length);
         want[at + i] = length | ((int32_t)('a' + ((seq + i) % 26)) << 24);
     }
-    int64_t r = qn_udp_send(client, family, mode, (int64_t)(uintptr_t)send_base, STRIDE, (int64_t)(uintptr_t)send_records,
-                            k, QN_GSO_MAX_SEGMENTS);
-    CHECK((r & 0xffffffff) == k && ((r >> 32) & 0xffff) == 0, "run: sent %lld of %d", (long long)(r & 0xffffffff), k);
+    /* A send buffer still holding undelivered datagrams reports would-block: wait for it to drain and send the rest. */
+    int32_t sent = 0;
+    int64_t deadline = now_ms() + WAIT_MS;
+    int64_t r = 0;
+    while (sent < k) {
+        r = qn_udp_send(client, family, mode, (int64_t)(uintptr_t)(send_base + (size_t)sent * STRIDE), STRIDE,
+                        (int64_t)(uintptr_t)(send_records + (size_t)sent * QN_SEND_RECORD), k - sent, QN_GSO_MAX_SEGMENTS);
+        sent += (int32_t)(r & 0xffffffff);
+        int32_t code = (int32_t)((r >> 32) & 0xffff);
+        if (sent == k) break;
+        if (code != QN_EAGAIN || now_ms() >= deadline) break;
+        wait_fd(client, POLLOUT);
+    }
+    CHECK(sent == k && ((r >> 32) & 0xffff) == 0, "run: sent %d of %d, code %lld", sent, k, (long long)((r >> 32) & 0xffff));
     return at + k;
 }
 
@@ -309,7 +365,6 @@ static void gro_mixed(int family) {
     for (unsigned p = 0; p < sizeof plan / sizeof plan[0]; p++) {
         at = send_run(client, family, plan[p][1], plan[p][0], at, plan[p][2], want, at);
     }
-    usleep(30000);
     got = coalesced_all(server, 64, at, lengths, got, &widest);
     CHECK(got == at, "family %d mixed: received %d of %d", family, got, at);
     for (int32_t i = 0; i < got && i < at; i++)
@@ -320,9 +375,10 @@ static void gro_mixed(int family) {
     qn_close(server);
 }
 
-/* Reads until a call returns nothing; returns the receive syscalls that took. */
-static int64_t drain_calls(int fd, int coalesced, int32_t *datagrams) {
-    int64_t before = qn_udp_recv_syscalls();
+/* Reads until `expected` datagrams have arrived (waiting up to WAIT_MS for stragglers) and a call then returns nothing;
+ * returns the receive calls that delivered something, plus the final empty one. */
+static int64_t drain_calls(int fd, int coalesced, int32_t *datagrams, int32_t expected) {
+    int64_t calls = 1, deadline = now_ms() + WAIT_MS;
     *datagrams = 0;
     for (;;) {
         for (int i = 0; i < 64; i++) {
@@ -332,10 +388,15 @@ static int64_t drain_calls(int fd, int coalesced, int32_t *datagrams) {
         int64_t r = coalesced ? qn_udp_recv_coalesced(fd, (int64_t)(uintptr_t)recv_records, 64, 2048)
                               : qn_udp_recv(fd, QN_IO_MULTI, (int64_t)(uintptr_t)recv_records, 64, 2048);
         int32_t n = (int32_t)(r & 0xffffffff);
-        if (n == 0) break;
-        *datagrams += n;
+        if (n > 0) {
+            calls++;
+            *datagrams += n;
+            continue;
+        }
+        if (*datagrams >= expected || now_ms() >= deadline) break;
+        wait_fd(fd, POLLIN);
     }
-    return qn_udp_recv_syscalls() - before;
+    return calls;
 }
 
 /* Lone datagrams (no GSO from the sender) must cost a GRO socket no more receive syscalls than the per-datagram path. */
@@ -346,9 +407,10 @@ static void gro_lone_syscalls(int family) {
         int client = open_socket(spec_a, family, spec_b + QN_SPEC_LOCAL);
         int32_t want[256];
         for (int round = 0; round < 4; round++) send_run(client, family, QN_IO_ONE, 16, round * 16, 1200, want, 0);
-        usleep(30000);
         int32_t datagrams;
-        calls[coalesced] = drain_calls(server, coalesced, &datagrams);
+        wait_fd(server, POLLIN);
+        wait_queue_settled(server);
+        calls[coalesced] = drain_calls(server, coalesced, &datagrams, 64);
         CHECK(datagrams == 64, "family %d lone (%s): received %d of 64", family, coalesced ? "gro" : "plain", datagrams);
         qn_close(client);
         qn_close(server);
@@ -395,16 +457,16 @@ static void gro_resident(void) {
     int32_t want[256], datagrams, widest = 0, lengths[256];
     for (int round = 0; round < 313; round++) {
         send_run(client, 4, QN_IO_ONE, 32, 0, 1200, want, 0);
-        drain_calls(server, 1, &datagrams);
+        drain_calls(server, 1, &datagrams, 32);
         CHECK(datagrams == 32, "lone round %d: %d of 32", round, datagrams);
     }
     int64_t b = resident_pages(scratch, QN_GRO_SCRATCH_BYTES);
     long rss_b = process_rss_kb();
     for (int g = 0; g < 4; g++) send_run(client, 4, QN_IO_SEGMENT, 17, 0, 500, want, 0);
-    usleep(30000);
-    int32_t got = coalesced_all(server, 64, 1, lengths, 0, &widest);
+    int32_t got = coalesced_all(server, 64, 68, lengths, 0, &widest);
     int32_t more;
-    drain_calls(server, 1, &more);
+    drain_calls(server, 1, &more, 0);
+    CHECK(got + more == 68, "coalesced burst delivered %d of 68 datagrams", got + more);
     int64_t c = resident_pages(scratch, QN_GRO_SCRATCH_BYTES);
     long rss_c = process_rss_kb();
     printf("scratch %lld pages virtual: resident %lld after open, %lld after 10016 lone datagrams, %lld after a coalesced burst\n",
@@ -417,8 +479,9 @@ static void gro_resident(void) {
     /* A message of 32 x 1200 bytes passes the release bound: once delivered, its pages (and the lone datagram's page
      * before it) are given back. */
     send_run(client, 4, QN_IO_SEGMENT, 32, 0, 1200, want, 0);
-    usleep(30000);
-    drain_calls(server, 1, &datagrams);
+    wait_fd(server, POLLIN);
+    wait_queue_settled(server);
+    drain_calls(server, 1, &datagrams, 32);
     CHECK(datagrams == 32, "big message delivered %d of 32 datagrams", datagrams);
     int64_t first = resident_pages(scratch + QN_GRO_HEADER_BYTES, QN_GRO_MESSAGE_BYTES);
     printf("a delivered 38400-byte message left %lld of its 16 pages resident\n", (long long)first);
