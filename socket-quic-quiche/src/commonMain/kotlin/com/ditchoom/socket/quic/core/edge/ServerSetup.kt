@@ -81,11 +81,47 @@ internal class ServerSetup(
     private val buffers: SocketBuffers,
     private val clock: LoopClock,
     private val driver: LoopDriver,
-    private val memory: EdgeMemory,
     private val stack: NetStack,
     private val batching: UdpBatching,
 ) {
+    /** The memory this server holds from [factory]: freed by the setup's [SetupOwner] until the loop is built, then by the loop. */
+    private val memory = EdgeMemory(factory)
+
     fun start(): CoreServer {
+        var owner: SetupOwner = SetupOwner.Allocating(memory)
+        try {
+            return opened { owner = it }.also { owner = SetupOwner.Served }
+        } finally {
+            when (val failed = owner) {
+                is SetupOwner.Allocating -> failed.memory.freeAll()
+                is SetupOwner.Polled -> {
+                    failed.poller.close()
+                    failed.memory.freeAll()
+                }
+                is SetupOwner.Configured -> {
+                    failed.poller.close()
+                    api.configFree(failed.config)
+                    failed.memory.freeAll()
+                }
+                is SetupOwner.Opened -> {
+                    failed.socket.close()
+                    failed.poller.close()
+                    api.configFree(failed.config)
+                    failed.memory.freeAll()
+                }
+                is SetupOwner.Built -> {
+                    failed.loop.stopHere()
+                    failed.socket.close()
+                }
+                is SetupOwner.Placed -> failed.loop.stopHere()
+                is SetupOwner.Started -> failed.loop.close(Runnable { })
+                is SetupOwner.Served -> Unit
+            }
+        }
+    }
+
+    /** Builds the server, telling [moved] each time what the setup opened passes to a new owner. */
+    private fun opened(moved: (SetupOwner) -> Unit): CoreServer {
         val limits = BatchLimits(maxDatagrams = MAX_BATCH, maxDatagramSize = MAX_DATAGRAM)
         val callerLimits = BatchLimits(maxDatagrams = CALLER_BATCH, maxDatagramSize = MAX_DATAGRAM)
         val send = SendBatch(memory.native(limits.maxDatagrams * limits.maxDatagramSize), limits)
@@ -122,46 +158,15 @@ internal class ServerSetup(
                             raise(Raised.SocketRefused(NativeSocketRefusal(opened.refusal)), QuicCloseCircumstance.HandshakeFailed)
                     }
             }
-        val quicheConfig = configured()
-        var owner: SetupOwner = SetupOwner.Setup
-        try {
-            val socket = openStackSocket(loopIo, memory, bind, SocketPeer.Unconnected, buffers, batching, limits.maxDatagrams)
-            val sends = listOf(send.storage) + List(CALLER_LANES) { lanes[it].batch.storage }
-            val socketIo = socket.ioOf(memory, sends, limits.maxDatagrams, MAX_PEERS_CACHED) { }
-            owner = SetupOwner.Opened(socketIo.io)
-            return serve(
-                socket,
-                socketIo,
-                poller,
-                quicheConfig,
-                limits,
-                send,
-                lanes,
-                receiveBuffers,
-                backlog,
-                scratch,
-                moved = { owner = it },
-            ).also { owner = SetupOwner.Served }
-        } finally {
-            when (val failed = owner) {
-                is SetupOwner.Setup -> {
-                    poller.close()
-                    api.configFree(quicheConfig)
-                }
-                is SetupOwner.Opened -> {
-                    failed.socket.close()
-                    poller.close()
-                    api.configFree(quicheConfig)
-                }
-                is SetupOwner.Built -> {
-                    failed.loop.stopHere()
-                    failed.socket.close()
-                }
-                is SetupOwner.Placed -> failed.loop.stopHere()
-                is SetupOwner.Started -> failed.loop.close(Runnable { })
-                is SetupOwner.Served -> Unit
-            }
-        }
+        moved(SetupOwner.Polled(memory, poller))
+        val quicheConfig = api.configNew(QUIC_V1)
+        moved(SetupOwner.Configured(memory, poller, quicheConfig))
+        configure(quicheConfig)
+        val socket = openStackSocket(loopIo, memory, bind, SocketPeer.Unconnected, buffers, batching, limits.maxDatagrams)
+        val sends = listOf(send.storage) + List(CALLER_LANES) { lanes[it].batch.storage }
+        val socketIo = socket.ioOf(memory, sends, limits.maxDatagrams, MAX_PEERS_CACHED) { }
+        moved(SetupOwner.Opened(memory, poller, quicheConfig, socketIo.io))
+        return serve(socket, socketIo, poller, quicheConfig, limits, send, lanes, receiveBuffers, backlog, scratch, moved)
     }
 
     private fun serve(
@@ -265,16 +270,14 @@ internal class ServerSetup(
     /** The handshake rule every connection of this server is built with. */
     private val handshake = serverHandshakeRule(options)
 
-    /** A server config with the certificate, ALPN, options, handshake rule and session ticket keys applied. */
-    private fun configured(): QuicheConfig {
-        val quicheConfig = api.configNew(QUIC_V1)
+    /** Applies the certificate, ALPN, options, handshake rule and session ticket keys to [quicheConfig]. */
+    private fun configure(quicheConfig: QuicheConfig) {
         nullTerminated(tls.certChainPath, factory).use { api.configLoadCertChainFromPemFile(quicheConfig, addressOf(it)) }
         nullTerminated(tls.privKeyPath, factory).use { api.configLoadPrivKeyFromPemFile(quicheConfig, addressOf(it)) }
         encodeAlpnList(options.alpnProtocols, factory).use { api.configSetApplicationProtos(quicheConfig, addressOf(it), it.remaining()) }
         applyQuicOptions(options, ApiQuicConfigCalls(api, quicheConfig), QuicRole.Server)
         handshake.applyTo(api, quicheConfig)
         api.applySessionTicketKeys(quicheConfig, tls.sessionTicketKeys, factory)
-        return quicheConfig
     }
 
     private companion object {

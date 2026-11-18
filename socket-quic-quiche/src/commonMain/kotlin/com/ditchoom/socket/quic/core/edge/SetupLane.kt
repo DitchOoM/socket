@@ -102,11 +102,21 @@ internal class StartedClient(
     fun abandon() = client.connection.closeNow(QuicError.NoError)
 }
 
-/** How far a connect's setup got: what a failed or cancelled connect has to end. */
+/**
+ * How far a connect's setup got, and so who ends what it made if it fails or is cancelled. Its memory has one owner at a
+ * time: the connect until the connection starts, then the connection, whose release frees it on its loop.
+ */
 internal sealed interface ClientSetup {
-    data object Unstarted : ClientSetup
+    /** The connect frees [memory]. */
+    class Unstarted(
+        val memory: EdgeMemory,
+    ) : ClientSetup
 
+    /** The connect only ends the connection; the connection frees the memory once its loop released it. */
     class Started(
         val started: StartedClient,
     ) : ClientSetup
+
+    /** The connect returned the connection to its caller. */
+    data object Established : ClientSetup
 }

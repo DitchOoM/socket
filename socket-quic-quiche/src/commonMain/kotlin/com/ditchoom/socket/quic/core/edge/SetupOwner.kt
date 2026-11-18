@@ -1,22 +1,43 @@
 package com.ditchoom.socket.quic.core.edge
 
+import com.ditchoom.socket.quic.QuicheConfig
 import com.ditchoom.socket.quic.core.loop.Loop
+import com.ditchoom.socket.quic.core.ready.Poller
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 
 /**
  * Who releases what a server's setup opened, at each step of it. A setup that fails releases through its owner at that
- * step, so the poller, the quiche config and the socket each have exactly one releaser, whatever step failed.
+ * step, so the memory, the poller, the quiche config and the socket each have exactly one releaser, whatever step
+ * failed. Until the loop is built the setup frees the memory; from then on only the loop's stop does.
  */
 internal sealed interface SetupOwner {
-    /** The setup frees the poller and the quiche config. */
-    data object Setup : SetupOwner
+    /** The setup frees the memory. */
+    class Allocating(
+        val memory: EdgeMemory,
+    ) : SetupOwner
+
+    /** The setup also closes the poller. */
+    class Polled(
+        val memory: EdgeMemory,
+        val poller: Poller,
+    ) : SetupOwner
+
+    /** The setup also frees the quiche config. */
+    class Configured(
+        val memory: EdgeMemory,
+        val poller: Poller,
+        val config: QuicheConfig,
+    ) : SetupOwner
 
     /** The setup also closes the socket it opened. */
     class Opened(
+        val memory: EdgeMemory,
+        val poller: Poller,
+        val config: QuicheConfig,
         val socket: DatagramBatchIo,
     ) : SetupOwner
 
-    /** The loop owns the poller and its memory hold the config; the setup still closes the socket. */
+    /** The loop owns the poller, and its memory hold the memory and the config; the setup still closes the socket. */
     class Built(
         val loop: Loop,
         val socket: DatagramBatchIo,
