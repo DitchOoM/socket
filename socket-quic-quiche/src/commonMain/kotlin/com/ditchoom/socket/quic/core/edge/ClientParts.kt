@@ -109,7 +109,6 @@ internal class ClientParts(
         Runnable {
             conn.release(
                 Runnable {
-                    w.api.configFree(w.config)
                     peerSockAddr.free()
                     localSockAddr.free()
                     w.memory.freeAll()
