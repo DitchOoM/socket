@@ -219,6 +219,7 @@ internal class ServerSetup(
                     datagramRuleOf(options),
                     keepAliveRuleOf(options),
                     earlyDataRuleOf(options),
+                    config.ack,
                 ),
                 factory,
                 config.flight,

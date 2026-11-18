@@ -186,6 +186,33 @@ class PtoCeilingPastConfirmationTests {
             }
         }
 
+    /**
+     * The server holds its acknowledgement of the request as long as a hold may last, waiting for a reply that does not
+     * come: the held ACK is still the first RTT sample in the application space and releases the ceiling.
+     */
+    @Test
+    fun aHeldAcknowledgementStillReleasesTheCeiling() =
+        runTest {
+            val client = confirmedAfterAnInflatedSample()
+            try {
+                val pair = client.pair
+                assertEquals(7, pair.streamSend(pair.client, QuicStreamId(0), "request", fin = true))
+                val request = pair.sends(pair.client)
+                pair.elapse(ONE_WAY) { if (it == pair.client) client.followExpiry() }
+                pair.deliver(request, pair.server)
+                pair.elapse(LONGEST_HOLD) { if (it == pair.client) client.followExpiry() }
+                val held = pair.sends(pair.server)
+                assertTrue(held.isNotEmpty(), "the server acknowledged the request at the end of its hold")
+                pair.elapse(ONE_WAY) { if (it == pair.client) client.followExpiry() }
+                assertTrue(env.api.connHandshakePtoCeilingHeld(pair.client), "held until the acknowledgement arrives")
+                pair.deliver(held, pair.client)
+                client.step()
+                assertEquals(false, env.api.connHandshakePtoCeilingHeld(pair.client), "released by the held acknowledgement")
+            } finally {
+                client.pair.close()
+            }
+        }
+
     private fun shown(ceiling: PtoCeiling): String =
         when (ceiling) {
             is PtoCeiling.At -> ceiling.nanos.nanoseconds.toString()
@@ -198,6 +225,9 @@ class PtoCeilingPastConfirmationTests {
         val HELD = 4.seconds
         val WAIT = 30.seconds
         val MAX_ACK_DELAY = 25.milliseconds
+
+        /** The longest an ACK hold lasts: the advertised max_ack_delay less the loop's one-millisecond wait step. */
+        val LONGEST_HOLD = 24.milliseconds
         const val MAX_ROUNDS = 64
     }
 }

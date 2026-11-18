@@ -1406,6 +1406,17 @@ internal object CinteropQuicheApi : QuicheApi, QuicheRandomPin {
 
     override fun sockAddrV6Lo(addr: Long): Long = beLong(addr, 16)
 
+    override fun connActivePathRttNanos(conn: QuicheConn): Long =
+        memScoped {
+            val out = alloc<quiche_path_stats>()
+            var index = 0L
+            while (quiche_conn_path_stats(conn.handle.toCPointer()!!, index.convert(), out.ptr) >= 0) {
+                if (out.active) return@memScoped out.rtt.toLong()
+                index++
+            }
+            NO_RTT_NANOS
+        }
+
     private const val QUICHE_ERR_DONE = -1
 
     private const val QUICHE_ERR_STREAM_RESET = -16

@@ -102,6 +102,10 @@ internal class DatagramBox(
     private var made = 0
     private val room = AtomicInt(NO_DATAGRAM_ROOM)
 
+    /** Monotonic: datagrams quiche took to send. */
+    var output = 0L
+        private set
+
     /** Any thread: the bytes one datagram may carry, as of the connection's last turn; 0 when none can be sent. */
     @Published
     fun maxBytes(): Int = maxOf(room.load(), 0)
@@ -117,7 +121,10 @@ internal class DatagramBox(
         if (length > max) return DatagramSend.TooLarge(max)
         val sent = q.api.connDgramSend(q.handle, if (length > 0) address else 0L, length)
         return when {
-            sent >= 0 -> DatagramSend.Sent
+            sent >= 0 -> {
+                output++
+                DatagramSend.Sent
+            }
             sent == QUICHE_ERR_DONE -> DatagramSend.QueueFull
             sent == QUICHE_ERR_INVALID_STATE -> DatagramSend.NotNegotiated
             sent == QuicheSendStop.QUICHE_ERR_BUFFER_TOO_SHORT -> DatagramSend.TooLarge(max)

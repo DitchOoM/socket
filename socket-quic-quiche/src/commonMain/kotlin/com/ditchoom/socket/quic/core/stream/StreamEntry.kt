@@ -4,6 +4,9 @@ import com.ditchoom.socket.quic.QuicStreamId
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.observe.Confined
 
+/** Whether a write or an open waits for room the peer gives. */
+internal enum class Backlog { None, Waiting }
+
 /** Where one direction of a stream stands: still open, or ended, and how. The first ending stays. */
 internal sealed interface Side {
     data object Open : Side

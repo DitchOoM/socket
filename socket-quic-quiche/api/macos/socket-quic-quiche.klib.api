@@ -144,6 +144,7 @@ abstract interface com.ditchoom.socket.quic/QuicheApi { // com.ditchoom.socket.q
     abstract fun streamIterNext(com.ditchoom.socket.quic/QuicheStreamIter): com.ditchoom.socket.quic/QuicStreamId? // com.ditchoom.socket.quic/QuicheApi.streamIterNext|streamIterNext(com.ditchoom.socket.quic.QuicheStreamIter){}[0]
     open fun clearThreadVirtualTime() // com.ditchoom.socket.quic/QuicheApi.clearThreadVirtualTime|clearThreadVirtualTime(){}[0]
     open fun configLogKeys(com.ditchoom.socket.quic/QuicheConfig) // com.ditchoom.socket.quic/QuicheApi.configLogKeys|configLogKeys(com.ditchoom.socket.quic.QuicheConfig){}[0]
+    open fun connActivePathRttNanos(com.ditchoom.socket.quic/QuicheConn): kotlin/Long // com.ditchoom.socket.quic/QuicheApi.connActivePathRttNanos|connActivePathRttNanos(com.ditchoom.socket.quic.QuicheConn){}[0]
     open fun connActiveScids(com.ditchoom.socket.quic/QuicheConn): kotlin/Int // com.ditchoom.socket.quic/QuicheApi.connActiveScids|connActiveScids(com.ditchoom.socket.quic.QuicheConn){}[0]
     open fun connApplicationProto(com.ditchoom.socket.quic/QuicheConn, kotlin/Long, kotlin/Int): kotlin/Int // com.ditchoom.socket.quic/QuicheApi.connApplicationProto|connApplicationProto(com.ditchoom.socket.quic.QuicheConn;kotlin.Long;kotlin.Int){}[0]
     open fun connDgramMaxWritableBytes(com.ditchoom.socket.quic/QuicheConn): kotlin/Int // com.ditchoom.socket.quic/QuicheApi.connDgramMaxWritableBytes|connDgramMaxWritableBytes(com.ditchoom.socket.quic.QuicheConn){}[0]
@@ -1548,6 +1549,8 @@ final object com.ditchoom.socket.quic/RealDriverClock : com.ditchoom.socket.quic
 
 final const val com.ditchoom.socket.quic/NO_DATAGRAM_ROOM // com.ditchoom.socket.quic/NO_DATAGRAM_ROOM|{}NO_DATAGRAM_ROOM[0]
     final fun <get-NO_DATAGRAM_ROOM>(): kotlin/Int // com.ditchoom.socket.quic/NO_DATAGRAM_ROOM.<get-NO_DATAGRAM_ROOM>|<get-NO_DATAGRAM_ROOM>(){}[0]
+final const val com.ditchoom.socket.quic/NO_RTT_NANOS // com.ditchoom.socket.quic/NO_RTT_NANOS|{}NO_RTT_NANOS[0]
+    final fun <get-NO_RTT_NANOS>(): kotlin/Long // com.ditchoom.socket.quic/NO_RTT_NANOS.<get-NO_RTT_NANOS>|<get-NO_RTT_NANOS>(){}[0]
 final const val com.ditchoom.socket.quic/NO_TIMEOUT_NANOS // com.ditchoom.socket.quic/NO_TIMEOUT_NANOS|{}NO_TIMEOUT_NANOS[0]
     final fun <get-NO_TIMEOUT_NANOS>(): kotlin/Long // com.ditchoom.socket.quic/NO_TIMEOUT_NANOS.<get-NO_TIMEOUT_NANOS>|<get-NO_TIMEOUT_NANOS>(){}[0]
 final const val com.ditchoom.socket.quic/RETIRED_SCID_SLOT_BYTES // com.ditchoom.socket.quic/RETIRED_SCID_SLOT_BYTES|{}RETIRED_SCID_SLOT_BYTES[0]

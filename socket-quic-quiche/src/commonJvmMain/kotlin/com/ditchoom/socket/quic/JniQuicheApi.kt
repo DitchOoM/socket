@@ -870,11 +870,22 @@ object JniQuicheApi : QuicheApi {
 
     override fun sockAddrV6Lo(addr: Long): Long = nSockAddrV6Lo(addr)
 
+    override fun connActivePathRttNanos(conn: QuicheConn): Long {
+        val out = pathStatsScratch.get()
+        var index = 0L
+        while (nConnPathStats(conn.handle, index++, out) >= 0) {
+            if (out[PATH_STATS_ACTIVE_SLOT] != 0L) return out[PATH_STATS_RTT_SLOT]
+        }
+        return NO_RTT_NANOS
+    }
+
     private const val QUICHE_ERR_DONE = -1L
     private const val CONN_STATS_SLOTS = 13 // quiche_jni.c nConnStats slot count
     private const val CONN_STATS_LOST_SLOT = 2
     private const val CONN_STATS_RETRANS_SLOT = 4
     private const val PATH_STATS_SLOTS = 18 // quiche_jni.c nConnPathStats slot count
+    private const val PATH_STATS_ACTIVE_SLOT = 1
+    private const val PATH_STATS_RTT_SLOT = 7
 
     // --- JNI externals (raw Long — JNI doesn't understand inline classes) ---
     @JvmStatic private external fun nConfigNew(version: Int): Long

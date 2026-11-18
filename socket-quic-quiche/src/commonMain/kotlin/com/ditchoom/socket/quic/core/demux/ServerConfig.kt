@@ -1,5 +1,6 @@
 package com.ditchoom.socket.quic.core.demux
 
+import com.ditchoom.socket.quic.core.conn.AckRule
 import com.ditchoom.socket.quic.core.conn.FlightSize
 import com.ditchoom.socket.quic.core.conn.LoopMemory
 import kotlin.time.Duration
@@ -61,4 +62,6 @@ internal class ServerConfig(
     val flight: FlightSize = FlightSize(records = 256),
     /** The payload arena every connection's flight recording on the server's loop shares. */
     val flightArenaBytes: Int = LoopMemory.ARENA_BYTES,
+    /** When each accepted connection writes the ACK it owes. */
+    val ack: AckRule = AckRule.UntilPassEnds,
 )

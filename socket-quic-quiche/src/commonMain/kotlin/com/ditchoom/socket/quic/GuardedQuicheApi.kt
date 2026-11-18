@@ -552,4 +552,9 @@ internal class GuardedQuicheApi(
         guard.assertOnLoop(LoopSite.Quiche)
         return delegate.sendInfoFromAddrLen(info)
     }
+
+    override fun connActivePathRttNanos(conn: QuicheConn): Long {
+        guard.assertOnLoop(LoopSite.Quiche)
+        return delegate.connActivePathRttNanos(conn)
+    }
 }

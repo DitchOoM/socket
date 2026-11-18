@@ -22,6 +22,7 @@ import com.ditchoom.socket.quic.clientAlpnOffer
 import com.ditchoom.socket.quic.core.conn.FlightArena
 import com.ditchoom.socket.quic.core.conn.LoopMemory
 import com.ditchoom.socket.quic.core.conn.Offer
+import com.ditchoom.socket.quic.core.demux.ServerConfig
 import com.ditchoom.socket.quic.core.edge.ClientParts
 import com.ditchoom.socket.quic.core.edge.ClientWiring
 import com.ditchoom.socket.quic.core.edge.CoreConnection
@@ -102,6 +103,7 @@ internal suspend fun replayServer(
     io: DatagramBatchIo,
     clock: VirtualClock,
     tls: QuicTlsConfig = coreTlsConfig(),
+    config: ServerConfig = ServerConfig(),
 ): CoreServer =
     coreServe(
         bind = InetSocketAddress(LOCALHOST, 0).toPathKey(),
@@ -114,6 +116,7 @@ internal suspend fun replayServer(
         wrapIo = { io },
         clock = clock,
         driver = LoopDriver.Caller,
+        config = config,
         // Like the replay's client, no discovery: its probe on a moved path delays the first echo past the walks' bounds.
         datagramSize = DatagramSize.Configured,
     )
