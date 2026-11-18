@@ -125,30 +125,22 @@ internal suspend fun coreServe(
     datagramSize: DatagramSize = DatagramSize.Probed,
 ): CoreServer =
     withContext(setupLane) {
-        val memory = EdgeMemory(factory)
-        var built = false
-        try {
-            ServerSetup(
-                bind,
-                tls,
-                options.sizedBy(datagramSize),
-                factory,
-                api,
-                readPolicy,
-                writePolicy,
-                config,
-                wrapIo,
-                buffers,
-                clock,
-                driver,
-                memory,
-                stack,
-                batching,
-            ).start()
-                .also { built = true }
-        } finally {
-            if (!built) memory.freeAll()
-        }
+        ServerSetup(
+            bind,
+            tls,
+            options.sizedBy(datagramSize),
+            factory,
+            api,
+            readPolicy,
+            writePolicy,
+            config,
+            wrapIo,
+            buffers,
+            clock,
+            driver,
+            stack,
+            batching,
+        ).start()
     }
 
 /** The name of the server loop's thread. */

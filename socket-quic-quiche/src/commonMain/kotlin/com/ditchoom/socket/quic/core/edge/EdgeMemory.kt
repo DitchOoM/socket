@@ -9,7 +9,8 @@ import com.ditchoom.socket.quic.core.udp.NativeBytes
 /**
  * Every piece of native memory one client connection, or one server, holds from the caller's factory, freed together
  * once it is released. A factory whose memory cannot carry datagrams fails the connect or the serve, typed, before any
- * socket exists.
+ * socket exists. Not thread-safe: it has one owner at a time, the setup until its loop takes it over (see [ClientSetup]
+ * and [SetupOwner]), and only that owner calls [freeAll].
  */
 internal class EdgeMemory(
     private val factory: BufferFactory,

@@ -23,13 +23,25 @@ import java.net.InetSocketAddress
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * A serve that fails partway leaves nothing behind and frees nothing twice: whatever it opened (the poller, the quiche
- * config, the socket) has exactly one releaser, before the loop is built and after.
+ * A serve that fails partway leaves nothing behind and frees nothing twice: whatever it opened (its memory, the poller,
+ * the quiche config, the socket) has exactly one releaser, before the loop is built and after.
  */
 class CoreServeFailureTests {
+    @Test
+    fun aServeFailingWhileItConfiguresQuicheReleasesThePollerConfigAndMemoryOnce() {
+        val rig = Rig()
+        rig.failConfiguring = true
+        assertFailsWith<InjectedFailure> { rig.serve(wrapIo = { it }, clock = MonotonicClock) }
+        assertEquals(1, rig.pollerCloses, "the poller is closed once")
+        assertEquals(1, rig.configFrees, "the quiche config is freed once")
+        assertEquals(0, rig.fdCloses, "no socket was opened")
+        rig.assertMemoryFreedOnce()
+    }
+
     @Test
     fun aServeFailingBeforeItsLoopIsBuiltReleasesThePollerConfigAndSocketOnce() {
         val rig = Rig()
@@ -62,6 +74,8 @@ class CoreServeFailureTests {
         var configFrees = 0
         var fdCloses = 0
         var ioCloses = 0
+        var failConfiguring = false
+        val factory = FreeCountingFactory(BufferFactory.Default)
 
         init {
             assumeNativeStack()
@@ -87,6 +101,12 @@ class CoreServeFailureTests {
                     configFrees++
                     api.configFree(config)
                 }
+
+                override fun configSetApplicationProtos(
+                    config: QuicheConfig,
+                    protosAddr: Long,
+                    protosLen: Int,
+                ): Int = if (failConfiguring) throw InjectedFailure() else api.configSetApplicationProtos(config, protosAddr, protosLen)
             }
 
         fun countingIo(inner: DatagramBatchIo): DatagramBatchIo =
@@ -105,7 +125,7 @@ class CoreServeFailureTests {
                 bind = InetSocketAddress("127.0.0.1", 0).toPathKey(),
                 tls = coreTlsConfig(),
                 options = options(),
-                factory = BufferFactory.Default,
+                factory = factory,
                 api = countingApi,
                 readPolicy = ReadPolicy.Bounded(10.seconds),
                 writePolicy = WritePolicy.Bounded(10.seconds),
@@ -120,6 +140,14 @@ class CoreServeFailureTests {
             assertEquals(1, pollerCloses, "the poller is closed once")
             assertEquals(1, configFrees, "the quiche config is freed once")
             assertEquals(1, fdCloses, "the socket's descriptor is closed once")
+            assertMemoryFreedOnce()
+        }
+
+        fun assertMemoryFreedOnce() {
+            val buffers = factory.edgeBuffers()
+            assertTrue(buffers.isNotEmpty(), "the serve took its memory through the counting factory")
+            val notOnce = buffers.filter { it.frees.get() != 1 }.map { it.capacity to it.frees.get() }
+            assertEquals(emptyList(), notOnce, "server buffers not freed exactly once, as (capacity, frees)")
         }
 
         private fun options() = QuicOptions(alpnProtocols = listOf("test"), verifyPeer = false, idleTimeout = 30.seconds)

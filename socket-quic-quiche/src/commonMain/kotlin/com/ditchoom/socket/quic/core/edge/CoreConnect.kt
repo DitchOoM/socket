@@ -75,11 +75,10 @@ internal suspend fun coreConnect(
     tokens: ClientTokens = ClientTokens.NotKept,
 ): CoreClient {
     val peerHost = peerHostFor(host)
-    val memory = EdgeMemory(factory)
+    val unstarted = ClientSetup.Unstarted(EdgeMemory(factory))
     val sized = options.sizedBy(datagramSize)
     // Read once the lane is left: a caller cancelled meanwhile never sees the started client, but must end it.
-    var setup: ClientSetup = ClientSetup.Unstarted
-    var connected = false
+    var setup: ClientSetup = unstarted
     try {
         val started =
             OnSetupLane.run {
@@ -89,7 +88,7 @@ internal suspend fun coreConnect(
                     port,
                     serverName,
                     sized,
-                    memory,
+                    unstarted.memory,
                     factory,
                     api,
                     timeout,
@@ -103,16 +102,15 @@ internal suspend fun coreConnect(
                     batching,
                     ride,
                     tokens,
-                ).also { setup = ClientSetup.Started(it) }
+                    handedOver = { setup = it },
+                )
             }
-        return started.established(sized.resumption, timeout).also { connected = true }
+        return started.established(sized.resumption, timeout).also { setup = ClientSetup.Established }
     } finally {
-        if (!connected) {
-            when (val reached = setup) {
-                is ClientSetup.Started -> reached.started.abandon()
-                is ClientSetup.Unstarted -> Unit
-            }
-            memory.freeAll()
+        when (val reached = setup) {
+            is ClientSetup.Unstarted -> reached.memory.freeAll()
+            is ClientSetup.Started -> reached.started.abandon()
+            is ClientSetup.Established -> Unit
         }
     }
 }
@@ -138,6 +136,8 @@ private suspend fun OnSetupLane.connectOnLane(
     batching: UdpBatching,
     ride: ClientRide,
     tokens: ClientTokens,
+    /** Told once the connection, not the connect, owns [memory]: right before the connection starts. */
+    handedOver: (ClientSetup.Started) -> Unit,
 ): StartedClient {
     val peer = UdpSocket.resolve(peerHost, port)
     val peerKey = peer.toPathKey()
@@ -229,9 +229,12 @@ private suspend fun OnSetupLane.connectOnLane(
             api.nameQlog(handle, parts.capture, QuicRole.Client, QuicSessionId(scidHex))
             parts to made
         }
+    val started = StartedClient(CoreClient(connection, built.conn, running.loop, SocketReport(socket.granted(), local.port)), offer)
+    // Placing the endpoint hands the memory to the loop, whose release of the connection frees it, whatever happens next.
+    handedOver(ClientSetup.Started(started))
     built.start()
     scope.feedNetwork(monitor, connection, built, { routeSource(route) }, local.hostLiteral(), onMoveOf(options.migration))
-    return StartedClient(CoreClient(connection, built.conn, running.loop, SocketReport(socket.granted(), local.port)), offer)
+    return started
 }
 
 private fun hex(buffer: com.ditchoom.buffer.PlatformBuffer): String {
