@@ -150,6 +150,13 @@ internal class ConnFlight(
             is TraceCapture.On -> traced = write(traced, toTrace)
         }
 
+    /** The newest record, seen at [now]. */
+    fun tail(now: Nanos): FlightTail =
+        when (val held = ring.size) {
+            0 -> FlightTail.Empty
+            else -> FlightTail.Last(ring.kindAt(held - 1), (now.value - ring.nanosAt(held - 1)).nanoseconds, held, ring.dropped)
+        }
+
     /** Writes every record the ring still holds into [sink]. */
     fun dump(sink: TraceSink) {
         write(0L, sink)

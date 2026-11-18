@@ -3,6 +3,7 @@ package com.ditchoom.socket.quic.core.conn
 import com.ditchoom.socket.quic.DeadlineFired
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicError
+import com.ditchoom.socket.quic.QuicStatsRead
 import com.ditchoom.socket.quic.Rearmable
 import com.ditchoom.socket.quic.core.life.CloseHow
 import com.ditchoom.socket.quic.core.life.ConnEnd
@@ -18,13 +19,15 @@ import com.ditchoom.socket.testkit.trace.TraceSink
 
 /** What work running inside a connection may reach. One per connection, handed only to work that is inside. */
 internal class Inside(
-    val streams: StreamTable,
-    private val life: ConnLife,
+    private val c: ConnParts,
     private val clock: LoopClock,
     private val port: LoopPort,
     private val turn: Turn,
-    val datagrams: Datagrams,
 ) {
+    val streams: StreamTable = c.streams
+    private val life: ConnLife = c.life
+    val datagrams: Datagrams = c.slots.datagrams
+
     fun now(): Nanos = clock.now()
 
     fun life(): Life = life.view()
@@ -68,4 +71,20 @@ internal class Inside(
 
     /** Writes the connection's flight recording into [sink], in the trace grammar. */
     fun dump(sink: TraceSink) = turn.dump(sink)
+
+    /** The connection's statistics, read now. */
+    fun stats(): QuicStatsRead = c.slots.paths.stats()
+
+    /** What the connection waits on, seen now. */
+    fun stallView(): StallView {
+        val now = clock.now()
+        return StallView(
+            quiche = c.timer.quicheWait(),
+            deadline = c.timer.armed(now),
+            liveStreams = c.streams.liveStreams(),
+            opensWaiting = c.streams.opensWaiting(),
+            stats = stats(),
+            flight = c.flight.tail(now),
+        )
+    }
 }

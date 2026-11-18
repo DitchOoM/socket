@@ -95,6 +95,15 @@ interface QuicScope : CoroutineScope {
     val sessionTicket: StateFlow<QuicSessionTicketState> get() = NeverIssuedTicket
 
     /**
+     * The connection's counters and active-path estimates, read by the connection and handed back as one immutable
+     * value. Suspends until the connection answers; never blocks a thread, and is safe from a main thread. Nothing is
+     * counted for it while nobody asks.
+     *
+     * Defaults to [QuicStatsRead.NotReported], the answer for a scope with no engine behind it.
+     */
+    suspend fun stats(): QuicStatsRead = QuicStatsRead.NotReported
+
+    /**
      * The [BufferFactory] this connection allocates from — the one passed via
      * [TransportConfig.bufferFactory][com.ditchoom.socket.TransportConfig.bufferFactory] (default
      * [BufferFactory.Default]). Allocate your send buffers and datagrams from here so they share the

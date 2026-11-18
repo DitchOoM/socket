@@ -1,6 +1,7 @@
 package com.ditchoom.socket.quic.core.conn
 
 import com.ditchoom.socket.quic.PathKey
+import com.ditchoom.socket.quic.QuicStatsRead
 import com.ditchoom.socket.quic.QuicheSendInfo
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.RetiredId
@@ -75,6 +76,13 @@ internal fun Paths.read(): PathRead =
     when (this) {
         is Paths.Client -> paths.read()
         is Paths.Server -> paths.read()
+    }
+
+/** The connection's statistics, read now. */
+internal fun Paths.stats(): QuicStatsRead =
+    when (this) {
+        is Paths.Client -> paths.stats()
+        is Paths.Server -> paths.stats()
     }
 
 /** The connection is established: each role hands out, or asks the loop for, the ids a move needs. */

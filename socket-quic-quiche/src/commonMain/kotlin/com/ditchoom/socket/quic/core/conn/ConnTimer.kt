@@ -9,6 +9,7 @@ import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.time.WakeSink
 import com.ditchoom.socket.quic.core.time.WakeState
 import kotlinx.coroutines.Runnable
+import kotlin.time.Duration.Companion.nanoseconds
 
 /** The connection's deadline: made by the first arming, with the action every arming runs, and re-armed in place after. */
 private sealed interface TimerDeadline {
@@ -98,4 +99,20 @@ internal class ConnTimer(
             is TimerDeadline.Unmade -> Unit
         }
     }
+
+    /** What quiche and the loop deadline wait for, seen at [now]. */
+    fun quicheWait(): QuicheWait =
+        when (val wait = q.api.connTimeoutNanos(q.handle)) {
+            NO_TIMEOUT_NANOS -> QuicheWait.Unarmed
+            else -> QuicheWait.Due(wait.nanoseconds)
+        }
+
+    fun armed(now: Nanos): ArmedDeadline =
+        when (val d = deadline) {
+            is TimerDeadline.Unmade -> ArmedDeadline.Unarmed
+            is TimerDeadline.Made ->
+                d.deadline.wanted().fold(none = {
+                    ArmedDeadline.Unarmed
+                }, at = { ArmedDeadline.Due((it - now.value).nanoseconds) })
+        }
 }

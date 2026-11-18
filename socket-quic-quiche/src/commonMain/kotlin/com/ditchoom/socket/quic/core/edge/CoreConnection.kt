@@ -22,6 +22,7 @@ import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicPathState
 import com.ditchoom.socket.quic.QuicResumptionOutcome
 import com.ditchoom.socket.quic.QuicSessionTicketState
+import com.ditchoom.socket.quic.QuicStatsRead
 import com.ditchoom.socket.quic.QuicStreamId
 import com.ditchoom.socket.quic.QuicStreamOrigin
 import com.ditchoom.socket.quic.QuicUnreadAtClose
@@ -35,7 +36,9 @@ import com.ditchoom.socket.quic.core.conn.NetworkWork
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.testkit.trace.TraceSink
 import kotlinx.coroutines.CancellableContinuation
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.MainCoroutineDispatcher
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.Flow
@@ -44,6 +47,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.consumeAsFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.selects.onTimeout
+import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.ContinuationInterceptor
 import kotlin.coroutines.CoroutineContext
@@ -167,6 +172,25 @@ internal class CoreConnection(
         stream: QuicStreamId,
         code: QuicAppErrorCode,
     ) = conn.submit(ResetWork(stream, code), CallerPlace.HandToLoop)
+
+    /** Read inside the connection when asked; nothing is counted for it otherwise. */
+    override suspend fun stats(): QuicStatsRead =
+        suspendCancellableCoroutine { cont ->
+            conn.submit(StatsWork(cont), CallerPlace.HandToLoop)
+        }
+
+    /** What the connection waits on: its published life and counts, and what the thread inside saw, if one answers within [bound]. */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    suspend fun stallReport(bound: Duration): StallReport {
+        val answer = CompletableDeferred<InsideAnswer>()
+        conn.submit(StallWork(answer), CallerPlace.HandToLoop)
+        val inside =
+            select {
+                answer.onAwait { it }
+                onTimeout(bound) { InsideAnswer.NoAnswer(bound) }
+            }
+        return StallReport(conn.life(), conn.counts.seen(), inside)
+    }
 
     /** Writes the connection's flight recording, in the trace grammar, into [sink]. */
     suspend fun dumpFlight(sink: TraceSink): FlightDump =

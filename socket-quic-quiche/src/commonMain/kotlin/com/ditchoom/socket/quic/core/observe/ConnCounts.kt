@@ -50,4 +50,25 @@ internal class ConnCounts {
     fun closeResent() = resent.increment()
 
     fun datagramOverflowed() = overflowed.increment()
+
+    /** Every count, read now. */
+    fun seen(): CountsSeen =
+        CountsSeen(
+            enteredInPlace = enteredInPlace,
+            leftForHolder = leftForHolder,
+            handedToLoop = handedToLoop,
+            datagramsCopied = datagramsCopied,
+            datagramsDropped = datagramsDropped,
+            lateDatagrams = lateDatagrams,
+        )
 }
+
+/** A connection's counts as one read saw them; see [ConnCounts] for what each counts. */
+internal class CountsSeen(
+    val enteredInPlace: Long,
+    val leftForHolder: Long,
+    val handedToLoop: Long,
+    val datagramsCopied: Long,
+    val datagramsDropped: Long,
+    val lateDatagrams: Long,
+)
