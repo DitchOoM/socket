@@ -211,11 +211,14 @@ public final class com/ditchoom/socket/quic/JniQuicheApi : com/ditchoom/socket/q
 	public fun connScidsLeft-ObL0uzk (J)J
 	public fun connSend-SpKmpVg (JJIJ)I
 	public fun connSendAckEliciting-ObL0uzk (J)I
+	public fun connSendNewToken-RTtnfzo (JJI)I
 	public fun connSession-RTtnfzo (JJI)I
 	public fun connSetHandshakePtoCeiling-7TBY80c (JLcom/ditchoom/socket/quic/PtoCeiling;)V
 	public fun connSetKeylogPath-7TBY80c (JLjava/lang/String;)Z
+	public fun connSetPeerAddressValidated-ObL0uzk (J)I
 	public fun connSetQlogPath-rezszl0 (JLjava/lang/String;Ljava/lang/String;Ljava/lang/String;)Z
 	public fun connSetSession-RTtnfzo (JJI)I
+	public fun connSetToken-RTtnfzo (JJI)I
 	public fun connSourceId-RTtnfzo (JJI)I
 	public fun connStats-ObL0uzk (J)Lcom/ditchoom/socket/quic/QuicConnStats;
 	public fun connStreamCapacity-brr6_Qg (JJ)J
@@ -226,6 +229,7 @@ public final class com/ditchoom/socket/quic/JniQuicheApi : com/ditchoom/socket/q
 	public fun connStreamSendStep-bIuTHMA (JJJIZ)J
 	public fun connStreamShutdown-OTKbAR0 (JJIJ)I
 	public fun connStreamWritableNext-ObL0uzk (J)J
+	public fun connTakeNewToken-RTtnfzo (JJI)I
 	public fun connTimeout-DIP9Sao (J)Lkotlin/time/Duration;
 	public fun connTimeoutNanos-ObL0uzk (J)J
 	public fun connTraceId-RTtnfzo (JJI)I
@@ -719,11 +723,14 @@ public abstract interface class com/ditchoom/socket/quic/QuicheApi {
 	public abstract fun connScidsLeft-ObL0uzk (J)J
 	public abstract fun connSend-SpKmpVg (JJIJ)I
 	public abstract fun connSendAckEliciting-ObL0uzk (J)I
+	public abstract fun connSendNewToken-RTtnfzo (JJI)I
 	public abstract fun connSession-RTtnfzo (JJI)I
 	public abstract fun connSetHandshakePtoCeiling-7TBY80c (JLcom/ditchoom/socket/quic/PtoCeiling;)V
 	public fun connSetKeylogPath-7TBY80c (JLjava/lang/String;)Z
+	public abstract fun connSetPeerAddressValidated-ObL0uzk (J)I
 	public fun connSetQlogPath-rezszl0 (JLjava/lang/String;Ljava/lang/String;Ljava/lang/String;)Z
 	public abstract fun connSetSession-RTtnfzo (JJI)I
+	public abstract fun connSetToken-RTtnfzo (JJI)I
 	public fun connSourceId-RTtnfzo (JJI)I
 	public fun connStats-ObL0uzk (J)Lcom/ditchoom/socket/quic/QuicConnStats;
 	public abstract fun connStreamCapacity-brr6_Qg (JJ)J
@@ -734,6 +741,7 @@ public abstract interface class com/ditchoom/socket/quic/QuicheApi {
 	public fun connStreamSendStep-bIuTHMA (JJJIZ)J
 	public abstract fun connStreamShutdown-OTKbAR0 (JJIJ)I
 	public abstract fun connStreamWritableNext-ObL0uzk (J)J
+	public abstract fun connTakeNewToken-RTtnfzo (JJI)I
 	public abstract fun connTimeout-DIP9Sao (J)Lkotlin/time/Duration;
 	public fun connTimeoutNanos-ObL0uzk (J)J
 	public fun connTraceId-RTtnfzo (JJI)I
