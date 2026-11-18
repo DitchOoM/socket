@@ -8,14 +8,19 @@ import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.socket.InternetAccess
 import com.ditchoom.socket.NetworkMonitor
 import com.ditchoom.socket.NetworkState
+import com.ditchoom.socket.quic.NetShim
 import com.ditchoom.socket.quic.NetworkMonitorSource
 import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.QuicheConfig
 import com.ditchoom.socket.quic.QuicheConn
+import com.ditchoom.socket.quic.QuicheRecvInfo
+import com.ditchoom.socket.quic.QuicheSendInfo
 import com.ditchoom.socket.quic.core.loop.LoopSet
+import com.ditchoom.socket.quic.core.ready.NetStack
+import com.ditchoom.socket.quic.core.ready.netStackOfThisRuntime
+import com.ditchoom.socket.quic.core.testing.assumeNativeStack
 import com.ditchoom.socket.quic.core.testing.platformQuicheApi
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
-import com.ditchoom.socket.quic.core.udp.SocketClosed
 import com.ditchoom.socket.quic.network
 import com.ditchoom.socket.quic.trace.QlogTarget
 import com.ditchoom.socket.quic.trace.QuicConnectionCapture
@@ -47,56 +52,59 @@ import kotlin.time.TimeSource
 
 /**
  * A connect that fails before its connection starts releases everything its setup made, each once: the sockaddrs it
- * encoded, quiche's connection, the scope its observers run in, the socket and the memory, whatever step failed.
+ * encoded, quiche's connection and its infos, the scope its observers run in, the socket, the memory and the loop seat
+ * it took, whatever step failed. Each test fails two connects on a set of two loops: a seat not given back sends the
+ * second to a second loop.
  */
 class CoreConnectSetupFailureTests {
-    private val loops = LoopSet(1)
     private val qlogDir: File = Files.createTempDirectory("core-setup-failure").toFile()
+    private val rigs = ArrayList<Rig>()
 
     @AfterTest
     fun cleanUp() {
-        loops.close()
+        rigs.forEach { it.loops.close() }
         qlogDir.deleteRecursively()
     }
 
     @Test
-    fun aConnectQuicheRefusesFreesTheSockaddrsAndArgumentsItEncodedOnce() =
+    fun aConnectQuicheRefusesFreesTheSockaddrsArgumentsSocketAndSeatOnce() =
         runBlocking {
             val rig = Rig()
             rig.api.failConnect = true
-            rig.connectFails()
+            rig.connectFailsTwice()
             assertEquals(0, rig.api.connFrees.get(), "no quiche connection was made")
-            rig.assertBuffersFreedOnce(FreeCountingFactory.Site.SockAddr, FreeCountingFactory.Site.ConnectArgs)
+            rig.assertReleasedOnce(FreeCountingFactory.Site.SockAddr, FreeCountingFactory.Site.ConnectArgs)
         }
 
     @Test
-    fun aConnectFailingWhileItBuildsItsPartsFreesQuichesConnectionAndTheSockaddrsOnce() =
+    fun aConnectFailingWhileItBuildsItsPartsFreesQuichesConnectionSockaddrsSocketAndSeatOnce() =
         runBlocking {
             val rig = Rig()
-            rig.connectFails(wrapIo = { throw InjectedFailure() })
-            assertEquals(1, rig.api.connFrees.get(), "quiche's connection is freed once")
-            rig.assertBuffersFreedOnce(FreeCountingFactory.Site.SockAddr)
+            rig.connectFailsTwice(wrapIo = { throw InjectedFailure() })
+            assertEquals(2, rig.api.connFrees.get(), "each quiche connection is freed once")
+            rig.assertReleasedOnce(FreeCountingFactory.Site.SockAddr)
         }
 
     @Test
-    fun aConnectFailingAfterItsPartsAreBuiltReleasesQuicheTheSockaddrsTheScopeAndTheSocketOnce() =
+    fun aConnectFailingWhileItComposesItsConnectionFreesTheInfosItMadeOnce() =
+        runBlocking {
+            val rig = Rig()
+            rig.api.failAfterInfos = true
+            rig.connectFailsTwice()
+            assertEquals(2, rig.api.connFrees.get(), "each quiche connection is freed once")
+            assertEquals(2, rig.api.recvInfoFrees.get(), "each connection's receive info is freed once")
+            assertEquals(2, rig.api.sendInfoFrees.get(), "each connection's send info is freed once")
+            rig.assertReleasedOnce(FreeCountingFactory.Site.SockAddr)
+        }
+
+    @Test
+    fun aConnectFailingAfterItsPartsAreBuiltReleasesQuicheTheSockaddrsTheScopeTheSocketAndTheSeatOnce() =
         runBlocking {
             val rig = Rig()
             rig.api.failQlog = true
-            val closes = AtomicInteger()
-            rig.connectFails(
-                wrapIo = { io ->
-                    object : DatagramBatchIo by io {
-                        override fun close(): SocketClosed {
-                            closes.incrementAndGet()
-                            return io.close()
-                        }
-                    }
-                },
-            )
-            assertEquals(1, rig.api.connFrees.get(), "quiche's connection is freed once")
-            assertEquals(1, closes.get(), "the socket is closed once")
-            rig.assertBuffersFreedOnce(FreeCountingFactory.Site.SockAddr)
+            rig.connectFailsTwice()
+            assertEquals(2, rig.api.connFrees.get(), "each quiche connection is freed once")
+            rig.assertReleasedOnce(FreeCountingFactory.Site.SockAddr)
             rig.monitor.assertEveryObserverEnded()
         }
 
@@ -108,9 +116,31 @@ class CoreConnectSetupFailureTests {
                 BufferFactory.network(),
                 setOf(FreeCountingFactory.Site.EdgeMemory, FreeCountingFactory.Site.SockAddr, FreeCountingFactory.Site.ConnectArgs),
             )
+        private val shim: NetShim
+        private val socketCloses = AtomicInteger()
+        val loops: LoopSet
+
+        init {
+            assumeNativeStack()
+            val native = netStackOfThisRuntime as NetStack.Native
+            shim = native.shim
+            val counting =
+                object : NetShim by shim {
+                    override fun close(fd: Int): Int {
+                        socketCloses.incrementAndGet()
+                        return shim.close(fd)
+                    }
+                }
+            loops = LoopSet(LOOPS, stack = NetStack.Native(counting, native.waits))
+            rigs.add(this)
+        }
+
+        suspend fun connectFailsTwice(wrapIo: (DatagramBatchIo) -> DatagramBatchIo = { it }) {
+            repeat(ATTEMPTS) { connectFails(wrapIo) }
+        }
 
         /** Connects to a peer that never answers, through [wrapIo], and requires the injected failure. */
-        suspend fun connectFails(wrapIo: (DatagramBatchIo) -> DatagramBatchIo = { it }) {
+        private suspend fun connectFails(wrapIo: (DatagramBatchIo) -> DatagramBatchIo) {
             DatagramSocket(0, InetAddress.getLoopbackAddress()).use { silent ->
                 val capture =
                     QuicTraceCapture(
@@ -150,7 +180,9 @@ class CoreConnectSetupFailureTests {
             }
         }
 
-        fun assertBuffersFreedOnce(vararg expected: FreeCountingFactory.Site) {
+        fun assertReleasedOnce(vararg expected: FreeCountingFactory.Site) {
+            assertEquals(ATTEMPTS, socketCloses.get(), "each connect's socket is closed once")
+            assertEquals(1, loops.countsOfStarted().size, "loops started: a failed connect kept its seat on the first")
             val buffers = factory.edgeBuffers()
             for (site in listOf(*expected, FreeCountingFactory.Site.EdgeMemory)) {
                 assertTrue(buffers.any { it.site == site }, "the connect allocated a $site buffer through the counting factory")
@@ -169,6 +201,34 @@ class CoreConnectSetupFailureTests {
         @Volatile var failConnect = false
 
         @Volatile var failQlog = false
+
+        /** Fails the composition of the connection once quiche's infos for its path were made. */
+        @Volatile var failAfterInfos = false
+
+        @Volatile private var infosMade = false
+
+        val recvInfoFrees = AtomicInteger()
+        val sendInfoFrees = AtomicInteger()
+
+        override fun sendInfoNew(): QuicheSendInfo = inner.sendInfoNew().also { infosMade = failAfterInfos }
+
+        override fun sockAddrFamily(addr: Long): Int =
+            if (infosMade) {
+                infosMade = false
+                throw InjectedFailure()
+            } else {
+                inner.sockAddrFamily(addr)
+            }
+
+        override fun recvInfoFree(info: QuicheRecvInfo) {
+            recvInfoFrees.incrementAndGet()
+            inner.recvInfoFree(info)
+        }
+
+        override fun sendInfoFree(info: QuicheSendInfo) {
+            sendInfoFrees.incrementAndGet()
+            inner.sendInfoFree(info)
+        }
 
         override fun connect(
             serverNameAddr: Long,
@@ -231,6 +291,8 @@ class CoreConnectSetupFailureTests {
     private class InjectedFailure : RuntimeException("injected")
 
     private companion object {
+        const val LOOPS = 2
+        const val ATTEMPTS = 2
         val SETTLE: Duration = 2.seconds
 
         suspend fun within(

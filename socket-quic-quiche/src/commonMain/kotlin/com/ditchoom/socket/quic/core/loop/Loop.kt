@@ -92,6 +92,9 @@ internal class Loop(
         prior: RttPrior,
     ) = port.submit(MoveWork(this, endpoint, bind, prior))
 
+    /** Any thread: a connection its set placed here ended before it joined: the seat it was counted for is given back. */
+    fun seatGivenBack() = connections.decrement()
+
     /** Any thread: the loop stops, ends every connection on it, and then runs [then]. */
     fun close(then: Runnable) = port.submit(StopWork(this, then))
 
