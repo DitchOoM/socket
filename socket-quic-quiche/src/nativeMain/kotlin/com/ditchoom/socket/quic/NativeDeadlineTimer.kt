@@ -162,13 +162,13 @@ internal class NativeDeadlineTimer private constructor(
             passes.incrementAndGet()
             queue.fireDue(now())
             val sleeping =
-                when (val next = queue.nextDue(now())) {
-                    is NextDue.At -> {
-                        if (next.nanos <= now()) return true
-                        TimerThread.Sleeping(next.nanos)
-                    }
-                    NextDue.None -> TimerThread.Idle
-                }
+                queue.nextDue(now()).fold(
+                    none = { TimerThread.Idle },
+                    due = { due ->
+                        if (due <= now()) return true
+                        TimerThread.Sleeping(due)
+                    },
+                )
             if (!thread.compareAndSet(TimerThread.Awake, sleeping)) {
                 // Closed, or woken between the pass and here: another pass.
                 return thread.value !== TimerThread.Closed

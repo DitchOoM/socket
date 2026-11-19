@@ -9,7 +9,7 @@ live/reactive validation work.
 |---|---|---|---|
 | Apple K/N (`:network-monitor`) | `AppleNetworkMonitor` → `NWPathMonitor` | yes | **typed**: `Wifi`/`Cellular`/`Ethernet`/`Vpn`/`Other` |
 | JVM-on-macOS, JDK 21+ | `RouteNetworkMonitor` → `PF_ROUTE` route socket (FFM) | **yes** | `Other(ifName)` only |
-| JVM-on-macOS, JDK 8–20 | `PollingNetworkMonitor` (interface poll) | no | `Other(ifName)` only |
+| JVM-on-macOS, JDK 17–20 | `PollingNetworkMonitor` (interface poll) | no | `Other(ifName)` only |
 
 Key point: **JVM-on-macOS is NOT missing reactivity** — `RouteNetworkMonitor` (jvm21,
 `FfmRoutingSocketNetworkMonitor.kt`) already wakes on `PF_ROUTE` routing messages and

@@ -128,6 +128,9 @@ class MigrationRefusedPeerForbids:
 
 
 NOT_ESTABLISHED = "Failed to establish connection"
+SMALLEST_SERVER_HELLO = 90
+MIN_INITIAL_DATAGRAM = 1200
+AMPLIFICATION_FACTOR = 3
 
 
 def no_fields(kind, fields):
@@ -346,6 +349,113 @@ class SimLostEveryDatagramToThePeer:
         return NotMatched()
 
 
+class PeerIdledOutWhileWeProbed:
+    """The peer's own report says it gave up on requests after its idle timeout, while a
+    connection of ours had answered, heard nothing more and probed at least min_probes times, and the simulator
+    corrupted or dropped at least min_lost of the datagrams we sent to one of the peer's ports: every probe of ours
+    that could have re-sent the answer was lost, and the peer, which sends nothing while it waits, had nothing to
+    prompt us with before it idled out."""
+
+    kind = "peer-idled-out-while-we-probed"
+
+    def __init__(self, fields):
+        if set(fields) != {"min_probes", "min_lost"}:
+            raise ExpectationError(f"{self.kind} takes exactly min_probes and min_lost, got {sorted(fields)}")
+        self.min_probes = positive_int(self.kind, {"min_probes": fields["min_probes"]}, "min_probes")
+        self.min_lost = positive_int(self.kind, {"min_lost": fields["min_lost"]}, "min_lost")
+
+    def match(self, test_evidence, peer_role):
+        unanswered = test_evidence.get("peer_unanswered_requests", 0)
+        probing = [c for c in test_evidence.get("connections", []) if c["fin_sent_streams"] > 0 and c["tx_after_last_rx"] >= self.min_probes]
+        lost = [p for p in test_evidence.get("sim_to_peer", []) if p["datagrams"] - p["delivered"] >= self.min_lost]
+        if unanswered and probing and lost:
+            return Matched(
+                f"peer gave up on {unanswered} request(s) after its idle timeout; "
+                f"{probing[0]['qlog']} probed {probing[0]['tx_after_last_rx']} times; the simulator lost "
+                f"{lost[0]['datagrams'] - lost[0]['delivered']} of {lost[0]['datagrams']} datagrams to port {lost[0]['port']}"
+            )
+        return NotMatched()
+
+
+class PeerServerHelloStoppedShort:
+    """Our client's handshake never completed and ran on until the runner's time limit: the server sent the start of
+    its ServerHello in Initial CRYPTO frames and then stopped short of the smallest TLS 1.3 ServerHello (90 bytes,
+    x25519), so we never had Handshake keys and read none of its Handshake packets, while it kept acknowledging our
+    Initial packets (at least min_acks of them, so our probes never went unanswered) without re-sending the rest."""
+
+    kind = "peer-server-hello-stopped-short"
+
+    def __init__(self, fields):
+        self.min_acks = positive_int(self.kind, fields, "min_acks")
+
+    def match(self, test_evidence, peer_role):
+        for c in test_evidence.get("connections", []):
+            short = 0 < c.get("rx_initial_crypto_end", 0) < SMALLEST_SERVER_HELLO
+            unread = c["rx_handshake_crypto"] == 0 and c["rx_handshake_acks"] == 0
+            if short and unread and not c["local_closes"] and "close_reason" not in c and c["rx_initial_acks"] >= self.min_acks:
+                return Matched(
+                    f"{c['qlog']}: the ServerHello stopped at byte {c['rx_initial_crypto_end']}; "
+                    f"{c['rx_initial_acks']} Initial acknowledgements, no close"
+                )
+        return NotMatched()
+
+
+class PeerNeverAckedEarlyRequest:
+    """Our client sent its request before the server's HANDSHAKE_DONE arrived, and in at least min_copies copies the
+    server never acknowledged it, then fell silent for at least silence_s seconds with it still in flight: the
+    server did not keep the 1-RTT packets that arrived before its handshake completed (RFC 9001 §5.7 lets it buffer
+    them), and none of our retransmissions reached it before it idled out."""
+
+    kind = "peer-never-acked-early-request"
+
+    def __init__(self, fields):
+        if set(fields) != {"min_copies", "silence_s"}:
+            raise ExpectationError(f"{self.kind} takes exactly min_copies and silence_s, got {sorted(fields)}")
+        self.min_copies = positive_int(self.kind, {"min_copies": fields["min_copies"]}, "min_copies")
+        self.silence_ms = positive_int(self.kind, {"silence_s": fields["silence_s"]}, "silence_s") * 1000
+
+    def match(self, test_evidence, peer_role):
+        for c in test_evidence.get("connections", []):
+            facts = ("handshake_done_rx_ms", "first_stream_tx_ms", "last_rx_ms", "end_ms")
+            if any(f not in c for f in facts) or "first_stream_ack_ms" in c:
+                continue
+            early = c["handshake_done_rx_ms"] - c["first_stream_tx_ms"]
+            silent = c["end_ms"] - c["last_rx_ms"]
+            in_flight = c["bytes_in_flight_at_end"] > 0
+            if early > 0 and in_flight and c.get("max_stream_copies", 0) >= self.min_copies and silent >= self.silence_ms:
+                return Matched(
+                    f"{c['qlog']}: our request went out {early:.0f} ms before the peer's HANDSHAKE_DONE; "
+                    f"{c['max_stream_copies']} copies, none acknowledged; the peer was silent {silent / 1000:.1f} s"
+                )
+        return NotMatched()
+
+
+class PeerGaveUpWhileWeWereAmplificationLimited:
+    """Our server heard nothing after the client's first datagram (quiche's qlog starts after it), had sent its
+    three-times budget (RFC 9000 §8.1: at least 3 x 1200 bytes in flight), and its loss timer then expired with
+    nothing it was allowed to send, while the simulator's drop list dropped at least min_dropped of the client's
+    datagrams: the client gave up before a datagram of its own got through to lift the limit."""
+
+    kind = "peer-gave-up-while-we-were-amplification-limited"
+
+    def __init__(self, fields):
+        self.min_dropped = positive_int(self.kind, fields, "min_dropped")
+
+    def match(self, test_evidence, peer_role):
+        dropped = test_evidence.get("sim_droplist_from_peer", 0)
+        if dropped < self.min_dropped:
+            return NotMatched()
+        for c in test_evidence.get("connections", []):
+            budget = c["bytes_in_flight_at_end"] >= AMPLIFICATION_FACTOR * MIN_INITIAL_DATAGRAM
+            if c["rx_packets"] == 0 and budget and c.get("pto_expiries_after_last_tx", 0) > 0:
+                return Matched(
+                    f"{c['qlog']}: {c['bytes_in_flight_at_end']} bytes in flight on the client's first datagram alone, "
+                    f"{c['pto_expiries_after_last_tx']} PTO expiries with nothing sent; the simulator dropped "
+                    f"{dropped} of the client's datagrams"
+                )
+        return NotMatched()
+
+
 class PeerLeftADownloadEmpty:
     """The peer's client exited 0 although the runner found a download it wrote empty, while our server answered
     a request on every connection: the client reported success for a file it never received."""
@@ -361,6 +471,33 @@ class PeerLeftADownloadEmpty:
         answered = bool(connections) and all(c["fin_sent_streams"] > 0 for c in connections)
         if empty and answered and test_evidence.get("exits", {}).get(peer_role) == 0:
             return Matched(f"peer {peer_role} exited 0 with {empty} empty download(s); we answered on all {len(connections)} connections")
+        return NotMatched()
+
+
+class PeerLeftARequestUnfinished:
+    """The peer's own report says it gave up on requests after its idle timeout, and on every connection of ours the
+    requests that never got an answer are exactly the streams the peer opened and began but never finished (data
+    arrived, no FIN, no reset) while every request that did arrive whole was answered: the peer wrote a partial
+    request, a short write it never resumed, so there was nothing complete for us to answer."""
+
+    kind = "peer-left-a-request-unfinished"
+
+    def __init__(self, fields):
+        no_fields(self.kind, fields)
+
+    def match(self, test_evidence, peer_role):
+        unanswered = test_evidence.get("peer_unanswered_requests", 0)
+        connections = test_evidence.get("connections", [])
+        unfinished = [c.get("peer_unfinished_streams", 0) for c in connections]
+        accounted = bool(connections) and all(
+            n > 0 and not c["local_closes"] and c["fin_sent_streams"] + n == c["peer_bidi_streams_opened"]
+            for c, n in zip(connections, unfinished)
+        )
+        if unanswered and accounted:
+            return Matched(
+                f"peer gave up on {unanswered} request(s) after its idle timeout; we answered the {connections[0]['fin_sent_streams']} "
+                f"that arrived whole and {unfinished[0]} more arrived without a FIN"
+            )
         return NotMatched()
 
 
@@ -438,6 +575,31 @@ class PeerClientHelloNeverCompleted:
             if c["rx_initial_crypto"] > 0 and c["tx_crypto"] == 0 and c["fin_sent_streams"] == 0 and lost:
                 gone = lost[0]["datagrams"] - lost[0]["delivered"]
                 return Matched(f"{c['qlog']}: the ClientHello never completed; the simulator lost {gone} of {lost[0]['datagrams']} datagrams from port {lost[0]['port']}")
+        return NotMatched()
+
+
+class PeerClientHelloOnlyInItsOpeningPacket:
+    """Our server acknowledged the Initial packet that opened the connection, which its qlog does not record, and
+    no later Initial carried CRYPTO: whatever of the ClientHello arrived came in that one packet, the rest never
+    did, so the server sent no CRYPTO of its own, heard nothing in the Handshake space and closed without an error,
+    while the simulator corrupted or dropped at least min_lost of the datagrams one client port sent us."""
+
+    kind = "peer-client-hello-only-in-its-opening-packet"
+
+    def __init__(self, fields):
+        self.min_lost = positive_int(self.kind, fields, "min_lost")
+
+    def match(self, test_evidence, peer_role):
+        lost = [p for p in test_evidence.get("sim_from_peer", []) if p["datagrams"] - p["delivered"] >= self.min_lost]
+        for c in test_evidence.get("connections", []):
+            opened_only = c.get("rx_initial_unlogged", 0) > 0 and c["rx_initial_crypto"] == 0
+            unanswered = c["tx_crypto"] == 0 and c["rx_handshake_crypto"] == 0 and c["rx_handshake_acks"] == 0
+            no_error = all(close["code"] == 0 for close in c["local_closes"])
+            if opened_only and unanswered and no_error and c["fin_sent_streams"] == 0 and lost:
+                gone = lost[0]["datagrams"] - lost[0]["delivered"]
+                return Matched(
+                    f"{c['qlog']}: no CRYPTO after the opening packet; the simulator lost {gone} of {lost[0]['datagrams']} datagrams from port {lost[0]['port']}"
+                )
         return NotMatched()
 
 
@@ -520,11 +682,17 @@ SIGNATURES = {
         SimLostEveryDatagramToUs,
         SimLostEveryDatagramToThePeer,
         PeerLeftADownloadEmpty,
+        PeerLeftARequestUnfinished,
         PeerRequestNeverArrived,
         PeerServerDidNotChallengeNewPathFirst,
         PeerHandshakePacketsNeverArrived,
         PeerGoneWhileWeProbed,
         PeerClientHelloNeverCompleted,
+        PeerClientHelloOnlyInItsOpeningPacket,
+        PeerIdledOutWhileWeProbed,
+        PeerServerHelloStoppedShort,
+        PeerNeverAckedEarlyRequest,
+        PeerGaveUpWhileWeWereAmplificationLimited,
         AnyOf,
     )
 }

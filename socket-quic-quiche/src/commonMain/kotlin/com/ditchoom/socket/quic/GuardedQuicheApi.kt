@@ -53,6 +53,16 @@ internal class GuardedQuicheApi(
         return delegate.connStreamRecv(conn, streamId, buf, bufLen)
     }
 
+    override fun connStreamRecvStep(
+        conn: QuicheConn,
+        streamId: QuicStreamId,
+        buf: Long,
+        bufLen: Int,
+    ): StreamRecvStep {
+        guard.assertOnLoop(LoopSite.Quiche)
+        return delegate.connStreamRecvStep(conn, streamId, buf, bufLen)
+    }
+
     override fun connStreamSend(
         conn: QuicheConn,
         streamId: QuicStreamId,
@@ -62,6 +72,17 @@ internal class GuardedQuicheApi(
     ): StreamSendResult {
         guard.assertOnLoop(LoopSite.Quiche)
         return delegate.connStreamSend(conn, streamId, buf, bufLen, fin)
+    }
+
+    override fun connStreamSendStep(
+        conn: QuicheConn,
+        streamId: QuicStreamId,
+        buf: Long,
+        bufLen: Int,
+        fin: Boolean,
+    ): StreamSendStep {
+        guard.assertOnLoop(LoopSite.Quiche)
+        return delegate.connStreamSendStep(conn, streamId, buf, bufLen, fin)
     }
 
     override fun connStreamCapacity(
@@ -135,6 +156,11 @@ internal class GuardedQuicheApi(
         return delegate.connIsClosed(conn)
     }
 
+    override fun connIsDraining(conn: QuicheConn): Boolean {
+        guard.assertOnLoop(LoopSite.Quiche)
+        return delegate.connIsDraining(conn)
+    }
+
     override fun connIsTimedOut(conn: QuicheConn): Boolean {
         guard.assertOnLoop(LoopSite.Quiche)
         return delegate.connIsTimedOut(conn)
@@ -191,6 +217,67 @@ internal class GuardedQuicheApi(
     override fun connSendAckEliciting(conn: QuicheConn): Int {
         guard.assertOnLoop(LoopSite.Quiche)
         return delegate.connSendAckEliciting(conn)
+    }
+
+    override fun connSetHandshakePtoCeiling(
+        conn: QuicheConn,
+        ceiling: PtoCeiling,
+    ) {
+        guard.assertOnLoop(LoopSite.Quiche)
+        delegate.connSetHandshakePtoCeiling(conn, ceiling)
+    }
+
+    override fun connHandshakePtoCeilingHeld(conn: QuicheConn): Boolean {
+        guard.assertOnLoop(LoopSite.Quiche)
+        return delegate.connHandshakePtoCeilingHeld(conn)
+    }
+
+    override fun connSetToken(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int {
+        guard.assertOnLoop(LoopSite.Quiche)
+        return delegate.connSetToken(conn, buf, bufLen)
+    }
+
+    override fun connTakeNewToken(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int {
+        guard.assertOnLoop(LoopSite.Quiche)
+        return delegate.connTakeNewToken(conn, buf, bufLen)
+    }
+
+    override fun connSendNewToken(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int {
+        guard.assertOnLoop(LoopSite.Quiche)
+        return delegate.connSendNewToken(conn, buf, bufLen)
+    }
+
+    override fun connSetPeerAddressValidated(conn: QuicheConn): Int {
+        guard.assertOnLoop(LoopSite.Quiche)
+        return delegate.connSetPeerAddressValidated(conn)
+    }
+
+    override fun connProbeNow(conn: QuicheConn): Int {
+        guard.assertOnLoop(LoopSite.Quiche)
+        return delegate.connProbeNow(conn)
+    }
+
+    override fun connRequeuePath(
+        conn: QuicheConn,
+        localAddr: Long,
+        localLen: Int,
+        peerAddr: Long,
+        peerLen: Int,
+    ): Int {
+        guard.assertOnLoop(LoopSite.Quiche)
+        return delegate.connRequeuePath(conn, localAddr, localLen, peerAddr, peerLen)
     }
 
     override fun connClose(
@@ -314,6 +401,18 @@ internal class GuardedQuicheApi(
         return delegate.connProbePath(conn, localAddr, localLen, peerAddr, peerLen)
     }
 
+    override fun connProbePathWith(
+        conn: QuicheConn,
+        localAddr: Long,
+        localLen: Int,
+        peerAddr: Long,
+        peerLen: Int,
+        initialRttNanos: Long,
+    ): ProbeOutcome {
+        guard.assertOnLoop(LoopSite.Quiche)
+        return delegate.connProbePathWith(conn, localAddr, localLen, peerAddr, peerLen, initialRttNanos)
+    }
+
     override fun connNewScid(
         conn: QuicheConn,
         scidAddr: Long,
@@ -414,6 +513,11 @@ internal class GuardedQuicheApi(
         return delegate.connWritable(conn)
     }
 
+    override fun connStreamWritableNext(conn: QuicheConn): Long {
+        guard.assertOnLoop(LoopSite.Quiche)
+        return delegate.connStreamWritableNext(conn)
+    }
+
     override fun recvInfoFree(info: QuicheRecvInfo) {
         guard.assertOnLoop(LoopSite.Quiche)
         delegate.recvInfoFree(info)
@@ -439,8 +543,18 @@ internal class GuardedQuicheApi(
         return delegate.sendInfoFromAddr(info)
     }
 
+    override fun sendInfoAtNanos(info: QuicheSendInfo): Long {
+        guard.assertOnLoop(LoopSite.Quiche)
+        return delegate.sendInfoAtNanos(info)
+    }
+
     override fun sendInfoFromAddrLen(info: QuicheSendInfo): Int {
         guard.assertOnLoop(LoopSite.Quiche)
         return delegate.sendInfoFromAddrLen(info)
+    }
+
+    override fun connActivePathRttNanos(conn: QuicheConn): Long {
+        guard.assertOnLoop(LoopSite.Quiche)
+        return delegate.connActivePathRttNanos(conn)
     }
 }

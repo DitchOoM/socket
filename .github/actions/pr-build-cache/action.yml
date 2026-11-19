@@ -1,0 +1,125 @@
+name: "PR-scoped Gradle build cache"
+description: >-
+  A warm local Gradle build cache (~/.gradle/caches/build-cache-1: Kotlin/Native klibs, cinterop klibs,
+  compiled outputs) for the pull-request runs of a long-lived PR. Two calls bracket a job: `mode: restore`
+  right after the job's base Gradle-cache restore, `mode: save` as the job's last step.
+  Why it exists: the main-scoped Gradle entries (written nightly by native-deps-freshness.yaml) hold
+  build-cache-1 outputs keyed on the task inputs of main's build. A PR that changes the build definition
+  (targets, source sets, JVM floor, modules) never matches them, so every run of that PR compiled
+  Kotlin/Native cold (iOS simulator shard: 351 of 354 tasks executed, 35 min) and, because every other cache
+  write in this workflow is main-only, never saved anything for the next push to reuse.
+  Scope: a cache written by a pull_request run lives under refs/pull/<N>/merge and is readable by later runs
+  of that same PR (and by nothing else), plus, for those runs, the base branch's and the default branch's
+  entries. So this is the only entry a PR's own pushes can share.
+  Exactly ONE job per OS calls `save` (the caller decides), and only when the exact key missed: entries are
+  immutable per key, @actions/cache tars the directory before it learns the key is taken, and two jobs
+  saving one key race. Only build-cache-1 is saved (not modules-2: the base restore already provides it),
+  with lock and GC files removed. A no-op outside `pull_request` events (push/dispatch runs keep using the
+  main-scoped warm entries; merged.yaml's pull_request_target token cannot write caches at all).
+inputs:
+  mode:
+    description: "restore | save"
+    required: true
+  os:
+    description: "macos | linux. Part of the key."
+    required: true
+  lane:
+    description: "The job's name in the key, so two lanes never share an entry (ios-sim, linux-checks)."
+    required: true
+  restored-exact:
+    description: "save only: the restore call's `exact-hit` output. 'true' skips the save."
+    required: false
+    default: ""
+  max-save-mb:
+    description: "save only: skip the save, loudly, when build-cache-1 is larger than this (the repo's Actions cache is 10 GB)."
+    required: false
+    default: "2500"
+outputs:
+  exact-hit:
+    description: "restore: 'true' when this PR's entry for the current build scripts was found exactly."
+    value: ${{ steps.restore.outputs.cache-hit }}
+  matched-key:
+    description: "restore: the key that was restored, empty on a miss."
+    value: ${{ steps.restore.outputs.cache-matched-key }}
+
+runs:
+  using: composite
+  steps:
+    - name: Refuse an unknown mode
+      if: inputs.mode != 'restore' && inputs.mode != 'save'
+      shell: bash
+      run: |
+        echo "::error::pr-build-cache mode must be restore or save; got '${{ inputs.mode }}'"
+        exit 1
+
+    # Key = lane + PR + a hash of everything that defines how tasks are wired (version catalog, build
+    # scripts, wrapper, gradle.properties). A push that only edits sources hits the exact key (no
+    # save; Gradle recompiles just the changed modules on top of the restored klibs). A build-definition
+    # edit misses, restores the PR's previous entry through the prefix, and saves a fresh one.
+    - name: Restore the PR's Gradle build cache
+      id: restore
+      if: inputs.mode == 'restore' && github.event_name == 'pull_request'
+      uses: actions/cache/restore@v6
+      with:
+        path: ~/.gradle/caches/build-cache-1
+        key: gradle-bc-${{ inputs.os }}-${{ inputs.lane }}-pr${{ github.event.pull_request.number }}-${{ hashFiles('gradle/libs.versions.toml', 'gradle.properties', '**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
+        restore-keys: |
+          gradle-bc-${{ inputs.os }}-${{ inputs.lane }}-pr${{ github.event.pull_request.number }}-
+
+    - name: Report what was restored
+      if: inputs.mode == 'restore' && github.event_name == 'pull_request'
+      shell: bash
+      run: |
+        echo "PR build cache: matched='${{ steps.restore.outputs.cache-matched-key }}' exact=${{ steps.restore.outputs.cache-hit }}"
+        du -sh "$HOME/.gradle/caches/build-cache-1" 2>/dev/null || echo "build-cache-1 empty (cold)"
+
+    - name: Prune lock and GC files from the build cache
+      id: prune
+      if: ${{ !cancelled() && inputs.mode == 'save' && github.event_name == 'pull_request' && inputs.restored-exact != 'true' }}
+      shell: bash
+      run: |
+        bc="$HOME/.gradle/caches/build-cache-1"
+        if [ ! -d "$bc" ]; then echo "no build-cache-1; nothing to save"; echo "mb=0" >> "$GITHUB_OUTPUT"; exit 0; fi
+        find "$bc" \( -name '*.lock' -o -name 'gc.properties' \) -type f -delete
+        mb=$(( $(du -sk "$bc" | cut -f1) / 1024 ))
+        echo "build-cache-1 to save: ${mb} MB ($(find "$bc" -type f | wc -l | tr -d ' ') entries)"
+        echo "mb=${mb}" >> "$GITHUB_OUTPUT"
+        if [ "$mb" -gt "${{ inputs.max-save-mb }}" ]; then
+          echo "::warning::build-cache-1 is ${mb} MB, over the ${{ inputs.max-save-mb }} MB cap; not saving it (the repo's Actions cache is 10 GB). Raise max-save-mb or shrink what the lane builds."
+        fi
+
+    # `!cancelled()`: a failed test step still leaves valid task outputs (only successful tasks are
+    # stored), and the next push is exactly when they pay off. continue-on-error: a cache problem must
+    # never redden the job.
+    - name: Save the PR's Gradle build cache
+      id: save
+      if: ${{ !cancelled() && inputs.mode == 'save' && github.event_name == 'pull_request' && inputs.restored-exact != 'true' && steps.prune.outputs.mb != '0' && steps.prune.outputs.mb != '' && fromJSON(steps.prune.outputs.mb) <= fromJSON(inputs.max-save-mb) }}
+      continue-on-error: true
+      uses: actions/cache/save@v6
+      with:
+        path: ~/.gradle/caches/build-cache-1
+        key: gradle-bc-${{ inputs.os }}-${{ inputs.lane }}-pr${{ github.event.pull_request.number }}-${{ hashFiles('gradle/libs.versions.toml', 'gradle.properties', '**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
+
+    # The previous entry of this lane on this PR is superseded by the one just saved (same lane, older
+    # build-script hash); keep the repo under its cap. Needs `actions: write`; a read-only token (fork PR)
+    # only warns. purge-pr-caches.yaml deletes whatever is left when the PR closes.
+    - name: Delete this PR's superseded entries of this lane
+      if: ${{ !cancelled() && steps.save.outcome == 'success' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        KEEP_KEY: gradle-bc-${{ inputs.os }}-${{ inputs.lane }}-pr${{ github.event.pull_request.number }}-${{ hashFiles('gradle/libs.versions.toml', 'gradle.properties', '**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
+        PREFIX: gradle-bc-${{ inputs.os }}-${{ inputs.lane }}-pr${{ github.event.pull_request.number }}-
+        REF: refs/pull/${{ github.event.pull_request.number }}/merge
+      run: |
+        ids=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/caches?per_page=100&ref=${REF}&key=${PREFIX}" \
+          --jq ".actions_caches[] | select(.key != \"${KEEP_KEY}\") | [.id, .key, .size_in_bytes] | @tsv") \
+          || { echo "::warning::could not list this PR's caches (read-only token?); superseded entries stay until the PR closes"; exit 0; }
+        while IFS=$'\t' read -r id key size; do
+          [ -n "$id" ] || continue
+          if gh api -X DELETE "repos/${GITHUB_REPOSITORY}/actions/caches/${id}" >/dev/null 2>&1; then
+            echo "deleted superseded $key ($((size / 1048576)) MB)"
+          else
+            echo "::warning::could not delete $key"
+          fi
+        done <<<"$ids"

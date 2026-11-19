@@ -4,13 +4,13 @@ package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
-import com.ditchoom.buffer.counting
 import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.nativeMemoryAccess
+import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.socket.quic.trace.QuicTraceRecorder
 import com.ditchoom.socket.quic.trace.TraceCapture
 import com.ditchoom.socket.testkit.trace.TraceSink
@@ -78,27 +78,43 @@ class QuicReadPoolingTests {
         return withTimeout(2.seconds) { deferred.await() }
     }
 
-    // The native-memory leaf factories QUIC accepts on THIS platform (quicBufferFactory() rejects
-    // heap factories at setup): network() is the production default (what quicBufferFactory()
-    // resolves to when the caller doesn't override); Default is a valid collector-owned override only
-    // where it allocates native buffers (JVM Arena, Apple NSMutableData) — on Linux it is a managed
-    // ByteArrayBuffer, so probe like requireNativeMemory().
-    private val leafFactories: List<Pair<String, BufferFactory>>
-        get() =
-            buildList {
-                add("network" to BufferFactory.network())
-                val probe = BufferFactory.Default.allocate(1)
-                if (probe.nativeMemoryAccess != null) add("default" to BufferFactory.Default)
-                probe.freeIfNeeded()
+    /**
+     * A native-memory leaf factory QUIC accepts on this platform. The driver pools [BufferFactory.Default]
+     * itself, and uses the shared [BufferFactory.network] pool as given, so a leaf's allocations are the
+     * misses of whichever pool serves the driver's buffers.
+     */
+    private class Leaf(
+        val name: String,
+        val factory: BufferFactory,
+    ) {
+        private val sharedMisses = (factory as? BufferPool)?.stats()?.poolMisses ?: 0L
+
+        fun allocations(buffers: DriverBuffers): Long =
+            when (buffers) {
+                is DriverBuffers.Owned -> buffers.pool.stats().poolMisses
+                is DriverBuffers.Callers -> (factory as BufferPool).stats().poolMisses - sharedMisses
             }
+    }
+
+    // network() is the production default (what quicBufferFactory() resolves to when the caller doesn't
+    // override); Default is a valid collector-owned override only where it allocates native buffers
+    // (JVM Arena, Apple NSMutableData) — on Linux it is a managed ByteArrayBuffer, so probe like
+    // requireNativeMemory().
+    private fun leafFactories(): List<Leaf> =
+        buildList {
+            add(Leaf("network", BufferFactory.network()))
+            val probe = BufferFactory.Default.allocate(1)
+            if (probe.nativeMemoryAccess != null) add(Leaf("default", BufferFactory.Default))
+            probe.freeIfNeeded()
+        }
 
     @Test
     fun streamReadBuffersAreRecycledNotAllocatedPerRead() =
         runQuicTest {
-            for ((name, leaf) in leafFactories) {
-                val counting = leaf.counting()
+            for (leaf in leafFactories()) {
+                val name = leaf.name
                 val api = StubQuicheApi().apply { streamRecvResult = StreamRecvResult.Data(1024, false) }
-                val driver = driverWith(api, counting)
+                val driver = driverWith(api, leaf.factory)
                 driver.start(this)
                 try {
                     val slot = openStream(driver)
@@ -114,7 +130,7 @@ class QuicReadPoolingTests {
                 } finally {
                     driver.destroy()
                 }
-                val allocations = counting.allocationCount
+                val allocations = leaf.allocations(driver.streamReadPool)
                 // Pooling ⇒ the leaf factory is hit only for driver scratch buffers + pool misses,
                 // NOT once per read (pre-fix: 300+ allocations here).
                 assertTrue(
@@ -133,11 +149,11 @@ class QuicReadPoolingTests {
     @Test
     fun streamReadBuffersTheLoopHandsOffAreRecycledNotAllocatedPerRead() =
         runQuicTest {
-            for ((name, leaf) in leafFactories) {
-                val counting = leaf.counting()
+            for (leaf in leafFactories()) {
+                val name = leaf.name
                 val api = StubQuicheApi().apply { streamRecvResult = StreamRecvResult.Data(1024, false) }
                 // The flight recorder names the loop's and the reader's last steps if a read is never served.
-                val driver = driverWith(api, counting, TraceCapture.On(QuicTraceRecorder(TraceSink { })))
+                val driver = driverWith(api, leaf.factory, TraceCapture.On(QuicTraceRecorder(TraceSink { })))
                 // The recorder's state collectors end with the scope the driver starts in, not with destroy().
                 val driverScope = CoroutineScope(coroutineContext + Job(coroutineContext.job))
                 driver.start(driverScope)
@@ -172,7 +188,7 @@ class QuicReadPoolingTests {
                     driver.destroy()
                     driverScope.cancel()
                 }
-                val allocations = counting.allocationCount
+                val allocations = leaf.allocations(driver.streamReadPool)
                 assertTrue(
                     allocations < 20,
                     "[$name] hand-off read buffers should be pooled/recycled: expected < 20 leaf allocations, got $allocations over 300 reads",
@@ -183,10 +199,10 @@ class QuicReadPoolingTests {
     @Test
     fun datagramReceiveBuffersAreRecycledNotAllocatedPerReceive() =
         runQuicTest {
-            for ((name, leaf) in leafFactories) {
-                val counting = leaf.counting()
+            for (leaf in leafFactories()) {
+                val name = leaf.name
                 val api = StubQuicheApi().apply { dgramRecvResult = StreamRecvResult.Data(3, false) }
-                val driver = driverWith(api, counting)
+                val driver = driverWith(api, leaf.factory)
                 val adapter = DriverDatagramAdapter(driver, SocketAddress.ofLiteral("127.0.0.1", 4433))
                 driver.start(this)
                 try {
@@ -198,7 +214,7 @@ class QuicReadPoolingTests {
                 } finally {
                     driver.destroy()
                 }
-                val allocations = counting.allocationCount
+                val allocations = leaf.allocations(driver.recvBufPool)
                 assertTrue(
                     allocations < 20,
                     "[$name] datagram receive buffers should be pooled/recycled: expected < 20 leaf allocations, got $allocations over 300 receives",

@@ -2,6 +2,7 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget
 import java.net.URI
 import java.security.MessageDigest
+import java.util.concurrent.Callable
 
 plugins {
     alias(libs.plugins.kotlin.multiplatform)
@@ -440,7 +441,7 @@ kotlin {
         compilerOptions.jvmTarget.set(JvmTarget.JVM_17)
     }
     jvm {
-        compilerOptions.jvmTarget.set(JvmTarget.JVM_1_8)
+        compilerOptions.jvmTarget.set(JvmTarget.JVM_17)
         // The JDK 21 FFM reactive network monitor (multi-release JAR under META-INF/versions/21) moved
         // to the com.ditchoom:network-monitor module along with the rest of the NetworkMonitor
         // implementation — including, since issue #269, the native Linux (netlink) and Apple
@@ -509,22 +510,18 @@ kotlin {
     if (appleTargets) {
         // macOS
         macosArm64 { configureNWHelpersCinterop() }
-        macosX64 { configureNWHelpersCinterop() }
 
         // iOS
         iosArm64 { configureNWHelpersCinterop() }
         iosSimulatorArm64 { configureNWHelpersCinterop() }
-        iosX64 { configureNWHelpersCinterop() }
 
         // tvOS
         tvosArm64 { configureNWHelpersCinterop() }
         tvosSimulatorArm64 { configureNWHelpersCinterop() }
-        tvosX64 { configureNWHelpersCinterop() }
 
         // watchOS (watchosArm32 not supported by buffer library)
-        watchosArm64 { configureNWHelpersCinterop() }
+        watchosDeviceArm64 { configureNWHelpersCinterop() }
         watchosSimulatorArm64 { configureNWHelpersCinterop() }
-        watchosX64 { configureNWHelpersCinterop() }
     }
 
     // Linux targets with io_uring async I/O and statically-linked OpenSSL
@@ -620,22 +617,18 @@ kotlin {
         // Cannot use appleMain directly because compileAppleMainKotlinMetadata
         // can't resolve Apple-specific types (NSDataBuffer, NSData, etc.) from dependencies.
         // POSIX code every native target shares (getaddrinfo), added per leaf for the same reason
-        // appleNativeImpl is: a shared appleMain cannot compile metadata with watchosArm64 in it.
+        // appleNativeImpl is.
         val posixNativeImplDir = file("src/posixNativeImpl/kotlin")
         if (appleTargets) {
             val appleNativeImplDir = file("src/appleNativeImpl/kotlin")
             listOf(
                 "macosArm64Main",
-                "macosX64Main",
                 "iosArm64Main",
                 "iosSimulatorArm64Main",
-                "iosX64Main",
                 "tvosArm64Main",
                 "tvosSimulatorArm64Main",
-                "tvosX64Main",
-                "watchosArm64Main",
+                "watchosDeviceArm64Main",
                 "watchosSimulatorArm64Main",
-                "watchosX64Main",
             ).forEach { sourceSetName ->
                 findByName(sourceSetName)?.kotlin?.srcDir(appleNativeImplDir)
                 findByName(sourceSetName)?.kotlin?.srcDir(posixNativeImplDir)
@@ -680,10 +673,9 @@ android {
         .manifest
         .srcFile("src/androidMain/AndroidManifest.xml")
     defaultConfig {
-        // 23, following :network-monitor (an `api` dependency, so its floor is ours — a lower value here
-        // is a manifest-merger failure, not a silent downgrade). See that module's build file for why the
-        // monitor cannot usefully support API 21/22: RFC_NETWORK_REACHABILITY §8.1.
-        minSdk = 23
+        // Same floor as :network-monitor (an `api` dependency, so its floor is ours — a lower value here
+        // is a manifest-merger failure, not a silent downgrade).
+        minSdk = 28
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // Shipped in the AAR as proguard.txt. Every module of this library depends on :socket, so this
         // is where a rule for the shared com.ditchoom:buffer dependency lives; see the file.
@@ -858,19 +850,88 @@ project(":socket-quic-quiche") {
         group = "verification"
         dependsOn("compileTestKotlinJvm")
     }
+    // Main-thread safety of the run-to-completion core: a caller on a main dispatcher must make no blocking
+    // call. BlockHound is a Java agent, so it gets its own JVM (see :socket-testsuite's mainThreadSafetyTest);
+    // unlike lincheckTest it drives a real handshake, so it runs on jvmTest's final classpath, which carries the
+    // quiche natives, and on its launcher, resolved when the task runs.
+    tasks.register<Test>("mainThreadSafetyTest") {
+        description = "Drives the core from a non-blocking main-like thread under BlockHound"
+        group = "verification"
+        dependsOn("compileTestKotlinJvm", "prepareQuicheNativeLib", "stageQuicheNativeResources")
+        forkEvery = 1
+        jvmArgs("-XX:+EnableDynamicAgentLoading", "-XX:+AllowRedefinitionToAddDeleteMethods")
+        testLogging {
+            events("passed", "skipped", "failed")
+            exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+            showStandardStreams = true
+        }
+    }
+    // The core's allocation gates measure the production path: they run in their own JVM without the CI-only
+    // recv_info lifecycle guard (QUIC_RECVINFO_GUARD), whose map lookup boxes a Long per received datagram.
+    tasks.register<Test>("coreAllocationTest") {
+        description = "Runs the core allocation gates on the production QuicheApi, without diagnostic wrappers"
+        group = "verification"
+        dependsOn("compileTestKotlinJvm", "prepareQuicheNativeLib", "stageQuicheNativeResources")
+        testLogging {
+            events("passed", "skipped", "failed")
+            exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+            showStandardStreams = true
+        }
+    }
     afterEvaluate {
         dependencies.add("jvmTestImplementation", libs.lincheck)
+        dependencies.add(
+            "jvmTestImplementation",
+            "io.projectreactor.tools:blockhound:${providers.gradleProperty("blockHoundVersion").get()}",
+        )
+        // Every test of every task below reports its end to FlightEvidenceListener (a JUnit Platform listener found by
+        // ServiceLoader), which writes the test's connections' flight recordings when it fails. The vintage engine runs the
+        // JUnit 4 tests on the Platform.
+        // kotlin.test's JUnit 4 flavour is named so that Kotlin does not pick its JUnit 5 one for a Platform run: the tests keep
+        // JUnit 4's annotations and rules (NoServerLoopLeft).
+        dependencies.add("jvmTestImplementation", dependencies.kotlin("test-junit"))
+        configurations.matching { it.name.startsWith("jvmTest") }.configureEach {
+            resolutionStrategy.capabilitiesResolution.withCapability("org.jetbrains.kotlin:kotlin-test-framework-impl") {
+                candidates.firstOrNull { (it.id as? ModuleComponentIdentifier)?.module == "kotlin-test-junit" }?.let { select(it) }
+            }
+        }
+        dependencies.add("jvmTestImplementation", "org.junit.vintage:junit-vintage-engine:5.11.4")
+        dependencies.add("jvmTestImplementation", "org.junit.platform:junit-platform-launcher:1.11.4")
+        for (name in listOf("jvmTest", "lincheckTest", "mainThreadSafetyTest", "coreAllocationTest")) {
+            tasks.named<Test>(name) { useJUnitPlatform() }
+        }
         val jvmTestTask = tasks.named<Test>("jvmTest").get()
         tasks.named<Test>("lincheckTest") {
             testClassesDirs = jvmTestTask.testClassesDirs
             classpath = jvmTestTask.classpath
             filter { includeTestsMatching("*Lincheck*") }
         }
+        tasks.named<Test>("mainThreadSafetyTest") {
+            testClassesDirs = jvmTestTask.testClassesDirs
+            classpath = files(Callable { jvmTestTask.classpath })
+            javaLauncher.set(jvmTestTask.javaLauncher)
+            jvmArgumentProviders.add(CommandLineArgumentProvider { jvmTestTask.jvmArgs.orEmpty() })
+            doFirst { environment(jvmTestTask.environment) }
+            filter {
+                includeTestsMatching("*MainThreadSafety*")
+            }
+        }
+        tasks.named<Test>("coreAllocationTest") {
+            testClassesDirs = jvmTestTask.testClassesDirs
+            classpath = files(Callable { jvmTestTask.classpath })
+            javaLauncher.set(jvmTestTask.javaLauncher)
+            jvmArgumentProviders.add(CommandLineArgumentProvider { jvmTestTask.jvmArgs.orEmpty() })
+            doFirst { environment(jvmTestTask.environment - "QUIC_RECVINFO_GUARD") }
+            filter { includeTestsMatching("com.ditchoom.socket.quic.core.*AllocationTests") }
+        }
         tasks.named<Test>("jvmTest") {
             filter {
                 excludeTestsMatching("*Lincheck*")
+                excludeTestsMatching("*MainThreadSafety*")
+                excludeTestsMatching("com.ditchoom.socket.quic.core.*AllocationTests")
                 isFailOnNoMatchingTests = false
             }
+            finalizedBy("coreAllocationTest")
         }
     }
 }
@@ -895,16 +956,12 @@ dokka {
     // Suppress duplicate Apple source sets - keep only macosArm64 as representative
     val suppressedAppleTargets =
         listOf(
-            "macosX64",
             "iosArm64",
             "iosSimulatorArm64",
-            "iosX64",
             "tvosArm64",
             "tvosSimulatorArm64",
-            "tvosX64",
-            "watchosArm64",
+            "watchosDeviceArm64",
             "watchosSimulatorArm64",
-            "watchosX64",
         )
     dokkaSourceSets {
         suppressedAppleTargets.forEach { target ->
@@ -1441,7 +1498,7 @@ listOf("jvmTest", "linuxX64Test", "jsNodeTest").forEach { name ->
 // JVM, and it is wired into the Linux checks-tests list (#501) — but harnessDown finalizes
 // only the jvmTest-family tasks above, so without its own edge the Android unit run
 // could find the stack already torn down and silently skip every live scenario.
-listOf("macosArm64Test", "macosX64Test", "testDebugUnitTest").forEach { name ->
+listOf("macosArm64Test", "testDebugUnitTest").forEach { name ->
     project(":socket-testsuite").tasks.matching { it.name == name }.configureEach {
         dependsOn(harnessUp)
         finalizedBy(harnessDown)

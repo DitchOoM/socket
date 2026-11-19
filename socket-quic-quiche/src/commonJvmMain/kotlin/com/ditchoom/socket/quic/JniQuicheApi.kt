@@ -214,6 +214,24 @@ object JniQuicheApi : QuicheApi {
         }
     }
 
+    override fun connStreamRecvStep(
+        conn: QuicheConn,
+        streamId: QuicStreamId,
+        buf: Long,
+        bufLen: Int,
+    ): StreamRecvStep {
+        val scratch = errorCodeScratch.get()
+        val raw = nConnStreamRecv(conn.handle, streamId.id, buf, bufLen, scratch.nativeMemoryAccess!!.nativeAddress.toLong())
+        // The same packing as [connStreamRecv]: lower 63 bits = bytes read, bit 63 = FIN; an error code is huge in them.
+        val lower63 = raw and 0x7FFFFFFFFFFFFFFFL
+        if (lower63 <= bufLen.toLong()) return StreamRecvStep.data(lower63.toInt(), raw < 0)
+        return when (raw) {
+            QUICHE_ERR_DONE -> StreamRecvStep.error(StreamRecvStep.QUICHE_ERR_DONE_CODE)
+            QuicheDriver.QUICHE_ERR_STREAM_RESET.toLong() -> StreamRecvStep.reset(QuicAppErrorCode(scratch.readErrorCode()))
+            else -> StreamRecvStep.error(raw.toInt())
+        }
+    }
+
     override fun connStreamSend(
         conn: QuicheConn,
         streamId: QuicStreamId,
@@ -234,6 +252,18 @@ object JniQuicheApi : QuicheApi {
                 null
             }
         return StreamSendResult(result, code)
+    }
+
+    override fun connStreamSendStep(
+        conn: QuicheConn,
+        streamId: QuicStreamId,
+        buf: Long,
+        bufLen: Int,
+        fin: Boolean,
+    ): StreamSendStep {
+        val scratch = errorCodeScratch.get()
+        val result = nConnStreamSend(conn.handle, streamId.id, buf, bufLen, fin, scratch.nativeMemoryAccess!!.nativeAddress.toLong())
+        return StreamSendStep.of(result) { QuicAppErrorCode(scratch.readErrorCode()) }
     }
 
     /** The 8 bytes the C shim wrote big-endian, read by absolute index: no position bookkeeping. */
@@ -345,6 +375,20 @@ object JniQuicheApi : QuicheApi {
         }
     }
 
+    override fun connDgramRecvStep(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): StreamRecvStep {
+        val raw = nConnDgramRecv(conn.handle, buf, bufLen)
+        return if (raw >= 0) StreamRecvStep.data(raw.toInt(), false) else StreamRecvStep.error(raw.toInt())
+    }
+
+    override fun connDgramMaxWritableBytes(conn: QuicheConn): Int {
+        val raw = nConnDgramMaxWritableLen(conn.handle)
+        return if (raw < 0) NO_DATAGRAM_ROOM else raw.toInt()
+    }
+
     override fun hasReadableDgram(conn: QuicheConn): Boolean = nConnDgramRecvFrontLen(conn.handle) >= 0
 
     override fun connDgramMaxWritableLen(conn: QuicheConn): MaxDatagramSize {
@@ -357,6 +401,8 @@ object JniQuicheApi : QuicheApi {
     override fun connIsHandshakeConfirmed(conn: QuicheConn): Boolean = nConnIsHandshakeConfirmed(conn.handle)
 
     override fun connIsClosed(conn: QuicheConn): Boolean = nConnIsClosed(conn.handle)
+
+    override fun connIsDraining(conn: QuicheConn): Boolean = nConnIsDraining(conn.handle)
 
     override fun connIsTimedOut(conn: QuicheConn): Boolean = nConnIsTimedOut(conn.handle)
 
@@ -371,6 +417,26 @@ object JniQuicheApi : QuicheApi {
         buf: Long,
         bufLen: Int,
     ): Int = nConnSession(conn.handle, buf, bufLen)
+
+    override fun connSetToken(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int = nConnSetToken(conn.handle, buf, bufLen)
+
+    override fun connTakeNewToken(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int = nConnTakeNewToken(conn.handle, buf, bufLen)
+
+    override fun connSendNewToken(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int = nConnSendNewToken(conn.handle, buf, bufLen)
+
+    override fun connSetPeerAddressValidated(conn: QuicheConn): Int = nConnSetPeerAddressValidated(conn.handle)
 
     override fun connIsResumed(conn: QuicheConn): Boolean = nConnIsResumed(conn.handle)
 
@@ -502,6 +568,11 @@ object JniQuicheApi : QuicheApi {
         return if (nanos < 0) null else nanos.nanoseconds
     }
 
+    override fun connTimeoutNanos(conn: QuicheConn): Long {
+        val nanos = nConnTimeoutAsNanos(conn.handle)
+        return if (nanos < 0) NO_TIMEOUT_NANOS else nanos
+    }
+
     override fun connOnTimeout(conn: QuicheConn) = nConnOnTimeout(conn.handle)
 
     override fun setThreadVirtualTimeNanos(nanos: Long) = nSetVirtualTimeNanos(nanos)
@@ -517,6 +588,28 @@ object JniQuicheApi : QuicheApi {
         }
 
     override fun connSendAckEliciting(conn: QuicheConn): Int = nConnSendAckEliciting(conn.handle).toInt()
+
+    override fun connProbeNow(conn: QuicheConn): Int = nConnProbeNow(conn.handle).toInt()
+
+    override fun connRequeuePath(
+        conn: QuicheConn,
+        localAddr: Long,
+        localLen: Int,
+        peerAddr: Long,
+        peerLen: Int,
+    ): Int = nConnRequeuePath(conn.handle, localAddr, localLen, peerAddr, peerLen).toInt()
+
+    override fun configSetInitialRtt(
+        config: QuicheConfig,
+        nanos: Long,
+    ) = nConfigSetInitialRtt(config.handle, nanos)
+
+    override fun connSetHandshakePtoCeiling(
+        conn: QuicheConn,
+        ceiling: PtoCeiling,
+    ) = nConnSetHandshakePtoCeiling(conn.handle, ptoCeilingFirstNanos(ceiling), ptoCeilingGrowth(ceiling), ptoCeilingMaxNanos(ceiling))
+
+    override fun connHandshakePtoCeilingHeld(conn: QuicheConn): Boolean = nConnHandshakePtoCeilingHeld(conn.handle)
 
     override fun connClose(
         conn: QuicheConn,
@@ -549,6 +642,18 @@ object JniQuicheApi : QuicheApi {
         // path, < 0 is a quiche error code. Real DCID sequence numbers are tiny, so this is
         // unambiguous in practice.
         val raw = nConnProbePath(conn.handle, localAddr, localLen, peerAddr, peerLen)
+        return if (raw >= 0) ProbeOutcome.Probed(raw) else ProbeOutcome.Rejected(raw.toInt())
+    }
+
+    override fun connProbePathWith(
+        conn: QuicheConn,
+        localAddr: Long,
+        localLen: Int,
+        peerAddr: Long,
+        peerLen: Int,
+        initialRttNanos: Long,
+    ): ProbeOutcome {
+        val raw = nConnProbePathWith(conn.handle, localAddr, localLen, peerAddr, peerLen, initialRttNanos)
         return if (raw >= 0) ProbeOutcome.Probed(raw) else ProbeOutcome.Rejected(raw.toInt())
     }
 
@@ -694,15 +799,37 @@ object JniQuicheApi : QuicheApi {
         outLen: Int,
     ): Int = nNegotiateVersion(scidAddr, scidLen, dcidAddr, dcidLen, outAddr, outLen)
 
+    override fun retry(
+        scidAddr: Long,
+        scidLen: Int,
+        dcidAddr: Long,
+        dcidLen: Int,
+        newScidAddr: Long,
+        newScidLen: Int,
+        tokenAddr: Long,
+        tokenLen: Int,
+        version: Int,
+        outAddr: Long,
+        outLen: Int,
+    ): Int = nRetry(scidAddr, scidLen, dcidAddr, dcidLen, newScidAddr, newScidLen, tokenAddr, tokenLen, version, outAddr, outLen)
+
     // --- Stream iteration ---
     override fun connReadable(conn: QuicheConn): QuicheStreamIter = QuicheStreamIter(nConnReadable(conn.handle))
 
     override fun connWritable(conn: QuicheConn): QuicheStreamIter = QuicheStreamIter(nConnWritable(conn.handle))
 
+    override fun connStreamWritableNext(conn: QuicheConn): Long = nConnStreamWritableNext(conn.handle)
+
     override fun streamIterNext(iter: QuicheStreamIter): QuicStreamId? {
         if (iter.isExhausted) return null
         val raw = nStreamIterNext(iter.handle)
         return if (raw >= 0) QuicStreamId(raw) else null
+    }
+
+    override fun streamIterNextId(iter: QuicheStreamIter): NextStream {
+        if (iter.isExhausted) return NextStream.End
+        val raw = nStreamIterNext(iter.handle)
+        return if (raw >= 0) NextStream.of(QuicStreamId(raw)) else NextStream.End
     }
 
     override fun streamIterFree(iter: QuicheStreamIter) {
@@ -731,6 +858,8 @@ object JniQuicheApi : QuicheApi {
 
     override fun sendInfoFromAddrLen(info: QuicheSendInfo): Int = nSendInfoFromAddrLen(info.handle)
 
+    override fun sendInfoAtNanos(info: QuicheSendInfo): Long = nSendInfoAtNanos(info.handle)
+
     override fun sockAddrFamily(addr: Long): Int = nSockAddrFamily(addr)
 
     override fun sockAddrPort(addr: Long): Int = nSockAddrPort(addr)
@@ -741,11 +870,22 @@ object JniQuicheApi : QuicheApi {
 
     override fun sockAddrV6Lo(addr: Long): Long = nSockAddrV6Lo(addr)
 
+    override fun connActivePathRttNanos(conn: QuicheConn): Long {
+        val out = pathStatsScratch.get()
+        var index = 0L
+        while (nConnPathStats(conn.handle, index++, out) >= 0) {
+            if (out[PATH_STATS_ACTIVE_SLOT] != 0L) return out[PATH_STATS_RTT_SLOT]
+        }
+        return NO_RTT_NANOS
+    }
+
     private const val QUICHE_ERR_DONE = -1L
     private const val CONN_STATS_SLOTS = 13 // quiche_jni.c nConnStats slot count
     private const val CONN_STATS_LOST_SLOT = 2
     private const val CONN_STATS_RETRANS_SLOT = 4
     private const val PATH_STATS_SLOTS = 18 // quiche_jni.c nConnPathStats slot count
+    private const val PATH_STATS_ACTIVE_SLOT = 1
+    private const val PATH_STATS_RTT_SLOT = 7
 
     // --- JNI externals (raw Long — JNI doesn't understand inline classes) ---
     @JvmStatic private external fun nConfigNew(version: Int): Long
@@ -1059,6 +1199,8 @@ object JniQuicheApi : QuicheApi {
 
     @JvmStatic private external fun nConnIsClosed(conn: Long): Boolean
 
+    @JvmStatic private external fun nConnIsDraining(conn: Long): Boolean
+
     @JvmStatic private external fun nConnIsTimedOut(conn: Long): Boolean
 
     @JvmStatic private external fun nConnSetSession(
@@ -1072,6 +1214,26 @@ object JniQuicheApi : QuicheApi {
         buf: Long,
         bufLen: Int,
     ): Int
+
+    @JvmStatic private external fun nConnSetToken(
+        conn: Long,
+        buf: Long,
+        bufLen: Int,
+    ): Int
+
+    @JvmStatic private external fun nConnTakeNewToken(
+        conn: Long,
+        buf: Long,
+        bufLen: Int,
+    ): Int
+
+    @JvmStatic private external fun nConnSendNewToken(
+        conn: Long,
+        buf: Long,
+        bufLen: Int,
+    ): Int
+
+    @JvmStatic private external fun nConnSetPeerAddressValidated(conn: Long): Int
 
     @JvmStatic private external fun nConnIsResumed(conn: Long): Boolean
 
@@ -1100,6 +1262,30 @@ object JniQuicheApi : QuicheApi {
     @JvmStatic private external fun nClearThreadRandomState()
 
     @JvmStatic private external fun nConnSendAckEliciting(conn: Long): Long
+
+    @JvmStatic private external fun nConnProbeNow(conn: Long): Long
+
+    @JvmStatic private external fun nConnRequeuePath(
+        conn: Long,
+        localAddr: Long,
+        localLen: Int,
+        peerAddr: Long,
+        peerLen: Int,
+    ): Long
+
+    @JvmStatic private external fun nConfigSetInitialRtt(
+        config: Long,
+        nanos: Long,
+    )
+
+    @JvmStatic private external fun nConnSetHandshakePtoCeiling(
+        conn: Long,
+        firstNanos: Long,
+        growth: Int,
+        maxNanos: Long,
+    )
+
+    @JvmStatic private external fun nConnHandshakePtoCeilingHeld(conn: Long): Boolean
 
     @JvmStatic private external fun nConnClose(
         conn: Long,
@@ -1133,6 +1319,15 @@ object JniQuicheApi : QuicheApi {
         localLen: Int,
         peerAddr: Long,
         peerLen: Int,
+    ): Long
+
+    @JvmStatic private external fun nConnProbePathWith(
+        conn: Long,
+        localAddr: Long,
+        localLen: Int,
+        peerAddr: Long,
+        peerLen: Int,
+        initialRttNanos: Long,
     ): Long
 
     @JvmStatic private external fun nConnNewScid(
@@ -1214,6 +1409,8 @@ object JniQuicheApi : QuicheApi {
 
     @JvmStatic private external fun nSendInfoFromAddrLen(ptr: Long): Int
 
+    @JvmStatic private external fun nSendInfoAtNanos(ptr: Long): Long
+
     @JvmStatic private external fun nSockAddrFamily(addr: Long): Int
 
     @JvmStatic private external fun nSockAddrPort(addr: Long): Int
@@ -1275,11 +1472,29 @@ object JniQuicheApi : QuicheApi {
         outLen: Int,
     ): Int
 
+    @JvmStatic private external fun nRetry(
+        scidAddr: Long,
+        scidLen: Int,
+        dcidAddr: Long,
+        dcidLen: Int,
+        newScidAddr: Long,
+        newScidLen: Int,
+        tokenAddr: Long,
+        tokenLen: Int,
+        version: Int,
+        outAddr: Long,
+        outLen: Int,
+    ): Int
+
     @FastNative
     @JvmStatic
     private external fun nConnReadable(conn: Long): Long
 
     @JvmStatic private external fun nConnWritable(conn: Long): Long
+
+    @FastNative
+    @JvmStatic
+    private external fun nConnStreamWritableNext(conn: Long): Long
 
     @FastNative
     @JvmStatic

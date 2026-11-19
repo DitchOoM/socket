@@ -614,7 +614,7 @@ private fun effectiveVerifyPeer(o: QuicOptions): Boolean =
  * Whether SecTrust ([appleSystemChainTrust]) rather than BoringSSL validates the server chain: the iOS
  * family, peer verification on, no pinned anchors or leaf hashes, and [AppleTrustSource.SystemTrustStore].
  */
-private fun usesSecTrust(o: QuicOptions): Boolean =
+internal fun usesSecTrust(o: QuicOptions): Boolean =
     Platform.osFamily != OsFamily.MACOSX &&
         o.appleTrustSource == AppleTrustSource.SystemTrustStore &&
         o.trustedCaCertificatesPem.isEmpty() &&

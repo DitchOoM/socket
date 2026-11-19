@@ -46,7 +46,7 @@ kotlin {
         publishLibraryVariants("release")
     }
     jvm {
-        compilerOptions.jvmTarget.set(JvmTarget.JVM_1_8)
+        compilerOptions.jvmTarget.set(JvmTarget.JVM_17)
     }
     js {
         browser()
@@ -59,16 +59,12 @@ kotlin {
 
     if (appleTargets) {
         macosArm64()
-        macosX64()
         iosArm64()
         iosSimulatorArm64()
-        iosX64()
         tvosArm64()
         tvosSimulatorArm64()
-        tvosX64()
-        watchosArm64()
+        watchosDeviceArm64()
         watchosSimulatorArm64()
-        watchosX64()
     }
 
     if (linuxTargets) {
@@ -113,7 +109,7 @@ android {
         .manifest
         .srcFile("src/androidMain/AndroidManifest.xml")
     defaultConfig {
-        minSdk = 21
+        minSdk = 28
     }
     namespace = "com.ditchoom.socket.testkit"
 

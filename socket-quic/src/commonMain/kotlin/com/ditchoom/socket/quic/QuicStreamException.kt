@@ -56,4 +56,7 @@ class QuicStreamException(
     val abort: QuicStreamAbort,
     message: String,
     cause: Throwable? = null,
-) : Exception(message, cause)
+) : Exception(message, cause) {
+    /** An abort described only by its type; the message is derived from [streamId] and [abort]. */
+    constructor(streamId: Long, abort: QuicStreamAbort) : this(streamId, abort, "QUIC stream $streamId aborted by the peer: $abort")
+}

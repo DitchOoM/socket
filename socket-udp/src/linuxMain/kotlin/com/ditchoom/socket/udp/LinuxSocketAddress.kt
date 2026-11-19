@@ -275,6 +275,8 @@ internal object LinuxSocketAddressResolver : SocketAddressResolver {
         port: Int,
     ): SocketAddress {
         require(port in 0..65535) { "port out of range: $port" }
+        // AI_NUMERICHOST never asks DNS: a literal resolves here, with no hop to another dispatcher.
+        resolveViaGetaddrinfo(host, port, numericOnly = true)?.let { return it }
         return withContext(Dispatchers.Default) {
             resolveViaGetaddrinfo(host, port, numericOnly = false)
                 ?: throw IllegalArgumentException("Could not resolve host: '$host'")

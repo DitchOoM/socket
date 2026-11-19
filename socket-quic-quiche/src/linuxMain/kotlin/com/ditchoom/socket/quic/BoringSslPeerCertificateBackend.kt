@@ -6,6 +6,7 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.WriteBuffer
+import com.ditchoom.buffer.crypto.secure
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.socket.quic.boringssl.ditchoom_p256_generate
 import com.ditchoom.socket.quic.boringssl.ditchoom_p256_sign
@@ -19,16 +20,15 @@ private const val P256_POINT_BYTES = 65
 
 /**
  * Linux [PeerCertificateBackend]: the BoringSSL already linked into this binary (the `ditchoom_p256_*`
- * wrappers in `BoringSslX509.def`), the module's SHA-256, `mkstemp` files. Never buffer-crypto: a second
- * static BoringSSL in one K/N binary collides with this one (see [sha256Into]).
+ * wrappers in `BoringSslX509.def`), the module's SHA-256, `mkstemp` files. The private scalar lives in a
+ * [secure] buffer, wiped when the key pair closes.
  */
 internal object BoringSslPeerCertificateBackend : PeerCertificateBackend {
     override fun generateKeyPair(): P256KeyPair {
-        val native = BufferFactory.network()
-        val scalar = native.allocate(P256_SCALAR_BYTES)
-        val point = native.allocate(P256_POINT_BYTES)
+        val scalar = BufferFactory.network().secure(maxAllocationBytes = P256_SCALAR_BYTES).allocate(P256_SCALAR_BYTES)
+        val point = BufferFactory.network().allocate(P256_POINT_BYTES)
         if (ditchoom_p256_generate(scalar.pointer(), point.pointer()) != 1) {
-            scalar.zeroAndFree()
+            scalar.freeNativeMemory()
             point.freeNativeMemory()
             throw PeerCertificateException(PeerCertificateFailure.KeyGenerationFailed("EC_KEY_generate_key failed"))
         }
@@ -47,7 +47,7 @@ internal object BoringSslPeerCertificateBackend : PeerCertificateBackend {
     ): R = withPosixPemFiles(certificatePem, privateKeyPem, block)
 }
 
-/** [scalar] and [point] were filled by `ditchoom_p256_generate`; [close] zeroes the scalar. */
+/** [scalar] and [point] were filled by `ditchoom_p256_generate`; freeing the secure [scalar] zeroes it. */
 private class BoringSslP256KeyPair(
     private val scalar: PlatformBuffer,
     private val point: PlatformBuffer,
@@ -64,14 +64,32 @@ private class BoringSslP256KeyPair(
         message: ReadBuffer,
         dest: WriteBuffer,
     ) {
+        val access = message.nativeMemoryAccess
+        if (access != null) {
+            signAt((access.nativeAddress + message.position()).toCPointer<UByteVar>(), message.remaining(), dest)
+            return
+        }
+        // Not native memory: staged into some, because the certificate body is small and signed once.
+        val staged = stageNative(message)
+        try {
+            signAt(staged.nativeMemoryAccess?.nativeAddress?.toCPointer<UByteVar>(), staged.remaining(), dest)
+        } finally {
+            staged.freeNativeMemory()
+        }
+    }
+
+    private fun signAt(
+        messageStart: CPointer<UByteVar>?,
+        messageLength: Int,
+        dest: WriteBuffer,
+    ) {
         val signature = BufferFactory.network().allocate(P256_MAX_SIGNATURE_BYTES)
         try {
-            val messageStart = message.nativeMemoryAccess!!.nativeAddress + message.position()
             val length =
                 ditchoom_p256_sign(
                     scalar.pointer(),
-                    messageStart.toCPointer<UByteVar>(),
-                    message.remaining().convert(),
+                    messageStart,
+                    messageLength.convert(),
                     signature.pointer(),
                     P256_MAX_SIGNATURE_BYTES.convert(),
                 ).toInt()
@@ -83,14 +101,19 @@ private class BoringSslP256KeyPair(
     }
 
     override fun close() {
-        scalar.zeroAndFree()
+        scalar.freeNativeMemory()
         point.freeNativeMemory()
     }
 }
 
 private fun PlatformBuffer.pointer(): CPointer<UByteVar> = nativeMemoryAccess!!.nativeAddress.toCPointer()!!
 
-private fun PlatformBuffer.zeroAndFree() {
-    for (i in 0 until capacity) set(i, 0.toByte())
-    freeNativeMemory()
+/** A native-memory copy of [message]'s remaining bytes, read-ready; [message]'s position is unchanged. */
+private fun stageNative(message: ReadBuffer): PlatformBuffer {
+    val start = message.position()
+    val staged = BufferFactory.network().allocate(message.remaining())
+    staged.write(message)
+    message.position(start)
+    staged.resetForRead()
+    return staged
 }

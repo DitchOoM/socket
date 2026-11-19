@@ -47,7 +47,7 @@ kotlin {
         publishLibraryVariants("release")
     }
     jvm {
-        compilerOptions.jvmTarget.set(JvmTarget.JVM_1_8)
+        compilerOptions.jvmTarget.set(JvmTarget.JVM_17)
     }
 
     // Linux quiche-backend consumers (host-gated like :socket-quic-quiche).
@@ -59,16 +59,12 @@ kotlin {
     // Apple targets — host-gated, since they only build on macOS.
     if (appleTargets) {
         macosArm64()
-        macosX64()
         iosArm64()
         iosSimulatorArm64()
-        iosX64()
         tvosArm64()
         tvosSimulatorArm64()
-        tvosX64()
-        watchosArm64()
+        watchosDeviceArm64()
         watchosSimulatorArm64()
-        watchosX64()
     }
 
     applyDefaultHierarchyTemplate()
@@ -135,7 +131,7 @@ kotlin {
 android {
     compileSdk = 37
     defaultConfig {
-        minSdk = 24
+        minSdk = 28
     }
     namespace = "com.ditchoom.socket.quic.testsuite"
 }

@@ -9,11 +9,7 @@ import java.security.MessageDigest
 private const val SHA256_DIGEST_BYTES = 32
 
 /**
- * JVM/Android SHA-256 straight from JCA [MessageDigest]: a pure-Java path with no native library, so there is
- * no BoringSSL to collide with quiche's (unlike Linux; see [sha256Into]'s expect doc and the linuxMain actual).
- *
- * Deliberately not `buffer-crypto`: its Android artifact declares minSdk 28, which would fail manifest merging
- * for every app below that, while this module supports minSdk 24. `MessageDigest` is available on all of them.
+ * JVM/Android SHA-256 straight from JCA [MessageDigest]: a pure-Java path with no native library.
  *
  * Non-consuming on [input]: a heap buffer is read through its own backing array, a direct one through a
  * read-only `ByteBuffer` view ([toNativeData] leaves position and limit alone). The digest goes straight into

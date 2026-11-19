@@ -40,6 +40,17 @@ val linuxTargets =
 val isRunningOnGithub = System.getenv("GITHUB_REPOSITORY")?.isNotBlank() == true
 val isMainBranchGithub = System.getenv("GITHUB_REF") == "refs/heads/main"
 
+// ⚠️ NATIVE-INPUT REGIONS. Every line between a `region quiche-native-inputs` marker and its
+// `endregion` is an input of a quiche native binary: the source patches, the cargo / NDK / clang
+// invocations, the JNI shim build, the BoringSSL bundle pin. Two things hash exactly those lines, so a
+// change here rebuilds the natives and nothing else does:
+//   * quichePatchDigest below, embedded in the `.built-…` markers of the cached natives, and
+//   * .github/scripts/quiche-native-inputs.sh, which keys every CI native cache (with the quiche
+//     version, the boring-crate pin, quiche_jni.c and quiche.h).
+// Code that decides what a native binary contains goes INSIDE a region. Test, fuzz, packaging and
+// publishing config goes OUTSIDE, so editing it does not recompile quiche. Both consumers fail loudly if
+// the markers are not exactly two balanced regions.
+// region quiche-native-inputs
 // quiche version — centralized in gradle/libs.versions.toml
 val quicheVersion = libs.versions.quiche.get()
 
@@ -53,21 +64,46 @@ val quicheSha256 = libs.versions.quicheSha256.get()
 val quicheBoringCrateVersion = libs.versions.quicheBoringCrate.get()
 val quicheBuildDir = layout.buildDirectory.dir("quiche")
 
-// Digest of THIS build script — the single source of truth for every quiche source patch
-// (patchQuicheForCallerClock + the build.rs patches). Embedded in the .built marker so ANY change to how
-// quiche source is patched changes the marker and forces a rebuild from the newly-patched clone. Fixes the
-// caller-clock cache-coherence bug (#260/#263): the marker used to be version-only, so #260's source patch
-// left it byte-identical and a cached pre-patch libquiche.dylib (missing quiche_set_virtual_time_nanos /
-// quiche_clear_virtual_time) satisfied it → JNI shim link failure. A content digest can't be forgotten the
-// way a hand-bumped version token can — which is exactly the failure mode that caused the incident.
+// Digest of the native-input regions of THIS build script — the single source of truth for every quiche
+// source patch (patchQuicheForCallerClock + the build.rs patches). Embedded in the .built marker so ANY
+// change to how quiche source is patched changes the marker and forces a rebuild from the newly-patched
+// clone. Fixes the caller-clock cache-coherence bug (#260/#263): the marker used to be version-only, so
+// #260's source patch left it byte-identical and a cached pre-patch libquiche.dylib (missing
+// quiche_set_virtual_time_nanos / quiche_clear_virtual_time) satisfied it → JNI shim link failure. A
+// content digest can't be forgotten the way a hand-bumped version token can — which is exactly the
+// failure mode that caused the incident. It covers the regions, not the whole file: this script is 7,000
+// lines and most of them configure tests, so a digest of all of it invalidated the natives on nearly
+// every commit.
 // The boring-crate pin is folded in because it changes the source build too, and lives in the version
 // catalog rather than this script.
 val quichePatchDigest: String =
-    MessageDigest
-        .getInstance("SHA-256")
-        .digest(buildFile.readBytes() + quicheBoringCrateVersion.toByteArray())
-        .joinToString("") { "%02x".format(it) }
-        .take(12)
+    run {
+        val regionMarker = "// region quiche-native-inputs"
+        val endMarker = "// endregion quiche-native-inputs"
+        val inputs = StringBuilder()
+        var inRegion = false
+        var regions = 0
+        for (line in buildFile.readLines()) {
+            when (line.trim()) {
+                regionMarker -> {
+                    check(!inRegion) { "nested `$regionMarker` in $buildFile" }
+                    inRegion = true
+                    regions++
+                }
+                endMarker -> {
+                    check(inRegion) { "`$endMarker` without a region in $buildFile" }
+                    inRegion = false
+                }
+                else -> if (inRegion) inputs.append(line).append('\n')
+            }
+        }
+        check(!inRegion && regions == 2) { "expected exactly 2 `$regionMarker` regions in $buildFile, found $regions" }
+        MessageDigest
+            .getInstance("SHA-256")
+            .digest(inputs.toString().toByteArray() + quicheBoringCrateVersion.toByteArray())
+            .joinToString("") { "%02x".format(it) }
+            .take(12)
+    }
 
 repositories {
     // Scoped mavenLocal: resolves the canonical :boringssl-canonical OWNER klib from ~/.m2, filtered to
@@ -237,6 +273,11 @@ fun downloadQuicheSource(
     // Let a simulation drive quiche's own random draws (packet-number skipping, path-challenge data) from
     // a seed, as the caller clock drives its time. Idempotent, fails loudly on drift. See the KDoc.
     patchQuicheForCallerEntropy(sourceDir)
+    // Give Apple targets a real `quiche_send_info.at` (upstream writes zero there). Applied after the caller
+    // clock so it reads `crate::now()`. Idempotent, fails loudly on drift. See the KDoc.
+    patchQuichePacingTimeOnApple(sourceDir)
+    // The same for Windows, on the clock System.nanoTime reads there. Idempotent, fails loudly on drift.
+    patchQuichePacingTimeOnWindows(sourceDir)
     // Give ffi.rs' `TransportParams` the `#[repr(C)]` it is missing upstream, so its ABI matches what
     // quiche.h declares. Idempotent, fails loudly on drift OR on an upstream fix. See the KDoc.
     patchQuicheTransportParamsRepr(sourceDir)
@@ -301,6 +342,10 @@ fun downloadQuicheSource(
     // complete, so a client whose Finished is lost re-sends it at every PTO instead of every other one.
     // Idempotent, fails loudly on drift OR on an upstream fix. See the KDoc.
     patchQuichePtoWaitsForConfirmation(sourceDir)
+    // Read a peer's key update once the handshake is complete rather than only once it is confirmed, so a
+    // client whose HANDSHAKE_DONE was lost can still read the server's later packets. Idempotent, fails
+    // loudly on drift OR on an upstream fix. See the KDoc.
+    patchQuichePeerKeyUpdateReadBeforeConfirmation(sourceDir)
     // Make every PTO probe in the Initial and Handshake spaces carry the oldest unacknowledged CRYPTO
     // bytes instead of a bare PING, so a lost ClientHello or Finished is not stranded behind one lucky
     // datagram. Idempotent, fails loudly on drift. See the KDoc.
@@ -332,6 +377,31 @@ fun downloadQuicheSource(
     // The 1-RTT data a client's Handshake probe re-sends leaves in a datagram of its own, so a confirmed peer
     // that drops a datagram's undecryptable Handshake packet still reads it. Idempotent, fails loudly on drift.
     patchQuicheProbeAppDataInItsOwnDatagram(sourceDir)
+    // Export quiche_conn_probe_now: a network that came back has the PTO's probes sent at once, past a congestion
+    // window the outage's own probes filled (RFC 9002 §6.2.4). Idempotent, fails loudly on drift. See the KDoc.
+    patchQuicheProbeNowFfi(sourceDir)
+    // Export quiche_config_set_initial_rtt and a ceiling on the PTO interval held until the first application-space
+    // RTT sample after confirmation, so retransmit gaps follow the caller's prior and growth rule until the
+    // connection has a sample of its own. Idempotent, fails loudly on drift. See the KDoc.
+    patchQuicheHandshakePtoCeiling(sourceDir)
+    // A path already validated is never failed by PATH_CHALLENGEs counted lost, and a connection left with no path
+    // closes with NO_VIABLE_PATH instead of no error. Applied after patchQuicheRetireDcidNoRelink, whose edit of
+    // the same branch it guards. Idempotent, fails loudly on drift. See the KDoc.
+    patchQuicheValidatedPathSurvivesProbeLoss(sourceDir)
+    // Export quiche_conn_requeue_path: a client that migrated away from a path whose socket is gone resends what that
+    // path had in flight now, from the active path. Applied after patchQuicheEvictedPathFramesRequeued, whose recovery
+    // methods it uses. Idempotent, fails loudly on drift. See the KDoc.
+    patchQuicheRequeuePathFfi(sourceDir)
+    // Export quiche_conn_probe_path_with: a probe that seeds a new path's RTT from the caller's prior for its link and
+    // sends its PATH_CHALLENGE past the congestion window. Idempotent, fails loudly on drift. See the KDoc.
+    patchQuicheProbePathWithFfi(sourceDir)
+    // A client probe of a 4-tuple quiche holds a path the client left at forgets that path and probes a new one, so a
+    // socket the OS hands a port the connection had before can be migrated to. Applied after
+    // patchQuicheProbePathWithFfi, whose function it edits. Idempotent, fails loudly on drift. See the KDoc.
+    patchQuicheProbeReplacesLeftPath(sourceDir)
+    // NEW_TOKEN on both sides (RFC 9000 §8.1.3): a client keeps and sends tokens, a server sends them and lifts the
+    // anti-amplification limit for a client that presented a valid one. Idempotent, fails loudly on drift. See the KDoc.
+    patchQuicheNewTokenFfi(sourceDir)
 
     // Name the patch set this tree now carries. The tree outlives the run (CI caches it with a
     // prefix fallback), so a reader that compiles it outside these tasks checks this stamp rather
@@ -343,6 +413,133 @@ fun downloadQuicheSource(
 
 /** Untracked file in the prepared quiche tree naming the [quichePatchDigest] it was patched for. */
 val quicheSourceDigestStamp = ".socket-patch-digest"
+
+/**
+ * Make `quiche_send_info.at` carry a time on Apple targets. Upstream's `std_time_to_c` reads Rust's `Instant` as a
+ * `timespec` only off Apple and Windows; on macOS and iOS it writes zero, so a caller sees every datagram as due
+ * decades ago and nothing is paced.
+ *
+ * Here `at` is written as the host's `CLOCK_UPTIME_RAW` reading (nanoseconds; `mach_absolute_time` converted, the
+ * clock `System.nanoTime` reads on macOS) plus how far `at` is from quiche's own now, so a caller compares it with
+ * its own monotonic clock directly. No assumption is made about `Instant`'s layout. Windows keeps upstream's zero.
+ *
+ * Marker-guarded and loud in both directions: a re-run returns, a moved anchor throws, and an upstream that
+ * converts the Apple instant itself throws, telling you to delete this patch.
+ */
+fun patchQuichePacingTimeOnApple(sourceDir: File) {
+    val ffiRs = sourceDir.resolve("quiche/src/ffi.rs")
+    if (!ffiRs.exists()) return
+    val text = ffiRs.readText()
+    val marker = "socket-apple-pacing-time"
+    if (text.contains(marker)) return
+    val anchor =
+        """
+        |#[cfg(any(target_os = "macos", target_os = "ios", target_os = "windows"))]
+        |fn std_time_to_c(_time: &Instant, out: &mut timespec) {
+        |    // TODO: implement Instant conversion for systems that don't use timespec.
+        |    out.tv_sec = 0;
+        |    out.tv_nsec = 0;
+        |}
+        """.trimMargin()
+    if (text.split(anchor).size != 2) {
+        throw GradleException(
+            "$marker: upstream's Apple/Windows `std_time_to_c` stub not found exactly once in quiche/src/ffi.rs — " +
+                "a quiche bump changed it. If upstream now converts the Apple instant, DELETE " +
+                "patchQuichePacingTimeOnApple and its call site; otherwise re-fit it.",
+        )
+    }
+    val replacement =
+        """
+        |// $marker: the instant as CLOCK_UPTIME_RAW nanoseconds, the clock a host's monotonic reads on Apple.
+        |#[cfg(any(target_os = "macos", target_os = "ios"))]
+        |fn std_time_to_c(time: &Instant, out: &mut timespec) {
+        |    let mut base: timespec = unsafe { std::mem::zeroed() };
+        |    unsafe { libc::clock_gettime(libc::CLOCK_UPTIME_RAW, &mut base) };
+        |    let base_nanos = base.tv_sec as i128 * 1_000_000_000 + base.tv_nsec as i128;
+        |    let now = crate::now();
+        |    let ahead = match time.checked_duration_since(now) {
+        |        Some(d) => d.as_nanos() as i128,
+        |        None => -(now.saturating_duration_since(*time).as_nanos() as i128),
+        |    };
+        |    let at = base_nanos + ahead;
+        |    out.tv_sec = at.div_euclid(1_000_000_000) as libc::time_t;
+        |    out.tv_nsec = at.rem_euclid(1_000_000_000) as libc::c_long;
+        |}
+        |
+        |#[cfg(target_os = "windows")]
+        |fn std_time_to_c(_time: &Instant, out: &mut timespec) {
+        |    // TODO: implement Instant conversion for systems that don't use timespec.
+        |    out.tv_sec = 0;
+        |    out.tv_nsec = 0;
+        |}
+        """.trimMargin()
+    ffiRs.writeText(text.replace(anchor, replacement))
+    logger.lifecycle("Patched quiche source: send_info.at on Apple")
+}
+
+/**
+ * Make `quiche_send_info.at` carry a time on Windows too. After [patchQuichePacingTimeOnApple] only Windows kept
+ * upstream's zero, so every datagram read as due at zero on a clock then reading 1,069 s (CorePacingClockTests on
+ * every Windows lane) and nothing was paced there.
+ *
+ * Here `at` is written as `QueryPerformanceCounter` scaled to nanoseconds, the reading `System.nanoTime` takes on
+ * Windows, plus how far `at` is from quiche's own now, as the Apple conversion does.
+ *
+ * Marker-guarded and loud in both directions: a re-run returns, a moved anchor throws, and an upstream that converts
+ * the Windows instant itself throws, telling you to delete this patch.
+ */
+fun patchQuichePacingTimeOnWindows(sourceDir: File) {
+    val ffiRs = sourceDir.resolve("quiche/src/ffi.rs")
+    if (!ffiRs.exists()) return
+    val text = ffiRs.readText()
+    val marker = "socket-windows-pacing-time"
+    if (text.contains(marker)) return
+    val anchor =
+        """
+        |#[cfg(target_os = "windows")]
+        |fn std_time_to_c(_time: &Instant, out: &mut timespec) {
+        |    // TODO: implement Instant conversion for systems that don't use timespec.
+        |    out.tv_sec = 0;
+        |    out.tv_nsec = 0;
+        |}
+        """.trimMargin()
+    if (text.split(anchor).size != 2) {
+        throw GradleException(
+            "$marker: the Windows `std_time_to_c` stub left by patchQuichePacingTimeOnApple was not found exactly once " +
+                "in quiche/src/ffi.rs. If upstream now converts the Windows instant, DELETE patchQuichePacingTimeOnWindows " +
+                "and its call site; otherwise re-fit it.",
+        )
+    }
+    val replacement =
+        """
+        |// $marker: the instant as QueryPerformanceCounter nanoseconds, the clock System.nanoTime reads on Windows.
+        |#[cfg(target_os = "windows")]
+        |fn std_time_to_c(time: &Instant, out: &mut timespec) {
+        |    #[link(name = "kernel32")]
+        |    extern "system" {
+        |        fn QueryPerformanceCounter(count: *mut i64) -> i32;
+        |        fn QueryPerformanceFrequency(frequency: *mut i64) -> i32;
+        |    }
+        |    let mut count: i64 = 0;
+        |    let mut frequency: i64 = 0;
+        |    unsafe {
+        |        QueryPerformanceCounter(&mut count);
+        |        QueryPerformanceFrequency(&mut frequency);
+        |    }
+        |    let base_nanos = if frequency > 0 { count as i128 * 1_000_000_000 / frequency as i128 } else { 0 };
+        |    let now = crate::now();
+        |    let ahead = match time.checked_duration_since(now) {
+        |        Some(d) => d.as_nanos() as i128,
+        |        None => -(now.saturating_duration_since(*time).as_nanos() as i128),
+        |    };
+        |    let at = base_nanos + ahead;
+        |    out.tv_sec = at.div_euclid(1_000_000_000) as libc::time_t;
+        |    out.tv_nsec = at.rem_euclid(1_000_000_000) as libc::c_long;
+        |}
+        """.trimMargin()
+    ffiRs.writeText(text.replace(anchor, replacement))
+    logger.lifecycle("Patched quiche source: send_info.at on Windows")
+}
 
 /**
  * Make quiche's own random draws **caller-seedable**, the entropy half of the caller clock
@@ -1027,6 +1224,50 @@ fun patchQuichePtoWaitsForConfirmation(sourceDir: File) {
 }
 
 /**
+ * Read a peer's key update as soon as the handshake is **complete**, not only once it is confirmed.
+ *
+ * **Why.** quiche derives the next 1-RTT keys for a packet whose key phase differs from its own only when
+ * `handshake_confirmed` is set, and a client sets that only when HANDSHAKE_DONE arrives. RFC 9001 §6.1 lets a
+ * server update its keys as soon as it has completed the handshake and holds an acknowledgement in the
+ * current phase. Lose the HANDSHAKE_DONE packet and a server that updates (quinn does) re-sends it, and the
+ * response with it, in the new phase: every such packet fails to decrypt and is dropped silently, the client
+ * never confirms, and it idles out. The quic-interop-runner's `handshakeloss` against quinn: the client's
+ * trace holds nine datagrams from quinn after its last decrypted one, all in the flipped key phase.
+ *
+ * A packet that decrypts under the derived keys proves the peer holds them, so reading it before
+ * confirmation weakens nothing.
+ *
+ * **Idempotent and loud in both directions** (the [patchQuicheForCallerClock] discipline).
+ */
+fun patchQuichePeerKeyUpdateReadBeforeConfirmation(sourceDir: File) {
+    val marker = "socket-peer-key-update-before-confirmation"
+    val libRs = sourceDir.resolve("quiche/src/lib.rs")
+    if (!libRs.exists()) return
+    val text = libRs.readText()
+    if (text.contains(marker)) return
+    val anchor =
+        "        if self.handshake_confirmed &&\n            hdr.ty != Type::ZeroRTT &&\n" +
+            "            hdr.key_phase != self.key_phase\n"
+    if (text.split(anchor).size != 2) {
+        throw GradleException(
+            "$marker: the peer key-update check was not found exactly once in quiche's lib.rs — a quiche " +
+                "bump moved it, or upstream now reads a key update before confirmation. If so, DELETE " +
+                "patchQuichePeerKeyUpdateReadBeforeConfirmation; otherwise re-fit the anchor.",
+        )
+    }
+    libRs.writeText(
+        text.replace(
+            anchor,
+            "        // $marker: a peer may update its keys once its handshake is complete (RFC 9001 §6.1).\n" +
+                "        if (self.handshake_confirmed || self.is_established()) &&\n" +
+                "            hdr.ty != Type::ZeroRTT &&\n" +
+                "            hdr.key_phase != self.key_phase\n",
+        ),
+    )
+    logger.lifecycle("Patched quiche source: a peer's key update is read once the handshake is complete")
+}
+
+/**
  * Make every PTO probe sent in the Initial or Handshake space carry the oldest CRYPTO bytes the peer has
  * not acknowledged, rather than a bare PING once the first probe has taken them.
  *
@@ -1557,6 +1798,1084 @@ fun patchQuicheProbeAppDataInItsOwnDatagram(sourceDir: File) {
         ),
     )
     logger.lifecycle("Patched quiche source: 1-RTT data re-sent on a client's Handshake probe leaves in a datagram of its own")
+}
+
+/**
+ * Export `quiche_conn_probe_now`: the application knows the path is usable again after an outage (a network came
+ * back), so quiche sends what a PTO would send, now: up to two probe packets carrying the frames of the oldest
+ * unacknowledged packets, or a PING when nothing is in flight. Without it the only lever is
+ * `quiche_conn_send_ack_eliciting`, whose PING is held by the congestion window: the PTO probes sent into the outage
+ * count as bytes in flight, so after a few seconds' outage the window is full and nothing leaves until the next
+ * backed-off PTO, a second or more later (`RehomeConditionTests`). Even when the PING leaves, the data lost in the
+ * outage is resent only once its acknowledgement arrives, a round trip late (`WalkConditionReplayTests`).
+ *
+ * RFC 9002 §6.2.4: probe packets MUST NOT be blocked by the congestion controller, and are at most two; this sends
+ * exactly that, early, on the application's evidence instead of the timer's. It neither counts a PTO nor declares
+ * any packet lost, so the congestion controller and the PTO backoff are untouched; the probes' acknowledgements
+ * then drive ordinary loss detection for the rest. Both recovery implementations (`congestion` and `gcongestion`).
+ *
+ * Marker-guarded and loud in both directions: a re-run returns, a moved anchor throws, and an upstream that exports
+ * the same throws, telling you to delete this patch.
+ */
+fun patchQuicheProbeNowFfi(sourceDir: File) {
+    val marker = "socket-probe-now"
+    val src = sourceDir.resolve("quiche/src")
+    val ffiRs = src.resolve("ffi.rs")
+    if (!ffiRs.exists()) return
+    if (ffiRs.readText().contains(marker)) return
+    if (ffiRs.readText().contains("quiche_conn_probe_now")) {
+        throw GradleException(
+            "$marker: quiche's ffi.rs already exports quiche_conn_probe_now — upstream added it. DELETE " +
+                "patchQuicheProbeNowFfi and its call site, and check the upstream signature against libs/quiche/include/quiche.h.",
+        )
+    }
+
+    fun insertBefore(
+        file: File,
+        anchor: String,
+        insert: String,
+    ) {
+        val text = file.readText()
+        if (text.split(anchor).size != 2) {
+            throw GradleException(
+                "$marker: `${anchor.trim()}` not found exactly once in ${file.relativeTo(src)} — a quiche bump moved " +
+                    "it. Re-fit patchQuicheProbeNowFfi and re-verify with RehomeConditionTests.",
+            )
+        }
+        file.writeText(text.replace(anchor, insert + anchor))
+    }
+
+    val timeoutDecl = "    fn on_loss_detection_timeout(\n"
+    insertBefore(
+        src.resolve("recovery/mod.rs"),
+        timeoutDecl,
+        """
+        |    // $marker: sends up to two probes now, as a PTO would, without counting one.
+        |    fn socket_probe_now(&mut self, handshake_status: HandshakeStatus, now: Instant);
+        |
+        |
+        """.trimMargin(),
+    )
+    insertBefore(
+        src.resolve("recovery/congestion/recovery.rs"),
+        timeoutDecl,
+        """
+        |    // $marker: the PTO's probes, sent now: no PTO counted, no packet declared lost.
+        |    fn socket_probe_now(&mut self, handshake_status: HandshakeStatus, now: Instant) {
+        |        if self.bytes_in_flight.get() == 0 {
+        |            return;
+        |        }
+        |        let (_, e) = self.pto_time_and_space(handshake_status, now);
+        |        let epoch = &mut self.epochs[e];
+        |        epoch.loss_probes = MAX_PTO_PROBES_COUNT;
+        |        if !epoch.lost_frames_pto.is_empty() {
+        |            return;
+        |        }
+        |        let unacked_iter = epoch
+        |            .sent_packets
+        |            .iter()
+        |            .filter(|p| p.has_data && p.time_acked.is_none() && p.time_lost.is_none())
+        |            .take(MAX_PTO_PROBES_COUNT);
+        |        for unacked in unacked_iter {
+        |            epoch.lost_frames_pto.extend_from_slice(&unacked.frames);
+        |        }
+        |    }
+        |
+        |
+        """.trimMargin(),
+    )
+    insertBefore(
+        src.resolve("recovery/gcongestion/recovery.rs"),
+        timeoutDecl,
+        """
+        |    // $marker: the PTO's probes, sent now: no PTO counted, no packet declared lost.
+        |    fn socket_probe_now(&mut self, handshake_status: HandshakeStatus, now: Instant) {
+        |        if self.bytes_in_flight.get() == 0 {
+        |            return;
+        |        }
+        |        let (_, e) = self.pto_time_and_space(handshake_status, now);
+        |        let epoch = &mut self.epochs[e];
+        |        epoch.loss_probes = MAX_PTO_PROBES_COUNT;
+        |        if !epoch.lost_frames_pto.is_empty() {
+        |            return;
+        |        }
+        |        let unacked_frames = epoch
+        |            .sent_packets
+        |            .iter()
+        |            .filter_map(|p| {
+        |                if let SentStatus::Sent {
+        |                    has_data: true,
+        |                    frames,
+        |                    ..
+        |                } = &p.status
+        |                {
+        |                    Some(frames)
+        |                } else {
+        |                    None
+        |                }
+        |            })
+        |            .take(MAX_PTO_PROBES_COUNT)
+        |            .flatten()
+        |            .filter(|f| !matches!(f, frame::Frame::DatagramHeader { .. }));
+        |        epoch.lost_frames_pto.extend(unacked_frames.cloned());
+        |    }
+        |
+        |
+        """.trimMargin(),
+    )
+    insertBefore(
+        src.resolve("lib.rs"),
+        "    pub fn send_ack_eliciting(&mut self) -> Result<()> {\n",
+        """
+        |    /// $marker: the path is usable again after an outage the application knows of. Sends what a PTO
+        |    /// would, now: up to two probes with the oldest unacknowledged data, or a PING.
+        |    pub fn socket_probe_now(&mut self) -> Result<()> {
+        |        if self.is_closed() || self.is_draining() {
+        |            return Ok(());
+        |        }
+        |        let handshake_status = self.handshake_status();
+        |        let now = crate::now();
+        |        let path = self.paths.get_active_mut()?;
+        |        path.recovery.socket_probe_now(handshake_status, now);
+        |        path.needs_ack_eliciting = true;
+        |        Ok(())
+        |    }
+        |
+        |
+        """.trimMargin(),
+    )
+    ffiRs.appendText(
+        "\n" +
+            """
+            |// $marker: the path is usable again; send the PTO's probes now.
+            |#[no_mangle]
+            |pub extern "C" fn quiche_conn_probe_now(conn: &mut Connection) -> ssize_t {
+            |    match conn.socket_probe_now() {
+            |        Ok(()) => 0,
+            |        Err(e) => e.to_c(),
+            |    }
+            |}
+            """.trimMargin() + "\n",
+    )
+    logger.lifecycle("Patched quiche source: quiche_conn_probe_now FFI export")
+}
+
+/**
+ * Export `quiche_config_set_initial_rtt`, `quiche_conn_set_handshake_pto_ceiling` and
+ * `quiche_conn_handshake_pto_ceiling_held`: the RTT quiche assumes before its first sample, a ceiling on the PTO
+ * interval that grows with each PTO expiry, and whether the active path still holds it.
+ *
+ * `Config::set_initial_rtt` exists in Rust and has no C function. The ceiling is new. The caller gives its rule (a first
+ * ceiling, a growth factor per PTO expiry, a maximum); each path's recovery holds it (`SocketPtoCeiling`): `Unset`,
+ * `Held { rule, ceiling }`, or `Released` once the path takes an RTT sample in the application space with the
+ * handshake confirmed (the `completed` flag of `HandshakeStatus`, which [patchQuichePtoWaitsForConfirmation] makes
+ * mean confirmed). While held, the recovery takes the smaller of its own backed-off PTO and the ceiling in every
+ * packet number space, so an estimate inflated by a handshake-era sample (the peer's handshake computation, or its own
+ * PTO delaying its ACK) is not held to multi-second retransmit gaps before a sample of the connection proper replaces
+ * it. Each PTO expiry grows the ceiling by the rule's factor, up to its maximum; discarding a packet number space's
+ * keys starts it again from the first ceiling, as [patchQuichePtoBackoffResetsOnKeyDiscard] does the backoff (applied
+ * before this patch, whose reset it anchors on). A released recovery ignores later rules. Setting a rule re-arms each
+ * path's loss-detection timer. A first ceiling of zero across the C seam removes a ceiling not yet released.
+ *
+ * Marker-guarded and loud in both directions: a re-run returns, a moved anchor throws, and an upstream that exports
+ * either function throws, telling you to delete this patch.
+ */
+fun patchQuicheHandshakePtoCeiling(sourceDir: File) {
+    val marker = "socket-handshake-pto-ceiling-v3"
+    val src = sourceDir.resolve("quiche/src")
+    val ffiRs = src.resolve("ffi.rs")
+    if (!ffiRs.exists()) return
+    if (ffiRs.readText().contains(marker)) return
+    if (ffiRs.readText().contains("quiche_config_set_initial_rtt") || ffiRs.readText().contains("pto_ceiling")) {
+        throw GradleException(
+            "$marker: quiche's ffi.rs already exports quiche_config_set_initial_rtt or a PTO ceiling — upstream added " +
+                "it. DELETE patchQuicheHandshakePtoCeiling and its call site, and check the upstream signature against " +
+                "libs/quiche/include/quiche.h.",
+        )
+    }
+
+    fun replaceOnce(
+        file: File,
+        anchor: String,
+        replacement: String,
+    ) {
+        val text = file.readText()
+        if (text.split(anchor).size != 2) {
+            throw GradleException(
+                "$marker: `${anchor.trim().lines().first()}` not found exactly once in ${file.relativeTo(src)} — a " +
+                    "quiche bump moved it. Re-fit patchQuicheHandshakePtoCeiling and re-verify with " +
+                    "HandshakePtoCeilingQuicheTests.",
+            )
+        }
+        file.writeText(text.replace(anchor, replacement))
+    }
+
+    val traitDecl = "#[enum_dispatch::enum_dispatch]\n/// Api for the Recovery implementation\npub trait RecoveryOps {\n"
+    replaceOnce(
+        src.resolve("recovery/mod.rs"),
+        traitDecl,
+        """
+        |// $marker: how a path's ceiling on its PTO interval starts, grows per PTO expiry, and stops growing.
+        |#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        |pub struct SocketPtoRule {
+        |    first: Duration,
+        |    growth: u32,
+        |    max: Duration,
+        |}
+        |
+        |impl SocketPtoRule {
+        |    pub fn new(first: Duration, growth: u32, max: Duration) -> Self {
+        |        SocketPtoRule { first, growth: growth.max(1), max: max.max(first) }
+        |    }
+        |}
+        |
+        |// $marker: a path's ceiling on its PTO interval, held until its first RTT sample in the application space
+        |// with the handshake confirmed.
+        |#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        |pub(crate) enum SocketPtoCeiling {
+        |    Unset,
+        |    Held { rule: SocketPtoRule, ceiling: Duration },
+        |    Released,
+        |}
+        |
+        |impl SocketPtoCeiling {
+        |    // A released ceiling stays released; otherwise the caller's rule from its first ceiling, or none.
+        |    pub(crate) fn set(self, rule: Option<SocketPtoRule>) -> Self {
+        |        match (self, rule) {
+        |            (SocketPtoCeiling::Released, _) => SocketPtoCeiling::Released,
+        |            (_, Some(rule)) => SocketPtoCeiling::Held { rule, ceiling: rule.first },
+        |            (_, None) => SocketPtoCeiling::Unset,
+        |        }
+        |    }
+        |
+        |    // A PTO expired: the ceiling grows by the rule's factor, up to its maximum.
+        |    pub(crate) fn grown(self) -> Self {
+        |        match self {
+        |            SocketPtoCeiling::Held { rule, ceiling } => SocketPtoCeiling::Held {
+        |                rule,
+        |                ceiling: ceiling
+        |                    .checked_mul(rule.growth)
+        |                    .map_or(rule.max, |c| std::cmp::min(c, rule.max)),
+        |            },
+        |            other => other,
+        |        }
+        |    }
+        |
+        |    // A packet number space's keys were discarded: the ceiling starts again from the rule's first.
+        |    pub(crate) fn restarted(self) -> Self {
+        |        match self {
+        |            SocketPtoCeiling::Held { rule, .. } => SocketPtoCeiling::Held { rule, ceiling: rule.first },
+        |            other => other,
+        |        }
+        |    }
+        |
+        |    pub(crate) fn clamp(self, duration: Duration) -> Duration {
+        |        match self {
+        |            SocketPtoCeiling::Held { ceiling, .. } => std::cmp::min(duration, ceiling),
+        |            SocketPtoCeiling::Unset | SocketPtoCeiling::Released => duration,
+        |        }
+        |    }
+        |}
+        |
+        |
+        """.trimMargin() + traitDecl,
+    )
+    val timeoutDecl = "    fn on_loss_detection_timeout(\n"
+    replaceOnce(
+        src.resolve("recovery/mod.rs"),
+        timeoutDecl,
+        """
+        |    // $marker: bounds the PTO interval by the rule's ceiling until released; re-arms the timer.
+        |    fn socket_set_pto_ceiling(
+        |        &mut self, rule: Option<SocketPtoRule>, handshake_status: HandshakeStatus,
+        |        now: Instant,
+        |    );
+        |
+        |    // $marker
+        |    fn socket_pto_ceiling_held(&self) -> bool;
+        |
+        |
+        """.trimMargin() + timeoutDecl,
+    )
+    val backoff = "        let mut duration = self.pto() * 2_u32.saturating_pow(self.pto_count);\n"
+    val clamp =
+        """
+        |        // $marker: never wait longer than a held ceiling.
+        |        duration = self.socket_pto_ceiling.clamp(duration);
+        |
+        """.trimMargin()
+    val setter =
+        """
+        |    // $marker
+        |    fn socket_set_pto_ceiling(
+        |        &mut self, rule: Option<crate::recovery::SocketPtoRule>,
+        |        handshake_status: HandshakeStatus, now: Instant,
+        |    ) {
+        |        self.socket_pto_ceiling = self.socket_pto_ceiling.set(rule);
+        |        self.set_loss_detection_timer(handshake_status, now);
+        |    }
+        |
+        |    // $marker
+        |    fn socket_pto_ceiling_held(&self) -> bool {
+        |        matches!(self.socket_pto_ceiling, crate::recovery::SocketPtoCeiling::Held { .. })
+        |    }
+        |
+        |
+        """.trimMargin()
+    val sampled =
+        "                Duration::from_micros(ack_delay),\n                now,\n" +
+            "                handshake_status.completed,\n            );\n"
+    val release =
+        """
+        |            // $marker: the first sample in the application space after confirmation releases the ceiling.
+        |            if epoch == crate::packet::Epoch::Application && handshake_status.completed {
+        |                self.socket_pto_ceiling = crate::recovery::SocketPtoCeiling::Released;
+        |            }
+        |
+        """.trimMargin()
+    val expiry = "        self.pto_count += 1;\n"
+    val growth =
+        "\n        // $marker: each PTO expiry grows the ceiling.\n" +
+            "        self.socket_pto_ceiling = self.socket_pto_ceiling.grown();\n"
+    val discard = "        // socket-pto-backoff-resets-on-key-discard: RFC 9002 §6.2.1 and A.10.\n        self.pto_count = 0;\n"
+    val restart =
+        "        // $marker: and the ceiling starts again from its first.\n" +
+            "        self.socket_pto_ceiling = self.socket_pto_ceiling.restarted();\n"
+    for (impl in listOf("recovery/congestion/recovery.rs", "recovery/gcongestion/recovery.rs")) {
+        val file = src.resolve(impl)
+        replaceOnce(
+            file,
+            "    pto_count: u32,\n",
+            "    pto_count: u32,\n\n    // $marker\n    socket_pto_ceiling: crate::recovery::SocketPtoCeiling,\n",
+        )
+        replaceOnce(
+            file,
+            "            pto_count: 0,\n",
+            "            pto_count: 0,\n\n            socket_pto_ceiling: crate::recovery::SocketPtoCeiling::Unset,\n",
+        )
+        replaceOnce(file, backoff, backoff + "\n" + clamp)
+        replaceOnce(file, timeoutDecl, setter + timeoutDecl)
+        replaceOnce(file, sampled, sampled + release)
+        replaceOnce(file, expiry, expiry + growth)
+        replaceOnce(file, discard, discard + restart)
+    }
+    replaceOnce(
+        src.resolve("lib.rs"),
+        "    pub fn send_ack_eliciting(&mut self) -> Result<()> {\n",
+        """
+        |    /// $marker: the rule of a ceiling on the PTO interval of every path until it is released, or none.
+        |    pub fn socket_set_handshake_pto_ceiling(
+        |        &mut self, rule: Option<crate::recovery::SocketPtoRule>,
+        |    ) {
+        |        let handshake_status = self.handshake_status();
+        |        let now = crate::now();
+        |        for (_, p) in self.paths.iter_mut() {
+        |            p.recovery.socket_set_pto_ceiling(rule, handshake_status, now);
+        |        }
+        |    }
+        |
+        |    /// $marker: whether the active path's recovery holds a ceiling.
+        |    pub fn socket_handshake_pto_ceiling_held(&self) -> bool {
+        |        self.paths
+        |            .get_active()
+        |            .map(|p| p.recovery.socket_pto_ceiling_held())
+        |            .unwrap_or(false)
+        |    }
+        |
+        |    pub fn send_ack_eliciting(&mut self) -> Result<()> {
+        |
+        """.trimMargin(),
+    )
+    ffiRs.appendText(
+        "\n" +
+            """
+            |// $marker: the RTT assumed before the first sample, in nanoseconds.
+            |#[no_mangle]
+            |pub extern "C" fn quiche_config_set_initial_rtt(config: &mut Config, v: u64) {
+            |    config.set_initial_rtt(std::time::Duration::from_nanos(v));
+            |}
+            |
+            |// $marker: the longest PTO interval until released, from `first` nanoseconds, times `growth` per PTO
+            |// expiry up to `max` nanoseconds; a `first` of 0 removes one not yet released.
+            |#[no_mangle]
+            |pub extern "C" fn quiche_conn_set_handshake_pto_ceiling(
+            |    conn: &mut Connection, first: u64, growth: u32, max: u64,
+            |) {
+            |    let rule = if first == 0 {
+            |        None
+            |    } else {
+            |        Some(crate::recovery::SocketPtoRule::new(
+            |            std::time::Duration::from_nanos(first),
+            |            growth,
+            |            std::time::Duration::from_nanos(max),
+            |        ))
+            |    };
+            |    conn.socket_set_handshake_pto_ceiling(rule);
+            |}
+            |
+            |// $marker: whether the active path still holds a ceiling.
+            |#[no_mangle]
+            |pub extern "C" fn quiche_conn_handshake_pto_ceiling_held(conn: &Connection) -> bool {
+            |    conn.socket_handshake_pto_ceiling_held()
+            |}
+            """.trimMargin() + "\n",
+    )
+    logger.lifecycle(
+        "Patched quiche source: quiche_config_set_initial_rtt, quiche_conn_set_handshake_pto_ceiling and " +
+            "quiche_conn_handshake_pto_ceiling_held FFI exports",
+    )
+}
+
+/**
+ * Export `quiche_conn_requeue_path`: every frame a path still owes the peer (in packets neither acknowledged nor
+ * declared lost, and lost frames not yet resent) is queued for retransmission on the active path, now.
+ *
+ * A client that migrates because its local address went away has nothing left on the old path: its socket is closed.
+ * quiche declares the old path's packets lost only by its own rules, by time against the largest acknowledged packet
+ * when the active path changes, and by the first acknowledgement of a later packet afterwards: what the old path sent
+ * after its last acknowledgement waits a round trip on the new path before it is resent. This hands it to the new path
+ * at once. PING, PATH_CHALLENGE and PATH_RESPONSE stay behind, as in [patchQuicheEvictedPathFramesRequeued], whose
+ * recovery methods this uses; the old path's packets stay counted in its own recovery, which no longer sends.
+ *
+ * Returns the number of frames moved, or a negative quiche error: `InvalidState` for the active path or no path at
+ * the 4-tuple. Marker-guarded and loud in both directions: a re-run returns, a moved anchor throws, and an upstream
+ * that exports the same throws.
+ */
+fun patchQuicheRequeuePathFfi(sourceDir: File) {
+    val marker = "socket-requeue-path"
+    val src = sourceDir.resolve("quiche/src")
+    val ffiRs = src.resolve("ffi.rs")
+    val libRs = src.resolve("lib.rs")
+    if (!ffiRs.exists() || !libRs.exists()) return
+    if (ffiRs.readText().contains(marker)) return
+    if (ffiRs.readText().contains("quiche_conn_requeue_path")) {
+        throw GradleException(
+            "$marker: quiche's ffi.rs already exports quiche_conn_requeue_path. DELETE patchQuicheRequeuePathFfi and " +
+                "its call site, and check the upstream signature against libs/quiche/include/quiche.h.",
+        )
+    }
+    val anchor = "    pub fn send_ack_eliciting(&mut self) -> Result<()> {\n"
+    val text = libRs.readText()
+    if (text.split(anchor).size != 2) {
+        throw GradleException(
+            "$marker: `${anchor.trim()}` not found exactly once in lib.rs: a quiche bump moved it. Re-fit " +
+                "patchQuicheRequeuePathFfi and re-verify with MigrationConditionTests.",
+        )
+    }
+    libRs.writeText(
+        text.replace(
+            anchor,
+            """
+            |    /// $marker: the path at `local`/`peer` will carry nothing more; what it still owes
+            |    /// the peer is resent from the active path. Returns how many frames moved.
+            |    pub fn socket_requeue_path(
+            |        &mut self, local: SocketAddr, peer: SocketAddr,
+            |    ) -> Result<usize> {
+            |        let pid = self
+            |            .paths
+            |            .path_id_from_addrs(&(local, peer))
+            |            .ok_or(Error::InvalidState)?;
+            |        let active = self.paths.get_active_path_id()?;
+            |        if pid == active {
+            |            return Err(Error::InvalidState);
+            |        }
+            |        let mut moved = 0;
+            |        for &epoch in packet::Epoch::epochs(
+            |            packet::Epoch::Initial..=packet::Epoch::Application,
+            |        ) {
+            |            let frames: Vec<frame::Frame> = self
+            |                .paths
+            |                .get_mut(pid)?
+            |                .recovery
+            |                .socket_take_outstanding_frames(epoch)
+            |                .into_iter()
+            |                .filter(|f| {
+            |                    !matches!(
+            |                        f,
+            |                        frame::Frame::Ping { .. } |
+            |                            frame::Frame::PathChallenge { .. } |
+            |                            frame::Frame::PathResponse { .. }
+            |                    )
+            |                })
+            |                .collect();
+            |            moved += frames.len();
+            |            self.paths
+            |                .get_mut(active)?
+            |                .recovery
+            |                .socket_requeue_lost_frames(epoch, frames);
+            |        }
+            |        Ok(moved)
+            |    }
+            |
+            |
+            """.trimMargin() + anchor,
+        ),
+    )
+    ffiRs.appendText(
+        "\n" +
+            """
+            |// $marker: the path at local/peer carries nothing more; resend what it owes from the active path.
+            |#[no_mangle]
+            |pub extern "C" fn quiche_conn_requeue_path(
+            |    conn: &mut Connection, local: &sockaddr, local_len: socklen_t,
+            |    peer: &sockaddr, peer_len: socklen_t,
+            |) -> ssize_t {
+            |    let local = std_addr_from_c(local, local_len);
+            |    let peer = std_addr_from_c(peer, peer_len);
+            |    match conn.socket_requeue_path(local, peer) {
+            |        Ok(moved) => moved as ssize_t,
+            |        Err(e) => e.to_c(),
+            |    }
+            |}
+            """.trimMargin() + "\n",
+    )
+    logger.lifecycle("Patched quiche source: quiche_conn_requeue_path FFI export")
+}
+
+/**
+ * Export `quiche_conn_probe_path_with`: `quiche_conn_probe_path`, and two things about the path probed.
+ *
+ * Its RTT estimate, while it has no sample, starts from `initial_rtt_ns` (zero keeps the configured one). quiche
+ * creates a path with the connection's configured initial RTT, which the client set from the link it connected on: a
+ * move from Wi-Fi to cellular probed the cellular path with a Wi-Fi round trip, and quiche forgot each challenge at
+ * that path's PTO, before a cellular answer could come.
+ *
+ * Its next packet is a probe the congestion window does not hold (RFC 9002 §6.2.4), as a PTO's is: the packet
+ * carrying the PATH_CHALLENGE. quiche counts a challenge's packet in flight until the path's loss timer declares it
+ * lost, and that timer backs off, so on a path that stayed dark the unanswered challenges filled the window and a
+ * fresh challenge asked for waited out the backed-off timer, seconds, before it left.
+ *
+ * Returns 0 and the destination id sequence number as `quiche_conn_probe_path` does, or a negative quiche error.
+ * Reproduced by `PathValidationPolicyTests` (the rehome re-probe migrates within a round trip) and
+ * `ProbePathWithTests`. Marker-guarded and loud in both directions: a re-run returns, a moved anchor throws, and an
+ * upstream that exports the same throws.
+ */
+fun patchQuicheProbePathWithFfi(sourceDir: File) {
+    val marker = "socket-probe-path-with"
+    val src = sourceDir.resolve("quiche/src")
+    val ffiRs = src.resolve("ffi.rs")
+    if (!ffiRs.exists()) return
+    if (ffiRs.readText().contains(marker)) return
+    if (ffiRs.readText().contains("quiche_conn_probe_path_with")) {
+        throw GradleException(
+            "$marker: quiche's ffi.rs already exports quiche_conn_probe_path_with. DELETE patchQuicheProbePathWithFfi " +
+                "and its call site, and check the upstream signature against libs/quiche/include/quiche.h.",
+        )
+    }
+
+    fun insertBefore(
+        file: File,
+        anchor: String,
+        insert: String,
+    ) {
+        val text = file.readText()
+        if (text.split(anchor).size != 2) {
+            throw GradleException(
+                "$marker: `${anchor.trim()}` not found exactly once in ${file.relativeTo(src)}: a quiche bump moved " +
+                    "it. Re-fit patchQuicheProbePathWithFfi and re-verify with ProbePathWithTests.",
+            )
+        }
+        file.writeText(text.replace(anchor, insert + anchor))
+    }
+
+    insertBefore(
+        src.resolve("recovery/rtt.rs"),
+        "    pub(crate) fn new(initial_rtt: Duration, max_ack_delay: Duration) -> Self {\n",
+        """
+        |    // $marker: an estimate with no sample starts again from `initial_rtt`.
+        |    pub(crate) fn socket_reseed(&mut self, initial_rtt: Duration) {
+        |        if !self.has_first_rtt_sample {
+        |            *self = RttStats::new(initial_rtt, self.max_ack_delay);
+        |        }
+        |    }
+        |
+        |
+        """.trimMargin(),
+    )
+    val timeoutDecl = "    fn on_loss_detection_timeout(\n"
+    insertBefore(
+        src.resolve("recovery/mod.rs"),
+        timeoutDecl,
+        """
+        |    // $marker: an RTT estimate with no sample starts from `initial_rtt`.
+        |    fn socket_reseed_rtt(&mut self, initial_rtt: Duration);
+        |
+        |    // $marker: the next application packet is a probe the congestion window does not hold.
+        |    fn socket_probe_past_cwnd(&mut self);
+        |
+        |
+        """.trimMargin(),
+    )
+    val impls =
+        """
+        |    // $marker: an RTT estimate with no sample starts from `initial_rtt`.
+        |    fn socket_reseed_rtt(&mut self, initial_rtt: Duration) {
+        |        self.rtt_stats.socket_reseed(initial_rtt);
+        |    }
+        |
+        |    // $marker: the next application packet is a probe the congestion window does not hold.
+        |    fn socket_probe_past_cwnd(&mut self) {
+        |        let epoch = &mut self.epochs[crate::packet::Epoch::Application];
+        |        epoch.loss_probes = epoch.loss_probes.max(1);
+        |    }
+        |
+        |
+        """.trimMargin()
+    insertBefore(src.resolve("recovery/congestion/recovery.rs"), timeoutDecl, impls)
+    insertBefore(src.resolve("recovery/gcongestion/recovery.rs"), timeoutDecl, impls)
+    insertBefore(
+        src.resolve("lib.rs"),
+        "    pub fn send_ack_eliciting(&mut self) -> Result<()> {\n",
+        """
+        |    /// $marker: `probe_path`; the path's RTT estimate, while it has no sample, starts from
+        |    /// `initial_rtt` (zero keeps the configured one), and its PATH_CHALLENGE leaves past the
+        |    /// congestion window.
+        |    pub fn socket_probe_path_with(
+        |        &mut self, local: SocketAddr, peer: SocketAddr, initial_rtt: Duration,
+        |    ) -> Result<u64> {
+        |        let seq = self.probe_path(local, peer)?;
+        |        let pid = self
+        |            .paths
+        |            .path_id_from_addrs(&(local, peer))
+        |            .ok_or(Error::InvalidState)?;
+        |        let path = self.paths.get_mut(pid)?;
+        |        if !initial_rtt.is_zero() {
+        |            path.recovery.socket_reseed_rtt(initial_rtt);
+        |        }
+        |        path.recovery.socket_probe_past_cwnd();
+        |        Ok(seq)
+        |    }
+        |
+        |
+        """.trimMargin(),
+    )
+    ffiRs.appendText(
+        "\n" +
+            """
+            |// $marker: probe_path, with the new path's initial RTT and its challenge past the congestion window.
+            |#[no_mangle]
+            |pub extern "C" fn quiche_conn_probe_path_with(
+            |    conn: &mut Connection, local: &sockaddr, local_len: socklen_t,
+            |    peer: &sockaddr, peer_len: socklen_t, initial_rtt_ns: u64, seq: *mut u64,
+            |) -> c_int {
+            |    let local = std_addr_from_c(local, local_len);
+            |    let peer = std_addr_from_c(peer, peer_len);
+            |    match conn.socket_probe_path_with(local, peer, std::time::Duration::from_nanos(initial_rtt_ns)) {
+            |        Ok(v) => {
+            |            unsafe { *seq = v }
+            |            0
+            |        },
+            |        Err(e) => e.to_c() as c_int,
+            |    }
+            |}
+            """.trimMargin() + "\n",
+    )
+    logger.lifecycle("Patched quiche source: quiche_conn_probe_path_with FFI export")
+}
+
+/**
+ * A client probe of a 4-tuple quiche still holds a path for, one nothing uses any more (no destination id, not
+ * active), forgets that path first and probes a new one there.
+ *
+ * Quiche keeps every path a client left, its destination id retired, until it evicts one to make room. A socket the OS
+ * hands a port an earlier socket of the connection had names such a path, and `probe_path` answered `InvalidState`
+ * for it, as its id is gone, every time: the client could neither probe nor migrate there, and every datagram it wrote
+ * was for a path no socket of its own held. Probing it again would not do either: a path validated before reports no
+ * new `Validated` event. Forgetting it as `make_room_for_new_path` evicts one, without its `Closed` event, which would
+ * name the 4-tuple the new path takes, makes the probe a new path's, validated afresh. What it still owed the peer is
+ * resent from the active path first ([patchQuicheRequeuePathFfi]).
+ *
+ * Reproduced by `CoreMoveBackVirtualTests`. Applied after [patchQuicheProbePathWithFfi], whose function it edits.
+ * Marker-guarded and loud: a re-run returns, a moved anchor throws.
+ */
+fun patchQuicheProbeReplacesLeftPath(sourceDir: File) {
+    val marker = "socket-probe-replaces-left-path"
+    val src = sourceDir.resolve("quiche/src")
+    val libRs = src.resolve("lib.rs")
+    if (!libRs.exists()) return
+    if (libRs.readText().contains(marker)) return
+
+    fun insertBefore(
+        file: File,
+        anchor: String,
+        insert: String,
+    ) {
+        val text = file.readText()
+        if (text.split(anchor).size != 2) {
+            throw GradleException(
+                "$marker: `${anchor.trim()}` not found exactly once in ${file.relativeTo(src)}: a quiche bump or a " +
+                    "re-fit of patchQuicheProbePathWithFfi moved it. Re-fit patchQuicheProbeReplacesLeftPath and " +
+                    "re-verify with CoreMoveBackVirtualTests.",
+            )
+        }
+        file.writeText(text.replace(anchor, insert + anchor))
+    }
+
+    insertBefore(
+        src.resolve("path.rs"),
+        "    /// Records the provided `Path` and returns its assigned identifier.\n",
+        """
+        |    // $marker: whether `addrs` names a path nothing uses (no destination id, not active).
+        |    pub(crate) fn socket_unused_at(&self, addrs: &(SocketAddr, SocketAddr)) -> bool {
+        |        self.path_id_from_addrs(addrs)
+        |            .is_some_and(|pid| self.paths[pid].unused())
+        |    }
+        |
+        |    // $marker: forgets the path of `addrs`, as `make_room_for_new_path` evicts one, with no event.
+        |    pub(crate) fn socket_forget(&mut self, addrs: &(SocketAddr, SocketAddr)) {
+        |        if let Some(pid) = self.addrs_to_paths.remove(addrs) {
+        |            self.paths.remove(pid);
+        |        }
+        |    }
+        |
+        |
+        """.trimMargin(),
+    )
+    insertBefore(
+        libRs,
+        "        let seq = self.probe_path(local, peer)?;\n",
+        """
+        |        // $marker: a path the client left at this 4-tuple is forgotten, and a new one probed.
+        |        if self.paths.socket_unused_at(&(local, peer)) {
+        |            self.socket_requeue_path(local, peer)?;
+        |            self.paths.socket_forget(&(local, peer));
+        |        }
+        |
+        """.trimMargin(),
+    )
+    logger.lifecycle("Patched quiche source: a probe replaces a path the client left at the same 4-tuple")
+}
+
+/**
+ * NEW_TOKEN (RFC 9000 §8.1.3, §19.7) on both sides, with the token's format and crypto left to the application.
+ * quiche 0.30 parses and checks the frame (non-empty, 1-RTT only, never from a client) but a client drops it ("TODO:
+ * implement stateless retry"), a server never sends one, and the C API can neither put a token in a client's Initial
+ * nor tell a server that a token validated its client's address. Four exports:
+ *  - `quiche_conn_set_token`: a client's token for every Initial of the connection, until a Retry replaces it; only
+ *    before the first packet is sent.
+ *  - `quiche_conn_take_new_token`: a client takes the newest NEW_TOKEN token it received and has not taken. At most
+ *    [4] are held, a repeat of a held one (a server repairing a loss) is dropped, so a hostile server cannot grow it.
+ *  - `quiche_conn_send_new_token`: a server queues a NEW_TOKEN frame, sent in 1-RTT once its handshake is complete,
+ *    and queued again when the packet carrying it is declared lost (RFC 9000 §13.3).
+ *  - `quiche_conn_set_peer_address_validated`: a server whose client presented a valid NEW_TOKEN token lifts the
+ *    3x anti-amplification limit on the active path, as a Retry does (RFC 9000 §8.1).
+ *
+ * Inert until called: nothing a peer sends changes behaviour beyond a client holding up to four tokens.
+ * Marker-guarded and loud in both directions: a re-run returns, a moved anchor throws, and an upstream that exports
+ * any of the four throws, telling you to delete this patch.
+ */
+fun patchQuicheNewTokenFfi(sourceDir: File) {
+    val marker = "socket-new-token"
+    val src = sourceDir.resolve("quiche/src")
+    val libRs = src.resolve("lib.rs")
+    val ffiRs = src.resolve("ffi.rs")
+    if (!ffiRs.exists()) return
+    if (ffiRs.readText().contains(marker)) return
+    for (name in listOf("quiche_conn_set_token", "quiche_conn_take_new_token", "quiche_conn_send_new_token")) {
+        if (ffiRs.readText().contains(name)) {
+            throw GradleException(
+                "$marker: quiche's ffi.rs already exports $name — upstream added NEW_TOKEN. DELETE patchQuicheNewTokenFfi " +
+                    "and its call site, and check the upstream signatures against libs/quiche/include/quiche.h.",
+            )
+        }
+    }
+
+    fun replaceOnce(
+        anchor: String,
+        replacement: String,
+    ) {
+        val text = libRs.readText()
+        if (text.split(anchor).size != 2) {
+            throw GradleException(
+                "$marker: `${anchor.trim().lines().first()}` not found exactly once in lib.rs — a quiche bump or an " +
+                    "earlier patch moved it. Re-fit patchQuicheNewTokenFfi and re-verify with CoreNewTokenTests.",
+            )
+        }
+        libRs.writeText(text.replace(anchor, replacement))
+    }
+
+    fun insertBefore(
+        anchor: String,
+        insert: String,
+    ) = replaceOnce(anchor, insert + anchor)
+
+    insertBefore(
+        "    did_retry: bool,\n",
+        """
+        |    // $marker: a client's NEW_TOKEN tokens not yet taken, newest last.
+        |    socket_new_tokens: VecDeque<Vec<u8>>,
+        |
+        |    // $marker: a server's NEW_TOKEN frames waiting for a 1-RTT packet.
+        |    socket_tokens_to_send: VecDeque<Vec<u8>>,
+        |
+        |
+        """.trimMargin(),
+    )
+    insertBefore(
+        "            did_retry: false,\n",
+        """
+        |            socket_new_tokens: VecDeque::new(),
+        |            socket_tokens_to_send: VecDeque::new(),
+        |
+        """.trimMargin(),
+    )
+    replaceOnce(
+        """
+        |            // TODO: implement stateless retry
+        |            frame::Frame::NewToken { .. } =>
+        |                if self.is_server {
+        |                    return Err(Error::InvalidPacket);
+        |                },
+        |
+        """.trimMargin(),
+        """
+        |            // $marker: a client holds the token for the application; a server never receives one.
+        |            frame::Frame::NewToken { token } => {
+        |                if self.is_server {
+        |                    return Err(Error::InvalidPacket);
+        |                }
+        |                if !self.socket_new_tokens.contains(&token) {
+        |                    if self.socket_new_tokens.len() == 4 {
+        |                        self.socket_new_tokens.pop_front();
+        |                    }
+        |                    self.socket_new_tokens.push_back(token);
+        |                }
+        |            },
+        |
+        """.trimMargin(),
+    )
+    replaceOnce(
+        """
+        |                    // NewToken frames are never sent by quiche; they are not
+        |                    // implemented.
+        |                    frame::Frame::NewToken { .. } => {
+        |                        debug_panic!(
+        |                            "Unexpected frame lost: NewToken. quiche used to \
+        |                             not implement NewToken frames, retransmission of \
+        |                             these frames is not implemented."
+        |                        );
+        |                    },
+        |
+        """.trimMargin(),
+        """
+        |                    // $marker: a lost NEW_TOKEN is sent again (RFC 9000 §13.3).
+        |                    frame::Frame::NewToken { token } =>
+        |                        self.socket_tokens_to_send.push_back(token),
+        |
+        """.trimMargin(),
+    )
+    insertBefore(
+        "            // Create MAX_STREAMS_BIDI frame.\n",
+        """
+        |            // $marker: the queued NEW_TOKEN frames, once the server's handshake is complete.
+        |            if self.is_server && self.handshake_completed {
+        |                while let Some(token) = self.socket_tokens_to_send.front() {
+        |                    let frame = frame::Frame::NewToken {
+        |                        token: token.clone(),
+        |                    };
+        |                    if push_frame_to_pkt!(b, frames, frame, left) {
+        |                        self.socket_tokens_to_send.pop_front();
+        |                        ack_eliciting = true;
+        |                        in_flight = true;
+        |                    } else {
+        |                        break;
+        |                    }
+        |                }
+        |            }
+        |
+        |
+        """.trimMargin(),
+    )
+    insertBefore(
+        "                self.should_send_max_streams_bidi ||\n",
+        "                (self.is_server && !self.socket_tokens_to_send.is_empty()) ||\n",
+    )
+    insertBefore(
+        "    pub fn send_ack_eliciting(&mut self) -> Result<()> {\n",
+        """
+        |    /// $marker: a client's token for every Initial of this connection; only before the first packet is sent.
+        |    pub fn socket_set_token(&mut self, token: &[u8]) -> Result<()> {
+        |        if self.is_server || self.sent_count > 0 || self.did_retry || token.is_empty() {
+        |            return Err(Error::InvalidState);
+        |        }
+        |        self.token = Some(token.to_vec());
+        |        Ok(())
+        |    }
+        |
+        |    /// $marker: moves the newest NEW_TOKEN token not yet taken into `out`; its length.
+        |    pub fn socket_take_new_token(&mut self, out: &mut [u8]) -> Result<usize> {
+        |        let len = match self.socket_new_tokens.back() {
+        |            Some(token) => token.len(),
+        |            None => return Err(Error::Done),
+        |        };
+        |        if len > out.len() {
+        |            return Err(Error::BufferTooShort);
+        |        }
+        |        if let Some(token) = self.socket_new_tokens.pop_back() {
+        |            out[..len].copy_from_slice(&token);
+        |        }
+        |        Ok(len)
+        |    }
+        |
+        |    /// $marker: a server queues a NEW_TOKEN frame carrying `token`.
+        |    pub fn socket_send_new_token(&mut self, token: &[u8]) -> Result<()> {
+        |        if !self.is_server || token.is_empty() {
+        |            return Err(Error::InvalidState);
+        |        }
+        |        self.socket_tokens_to_send.push_back(token.to_vec());
+        |        Ok(())
+        |    }
+        |
+        |    /// $marker: a server's client proved its address with a token: no anti-amplification limit.
+        |    pub fn socket_set_peer_address_validated(&mut self) -> Result<()> {
+        |        if !self.is_server {
+        |            return Err(Error::InvalidState);
+        |        }
+        |        self.paths.get_active_mut()?.verified_peer_address = true;
+        |        Ok(())
+        |    }
+        |
+        |
+        """.trimMargin(),
+    )
+    ffiRs.appendText(
+        "\n" +
+            """
+            |// $marker: a client's token for every Initial; before the first packet only.
+            |#[no_mangle]
+            |pub extern "C" fn quiche_conn_set_token(
+            |    conn: &mut Connection, token: *const u8, token_len: size_t,
+            |) -> c_int {
+            |    let token = unsafe { slice::from_raw_parts(token, token_len) };
+            |    match conn.socket_set_token(token) {
+            |        Ok(()) => 0,
+            |        Err(e) => e.to_c() as c_int,
+            |    }
+            |}
+            |
+            |// $marker: the newest NEW_TOKEN token the client has not taken, moved into `out`.
+            |#[no_mangle]
+            |pub extern "C" fn quiche_conn_take_new_token(
+            |    conn: &mut Connection, out: *mut u8, out_len: size_t,
+            |) -> ssize_t {
+            |    let out = unsafe { slice::from_raw_parts_mut(out, out_len) };
+            |    match conn.socket_take_new_token(out) {
+            |        Ok(len) => len as ssize_t,
+            |        Err(e) => e.to_c(),
+            |    }
+            |}
+            |
+            |// $marker: a server queues a NEW_TOKEN frame.
+            |#[no_mangle]
+            |pub extern "C" fn quiche_conn_send_new_token(
+            |    conn: &mut Connection, token: *const u8, token_len: size_t,
+            |) -> c_int {
+            |    let token = unsafe { slice::from_raw_parts(token, token_len) };
+            |    match conn.socket_send_new_token(token) {
+            |        Ok(()) => 0,
+            |        Err(e) => e.to_c() as c_int,
+            |    }
+            |}
+            |
+            |// $marker: a server's client proved its address with a token.
+            |#[no_mangle]
+            |pub extern "C" fn quiche_conn_set_peer_address_validated(conn: &mut Connection) -> c_int {
+            |    match conn.socket_set_peer_address_validated() {
+            |        Ok(()) => 0,
+            |        Err(e) => e.to_c() as c_int,
+            |    }
+            |}
+            """.trimMargin() + "\n",
+    )
+    logger.lifecycle("Patched quiche source: NEW_TOKEN on client and server")
+}
+
+/**
+ * Never fail a path that is already validated because PATH_CHALLENGEs sent on it were counted lost, and close a
+ * connection left with no usable path with `NO_VIABLE_PATH` (RFC 9000 §20.1) instead of with no error.
+ *
+ * `Path::on_loss_detection_timeout` counts a challenge lost when a loss timer passes its send time, and
+ * `probing_lost` is reset only by a PATH_RESPONSE. A response validates the path and removes only its own
+ * challenge: the others sent before it are counted lost at the next timer, and each count re-requests validation,
+ * so a fresh challenge goes out on the validated path. While the path's round trip is longer than its PTO (an uplink
+ * that holds datagrams for seconds), every one of those is counted too, and the third fails the path. When it was
+ * the active path no candidate is left, `on_timeout` calls `mark_closed()` with no error, and the connection ends
+ * unexplained while the path carries traffic.
+ *
+ * The edits: in `on_loss_detection_timeout`, a validated path forgets the challenges it counted instead of failing
+ * or re-probing; a path not yet validated is judged as before. In `on_timeout`, a connection with no path to switch
+ * to records the transport error `NO_VIABLE_PATH` (0x10) as its local error before it closes; it sends nothing, as
+ * before, since it has no path to send on.
+ *
+ * Reproduced by `ValidatedPathProbeLossTests`. Marker-guarded and loud: a re-run returns, a moved anchor throws.
+ */
+fun patchQuicheValidatedPathSurvivesProbeLoss(sourceDir: File) {
+    val marker = "socket-validated-path-survives-probe-loss"
+    val pathRs = sourceDir.resolve("quiche/src/path.rs")
+    val libRs = sourceDir.resolve("quiche/src/lib.rs")
+    if (!pathRs.exists() || !libRs.exists()) return
+    if (pathRs.readText().contains(marker)) return
+
+    fun replaceOnce(
+        file: File,
+        anchor: String,
+        replacement: String,
+    ) {
+        val text = file.readText()
+        if (text.split(anchor).size != 2) {
+            throw GradleException(
+                "$marker: `${anchor.trim().lines().first()}` not found exactly once in ${file.name}: a quiche bump or " +
+                    "a change to patchQuicheRetireDcidNoRelink moved it. Re-fit patchQuicheValidatedPathSurvivesProbeLoss " +
+                    "and re-verify with ValidatedPathProbeLossTests.",
+            )
+        }
+        file.writeText(text.replace(anchor, replacement))
+    }
+
+    replaceOnce(
+        pathRs,
+        """
+        |            if self.probing_lost >= crate::MAX_PROBING_TIMEOUTS ||
+        |                (is_server && self.max_send_bytes < crate::MIN_PROBING_SIZE)
+        |            {
+        |                self.on_failed_validation();
+        """.trimMargin(),
+        """
+        |            if self.validated() {
+        |                // $marker: the path's reachability is proven; a challenge
+        |                // that went unanswered is not evidence against it.
+        |                self.probing_lost = 0;
+        |                self.last_probe_lost_time = None;
+        |            } else if self.probing_lost >= crate::MAX_PROBING_TIMEOUTS ||
+        |                (is_server && self.max_send_bytes < crate::MIN_PROBING_SIZE)
+        |            {
+        |                self.on_failed_validation();
+        """.trimMargin(),
+    )
+    replaceOnce(
+        libRs,
+        """
+        |                // The connection cannot continue.
+        |                None => {
+        |                    self.mark_closed();
+        |                },
+        """.trimMargin(),
+        """
+        |                // The connection cannot continue.
+        |                None => {
+        |                    // $marker: say why.
+        |                    if self.local_error.is_none() {
+        |                        self.local_error = Some(ConnectionError {
+        |                            is_app: false,
+        |                            error_code: 0x10,
+        |                            reason: vec![],
+        |                        });
+        |                    }
+        |                    self.mark_closed();
+        |                },
+        """.trimMargin(),
+    )
+    logger.lifecycle("Patched quiche source: a validated path survives lost probes; no usable path closes with NO_VIABLE_PATH")
 }
 
 /**
@@ -4120,11 +5439,10 @@ val buildQuicheSharedMacosX64 = if (isMacOS) createBuildQuicheSharedTask("macos"
 val buildQuicheSharedMacosArm64 = if (isMacOS) createBuildQuicheSharedTask("macos", "arm64") else null
 
 // iOS static libs for the Apple quiche engine (macOS .a comes from the shared tasks above). Device
-// (aarch64-apple-ios), simulator-arm64 (…-ios-sim), and simulator-x64 (x86_64-apple-ios).
+// (aarch64-apple-ios) and simulator-arm64 (…-ios-sim).
 val buildQuicheStaticIosArm64 = if (isMacOS) createBuildQuicheAppleStaticTask("ios-arm64", "aarch64-apple-ios") else null
 val buildQuicheStaticIosSimulatorArm64 =
     if (isMacOS) createBuildQuicheAppleStaticTask("ios-simulator-arm64", "aarch64-apple-ios-sim") else null
-val buildQuicheStaticIosX64 = if (isMacOS) createBuildQuicheAppleStaticTask("ios-x64", "x86_64-apple-ios") else null
 
 // Convenience task: build all quiche libraries for the current host
 tasks.register("buildQuicheAll") {
@@ -4136,19 +5454,19 @@ tasks.register("buildQuicheAll") {
     }
     if (isMacOS) {
         dependsOn(buildQuicheSharedMacosX64!!, buildQuicheSharedMacosArm64!!)
-        dependsOn(buildQuicheStaticIosArm64!!, buildQuicheStaticIosSimulatorArm64!!, buildQuicheStaticIosX64!!)
+        dependsOn(buildQuicheStaticIosArm64!!, buildQuicheStaticIosSimulatorArm64!!)
     }
 }
 
-// Convenience task: build every Apple K/Native static lib (macOS .a from the shared tasks + the three
-// iOS static libs). Referenced by build-apple.yaml so a CI runner prepares all five before the K/N
+// Convenience task: build every Apple K/Native static lib (macOS .a from the shared tasks + the two
+// iOS static libs). Referenced by build-apple.yaml so a CI runner prepares all three before the K/N
 // link/test tasks (which gate their -force_load on the .a existing at configuration time).
 if (isMacOS) {
     tasks.register("buildQuicheAppleStaticLibs") {
         group = "build"
         description = "Build all Apple K/Native quiche static libs (macOS + iOS)"
-        dependsOn(buildQuicheSharedMacosArm64!!, buildQuicheSharedMacosX64!!)
-        dependsOn(buildQuicheStaticIosArm64!!, buildQuicheStaticIosSimulatorArm64!!, buildQuicheStaticIosX64!!)
+        dependsOn(buildQuicheSharedMacosArm64!!)
+        dependsOn(buildQuicheStaticIosArm64!!, buildQuicheStaticIosSimulatorArm64!!)
     }
 }
 
@@ -4157,7 +5475,7 @@ if (isMacOS) {
 // sibling self-contained libquiche.{dylib,so} (via -lquiche) rather than re-bundling quiche +
 // BoringSSL a second time — so those ship exactly once. NativeLibLoader extracts libquiche.* next to
 // the shim so its DT_NEEDED / @rpath resolves via $ORIGIN / @loader_path. FFM on JDK 21+ loads
-// libquiche.{dylib,so} directly; this shim is only the JDK 8–20 JNI fallback path.
+// libquiche.{dylib,so} directly; this shim is only the JDK 17–20 JNI fallback path.
 
 fun createBuildJvmJniShimTask(
     os: String,
@@ -4172,11 +5490,12 @@ fun createBuildJvmJniShimTask(
 
     return tasks.register(taskName) {
         group = "build"
-        description = "Build quiche JNI shim for $os-$arch (JDK 8–20 fallback path)"
+        description = "Build quiche JNI shim for $os-$arch (JDK 17–20 fallback path)"
         dependsOn(buildShared)
         inputs.property("quicheVersion", quicheVersion)
-        val jniSourceFile = projectDir.resolve("src/jni/quiche_jni.c")
-        inputs.file(jniSourceFile)
+        // quiche_jni.c includes the native stack's sources (qnet*.c, qnet.h) from the same directory.
+        val jniSources = fileTree(projectDir.resolve("src/jni")) { exclude("test/**") }
+        inputs.files(jniSources)
         outputs.files(outputLib, markerFile)
         // The shim dynamically links the sibling self-contained libquiche.$libExt (built by the
         // shared task we dependsOn) rather than static-bundling libquiche.a — so quiche + BoringSSL
@@ -4189,7 +5508,7 @@ fun createBuildJvmJniShimTask(
         onlyIf {
             !markerFile.exists() ||
                 !outputLib.exists() ||
-                jniSourceFile.lastModified() > markerFile.lastModified() ||
+                jniSources.files.any { it.lastModified() > markerFile.lastModified() } ||
                 quicheShared.lastModified() > markerFile.lastModified()
         }
 
@@ -4332,9 +5651,36 @@ val jvmJniShimLinuxX64 =
 val jvmJniShimLinuxArm64 =
     if (isLinux) createBuildJvmJniShimTask("linux", "arm64", buildQuicheSharedLinuxArm64!!) else null
 
+// qnet's own red tests (src/jni/test/qnet_selftest.c), below every binding, on this host's kernel: every batching it
+// offers, a batch refused part way, segmented groups arriving as their datagrams, the poller. The JVM suites depend on
+// it, so each Linux and macOS lane proves its kernel's batching before any Kotlin runs on it.
+val qnetSelftest =
+    tasks.register("qnetSelftest") {
+        group = "verification"
+        description = "Compile and run qnet's C selftest on this host's kernel"
+        onlyIf { isMacOS || isLinux }
+        val jniDir = projectDir.resolve("src/jni")
+        val binary = layout.buildDirectory.file("qnet/qnet_selftest")
+        inputs.files(fileTree(jniDir))
+        outputs.file(binary)
+        doLast {
+            val out = binary.get().asFile
+            out.parentFile.mkdirs()
+
+            fun run(vararg command: String) {
+                val process = ProcessBuilder(*command).redirectErrorStream(true).start()
+                process.inputStream.bufferedReader().forEachLine { logger.lifecycle(it) }
+                if (process.waitFor() != 0) throw GradleException("qnet selftest failed: ${command.joinToString(" ")}")
+            }
+            run("cc", "-O1", "-Wall", "-o", out.absolutePath, jniDir.resolve("test/qnet_selftest.c").absolutePath)
+            run(out.absolutePath)
+        }
+    }
+tasks.matching { it.name == "jvmTest" }.configureEach { dependsOn(qnetSelftest) }
+
 // Every macOS native the JVM jar publishes — libquiche + JNI shim for BOTH arches, whatever the host.
 // The release injects build-apple's macos-*/lib dirs into the jar, so building only the host arch's
-// shim there shipped macos-x64 without libquiche_jni.dylib (4.19.0-4.21.0), and JDK 8-20 on an Intel
+// shim there shipped macos-x64 without libquiche_jni.dylib (4.19.0-4.21.0), and JDK 17-20 on an Intel
 // Mac could not load quiche. .github/scripts/verify-quiche-jvm-natives.sh gates the result.
 if (isMacOS) {
     tasks.register("buildPublishedMacosQuicheNatives") {
@@ -4381,6 +5727,8 @@ tasks.register("prepareQuicheSource") {
         logger.lifecycle("Prepared quiche source ${sourceDir.absolutePath} (patch digest $quichePatchDigest)")
     }
 }
+
+// endregion quiche-native-inputs
 
 // Stage built native libs into a directory added to the jvmTest runtime
 // classpath (not to main resources — we don't want them in the base jvmJar).
@@ -4644,6 +5992,33 @@ tasks.register<JavaExec>("captureToReplay") {
     argumentProviders.add { capture.get().split(Regex("\\s+")).filter { it.isNotEmpty() } }
 }
 
+// Walk failure -> permanent test: converts one connection's walk recording (and the peer's, when there is one) into
+// the network conditions it lived through, replays them against a core client and server on virtual time, and writes
+// the anonymised conditions fixture and a test holding the core to the outcome it gives today:
+//   ./gradlew :socket-quic-quiche:conditionsFromTrace -Ptrace=<file> -Pname=<TestName> [-Ppeer=<file>] [-PfromMs=<n> -PtoMs=<n>]
+tasks.register<JavaExec>("conditionsFromTrace") {
+    group = "trace"
+    description = "Write the conditions fixture and replay test of a walk recording."
+    dependsOn("jvmTestClasses", "prepareQuicheNativeLib", "stageQuicheNativeResources")
+    val jvmTestCompilation = kotlin.jvm().compilations["test"]
+    classpath = files(jvmTestCompilation.output.allOutputs, jvmTestCompilation.runtimeDependencyFiles, stagedNativeResourcesDir)
+    mainClass.set("com.ditchoom.socket.quic.replay.conditions.ConditionsFromTraceCliKt")
+    workingDir = projectDir
+    jvmArgs("--enable-native-access=ALL-UNNAMED", "--add-opens", "java.base/java.nio=ALL-UNNAMED")
+    val given =
+        mapOf(
+            "trace" to providers.gradleProperty("trace"),
+            "name" to providers.gradleProperty("name"),
+            "peer" to providers.gradleProperty("peer"),
+            "from-ms" to providers.gradleProperty("fromMs"),
+            "to-ms" to providers.gradleProperty("toMs"),
+            "source" to providers.gradleProperty("source"),
+        )
+    argumentProviders.add {
+        given.flatMap { (option, value) -> if (value.isPresent) listOf("--$option", value.get()) else emptyList() }
+    }
+}
+
 tasks.register<JavaExec>("quicHeaderFuzz") {
     group = "verification"
     description = "Coverage-guided Jazzer fuzzing of quiche_header_info (HeaderInfoFuzzer). " +
@@ -4761,6 +6136,7 @@ fun registerNativeFuzz(
 registerNativeFuzz("quicHeaderFuzzNative", "header_info", "header-info-corpus")
 registerNativeFuzz("quicConnRecvFuzzNative", "conn_recv", "conn-recv-corpus")
 
+// region quiche-native-inputs
 // --- Android JNI native library build ---
 // Builds quiche via cargo-ndk and compiles the JNI shim with NDK clang.
 // Requires: rustup, cargo-ndk, Android NDK, Rust Android targets
@@ -4787,12 +6163,34 @@ data class AndroidAbi(
     val ndkClangPrefix: String,
 )
 
-val androidAbis =
+val allAndroidAbis =
     listOf(
         AndroidAbi("arm64-v8a", "aarch64-linux-android", "aarch64-linux-android24"),
         AndroidAbi("armeabi-v7a", "armv7-linux-androideabi", "armv7a-linux-androideabi24"),
         AndroidAbi("x86_64", "x86_64-linux-android", "x86_64-linux-android24"),
     )
+
+// `-PquicheAndroidAbis=x86_64` (comma-separated) builds, and so packages, only the named ABIs. An emulator
+// lane runs one ABI, but every connected* and merge*JniLibFolders task depends on every ABI task, so it
+// used to compile the other two through cargo-ndk as well (~2.5 minutes). Unset builds all of them, which
+// is what a release and the default local build want.
+val androidAbis =
+    providers
+        .gradleProperty("quicheAndroidAbis")
+        .map { requested ->
+            val names = requested.split(',').map { it.trim() }.filter { it.isNotEmpty() }
+            val unknown = names - allAndroidAbis.map { it.abi }.toSet()
+            require(names.isNotEmpty() && unknown.isEmpty()) {
+                "quicheAndroidAbis=$requested: unknown ABI $unknown; choose from ${allAndroidAbis.map { it.abi }}"
+            }
+            allAndroidAbis.filter { it.abi in names }
+        }.getOrElse(allAndroidAbis)
+
+// `-PquicheAndroidNativesPrebuilt=true`: CI restored the Android natives from a cache keyed on exactly the
+// inputs of this region, so the tasks only check that their outputs are there. A fresh runner has no Gradle
+// history, so without this every restored library would be compiled again. Unset, the tasks build.
+val androidNativesPrebuilt =
+    providers.gradleProperty("quicheAndroidNativesPrebuilt").map(String::toBooleanStrict).getOrElse(false)
 
 fun createBuildAndroidJniTask(abi: AndroidAbi): TaskProvider<Task>? {
     val ndk = androidNdkDir ?: return null
@@ -4810,11 +6208,24 @@ fun createBuildAndroidJniTask(abi: AndroidAbi): TaskProvider<Task>? {
         // nConnDgramMaxWritableLen) → UnsatisfiedLinkError at runtime. This mirrors
         // the host JNI-shim task. Do NOT reintroduce a marker + onlyIf gate.
         inputs.property("quicheVersion", quicheVersion)
-        inputs.file("src/jni/quiche_jni.c")
+        inputs.property("quichePatchDigest", quichePatchDigest)
+        // quiche_jni.c and the native stack's sources it includes (qnet*.c, qnet.h).
+        inputs.files(fileTree(projectDir.resolve("src/jni")) { exclude("test/**") })
         // Both natives are outputs: the thin JNI shim AND the self-contained cdylib it DT_NEEDEDs.
         outputs.files(outputLib, outputDir.resolve("libquiche.so"))
 
         doLast {
+            if (androidNativesPrebuilt) {
+                val missing = listOf(outputLib, outputDir.resolve("libquiche.so")).filterNot { it.isFile && it.length() > 0 }
+                if (missing.isNotEmpty()) {
+                    throw GradleException(
+                        "quicheAndroidNativesPrebuilt=true but ${abi.abi} natives are missing: $missing. " +
+                            "The cache restore did not produce them; build without the property.",
+                    )
+                }
+                logger.lifecycle("Android ${abi.abi} natives restored from cache: ${outputLib.absolutePath}")
+                return@doLast
+            }
             // 1. Get quiche source (reuses shared clone)
             val buildDir = quicheBuildDir.get().asFile
             val sourceDir = downloadQuicheSource(buildDir, quicheVersion, quicheSha256)
@@ -4923,6 +6334,7 @@ fun createBuildAndroidJniTask(abi: AndroidAbi): TaskProvider<Task>? {
 }
 
 val androidJniTasks = androidAbis.mapNotNull { createBuildAndroidJniTask(it) }
+// endregion quiche-native-inputs
 
 if (androidJniTasks.isNotEmpty()) {
     tasks.register("buildAndroidNativeLibs") {
@@ -4953,6 +6365,69 @@ if (androidJniTasks.isNotEmpty()) {
 // answer moves with every commit and every edit, but rewrites a file only when the stamp changed, so a
 // build whose stamp did not move recompiles nothing. An empty stamp means git had no answer; the
 // binary reports that as `build=unknown(NotStamped)` rather than leaving the field out.
+val coreAndroidTestDir = layout.buildDirectory.dir("generated/coreAndroidTests")
+val stageCoreAndroidTests =
+    tasks.register<Sync>("stageCoreAndroidTests") {
+        group = "verification"
+        description = "Copy the JVM-tool-free core test sources into the Android instrumented test source set"
+        // Core suites that need no JVM-only tool.
+        from("src/jvmTest/kotlin/com/ditchoom/socket/quic/core") {
+            include(
+                "testing/ConnRig.kt",
+                "testing/FlightEvidenceRule.kt",
+                "testing/EchoQuiche.kt",
+                "testing/NioEcho.kt",
+                "testing/SocketView.kt",
+                "testing/NativeStackRequired.kt",
+                "testing/LoopScheduling.kt",
+                "udp/NativeIoTests.kt",
+                "ready/NativePollerTests.kt",
+                "edge/JvmCoreTestSupport.kt",
+                "edge/CoreEdgeTests.kt",
+                "edge/CallerInPlaceTests.kt",
+                "edge/CoreErrorTierTests.kt",
+                "edge/CoreBulkTransferTests.kt",
+                "edge/CorePacingClockTests.kt",
+                "edge/CoreNetworkFeedTests.kt",
+                "edge/HomeWatchTests.kt",
+                "loop/EndpointRehomeTests.kt",
+                "conn/ConnTests.kt",
+                "conn/ConnPacingTests.kt",
+                "loop/SharedClientLoopTests.kt",
+                "loop/NioLoopEchoTests.kt",
+                "loop/LoopDeadlineWakeTests.kt",
+                "loop/LoopPassTests.kt",
+                "loop/LoopClockReadsTests.kt",
+                "conn/CoreClientAgainstServerTests.kt",
+                "conn/NetworkWatchTests.kt",
+                "udp/SocketBuffersEchoTests.kt",
+                "udp/SocketReportReading.kt",
+                "demux/ServerTestSupport.kt",
+                "demux/ServerRig.kt",
+                "demux/DemuxTests.kt",
+                "demux/AdmissionTests.kt",
+                "demux/CoreServerEchoTests.kt",
+                "demux/CoreServerMemoryTests.kt",
+                "demux/CoreServerStatelessTests.kt",
+                "demux/CoreServerCloseTests.kt",
+                "demux/ServerShutdownTests.kt",
+                "demux/CoreServerAdmissionTests.kt",
+                "demux/CoreServerStartupHerdTests.kt",
+            )
+            into("com/ditchoom/socket/quic/core")
+        }
+        from("src/commonTest/kotlin/com/ditchoom/socket/quic/core") {
+            include("testing/Fakes.kt", "stream/ReadChunkTests.kt")
+            into("com/ditchoom/socket/quic/core")
+        }
+        // The suites every platform runs, with the JVM's platform calls, which Android's are.
+        from("src/coreTest/kotlin/com/ditchoom/socket/quic/core") { into("com/ditchoom/socket/quic/core") }
+        from("src/jvmTest/kotlin/com/ditchoom/socket/quic/core") {
+            include("testing/CorePlatform.jvm.kt")
+            into("com/ditchoom/socket/quic/core")
+        }
+        into(coreAndroidTestDir.map { it.dir("kotlin") })
+    }
 val buildStampDir = layout.buildDirectory.dir("generated/buildStamp")
 val generateBuildStamp =
     tasks.register("generateBuildStamp") {
@@ -5775,7 +7250,7 @@ kotlin {
         compilerOptions.jvmTarget.set(JvmTarget.JVM_17)
     }
     jvm {
-        compilerOptions.jvmTarget.set(JvmTarget.JVM_1_8)
+        compilerOptions.jvmTarget.set(JvmTarget.JVM_17)
         // Java 21 compilation for FFM (Foreign Function & Memory) quiche bindings
         compilations.create("java21") {
             compilerOptions.configure {
@@ -5816,6 +7291,23 @@ kotlin {
                 }
             }
         }
+    }
+
+    // The native stack (`qnet`, src/jni) on Kotlin/Native: the same C the JVM's libquiche_jni carries, compiled into a
+    // QNet cinterop klib, with its binding (src/qnetMain), on every Kotlin/Native target: the core's loops wait in its
+    // poller, and servers use its sockets. On iOS qnet is compiled without Darwin's batched calls (TARGET_OS_IPHONE:
+    // not in the public SDK, so not even looked up), and a client's datagrams ride Network.framework.
+    val configureQNet: org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget.() -> Unit = {
+        compilations["main"].cinterops {
+            create("QNet") {
+                defFile("src/nativeInterop/cinterop/QNet.def")
+                includeDirs("src/jni")
+                // The def includes qnet.c, which includes the rest: every source is an input of the klib.
+                tasks.named(interopProcessingTaskName) { inputs.files(fileTree("src/jni") { exclude("test/**") }) }
+            }
+        }
+        compilations["main"].defaultSourceSet.kotlin.srcDir("src/qnetMain/kotlin")
+        compilations["test"].defaultSourceSet.kotlin.srcDir("src/qnetTest/kotlin")
     }
 
     if (linuxTargets) {
@@ -5865,6 +7357,7 @@ kotlin {
             }
         }
         linuxX64 {
+            configureQNet()
             val quicheLibDir = projectDir.resolve("libs/quiche/linux-x64/lib")
             val quicheStatic = quicheLibDir.resolve("libquiche.a")
             val generatedDef = projectDir.resolve("build/generated/cinterop/Quiche-linux-x64.def")
@@ -5937,6 +7430,7 @@ kotlin {
             }
         }
         linuxArm64 {
+            configureQNet()
             val quicheLibDir = projectDir.resolve("libs/quiche/linux-arm64/lib")
             val quicheStatic = quicheLibDir.resolve("libquiche.a")
             val generatedDef = projectDir.resolve("build/generated/cinterop/Quiche-linux-arm64.def")
@@ -6020,10 +7514,8 @@ kotlin {
             val buildTask: TaskProvider<Task>? =
                 when (libSubdir) {
                     "macos-arm64" -> buildQuicheSharedMacosArm64
-                    "macos-x64" -> buildQuicheSharedMacosX64
                     "ios-arm64" -> buildQuicheStaticIosArm64
                     "ios-simulator-arm64" -> buildQuicheStaticIosSimulatorArm64
-                    "ios-x64" -> buildQuicheStaticIosX64
                     else -> null
                 }
             val genDefTask =
@@ -6060,12 +7552,12 @@ kotlin {
             // to actually building this target, so this is where "…and its libquiche.a must be current"
             // belongs. Measured task graphs, `./gradlew :socket-quic-quiche:<task> --dry-run`:
             //
-            //   jvmTest / quicEchoJar  → cinteropQuiche{IosArm64,IosSimulatorArm64,IosX64,MacosX64} ARE
+            //   jvmTest / quicEchoJar  → cinteropQuiche{IosArm64,IosSimulatorArm64} ARE
             //                            present (commonizeCInterop pulls every Apple cinterop), but NO
             //                            compileKotlin<AppleTarget> is.
             //   macosArm64Test         → compileKotlinMacosArm64 / compileTestKotlinMacosArm64 only.
             //
-            // So a dependsOn on the CINTEROP would drag three iOS cargo cross-builds plus a macOS-x64 one
+            // So a dependsOn on the CINTEROP would drag two iOS cargo cross-builds
             // into an ordinary host-only `:jvmTest` — precisely the leak the Linux genLinuxQuicheDef
             // comment records and the reason that one is `mustRunAfter`. Hanging it off the compilations
             // instead keeps the cross-build attached to the target that needs it and to nothing else.
@@ -6106,14 +7598,19 @@ kotlin {
         }
         macosArm64 {
             configureQuicheApple("macos-arm64")
+            configureQNet()
             // An optimized (-opt) test binary for profiling the native data path: a debug K/N binary is not
             // representative. scripts/native-perf/ records it. (-g cannot combine with -opt; the dSYM still symbolicates.)
             binaries { test(listOf(org.jetbrains.kotlin.gradle.plugin.mpp.NativeBuildType.RELEASE)) }
         }
-        macosX64 { configureQuicheApple("macos-x64") }
-        iosArm64 { configureQuicheApple("ios-arm64") }
-        iosSimulatorArm64 { configureQuicheApple("ios-simulator-arm64") }
-        iosX64 { configureQuicheApple("ios-x64") }
+        iosArm64 {
+            configureQuicheApple("ios-arm64")
+            configureQNet()
+        }
+        iosSimulatorArm64 {
+            configureQuicheApple("ios-simulator-arm64")
+            configureQNet()
+        }
     }
 
     applyDefaultHierarchyTemplate()
@@ -6139,6 +7636,8 @@ kotlin {
             // @ExperimentalDatagramApi, opted into at the adapter call sites.
             implementation(project(":socket-udp"))
             implementation(libs.kotlinx.coroutines.core)
+            // SecureBuffer: the session ticket key and the Linux P-256 scalar are wiped when freed.
+            implementation(libs.buffer.crypto)
         }
         commonTest {
             kotlin.srcDir(generateQuicHarnessConfig.map { quicHarnessGeneratedDir })
@@ -6181,11 +7680,11 @@ kotlin {
         }
         val commonJvmMain by creating {
             dependsOn(commonMain.get())
-            // No buffer-crypto here, ever: the SHA-256 behind W3C serverCertificateHashes (sha256Into actual)
-            // is JCA MessageDigest directly. buffer-crypto-android declares minSdk 28, above this module's 24,
-            // so depending on it failed manifest merging for every app with minSdk 24-27. It must also never
-            // reach the Linux link: it bundles a SECOND static BoringSSL alongside quiche's → duplicate
-            // SHA256_* symbols → SIGSEGV (Linux uses the already-linked BoringSSL; see Sha256.linux.kt).
+            // buffer-crypto is a dependency of commonMain (SecureBuffer). Its Android artifact declares
+            // minSdk 28, the floor of this module. On Linux its klib depends on the same canonical
+            // boringssl-canonical owner klib as this module, and its own cinterop declares no static
+            // library, so one libcrypto.a reaches the link (SHA-256 for serverCertificateHashes still calls
+            // that libcrypto directly; see Sha256.linux.kt).
         }
         jvmMain.get().dependsOn(commonJvmMain)
         androidMain.get().dependsOn(commonJvmMain)
@@ -6223,6 +7722,12 @@ kotlin {
             kotlin.srcDir("src/sharedJvmTestProtocol/kotlin")
         }
         jvmTest.get().dependsOn(commonJvmTest)
+        // The core's suites that run on the JVM, on Android and on every Kotlin/Native target alike (src/coreTest). They
+        // open loopback sockets and load quiche, so they are not in commonTest, which Android's unit tests compile. Each
+        // platform's test source set supplies the few platform calls they make (CorePlatform: quiche's binding, the
+        // server certificate, thread names, a thread of their own); Android's instrumented tests get them staged.
+        jvmTest.get().kotlin.srcDir("src/coreTest/kotlin")
+        findByName("nativeTest")?.kotlin?.srcDir("src/coreTest/kotlin")
         jvmTest.dependencies {
             // A QUIC server this library did not write, for NettyServerActiveMigrationTests. Test scope on
             // the JVM only: nothing published depends on Netty.
@@ -6254,6 +7759,10 @@ kotlin {
             // for #393, a defect found on an Android device. They need no native lib and no socket
             // (StubQuicheApi + a gated UdpChannel), so nothing about them is desktop-only.
             kotlin.srcDir("src/sharedQuicheTestSuites/kotlin")
+            // The run-to-completion core suites live in jvmTest because the JVM-only tools (BlockHound,
+            // Lincheck, allocation counters) sit beside them. The rest use nothing but kotlin.test and the
+            // JDK, so they are copied here unchanged and an ART device runs the very same source.
+            kotlin.srcDir(stageCoreAndroidTests.map { coreAndroidTestDir })
             dependencies {
                 implementation(kotlin("test"))
                 implementation(libs.kotlinx.coroutines.test)
@@ -6291,7 +7800,15 @@ afterEvaluate {
 
 // Enable FFM native access for JVM tests (quiche uses Panama on JDK 21+)
 // --add-opens needed for JNI fallback path (direct ByteBuffer address access)
+// A failed core test writes the flight recording of each connection it touched here (CI uploads it on failure).
+val coreFlightDir = layout.buildDirectory.dir("core-flight")
+
+tasks.withType<org.jetbrains.kotlin.gradle.targets.native.tasks.KotlinNativeTest>().configureEach {
+    environment("CORE_FLIGHT_DIR", coreFlightDir.get().asFile.path)
+}
+
 tasks.withType<Test> {
+    systemProperty("core.flight.dir", coreFlightDir.get().asFile.path)
     jvmArgs("--enable-native-access=ALL-UNNAMED")
     jvmArgs("--add-opens", "java.base/java.nio=ALL-UNNAMED")
 }
@@ -6363,7 +7880,7 @@ android {
         baselineProfiles.srcDir("src/androidMain/baselineProfiles")
     }
     defaultConfig {
-        minSdk = 24
+        minSdk = 28
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // Shipped in the AAR as proguard.txt: keeps JniQuicheApi's by-name JNI binding intact in any app
         // that minifies, whether or not it uses AGP's default rules. Without it (and without AGP's

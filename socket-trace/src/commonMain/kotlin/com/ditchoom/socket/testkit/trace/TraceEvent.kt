@@ -388,6 +388,17 @@ sealed interface TraceEvent {
     }
 
     /**
+     * This endpoint's timer fell due and quiche's timeout ran, at the time its host got to it, which a loaded host
+     * reaches late. Observation: what this endpoint's host did; a schedule replay fires the replayed endpoint's
+     * timers at these times instead of when they fall due.
+     */
+    data class TimerFired(
+        override val at: Duration,
+    ) : TraceEvent {
+        override fun toString(): String = encodeTraceLine(this)
+    }
+
+    /**
      * True for the replayable input-event subset (RFC §2), false for observations.
      *
      * The exhaustive `when` is load-bearing, not stylistic: it is what makes adding a variant a
@@ -403,7 +414,7 @@ sealed interface TraceEvent {
                 // in would be replaying our own reaction, not the input that caused it. QlogRefused is
                 // the same shape: a local filesystem fact, not something the far side caused.
                 is DgramOut, is State, is PathState, is Stats, is StreamLoss, is Migration, is Silence,
-                is QlogRefused, is TrafficSecretsRefused, is Drop,
+                is QlogRefused, is TrafficSecretsRefused, is Drop, is TimerFired,
                 -> false
             }
 

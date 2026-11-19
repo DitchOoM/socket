@@ -135,10 +135,9 @@ kotlin {
         publishLibraryVariants("release")
     }
     jvm {
-        // Java 8 bytecode to match the base :socket module — the production surface is pure java.nio
-        // (DatagramChannel/Selector), no post-8 java.* API on the shipped path (JDK-version-specific
-        // socket options are resolved reflectively via DatagramChannel.supportedOptions()).
-        compilerOptions.jvmTarget.set(JvmTarget.JVM_1_8)
+        // Java 17 bytecode, the JVM floor shared by every module. JDK-version-specific socket options are
+        // resolved reflectively via DatagramChannel.supportedOptions().
+        compilerOptions.jvmTarget.set(JvmTarget.JVM_17)
     }
 
     // Node.js `dgram` UDP (RFC Phase 4). The single JS target compiles for both runtimes; the
@@ -168,29 +167,19 @@ kotlin {
     // :network-monitor. The former five-target list carried a comment blaming buffer-flow's Apple klib
     // coverage; that was true at buffer 6.11.0 and is stale (issue #280). buffer / buffer-flow /
     // buffer-codec all publish tvos{Arm64,SimulatorArm64,X64} and watchos{Arm64,SimulatorArm64,X64}
-    // klibs at the pinned 6.25.0, and a metadata dump of buffer-flow watchosArm64 vs macosArm64 is
-    // identical, so the datagram trichotomy is the same API on every one.
+    // klibs, so the datagram trichotomy is the same API on every one.
     //
     // Nothing platform-specific is missing either: Network.framework is watchOS 6+ / tvOS 12+ (K/N's
     // floors are watchos 8.0 / tvos 15.0) and root :socket already ships NWConnection TCP on these same
-    // targets. NOT included is watchosDeviceArm64 — buffer publishes no klib for it and Kotlin 2.4.0
-    // has no platform libs for it; that is the target :network-monitor omits, not watchosArm64.
-    //
-    // watchosArm64 is arm64_32: 32-bit pointers, so `ssize_t` is Int there and Long everywhere else.
-    // Keep width-dependent comparisons normalized (see HostLoopback.apple.kt) or this target alone
-    // fails to compile.
+    // targets.
     if (appleTargets) {
         macosArm64 { configureNwUdpCinterop() }
-        macosX64 { configureNwUdpCinterop() }
         iosArm64 { configureNwUdpCinterop() }
         iosSimulatorArm64 { configureNwUdpCinterop() }
-        iosX64 { configureNwUdpCinterop() }
         tvosArm64 { configureNwUdpCinterop() }
         tvosSimulatorArm64 { configureNwUdpCinterop() }
-        tvosX64 { configureNwUdpCinterop() }
-        watchosArm64 { configureNwUdpCinterop() }
+        watchosDeviceArm64 { configureNwUdpCinterop() }
         watchosSimulatorArm64 { configureNwUdpCinterop() }
-        watchosX64 { configureNwUdpCinterop() }
     }
 
     applyDefaultHierarchyTemplate()
@@ -230,27 +219,18 @@ kotlin {
         // shape root :socket and :network-monitor use, and for the same reason they adopted it.
         //
         // An `appleMain` source set forces a `compileAppleMainKotlinMetadata` compilation that must
-        // type-check ONE source against ALL Apple targets at once. That is fine while every target is
-        // 64-bit, and breaks the moment watchosArm64 (arm64_32) joins: `size_t`/`ssize_t`/`NSUInteger`
-        // are 32-bit there and 64-bit everywhere else, so every `sizeOf<…>().convert()`, `memcpy` length
-        // and `content.length` in this module becomes "numbers with different bit widths in at least two
-        // actual platforms" and the metadata compilation fails — while each individual target still
-        // compiles perfectly. Per-target srcDir removes the metadata compilation from the picture, which
-        // is exactly how the other two modules carry all eleven Apple targets (#280).
+        // type-check ONE source against ALL Apple targets at once; the per-target srcDir keeps that
+        // metadata compilation out of the picture, as in the other two modules.
         if (appleTargets) {
             val appleNativeImplDir = file("src/appleNativeImpl/kotlin")
             listOf(
                 "macosArm64Main",
-                "macosX64Main",
                 "iosArm64Main",
                 "iosSimulatorArm64Main",
-                "iosX64Main",
                 "tvosArm64Main",
                 "tvosSimulatorArm64Main",
-                "tvosX64Main",
-                "watchosArm64Main",
+                "watchosDeviceArm64Main",
                 "watchosSimulatorArm64Main",
-                "watchosX64Main",
             ).forEach { sourceSetName ->
                 findByName(sourceSetName)?.kotlin?.srcDir(appleNativeImplDir)
             }
@@ -288,7 +268,7 @@ android {
         .manifest
         .srcFile("src/androidMain/AndroidManifest.xml")
     defaultConfig {
-        minSdk = 21
+        minSdk = 28
     }
     namespace = "com.ditchoom.socket.udp"
 

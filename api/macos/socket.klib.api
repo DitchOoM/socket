@@ -1,6 +1,6 @@
 // Klib ABI Dump
-// Targets: [iosArm64, iosSimulatorArm64, iosX64, js, macosArm64, macosX64, tvosArm64, tvosSimulatorArm64, tvosX64, wasmJs, watchosArm64, watchosSimulatorArm64, watchosX64]
-// Alias: apple => [iosArm64, iosSimulatorArm64, iosX64, macosArm64, macosX64, tvosArm64, tvosSimulatorArm64, tvosX64, watchosArm64, watchosSimulatorArm64, watchosX64]
+// Targets: [iosArm64, iosSimulatorArm64, js, macosArm64, tvosArm64, tvosSimulatorArm64, wasmJs, watchosDeviceArm64, watchosSimulatorArm64]
+// Alias: apple => [iosArm64, iosSimulatorArm64, macosArm64, tvosArm64, tvosSimulatorArm64, watchosDeviceArm64, watchosSimulatorArm64]
 // Rendering settings:
 // - Signature version: 2
 // - Show manifest properties: true
@@ -536,16 +536,16 @@ sealed interface com.ditchoom.socket/ReconnectDecision { // com.ditchoom.socket/
 
 sealed interface com.ditchoom.socket/Resolution { // com.ditchoom.socket/Resolution|null[0]
     final class Failed : com.ditchoom.socket/Resolution { // com.ditchoom.socket/Resolution.Failed|null[0]
-        constructor <init>(kotlin/String, kotlin/Throwable) // com.ditchoom.socket/Resolution.Failed.<init>|<init>(kotlin.String;kotlin.Throwable){}[0]
+        constructor <init>(kotlin/String, com.ditchoom.socket/ResolveFailure) // com.ditchoom.socket/Resolution.Failed.<init>|<init>(kotlin.String;com.ditchoom.socket.ResolveFailure){}[0]
 
-        final val cause // com.ditchoom.socket/Resolution.Failed.cause|{}cause[0]
-            final fun <get-cause>(): kotlin/Throwable // com.ditchoom.socket/Resolution.Failed.cause.<get-cause>|<get-cause>(){}[0]
         final val host // com.ditchoom.socket/Resolution.Failed.host|{}host[0]
             final fun <get-host>(): kotlin/String // com.ditchoom.socket/Resolution.Failed.host.<get-host>|<get-host>(){}[0]
+        final val why // com.ditchoom.socket/Resolution.Failed.why|{}why[0]
+            final fun <get-why>(): com.ditchoom.socket/ResolveFailure // com.ditchoom.socket/Resolution.Failed.why.<get-why>|<get-why>(){}[0]
 
         final fun component1(): kotlin/String // com.ditchoom.socket/Resolution.Failed.component1|component1(){}[0]
-        final fun component2(): kotlin/Throwable // com.ditchoom.socket/Resolution.Failed.component2|component2(){}[0]
-        final fun copy(kotlin/String = ..., kotlin/Throwable = ...): com.ditchoom.socket/Resolution.Failed // com.ditchoom.socket/Resolution.Failed.copy|copy(kotlin.String;kotlin.Throwable){}[0]
+        final fun component2(): com.ditchoom.socket/ResolveFailure // com.ditchoom.socket/Resolution.Failed.component2|component2(){}[0]
+        final fun copy(kotlin/String = ..., com.ditchoom.socket/ResolveFailure = ...): com.ditchoom.socket/Resolution.Failed // com.ditchoom.socket/Resolution.Failed.copy|copy(kotlin.String;com.ditchoom.socket.ResolveFailure){}[0]
         final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/Resolution.Failed.equals|equals(kotlin.Any?){}[0]
         final fun hashCode(): kotlin/Int // com.ditchoom.socket/Resolution.Failed.hashCode|hashCode(){}[0]
         final fun toString(): kotlin/String // com.ditchoom.socket/Resolution.Failed.toString|toString(){}[0]
@@ -575,6 +575,45 @@ sealed interface com.ditchoom.socket/Resolution { // com.ditchoom.socket/Resolut
         final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/Resolution.Resolved.equals|equals(kotlin.Any?){}[0]
         final fun hashCode(): kotlin/Int // com.ditchoom.socket/Resolution.Resolved.hashCode|hashCode(){}[0]
         final fun toString(): kotlin/String // com.ditchoom.socket/Resolution.Resolved.toString|toString(){}[0]
+    }
+}
+
+sealed interface com.ditchoom.socket/ResolveFailure { // com.ditchoom.socket/ResolveFailure|null[0]
+    final class Os : com.ditchoom.socket/ResolveFailure { // com.ditchoom.socket/ResolveFailure.Os|null[0]
+        constructor <init>(kotlin/Int) // com.ditchoom.socket/ResolveFailure.Os.<init>|<init>(kotlin.Int){}[0]
+
+        final val code // com.ditchoom.socket/ResolveFailure.Os.code|{}code[0]
+            final fun <get-code>(): kotlin/Int // com.ditchoom.socket/ResolveFailure.Os.code.<get-code>|<get-code>(){}[0]
+
+        final fun component1(): kotlin/Int // com.ditchoom.socket/ResolveFailure.Os.component1|component1(){}[0]
+        final fun copy(kotlin/Int = ...): com.ditchoom.socket/ResolveFailure.Os // com.ditchoom.socket/ResolveFailure.Os.copy|copy(kotlin.Int){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/ResolveFailure.Os.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket/ResolveFailure.Os.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket/ResolveFailure.Os.toString|toString(){}[0]
+    }
+
+    final object NoNetwork : com.ditchoom.socket/ResolveFailure { // com.ditchoom.socket/ResolveFailure.NoNetwork|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/ResolveFailure.NoNetwork.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket/ResolveFailure.NoNetwork.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket/ResolveFailure.NoNetwork.toString|toString(){}[0]
+    }
+
+    final object NotFound : com.ditchoom.socket/ResolveFailure { // com.ditchoom.socket/ResolveFailure.NotFound|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/ResolveFailure.NotFound.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket/ResolveFailure.NotFound.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket/ResolveFailure.NotFound.toString|toString(){}[0]
+    }
+
+    final object TimedOut : com.ditchoom.socket/ResolveFailure { // com.ditchoom.socket/ResolveFailure.TimedOut|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/ResolveFailure.TimedOut.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket/ResolveFailure.TimedOut.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket/ResolveFailure.TimedOut.toString|toString(){}[0]
+    }
+
+    final object Unsupported : com.ditchoom.socket/ResolveFailure { // com.ditchoom.socket/ResolveFailure.Unsupported|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket/ResolveFailure.Unsupported.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket/ResolveFailure.Unsupported.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket/ResolveFailure.Unsupported.toString|toString(){}[0]
     }
 }
 

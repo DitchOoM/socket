@@ -129,7 +129,7 @@ internal class PublicEndpointAttempt private constructor(
         when (val answer = HostResolver.platform().resolve(host)) {
             is Resolution.Resolved -> enter("dns answered ${answer.candidates.size} address(es)")
             is Resolution.NoAddress -> throw UnreachableEndpoint("$host has no address")
-            is Resolution.Failed -> throw UnreachableEndpoint("$host did not resolve: ${answer.cause}")
+            is Resolution.Failed -> throw UnreachableEndpoint("$host did not resolve: ${answer.why}")
         }
     }
 

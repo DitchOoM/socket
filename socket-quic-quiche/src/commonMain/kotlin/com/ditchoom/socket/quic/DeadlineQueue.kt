@@ -12,15 +12,29 @@ import kotlin.concurrent.atomics.decrementAndFetch
 import kotlin.concurrent.atomics.fetchAndIncrement
 import kotlin.concurrent.atomics.incrementAndFetch
 
-/** What [DeadlineQueue.nextDue] answers: when the queue next needs looking at, or that there is nothing to wait for. */
-internal sealed interface NextDue {
-    /** Nothing worth waiting for: nothing armed, or only disarmed deadlines too near to sleep towards. */
-    object None : NextDue
+/**
+ * What [DeadlineQueue.nextDue] answers: the time the queue next needs looking at, or [None] when there is nothing to
+ * wait for. A primitive, so a pass allocates nothing; no deadline is ever due at [Long.MAX_VALUE].
+ */
+@kotlin.jvm.JvmInline
+internal value class NextDue private constructor(
+    private val nanos: Long,
+) {
+    /** Calls [due] with the time the earliest deadline worth waking for falls due, a far disarmed one included; [none] when nothing is worth waiting for. */
+    inline fun <R> fold(
+        none: () -> R,
+        due: (nanos: Long) -> R,
+    ): R = if (this == None) none() else due(dueNanos())
 
-    /** The earliest deadline worth waking for, a disarmed one included when it is far off, falls due at [nanos]. */
-    class At(
-        val nanos: Long,
-    ) : NextDue
+    @PublishedApi
+    internal fun dueNanos(): Long = nanos
+
+    companion object {
+        /** Nothing worth waiting for: nothing armed, or only disarmed deadlines too near to sleep towards. */
+        val None = NextDue(Long.MAX_VALUE)
+
+        fun at(nanos: Long): NextDue = NextDue(nanos)
+    }
 }
 
 /**
@@ -99,6 +113,9 @@ internal abstract class DeadlineNode(
     }
 
     internal fun isDisarmed(): Boolean = loadState() === NodeState.Disarmed
+
+    /** Neither fired nor disarmed. */
+    internal fun isArmed(): Boolean = loadState() === this
 }
 
 /** A [DeadlineNode] that runs a [Runnable]: what the code that is not on the stream-bound path arms. */
@@ -128,8 +145,7 @@ private object NoAction : Runnable {
  *
  * Shared by the JVM's [DeadlineTimer] and Kotlin/Native's `NativeDeadlineTimer`; the thread, the clock and the
  * waiting are theirs, the queue is the same code. Only `kotlin.concurrent.atomics`, `Int` and `Long` are used
- * outside [StateCell], so it compiles for every target of the module (no pointer-width-dependent type, as
- * watchosArm64 needs).
+ * outside [StateCell], so it compiles for every target of the module (no pointer-width-dependent type).
  *
  * Arming allocates the [DeadlineNode] and nothing else; disarming allocates nothing. The timer thread's own
  * bookkeeping (the heap's growth) is off that path.
@@ -276,7 +292,7 @@ internal class DeadlineQueue(
                 disarmed.decrementAndFetch()
                 continue
             }
-            return NextDue.At(top.dueNanos)
+            return NextDue.at(top.dueNanos)
         }
         return NextDue.None
     }

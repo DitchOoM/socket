@@ -1,0 +1,33 @@
+name: "quic-go interop endpoints"
+description: >-
+  quic-go's interop server and client, built from quic-go's current HEAD, in `$RUNNER_TEMP/peers`.
+  Cached per runner OS, architecture and quic-go commit, so a run builds them (and installs Go) only
+  when quic-go has moved since the last run that could share the cache.
+runs:
+  using: "composite"
+  steps:
+    - id: rev
+      shell: bash
+      run: |
+        set -euo pipefail
+        sha=$(git ls-remote https://github.com/quic-go/quic-go HEAD | cut -f1)
+        [ -n "$sha" ] || { echo "::error::could not read quic-go's HEAD"; exit 1; }
+        echo "sha=$sha" >> "$GITHUB_OUTPUT"
+    - id: restore
+      uses: actions/cache/restore@v6
+      with:
+        path: ${{ runner.temp }}/peers
+        key: quic-go-endpoints-${{ runner.os }}-${{ runner.arch }}-${{ steps.rev.outputs.sha }}
+    - if: ${{ steps.restore.outputs.cache-hit != 'true' }}
+      uses: actions/setup-go@v6
+      with:
+        go-version: stable
+        cache: false
+    - if: ${{ steps.restore.outputs.cache-hit != 'true' }}
+      shell: bash
+      run: .github/scripts/build-quic-go-interop.sh "$RUNNER_TEMP/peers" "${{ steps.rev.outputs.sha }}"
+    - if: ${{ steps.restore.outputs.cache-hit != 'true' }}
+      uses: actions/cache/save@v6
+      with:
+        path: ${{ runner.temp }}/peers
+        key: quic-go-endpoints-${{ runner.os }}-${{ runner.arch }}-${{ steps.rev.outputs.sha }}

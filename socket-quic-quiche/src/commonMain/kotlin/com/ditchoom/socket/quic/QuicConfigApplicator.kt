@@ -152,8 +152,8 @@ internal fun applyQuicOptions(
     calls.setInitialMaxStreamDataUni(fc.initialMaxStreamDataUni)
     calls.setInitialMaxStreamsBidi(fc.initialMaxStreamsBidi)
     calls.setInitialMaxStreamsUni(fc.initialMaxStreamsUni)
-    fc.maxConnectionWindow?.let { calls.setMaxConnectionWindow(it) }
-    fc.maxStreamWindow?.let { calls.setMaxStreamWindow(it) }
+    calls.setMaxConnectionWindow(fc.maxConnectionWindow)
+    calls.setMaxStreamWindow(fc.maxStreamWindow)
 
     // RFC 9000 §18.2. An exhaustive `when`, not a boolean read: the wire parameter and the reactor are
     // now one decision, so a new MigrationPolicy case cannot be added without answering here what it

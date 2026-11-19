@@ -104,3 +104,58 @@ data class QuicStatsSnapshot(
     val connStats: QuicConnStats?,
     val pathStats: QuicPathStats?,
 )
+
+/** The public statistics of a connection whose counters read [conn] and whose active path read [active]. */
+internal fun publicStatsOf(
+    conn: QuicConnStats,
+    active: ActivePath,
+): QuicConnectionStats =
+    QuicConnectionStats(
+        packetsSent = conn.sent,
+        packetsReceived = conn.recv,
+        packetsLost = conn.lost,
+        packetsSpuriouslyLost = conn.spuriousLost,
+        packetsRetransmitted = conn.retrans,
+        bytesSent = conn.sentBytes,
+        bytesReceived = conn.recvBytes,
+        bytesAcknowledged = conn.ackedBytes,
+        bytesLost = conn.lostBytes,
+        streamBytesRetransmitted = conn.streamRetransBytes,
+        datagramsSent = conn.dgramSent,
+        datagramsReceived = conn.dgramRecv,
+        paths = conn.pathsCount.toInt(),
+        activePath =
+            when (active) {
+                is ActivePath.Read -> publicPathOf(active.stats)
+                ActivePath.Unreadable -> QuicActivePathStats.BetweenPaths
+            },
+    )
+
+private fun publicPathOf(path: QuicPathStats): QuicActivePathStats =
+    QuicActivePathStats.Measured(
+        smoothedRtt = path.rtt,
+        minRtt = path.minRtt,
+        maxRtt = path.maxRtt,
+        rttVariance = path.rttvar,
+        congestionWindowBytes = path.cwnd,
+        pathMtuBytes = path.pmtu,
+        deliveryRateBytesPerSecond = path.deliveryRate,
+        probeTimeouts = path.totalPtoCount,
+        packetsSent = path.sent,
+        packetsReceived = path.recv,
+        packetsLost = path.lost,
+    )
+
+/** Reads [conn]'s statistics as the public type: [QuicStatsRead.NotReported] on a backend without the stats FFI. */
+internal fun QuicheApi.readStats(conn: QuicheConn): QuicStatsRead =
+    when (val stats = connStats(conn)) {
+        null -> QuicStatsRead.NotReported
+        else -> QuicStatsRead.Read(publicStatsOf(stats, readActivePath(conn)))
+    }
+
+/** This driver's connection statistics, read on its loop; [QuicStatsRead.Ended] once the connection is torn down. */
+internal suspend fun QuicheDriver.publicStats(): QuicStatsRead =
+    when (val read = inspect { api, conn -> api.readStats(conn) }) {
+        is Inspected.Read -> read.value
+        Inspected.ConnectionGone -> QuicStatsRead.Ended
+    }

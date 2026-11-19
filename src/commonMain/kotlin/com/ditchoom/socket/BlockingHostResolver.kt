@@ -3,6 +3,7 @@ package com.ditchoom.socket
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.async
 import kotlin.coroutines.CoroutineContext
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * A [HostResolver] over a platform lookup that blocks its thread (`getaddrinfo`,
@@ -23,5 +24,17 @@ internal class BlockingHostResolver(
     private val context: CoroutineContext,
     private val lookup: (host: String) -> Resolution,
 ) : HostResolver {
-    override suspend fun resolve(host: String): Resolution = CoroutineScope(context).async { lookup(host) }.await()
+    override suspend fun resolve(host: String): Resolution {
+        val running = CoroutineScope(context).async { lookup(host) }
+        try {
+            return running.await()
+        } catch (e: CancellationException) {
+            // A lookup still queued behind slow ones never starts; one already inside the OS finishes and is dropped.
+            running.cancel()
+            throw e
+        }
+    }
 }
+
+/** Threads a blocking resolver may hold: enough that a slow name does not queue the next, few enough to stay small. */
+internal const val RESOLVER_PARALLELISM = 4

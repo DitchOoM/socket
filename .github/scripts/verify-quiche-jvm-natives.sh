@@ -3,7 +3,7 @@
 # built for that platform's CPU.
 #
 # Per platform the jar must hold libquiche (the FFM backend on JDK 21+) AND libquiche_jni (the JNI
-# backend on JDK 8-20, which NativeLibLoader extracts beside libquiche). Checking for the platform's
+# backend on JDK 17-20, which NativeLibLoader extracts beside libquiche). Checking for the platform's
 # directory alone is not enough: 4.19.0-4.21.0 shipped META-INF/native/macos-x64/ holding only
 # libquiche.dylib, so an Intel Mac on JDK 17 failed to load quiche at all, and a directory check passed.
 # The architecture is checked too, because a shim built on an arm64 host without `-arch x86_64` is an

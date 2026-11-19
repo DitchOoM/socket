@@ -60,25 +60,17 @@ jobs:
       LANE: macos-arm64
     steps:
       - uses: actions/checkout@v7
-      - uses: ./.github/actions/await-artifact
-        if: ${{ inputs.await-natives }}
-        with:
-          name: quiche-apple-natives
-          producer: "Apple quiche natives"
-          github-token: ${{ github.token }}
+      # Setup that needs no artifact of this run goes before the wait, so it overlaps the natives build.
+      - name: quic-go's interop endpoints
+        uses: ./.github/actions/quic-go-endpoints
       - uses: ./.github/actions/apple-quiche-env
         with:
+          await-natives-producer: ${{ inputs.await-natives && 'Apple quiche natives' || '' }}
           konan: "false"
           natives-run-id: ${{ inputs.apple-natives-run-id }}
           github-token: ${{ github.token }}
       - name: Build the endpoint jar
         run: ./gradlew :socket-quic-quiche:quicInteropJar -PappleTargets=false --no-configuration-cache
-      - uses: actions/setup-go@v6
-        with:
-          go-version: stable
-          cache: false
-      - name: Build quic-go's interop endpoints
-        run: .github/scripts/build-quic-go-interop.sh "$RUNNER_TEMP/peers"
       - name: Run the pairs
         run: .github/scripts/quic-interop-native-run.sh
       - uses: actions/upload-artifact@v7
@@ -104,20 +96,9 @@ jobs:
     timeout-minutes: 75
     steps:
       - uses: actions/checkout@v7
-      - uses: ./.github/actions/await-artifact
-        if: ${{ inputs.await-natives }}
-        with:
-          name: quiche-apple-natives
-          producer: "Apple quiche natives"
-          github-token: ${{ github.token }}
-      - uses: ./.github/actions/apple-quiche-env
-        with:
-          natives-run-id: ${{ inputs.apple-natives-run-id }}
-          github-token: ${{ github.token }}
-      # Linked before the simulator boots, so the link does not share the runner with the booting device.
-      - name: Link the test binaries
-        run: ./gradlew :socket-quic-quiche:linkDebugTestMacosArm64 :socket-quic-quiche:linkDebugTestIosSimulatorArm64 --no-configuration-cache
-      - name: Boot an iOS simulator
+      # The simulator boots while this job waits for the natives, before anything else runs on the runner;
+      # "Wait for the iOS simulator" blocks before the pairs.
+      - name: Start booting an iOS simulator
         run: |
           set -euo pipefail
           UDID=$(xcrun simctl list devices available -j \
@@ -128,14 +109,28 @@ jobs:
             exit 1
           fi
           xcrun simctl boot "$UDID" || true # already booted is fine
-          xcrun simctl bootstatus "$UDID" -b
           echo "IOS_SIMULATOR_BOOTED_UDID=$UDID" >> "$GITHUB_ENV"
-      - uses: actions/setup-go@v6
+      # Setup that needs no artifact of this run goes before the wait, so it overlaps the natives build.
+      - name: quic-go's interop endpoints
+        uses: ./.github/actions/quic-go-endpoints
+      - uses: ./.github/actions/apple-quiche-env
         with:
-          go-version: stable
-          cache: false
-      - name: Build quic-go's interop endpoints
-        run: .github/scripts/build-quic-go-interop.sh "$RUNNER_TEMP/peers"
+          await-natives-producer: ${{ inputs.await-natives && 'Apple quiche natives' || '' }}
+          natives-run-id: ${{ inputs.apple-natives-run-id }}
+          github-token: ${{ github.token }}
+      # Read-only: the iOS simulator shard of build-apple is the single writer of this lane's entry.
+      - name: Restore the PR's Gradle build cache
+        uses: ./.github/actions/pr-build-cache
+        with:
+          mode: restore
+          os: macos
+          lane: ios-sim
+      # The simulator, started before the wait for the natives, has normally finished booting by now, so the
+      # link does not share the runner with a booting device.
+      - name: Link the test binaries
+        run: ./gradlew :socket-quic-quiche:linkDebugTestMacosArm64 :socket-quic-quiche:linkDebugTestIosSimulatorArm64 --no-configuration-cache
+      - name: Wait for the iOS simulator to finish booting
+        run: xcrun simctl bootstatus "$IOS_SIMULATOR_BOOTED_UDID" -b
       - name: Run the pairs
         run: .github/scripts/quic-interop-native-kn-run.sh
       - uses: actions/upload-artifact@v7
@@ -167,6 +162,9 @@ jobs:
         with:
           distribution: 'zulu'
           java-version: '21'
+      # Setup that needs no artifact of this run goes before the wait, so it overlaps the natives build.
+      - name: quic-go's interop endpoints
+        uses: ./.github/actions/quic-go-endpoints
       - uses: ./.github/actions/await-artifact
         if: ${{ inputs.await-natives }}
         with:
@@ -181,12 +179,6 @@ jobs:
           github-token: ${{ github.token }}
       - name: Build the endpoint jar
         run: ./gradlew :socket-quic-quiche:quicInteropJar --no-configuration-cache
-      - uses: actions/setup-go@v6
-        with:
-          go-version: stable
-          cache: false
-      - name: Build quic-go's interop endpoints
-        run: .github/scripts/build-quic-go-interop.sh "$RUNNER_TEMP/peers"
       - name: Run the pairs
         run: .github/scripts/quic-interop-native-run.sh
       - uses: actions/upload-artifact@v7

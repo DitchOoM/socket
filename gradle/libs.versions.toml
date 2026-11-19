@@ -89,8 +89,6 @@ kotlinWrappers = "2026.11.0"
 # memory on release, and socket publishes wasmJs from root :socket and :socket-quic. The rest of the
 # range is buffer's own CI and dependency bumps. #341 (buffer-crypto `UserVerification`) is not
 # consumed — socket links buffer-crypto only from :socket-quic-quiche and only for sha256.
-# #342 matters here beyond the ordering trap: it is the UPSTREAM HALF of watchosDeviceArm64 for this
-# repo, so `socket-udp/build.gradle.kts`'s "buffer publishes no klib for it" is stale from 6.28.0 on.
 # 6.29.0->6.30.0: drop-in. The new text (writeText/readText/TextPolicy) and codec-processor
 # FrameDetector surfaces are additive with defaults; #360's E5 rule (framing uniform across a dispatch
 # family) accepts socket-http3's Http3Frame — @FramedBy sits on the @DispatchOn parent, no variant.

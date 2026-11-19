@@ -204,10 +204,14 @@ internal class QuichePairByHand private constructor(
         }
     }
 
-    /** Move the clock on by [span], firing each quiche timer of the [firing] connections as it falls due. */
+    /**
+     * Move the clock on by [span], firing each quiche timer of the [firing] connections as it falls due; [fired] runs
+     * after each, at the time it fell due, as a driver's timer handler would.
+     */
     fun elapse(
         span: Duration,
         firing: List<QuicheConn> = listOf(client, server),
+        fired: (QuicheConn) -> Unit = {},
     ) {
         val until = now + span
         while (true) {
@@ -219,9 +223,16 @@ internal class QuichePairByHand private constructor(
                     ?: break
             now = due
             at(lead(conn)) { api.connOnTimeout(conn) }
+            fired(conn)
         }
         now = until
     }
+
+    /** Run [block] on [conn]'s clock: quiche calls a driver makes outside this class read the pair's time. */
+    fun <T> onClock(
+        conn: QuicheConn,
+        block: () -> T,
+    ): T = at(lead(conn), block)
 
     /** [conn]'s next timer. */
     fun timer(conn: QuicheConn): Timer =
@@ -393,6 +404,25 @@ internal class QuichePairByHand private constructor(
     fun probe(endpoint: Int): ProbeOutcome =
         at(lead(client)) {
             api.connProbePath(client, clientAddrs[endpoint].address, clientAddrs[endpoint].length, serverAddr.address, serverAddr.length)
+        }
+
+    /**
+     * The client probes the path from its [endpoint] with `quiche_conn_probe_path_with`: the path assumes
+     * [initialRttNanos] until it has a sample, and its challenge leaves past the congestion window.
+     */
+    fun probeWith(
+        endpoint: Int,
+        initialRttNanos: Long,
+    ): ProbeOutcome =
+        at(lead(client)) {
+            api.connProbePathWith(
+                client,
+                clientAddrs[endpoint].address,
+                clientAddrs[endpoint].length,
+                serverAddr.address,
+                serverAddr.length,
+                initialRttNanos,
+            )
         }
 
     /** The client moves onto the path from its [endpoint]. */

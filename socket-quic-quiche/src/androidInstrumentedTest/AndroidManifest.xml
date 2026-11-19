@@ -33,7 +33,12 @@
       Without it those two fields report NotReported and every other fact still lands.
     -->
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
-    <application>
+    <!--
+      largeHeap: Android allocates a direct ByteBuffer as a non-movable array on the Java heap, so the
+      core's per-connection datagram storage (about 200 KB each) counts against it. The 1024-connection
+      echo needs more than the default 192 MB.
+    -->
+    <application android:largeHeap="true">
         <!-- DeviceHandoffProbe's dead man's switch: posts "probe stopped" when its alarm was not pushed back. -->
         <receiver
             android:name="com.ditchoom.socket.quic.ProbeStoppedReceiver"

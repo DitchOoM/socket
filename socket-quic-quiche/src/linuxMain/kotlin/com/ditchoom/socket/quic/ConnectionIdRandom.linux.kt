@@ -53,3 +53,6 @@ internal class DevUrandomRandom : NativeEntropyRandom() {
 }
 
 internal actual val connectionIdRandom: Random = DevUrandomRandom()
+
+/** Each draw is its own `read(2)`, with no lock in this process, so the shared source serves every owner. */
+internal actual fun newConnectionIdRandom(): Random = connectionIdRandom

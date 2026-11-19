@@ -584,6 +584,129 @@ NSNumber * _Nonnull nw_helper_is_port_available(int32_t port)
     return @(result != -1);
 }
 
+// ============================================================
+// Asynchronous name resolution (DNS-SD)
+// ============================================================
+
+#include <dns_sd.h>
+#include <netdb.h>
+
+typedef void (^nw_resolve_result_t)(DNSServiceFlags flags, DNSServiceErrorType error, const struct sockaddr * _Nullable address);
+
+static void nw_resolve_callback(DNSServiceRef sdRef, DNSServiceFlags flags, uint32_t interfaceIndex,
+    DNSServiceErrorType errorCode, const char *hostname, const struct sockaddr *address, uint32_t ttl, void *context)
+{
+    nw_resolve_result_t onResult = (__bridge nw_resolve_result_t)context;
+    onResult(flags, errorCode, address);
+}
+
+// All state is touched only on `queue`. The handle returned is a block that cancels the lookup.
+NSArray * _Nonnull nw_helper_resolve_start(
+    const char * _Nonnull host,
+    int32_t timeout_ms,
+    nw_helper_resolve_handler_t _Nonnull handler)
+{
+    dispatch_queue_t queue = dispatch_queue_create("com.ditchoom.socket.resolve", DISPATCH_QUEUE_SERIAL);
+    NSString *name = [NSString stringWithUTF8String:host];
+    NSMutableArray<NSString *> *addresses = [NSMutableArray array];
+    __block nw_helper_resolve_handler_t pending = handler;
+    __block DNSServiceRef ref = NULL;
+    __block CFTypeRef context = NULL;
+    __block BOOL done = NO;
+    __block BOOL graceScheduled = NO;
+    __block int32_t reports = 0;
+
+    void (^teardown)(void) = ^{
+        done = YES;
+        if (ref != NULL) { DNSServiceRefDeallocate(ref); ref = NULL; }
+        if (context != NULL) { CFRelease(context); context = NULL; }
+    };
+    // Statuses handed to Kotlin: 0 answered, 1 no such name, 2 timed out, 3 another DNS-SD error (raw code alongside).
+    void (^finish)(int32_t, int32_t) = ^(int32_t status, int32_t raw) {
+        if (done) return;
+        teardown();
+        nw_helper_resolve_handler_t callback = pending;
+        pending = nil;
+        callback(addresses.count > 0 ? [addresses copy] : nil, status, raw);
+    };
+    nw_resolve_result_t onResult = ^(DNSServiceFlags flags, DNSServiceErrorType error, const struct sockaddr *address) {
+        if (done) return;
+        if (error == kDNSServiceErr_NoError && address != NULL && (flags & kDNSServiceFlagsAdd) != 0) {
+            char text[NI_MAXHOST];
+            if ((address->sa_family == AF_INET || address->sa_family == AF_INET6)
+                && getnameinfo(address, address->sa_len, text, sizeof(text), NULL, 0, NI_NUMERICHOST) == 0) {
+                [addresses addObject:[NSString stringWithUTF8String:text]];
+            }
+            reports += 1;
+        } else if (error == kDNSServiceErr_NoSuchRecord) {
+            reports += 1; // that family has no record
+        } else if (error != kDNSServiceErr_NoError) {
+            if (addresses.count > 0) { finish(0, 0); return; }
+            int32_t status = 3;
+            if (error == kDNSServiceErr_NoSuchName) status = 1;
+            else if (error == kDNSServiceErr_Timeout) status = 2;
+            finish(status, (int32_t)error);
+            return;
+        }
+        if (reports >= 2) {
+            finish(addresses.count > 0 ? 0 : 1, 0);
+        } else if (addresses.count > 0 && !graceScheduled) {
+            // RFC 8305 section 3: after the first family answers, the other gets 50 ms.
+            graceScheduled = YES;
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 50 * NSEC_PER_MSEC), queue, ^{ finish(0, 0); });
+        }
+    };
+
+    // DNS-SD answers a numeric literal NoSuchName: a literal is its own answer, and never reaches DNS.
+    struct addrinfo numericOnly = {0};
+    numericOnly.ai_flags = AI_NUMERICHOST;
+    struct addrinfo *literal = NULL;
+    if (getaddrinfo(host, NULL, &numericOnly, &literal) == 0) {
+        for (struct addrinfo *it = literal; it != NULL; it = it->ai_next) {
+            char text[NI_MAXHOST];
+            if (getnameinfo(it->ai_addr, it->ai_addrlen, text, sizeof(text), NULL, 0, NI_NUMERICHOST) == 0
+                && ![addresses containsObject:[NSString stringWithUTF8String:text]]) {
+                [addresses addObject:[NSString stringWithUTF8String:text]];
+            }
+        }
+        freeaddrinfo(literal);
+        dispatch_async(queue, ^{ finish(addresses.count > 0 ? 0 : 1, 0); });
+        dispatch_block_t cancelLiteral = ^{ dispatch_async(queue, ^{ if (!done) { pending = nil; teardown(); } }); };
+        return @[[cancelLiteral copy]];
+    }
+
+    dispatch_async(queue, ^{
+        if (done) return;
+        context = CFBridgingRetain(onResult);
+        DNSServiceErrorType error = DNSServiceGetAddrInfo(&ref,
+            kDNSServiceFlagsReturnIntermediates, kDNSServiceInterfaceIndexAny, 0,
+            name.UTF8String, nw_resolve_callback, (void *)context);
+        if (error != kDNSServiceErr_NoError) {
+            ref = NULL;
+            finish(3, (int32_t)error);
+            return;
+        }
+        DNSServiceSetDispatchQueue(ref, queue);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)timeout_ms * NSEC_PER_MSEC), queue, ^{
+            finish(addresses.count > 0 ? 0 : 2, 0);
+        });
+    });
+
+    dispatch_block_t cancel = ^{
+        dispatch_async(queue, ^{
+            if (done) return;
+            pending = nil;
+            teardown();
+        });
+    };
+    return @[[cancel copy]];
+}
+
+void nw_helper_resolve_cancel(NSArray * _Nonnull query)
+{
+    ((dispatch_block_t)query.firstObject)();
+}
+
 // The NWPathMonitor bridge and the getifaddrs interface scan that used to live here moved to
 // :network-monitor's own NetworkHelpers.def, with AppleNetworkMonitor and
 // listNetworkInterfaces() (issue #269) — see the note in nw_helpers.h.

@@ -21,6 +21,11 @@ sealed interface QuicError : DatagramCloseReason {
         override val code: Long = 0x0
     }
 
+    /** Processing the connection threw locally; the connection was closed with INTERNAL_ERROR (code 0x1). */
+    data object ProcessingFailed : QuicError {
+        override val code: Long = 0x1
+    }
+
     data class InternalError(
         val detail: String,
     ) : QuicError {
@@ -158,6 +163,18 @@ sealed interface QuicError : DatagramCloseReason {
     data class HandshakeTimeout(
         val bound: Duration,
     ) : QuicError {
+        override val code: Long = -1
+    }
+
+    /**
+     * The server this connection belonged to stopped before the connection's CONNECTION_CLOSE was handed to the
+     * network: a thread inside the connection still held it when the server's shutdown bound passed.
+     *
+     * A *local* decision with no transport [code] (-1), like [IdleTimeout]. The peer may never receive a close, so
+     * it learns of the end only from its own idle timeout; a connection that reports this is the one to look at
+     * when a client sees an idle timeout right after its server stopped.
+     */
+    data object ServerStoppedBeforeCloseSent : QuicError {
         override val code: Long = -1
     }
 

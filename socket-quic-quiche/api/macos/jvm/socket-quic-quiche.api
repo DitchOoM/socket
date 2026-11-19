@@ -47,6 +47,30 @@ public final class com/ditchoom/socket/quic/DeadlineTimerUnavailableException : 
 	public fun <init> (Ljava/lang/Throwable;)V
 }
 
+public abstract class com/ditchoom/socket/quic/DriverBuffers : com/ditchoom/buffer/BufferFactory {
+	public static final field Companion Lcom/ditchoom/socket/quic/DriverBuffers$Companion;
+	public synthetic fun <init> (Lcom/ditchoom/buffer/BufferFactory;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun allocate (ILcom/ditchoom/buffer/ByteOrder;)Lcom/ditchoom/buffer/PlatformBuffer;
+	public abstract fun clear ()V
+	public fun decorate (Lcom/ditchoom/buffer/PlatformBuffer;)Lcom/ditchoom/buffer/PlatformBuffer;
+	public fun wrap ([BLcom/ditchoom/buffer/ByteOrder;)Lcom/ditchoom/buffer/PlatformBuffer;
+}
+
+public final class com/ditchoom/socket/quic/DriverBuffers$Callers : com/ditchoom/socket/quic/DriverBuffers {
+	public fun <init> (Lcom/ditchoom/buffer/BufferFactory;)V
+	public fun clear ()V
+}
+
+public final class com/ditchoom/socket/quic/DriverBuffers$Companion {
+	public final fun of (Lcom/ditchoom/buffer/BufferFactory;II)Lcom/ditchoom/socket/quic/DriverBuffers;
+}
+
+public final class com/ditchoom/socket/quic/DriverBuffers$Owned : com/ditchoom/socket/quic/DriverBuffers {
+	public fun <init> (Lcom/ditchoom/buffer/pool/BufferPool;)V
+	public fun clear ()V
+	public final fun getPool ()Lcom/ditchoom/buffer/pool/BufferPool;
+}
+
 public abstract interface class com/ditchoom/socket/quic/DriverClock {
 	public abstract fun armTimeout-HG0u8IE (Lkotlinx/coroutines/selects/SelectBuilder;J)V
 	public abstract fun markNow ()Lkotlin/time/TimeMark;
@@ -132,6 +156,7 @@ public final class com/ditchoom/socket/quic/JniQuicheApi : com/ditchoom/socket/q
 	public fun configSetInitialMaxStreamDataUni-656eFbI (JJ)V
 	public fun configSetInitialMaxStreamsBidi-656eFbI (JJ)V
 	public fun configSetInitialMaxStreamsUni-656eFbI (JJ)V
+	public fun configSetInitialRtt-656eFbI (JJ)V
 	public fun configSetMaxConnectionWindow-656eFbI (JJ)V
 	public fun configSetMaxIdleTimeout-656eFbI (JJ)V
 	public fun configSetMaxPacingRate-656eFbI (JJ)V
@@ -140,17 +165,22 @@ public final class com/ditchoom/socket/quic/JniQuicheApi : com/ditchoom/socket/q
 	public fun configSetMaxStreamWindow-656eFbI (JJ)V
 	public fun configSetTicketKey-ZPdP-6U (JJI)I
 	public fun configVerifyPeer-656eFbI (JZ)V
+	public fun connActivePathRttNanos-ObL0uzk (J)J
 	public fun connActiveScids-ObL0uzk (J)I
 	public fun connApplicationProto-RTtnfzo (JJI)I
 	public fun connAvailableDcids-ObL0uzk (J)J
 	public fun connClose-7TBY80c (JLcom/ditchoom/socket/quic/QuicError;)I
+	public fun connDgramMaxWritableBytes-ObL0uzk (J)I
 	public fun connDgramMaxWritableLen-ObL0uzk (J)Lcom/ditchoom/socket/quic/MaxDatagramSize;
 	public fun connDgramRecv-RTtnfzo (JJI)Lcom/ditchoom/socket/quic/StreamRecvResult;
+	public fun connDgramRecvStep-19tTNE0 (JJI)J
 	public fun connDgramSend-RTtnfzo (JJI)I
 	public fun connDrainRetiredScids-RTtnfzo (JJI)I
 	public fun connEarlyDataReason-ObL0uzk (J)I
 	public fun connFree-ObL0uzk (J)V
+	public fun connHandshakePtoCeilingHeld-ObL0uzk (J)Z
 	public fun connIsClosed-ObL0uzk (J)Z
+	public fun connIsDraining-ObL0uzk (J)Z
 	public fun connIsEstablished-ObL0uzk (J)Z
 	public fun connIsHandshakeConfirmed-ObL0uzk (J)Z
 	public fun connIsInEarlyData-ObL0uzk (J)Z
@@ -170,28 +200,40 @@ public final class com/ditchoom/socket/quic/JniQuicheApi : com/ditchoom/socket/q
 	public fun connPeerStreamsLeftBidi-ObL0uzk (J)J
 	public fun connPeerStreamsLeftUni-ObL0uzk (J)J
 	public fun connPeerTransportParams-ObL0uzk (J)Lcom/ditchoom/socket/quic/PeerTransportParams;
+	public fun connProbeNow-ObL0uzk (J)I
 	public fun connProbePath-oJNOU9g (JJIJI)Lcom/ditchoom/socket/quic/ProbeOutcome;
+	public fun connProbePathWith-KE9HG-0 (JJIJIJ)Lcom/ditchoom/socket/quic/ProbeOutcome;
 	public fun connReadSourceIds-RTtnfzo (JJI)I
 	public fun connReadable-pauv0Lc (J)J
 	public fun connRecv-LflwuVw (JJIJ)I
 	public fun connRecvGaps-ObL0uzk (J)J
+	public fun connRequeuePath-oJNOU9g (JJIJI)I
 	public fun connRetireDcid-7TBY80c (JJ)I
 	public fun connRetiredScids-ObL0uzk (J)I
 	public fun connScidsLeft-ObL0uzk (J)J
 	public fun connSend-SpKmpVg (JJIJ)I
 	public fun connSendAckEliciting-ObL0uzk (J)I
+	public fun connSendNewToken-RTtnfzo (JJI)I
 	public fun connSession-RTtnfzo (JJI)I
+	public fun connSetHandshakePtoCeiling-7TBY80c (JLcom/ditchoom/socket/quic/PtoCeiling;)V
 	public fun connSetKeylogPath-7TBY80c (JLjava/lang/String;)Z
+	public fun connSetPeerAddressValidated-ObL0uzk (J)I
 	public fun connSetQlogPath-rezszl0 (JLjava/lang/String;Ljava/lang/String;Ljava/lang/String;)Z
 	public fun connSetSession-RTtnfzo (JJI)I
+	public fun connSetToken-RTtnfzo (JJI)I
 	public fun connSourceId-RTtnfzo (JJI)I
 	public fun connStats-ObL0uzk (J)Lcom/ditchoom/socket/quic/QuicConnStats;
 	public fun connStreamCapacity-brr6_Qg (JJ)J
 	public fun connStreamDataUnacknowledged-ObL0uzk (J)Z
 	public fun connStreamRecv-OTKbAR0 (JJJI)Lcom/ditchoom/socket/quic/StreamRecvResult;
+	public fun connStreamRecvStep-CtlJxC8 (JJJI)J
 	public fun connStreamSend-AGE4KGY (JJJIZ)Lcom/ditchoom/socket/quic/StreamSendResult;
+	public fun connStreamSendStep-bIuTHMA (JJJIZ)J
 	public fun connStreamShutdown-OTKbAR0 (JJIJ)I
+	public fun connStreamWritableNext-ObL0uzk (J)J
+	public fun connTakeNewToken-RTtnfzo (JJI)I
 	public fun connTimeout-DIP9Sao (J)Lkotlin/time/Duration;
+	public fun connTimeoutNanos-ObL0uzk (J)J
 	public fun connTraceId-RTtnfzo (JJI)I
 	public fun connWritable-pauv0Lc (J)J
 	public fun connect-SH88Jj4 (JIJIJIJIJ)J
@@ -200,6 +242,8 @@ public final class com/ditchoom/socket/quic/JniQuicheApi : com/ditchoom/socket/q
 	public fun negotiateVersion (JIJIJI)I
 	public fun recvInfoFree-RNyYMFw (J)V
 	public fun recvInfoNew-u6CMxgY (JIJI)J
+	public fun retry (JIJIJIJIIJI)I
+	public fun sendInfoAtNanos-Ny8-tdU (J)J
 	public fun sendInfoFree-Ny8-tdU (J)V
 	public fun sendInfoFromAddr-Ny8-tdU (J)J
 	public fun sendInfoFromAddrLen-Ny8-tdU (J)I
@@ -214,6 +258,7 @@ public final class com/ditchoom/socket/quic/JniQuicheApi : com/ditchoom/socket/q
 	public fun sockAddrV6Lo (J)J
 	public fun streamIterFree-yoU7egk (J)V
 	public fun streamIterNext-lmn-uo4 (J)Lcom/ditchoom/socket/quic/QuicStreamId;
+	public fun streamIterNextId-mqD17U0 (J)J
 }
 
 public abstract interface class com/ditchoom/socket/quic/LocalEndpointSupport {
@@ -292,6 +337,26 @@ public final class com/ditchoom/socket/quic/NewPath {
 	public final fun getLocalSockAddrAddress ()J
 	public final fun getLocalSockAddrLength ()I
 	public final fun getRelease ()Lkotlin/jvm/functions/Function0;
+}
+
+public final class com/ditchoom/socket/quic/NextStream {
+	public static final field Companion Lcom/ditchoom/socket/quic/NextStream$Companion;
+	public static final synthetic fun box-impl (J)Lcom/ditchoom/socket/quic/NextStream;
+	public fun equals (Ljava/lang/Object;)Z
+	public static fun equals-impl (JLjava/lang/Object;)Z
+	public static final fun equals-impl0 (JJ)Z
+	public static final fun fold-impl (JLkotlin/jvm/functions/Function0;Lkotlin/jvm/functions/Function1;)Ljava/lang/Object;
+	public fun hashCode ()I
+	public static fun hashCode-impl (J)I
+	public static final fun id-impl (J)J
+	public fun toString ()Ljava/lang/String;
+	public static fun toString-impl (J)Ljava/lang/String;
+	public final synthetic fun unbox-impl ()J
+}
+
+public final class com/ditchoom/socket/quic/NextStream$Companion {
+	public final fun getEnd-IvJygr0 ()J
+	public final fun of-GANtQyU (J)J
 }
 
 public final class com/ditchoom/socket/quic/OwnedDatagram {
@@ -451,6 +516,28 @@ public final class com/ditchoom/socket/quic/ProbeOutcome$Rejected : com/ditchoom
 	public final fun getCode ()I
 }
 
+public abstract interface class com/ditchoom/socket/quic/PtoCeiling {
+}
+
+public final class com/ditchoom/socket/quic/PtoCeiling$At : com/ditchoom/socket/quic/PtoCeiling {
+	public fun <init> (J)V
+	public final fun getNanos ()J
+}
+
+public final class com/ditchoom/socket/quic/PtoCeiling$Growing : com/ditchoom/socket/quic/PtoCeiling {
+	public fun <init> (JIJ)V
+	public final fun getFirstNanos ()J
+	public final fun getGrowth ()I
+	public final fun getMaxNanos ()J
+}
+
+public final class com/ditchoom/socket/quic/PtoCeiling$None : com/ditchoom/socket/quic/PtoCeiling {
+	public static final field INSTANCE Lcom/ditchoom/socket/quic/PtoCeiling$None;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
 public final class com/ditchoom/socket/quic/QuicConnStats {
 	public fun <init> (JJJJJJJJJJJJJ)V
 	public final fun component1 ()J
@@ -590,6 +677,7 @@ public abstract interface class com/ditchoom/socket/quic/QuicheApi {
 	public abstract fun configSetInitialMaxStreamDataUni-656eFbI (JJ)V
 	public abstract fun configSetInitialMaxStreamsBidi-656eFbI (JJ)V
 	public abstract fun configSetInitialMaxStreamsUni-656eFbI (JJ)V
+	public abstract fun configSetInitialRtt-656eFbI (JJ)V
 	public abstract fun configSetMaxConnectionWindow-656eFbI (JJ)V
 	public abstract fun configSetMaxIdleTimeout-656eFbI (JJ)V
 	public abstract fun configSetMaxPacingRate-656eFbI (JJ)V
@@ -598,17 +686,22 @@ public abstract interface class com/ditchoom/socket/quic/QuicheApi {
 	public abstract fun configSetMaxStreamWindow-656eFbI (JJ)V
 	public abstract fun configSetTicketKey-ZPdP-6U (JJI)I
 	public abstract fun configVerifyPeer-656eFbI (JZ)V
+	public fun connActivePathRttNanos-ObL0uzk (J)J
 	public fun connActiveScids-ObL0uzk (J)I
 	public fun connApplicationProto-RTtnfzo (JJI)I
 	public abstract fun connAvailableDcids-ObL0uzk (J)J
 	public abstract fun connClose-7TBY80c (JLcom/ditchoom/socket/quic/QuicError;)I
+	public fun connDgramMaxWritableBytes-ObL0uzk (J)I
 	public abstract fun connDgramMaxWritableLen-ObL0uzk (J)Lcom/ditchoom/socket/quic/MaxDatagramSize;
 	public abstract fun connDgramRecv-RTtnfzo (JJI)Lcom/ditchoom/socket/quic/StreamRecvResult;
+	public fun connDgramRecvStep-19tTNE0 (JJI)J
 	public abstract fun connDgramSend-RTtnfzo (JJI)I
 	public fun connDrainRetiredScids-RTtnfzo (JJI)I
 	public abstract fun connEarlyDataReason-ObL0uzk (J)I
 	public abstract fun connFree-ObL0uzk (J)V
+	public abstract fun connHandshakePtoCeilingHeld-ObL0uzk (J)Z
 	public abstract fun connIsClosed-ObL0uzk (J)Z
+	public abstract fun connIsDraining-ObL0uzk (J)Z
 	public abstract fun connIsEstablished-ObL0uzk (J)Z
 	public abstract fun connIsHandshakeConfirmed-ObL0uzk (J)Z
 	public abstract fun connIsInEarlyData-ObL0uzk (J)Z
@@ -628,28 +721,40 @@ public abstract interface class com/ditchoom/socket/quic/QuicheApi {
 	public abstract fun connPeerStreamsLeftBidi-ObL0uzk (J)J
 	public abstract fun connPeerStreamsLeftUni-ObL0uzk (J)J
 	public abstract fun connPeerTransportParams-ObL0uzk (J)Lcom/ditchoom/socket/quic/PeerTransportParams;
+	public abstract fun connProbeNow-ObL0uzk (J)I
 	public abstract fun connProbePath-oJNOU9g (JJIJI)Lcom/ditchoom/socket/quic/ProbeOutcome;
+	public abstract fun connProbePathWith-KE9HG-0 (JJIJIJ)Lcom/ditchoom/socket/quic/ProbeOutcome;
 	public fun connReadSourceIds-RTtnfzo (JJI)I
 	public abstract fun connReadable-pauv0Lc (J)J
 	public abstract fun connRecv-LflwuVw (JJIJ)I
 	public abstract fun connRecvGaps-ObL0uzk (J)J
+	public abstract fun connRequeuePath-oJNOU9g (JJIJI)I
 	public abstract fun connRetireDcid-7TBY80c (JJ)I
 	public fun connRetiredScids-ObL0uzk (J)I
 	public abstract fun connScidsLeft-ObL0uzk (J)J
 	public abstract fun connSend-SpKmpVg (JJIJ)I
 	public abstract fun connSendAckEliciting-ObL0uzk (J)I
+	public abstract fun connSendNewToken-RTtnfzo (JJI)I
 	public abstract fun connSession-RTtnfzo (JJI)I
+	public abstract fun connSetHandshakePtoCeiling-7TBY80c (JLcom/ditchoom/socket/quic/PtoCeiling;)V
 	public fun connSetKeylogPath-7TBY80c (JLjava/lang/String;)Z
+	public abstract fun connSetPeerAddressValidated-ObL0uzk (J)I
 	public fun connSetQlogPath-rezszl0 (JLjava/lang/String;Ljava/lang/String;Ljava/lang/String;)Z
 	public abstract fun connSetSession-RTtnfzo (JJI)I
+	public abstract fun connSetToken-RTtnfzo (JJI)I
 	public fun connSourceId-RTtnfzo (JJI)I
 	public fun connStats-ObL0uzk (J)Lcom/ditchoom/socket/quic/QuicConnStats;
 	public abstract fun connStreamCapacity-brr6_Qg (JJ)J
 	public abstract fun connStreamDataUnacknowledged-ObL0uzk (J)Z
 	public abstract fun connStreamRecv-OTKbAR0 (JJJI)Lcom/ditchoom/socket/quic/StreamRecvResult;
+	public fun connStreamRecvStep-CtlJxC8 (JJJI)J
 	public abstract fun connStreamSend-AGE4KGY (JJJIZ)Lcom/ditchoom/socket/quic/StreamSendResult;
+	public fun connStreamSendStep-bIuTHMA (JJJIZ)J
 	public abstract fun connStreamShutdown-OTKbAR0 (JJIJ)I
+	public abstract fun connStreamWritableNext-ObL0uzk (J)J
+	public abstract fun connTakeNewToken-RTtnfzo (JJI)I
 	public abstract fun connTimeout-DIP9Sao (J)Lkotlin/time/Duration;
+	public fun connTimeoutNanos-ObL0uzk (J)J
 	public fun connTraceId-RTtnfzo (JJI)I
 	public abstract fun connWritable-pauv0Lc (J)J
 	public abstract fun connect-SH88Jj4 (JIJIJIJIJ)J
@@ -658,6 +763,8 @@ public abstract interface class com/ditchoom/socket/quic/QuicheApi {
 	public abstract fun negotiateVersion (JIJIJI)I
 	public abstract fun recvInfoFree-RNyYMFw (J)V
 	public abstract fun recvInfoNew-u6CMxgY (JIJI)J
+	public abstract fun retry (JIJIJIJIIJI)I
+	public fun sendInfoAtNanos-Ny8-tdU (J)J
 	public abstract fun sendInfoFree-Ny8-tdU (J)V
 	public abstract fun sendInfoFromAddr-Ny8-tdU (J)J
 	public abstract fun sendInfoFromAddrLen-Ny8-tdU (J)I
@@ -672,13 +779,17 @@ public abstract interface class com/ditchoom/socket/quic/QuicheApi {
 	public abstract fun sockAddrV6Lo (J)J
 	public abstract fun streamIterFree-yoU7egk (J)V
 	public abstract fun streamIterNext-lmn-uo4 (J)Lcom/ditchoom/socket/quic/QuicStreamId;
+	public fun streamIterNextId-mqD17U0 (J)J
 }
 
 public final class com/ditchoom/socket/quic/QuicheApi$DefaultImpls {
 	public static fun clearThreadVirtualTime (Lcom/ditchoom/socket/quic/QuicheApi;)V
 	public static fun configLogKeys-N7TAlBc (Lcom/ditchoom/socket/quic/QuicheApi;J)V
+	public static fun connActivePathRttNanos-ObL0uzk (Lcom/ditchoom/socket/quic/QuicheApi;J)J
 	public static fun connActiveScids-ObL0uzk (Lcom/ditchoom/socket/quic/QuicheApi;J)I
 	public static fun connApplicationProto-RTtnfzo (Lcom/ditchoom/socket/quic/QuicheApi;JJI)I
+	public static fun connDgramMaxWritableBytes-ObL0uzk (Lcom/ditchoom/socket/quic/QuicheApi;J)I
+	public static fun connDgramRecvStep-19tTNE0 (Lcom/ditchoom/socket/quic/QuicheApi;JJI)J
 	public static fun connDrainRetiredScids-RTtnfzo (Lcom/ditchoom/socket/quic/QuicheApi;JJI)I
 	public static fun connLocalError-ObL0uzk (Lcom/ditchoom/socket/quic/QuicheApi;J)Lcom/ditchoom/socket/quic/QuicError;
 	public static fun connPathStats-7TBY80c (Lcom/ditchoom/socket/quic/QuicheApi;JJ)Lcom/ditchoom/socket/quic/QuicPathStats;
@@ -689,11 +800,19 @@ public final class com/ditchoom/socket/quic/QuicheApi$DefaultImpls {
 	public static fun connSetQlogPath-rezszl0 (Lcom/ditchoom/socket/quic/QuicheApi;JLjava/lang/String;Ljava/lang/String;Ljava/lang/String;)Z
 	public static fun connSourceId-RTtnfzo (Lcom/ditchoom/socket/quic/QuicheApi;JJI)I
 	public static fun connStats-ObL0uzk (Lcom/ditchoom/socket/quic/QuicheApi;J)Lcom/ditchoom/socket/quic/QuicConnStats;
+	public static fun connStreamRecvStep-CtlJxC8 (Lcom/ditchoom/socket/quic/QuicheApi;JJJI)J
+	public static fun connStreamSendStep-bIuTHMA (Lcom/ditchoom/socket/quic/QuicheApi;JJJIZ)J
+	public static fun connTimeoutNanos-ObL0uzk (Lcom/ditchoom/socket/quic/QuicheApi;J)J
 	public static fun connTraceId-RTtnfzo (Lcom/ditchoom/socket/quic/QuicheApi;JJI)I
+	public static fun sendInfoAtNanos-Ny8-tdU (Lcom/ditchoom/socket/quic/QuicheApi;J)J
 	public static fun setThreadVirtualTimeNanos (Lcom/ditchoom/socket/quic/QuicheApi;J)V
+	public static fun streamIterNextId-mqD17U0 (Lcom/ditchoom/socket/quic/QuicheApi;J)J
 }
 
 public final class com/ditchoom/socket/quic/QuicheApiKt {
+	public static final field NO_DATAGRAM_ROOM I
+	public static final field NO_RTT_NANOS J
+	public static final field NO_TIMEOUT_NANOS J
 	public static final field RETIRED_SCID_SLOT_BYTES I
 }
 
@@ -871,8 +990,8 @@ public final class com/ditchoom/socket/quic/QuicheDriver {
 	public static final field SOCKADDR_STORAGE_SIZE I
 	public static final field STATELESS_RESET_TOKEN_LEN I
 	public static final field STREAM_READ_BUFFER_SIZE I
-	public synthetic fun <init> (Lcom/ditchoom/socket/quic/QuicheApi;JLcom/ditchoom/buffer/BufferFactory;JJLcom/ditchoom/socket/quic/UdpChannel;Lcom/ditchoom/socket/quic/QuicRole;Lcom/ditchoom/socket/quic/DatagramIngress;Lkotlin/time/Duration;Lcom/ditchoom/buffer/flow/ReadPolicy;Lcom/ditchoom/buffer/flow/WritePolicy;Lcom/ditchoom/socket/quic/StreamOpenPolicy;Lcom/ditchoom/socket/quic/DriverClock;Lkotlin/coroutines/CoroutineContext;JLkotlin/random/Random;Lcom/ditchoom/socket/quic/trace/TraceCapture;Lcom/ditchoom/socket/quic/MigrationCapability;Lcom/ditchoom/socket/quic/ConnectionNetworkObservation;Lkotlin/jvm/functions/Function0;Lcom/ditchoom/socket/quic/SourceIdSink;Lcom/ditchoom/buffer/pool/BufferPool;Lcom/ditchoom/socket/quic/SilenceThreshold;Lcom/ditchoom/socket/quic/SessionOffer;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
-	public synthetic fun <init> (Lcom/ditchoom/socket/quic/QuicheApi;JLcom/ditchoom/buffer/BufferFactory;JJLcom/ditchoom/socket/quic/UdpChannel;Lcom/ditchoom/socket/quic/QuicRole;Lcom/ditchoom/socket/quic/DatagramIngress;Lkotlin/time/Duration;Lcom/ditchoom/buffer/flow/ReadPolicy;Lcom/ditchoom/buffer/flow/WritePolicy;Lcom/ditchoom/socket/quic/StreamOpenPolicy;Lcom/ditchoom/socket/quic/DriverClock;Lkotlin/coroutines/CoroutineContext;JLkotlin/random/Random;Lcom/ditchoom/socket/quic/trace/TraceCapture;Lcom/ditchoom/socket/quic/MigrationCapability;Lcom/ditchoom/socket/quic/ConnectionNetworkObservation;Lkotlin/jvm/functions/Function0;Lcom/ditchoom/socket/quic/SourceIdSink;Lcom/ditchoom/buffer/pool/BufferPool;Lcom/ditchoom/socket/quic/SilenceThreshold;Lcom/ditchoom/socket/quic/SessionOffer;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (Lcom/ditchoom/socket/quic/QuicheApi;JLcom/ditchoom/buffer/BufferFactory;JJLcom/ditchoom/socket/quic/UdpChannel;Lcom/ditchoom/socket/quic/QuicRole;Lcom/ditchoom/socket/quic/DatagramIngress;Lkotlin/time/Duration;Lcom/ditchoom/buffer/flow/ReadPolicy;Lcom/ditchoom/buffer/flow/WritePolicy;Lcom/ditchoom/socket/quic/StreamOpenPolicy;Lcom/ditchoom/socket/quic/DriverClock;Lkotlin/coroutines/CoroutineContext;JLkotlin/random/Random;Lcom/ditchoom/socket/quic/trace/TraceCapture;Lcom/ditchoom/socket/quic/MigrationCapability;Lcom/ditchoom/socket/quic/ConnectionNetworkObservation;Lkotlin/jvm/functions/Function0;Lcom/ditchoom/socket/quic/SourceIdSink;Lcom/ditchoom/socket/quic/DriverBuffers;Lcom/ditchoom/socket/quic/SilenceThreshold;Lcom/ditchoom/socket/quic/SessionOffer;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public synthetic fun <init> (Lcom/ditchoom/socket/quic/QuicheApi;JLcom/ditchoom/buffer/BufferFactory;JJLcom/ditchoom/socket/quic/UdpChannel;Lcom/ditchoom/socket/quic/QuicRole;Lcom/ditchoom/socket/quic/DatagramIngress;Lkotlin/time/Duration;Lcom/ditchoom/buffer/flow/ReadPolicy;Lcom/ditchoom/buffer/flow/WritePolicy;Lcom/ditchoom/socket/quic/StreamOpenPolicy;Lcom/ditchoom/socket/quic/DriverClock;Lkotlin/coroutines/CoroutineContext;JLkotlin/random/Random;Lcom/ditchoom/socket/quic/trace/TraceCapture;Lcom/ditchoom/socket/quic/MigrationCapability;Lcom/ditchoom/socket/quic/ConnectionNetworkObservation;Lkotlin/jvm/functions/Function0;Lcom/ditchoom/socket/quic/SourceIdSink;Lcom/ditchoom/socket/quic/DriverBuffers;Lcom/ditchoom/socket/quic/SilenceThreshold;Lcom/ditchoom/socket/quic/SessionOffer;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun awaitEstablished-VtjQ1oo (JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public final fun closeReasonOr (Lcom/ditchoom/socket/quic/QuicError;)Lcom/ditchoom/socket/quic/QuicCloseReason;
 	public final fun destroy (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
@@ -1280,11 +1399,74 @@ public final class com/ditchoom/socket/quic/StreamRecvResult$Reset : com/ditchoo
 	public final fun getApplicationErrorCode-sdY0TRY ()J
 }
 
+public final class com/ditchoom/socket/quic/StreamRecvStep {
+	public static final field BYTES J
+	public static final field Companion Lcom/ditchoom/socket/quic/StreamRecvStep$Companion;
+	public static final field FIN J
+	public static final field KIND_DATA J
+	public static final field KIND_GONE J
+	public static final field KIND_RESET J
+	public static final field KIND_SHIFT I
+	public static final field PAYLOAD J
+	public static final field QUICHE_ERR_DONE_CODE I
+	public static final synthetic fun box-impl (J)Lcom/ditchoom/socket/quic/StreamRecvStep;
+	public fun equals (Ljava/lang/Object;)Z
+	public static fun equals-impl (JLjava/lang/Object;)Z
+	public static final fun equals-impl0 (JJ)Z
+	public static final fun fold-impl (JLkotlin/jvm/functions/Function1;Lkotlin/jvm/functions/Function1;Lkotlin/jvm/functions/Function0;Lkotlin/jvm/functions/Function0;Lkotlin/jvm/functions/Function1;Lkotlin/jvm/functions/Function1;)Ljava/lang/Object;
+	public fun hashCode ()I
+	public static fun hashCode-impl (J)I
+	public static final fun packed-impl (J)J
+	public fun toString ()Ljava/lang/String;
+	public static fun toString-impl (J)Ljava/lang/String;
+	public final synthetic fun unbox-impl ()J
+}
+
+public final class com/ditchoom/socket/quic/StreamRecvStep$Companion {
+	public final fun data-cqlsy98 (IZ)J
+	public final fun error-QpC-YNI (I)J
+	public final fun getGone-HJFeYEA ()J
+	public final fun of-QpC-YNI (Lcom/ditchoom/socket/quic/StreamRecvResult;)J
+	public final fun reset-n_AFOA8 (J)J
+}
+
 public final class com/ditchoom/socket/quic/StreamSendResult {
 	public synthetic fun <init> (ILcom/ditchoom/socket/quic/QuicAppErrorCode;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public synthetic fun <init> (ILcom/ditchoom/socket/quic/QuicAppErrorCode;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun getErrorCode-L6YGb3w ()Lcom/ditchoom/socket/quic/QuicAppErrorCode;
 	public final fun getResult ()I
+}
+
+public final class com/ditchoom/socket/quic/StreamSendStep {
+	public static final field Companion Lcom/ditchoom/socket/quic/StreamSendStep$Companion;
+	public static final field KIND_RESET J
+	public static final field KIND_SHIFT I
+	public static final field KIND_STOPPED J
+	public static final field KIND_TAKEN J
+	public static final field PAYLOAD J
+	public static final field QUICHE_ERR_DONE_CODE I
+	public static final field RESET_CODE I
+	public static final field STOPPED_CODE I
+	public static final synthetic fun box-impl (J)Lcom/ditchoom/socket/quic/StreamSendStep;
+	public fun equals (Ljava/lang/Object;)Z
+	public static fun equals-impl (JLjava/lang/Object;)Z
+	public static final fun equals-impl0 (JJ)Z
+	public static final fun fold-impl (JLkotlin/jvm/functions/Function1;Lkotlin/jvm/functions/Function0;Lkotlin/jvm/functions/Function2;)Ljava/lang/Object;
+	public fun hashCode ()I
+	public static fun hashCode-impl (J)I
+	public static final fun packed-impl (J)J
+	public fun toString ()Ljava/lang/String;
+	public static fun toString-impl (J)Ljava/lang/String;
+	public final synthetic fun unbox-impl ()J
+}
+
+public final class com/ditchoom/socket/quic/StreamSendStep$Companion {
+	public final fun error-BuF1_-U (I)J
+	public final fun of-BuF1_-U (Lcom/ditchoom/socket/quic/StreamSendResult;)J
+	public final fun of-RTrrKYQ (ILkotlin/jvm/functions/Function0;)J
+	public final fun reset-C3gG4qM (J)J
+	public final fun stopped-C3gG4qM (J)J
+	public final fun taken-BuF1_-U (I)J
 }
 
 public final class com/ditchoom/socket/quic/StreamSlot {

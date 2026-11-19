@@ -72,6 +72,8 @@ import com.ditchoom.socket.transport.Liveness as TransportLiveness
  *                                                                       ;   `create_new` open refused
  *             | "TRAFFIC_SECRETS_REFUSED" SP path                       ; observation: the key log
  *                                                                       ;   could not be opened
+ *             | "TIMER_FIRED"                                           ; observation: the host ran
+ *                                                                       ;   quiche's timeout (core)
  * path       := "-" | family ":" port ":" hi-hex ":" lo-hex             ; PathKey
  * netstate   := "Unknown" | "Offline" | "LinkLocal" SP netid | "Routable" SP netid SP internet
  * internet   := "Unobserved" | "Confirmed" | "Pending" | "Limited" | "Blocked:CaptivePortal" | "Blocked:Suspended"

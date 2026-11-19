@@ -121,7 +121,7 @@ kotlin {
         compilerOptions.jvmTarget.set(JvmTarget.JVM_17)
     }
     jvm {
-        compilerOptions.jvmTarget.set(JvmTarget.JVM_1_8)
+        compilerOptions.jvmTarget.set(JvmTarget.JVM_17)
         // Java 21 compilation for the FFM-based reactive network monitor (routing sockets).
         // Shipped under META-INF/versions/21 (multi-release JAR) so it only loads on JDK 21+;
         // the Java-8 base compilation keeps the polling fallback (see JvmNetworkMonitorSelector.kt).
@@ -165,16 +165,12 @@ kotlin {
     // compilations resolve this dep.
     if (appleTargets) {
         macosArm64 { configureNetworkHelpersCinterop() }
-        macosX64 { configureNetworkHelpersCinterop() }
         iosArm64 { configureNetworkHelpersCinterop() }
         iosSimulatorArm64 { configureNetworkHelpersCinterop() }
-        iosX64 { configureNetworkHelpersCinterop() }
         tvosArm64 { configureNetworkHelpersCinterop() }
         tvosSimulatorArm64 { configureNetworkHelpersCinterop() }
-        tvosX64 { configureNetworkHelpersCinterop() }
-        watchosArm64 { configureNetworkHelpersCinterop() }
+        watchosDeviceArm64 { configureNetworkHelpersCinterop() }
         watchosSimulatorArm64 { configureNetworkHelpersCinterop() }
-        watchosX64 { configureNetworkHelpersCinterop() }
     }
 
     // Linux targets — LinuxNetworkMonitor over netlink, via this module's own Netlink cinterop.
@@ -248,16 +244,12 @@ kotlin {
             val appleNativeImplDir = file("src/appleNativeImpl/kotlin")
             listOf(
                 "macosArm64Main",
-                "macosX64Main",
                 "iosArm64Main",
                 "iosSimulatorArm64Main",
-                "iosX64Main",
                 "tvosArm64Main",
                 "tvosSimulatorArm64Main",
-                "tvosX64Main",
-                "watchosArm64Main",
+                "watchosDeviceArm64Main",
                 "watchosSimulatorArm64Main",
-                "watchosX64Main",
             ).forEach { sourceSetName ->
                 findByName(sourceSetName)?.kotlin?.srcDir(appleNativeImplDir)
             }
@@ -271,19 +263,16 @@ kotlin {
             // LinkQualityResolution.None and never fabricates a reading.
             val appleRssiMacosDir = file("src/appleRssiMacosImpl/kotlin")
             val appleRssiDefaultDir = file("src/appleRssiDefaultImpl/kotlin")
-            listOf("macosArm64Main", "macosX64Main").forEach { sourceSetName ->
+            listOf("macosArm64Main").forEach { sourceSetName ->
                 findByName(sourceSetName)?.kotlin?.srcDir(appleRssiMacosDir)
             }
             listOf(
                 "iosArm64Main",
                 "iosSimulatorArm64Main",
-                "iosX64Main",
                 "tvosArm64Main",
                 "tvosSimulatorArm64Main",
-                "tvosX64Main",
-                "watchosArm64Main",
+                "watchosDeviceArm64Main",
                 "watchosSimulatorArm64Main",
-                "watchosX64Main",
             ).forEach { sourceSetName ->
                 findByName(sourceSetName)?.kotlin?.srcDir(appleRssiDefaultDir)
             }
@@ -408,15 +397,9 @@ android {
         .manifest
         .srcFile("src/androidMain/AndroidManifest.xml")
     defaultConfig {
-        // 23 (M), not 21. AndroidNetworkMonitor needs ConnectivityManager.getActiveNetwork() (API 23) to
-        // seed its state, and Network.getNetworkHandle() (also 23) to give a NetworkId.Link a real
-        // per-link identity. Declaring 21 while calling both was simply a latent NoSuchMethodError on
-        // API 21/22, and the obvious guarded fallback onto the deprecated activeNetworkInfo is untestable
-        // with any infrastructure this repo has: Robolectric 4.16.1 rejects @Config(sdk = 21) and 22 with
-        // "API level N is not available", and the emulator lanes run 29 and 35. Below 23 a NetworkState
-        // could never carry a real identity anyway, so an untestable branch would buy a configuration
-        // that cannot produce a useful answer (RFC_NETWORK_REACHABILITY §8.1).
-        minSdk = 23
+        // 28: the floor of every module in this library. It guarantees the default-network callback with its
+        // onAvailable-then-onCapabilitiesChanged ordering and the NOT_SUSPENDED capability bit.
+        minSdk = 28
     }
     namespace = "com.ditchoom.networkmonitor"
 

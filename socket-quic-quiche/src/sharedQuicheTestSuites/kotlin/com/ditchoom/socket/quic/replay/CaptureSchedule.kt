@@ -22,6 +22,9 @@ internal class CaptureSchedule(
     val ourTransport: TransportSetup,
     val peerTransport: TransportSetup,
     val peerPackets: PeerPackets,
+    /** What the modelled peer's application does with the streams our endpoint writes. */
+    val peerApp: PeerApp = PeerApp.Reads,
+    val ourApp: OurApp = OurApp.Ignores,
     /**
      * In the order our endpoint took them: a peer datagram stands where our endpoint processed it,
      * which the times of two threads' records do not always say.
@@ -34,6 +37,10 @@ internal class CaptureSchedule(
     /** The capture's length. */
     val runsFor: Duration,
     val tolerance: SendTimeTolerance,
+    /** Spare connection ids our endpoint hands its peer in the pass its handshake completes, before it writes again. */
+    val idsAtEstablishment: Int = 0,
+    /** When our endpoint's timers fire. */
+    val ourTimers: OurTimers = OurTimers.WhenDue,
 ) {
     /**
      * This schedule up to [at], with the connection still open there: what a peer that had not gone
@@ -47,11 +54,15 @@ internal class CaptureSchedule(
             ourTransport = ourTransport,
             peerTransport = peerTransport,
             peerPackets = peerPackets,
+            peerApp = peerApp,
+            ourApp = ourApp,
             steps = steps.filter { it.at < at },
             established = if (established is Moment.At && established.at < at) established else Moment.Never,
             end = ConnectionEnd.Open,
             runsFor = at,
             tolerance = tolerance,
+            idsAtEstablishment = idsAtEstablishment,
+            ourTimers = ourTimers,
         )
 
     /**
@@ -69,13 +80,32 @@ internal class CaptureSchedule(
             ourTransport = ourTransport,
             peerTransport = peerTransport,
             peerPackets = peerPackets,
+            peerApp = peerApp,
+            ourApp = ourApp,
             steps = steps.map { if (it is Step.PeerSent && it in lost) it.copy(fate = Fate.Lost) else it },
             established = established,
             end = end,
             runsFor = runsFor,
             tolerance = tolerance,
+            idsAtEstablishment = idsAtEstablishment,
+            ourTimers = ourTimers,
         )
     }
+}
+
+/** When our endpoint's timers fire in a replay. */
+internal sealed interface OurTimers {
+    /** When quiche says they fall due: a capture that does not say when its host ran them. */
+    data object WhenDue : OurTimers
+
+    /**
+     * At the first of [firings], the times the capture's host ran quiche's timeout, at or after quiche says one falls
+     * due. A host runs a timer only when its loop starts a pass: one that stalled, mid-pass or between passes, ran it
+     * when it next did, and every timer armed after that one moves with it. Past the last, when due.
+     */
+    data class AsRecorded(
+        val firings: List<Duration>,
+    ) : OurTimers
 }
 
 /** A packet's type as its unprotected header gives it (RFC 9000 §17), which is also its packet number space. */
@@ -136,6 +166,36 @@ internal enum class PeerPackets {
      */
     WholeFlights,
 }
+
+/**
+ * What our endpoint's application does with the bytes the peer sends back on the streams it wrote. Reading them
+ * is what lets quiche widen the peer's flow control and acknowledge, so it changes what our endpoint sends.
+ */
+internal enum class OurApp {
+    /** Nothing: the bytes stay in quiche. */
+    Ignores,
+
+    /** It reads them as they arrive, right after each receive pass. */
+    Reads,
+}
+
+/** What the modelled peer's application does with the bytes it reads from a stream. */
+internal enum class PeerApp {
+    /** Nothing: it reads them. */
+    Reads,
+
+    /** It writes them back on the same stream as it reads them, finishing the stream when the stream finished. */
+    Echoes,
+}
+
+/** A short-header datagram of at most this many bytes holds acknowledgements and at most a control frame. */
+private const val ACKS_ONLY_BYTES = 64
+
+/** Whether a datagram of [shape] and [size] bytes holds nothing the peer must acknowledge in return or a sender retransmit. */
+internal fun isAcksOnly(
+    shape: List<PacketKind>,
+    size: Int,
+): Boolean = shape == listOf(PacketKind.OneRtt) && size <= ACKS_ONLY_BYTES
 
 /** What a datagram of ours was for. */
 internal enum class Carries {
@@ -232,6 +292,8 @@ internal class CaptureScheduleBuilder(
     private var ourTransport = TransportSetup()
     private var peerTransport = TransportSetup()
     private var peerPackets = PeerPackets.WholeFlights
+    private var peerApp = PeerApp.Reads
+    private var ourApp = OurApp.Ignores
     private var established: Moment = Moment.Never
     private var end: ConnectionEnd = ConnectionEnd.Open
     private var runsFor: Duration = Duration.ZERO
@@ -247,6 +309,14 @@ internal class CaptureScheduleBuilder(
 
     fun peerPackets(packets: PeerPackets) {
         peerPackets = packets
+    }
+
+    fun peerApp(app: PeerApp) {
+        peerApp = app
+    }
+
+    fun ourApp(app: OurApp) {
+        ourApp = app
     }
 
     fun tolerance(tolerance: SendTimeTolerance) {
@@ -372,6 +442,8 @@ internal class CaptureScheduleBuilder(
             ourTransport = ourTransport,
             peerTransport = peerTransport,
             peerPackets = peerPackets,
+            peerApp = peerApp,
+            ourApp = ourApp,
             steps = steps.toList(),
             established = established,
             end = end,

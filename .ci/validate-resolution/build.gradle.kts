@@ -24,22 +24,18 @@ kotlin {
 
     // Apple – macOS
     macosArm64()
-    macosX64()
 
     // Apple – iOS
     iosArm64()
     iosSimulatorArm64()
-    iosX64()
 
     // Apple – tvOS
     tvosArm64()
     tvosSimulatorArm64()
-    tvosX64()
 
     // Apple – watchOS
-    watchosArm64()
+    watchosDeviceArm64()
     watchosSimulatorArm64()
-    watchosX64()
 
     sourceSets {
         commonMain.dependencies {

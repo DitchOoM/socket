@@ -71,7 +71,14 @@
       "longrtt": "pass",
       "multiplexing": "pass",
       "rebind-addr": "pass",
-      "rebind-port": "pass",
+      "rebind-port": {
+        "flaky": {
+          "why": "peer: the runner fails the test when aioquic's first packet to our client's new port carries no PATH_CHALLENGE, a check of the server's own packets; our client downloads every file and exits 0 (run 43947308066, both attempts)",
+          "signature": {
+            "kind": "peer-server-did-not-challenge-new-path-first"
+          }
+        }
+      },
       "resumption": "pass",
       "retry": "pass",
       "transfer": "pass",
@@ -435,7 +442,25 @@
       "handshakecorruption": {
         "flaky": "unproven: the stock quiche server drops a request that arrives before its handshake completes (it buffers no early 1-RTT), our retransmission 15 s later (a 5 s first RTT sample) is lost, and the server idles out 30 s after its last packet (run 43612995827); the server's side is only in its own log"
       },
-      "handshakeloss": "pass",
+      "handshakeloss": {
+        "flaky": {
+          "why": "peer: the stock quiche server drops our request when it arrives before its handshake completes (it buffers no early 1-RTT), our retransmissions 12 s and 36 s later (a 4 s first RTT sample, the server's acknowledgement of our Initial having ridden its own 4 s PTO) are lost or late, and it idles out 30 s after its last packet (run 44177059008); or, its congestion window spent on Handshake packets we cannot read, it never re-sends the last 31 bytes of its ServerHello and acknowledges our Initial probes for the whole time limit (run 44177059008 retry: 2722 acknowledgements, the ServerHello stopped at byte 59 of 90)",
+          "signature": {
+            "kind": "any-of",
+            "signatures": [
+              {
+                "kind": "peer-never-acked-early-request",
+                "min_copies": 3,
+                "silence_s": 25
+              },
+              {
+                "kind": "peer-server-hello-stopped-short",
+                "min_acks": 1000
+              }
+            ]
+          }
+        }
+      },
       "ipv6": "pass",
       "longrtt": "pass",
       "multiplexing": "pass",
@@ -477,9 +502,19 @@
       },
       "handshakeloss": {
         "flaky": {
-          "why": "peer: quinn acknowledges our Initials but never re-sends a lost ServerHello; its probes are Handshake packets we cannot decrypt (run 43609318908)",
+          "why": "peer: quinn acknowledges our Initials but never re-sends a lost ServerHello; its probes are Handshake packets we cannot decrypt (run 43609318908); or the handshake completes and our request is acknowledged, but every copy of quinn's response is lost and its recovery backs off past our 30 s idle timeout, so the client hears nothing for 30 s with nothing of ours in flight (run 43918562845: 10 of 24 datagrams from quinn delivered, one 1-RTT packet between 7.5 s and the end at 54.2 s)",
           "signature": {
-            "kind": "peer-never-resent-server-hello"
+            "kind": "any-of",
+            "signatures": [
+              {
+                "kind": "peer-never-resent-server-hello"
+              },
+              {
+                "kind": "peer-silent-until-our-timeout",
+                "silence_s": 25,
+                "our_wait_s": 8
+              }
+            ]
           }
         }
       },
@@ -548,7 +583,16 @@
       "goodput": "pass",
       "handshake": "pass",
       "handshakecorruption": "pass",
-      "handshakeloss": "pass",
+      "handshakeloss": {
+        "flaky": {
+          "why": "peer and simulator: one lost ACK of ours made the xquic server take its first RTT sample from our probe 3 s later, so its next probe timeouts were 10 s and 20 s; its one re-send of the Handshake flight inside our 30 s handshake limit was lost, and our client, every packet of its own acknowledged and nothing in flight (RFC 9002 6.2.2.1 leaves the next move to the server), heard nothing from 4.4 s until its timeout at 34.4 s (run 44433727770, both attempts; server log: PTO 10.2 s then 20.4 s, re-sends at 14.3 s and 34.7 s)",
+          "signature": {
+            "kind": "peer-silent-until-our-timeout",
+            "silence_s": 25,
+            "our_wait_s": 8
+          }
+        }
+      },
       "ipv6": "pass",
       "longrtt": "pass",
       "multiplexing": "pass",
@@ -819,7 +863,15 @@
       "zerortt": "pass"
     },
     "msquic": {
-      "amplificationlimit": "pass",
+      "amplificationlimit": {
+        "flaky": {
+          "why": "peer and simulator: msquic's client abandons a handshake at 10 s and the drop list takes its datagrams 2 to 7, so our server, holding its full three-times budget, hears nothing more; when our whole first flight reaches msquic before it answers, it acknowledges both spaces in one datagram rather than two, and its eighth datagram, the first through, falls due on its PTO backoff at about 13.9 s, after it gave up (run 44177059008, both attempts; passing run 44124082900 sent the extra 50-byte Handshake acknowledgement and got through at 8.1 s)",
+          "signature": {
+            "kind": "peer-gave-up-while-we-were-amplification-limited",
+            "min_dropped": 6
+          }
+        }
+      },
       "blackhole": "pass",
       "goodput": "pass",
       "handshake": "pass",
@@ -957,7 +1009,7 @@
       "handshake": "pass",
       "handshakecorruption": {
         "flaky": {
-          "why": "peer and simulator: the stock quiche client sends its request 30 s after our HANDSHAKE_DONE (its own unreset backoff) and idles out with our answer in flight (run 43609318908); or every datagram we send it is corrupted, so its ClientHello's second packet is never re-sent (run 43612995827); or every copy of its Finished is corrupted while half its probes go to 1-RTT packets our server cannot read before the Finished (run 43680120243); or only part of its two-packet ClientHello ever arrives (run 43687068929); or it acknowledges our flight and its Finished never arrives (run 43687046353)",
+          "why": "peer and simulator: the stock quiche client sends its request 30 s after our HANDSHAKE_DONE (its own unreset backoff) and idles out with our answer in flight (run 43609318908); or every datagram we send it is corrupted, so its ClientHello's second packet is never re-sent (run 43612995827); or every copy of its Finished is corrupted while half its probes go to 1-RTT packets our server cannot read before the Finished (run 43680120243); or only part of its two-packet ClientHello ever arrives (run 43687068929); or it acknowledges our flight and its Finished never arrives (run 43687046353); or the simulator corrupts every one of our answer's copies, which our server sends at the pace RFC 9002 gives it after a handshake that lost packets (smoothed RTT 1.7 s, PTO 7 s then 14 s: three probes in the client's 30 s), and the client, which sends nothing while it waits, idles out (run 43947308066)",
           "signature": {
             "kind": "any-of",
             "signatures": [
@@ -979,6 +1031,11 @@
               },
               {
                 "kind": "peer-finished-never-arrived"
+              },
+              {
+                "kind": "peer-idled-out-while-we-probed",
+                "min_probes": 3,
+                "min_lost": 5
               }
             ]
           }
@@ -986,7 +1043,7 @@
       },
       "handshakeloss": {
         "flaky": {
-          "why": "peer and simulator: every Handshake packet of the stock quiche client is lost while half its probes go to 1-RTT packets (run 43687046353); or only part of its two-packet ClientHello ever arrives (run 43687073037)",
+          "why": "peer and simulator: every Handshake packet of the stock quiche client is lost while half its probes go to 1-RTT packets (run 43687046353); or only part of its two-packet ClientHello ever arrives (run 43687073037); or the second packet of its ClientHello (CRYPTO 1133-1496) is sent once and lost, and every probe after it re-sends only the first packet plus a PING (RFC 9002 §6.2.4 leaves the probe's content to the sender), so the ClientHello never completes although its first packet opened our server's connection and two PINGs arrived; each of our three acknowledgements is lost too, and the client idles out with nothing received (run 44484652758)",
           "signature": {
             "kind": "any-of",
             "signatures": [
@@ -996,6 +1053,10 @@
               },
               {
                 "kind": "peer-client-hello-never-completed",
+                "min_lost": 5
+              },
+              {
+                "kind": "peer-client-hello-only-in-its-opening-packet",
                 "min_lost": 5
               }
             ]
@@ -1099,10 +1160,20 @@
       "handshake": "pass",
       "handshakecorruption": {
         "flaky": {
-          "why": "peer: the s2n-quic client acknowledges our HANDSHAKE_DONE and pings for 17 s but never sends its request (run 43612995827)",
+          "why": "peer and simulator: the s2n-quic client acknowledges our HANDSHAKE_DONE and pings for 17 s but never sends its request (run 43612995827); or its request arrives after a handshake the simulator delayed 15 s, every copy of our answer is corrupted, and the first RTT sample (6 s, from the one Handshake packet that got through) puts our next PTO 21 s out, past the client's 30 s idle timeout, which sends nothing while it waits (run 43973014575)",
           "signature": {
-            "kind": "peer-request-never-arrived",
-            "min_packets": 5
+            "kind": "any-of",
+            "signatures": [
+              {
+                "kind": "peer-request-never-arrived",
+                "min_packets": 5
+              },
+              {
+                "kind": "peer-idled-out-while-we-probed",
+                "min_probes": 2,
+                "min_lost": 5
+              }
+            ]
           }
         }
       },
@@ -1199,9 +1270,17 @@
     "quiche": {
       "multiplexing": {
         "flaky": {
-          "why": "peer: the stock quiche client exits 0 leaving a download empty while our server answered on every connection (run 43687061738; 1 of 11 runs)",
+          "why": "peer: the stock quiche client exits 0 leaving a download empty while our server answered on every connection (run 43687061738; 1 of 11 runs); or, with its congestion window full, writes a request short (a 3-byte STREAM frame, no FIN), logs 'failed to send request Done', never resumes it and idles out with exit 254 while our server answered every request that arrived whole (run 44402991044, our-server-raised-streams: 7 of 1999)",
           "signature": {
-            "kind": "peer-left-a-download-empty"
+            "kind": "any-of",
+            "signatures": [
+              {
+                "kind": "peer-left-a-download-empty"
+              },
+              {
+                "kind": "peer-left-a-request-unfinished"
+              }
+            ]
           }
         }
       }

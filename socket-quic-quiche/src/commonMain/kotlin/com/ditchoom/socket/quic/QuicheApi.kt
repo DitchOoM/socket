@@ -55,6 +55,12 @@ interface QuicheApi {
         v: Long,
     )
 
+    /** The RTT quiche assumes before its first sample (`quiche_config_set_initial_rtt`, a patched-in export). */
+    fun configSetInitialRtt(
+        config: QuicheConfig,
+        nanos: Long,
+    )
+
     fun configSetInitialMaxStreamDataBidiLocal(
         config: QuicheConfig,
         v: Long,
@@ -196,6 +202,17 @@ interface QuicheApi {
     ): StreamRecvResult
 
     /**
+     * [connStreamRecv] as a primitive: a stream read on the core's hot path allocates no result object. Backends
+     * override it to decode quiche's answer straight into the [StreamRecvStep].
+     */
+    fun connStreamRecvStep(
+        conn: QuicheConn,
+        streamId: QuicStreamId,
+        buf: Long,
+        bufLen: Int,
+    ): StreamRecvStep = StreamRecvStep.of(connStreamRecv(conn, streamId, buf, bufLen))
+
+    /**
      * Write to a QUIC stream. Returns a [StreamSendResult] carrying the raw quiche return plus the peer's
      * application error code (when the peer aborted the stream and the backend exposes `out_error_code`).
      */
@@ -206,6 +223,18 @@ interface QuicheApi {
         bufLen: Int,
         fin: Boolean,
     ): StreamSendResult
+
+    /**
+     * [connStreamSend] as a primitive: a stream write on the core's hot path allocates no result object. Backends
+     * override it to decode quiche's answer straight into the [StreamSendStep].
+     */
+    fun connStreamSendStep(
+        conn: QuicheConn,
+        streamId: QuicStreamId,
+        buf: Long,
+        bufLen: Int,
+        fin: Boolean,
+    ): StreamSendStep = StreamSendStep.of(connStreamSend(conn, streamId, buf, bufLen, fin))
 
     /**
      * Bytes [streamId] can take right now (`quiche_conn_stream_capacity`): > 0 when a write would be
@@ -271,6 +300,26 @@ interface QuicheApi {
         bufLen: Int,
     ): StreamRecvResult
 
+    /**
+     * [connDgramRecv] as a primitive: a datagram read on the core's hot path allocates no result object. The answer is
+     * [StreamRecvStep.fold]'s `more` with the datagram's length, or `nothingYet` when none is queued.
+     */
+    fun connDgramRecvStep(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): StreamRecvStep = StreamRecvStep.of(connDgramRecv(conn, buf, bufLen))
+
+    /**
+     * [connDgramMaxWritableLen] as a primitive: the bytes one datagram may carry now, or [NO_DATAGRAM_ROOM] when
+     * datagrams cannot be sent.
+     */
+    fun connDgramMaxWritableBytes(conn: QuicheConn): Int =
+        when (val max = connDgramMaxWritableLen(conn)) {
+            is MaxDatagramSize.Bytes -> max.bytes
+            is MaxDatagramSize.Unavailable -> NO_DATAGRAM_ROOM
+        }
+
     /** True when at least one datagram is queued for receive. (Wraps `dgram_recv_front_len`.) */
     fun hasReadableDgram(conn: QuicheConn): Boolean
 
@@ -290,7 +339,26 @@ interface QuicheApi {
      */
     fun connIsHandshakeConfirmed(conn: QuicheConn): Boolean
 
+    /**
+     * Caps every PTO interval at [ceiling] and re-arms the loss-detection timer (`quiche_conn_set_handshake_pto_ceiling`,
+     * a patched-in export). quiche's own smaller PTO still wins. Each path holds the ceiling until its first RTT sample
+     * in the application space after confirmation releases it; a released path ignores later ceilings.
+     */
+    fun connSetHandshakePtoCeiling(
+        conn: QuicheConn,
+        ceiling: PtoCeiling,
+    )
+
+    /**
+     * Whether the active path still holds the ceiling of [connSetHandshakePtoCeiling]
+     * (`quiche_conn_handshake_pto_ceiling_held`, a patched-in export).
+     */
+    fun connHandshakePtoCeilingHeld(conn: QuicheConn): Boolean
+
     fun connIsClosed(conn: QuicheConn): Boolean
+
+    /** `quiche_conn_is_draining`: quiche sent its CONNECTION_CLOSE, or read the peer's, and sends nothing more. */
+    fun connIsDraining(conn: QuicheConn): Boolean
 
     fun connIsTimedOut(conn: QuicheConn): Boolean
 
@@ -319,6 +387,39 @@ interface QuicheApi {
         buf: Long,
         bufLen: Int,
     ): Int
+
+    // --- NEW_TOKEN (RFC 9000 §8.1.3), patched-in exports. Token format and crypto stay the caller's. ---
+
+    /**
+     * A client's address-validation token for every Initial of [conn] (`quiche_conn_set_token`): [bufLen] bytes at
+     * [buf]. Only before the first send. Returns 0 or a negative quiche error code.
+     */
+    fun connSetToken(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int
+
+    /**
+     * Moves the newest NEW_TOKEN token [conn] received and has not handed out into [buf] (`quiche_conn_take_new_token`).
+     * Returns its length, `QUICHE_ERR_DONE` when none waits, `QUICHE_ERR_BUFFER_TOO_SHORT` (nothing taken) when it does
+     * not fit [bufLen].
+     */
+    fun connTakeNewToken(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int
+
+    /** A server queues a NEW_TOKEN frame carrying [bufLen] bytes at [buf] (`quiche_conn_send_new_token`). */
+    fun connSendNewToken(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): Int
+
+    /** A server's client proved its address with a token: no anti-amplification limit (`quiche_conn_set_peer_address_validated`). */
+    fun connSetPeerAddressValidated(conn: QuicheConn): Int
 
     /** Whether the handshake resumed a session (`quiche_conn_is_resumed`). */
     fun connIsResumed(conn: QuicheConn): Boolean
@@ -387,6 +488,12 @@ interface QuicheApi {
      */
     fun connTimeout(conn: QuicheConn): Duration?
 
+    /**
+     * [connTimeout] in nanoseconds, with [NO_TIMEOUT_NANOS] for no timeout: a nullable [Duration] is boxed on every
+     * call that has a timeout, which the core's hot path may not do. Backends override it to read the raw value.
+     */
+    fun connTimeoutNanos(conn: QuicheConn): Long = connTimeout(conn)?.inWholeNanoseconds ?: NO_TIMEOUT_NANOS
+
     fun connOnTimeout(conn: QuicheConn)
 
     /**
@@ -396,6 +503,28 @@ interface QuicheApi {
      * quiche error code (e.g. `QUICHE_ERR_DONE` when nothing needs sending).
      */
     fun connSendAckEliciting(conn: QuicheConn): Int
+
+    /**
+     * The path is usable again after an outage the caller knows of: quiche sends what a PTO would, at its next
+     * [connSend] — up to two probe packets with the oldest unacknowledged data, past the congestion window, or a
+     * PING when nothing is in flight (`quiche_conn_probe_now`, a patched-in export). Counts no PTO and declares
+     * nothing lost. Returns 0 or a negative quiche error code.
+     */
+    fun connProbeNow(conn: QuicheConn): Int
+
+    /**
+     * The path between the sockaddrs at [localAddr] and [peerAddr] will carry nothing more (a client's socket moved
+     * away from it): every frame it still owes the peer is queued for retransmission on the active path, at the next
+     * [connSend] (`quiche_conn_requeue_path`, a patched-in export). Returns the number of frames moved, or a negative
+     * quiche error code (`QUICHE_ERR_INVALID_STATE` for the active path or no path at the 4-tuple).
+     */
+    fun connRequeuePath(
+        conn: QuicheConn,
+        localAddr: Long,
+        localLen: Int,
+        peerAddr: Long,
+        peerLen: Int,
+    ): Int
 
     /**
      * Close the connection with the given [error].
@@ -617,6 +746,20 @@ interface QuicheApi {
     ): ProbeOutcome
 
     /**
+     * [connProbePath] (`quiche_conn_probe_path_with`, a patched-in export), and two things about the path probed: its
+     * RTT estimate, while it has no sample, starts from [initialRttNanos] (zero keeps the configured one), and its
+     * next packet, the one carrying the PATH_CHALLENGE, is a probe the congestion window does not hold.
+     */
+    fun connProbePathWith(
+        conn: QuicheConn,
+        localAddr: Long,
+        localLen: Int,
+        peerAddr: Long,
+        peerLen: Int,
+        initialRttNanos: Long,
+    ): ProbeOutcome
+
+    /**
      * Supply a spare source connection ID to the peer (`quiche_conn_new_scid`). quiche does
      * not auto-issue CIDs — without this the peer never gets a NEW_CONNECTION_ID and has no
      * spare destination CID to migrate to. [scidAddr] points at a [scidLen]-byte CID,
@@ -830,6 +973,25 @@ interface QuicheApi {
         outLen: Int,
     ): Int
 
+    /**
+     * `quiche_retry`: writes a Retry packet for the Initial whose source id is at [scidAddr] and destination id at
+     * [dcidAddr], naming [newScidAddr] as the id the client must use next and carrying the token at [tokenAddr].
+     * Returns the packet's length, or a negative error.
+     */
+    fun retry(
+        scidAddr: Long,
+        scidLen: Int,
+        dcidAddr: Long,
+        dcidLen: Int,
+        newScidAddr: Long,
+        newScidLen: Int,
+        tokenAddr: Long,
+        tokenLen: Int,
+        version: Int,
+        outAddr: Long,
+        outLen: Int,
+    ): Int
+
     // --- Stream iteration ---
 
     /** Get iterator over readable streams. Check [QuicheStreamIter.isExhausted] before iterating. */
@@ -839,10 +1001,19 @@ interface QuicheApi {
     fun connWritable(conn: QuicheConn): QuicheStreamIter
 
     /**
+     * The next stream quiche marked writable since it was last handed out, its mark taken
+     * (`quiche_conn_stream_writable_next`), or -1 when none is marked. A stream the peer stopped is marked too.
+     */
+    fun connStreamWritableNext(conn: QuicheConn): Long
+
+    /**
      * Advance stream iterator. Returns the next [QuicStreamId], or `null` when exhausted.
      * Implementations handle the output-parameter pattern internally.
      */
     fun streamIterNext(iter: QuicheStreamIter): QuicStreamId?
+
+    /** [streamIterNext] as a primitive: a [QuicStreamId] in a nullable is boxed on every step. Backends override it. */
+    fun streamIterNextId(iter: QuicheStreamIter): NextStream = streamIterNext(iter)?.let { NextStream.of(it) } ?: NextStream.End
 
     fun streamIterFree(iter: QuicheStreamIter)
 
@@ -876,6 +1047,16 @@ interface QuicheApi {
 
     fun sendInfoFromAddrLen(info: QuicheSendInfo): Int
 
+    /**
+     * When quiche's pacer wants the datagram [connSend] just wrote to leave, in nanoseconds on the monotonic clock
+     * libquiche reads (the one the loop's clock reads), from the `at` field of the send info. A time at or before
+     * now means send at once. Backends read the struct without allocating; the default answers 0, which is never
+     * in the future, so a backend without it does not pace. The clock is CLOCK_MONOTONIC on Linux and
+     * CLOCK_UPTIME_RAW on Apple platforms and QueryPerformanceCounter nanoseconds on Windows (the patched libquiche
+     * converts its instant to each).
+     */
+    fun sendInfoAtNanos(info: QuicheSendInfo): Long = 0L
+
     // --- sockaddr decode (slice 3 migration) ---
     // Reverse of SockAddrUtil's encode. The JNI backend forwards to native helpers in
     // quiche_jni.c (native code knows the platform's sockaddr layout — BSD sin_len,
@@ -896,7 +1077,29 @@ interface QuicheApi {
 
     /** Low 8 bytes of the IPv6 address at [addr] — opaque identity, valid when family == 6. */
     fun sockAddrV6Lo(addr: Long): Long
+
+    /**
+     * The smoothed RTT of the connection's active path in nanoseconds (`quiche_conn_path_stats`' `rtt`), or
+     * [NO_RTT_NANOS] when no path is active. The real backends read it into a per-thread scratch and allocate nothing;
+     * this default, for test doubles, reads [connPathStats]. Same threading contract as [connStats].
+     */
+    fun connActivePathRttNanos(conn: QuicheConn): Long {
+        var index = 0L
+        while (true) {
+            val stats = connPathStats(conn, index++) ?: return NO_RTT_NANOS
+            if (stats.active) return stats.rtt.inWholeNanoseconds
+        }
+    }
 }
+
+/** What [QuicheApi.connActivePathRttNanos] answers when the connection has no active path. */
+const val NO_RTT_NANOS = -1L
+
+/** What [QuicheApi.connTimeoutNanos] answers when quiche has no timer armed. */
+const val NO_TIMEOUT_NANOS = -1L
+
+/** What [QuicheApi.connDgramMaxWritableBytes] answers when datagrams cannot be sent. */
+const val NO_DATAGRAM_ROOM = -1
 
 /**
  * Slot width for [QuicheApi.connDrainRetiredScids]'s output buffer: one length byte followed by the
@@ -906,4 +1109,5 @@ interface QuicheApi {
  * Public for the same reason [QuicheApi] itself is: the FFM backend lives in the `jvm21` compilation,
  * which `internal` does not reach.
  */
+
 const val RETIRED_SCID_SLOT_BYTES = 1 + QUIC_MAX_CONN_ID_LEN

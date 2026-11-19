@@ -2,6 +2,7 @@ package com.ditchoom.socket
 
 import com.ditchoom.data.readString
 import com.ditchoom.data.writeString
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.launch
@@ -51,18 +52,25 @@ class HostResolverTests {
     }
 
     @Test
-    fun thePlatformResolverAnswersLocalhostWithALoopbackLiteral() =
+    fun localhostIsLoopbackWithoutAQueryIPv4First() =
         runTestNoTimeSkipping {
-            val answer = HostResolver.platform().resolve("localhost")
-            if (!tcpAvailable()) {
-                assertIs<Resolution.Failed>(answer, "a browser has no resolver, and says so as an answer")
-                return@runTestNoTimeSkipping
+            val loopback = listOf(ResolvedAddress("127.0.0.1", IpFamily.V4), ResolvedAddress("::1", IpFamily.V6))
+            for (name in listOf("localhost", "LocalHost.", "api.localhost")) {
+                assertEquals(loopback, assertIs<Resolution.Resolved>(HostResolver.platform().resolve(name), name).candidates, name)
             }
-            val resolved = assertIs<Resolution.Resolved>(answer)
-            assertTrue(
-                resolved.candidates.any { it.ip == "127.0.0.1" || it.ip == "::1" },
-                "localhost resolves to a loopback literal: ${resolved.candidates}",
-            )
+        }
+
+    @Test
+    fun theResolverAnswersAnAddressLiteralWithItselfWithoutAskingDns() =
+        runTestNoTimeSkipping {
+            if (!tcpAvailable()) return@runTestNoTimeSkipping
+            for ((literal, family) in listOf("127.0.0.1" to IpFamily.V4, "::1" to IpFamily.V6, "192.0.2.7" to IpFamily.V4)) {
+                val resolved = assertIs<Resolution.Resolved>(HostResolver.platform().resolve(literal), literal)
+                val answer = resolved.candidates.single()
+                assertEquals(family, answer.family, literal)
+                // The JDK writes ::1 out in full; any spelling of the same address is itself.
+                assertTrue(answer.ip == literal || (literal == "::1" && answer.ip == "0:0:0:0:0:0:0:1"), "$literal answered ${answer.ip}")
+            }
         }
 
     @Test
@@ -70,6 +78,46 @@ class HostResolverTests {
         runTestNoTimeSkipping {
             val answer = HostResolver.platform().resolve("this.host.does.not.exist.invalid")
             assertTrue(answer is Resolution.Failed || answer is Resolution.NoAddress, "got $answer")
+            if (answer is Resolution.Failed) {
+                val expected =
+                    if (tcpAvailable()) {
+                        listOf(ResolveFailure.NotFound, ResolveFailure.TimedOut, ResolveFailure.NoNetwork)
+                    } else {
+                        listOf(ResolveFailure.Unsupported)
+                    }
+                assertTrue(answer.why in expected, "a name that does not exist is a typed failure, got ${answer.why}")
+            }
+        }
+
+    /**
+     * Cancelling never waits for the lookup: `cancel()` only posts the teardown to the query's own queue (about 3 us),
+     * and the join is one dispatcher hop (about 70 us, measured on the iOS simulator even with 100 busy loops on 36
+     * cores). A cancel that did wait would wait for DNS, so EVERY sample would take a lookup's time; one scheduler
+     * stall (CI tvOS run 134236838626 saw a lone 33.9 ms on a 3-vCPU runner) hits one sample. So this asserts the
+     * median, not the worst, and prints every sample on failure.
+     */
+    @Test
+    fun cancellingALookupReturnsWithinAMillisecondOfWork() =
+        runTestNoTimeSkipping(timeout = 60.seconds) {
+            if (!tcpAvailable()) return@runTestNoTimeSkipping
+            val cancelCall = ArrayList<Long>()
+            val joined = ArrayList<Long>()
+            repeat(30) { round ->
+                val lookup =
+                    launch(start = CoroutineStart.UNDISPATCHED) {
+                        HostResolver.platform().resolve("cancel-$round.lookup.invalid")
+                    }
+                val start = TimeSource.Monotonic.markNow()
+                lookup.cancel()
+                cancelCall += start.elapsedNow().inWholeMicroseconds
+                lookup.join()
+                joined += start.elapsedNow().inWholeMicroseconds
+            }
+            val calls = cancelCall.drop(10).sorted()
+            val joins = joined.drop(10).sorted()
+            val detail = "sorted after warm-up, us: cancel() calls=$calls; cancel+join=$joins"
+            assertTrue(calls[calls.size / 2] < 1_000, "median cancel() call ${calls[calls.size / 2]} us; $detail")
+            assertTrue(joins[joins.size / 2] < 1_000, "median cancel+join ${joins[joins.size / 2]} us; $detail")
         }
 
     @Test

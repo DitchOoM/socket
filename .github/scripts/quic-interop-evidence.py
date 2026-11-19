@@ -9,12 +9,15 @@ sources are read, both written by something this repository controls or the runn
     transport parameters each side set, the MAX_STREAMS we sent, the highest stream the peer opened, the
     source connection id lengths of the peer's Initial packets and the CONNECTION_CLOSE frames we sent;
   - the runner's output.txt: each container's exit code, our client's MIGRATION-SUMMARY line (its typed
-    move results) when it migrated, the runner's handshake count and time limit, and what the simulator did
-    with each datagram addressed to our endpoint.
+    move results) when it migrated, the runner's handshake count and time limit, what the simulator did
+    with each datagram addressed to our endpoint, and how many of the peer's datagrams a drop-list scenario
+    (`droplist --drops_to_server=...`) dropped.
 
-Per connection the qlog also gives what the peer sent in the handshake spaces, when we last heard from it,
-how the connection ended, what was still in flight then, the streams we answered and how fast, and every
-RESET_STREAM the peer sent with how many copies of that stream's first bytes we had sent.
+Per connection the qlog also gives what the peer sent in the handshake spaces, how many contiguous Initial
+CRYPTO bytes arrived, when we last heard from it, how the connection ended, what was still in flight then, how
+many PTO expiries passed with nothing sent, the peer-opened streams that never received a FIN, the streams we answered and how fast, when our first stream data
+went out, when the peer first acknowledged it, when its HANDSHAKE_DONE arrived, and every RESET_STREAM the peer
+sent with how many copies of that stream's first bytes we had sent.
 
 The output maps test -> {"connections": [...], "exits": {"client": n, "server": n}, "migrations": [...]}. A
 connection, exit or summary the logs do not show is absent, never written as a placeholder.
@@ -30,8 +33,12 @@ TIME_LIMIT = re.compile(r"took longer than (\d+)s")
 NO_PATH_CHALLENGE = re.compile(r"First server packet on new path .* did not contain a PATH_CHALLENGE frame")
 EMPTY_DOWNLOAD = re.compile(r"doesn't match\. Original: \d+ bytes, downloaded: 0 bytes")
 SIM_DATAGRAM = re.compile(r"\b(Forwarding|Corrupting|Dropping) \d+ bytes [\d.]+:(\d+) -> ([\d.]+):(\d+)")
+SIM_DROPLIST = re.compile(r"\bDropping packet \d+ \(\d+ bytes\) from ([\d.]+)")
 OUR_ADDRESS = {"client": "193.167.0.100", "server": "193.167.100.100"}
+PEER_ADDRESS = {"client": OUR_ADDRESS["server"], "server": OUR_ADDRESS["client"]}
 MIGRATION_SUMMARY = re.compile(r"MIGRATION-SUMMARY attempted=(\d+) succeeded=(\d+)(?:.*?firstUnmoved=move \d+: (\w+))?")
+PEER_IDLE_TIMEOUT = re.compile(r"connection timed out after [\d.]+s and only completed (\d+)/(\d+) requests")
+PEER_IDLE_REQUEST_FAILED = re.compile(r"Request \S+ failed: .*IdleTimerExpired")
 TRANSPORT_SPACE = "transport"
 
 
@@ -56,6 +63,21 @@ def qlog_records(path):
                 continue
 
 
+def acked(ranges, packet_number):
+    """Whether a qlog ACK frame's acked_ranges ([[n]] or [[low, high]] entries) cover packet_number."""
+    return any(r and r[0] <= packet_number <= r[-1] for r in ranges)
+
+
+def contiguous_end(ranges):
+    """How far from offset 0 the (start, end) byte ranges cover without a gap."""
+    end = 0
+    for start, stop in sorted(ranges):
+        if start > end:
+            break
+        end = max(end, stop)
+    return end
+
+
 def connection_facts(path, side):
     facts = {
         "qlog": os.path.basename(path),
@@ -72,6 +94,7 @@ def connection_facts(path, side):
         "rx_handshake_acks": 0,
         "tx_crypto": 0,
         "tx_after_last_rx": 0,
+        "pto_expiries_after_last_tx": 0,
         "bytes_in_flight_at_end": 0,
         "longest_wait_in_flight_ms": 0.0,
         "fin_sent_streams": 0,
@@ -79,6 +102,10 @@ def connection_facts(path, side):
     }
     remainder = peer_bidi_remainder(side)
     first_rx, first_tx, fin_sent, copies = {}, {}, set(), {}
+    fin_rx, reset_rx = set(), set()
+    initial_crypto = []
+    initial_rx, initial_acked = set(), set()
+    stream_packets = set()
     last_tx = -1.0
     for record in qlog_records(path):
         name = record.get("name", "")
@@ -89,6 +116,8 @@ def connection_facts(path, side):
             facts["end_ms"] = at
         if name.endswith("recovery_metrics_updated") and "bytes_in_flight" in data:
             facts["bytes_in_flight_at_end"] = int(data["bytes_in_flight"])
+        if name.endswith("recovery_metrics_updated") and int(data.get("pto_count", 0)) > 0:
+            facts["pto_expiries_after_last_tx"] += 1
         if name.endswith("connection_closed") and data.get("reason"):
             facts["close_reason"] = data["reason"]
         if name.endswith("packet_received"):
@@ -97,18 +126,43 @@ def connection_facts(path, side):
             facts["tx_after_last_rx"] = 0
             space = (data.get("header") or {}).get("packet_type", "")
             frames = {f.get("frame_type") for f in data.get("frames") or []}
+            if space == "initial" and "packet_number" in (data.get("header") or {}):
+                initial_rx.add(int(data["header"]["packet_number"]))
             if space in ("initial", "handshake"):
                 facts[f"rx_{space}_crypto"] += "crypto" in frames
                 facts[f"rx_{space}_acks"] += "ack" in frames
             for frame in data.get("frames") or []:
+                if frame.get("frame_type") == "crypto" and space == "initial":
+                    length = int(frame.get("length", (frame.get("raw") or {}).get("payload_length", 0)))
+                    offset = int(frame.get("offset", 0))
+                    initial_crypto.append((offset, offset + length))
+                elif frame.get("frame_type") == "handshake_done":
+                    facts.setdefault("handshake_done_rx_ms", at)
+                elif frame.get("frame_type") == "ack" and space == "1RTT" and "first_stream_ack_ms" not in facts:
+                    if any(acked(frame.get("acked_ranges") or [], n) for n in stream_packets):
+                        facts["first_stream_ack_ms"] = at
                 if frame.get("frame_type") == "stream":
                     first_rx.setdefault(int(frame.get("stream_id", 0)), at)
+                    if frame.get("fin"):
+                        fin_rx.add(int(frame.get("stream_id", 0)))
                 elif frame.get("frame_type") == "reset_stream":
+                    reset_rx.add(int(frame.get("stream_id", 0)))
                     facts["peer_resets"].append(
                         {"stream_id": int(frame.get("stream_id", 0)), "final_size": int(frame.get("final_size", 0))}
                     )
         elif name.endswith("packet_sent"):
             facts["tx_after_last_rx"] += 1
+            facts["pto_expiries_after_last_tx"] = 0
+            header = data.get("header") or {}
+            if header.get("packet_type") == "initial":
+                for frame in data.get("frames") or []:
+                    if frame.get("frame_type") == "ack":
+                        for r in frame.get("acked_ranges") or []:
+                            if r:
+                                initial_acked.update(range(int(r[0]), int(r[-1]) + 1))
+            carries_stream = any(f.get("frame_type") == "stream" for f in data.get("frames") or [])
+            if carries_stream and header.get("packet_type") == "1RTT" and "packet_number" in header:
+                stream_packets.add(int(header["packet_number"]))
             facts["tx_crypto"] += any(f.get("frame_type") == "crypto" for f in data.get("frames") or [])
             # How long we waited to send again while data was in flight: our own retransmission timer's gaps.
             if last_tx >= 0 and facts["bytes_in_flight_at_end"] > 0:
@@ -148,6 +202,17 @@ def connection_facts(path, side):
                     if stream_id % 4 == remainder:
                         facts["peer_bidi_streams_opened"] = max(facts["peer_bidi_streams_opened"], stream_id // 4 + 1)
     facts["fin_sent_streams"] = len(fin_sent)
+    # Initial packets we acknowledged that the qlog never shows arriving: a server's qlog opens after the datagram
+    # that created the connection was processed, so that datagram's packet appears only in our acknowledgements.
+    facts["rx_initial_unlogged"] = len(initial_acked - initial_rx)
+    # Requests the peer opened and began but never finished: stream data arrived, no FIN and no RESET_STREAM ever did.
+    facts["peer_unfinished_streams"] = len([s for s in first_rx if s % 4 == remainder and s not in fin_rx and s not in reset_rx])
+    if initial_crypto:
+        facts["rx_initial_crypto_end"] = contiguous_end(initial_crypto)
+    if first_tx:
+        facts["first_stream_tx_ms"] = min(first_tx.values())
+    if copies:
+        facts["max_stream_copies"] = max(copies.values())
     for reset in facts["peer_resets"]:
         reset["our_copies"] = copies.get(reset["stream_id"], 0)
     answers = [first_tx[s] - first_rx[s] for s in first_rx if s in first_tx and s % 4 == remainder]
@@ -161,9 +226,27 @@ def connection_facts(path, side):
     return facts
 
 
+def peer_idle_timeouts(log_txt, output_txt):
+    """How many requests the peer's own report says it gave up on after its idle timeout: the stock quiche client
+    counts them in its log, the s2n-quic client names each one in the runner's output."""
+    unanswered = 0
+    if os.path.exists(log_txt):
+        with open(log_txt, errors="replace") as f:
+            for line in f:
+                m = PEER_IDLE_TIMEOUT.search(line)
+                if m:
+                    unanswered += int(m.group(2)) - int(m.group(1))
+    if os.path.exists(output_txt):
+        with open(output_txt, errors="replace") as f:
+            unanswered += sum(1 for line in f if PEER_IDLE_REQUEST_FAILED.search(line))
+    return unanswered
+
+
 def runner_output(output_txt, side):
-    """(container exits, our client's migration summaries, runner verdicts, simulator deliveries to us)."""
+    """(container exits, our client's migration summaries, runner verdicts, simulator deliveries to us, to the
+    peer and from the peer, the peer's datagrams a drop list dropped)."""
     exits, migrations, runner, to_us, to_peer, from_peer = {}, [], {}, {}, {}, {}
+    droplist_from_peer = 0
     if os.path.exists(output_txt):
         with open(output_txt, errors="replace") as f:
             for line in f:
@@ -179,6 +262,7 @@ def runner_output(output_txt, side):
                     )
                 if EMPTY_DOWNLOAD.search(line):
                     runner["empty_downloads"] = runner.get("empty_downloads", 0) + 1
+                droplist_from_peer += SIM_DROPLIST.findall(line).count(PEER_ADDRESS[side])
                 for action, source, address, port in SIM_DATAGRAM.findall(line):
                     ours = address == OUR_ADDRESS[side]
                     counted = [(to_us if ours else to_peer, int(port))]
@@ -198,7 +282,7 @@ def runner_output(output_txt, side):
                         summary["first_unmoved"] = m.group(3)
                     migrations.append(summary)
     by_port = lambda seen: sorted(seen.values(), key=lambda d: d["port"])
-    return exits, migrations, runner, by_port(to_us), by_port(to_peer), by_port(from_peer)
+    return exits, migrations, runner, by_port(to_us), by_port(to_peer), by_port(from_peer), droplist_from_peer
 
 
 def evidence(logs, direction, peer):
@@ -214,7 +298,9 @@ def evidence(logs, direction, peer):
             continue
         qlog_dir = os.path.join(test_dir, side, "qlog")
         qlogs = sorted(f for f in os.listdir(qlog_dir) if f.endswith(".sqlog")) if os.path.isdir(qlog_dir) else []
-        exits, migrations, runner, to_us, to_peer, from_peer = runner_output(os.path.join(test_dir, "output.txt"), side)
+        exits, migrations, runner, to_us, to_peer, from_peer, droplist_from_peer = runner_output(
+            os.path.join(test_dir, "output.txt"), side
+        )
         tests[test] = {
             "connections": [connection_facts(os.path.join(qlog_dir, q), side) for q in qlogs],
             "exits": exits,
@@ -223,6 +309,10 @@ def evidence(logs, direction, peer):
             "sim_to_us": to_us,
             "sim_to_peer": to_peer,
             "sim_from_peer": from_peer,
+            "sim_droplist_from_peer": droplist_from_peer,
+            "peer_unanswered_requests": peer_idle_timeouts(
+                os.path.join(test_dir, "client" if side == "server" else "server", "log.txt"), os.path.join(test_dir, "output.txt")
+            ),
         }
     return tests
 

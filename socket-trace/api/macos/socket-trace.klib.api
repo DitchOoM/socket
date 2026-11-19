@@ -1,5 +1,5 @@
 // Klib ABI Dump
-// Targets: [iosArm64, iosSimulatorArm64, iosX64, js, macosArm64, macosX64, tvosArm64, tvosSimulatorArm64, tvosX64, wasmJs, watchosArm64, watchosSimulatorArm64, watchosX64]
+// Targets: [iosArm64, iosSimulatorArm64, js, macosArm64, tvosArm64, tvosSimulatorArm64, wasmJs, watchosDeviceArm64, watchosSimulatorArm64]
 // Rendering settings:
 // - Signature version: 2
 // - Show manifest properties: true
@@ -551,6 +551,19 @@ sealed interface com.ditchoom.socket.testkit.trace/TraceEvent { // com.ditchoom.
         final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.testkit.trace/TraceEvent.StreamLoss.equals|equals(kotlin.Any?){}[0]
         final fun hashCode(): kotlin/Int // com.ditchoom.socket.testkit.trace/TraceEvent.StreamLoss.hashCode|hashCode(){}[0]
         final fun toString(): kotlin/String // com.ditchoom.socket.testkit.trace/TraceEvent.StreamLoss.toString|toString(){}[0]
+    }
+
+    final class TimerFired : com.ditchoom.socket.testkit.trace/TraceEvent { // com.ditchoom.socket.testkit.trace/TraceEvent.TimerFired|null[0]
+        constructor <init>(kotlin.time/Duration) // com.ditchoom.socket.testkit.trace/TraceEvent.TimerFired.<init>|<init>(kotlin.time.Duration){}[0]
+
+        final val at // com.ditchoom.socket.testkit.trace/TraceEvent.TimerFired.at|{}at[0]
+            final fun <get-at>(): kotlin.time/Duration // com.ditchoom.socket.testkit.trace/TraceEvent.TimerFired.at.<get-at>|<get-at>(){}[0]
+
+        final fun component1(): kotlin.time/Duration // com.ditchoom.socket.testkit.trace/TraceEvent.TimerFired.component1|component1(){}[0]
+        final fun copy(kotlin.time/Duration = ...): com.ditchoom.socket.testkit.trace/TraceEvent.TimerFired // com.ditchoom.socket.testkit.trace/TraceEvent.TimerFired.copy|copy(kotlin.time.Duration){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.testkit.trace/TraceEvent.TimerFired.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.testkit.trace/TraceEvent.TimerFired.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.testkit.trace/TraceEvent.TimerFired.toString|toString(){}[0]
     }
 
     final class TrafficSecretsRefused : com.ditchoom.socket.testkit.trace/TraceEvent { // com.ditchoom.socket.testkit.trace/TraceEvent.TrafficSecretsRefused|null[0]

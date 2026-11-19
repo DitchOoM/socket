@@ -28,11 +28,31 @@ sealed interface Resolution {
         val host: String,
     ) : Resolution
 
-    /** The resolver could not answer. */
+    /** The resolver could not answer, for [why]. */
     data class Failed(
         val host: String,
-        val cause: Throwable,
+        val why: ResolveFailure,
     ) : Resolution
+}
+
+/** Why a [HostResolver] could not answer. A caller's own cancellation is not one: it cancels the caller. */
+sealed interface ResolveFailure {
+    /** The resolver answered that the name does not exist. */
+    data object NotFound : ResolveFailure
+
+    /** The device has no route to a resolver. */
+    data object NoNetwork : ResolveFailure
+
+    /** The resolver did not answer within its own bound, or reported a temporary failure. */
+    data object TimedOut : ResolveFailure
+
+    /** This platform has no resolver (a browser). */
+    data object Unsupported : ResolveFailure
+
+    /** The OS resolver failed with [code], which none of the cases above names. */
+    data class Os(
+        val code: Int,
+    ) : ResolveFailure
 }
 
 /** Turns a name into every address it stands for. */
@@ -40,8 +60,20 @@ fun interface HostResolver {
     suspend fun resolve(host: String): Resolution
 
     companion object {
-        /** This platform's own resolver: every record it returns, in [happyEyeballsOrder]. */
-        fun platform(): HostResolver = platformHostResolver()
+        /**
+         * This platform's own resolver: every record it returns, in [happyEyeballsOrder]. `localhost` and `*.localhost`
+         * are loopback without a query (RFC 6761 §6.3), IPv4 first, as most local servers listen there.
+         */
+        fun platform(): HostResolver = LoopbackForLocalhost
+    }
+}
+
+private object LoopbackForLocalhost : HostResolver {
+    private val loopback = Resolution.Resolved(listOf(ResolvedAddress("127.0.0.1", IpFamily.V4), ResolvedAddress("::1", IpFamily.V6)))
+
+    override suspend fun resolve(host: String): Resolution {
+        val name = host.lowercase().removeSuffix(".")
+        return if (name == "localhost" || name.endsWith(".localhost")) loopback else platformHostResolver().resolve(host)
     }
 }
 
@@ -106,6 +138,6 @@ suspend fun NameResolution.candidatesFor(host: String): List<ResolvedAddress> {
     return when (val answer = resolver.resolve(host)) {
         is Resolution.Resolved -> answer.candidates
         is Resolution.NoAddress -> throw SocketUnknownHostException(host, "the name has no address")
-        is Resolution.Failed -> throw SocketUnknownHostException(host, cause = answer.cause)
+        is Resolution.Failed -> throw SocketUnknownHostException(host, "the name did not resolve: ${answer.why}")
     }
 }

@@ -1332,6 +1332,56 @@ void quiche_conn_peer_cert_chain_at(const quiche_conn *conn, size_t index, const
 // marker-guarded source patch in socket-quic-quiche/build.gradle.kts (patchQuicheHandshakeConfirmedFfi).
 bool quiche_conn_is_handshake_confirmed(const quiche_conn *conn);
 
+// socket-probe-now: the path is usable again after an outage: sends what a PTO would, now — up to two probe
+// packets with the oldest unacknowledged data, past the congestion window, or a PING. Counts no PTO and
+// declares nothing lost. Returns 0 or a negative quiche error. Added by the marker-guarded source patch in
+// socket-quic-quiche/build.gradle.kts (patchQuicheProbeNowFfi).
+ssize_t quiche_conn_probe_now(quiche_conn *conn);
+
+// socket-new-token (RFC 9000 §8.1.3), added by patchQuicheNewTokenFfi in socket-quic-quiche/build.gradle.kts.
+// Client: the token for every Initial of this connection, until a Retry replaces it. Only before the first packet
+// is sent; QUICHE_ERR_INVALID_STATE otherwise, on a server, or for an empty token.
+int quiche_conn_set_token(quiche_conn *conn, const uint8_t *token, size_t token_len);
+
+// Client: moves the newest NEW_TOKEN token received and not yet taken into out; returns its length,
+// QUICHE_ERR_DONE when there is none, QUICHE_ERR_BUFFER_TOO_SHORT (nothing taken) when out_len is too small.
+ssize_t quiche_conn_take_new_token(quiche_conn *conn, uint8_t *out, size_t out_len);
+
+// Server: queues a NEW_TOKEN frame carrying token, sent once the handshake is complete and again if lost.
+int quiche_conn_send_new_token(quiche_conn *conn, const uint8_t *token, size_t token_len);
+
+// Server: the client's address is validated (it presented a valid NEW_TOKEN token): lifts the anti-amplification
+// limit on the active path.
+int quiche_conn_set_peer_address_validated(quiche_conn *conn);
+
+// socket-requeue-path: the path at local/peer carries nothing more (a client's socket moved away from it); every
+// frame it still owes the peer is queued for retransmission on the active path now. Returns the number of frames
+// moved, or a negative quiche error (QUICHE_ERR_INVALID_STATE for the active path or no path at the 4-tuple). Added
+// by the marker-guarded source patch in socket-quic-quiche/build.gradle.kts (patchQuicheRequeuePathFfi).
+ssize_t quiche_conn_requeue_path(quiche_conn *conn,
+                                 const struct sockaddr *local, socklen_t local_len,
+                                 const struct sockaddr *peer, socklen_t peer_len);
+
+// socket-probe-path-with: quiche_conn_probe_path, and the path's RTT estimate, while it has no sample, starts from
+// initial_rtt_ns (zero keeps the configured initial RTT); its next packet, the one carrying the PATH_CHALLENGE, is a
+// probe the congestion window does not hold. Returns 0 and the destination id sequence number in seq, or a negative
+// quiche error. Added by the marker-guarded source patch in socket-quic-quiche/build.gradle.kts
+// (patchQuicheProbePathWithFfi).
+int quiche_conn_probe_path_with(quiche_conn *conn,
+                                const struct sockaddr *local, socklen_t local_len,
+                                const struct sockaddr *peer, socklen_t peer_len,
+                                uint64_t initial_rtt_ns, uint64_t *seq);
+
+// socket-handshake-pto-ceiling: the RTT quiche assumes before its first sample, in nanoseconds (quiche's Rust
+// Config::set_initial_rtt, which its C API lacks); the longest PTO interval, from `first` nanoseconds (0 removes it),
+// times `growth` per PTO expiry up to `max` nanoseconds, back to `first` when a space's keys are discarded, held by
+// each path until its first RTT sample in the application space after confirmation releases it; and whether the
+// active path still holds one. Setting the ceiling re-arms the loss-detection timer. Added by the marker-guarded
+// source patch in socket-quic-quiche/build.gradle.kts (patchQuicheHandshakePtoCeiling).
+void quiche_config_set_initial_rtt(quiche_config *config, uint64_t v);
+void quiche_conn_set_handshake_pto_ceiling(quiche_conn *conn, uint64_t first, uint32_t growth, uint64_t max);
+bool quiche_conn_handshake_pto_ceiling_held(const quiche_conn *conn);
+
 #if defined(__cplusplus)
 }  // extern C
 #endif

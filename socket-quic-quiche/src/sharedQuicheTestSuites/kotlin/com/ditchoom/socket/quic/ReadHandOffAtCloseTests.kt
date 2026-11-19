@@ -194,7 +194,7 @@ class ReadHandOffAtCloseTests {
                 settle(reader) // the cancelled read resumes, and must give back what it was handed
 
                 assertIs<QuicCloseException>(outcome.getCompleted())
-                val pool = driver.streamReadPool.stats()
+                val pool = (driver.streamReadPool as DriverBuffers.Owned).pool.stats()
                 assertEquals(
                     pool.totalAllocations.toInt(),
                     pool.currentPoolSize,

@@ -265,6 +265,14 @@ jobs:
               aarch64-linux-android armv7-linux-androideabi \
               x86_64-linux-android i686-linux-android
 
+      # One digest of the inputs of a quiche native binary (the quiche pins, the native-input regions of
+      # socket-quic-quiche/build.gradle.kts, the JNI shim source, the header). The same action keys every
+      # writer and reader of these caches (see .github/scripts/quiche-native-inputs.sh), so a commit that
+      # touches none of those inputs reuses the natives instead of recompiling quiche.
+      - name: Compute quiche native cache key
+        id: qkey
+        uses: ./.github/actions/quiche-native-key
+
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --quiet
 
@@ -277,13 +285,13 @@ jobs:
         uses: actions/cache@v6
         with:
           path: socket-quic-quiche/libs/quiche/linux-x64
-          key: quiche-linux-x64-v8-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/build.gradle.kts', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
+          key: quiche-linux-x64-v9-${{ steps.qkey.outputs.digest }}
 
       - name: Cache quiche Linux ARM64
         uses: actions/cache@v6
         with:
           path: socket-quic-quiche/libs/quiche/linux-arm64
-          key: quiche-linux-arm64-v8-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/build.gradle.kts', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
+          key: quiche-linux-arm64-v9-${{ steps.qkey.outputs.digest }}
 
       # Cache the cargo target/ trees for all four quiche cross-compile
       # targets (Linux x64, Linux arm64, Windows x64, Android arm64). The
@@ -305,8 +313,8 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: socket-quic-quiche/build/quiche
-          key: quiche-cargo-target-v3-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/build.gradle.kts', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
-          restore-keys: quiche-cargo-target-v3-
+          key: quiche-cargo-target-v4-${{ steps.qkey.outputs.digest }}
+          restore-keys: quiche-cargo-target-v4-
 
       - name: Cache Cargo registry
         uses: actions/cache@v6
@@ -760,6 +768,26 @@ jobs:
         with:
           test-launcher-jdk: "25"
 
+      # This job is the single Linux writer of the PR-scoped build cache (.github/actions/pr-build-cache,
+      # pull_request runs only). Main's gradle-linux entry has build-cache-1 pruned out
+      # (gradle-cache-prune) and the PR changes task keys anyway, so without this every run compiled
+      # cold (968 tasks, 104 from cache).
+      - name: Restore the PR's Gradle build cache
+        id: pr_bc
+        uses: ./.github/actions/pr-build-cache
+        with:
+          mode: restore
+          os: linux
+          lane: linux-checks
+
+      # The seven defaults on the run-to-completion core's production sources. The self-test plants one
+      # violation of each kind first, so a checker that stopped catching one fails here.
+      - name: Seven defaults in the QUIC core
+        run: |
+          set -euo pipefail
+          java scripts/CoreDefaultsCheck.java --selftest
+          java scripts/CoreDefaultsCheck.java --rules=all .
+
       # Flight Recorder ring on every Gradle test worker of this job (JNI backend, JDK 25): dumped
       # only if a test fails or a worker hangs, uploaded only on failure. Traced lanes on Linux:
       # this one and the quiche-jvm FFM leg; the quiche-jvm JNI, JDK 17 and JDK 25 legs stay UNTRACED.
@@ -810,6 +838,18 @@ jobs:
           done
           echo "::error::Android SDK license acceptance failed after $attempts attempts"
           exit 1
+
+      # The run-to-completion core is shared by the JVM and Android (minSdk 28). A JDK 9+ API it calls links on
+      # the JVM and throws NoSuchMethodError on an older Android, so every java.*/javax.* reference in its
+      # compiled classes must exist in android-28's android.jar. The self-test plants a Path.of reference.
+      - name: Core uses only APIs present on Android API 28
+        run: |
+          set -euo pipefail
+          printf 'y\n%.0s' $(seq 1 10) | sdkmanager "platforms;android-28"
+          jar="$ANDROID_HOME/platforms/android-28/android.jar"
+          java scripts/AndroidApiCheck.java --selftest "$jar"
+          ./gradlew :socket-quic-quiche:compileKotlinJvm
+          java scripts/AndroidApiCheck.java "$jar" socket-quic-quiche/build/classes/kotlin/jvm/main/com/ditchoom/socket/quic/core
 
       # Harness-backed tests use the in-repo Docker stack (`docker compose up`
       # is wired via Gradle's harnessUp/harnessDown tasks). The TLS server
@@ -910,6 +950,26 @@ jobs:
           echo "io_uring_disabled: $(cat /proc/sys/kernel/io_uring_disabled 2>/dev/null || echo 'absent (kernel < 6.6)')"
           grep -E '^(MemTotal|MemAvailable|Mlocked|Committed_AS)' /proc/meminfo || true
           echo "nproc: $(nproc)"
+
+      # Compile and link everything the next step runs, then save the PR's build cache before the
+      # tests: a push to the PR cancels the run in flight (concurrency), and a save placed after the
+      # test run never executed whenever a push landed during the tests, so every run stayed cold.
+      - name: Compile and link the Linux checks test binaries
+        id: compile_checks
+        timeout-minutes: 45
+        run: >-
+          .github/scripts/gradle-retry.sh testClasses linuxX64TestBinaries
+          --no-configuration-cache ${{ inputs.gradle-args }}
+
+      # The single Linux writer of the PR-scoped build cache, and only when its exact key missed.
+      - name: Save the PR's Gradle build cache
+        if: ${{ steps.compile_checks.outcome == 'success' }}
+        uses: ./.github/actions/pr-build-cache
+        with:
+          mode: save
+          os: linux
+          lane: linux-checks
+          restored-exact: ${{ steps.pr_bc.outputs.exact-hit }}
 
       - name: Run checks and tests
         timeout-minutes: 45
@@ -1223,6 +1283,7 @@ jobs:
           path: |
             **/build/reports/tests/
             **/build/test-results/
+            **/build/core-flight/
             **/hs_err_pid*.log
             **/replay_pid*.log
             /tmp/cores/core.*
@@ -1404,6 +1465,10 @@ jobs:
             jfr: "false"
     steps:
       - uses: actions/checkout@v7
+      # Samples the runner's I/O and CPU stalls and records the job's start, so a job that spends half its
+      # budget in setup leaves evidence of the host being slow, and the hang dump below fits in the budget.
+      - name: Sample the runner
+        run: .github/scripts/runner-health.sh start
       # konan: false — this lane is JVM-only (see -PlinuxTargets=false on the test step), so restoring
       # the ~450MB Kotlin/Native toolchain would be download cost for nothing. A second JDK only on
       # the legs whose Test task runs on a 17 or 25 launcher.
@@ -1498,8 +1563,10 @@ jobs:
           SOCKET_REQUIRE_ALL_TESTS: "1"
         run: |
           # A run still going at 20 of its 24 minutes is hung (a healthy one takes under 10): print every
-          # test worker's threads into this log before the step lid kills them without a trace.
-          ( sleep 1200
+          # test worker's threads into this log before the step lid kills them without a trace. The wait
+          # is shortened to what is left of the job's 40 minutes, so a slow setup cannot let the job
+          # timeout arrive first.
+          ( sleep "$(.github/scripts/runner-health.sh hang-wait 1200 40)"
             for p in $(pgrep -f GradleWorkerMain); do echo "===== HANG: jstack pid=$p ====="; jstack -l "$p" || true; done
           ) &
           HANG_DUMP=$!
@@ -1518,6 +1585,11 @@ jobs:
             .github/scripts/gradle-retry.sh :socket-quic-quiche:jvmTest ${{ matrix.leg.args }} -PlinuxTargets=false \
               --continue --no-configuration-cache ${{ inputs.gradle-args }}
           fi
+
+      - name: Runner health
+        if: ${{ always() }}
+        continue-on-error: true
+        run: .github/scripts/runner-health.sh report
 
       # Distinct from the harness OK/SKIP audit below: that one counts whether the QUIC *client*
       # reached the live harness, this one counts test bodies that never executed at all.
@@ -1690,6 +1762,7 @@ jobs:
           path: |
             **/build/reports/tests/
             **/build/test-results/
+            **/build/core-flight/
             **/hs_err_pid*.log
             **/replay_pid*.log
             /tmp/cores/core.*
@@ -1809,6 +1882,7 @@ jobs:
           path: |
             **/build/reports/tests/
             **/build/test-results/
+            **/build/core-flight/
             **/hs_err_pid*.log
             **/replay_pid*.log
           retention-days: 90
@@ -1925,6 +1999,9 @@ jobs:
       # still RUN in "Run checks and tests" (now the `checks-tests` job); only
       # socket-quic-quiche's native run relocated (it's the allocation-heavy quiche
       # cinterop suite, grouped with the fuzz/ASAN lanes in the integration job).
+      # The quiche link passes --allow-multiple-definition, so a second libcrypto.a would link without error.
+      # LinuxOneBoringSslTests (in the socket-quic-quiche test binary linked here) runs quiche's BoringSSL and
+      # buffer-crypto's SHA-256/HKDF in one process and crashes or disagrees if two copies are present.
       - name: Link native test binaries (x64 + arm64) for integration jobs
         run: >-
           .github/scripts/gradle-retry.sh
@@ -2293,6 +2370,19 @@ jobs:
           mode: collect
           artifact-name: native-crash-linux-x64
 
+      # What a failed core test wrote: the flight recording of each connection it touched (client and server),
+      # one .trace file per connection, named for the test. The test binary's working directory is the repo
+      # root, so they land in build/core-flight.
+      - name: Upload core flight recordings (on failure)
+        if: ${{ failure() || cancelled() }}
+        continue-on-error: true # an upload hiccup must not mask the failure it was capturing
+        uses: actions/upload-artifact@v7
+        with:
+          name: core-flight-linux-x64-native
+          path: build/core-flight/
+          retention-days: 14
+          if-no-files-found: ignore
+
       - name: Bring down test harness
         if: always()
         run: cd test-harness && docker compose down -v
@@ -2478,6 +2568,19 @@ jobs:
           mode: collect
           artifact-name: native-crash-linux-arm64
 
+      # What a failed core test wrote: the flight recording of each connection it touched (client and server),
+      # one .trace file per connection, named for the test. The test binary's working directory is the repo
+      # root, so they land in build/core-flight.
+      - name: Upload core flight recordings (on failure)
+        if: ${{ failure() || cancelled() }}
+        continue-on-error: true # an upload hiccup must not mask the failure it was capturing
+        uses: actions/upload-artifact@v7
+        with:
+          name: core-flight-linux-arm64-native
+          path: build/core-flight/
+          retention-days: 14
+          if-no-files-found: ignore
+
       - name: Bring down test harness
         if: always()
         run: cd test-harness && docker compose down -v
@@ -2625,6 +2728,7 @@ jobs:
           path: |
             **/build/reports/tests/
             **/build/test-results/
+            **/build/core-flight/
             **/hs_err_pid*.log
             **/replay_pid*.log
             /tmp/cores/core.*

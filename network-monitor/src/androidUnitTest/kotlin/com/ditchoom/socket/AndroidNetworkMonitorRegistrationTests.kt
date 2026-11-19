@@ -3,7 +3,6 @@ package com.ditchoom.socket
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkRequest
-import android.os.Build
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -13,8 +12,6 @@ import org.robolectric.annotation.Implementation
 import org.robolectric.annotation.Implements
 import org.robolectric.shadows.ShadowConnectivityManager
 import kotlin.test.assertEquals
-import kotlin.test.assertNotNull
-import kotlin.test.assertTrue
 
 /**
  * Pins *which* `ConnectivityManager` registration the monitor uses, because that choice — not the
@@ -53,31 +50,6 @@ class AndroidNetworkMonitorRegistrationTests {
                 0,
                 RecordingConnectivityManager.requestRegistrations,
                 "registering an INTERNET NetworkRequest on O+ reintroduces the VPN-teardown bug",
-            )
-        } finally {
-            monitor.close()
-        }
-    }
-
-    @Test
-    @Config(sdk = [Build.VERSION_CODES.N_MR1])
-    fun belowOTheMonitorFallsBackToAnInternetRequest() {
-        // registerDefaultNetworkCallback exists from N, but only O documents that onAvailable is
-        // "always immediately followed by a call to onCapabilitiesChanged" — the ordering this monitor
-        // relies on to publish availability and identity together. Below O it uses the request path.
-        RecordingConnectivityManager.reset()
-
-        val monitor = NetworkMonitor.android(context)
-        try {
-            assertEquals(0, RecordingConnectivityManager.defaultCallbackRegistrations)
-            assertEquals(1, RecordingConnectivityManager.requestRegistrations)
-            val request = assertNotNull(RecordingConnectivityManager.lastRequest)
-            // NetworkRequest.hasCapability is API 30+, so it does not exist on the API level this test
-            // simulates; toString() is the only way to inspect the request here. Matching on the
-            // platform's own capability name, not a string we invented.
-            assertTrue(
-                request.toString().contains("INTERNET"),
-                "the fallback request must still require INTERNET, was: $request",
             )
         } finally {
             monitor.close()

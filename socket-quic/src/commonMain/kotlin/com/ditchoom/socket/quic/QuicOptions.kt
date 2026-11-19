@@ -111,10 +111,19 @@ data class FlowControl(
     val initialMaxStreamsBidi: Long = 100,
     /** Maximum concurrent unidirectional streams the peer may open. */
     val initialMaxStreamsUni: Long = 100,
-    /** Maximum connection-level flow control window (bytes). Null uses quiche default. */
-    val maxConnectionWindow: Long? = null,
-    /** Maximum stream-level flow control window (bytes). Null uses quiche default. */
-    val maxStreamWindow: Long? = null,
+    /**
+     * The ceiling the connection-level receive window auto-tunes up to (bytes). The window starts at
+     * [initialMaxData] and grows only while the peer keeps it full, so this is memory a connection can
+     * commit, not memory it does commit. Credit is extended after half the window is consumed, so a path
+     * sustains at most `maxConnectionWindow / 2` per round trip.
+     */
+    val maxConnectionWindow: Long = DEFAULT_MAX_CONNECTION_WINDOW,
+    /**
+     * The ceiling a stream's receive window auto-tunes up to (bytes), starting at the stream's initial
+     * limit. A single stream sustains at most `maxStreamWindow / 2` per round trip, so the default
+     * carries a 2.5 GbE link at 50 ms.
+     */
+    val maxStreamWindow: Long = DEFAULT_MAX_STREAM_WINDOW,
 ) {
     init {
         require(initialMaxData >= 0) { "initialMaxData must be non-negative" }
@@ -123,8 +132,16 @@ data class FlowControl(
         require(initialMaxStreamDataUni >= 0) { "initialMaxStreamDataUni must be non-negative" }
         require(initialMaxStreamsBidi >= 0) { "initialMaxStreamsBidi must be non-negative" }
         require(initialMaxStreamsUni >= 0) { "initialMaxStreamsUni must be non-negative" }
-        require(maxConnectionWindow == null || maxConnectionWindow > 0) { "maxConnectionWindow must be positive" }
-        require(maxStreamWindow == null || maxStreamWindow > 0) { "maxStreamWindow must be positive" }
+        require(maxConnectionWindow > 0) { "maxConnectionWindow must be positive" }
+        require(maxStreamWindow > 0) { "maxStreamWindow must be positive" }
+    }
+
+    companion object {
+        /** 128 MiB: twice the stream ceiling, so two streams can run at their full window together. */
+        const val DEFAULT_MAX_CONNECTION_WINDOW: Long = 128L * 1024 * 1024
+
+        /** 64 MiB: half of it per round trip is 32 MiB, which fills 80 % of a 2.5 GbE link at 50 ms. */
+        const val DEFAULT_MAX_STREAM_WINDOW: Long = 64L * 1024 * 1024
     }
 }
 
@@ -187,8 +204,12 @@ data class QuicOptions(
     val alpnProtocols: List<String>,
     /** Flow control limits. */
     val flowControl: FlowControl = FlowControl(),
-    /** Congestion control algorithm and per-algorithm options. */
-    val congestionControl: CongestionControl = CongestionControl.Cubic(),
+    /**
+     * Congestion control algorithm and per-algorithm options. [CongestionControl.Bbr2] by default: it holds
+     * its rate through the occasional loss of a delayed path, where CUBIC can stay at a few megabytes of
+     * window for seconds. [CongestionControl.Cubic] costs fewer retransmits on a shallow bottleneck queue.
+     */
+    val congestionControl: CongestionControl = CongestionControl.Bbr2,
     /** Send pacing configuration. */
     val pacing: Pacing = Pacing.Unlimited,
     /** Connection idle timeout. Zero means no timeout. */
@@ -418,8 +439,8 @@ data class QuicOptions(
      */
     val trace: QuicTraceCapture? = null,
     /**
-     * **Client-side**: the session this connection offers — [QuicResumption.None] for a full
-     * handshake, or a ticket an earlier connection received ([QuicScope.sessionTicket]), resumed with
+     * **Client-side**: the session this connection offers — [QuicResumption.None] for none of the
+     * app's own (the run-to-completion core then offers one [sessionStore] kept), or a ticket an earlier connection received ([QuicScope.sessionTicket]), resumed with
      * ([QuicResumption.ResumeWithEarlyData]) or without ([QuicResumption.Resume]) 0-RTT data. The
      * handshake's answer is [QuicScope.resumption].
      *
@@ -447,6 +468,18 @@ data class QuicOptions(
      * ([AppleTrustSource.SystemTrustStore], via Security.framework). Ignored on every other platform.
      */
     val appleTrustSource: AppleTrustSource = AppleTrustSource.SystemTrustStore,
+    /** How the run-to-completion core retransmits the handshake before it is confirmed. */
+    val handshakePacing: HandshakePacing = HandshakePacing.Adaptive(),
+    /** How long the run-to-completion core lets a handshake take before the connection ends. */
+    val handshakePolicy: HandshakePolicy = HandshakePolicy.Bounded(10.seconds),
+    /** How many datagrams one system call of the run-to-completion core's sockets may carry. */
+    val udpBatching: UdpBatching = UdpBatching.Newest,
+    /**
+     * **Client-side, run-to-completion core**: where the tickets servers issue are kept, so a reconnect to a server
+     * this process has talked to before resumes on its own while [resumption] is [QuicResumption.None]. This
+     * process's memory by default; [QuicSessionStore.NotKept] opts out. Ignored for the server role.
+     */
+    val sessionStore: QuicSessionStore = QuicSessionStore.Default,
 ) {
     init {
         require(alpnProtocols.isNotEmpty()) { "QUIC requires at least one ALPN protocol" }

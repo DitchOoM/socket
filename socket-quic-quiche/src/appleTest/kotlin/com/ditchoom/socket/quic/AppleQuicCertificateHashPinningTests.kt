@@ -15,7 +15,7 @@ import com.ditchoom.buffer.fromHexString
  * The five fixture tests need a build-generated `pinned*` fixture, and those are reachable only from a
  * cwd containing `testcerts/`. The two generated-certificate tests (`acceptsGeneratedPeerCertificate`,
  * `rejectsExpiredGeneratedPeerCertificate`) mint their certificate at runtime and need none.
- *  - **macosArm64/macosX64** — cwd is the repo/module dir, so all seven run for real. The three
+ *  - **macosArm64** — cwd is the repo/module dir, so all seven run for real. The three
  *    constraint-reject cases (`rejectsExpiredLeaf`, `rejectsOverlyLongValidityLeaf`,
  *    `rejectsNonP256KeyLeaf`) execute **only here** among the Apple targets.
  *  - **iOS simulator** — runs under `simctl spawn --standalone`, whose cwd has no `testcerts/`, so

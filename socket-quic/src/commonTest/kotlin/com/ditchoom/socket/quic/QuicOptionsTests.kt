@@ -198,9 +198,9 @@ class QuicOptionsTests {
     }
 
     @Test
-    fun defaultCongestionControl_isCubic() {
+    fun defaultCongestionControl_isBbr2() {
         val options = QuicOptions(alpnProtocols = listOf("h3"))
-        assertIs<CongestionControl.Cubic>(options.congestionControl)
+        assertIs<CongestionControl.Bbr2>(options.congestionControl)
     }
 
     @Test

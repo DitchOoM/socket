@@ -1,0 +1,27 @@
+name: "quiche native cache key"
+description: >-
+  Digest of every input of a quiche native binary (see .github/scripts/quiche-native-inputs.sh), for
+  the cache keys of the quiche natives. Every writer and reader of a quiche native cache takes its key
+  from this one action, so two keys can never be computed from different sets of files: the orphan
+  cache lineage of #338 was exactly that. Needs the repository checked out.
+inputs:
+  rust:
+    description: "true: also hash the installed `rustc --version` (rustc must already be on PATH)."
+    default: "false"
+outputs:
+  digest:
+    description: "16 hex characters."
+    value: ${{ steps.digest.outputs.digest }}
+runs:
+  using: "composite"
+  steps:
+    - id: digest
+      shell: bash
+      env:
+        WITH_RUST: ${{ inputs.rust }}
+      run: |
+        if [ "$WITH_RUST" = true ]; then
+          bash "${GITHUB_WORKSPACE}/.github/scripts/quiche-native-inputs.sh" --rust
+        else
+          bash "${GITHUB_WORKSPACE}/.github/scripts/quiche-native-inputs.sh"
+        fi

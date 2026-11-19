@@ -1,4 +1,4 @@
-// A standalone build (not part of the main Gradle build): a minimal Android APP with minSdk 24 that
+// A standalone build (not part of the main Gradle build): a minimal Android APP with minSdk 28 that
 // depends on every library module an Android user consumes, resolved from the PUBLISHED artifacts.
 // See build.gradle.kts for what it guards.
 pluginManagement {

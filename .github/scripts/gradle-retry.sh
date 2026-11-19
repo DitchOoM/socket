@@ -52,6 +52,8 @@ plugin_failure="Plugin Repositories \(could not resolve plugin artifact '"
 transient+="|${plugin_failure}"
 # Prints what the plugin portal answers for each plugin marker the failed build could not resolve:
 # status, remote address and timings, or curl's own error (timeout, DNS, TLS). Failure path only.
+# The portal answers 303 and sends Gradle on to Maven Central, which is where a refusal (403, 429) happens, and
+# Gradle's own message names no status; so the probe follows the redirect and reports the final host's answer.
 # GRADLE_RETRY_PROBE swaps curl out for tests/gradle-retry.test.sh.
 probe_plugin_portal() {
   local group name version url
@@ -59,8 +61,8 @@ probe_plugin_portal() {
     while IFS=: read -r group name version; do
       url="https://plugins.gradle.org/m2/${group//.//}/${name}/${version}/${name}-${version}.pom"
       echo "::warning::plugin portal probe for ${group}:${name}:${version}: GET ${url}"
-      ${GRADLE_RETRY_PROBE:-curl} -sS -o /dev/null --max-time 20 \
-        -w 'status=%{http_code} remote_ip=%{remote_ip} connect=%{time_connect}s total=%{time_total}s\n' "$url" 2>&1 ||
+      ${GRADLE_RETRY_PROBE:-curl} -sSL -o /dev/null --max-time 20 \
+        -w 'status=%{http_code} final=%{url_effective} redirects=%{num_redirects} remote_ip=%{remote_ip} connect=%{time_connect}s total=%{time_total}s\n' "$url" 2>&1 ||
         echo "::warning::plugin portal probe failed (exit $?)"
     done
 }
@@ -75,15 +77,40 @@ fold_status_lines() {
        END { if (NR > 0) print line }' "$1"
 }
 
+# Gradle caches a repository's "not found" answer, so a retry after an unresolved plugin re-asks every
+# repository (--refresh-dependencies) instead of re-reading the first attempt's answer. It also runs with
+# --stacktrace: Gradle puts the cause (the HTTP status, the timeout) only in the stack trace.
+# `${extra[@]+...}` keeps bash 3.2 (macOS) happy under `set -u` while the array is empty.
+extra=()
+# Lists what the Gradle cache holds for each plugin the failed build could not resolve, so a cached
+# answer is visible in the log instead of inferred. Failure path only.
+show_cached_plugin_entries() {
+  local group name version dir
+  sed -n "s/.*could not resolve plugin artifact '\([^']*\)'.*/\1/p" "$log" | sort -u |
+    while IFS=: read -r group name version; do
+      for dir in "${GRADLE_USER_HOME:-$HOME/.gradle}"/caches/modules-2/metadata-*/descriptors/"$group"/"$name"/"$version"; do
+        [ -d "$dir" ] || continue
+        echo "::warning::cached resolution of ${group}:${name}:${version}: $(find "$dir" -type f -exec ls -l {} + 2>&1 | tr '\n' ';')"
+      done
+    done
+}
+
 for i in $(seq 1 "$attempts"); do
-  if ./gradlew "$@" 2>&1 | tee "$log"; then
+  if ./gradlew "$@" ${extra[@]+"${extra[@]}"} 2>&1 | tee "$log"; then
     exit 0
   fi
-  if ! fold_status_lines "$log" | grep -qE "$transient"; then
+  # Folded once: piping into `grep -q` under pipefail fails the pipeline when grep exits before awk
+  # finishes writing, which would read a transient failure as non-transient.
+  folded="$(fold_status_lines "$log")"
+  if ! grep -qE "$transient" <<<"$folded"; then
     echo "::error::gradle failed for a non-transient reason — not retrying. See the output above."
     exit 1
   fi
-  if fold_status_lines "$log" | grep -qE "$plugin_failure"; then probe_plugin_portal; fi
+  if grep -qE "$plugin_failure" <<<"$folded"; then
+    probe_plugin_portal
+    show_cached_plugin_entries
+    extra=(--refresh-dependencies --stacktrace)
+  fi
   if [ "$i" -lt "$attempts" ]; then
     backoff=$((i * backoff_unit))
     echo "::warning::gradle hit a transient repository failure (attempt $i/$attempts); retrying in ${backoff}s. See issue #427 for why this job talks to Maven Central at all."

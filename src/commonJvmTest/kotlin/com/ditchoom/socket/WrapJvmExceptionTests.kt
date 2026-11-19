@@ -212,12 +212,12 @@ class WrapJvmExceptionTests {
     // ==================== DNS resolution (JvmHostResolver) ====================
 
     @Test
-    fun jvmResolver_unknownHost_isAFailedAnswerCarryingTheJdkCause() =
+    fun jvmResolver_unknownHost_isAFailedAnswerNamingNotFound() =
         runTestNoTimeSkipping {
             val answer = HostResolver.platform().resolve("this.host.does.not.exist.invalid")
             val failed = assertIs<Resolution.Failed>(answer)
             assertEquals("this.host.does.not.exist.invalid", failed.host)
-            assertIs<java.net.UnknownHostException>(failed.cause)
+            assertEquals(ResolveFailure.NotFound, failed.why)
         }
 
     // ==================== asyncIOIntHandler wrapping ====================

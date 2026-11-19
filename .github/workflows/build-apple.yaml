@@ -2,7 +2,7 @@ name: "Build & Test (Apple)"
 
 # FAN-OUT SHAPE (was one ~32-43 minute serial job):
 #
-#   natives ──┬── kn-tests (matrix: macos-x64 | ios-sim | other-sims | device-compile)
+#   natives ──┬── kn-tests (matrix: ios-sim | other-sims | device-compile)
 #             ├── jvm-tests (matrix: JNI | FFM | JDK 25 / FFM)
 #             ├── link ── integration-macos-arm64
 #             └── publish
@@ -144,12 +144,21 @@ jobs:
       - name: Show pinned version
         run: echo "Building version ${ORG_GRADLE_PROJECT_version} (pinned for the whole run)"
 
-      # All five Apple Rust targets the quiche static libs are built for (macOS x2 + iOS device/sim-arm64/
-      # sim-x64). Pre-installing them here means the Gradle build step doesn't have to.
+      # The Rust targets the quiche libs are built for: macOS arm64 (K/N + JVM), macOS x86_64 (the JVM
+      # native only), iOS device and iOS simulator arm64. Pre-installing them here means the Gradle build
+      # step doesn't have to.
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin,aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
+          targets: aarch64-apple-darwin,x86_64-apple-darwin,aarch64-apple-ios,aarch64-apple-ios-sim
+
+      # One digest of the inputs of a quiche native binary (the quiche pins, the native-input regions of
+      # socket-quic-quiche/build.gradle.kts, the JNI shim source, the header). The same action keys every
+      # writer and reader of these caches (see .github/scripts/quiche-native-inputs.sh), so a commit that
+      # touches none of those inputs reuses the natives instead of recompiling quiche.
+      - name: Compute quiche native cache key
+        id: qkey
+        uses: ./.github/actions/quiche-native-key
 
       - name: Cache Cargo registry
         uses: actions/cache@v6
@@ -169,9 +178,11 @@ jobs:
       # built from a DIFFERENT quiche source patch — exactly the #260/#263 bug where a pre-caller-clock
       # dylib (missing quiche_set_virtual_time_nanos) satisfied the marker and the JNI shim failed to link.
       # An exact-key miss must force a clean rebuild; cargo warm-start still comes from the cargo-target cache.
-      # Restore only: cache-warm-apple writes this key on main. A copy per pull-request ref (95 MB each)
-      # crowded the 10 GB cache; a pull request that changes the quiche build rebuilds these on each push.
+      # cache-warm-apple writes this key on main. A pull request saves its own copy (below) only when its
+      # quiche build inputs differ from main's, so only a pull request that changes the quiche build holds
+      # one (about 95 MB, deleted with the pull request's caches when it closes).
       - name: Restore quiche Apple native libs
+        id: restore_apple_natives
         uses: actions/cache/restore@v6
         with:
           path: |
@@ -179,11 +190,10 @@ jobs:
             socket-quic-quiche/libs/quiche/macos-x64/lib
             socket-quic-quiche/libs/quiche/ios-arm64/lib
             socket-quic-quiche/libs/quiche/ios-simulator-arm64/lib
-            socket-quic-quiche/libs/quiche/ios-x64/lib
-          key: quiche-apple-v3-${{ hashFiles('gradle/libs.versions.toml', 'socket-quic-quiche/build.gradle.kts', 'socket-quic-quiche/src/jni/quiche_jni.c') }}
+          key: quiche-apple-v4-${{ steps.qkey.outputs.digest }}
 
-      # Build every Apple quiche native lib. buildQuicheAppleStaticLibs makes the macOS dylib+.a (both
-      # arches) + the three iOS static libs (vendored BoringSSL, build.rs patched for the arm64 iOS
+      # Build every Apple quiche native lib. buildQuicheAppleStaticLibs makes the macOS dylib+.a (arm64)
+      # + the two iOS static libs (vendored BoringSSL, build.rs patched for the arm64 iOS
       # simulator); buildPublishedMacosQuicheNatives makes the JNI shim for BOTH macOS arches — the
       # release injects these macos-*/lib dirs into the JVM jar, so a host-arch-only shim shipped
       # macos-x64 without libquiche_jni.dylib (4.19.0-4.21.0). All skip cargo on a marker/cache hit.
@@ -200,11 +210,24 @@ jobs:
         run: |
           set -euo pipefail
           missing=0
-          for d in macos-arm64 macos-x64 ios-arm64 ios-simulator-arm64 ios-x64; do
+          for d in macos-arm64 ios-arm64 ios-simulator-arm64; do
             f="socket-quic-quiche/libs/quiche/$d/lib/libquiche.a"
             if [ ! -f "$f" ]; then echo "::error::missing $f"; missing=1; else echo "ok: $f"; fi
           done
           [ "$missing" = 0 ] || { echo "::error::quiche Apple static libs missing — the build step failed."; exit 1; }
+
+      # The Apple natives sit on the iOS shard's critical path (8-9 min to build), so a pull request that
+      # changes the quiche build keeps them for its next push instead of rebuilding them every run.
+      - name: Save quiche Apple native libs for this pull request
+        if: ${{ github.event_name == 'pull_request' && steps.restore_apple_natives.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            socket-quic-quiche/libs/quiche/macos-arm64/lib
+            socket-quic-quiche/libs/quiche/macos-x64/lib
+            socket-quic-quiche/libs/quiche/ios-arm64/lib
+            socket-quic-quiche/libs/quiche/ios-simulator-arm64/lib
+          key: quiche-apple-v4-${{ steps.qkey.outputs.digest }}
 
       # ⚠️ include-hidden-files IS LOAD-BEARING — do not drop it.
       # The consumers skip their cargo builds via `onlyIf { !markerFile.exists() || ... }`, and every
@@ -281,7 +304,7 @@ jobs:
 
   # ── Stage 2a: Kotlin/Native test shards ──────────────────────────────────────────────────────
   # Task names are UNQUALIFIED (no leading colon) so Gradle runs them in every subproject that has
-  # them — a leading-colon `:macosX64Test` would run only the ROOT project's test and silently skip
+  # them — a leading-colon `:macosArm64Test` would run only the ROOT project's test and silently skip
   # socket-quic-quiche / socket-http3 / socket-webtransport (a false green). The full QUIC suites are:
   #   - socket-quic-quiche AppleQuicheEngineLoopbackTest (quiche client over NW-UDP <-> dual-stack
   #     IPv6 POSIX server)
@@ -312,17 +335,6 @@ jobs:
       fail-fast: false
       matrix:
         shard:
-          # ⚠️ The macOS x64 suite is split with `-x`, NOT with a hand-kept list of qualified
-          # `:module:macosX64Test` task paths, and that choice is load-bearing. An explicit list is
-          # exactly the false-green this file already warns about above: add a module (or an Apple
-          # target to an existing one) and its tests silently stop running, with everything green.
-          # `-x` inverts the failure mode — the unqualified task still means "every subproject that
-          # has one", so a new module automatically lands in the `rest` shard. The only thing the
-          # split can get wrong is running something twice, which is loud and cheap.
-          #
-          # socket-quic-quiche is peeled off because it carries the real QUIC loopback suites and
-          # dominates the lane; the two together were 827s of a 864s job before this split.
-          #
           # `requireAllTests` turns a skipped test into a hard failure on the lanes whose first
           # inventory came back empty (see the skip-inventory step). It is deliberately absent from
           # the three simulator shards, which still legitimately skip.
@@ -343,30 +355,44 @@ jobs:
           # So setting requireAllTests: "1" here today would convert 22 correct, documented skips into
           # a permanently red lane — the SkipGate docs' exact "a gate that cannot be satisfied is not
           # a gate". It goes on when #81 lands and the inventory reads zero, and not before.
-          - name: "macOS x64 (quiche)"
-            tasks: ":socket-quic-quiche:macosX64Test"
-            requireAllTests: "1"
-          - name: "macOS x64 (all other modules)"
-            tasks: "macosX64Test -x :socket-quic-quiche:macosX64Test"
-            requireAllTests: "1"
           # Booted, not standalone: the shard boots an iPhone simulator and the tests spawn into it,
           # so the network daemons the WebTransport and QUIC-harness suites need are reachable.
           # requireAllTests stays off until this shard's skip inventory reads zero.
-          - name: "iOS simulator"
-            tasks: "iosSimulatorArm64Test"
+          #
+          # The iOS simulator suite is TWO shards that together run exactly what one task did,
+          # `iosSimulatorArm64Test` over every module. The quiche module (about 7 of the ~11 minutes of
+          # test execution, and the longest link) runs alone; the other shard runs the same task with
+          # that one module excluded, so a module added later lands in "iOS simulator" without anyone
+          # editing this matrix. Measured (run 43900949614): one shard took 45 minutes, 27 of them
+          # compiling and linking ten test binaries one after another, and was the run's critical path.
+          - name: "iOS simulator (quiche)"
+            tasks: ":socket-quic-quiche:iosSimulatorArm64Test"
             ring: "sample"
-            linkFirst: "linkDebugTestIosSimulatorArm64"
+            linkFirst: ":socket-quic-quiche:linkDebugTestIosSimulatorArm64"
             testArgs: "--max-workers=1 --continue"
             bootSimulator: "1"
+            prCache: "ios-sim-quiche"
+            prCacheSave: "1"
+          - name: "iOS simulator"
+            tasks: "iosSimulatorArm64Test -x :socket-quic-quiche:iosSimulatorArm64Test"
+            ring: "sample"
+            linkFirst: "linkDebugTestIosSimulatorArm64 -x :socket-quic-quiche:linkDebugTestIosSimulatorArm64"
+            testArgs: "--max-workers=1 --continue"
+            bootSimulator: "1"
+            # The one Apple job that SAVES the PR-scoped build cache (the pr-build-cache action);
+            # the other compiling shards restore it.
+            prCache: "ios-sim"
+            prCacheSave: "1"
           # tvOS and watchOS split apart: together they were 791-833s, the second-longest lane.
           # Neither has a quiche target (→ UnsupportedQuicEngine), so their QUIC suites skip
           # cleanly and what remains is mostly compile time, which parallelises well.
           - name: "tvOS simulator"
             tasks: "tvosSimulatorArm64Test"
+            prCache: "ios-sim"
           - name: "watchOS simulator"
             tasks: "watchosSimulatorArm64Test"
-          # ktlint gets its OWN lane. It rode the macOS x64 lane, then moved to the compile lane
-          # when that was split — and took the bottleneck with it both times, because it is ~400s
+            prCache: "ios-sim"
+          # ktlint gets its OWN lane. It is ~400s
           # of work in its own right (measured: the ILP32 lane went 414s -> 813s the moment ktlint
           # landed on it). It depends on no native artifact and no test, so it parallelises freely.
           - name: "ktlint"
@@ -377,14 +403,10 @@ jobs:
           - name: "ABI (binary compatibility)"
             tasks: "checkKotlinAbi"
           # Compile (can't run — no device) the test sources for the Apple *device* targets that
-          # nothing else covers. The simulator lanes above are all 64-bit, so they cannot catch an
-          # ILP32 regression: watchosArm64 is arm64_32, where K/N maps `ssize_t` to Int while every
-          # other Apple target maps it to Long. A width-dependent comparison therefore compiles
-          # clean on macOS/iOS/tvOS and on the watchOS *simulator*, and fails only here — exactly
-          # how socket-udp's HostLoopback.apple.kt was broken for watchosArm64 while looking fine
-          # everywhere (#280). Cheap: compile only, no link, no run.
+          # nothing else covers. Cheap: compile only, no link, no run.
           - name: "device-target compile (ILP32 guard)"
-            tasks: "compileTestKotlinWatchosArm64 compileTestKotlinTvosArm64 compileTestKotlinIosArm64"
+            tasks: "compileTestKotlinWatchosDeviceArm64 compileTestKotlinTvosArm64 compileTestKotlinIosArm64"
+            prCache: "ios-sim"
     steps:
       - uses: actions/checkout@v7
       # The marker every failure-capture window starts from, and a hang watchdog: at 52 minutes (the
@@ -398,15 +420,30 @@ jobs:
           hang-budget-minutes: "52"
           kill-after-dump: "true"
           # Timeline ring of the test binary: `sample` snapshots on the iOS simulator shard only (its
-          # test.kexe runs as a host process), none on the macOS x64 / tvOS / watchOS / ktlint / ABI
+          # test.kexe runs as a host process), none on the tvOS / watchOS / ktlint / ABI
           # shards, which stay uninstrumented.
           trace-ring: ${{ matrix.shard.ring }}
       - uses: ./.github/actions/apple-quiche-env
         id: quiche_env
 
-      # Picks the newest available iPhone, boots it and waits for boot to finish; the root build
-      # reads IOS_SIMULATOR_BOOTED_UDID and runs the iOS tests inside it (standalone = false).
-      - name: Boot an iOS simulator
+      # The PR's own build cache on top of the base restore above (pull_request runs only): this PR's
+      # klibs from its previous run, so a push recompiles what it changed instead of the whole
+      # Kotlin/Native graph (iOS shard: 351 of 354 tasks executed cold, 35 min). Read by every shard
+      # that compiles; written by the iOS shard alone (the save step below).
+      - name: Restore the PR's Gradle build cache
+        id: pr_bc
+        if: ${{ matrix.shard.prCache != '' }}
+        uses: ./.github/actions/pr-build-cache
+        with:
+          mode: restore
+          os: macos
+          lane: ${{ matrix.shard.prCache }}
+
+      # Picks the newest available iPhone and starts booting it; the boot runs while the test binaries
+      # compile, and "Wait for the iOS simulator" below blocks until it has finished, right before the
+      # tests. The root build reads IOS_SIMULATOR_BOOTED_UDID and runs the iOS tests inside it
+      # (standalone = false).
+      - name: Start booting an iOS simulator
         if: ${{ matrix.shard.bootSimulator == '1' }}
         run: |
           set -euo pipefail
@@ -418,8 +455,6 @@ jobs:
             exit 1
           fi
           xcrun simctl boot "$UDID" || true # already booted is fine
-          xcrun simctl bootstatus "$UDID" -b
-          echo "booted $(xcrun simctl list devices | grep "$UDID")"
           echo "IOS_SIMULATOR_BOOTED_UDID=$UDID" >> "$GITHUB_ENV"
 
       # Every test binary is linked BEFORE any simulator test starts, in its own Gradle invocation.
@@ -436,11 +471,32 @@ jobs:
       # UNQUALIFIED, like the test task, so a new module's binary is linked here without a list.
       # tvOS/watchOS have not shown these stalls and were not measured, so they keep one invocation.
       - name: Compile and link the ${{ matrix.shard.name }} test binaries
+        id: link_first
         if: ${{ matrix.shard.linkFirst != '' }}
         run: >-
           .github/scripts/gradle-retry.sh
           ${{ matrix.shard.linkFirst }}
           --no-configuration-cache ${{ inputs.gradle-args }}
+
+      # The single Apple writer of the PR-scoped build cache, and only when its exact key missed.
+      # It runs right after the compile, not after the tests: a push to the PR cancels the run in
+      # flight (concurrency), and a save placed behind the ~10 min test run never executed whenever
+      # a push landed during the tests, so every run stayed cold.
+      - name: Save the PR's Gradle build cache
+        if: ${{ steps.link_first.outcome == 'success' && matrix.shard.prCacheSave == '1' }}
+        uses: ./.github/actions/pr-build-cache
+        with:
+          mode: save
+          os: macos
+          lane: ${{ matrix.shard.prCache }}
+          restored-exact: ${{ steps.pr_bc.outputs.exact-hit }}
+
+      - name: Wait for the iOS simulator to finish booting
+        if: ${{ matrix.shard.bootSimulator == '1' }}
+        run: |
+          set -euo pipefail
+          xcrun simctl bootstatus "$IOS_SIMULATOR_BOOTED_UDID" -b
+          echo "booted $(xcrun simctl list devices | grep "$IOS_SIMULATOR_BOOTED_UDID")"
 
       # `testArgs` is the iOS shard's `--max-workers=1 --continue`: one module's simulator tests at a
       # time. With the default workers, Gradle runs several modules' test binaries in the one booted
@@ -466,7 +522,7 @@ jobs:
       - uses: ./.github/actions/skip-inventory
         if: ${{ !cancelled() }}
 
-      # No cache saves here. The klib entry (`gradle-macos-kn-*`) and the Kotlin/Native toolchain
+      # No other cache saves here. The klib entry (`gradle-macos-kn-*`) and the Kotlin/Native toolchain
       # (`konan-macos-*`) are both written by native-deps-freshness.yaml's `cache-warm-apple`, a
       # scheduled run on main. This shard used to save both "on main", but on main it runs from
       # merged.yaml as `pull_request_target`, whose token cannot write caches: job 108256043120
@@ -500,6 +556,7 @@ jobs:
           path: |
             **/build/reports/tests/
             **/build/test-results/
+            **/build/core-flight/
             build/reports/ktlint/
           retention-days: 7
           if-no-files-found: ignore
@@ -663,6 +720,7 @@ jobs:
           path: |
             **/build/reports/tests/
             **/build/test-results/
+            **/build/core-flight/
             **/hs_err_pid*.log
             **/replay_pid*.log
           retention-days: 7
@@ -784,15 +842,11 @@ jobs:
           publishKotlinMultiplatformPublicationToMavenLocal
           publishIosArm64PublicationToMavenLocal
           publishIosSimulatorArm64PublicationToMavenLocal
-          publishIosX64PublicationToMavenLocal
           publishMacosArm64PublicationToMavenLocal
-          publishMacosX64PublicationToMavenLocal
           publishTvosArm64PublicationToMavenLocal
           publishTvosSimulatorArm64PublicationToMavenLocal
-          publishTvosX64PublicationToMavenLocal
-          publishWatchosArm64PublicationToMavenLocal
+          publishWatchosDeviceArm64PublicationToMavenLocal
           publishWatchosSimulatorArm64PublicationToMavenLocal
-          publishWatchosX64PublicationToMavenLocal
 
       - name: Upload Maven local artifacts
         id: upload_maven_local
@@ -830,7 +884,7 @@ jobs:
     # The shared QUIC suites keep the last events of every connection they open in a ring and attach
     # them to a failing test's report (socket-testsuite TraceRing.kt). Off by default because turning
     # the trace on wraps the connection's UDP channels, i.e. changes the code under test: on in THIS
-    # K/N lane (macOS arm64), off in the macOS x64, simulator, Linux native and JVM-FFM lanes.
+    # K/N lane (macOS arm64), off in the simulator, Linux native and JVM-FFM lanes.
     env:
       QUIC_TEST_TRACE_RING: "1"
     steps:
@@ -847,7 +901,7 @@ jobs:
           kill-after-dump: "true"
           # Time Profiler recording of the K/N test binary (last ~60 s), uploaded only on failure.
           # The only lane that records with xctrace: a sampling profiler perturbs timing, so the
-          # macOS x64 shards and the JVM lanes stay untraced.
+          # simulator shards and the JVM lanes stay untraced.
           trace-ring: xctrace
 
       # Restores each module's test.kexe to its <module>/build/bin/macosArm64/debugTest/ path
@@ -934,4 +988,17 @@ jobs:
           name: macos-arm64-test-log
           path: /tmp/macos-arm64.log
           retention-days: 7
+          if-no-files-found: ignore
+
+      # What a failed core test wrote: the flight recording of each connection it touched (client and server),
+      # one .trace file per connection, named for the test. The test binary's working directory is the repo
+      # root, so they land in build/core-flight.
+      - name: Upload core flight recordings (on failure)
+        if: ${{ failure() || cancelled() }}
+        continue-on-error: true # an upload hiccup must not mask the failure it was capturing
+        uses: actions/upload-artifact@v7
+        with:
+          name: core-flight-macos-arm64-native
+          path: build/core-flight/
+          retention-days: 14
           if-no-files-found: ignore

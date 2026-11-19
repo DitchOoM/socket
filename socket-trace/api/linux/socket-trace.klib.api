@@ -553,6 +553,19 @@ sealed interface com.ditchoom.socket.testkit.trace/TraceEvent { // com.ditchoom.
         final fun toString(): kotlin/String // com.ditchoom.socket.testkit.trace/TraceEvent.StreamLoss.toString|toString(){}[0]
     }
 
+    final class TimerFired : com.ditchoom.socket.testkit.trace/TraceEvent { // com.ditchoom.socket.testkit.trace/TraceEvent.TimerFired|null[0]
+        constructor <init>(kotlin.time/Duration) // com.ditchoom.socket.testkit.trace/TraceEvent.TimerFired.<init>|<init>(kotlin.time.Duration){}[0]
+
+        final val at // com.ditchoom.socket.testkit.trace/TraceEvent.TimerFired.at|{}at[0]
+            final fun <get-at>(): kotlin.time/Duration // com.ditchoom.socket.testkit.trace/TraceEvent.TimerFired.at.<get-at>|<get-at>(){}[0]
+
+        final fun component1(): kotlin.time/Duration // com.ditchoom.socket.testkit.trace/TraceEvent.TimerFired.component1|component1(){}[0]
+        final fun copy(kotlin.time/Duration = ...): com.ditchoom.socket.testkit.trace/TraceEvent.TimerFired // com.ditchoom.socket.testkit.trace/TraceEvent.TimerFired.copy|copy(kotlin.time.Duration){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.testkit.trace/TraceEvent.TimerFired.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.testkit.trace/TraceEvent.TimerFired.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.testkit.trace/TraceEvent.TimerFired.toString|toString(){}[0]
+    }
+
     final class TrafficSecretsRefused : com.ditchoom.socket.testkit.trace/TraceEvent { // com.ditchoom.socket.testkit.trace/TraceEvent.TrafficSecretsRefused|null[0]
         constructor <init>(kotlin.time/Duration, kotlin/String) // com.ditchoom.socket.testkit.trace/TraceEvent.TrafficSecretsRefused.<init>|<init>(kotlin.time.Duration;kotlin.String){}[0]
 

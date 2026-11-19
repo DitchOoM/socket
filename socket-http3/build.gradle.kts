@@ -41,18 +41,12 @@ kotlin {
         publishLibraryVariants("release")
     }
     jvm {
-        // Java 8 bytecode (v52) to match the base :socket / :socket-quic-quiche modules. The H3 codec
-        // is pure-Kotlin commonMain — no java.* API, so this is safe — and targeting 21 (the toolchain
-        // default) needlessly threw UnsupportedClassVersionError for JDK<21 consumers using HTTP/3 over
-        // the JNI backend. The android variant keeps JVM_17 above (dexed, unaffected).
-        compilerOptions.jvmTarget.set(JvmTarget.JVM_1_8)
-        // jvmTarget only stamps the class-file version; it does NOT restrict which JDK APIs are visible
-        // (the toolchain is 21). -Xjdk-release=8 gates the API surface to Java 8 — like javac --release 8
-        // — so a future post-8 java.* call becomes a compile error here instead of a NoSuchMethodError on
-        // a real JDK 8/11 runtime. Scoped to the SHIPPED main compilation; jvmTest runs on JDK 21 and is
-        // not published, so it is left unrestricted.
+        // Java 17 bytecode, the JVM floor shared by every module (the toolchain is 21).
+        compilerOptions.jvmTarget.set(JvmTarget.JVM_17)
+        // jvmTarget only stamps the class-file version; -Xjdk-release=17 also limits the visible JDK API to 17,
+        // so a newer java.* call fails to compile instead of failing on a JDK 17 runtime. Main compilation only.
         compilations.named("main").configure {
-            compileTaskProvider.configure { compilerOptions.freeCompilerArgs.add("-Xjdk-release=8") }
+            compileTaskProvider.configure { compilerOptions.freeCompilerArgs.add("-Xjdk-release=17") }
         }
     }
     js {
@@ -88,16 +82,12 @@ kotlin {
         // frameworks straight from that klib. tvOS/watchOS have no quiche target
         // (UnsupportedQuicEngine), so they link no quiche.
         macosArm64()
-        macosX64()
         iosArm64()
         iosSimulatorArm64()
-        iosX64()
         tvosArm64()
         tvosSimulatorArm64()
-        tvosX64()
-        watchosArm64()
+        watchosDeviceArm64()
         watchosSimulatorArm64()
-        watchosX64()
     }
 
     if (linuxTargets) {
@@ -176,7 +166,7 @@ android {
         manifest.srcFile("src/androidMain/AndroidManifest.xml")
     }
     defaultConfig {
-        minSdk = 24
+        minSdk = 28
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     namespace = "com.ditchoom.socket.http3"

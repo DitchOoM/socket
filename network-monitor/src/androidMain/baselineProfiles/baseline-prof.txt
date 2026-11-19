@@ -9,8 +9,6 @@ HSPLcom/ditchoom/socket/AndroidNetworkMonitor$callback$1;->onBlockedStatusChange
 HSPLcom/ditchoom/socket/AndroidNetworkMonitor$callback$1;->onCapabilitiesChanged(Landroid/net/Network;Landroid/net/NetworkCapabilities;)V
 HSPLcom/ditchoom/socket/AndroidNetworkMonitor$callback$1;->onLinkPropertiesChanged(Landroid/net/Network;Landroid/net/LinkProperties;)V
 HSPLcom/ditchoom/socket/AndroidNetworkMonitor;-><init>(Landroid/content/Context;)V
-HSPLcom/ditchoom/socket/AndroidNetworkMonitor;->acceptsUpdateFor(Landroid/net/Network;)Z
-HSPLcom/ditchoom/socket/AndroidNetworkMonitor;->access$acceptsUpdateFor(Lcom/ditchoom/socket/AndroidNetworkMonitor;Landroid/net/Network;)Z
 HSPLcom/ditchoom/socket/AndroidNetworkMonitor;->access$fold(Lcom/ditchoom/socket/AndroidNetworkMonitor;Landroid/net/Network;Landroid/net/NetworkCapabilities;)Lcom/ditchoom/socket/NetworkState;
 HSPLcom/ditchoom/socket/AndroidNetworkMonitor;->access$getCurrentCaps$p(Lcom/ditchoom/socket/AndroidNetworkMonitor;)Landroid/net/NetworkCapabilities;
 HSPLcom/ditchoom/socket/AndroidNetworkMonitor;->access$getCurrentNetwork$p(Lcom/ditchoom/socket/AndroidNetworkMonitor;)Landroid/net/Network;

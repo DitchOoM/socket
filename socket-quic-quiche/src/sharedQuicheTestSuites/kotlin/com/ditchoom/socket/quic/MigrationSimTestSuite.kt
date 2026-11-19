@@ -278,6 +278,41 @@ abstract class MigrationSimTestSuite {
         }
 
     /**
+     * A link change that lands before the reactor has taken its first look at the monitor is still a change.
+     *
+     * The connection was made on Wi-Fi. The monitor reports cellular before the reactor's coroutine has first
+     * run, which on a busy machine is a matter of scheduling and not of the network. The reactor must still
+     * know it was made on Wi-Fi, so the move to cellular migrates the connection instead of being taken for the
+     * link the connection began on.
+     */
+    @Test
+    fun aLinkChangeBeforeTheReactorFirstRunsStillMigrates() =
+        runTest {
+            val monitor = SimNetworkMonitor.on(WIFI)
+            wrapTestBody {
+                withMigrationSim(
+                    simEnv(),
+                    seed = 952_001L,
+                    probeImpairment = { PathImpairment(latency = DEFAULT_PATH_LATENCY) },
+                    quicOptions =
+                        migrationSimOptions(
+                            migration = MigrationPolicy.Automatic,
+                            networkMonitor = NetworkMonitorSource.Supplied(monitor),
+                        ),
+                ) {
+                    // No suspension since the reactor was launched: it has not run.
+                    monitor.setNetworkId(CELLULAR)
+                    val moved =
+                        withTimeoutOrNull(MIGRATION_AFTER_CONFIRMATION_WITHIN) {
+                            while (client.timeline.isEmpty()) delay(10.milliseconds)
+                        }
+                    assertEquals(Unit, moved, "the change to cellular must migrate the connection; traffic ${pipeTraffic()}")
+                    assertIs<MigrationResult.Succeeded>(client.timeline.first().result)
+                }
+            }
+        }
+
+    /**
      * A FIN that arrives on a retransmission of bytes the reader has already consumed still ends the
      * stream.
      *

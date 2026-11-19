@@ -21,7 +21,7 @@ import kotlin.concurrent.Volatile
  *   app stripped `NetworkMonitorInitializer` (androidx.startup) from its merged manifest
  * - **JVM desktop, JDK 21+**: FFM routing socket — `AF_NETLINK` on Linux, `PF_ROUTE` on macOS
  *   (event-driven); `NetworkInterface` polling on Windows
- * - **JVM desktop, JDK 8–20**: `NetworkInterface` polling (the base half of the multi-release JAR — no
+ * - **JVM desktop, JDK 17–20**: `NetworkInterface` polling (the base half of the multi-release JAR — no
  *   event-driven network-change API exists in the JDK before FFM)
  * - **Node.js**: `os.networkInterfaces()` polling; **browser JS**: `online`/`offline` (event-driven)
  * - **Linux native**: netlink sockets (event-driven)

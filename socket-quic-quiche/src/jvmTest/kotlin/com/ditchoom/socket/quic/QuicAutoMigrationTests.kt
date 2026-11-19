@@ -4,14 +4,17 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.Default
 import com.ditchoom.socket.quic.sim.SimNetworkMonitor
+import com.ditchoom.socket.quic.trace.QuicTraceCapture
 import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.transport.NetworkKind
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import java.util.concurrent.ConcurrentLinkedQueue
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -71,9 +74,57 @@ class QuicAutoMigrationTests {
         return acc.decodeToString()
     }
 
+    /**
+     * What a failure of [networkIdChangeAutoMigratesTheConnection] needs to say which cause it was: the client's
+     * connection and path states as they changed, quiche's spare destination ids and path table sampled while
+     * the connection lived, and the trace's migration attempts with their outcomes. Held in memory and written
+     * out only when the test fails.
+     */
+    private class FailureCapture {
+        private val lines = ConcurrentLinkedQueue<String>()
+        private val started = System.nanoTime()
+
+        fun note(what: String) {
+            lines += "+${(System.nanoTime() - started) / 1_000_000}ms $what"
+        }
+
+        fun dump(failure: Throwable) {
+            System.err.println(
+                "QuicAutoMigrationTests failure capture for $failure\n" + lines.joinToString("\n") { "  $it" },
+            )
+        }
+    }
+
+    /** Notes this connection's state and path state as they change, and quiche's spare ids and paths each second. */
+    private fun QuicScope.capturedInto(capture: FailureCapture) {
+        (this as? QuicConnection)?.let { connection -> launch { connection.state.collect { capture.note("client state $it") } } }
+        launch { pathState.collect { capture.note("client path $it") } }
+        val driver = (this as? QuicheBackedConnection)?.quicheDriver ?: return capture.note("no driver behind $this")
+        launch {
+            while (true) {
+                val sample =
+                    driver.inspect { api, conn ->
+                        val paths = api.connStats(conn)?.pathsCount ?: 0L
+                        "spareDcids=${api.connAvailableDcids(conn)} paths=" +
+                            (0 until paths).joinToString(" ") { i ->
+                                api.connPathStats(conn, i).let { "[$i state=${it?.validationState} active=${it?.active}]" }
+                            }
+                    }
+                capture.note(
+                    when (sample) {
+                        is Inspected.Read -> "quiche ${sample.value}"
+                        Inspected.ConnectionGone -> "quiche connection gone"
+                    },
+                )
+                delay(1.seconds)
+            }
+        }
+    }
+
     @Test
     fun networkIdChangeAutoMigratesTheConnection() =
         runBlocking(Dispatchers.IO) {
+            val capture = FailureCapture()
             try {
                 withTimeout(20.seconds) {
                     // Baseline link the client "connected on" — Wi-Fi. The reactor drops this as the
@@ -87,6 +138,8 @@ class QuicAutoMigrationTests {
                             idleTimeout = 10.seconds,
                             // QuicOptions.migration defaults to Automatic; inject the scriptable monitor.
                             networkMonitor = NetworkMonitorSource.Supplied(monitor),
+                            // Datagram lines are most of a trace and say nothing of why a migration did not happen.
+                            trace = QuicTraceCapture(sink = { e -> e.toString().let { if (" DGRAM_" !in it) capture.note("trace $it") } }),
                         )
                     val serverOptions =
                         QuicOptions(alpnProtocols = listOf("test"), verifyPeer = false, idleTimeout = 10.seconds)
@@ -114,6 +167,7 @@ class QuicAutoMigrationTests {
                             launch(Dispatchers.IO) {
                                 // Connect on 127.0.0.1 so the peer is reachable from the migrated path too.
                                 withQuicConnection("127.0.0.1", port, clientOptions, timeout = 10.seconds) {
+                                    capturedInto(capture)
                                     val stream = openStream()
                                     beforeEcho.complete(stream.echoOnce("before"))
 
@@ -133,6 +187,7 @@ class QuicAutoMigrationTests {
 
                             // Simulate a Wi-Fi → cellular handoff. This is the ONLY migration trigger —
                             // wireAutoMigration observes the networkId change and migrates the connection.
+                            capture.note("monitor flips to cellular")
                             monitor.setNetworkId(NetworkId.Link(NetworkKind.Cellular, 2L))
 
                             // Note the budget: unchanged from before this phase. The reactor applies no
@@ -156,6 +211,9 @@ class QuicAutoMigrationTests {
                 }
             } catch (e: UnsatisfiedLinkError) {
                 recordMissingNativeLib(QuicAutoMigrationTests::class, e)
+            } catch (e: Throwable) {
+                capture.dump(e)
+                throw e
             }
         }
 }

@@ -58,15 +58,22 @@ internal actual fun writeNativeSizeT(
     value: Int,
 ) {
     val bb = (buf.unwrapFully() as BaseJvmBuffer).byteBuffer
-    bb.order(ByteOrder.nativeOrder())
-    bb.putLong(0, value.toLong())
+    bb.putLong(0, nativeOrdered(bb, value.toLong()))
 }
 
 internal actual fun readNativeSizeT(buf: PlatformBuffer): Int {
     val bb = (buf.unwrapFully() as BaseJvmBuffer).byteBuffer
-    bb.order(ByteOrder.nativeOrder())
-    return bb.getLong(0).toInt()
+    return nativeOrdered(bb, bb.getLong(0)).toInt()
 }
+
+/**
+ * [value] as [bb] must put or get it for the bytes to be in native order. The buffer's own order is left alone: the
+ * buffer goes back to a pool whose next owner writes through it in the order it was made with.
+ */
+private fun nativeOrdered(
+    bb: java.nio.ByteBuffer,
+    value: Long,
+): Long = if (bb.order() == ByteOrder.nativeOrder()) value else java.lang.Long.reverseBytes(value)
 
 internal actual class PathAddressTable actual constructor() {
     // Concurrent: written on the receive loop (insert/evict) + the post-join close sweep, read by

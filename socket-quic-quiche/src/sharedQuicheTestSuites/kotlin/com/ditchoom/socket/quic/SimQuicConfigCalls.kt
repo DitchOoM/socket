@@ -3,7 +3,7 @@ package com.ditchoom.socket.quic
 /**
  * The sim's [QuicConfigCalls], adapting whichever [QuicheApi] the platform supplied.
  *
- * A verbatim twin of `commonJvmMain`'s `CommonJvmQuicConfigCalls`, which the sims used while they were
+ * A verbatim twin of `commonJvmMain`'s `ApiQuicConfigCalls`, which the sims used while they were
  * JVM-only. Every call here goes through the [QuicheApi] abstraction rather than a cinterop config
  * pointer, so unlike the Apple and Linux adapters — which take their native config directly and are
  * therefore per-platform — this one is genuinely common: it works against the JNI, FFM and cinterop

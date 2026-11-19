@@ -10,6 +10,11 @@ out=$1
 src=$(mktemp -d)
 git clone --depth 1 https://github.com/quic-go/quic-go "$src" >/dev/null 2>&1
 cd "$src"
+# An optional commit pins the build to the revision its cache entry is keyed on.
+if [ -n "${2:-}" ] && [ "$(git rev-parse HEAD)" != "$2" ]; then
+  git fetch --depth 1 origin "$2" >/dev/null 2>&1
+  git checkout --quiet FETCH_HEAD
+fi
 git log -1 --format='quic-go %H %cs'
 perl -pi -e 's#"/certs/cert.pem"#os.Getenv("CERTS")+"/cert.pem"#; s#"/certs/priv.key"#os.Getenv("CERTS")+"/priv.key"#; s#http\.Dir\("/www"\)#http.Dir(os.Getenv("WWW"))#g; s#":443"#":"+os.Getenv("PORT")#g' interop/server/main.go
 perl -pi -e 's#os\.Create\("/downloads" \+#os.Create(os.Getenv("DOWNLOADS") +#' interop/client/main.go

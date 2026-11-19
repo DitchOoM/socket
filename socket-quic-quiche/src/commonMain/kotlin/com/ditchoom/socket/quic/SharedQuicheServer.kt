@@ -13,7 +13,6 @@ import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.nativeMemoryAccess
-import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.socket.quic.trace.TraceCapture
 import com.ditchoom.socket.quic.trace.record
 import com.ditchoom.socket.udp.SocketAddressCodec
@@ -105,7 +104,7 @@ internal class SharedQuicheServer(
      * datagram from it and the receive loop routes it with no copy (B2 elimination). Built from a **leaf**
      * [bufferFactory] — never an already-pooled factory (the `80575c1` double-wrap regression).
      */
-    private val recvBufPool: BufferPool = QuicheDriver.newRecvBufPool(bufferFactory),
+    private val recvBufPool: DriverBuffers = QuicheDriver.newRecvBufPool(bufferFactory),
     // The ALPN offer this listener was configured with. Carried purely to report it back through
     // [QuicServer.alpnProtocols] — quiche keeps the offer inside the opaque config, so the build
     // functions pass QuicOptions.alpnProtocols through rather than reading it back out.

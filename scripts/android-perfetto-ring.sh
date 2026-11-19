@@ -14,8 +14,8 @@
 # thread, with the app's own atrace slices) is the missing view. Read the result at ui.perfetto.dev
 # or with trace_processor_shell (see the README written next to it).
 #
-# API 24 has NO Perfetto (it ships from Android 9/10; perfetto + traced are absent from the API 24
-# image), so that lane keeps logcat only and this is a no-op there. Enabled per lane by
+# Below API 29 the device has no Perfetto service (it ships with Android 10), so the API 28 lane
+# keeps logcat only and this is a no-op there. Enabled per lane by
 # PERFETTO_RING=1 so the recorder is never the only configuration the Android matrix has run.
 #
 # The ring lives in the device's tracing service: buffers are RING_BUFFER (oldest overwritten) and
@@ -35,7 +35,9 @@ PERFETTO_APPS="${PERFETTO_RING_APPS:-com.ditchoom.socket.http3.test com.ditchoom
 _pf_adb() { "${ADB:-adb}" "$@"; }
 
 # The TraceConfig, as text proto. Kept to scheduling, process stats and the atrace categories for
-# connection state (am), network and system services (ss/network).
+# connection state (am), network and system services (ss/network). sched_waking names the thread that
+# woke a sleeper (the holder of the lock a loop slept on), and dalvik is ART's own slices: its GCs and
+# "Lock contention on a monitor lock (owner tid: N)", which name a Java lock a loop waited on.
 perfetto_ring_config() { # <api>
   local api="$1" app
   cat <<CFG
@@ -48,6 +50,8 @@ data_sources {
     ftrace_config {
       ftrace_events: "sched/sched_switch"
       ftrace_events: "sched/sched_wakeup"
+      ftrace_events: "sched/sched_waking"
+      atrace_categories: "dalvik"
       atrace_categories: "ss"
       atrace_categories: "am"
       atrace_categories: "network"

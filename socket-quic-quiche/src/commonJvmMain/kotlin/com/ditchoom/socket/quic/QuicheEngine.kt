@@ -8,7 +8,7 @@ import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.Duration
 
 /**
- * JVM/Android [QuicEngine] backed by Cloudflare quiche (JNI on JDK 8–20, FFM on JDK 21+, selected
+ * JVM/Android [QuicEngine] backed by Cloudflare quiche (JNI on JDK 17–20, FFM on JDK 21+, selected
  * by [loadQuicheApi]) over NIO [java.nio.channels.DatagramChannel]. The `withQuicConnection` /
  * `withQuicServer` wrappers (in `:socket-quic-default`) own the lifecycle; this engine just builds
  * + establishes.

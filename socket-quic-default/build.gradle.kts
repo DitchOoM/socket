@@ -40,7 +40,7 @@ kotlin {
         compilerOptions.jvmTarget.set(JvmTarget.JVM_17)
     }
     jvm {
-        compilerOptions.jvmTarget.set(JvmTarget.JVM_1_8)
+        compilerOptions.jvmTarget.set(JvmTarget.JVM_17)
     }
     js {
         browser()
@@ -53,16 +53,12 @@ kotlin {
 
     if (appleTargets) {
         macosArm64()
-        macosX64()
         iosArm64()
         iosSimulatorArm64()
-        iosX64()
         tvosArm64()
         tvosSimulatorArm64()
-        tvosX64()
-        watchosArm64()
+        watchosDeviceArm64()
         watchosSimulatorArm64()
-        watchosX64()
     }
 
     if (linuxTargets) {
@@ -144,7 +140,7 @@ android {
         .baselineProfiles
         .srcDir("src/androidMain/baselineProfiles")
     defaultConfig {
-        minSdk = 24
+        minSdk = 28
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     namespace = "com.ditchoom.socket.quic.defaults"

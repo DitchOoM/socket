@@ -33,6 +33,15 @@ inputs:
     required: false
     default: ""
 
+  await-natives-producer:
+    description: >-
+      When set, wait here (after the JDK and cache restores, before the natives download) until this run
+      holds the natives artifact, naming the producing job as await-artifact's `producer` does. A job that
+      starts beside `natives` uses this so its toolchain and cache restores overlap the natives build
+      instead of queueing behind the wait. Needs `github-token`. Empty (the default) waits for nothing.
+    required: false
+    default: ""
+
 runs:
   using: composite
   steps:
@@ -135,6 +144,15 @@ runs:
         path: ~/.gradle/wrapper
         key: gradle-wrapper-macos-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
 
+    # Only a job that starts beside the producer sets this; everything above is independent of the artifact.
+    - name: Wait for the natives of this run
+      if: inputs.await-natives-producer != ''
+      uses: ./.github/actions/await-artifact
+      with:
+        name: quiche-apple-natives
+        producer: ${{ inputs.await-natives-producer }}
+        github-token: ${{ inputs.github-token }}
+
     # The five Apple libquiche.a / dylib / JNI shim sets built once by `natives`. Restored to the
     # exact paths the Gradle build and the K/N `-force_load` link expect.
     - name: Download prebuilt Apple quiche natives
@@ -192,7 +210,7 @@ runs:
       run: |
         set -euo pipefail
         missing=0
-        for d in macos-arm64 macos-x64 ios-arm64 ios-simulator-arm64 ios-x64; do
+        for d in macos-arm64 ios-arm64 ios-simulator-arm64; do
           f="socket-quic-quiche/libs/quiche/$d/lib/libquiche.a"
           if [ ! -f "$f" ]; then echo "::error::missing $f"; missing=1; else echo "ok: $f"; fi
         done

@@ -27,23 +27,30 @@ import com.ditchoom.socket.SocketClosedException
  * connections — the gap that left reconnect-cycle incidents unattributable when only a reason was
  * recorded.
  */
-class QuicCloseException(
+class QuicCloseException private constructor(
     /**
-     * Why the connection ended, exhaustively — including **which side** closed it and whether the
-     * protocol explained the close at all. Match on it; do not infer the side from [quicError], which
-     * cannot express it.
+     * How the connection ended, exhaustively. An engine that records only the close reason reports
+     * [QuicConnectionEnd.ReasonOnly].
      */
-    val closeReason: QuicCloseReason,
+    val end: QuicConnectionEnd,
+    /** What the local endpoint was doing when it ended; see [QuicCloseCircumstance]. */
+    val circumstance: QuicCloseCircumstance,
     message: String,
-    cause: Throwable? = null,
+    cause: Throwable?,
     /**
      * Which connection this came from, as a value snapshot — see [QuicCloseAttribution].
      *
-     * Defaults to [QuicCloseAttribution.Unattributed] so a throw site with no connection in hand stays
-     * honest rather than inventing one; every driver-backed site supplies it.
+     * [QuicCloseAttribution.Unattributed] when the throw site has no connection in hand.
      */
-    val attribution: QuicCloseAttribution = QuicCloseAttribution.Unattributed,
-) : SocketClosedException(withReason(message, closeReason, attribution), cause) {
+    val attribution: QuicCloseAttribution,
+) : SocketClosedException(withReason(message, end.closeReason, attribution), cause) {
+    /**
+     * Why the connection ended — including **which side** closed it and whether the protocol explained
+     * the close at all; derived from [end]. Match on it; do not infer the side from [quicError], which
+     * cannot express it.
+     */
+    val closeReason: QuicCloseReason get() = end.closeReason
+
     /**
      * The protocol error code this close carries, for callers that want the *why* without the *who* —
      * e.g. mapping to a WebTransport failure, which has no notion of sides.
@@ -55,6 +62,32 @@ class QuicCloseException(
      * the thing to branch on: `Graceful` and `Unspecified` are indistinguishable here.
      */
     val quicError: QuicError get() = closeReason.errorOrNoError()
+
+    /**
+     * A close that names its [end]. The message is derived from [circumstance] and the end's reason; the cause, for
+     * stack traces only, is the end's thrown object when it has one.
+     */
+    constructor(
+        end: QuicConnectionEnd,
+        circumstance: QuicCloseCircumstance,
+        attribution: QuicCloseAttribution = QuicCloseAttribution.Unattributed,
+    ) : this(end, circumstance, circumstance.summary(), end.thrownForTrace(), attribution)
+
+    /** A close described by its reason alone: [end] is [QuicConnectionEnd.ReasonOnly]. */
+    constructor(
+        closeReason: QuicCloseReason,
+        circumstance: QuicCloseCircumstance,
+        cause: Throwable? = null,
+        attribution: QuicCloseAttribution = QuicCloseAttribution.Unattributed,
+    ) : this(QuicConnectionEnd.ReasonOnly(closeReason), circumstance, circumstance.summary(), cause, attribution)
+
+    /** A close the thrower describes in its own [message]; [circumstance] is [QuicCloseCircumstance.Unstated]. */
+    constructor(
+        closeReason: QuicCloseReason,
+        message: String,
+        cause: Throwable? = null,
+        attribution: QuicCloseAttribution = QuicCloseAttribution.Unattributed,
+    ) : this(QuicConnectionEnd.ReasonOnly(closeReason), QuicCloseCircumstance.Unstated, message, cause, attribution)
 
     /**
      * Compatibility constructor for the `QuicCloseException(error, …)` shape, for throw sites that
@@ -136,4 +169,27 @@ internal fun QuicCloseReason.errorOrNoError(): QuicError =
         is QuicCloseReason.ByPeer -> error
         is QuicCloseReason.ByLocal -> error
         QuicCloseReason.Graceful, QuicCloseReason.Unspecified -> QuicError.NoError
+    }
+
+/** The thrown object [this] end carries, kept as an exception's cause for stack traces only. */
+private fun QuicConnectionEnd.thrownForTrace(): Throwable? =
+    when (this) {
+        is QuicConnectionEnd.ProcessingFailed -> thrown
+        is QuicConnectionEnd.CallerFailed -> thrown
+        is QuicConnectionEnd.LoopFailed -> thrown
+        is QuicConnectionEnd.SocketFailed ->
+            when (val fault = fault) {
+                is QuicSocketFault.Unnamed -> fault.thrown
+                is QuicSocketFault.Repeated -> fault.thrown
+                is QuicSocketFault.ReopenRefused -> fault.thrown
+                is QuicSocketFault.MoveRefused -> fault.thrown
+                is QuicSocketFault.Closed -> null
+            }
+        is QuicConnectionEnd.ByPeer, is QuicConnectionEnd.ByLocal, is QuicConnectionEnd.IdleTimeout,
+        is QuicConnectionEnd.HandshakeTimedOut, is QuicConnectionEnd.HandshakeSendRefused, is QuicConnectionEnd.LoopStopped,
+        is QuicConnectionEnd.ServerClosed,
+        is QuicConnectionEnd.ServerClosedUnsettled, is QuicConnectionEnd.NoErrorRecorded, is QuicConnectionEnd.Released,
+        is QuicConnectionEnd.NetworkLost, is QuicConnectionEnd.LocalAddressGone, is QuicConnectionEnd.NoUsablePath,
+        is QuicConnectionEnd.ReasonOnly,
+        -> null
     }

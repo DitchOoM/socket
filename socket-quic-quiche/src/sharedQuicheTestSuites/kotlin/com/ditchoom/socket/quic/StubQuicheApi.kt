@@ -396,7 +396,10 @@ internal class StubQuicheApi : QuicheApi {
     override fun connIsEstablished(conn: QuicheConn) = established
 
     // A stub's handshake confirms the moment it completes, as a server's does.
-    override fun connIsHandshakeConfirmed(conn: QuicheConn) = established
+    override fun connIsHandshakeConfirmed(conn: QuicheConn) = established && !withholdConfirmation
+
+    /** When true, an established stub is never confirmed: the peer's HANDSHAKE_DONE does not arrive. */
+    var withholdConfirmation = false
 
     /**
      * When true, [connIsClosed] also reports closed once [connClose] has been called, so a test's own
@@ -406,6 +409,9 @@ internal class StubQuicheApi : QuicheApi {
     @Volatile var closesOnLocalClose = false
 
     override fun connIsClosed(conn: QuicheConn) = closed || (closesOnLocalClose && closeInitiated)
+
+    /** Draining once the close datagram of [emitOneDatagramOnClose] went out, as quiche drains once it sent its close. */
+    override fun connIsDraining(conn: QuicheConn) = closeDatagramEmitted
 
     /** When true, [connIsTimedOut] reports a timeout — drives the IdleTimeout close-reason fallback. */
     @Volatile var timedOut = false
@@ -478,6 +484,80 @@ internal class StubQuicheApi : QuicheApi {
         return 0
     }
 
+    /** No token is ever set, received, sent or proven: the stub's peer never issues NEW_TOKEN. */
+    override fun connSetToken(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ) = 0
+
+    override fun connTakeNewToken(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ) = -1 // QUICHE_ERR_DONE
+
+    override fun connSendNewToken(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ) = 0
+
+    override fun connSetPeerAddressValidated(conn: QuicheConn) = 0
+
+    /** How many times [connProbeNow] was called. */
+    @Volatile var probeNowCount = 0
+
+    /** Invoked on every [connProbeNow]: a test queues the probe it would send. */
+    @Volatile var onProbeNow: (() -> Unit)? = null
+
+    /** Every initial RTT a config was given, in nanoseconds, oldest first. */
+    val initialRtts = ArrayList<Long>()
+
+    override fun configSetInitialRtt(
+        config: QuicheConfig,
+        nanos: Long,
+    ) {
+        initialRtts += nanos
+    }
+
+    /** Every PTO ceiling the connection was given, oldest first. */
+    val ptoCeilings = ArrayList<PtoCeiling>()
+
+    override fun connSetHandshakePtoCeiling(
+        conn: QuicheConn,
+        ceiling: PtoCeiling,
+    ) {
+        ptoCeilings += ceiling
+    }
+
+    /** Held while the last ceiling given is one: the stub takes no RTT sample that would release it. */
+    override fun connHandshakePtoCeilingHeld(conn: QuicheConn) =
+        when (ptoCeilings.lastOrNull()) {
+            null, is PtoCeiling.None -> false
+            is PtoCeiling.At, is PtoCeiling.Growing -> true
+        }
+
+    override fun connProbeNow(conn: QuicheConn): Int {
+        probeNowCount++
+        onProbeNow?.invoke()
+        return 0
+    }
+
+    /** How many times [connRequeuePath] was called. */
+    @Volatile var requeuePathCount = 0
+
+    override fun connRequeuePath(
+        conn: QuicheConn,
+        localAddr: Long,
+        localLen: Int,
+        peerAddr: Long,
+        peerLen: Int,
+    ): Int {
+        requeuePathCount++
+        return 0
+    }
+
     /**
      * Every [QuicError] the driver handed to [connClose], in order — i.e. what would have gone onto the
      * wire. A test that closes with a reason quiche cannot carry (no transport code) asserts here that the
@@ -544,6 +624,20 @@ internal class StubQuicheApi : QuicheApi {
         config: QuicheConfig,
     ) = QuicheConn(1L)
 
+    override fun retry(
+        scidAddr: Long,
+        scidLen: Int,
+        dcidAddr: Long,
+        dcidLen: Int,
+        newScidAddr: Long,
+        newScidLen: Int,
+        tokenAddr: Long,
+        tokenLen: Int,
+        version: Int,
+        outAddr: Long,
+        outLen: Int,
+    ) = 0
+
     override fun negotiateVersion(
         scidAddr: Long,
         scidLen: Int,
@@ -589,6 +683,9 @@ internal class StubQuicheApi : QuicheApi {
     val writableStreams: ArrayDeque<Long> = ArrayDeque()
 
     override fun connWritable(conn: QuicheConn) = if (writableStreams.isEmpty()) QuicheStreamIter(0L) else QuicheStreamIter(WRITABLE_ITER)
+
+    /** Hands out [writableStreams] one at a time, as quiche hands out its writable marks. */
+    override fun connStreamWritableNext(conn: QuicheConn): Long = writableStreams.removeFirstOrNull() ?: -1L
 
     // The handle tells the two iterators apart, so a test can arm both without their ids crossing over.
     override fun streamIterNext(iter: QuicheStreamIter): QuicStreamId? =
@@ -738,6 +835,21 @@ internal class StubQuicheApi : QuicheApi {
         linkedDcidSeqs += seq
         pathDcidSeqs[localAddr] = seq
         return ProbeOutcome.Probed(seq)
+    }
+
+    /** The initial RTT of every [connProbePathWith] call, in order. */
+    val probeInitialRtts: MutableList<Long> = mutableListOf()
+
+    override fun connProbePathWith(
+        conn: QuicheConn,
+        localAddr: Long,
+        localLen: Int,
+        peerAddr: Long,
+        peerLen: Int,
+        initialRttNanos: Long,
+    ): ProbeOutcome {
+        probeInitialRtts += initialRttNanos
+        return connProbePath(conn, localAddr, localLen, peerAddr, peerLen)
     }
 
     /** The local sockaddr of every [connProbePath] call, in order — which path each probe named. */

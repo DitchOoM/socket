@@ -125,7 +125,7 @@ internal class LeafHashMatch(
  *
  * [bufferFactory] supplies a scratch buffer for the digest; it is freed before returning. [sha256Into] is
  * the per-backend native digest (JCA `MessageDigest` on JVM/Android; the already-linked BoringSSL via
- * cinterop on Linux — see its actuals for why Linux can't take buffer-crypto's BoringSSL); it reads
+ * cinterop on Linux); it reads
  * [leafCertDer] non-destructively.
  */
 internal fun matchLeafHash(

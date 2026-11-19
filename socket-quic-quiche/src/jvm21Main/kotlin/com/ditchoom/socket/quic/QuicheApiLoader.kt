@@ -2,6 +2,9 @@
 
 package com.ditchoom.socket.quic
 
+import java.lang.foreign.Arena
+import java.lang.foreign.SymbolLookup
+
 /**
  * JDK 21+ shadow of [loadQuicheApi] — returns [FfmQuicheApi] using Panama FFM downcalls.
  * Zero-copy: no JNI boundary, MemorySegment passed directly to quiche.
@@ -34,7 +37,16 @@ private val ffmQuicheApi: QuicheApi by lazy { maybeGuardRecvInfo(ffmBackend) }
 /** The bare backend under [ffmQuicheApi]'s guard — what [loadQuicheRandomPin] binds. */
 private val ffmBackend: FfmQuicheApi by lazy { loadFfmBackend() }
 
-private fun loadFfmBackend(): FfmQuicheApi {
+private fun loadFfmBackend(): FfmQuicheApi =
+    try {
+        FfmQuicheApi.create()
+    } catch (e: ExceptionInInitializerError) {
+        // FfmLibrary's initialiser failed: surface the packaging error it carries, not the wrapper.
+        throw e.cause ?: e
+    }
+
+/** The process-lifetime lookup over the first libquiche resource that loads; [FfmLibrary]'s one call. */
+internal fun openFfmQuicheLibrary(): SymbolLookup {
     val classLoader =
         QuicheApi::class.java.classLoader
             ?: error("Cannot load quiche FFM backend: no class loader for QuicheApi")
@@ -55,7 +67,11 @@ private fun loadFfmBackend(): FfmQuicheApi {
         }
         stream.close()
         try {
-            return FfmQuicheApi.create(extractToTemp(resourcePath))
+            // Arena.global(), NEVER an unloadable arena: libquiche statically links BoringSSL, which registers
+            // pthread TLS destructors that glibc does not unregister on dlclose. An auto/confined arena lets the
+            // JVM dlclose the library once unreachable, and any thread that ever called into it then jumps to
+            // unmapped memory when it exits (CI SIGSEGV SEGV_ACCERR). The mapping must live for the process.
+            return SymbolLookup.libraryLookup(extractToTemp(resourcePath), Arena.global())
         } catch (t: Throwable) {
             failures += "$resourcePath (${t.message})"
         }
@@ -68,14 +84,28 @@ private fun loadFfmBackend(): FfmQuicheApi {
 }
 
 private fun extractToTemp(resourcePath: String): String {
-    val stream = QuicheApi::class.java.classLoader!!.getResourceAsStream(resourcePath)!!
-    val tempDir =
-        java.nio.file.Files
-            .createTempDirectory("quiche-ffm")
-            .toFile()
-    tempDir.deleteOnExit()
     val ext = resourcePath.substringAfterLast('.')
-    val tempFile = java.io.File(tempDir, "libquiche.$ext")
+    return extractFfmNative(resourcePath, "libquiche.$ext")
+}
+
+/**
+ * The one directory this process extracts its FFM natives into: the JNI shim, which carries the native stack's
+ * `qnet` calls and links libquiche by `@rpath`/`$ORIGIN`, then resolves the libquiche already loaded from here.
+ */
+private val ffmNativeDir: java.io.File by lazy {
+    java.nio.file.Files
+        .createTempDirectory("quiche-ffm")
+        .toFile()
+        .also { it.deleteOnExit() }
+}
+
+/** Extracts [resourcePath] into [ffmNativeDir] as [fileName]; its absolute path. */
+internal fun extractFfmNative(
+    resourcePath: String,
+    fileName: String,
+): String {
+    val stream = QuicheApi::class.java.classLoader!!.getResourceAsStream(resourcePath)!!
+    val tempFile = java.io.File(ffmNativeDir, fileName)
     tempFile.deleteOnExit()
     stream.use { input -> tempFile.outputStream().use { output -> input.copyTo(output) } }
     return tempFile.absolutePath
@@ -111,4 +141,15 @@ private fun quicheFfmResourceCandidates(): List<String> {
         val ext = if (os == "macos") "dylib" else "so"
         listOf("$dir/libquiche.$ext")
     }
+}
+
+/**
+ * The JNI shim's path in [ffmNativeDir], extracted beside the libquiche the FFM backend loaded (loaded first here),
+ * so the shim's link to libquiche resolves to that same image. Not on Windows: the native stack has no poller there.
+ */
+internal fun extractedJniShim(): String {
+    loadQuicheApi()
+    val base = quicheFfmResourceCandidates().first()
+    val ext = base.substringAfterLast('.')
+    return extractFfmNative(base.substringBeforeLast('/') + "/libquiche_jni.$ext", "libquiche_jni.$ext")
 }

@@ -94,7 +94,7 @@ import java.nio.channels.ClosedChannelException
  *
  * [attempted] and [limit] are only consulted for `EMSGSIZE`, as in `sendErrnoToError`.
  */
-internal fun jvmSendErrorOf(
+fun jvmSendErrorOf(
     e: IOException,
     attempted: Int,
     limit: Int,

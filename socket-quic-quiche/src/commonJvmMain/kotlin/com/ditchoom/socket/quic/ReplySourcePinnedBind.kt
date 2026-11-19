@@ -5,7 +5,6 @@ package com.ditchoom.socket.quic
 import com.ditchoom.buffer.flow.AddressFamily
 import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
-import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.socket.udp.UdpBindError
 import com.ditchoom.socket.udp.UdpBindException
 import com.ditchoom.socket.udp.UdpSocket
@@ -58,7 +57,7 @@ internal val SocketPerLocalAddress: UnpinnedWildcard = socketPerLocalAddress(Dis
 internal suspend fun bindServerMember(
     host: String,
     port: Int,
-    recvBufPool: BufferPool,
+    recvBufPool: DriverBuffers,
 ): AddressedDatagramChannel =
     UdpSocket.bind(
         localHost = host,

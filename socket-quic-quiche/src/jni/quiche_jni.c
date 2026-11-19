@@ -10,6 +10,10 @@
  *     -L/path/to/quiche/lib -lquiche
  */
 
+/* qnet (included at the end) needs glibc's sendmmsg/recvmmsg declarations, which only _GNU_SOURCE exposes. */
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE
+#endif
 #include <jni.h>
 #include <quiche.h>
 #include <stdint.h>
@@ -554,6 +558,10 @@ JNIEXPORT jboolean JNICALL JNI_FN(nConnIsClosed)(JNIEnv *env, jclass cls, jlong 
     return (jboolean)quiche_conn_is_closed((const quiche_conn *)(uintptr_t)conn);
 }
 
+JNIEXPORT jboolean JNICALL JNI_FN(nConnIsDraining)(JNIEnv *env, jclass cls, jlong conn) {
+    return (jboolean)quiche_conn_is_draining((const quiche_conn *)(uintptr_t)conn);
+}
+
 JNIEXPORT jboolean JNICALL JNI_FN(nConnIsTimedOut)(JNIEnv *env, jclass cls, jlong conn) {
     return (jboolean)quiche_conn_is_timed_out((const quiche_conn *)(uintptr_t)conn);
 }
@@ -570,6 +578,30 @@ JNIEXPORT jint JNICALL JNI_FN(nConnSetSession)(
 JNIEXPORT jint JNICALL JNI_FN(nConnSession)(
     JNIEnv *env, jclass cls, jlong conn, jlong buf, jint buf_len) {
     return copy_conn_bytes(quiche_conn_session, conn, buf, buf_len);
+}
+
+/* --- NEW_TOKEN (patched-in exports, RFC 9000 §8.1.3) --- */
+
+JNIEXPORT jint JNICALL JNI_FN(nConnSetToken)(
+    JNIEnv *env, jclass cls, jlong conn, jlong buf, jint buf_len) {
+    return (jint)quiche_conn_set_token(
+        (quiche_conn *)(uintptr_t)conn, (const uint8_t *)(uintptr_t)buf, (size_t)buf_len);
+}
+
+JNIEXPORT jint JNICALL JNI_FN(nConnTakeNewToken)(
+    JNIEnv *env, jclass cls, jlong conn, jlong buf, jint buf_len) {
+    return (jint)quiche_conn_take_new_token(
+        (quiche_conn *)(uintptr_t)conn, (uint8_t *)(uintptr_t)buf, (size_t)buf_len);
+}
+
+JNIEXPORT jint JNICALL JNI_FN(nConnSendNewToken)(
+    JNIEnv *env, jclass cls, jlong conn, jlong buf, jint buf_len) {
+    return (jint)quiche_conn_send_new_token(
+        (quiche_conn *)(uintptr_t)conn, (const uint8_t *)(uintptr_t)buf, (size_t)buf_len);
+}
+
+JNIEXPORT jint JNICALL JNI_FN(nConnSetPeerAddressValidated)(JNIEnv *env, jclass cls, jlong conn) {
+    return (jint)quiche_conn_set_peer_address_validated((quiche_conn *)(uintptr_t)conn);
 }
 
 JNIEXPORT jboolean JNICALL JNI_FN(nConnIsResumed)(JNIEnv *env, jclass cls, jlong conn) {
@@ -628,6 +660,42 @@ JNIEXPORT jlong JNICALL JNI_FN(nConnSendAckEliciting)(JNIEnv *env, jclass cls, j
     /* Schedules a PING on the active path; emitted by the next send(). Returns 0 on success or a
        negative quiche error code. */
     return (jlong)quiche_conn_send_ack_eliciting((quiche_conn *)(uintptr_t)conn);
+}
+
+JNIEXPORT void JNICALL JNI_FN(nConfigSetInitialRtt)(
+    JNIEnv *env, jclass cls, jlong config, jlong nanos) {
+    /* patched-in export */
+    quiche_config_set_initial_rtt((quiche_config *)(uintptr_t)config, (uint64_t)nanos);
+}
+
+JNIEXPORT void JNICALL JNI_FN(nConnSetHandshakePtoCeiling)(
+    JNIEnv *env, jclass cls, jlong conn, jlong first_nanos, jint growth, jlong max_nanos) {
+    /* patched-in export; a first ceiling of 0 removes the ceiling */
+    quiche_conn_set_handshake_pto_ceiling(
+        (quiche_conn *)(uintptr_t)conn, (uint64_t)first_nanos, (uint32_t)growth, (uint64_t)max_nanos);
+}
+
+JNIEXPORT jboolean JNICALL JNI_FN(nConnHandshakePtoCeilingHeld)(JNIEnv *env, jclass cls, jlong conn) {
+    /* patched-in export */
+    return (jboolean)quiche_conn_handshake_pto_ceiling_held((const quiche_conn *)(uintptr_t)conn);
+}
+
+JNIEXPORT jlong JNICALL JNI_FN(nConnProbeNow)(JNIEnv *env, jclass cls, jlong conn) {
+    /* Queues the PTO's probes for the next send(), past the congestion window (patched-in export).
+       Returns 0 on success or a negative quiche error code. */
+    return (jlong)quiche_conn_probe_now((quiche_conn *)(uintptr_t)conn);
+}
+
+JNIEXPORT jlong JNICALL JNI_FN(nConnRequeuePath)(
+    JNIEnv *env, jclass cls,
+    jlong conn, jlong local_addr, jint local_len,
+    jlong peer_addr, jint peer_len) {
+    /* The path carries nothing more: what it owes is resent from the active path (patched-in export).
+       Returns the number of frames moved or a negative quiche error code. */
+    return (jlong)quiche_conn_requeue_path(
+        (quiche_conn *)(uintptr_t)conn,
+        (const struct sockaddr *)(uintptr_t)local_addr, (socklen_t)local_len,
+        (const struct sockaddr *)(uintptr_t)peer_addr, (socklen_t)peer_len);
 }
 
 JNIEXPORT jint JNICALL JNI_FN(nConnClose)(
@@ -693,6 +761,21 @@ JNIEXPORT jlong JNICALL JNI_FN(nConnProbePath)(
         (const struct sockaddr *)(uintptr_t)local_addr, (socklen_t)local_len,
         (const struct sockaddr *)(uintptr_t)peer_addr, (socklen_t)peer_len,
         &seq);
+    if (rc == 0) return (jlong)seq;
+    return (jlong)rc;
+}
+
+/* quiche_conn_probe_path_with, packed as nConnProbePath: (jlong)seq on success, (jlong)rc on failure. */
+JNIEXPORT jlong JNICALL JNI_FN(nConnProbePathWith)(
+    JNIEnv *env, jclass cls,
+    jlong conn, jlong local_addr, jint local_len,
+    jlong peer_addr, jint peer_len, jlong initial_rtt_ns) {
+    uint64_t seq = 0;
+    int rc = quiche_conn_probe_path_with(
+        (quiche_conn *)(uintptr_t)conn,
+        (const struct sockaddr *)(uintptr_t)local_addr, (socklen_t)local_len,
+        (const struct sockaddr *)(uintptr_t)peer_addr, (socklen_t)peer_len,
+        (uint64_t)initial_rtt_ns, &seq);
     if (rc == 0) return (jlong)seq;
     return (jlong)rc;
 }
@@ -951,6 +1034,23 @@ JNIEXPORT jint JNICALL JNI_FN(nNegotiateVersion)(
         (uint8_t *)(uintptr_t)out_addr, (size_t)out_len);
 }
 
+JNIEXPORT jint JNICALL JNI_FN(nRetry)(
+    JNIEnv *env, jclass cls,
+    jlong scid_addr, jint scid_len,
+    jlong dcid_addr, jint dcid_len,
+    jlong new_scid_addr, jint new_scid_len,
+    jlong token_addr, jint token_len,
+    jint version,
+    jlong out_addr, jint out_len) {
+    return (jint)quiche_retry(
+        (const uint8_t *)(uintptr_t)scid_addr, (size_t)scid_len,
+        (const uint8_t *)(uintptr_t)dcid_addr, (size_t)dcid_len,
+        (const uint8_t *)(uintptr_t)new_scid_addr, (size_t)new_scid_len,
+        (const uint8_t *)(uintptr_t)token_addr, (size_t)token_len,
+        (uint32_t)version,
+        (uint8_t *)(uintptr_t)out_addr, (size_t)out_len);
+}
+
 /* --- Stream iteration --- */
 
 JNIEXPORT jlong JNICALL JNI_FN(nConnReadable)(JNIEnv *env, jclass cls, jlong conn) {
@@ -959,6 +1059,10 @@ JNIEXPORT jlong JNICALL JNI_FN(nConnReadable)(JNIEnv *env, jclass cls, jlong con
 
 JNIEXPORT jlong JNICALL JNI_FN(nConnWritable)(JNIEnv *env, jclass cls, jlong conn) {
     return (jlong)(uintptr_t)quiche_conn_writable((const quiche_conn *)(uintptr_t)conn);
+}
+
+JNIEXPORT jlong JNICALL JNI_FN(nConnStreamWritableNext)(JNIEnv *env, jclass cls, jlong conn) {
+    return (jlong)quiche_conn_stream_writable_next((quiche_conn *)(uintptr_t)conn);
 }
 
 JNIEXPORT jlong JNICALL JNI_FN(nStreamIterNext)(
@@ -1033,6 +1137,11 @@ JNIEXPORT jint JNICALL JNI_FN(nSendInfoFromAddrLen)(JNIEnv *env, jclass cls, jlo
     return (jint)info->from_len;
 }
 
+JNIEXPORT jlong JNICALL JNI_FN(nSendInfoAtNanos)(JNIEnv *env, jclass cls, jlong ptr) {
+    quiche_send_info *info = (quiche_send_info *)(uintptr_t)ptr;
+    return (jlong)info->at.tv_sec * 1000000000LL + (jlong)info->at.tv_nsec;
+}
+
 /* --- sockaddr decode (slice 3 migration) ---
  * Native code knows the platform's sockaddr layout (sa_family value, field
  * offsets), so the JVM side never branches on OS for the JNI backend. The
@@ -1078,3 +1187,6 @@ JNIEXPORT jlong JNICALL JNI_FN(nSockAddrV6Lo)(JNIEnv *env, jclass cls, jlong add
     for (int i = 0; i < 8; i++) lo = (lo << 8) | b[i];
     return (jlong)lo;
 }
+
+/* The native stack (poller and UDP socket calls) rides in this library: see qnet.h. */
+#include "qnet_jni.c"

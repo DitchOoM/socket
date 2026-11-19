@@ -118,6 +118,13 @@ internal class CallerClockQuicheApi(
         bufLen: Int,
     ): StreamRecvResult = synced { delegate.connStreamRecv(conn, streamId, buf, bufLen) }
 
+    override fun connStreamRecvStep(
+        conn: QuicheConn,
+        streamId: QuicStreamId,
+        buf: Long,
+        bufLen: Int,
+    ): StreamRecvStep = synced { delegate.connStreamRecvStep(conn, streamId, buf, bufLen) }
+
     override fun connStreamSend(
         conn: QuicheConn,
         streamId: QuicStreamId,
@@ -125,6 +132,14 @@ internal class CallerClockQuicheApi(
         bufLen: Int,
         fin: Boolean,
     ): StreamSendResult = synced { delegate.connStreamSend(conn, streamId, buf, bufLen, fin) }
+
+    override fun connStreamSendStep(
+        conn: QuicheConn,
+        streamId: QuicStreamId,
+        buf: Long,
+        bufLen: Int,
+        fin: Boolean,
+    ): StreamSendStep = synced { delegate.connStreamSendStep(conn, streamId, buf, bufLen, fin) }
 
     override fun connStreamShutdown(
         conn: QuicheConn,
@@ -153,6 +168,23 @@ internal class CallerClockQuicheApi(
 
     override fun connSendAckEliciting(conn: QuicheConn): Int = synced { delegate.connSendAckEliciting(conn) }
 
+    override fun connProbeNow(conn: QuicheConn): Int = synced { delegate.connProbeNow(conn) }
+
+    override fun connRequeuePath(
+        conn: QuicheConn,
+        localAddr: Long,
+        localLen: Int,
+        peerAddr: Long,
+        peerLen: Int,
+    ): Int = synced { delegate.connRequeuePath(conn, localAddr, localLen, peerAddr, peerLen) }
+
+    override fun connSetHandshakePtoCeiling(
+        conn: QuicheConn,
+        ceiling: PtoCeiling,
+    ) = synced { delegate.connSetHandshakePtoCeiling(conn, ceiling) }
+
+    override fun connHandshakePtoCeilingHeld(conn: QuicheConn): Boolean = synced { delegate.connHandshakePtoCeilingHeld(conn) }
+
     override fun connClose(
         conn: QuicheConn,
         error: QuicError,
@@ -165,6 +197,15 @@ internal class CallerClockQuicheApi(
         peerAddr: Long,
         peerLen: Int,
     ): ProbeOutcome = synced { delegate.connProbePath(conn, localAddr, localLen, peerAddr, peerLen) }
+
+    override fun connProbePathWith(
+        conn: QuicheConn,
+        localAddr: Long,
+        localLen: Int,
+        peerAddr: Long,
+        peerLen: Int,
+        initialRttNanos: Long,
+    ): ProbeOutcome = synced { delegate.connProbePathWith(conn, localAddr, localLen, peerAddr, peerLen, initialRttNanos) }
 
     override fun connMigrate(
         conn: QuicheConn,
@@ -198,6 +239,8 @@ internal class CallerClockQuicheApi(
     ): QuicPathStats? = synced { delegate.connPathStats(conn, pathIdx) }
 
     override fun connPeerTransportParams(conn: QuicheConn): PeerTransportParams = synced { delegate.connPeerTransportParams(conn) }
+
+    override fun connActivePathRttNanos(conn: QuicheConn): Long = synced { delegate.connActivePathRttNanos(conn) }
 }
 
 private const val CLIENT_STREAM = 0x434C49454E54L // "CLIENT"

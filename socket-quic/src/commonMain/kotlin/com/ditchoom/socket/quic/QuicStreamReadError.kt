@@ -62,4 +62,7 @@ class QuicStreamReadException(
     val streamId: Long,
     val error: QuicStreamReadError,
     message: String,
-) : Exception(message)
+) : Exception(message) {
+    /** A read failure described only by its type; the message is derived from [streamId] and [error]. */
+    constructor(streamId: Long, error: QuicStreamReadError) : this(streamId, error, "QUIC stream $streamId read failed: $error")
+}

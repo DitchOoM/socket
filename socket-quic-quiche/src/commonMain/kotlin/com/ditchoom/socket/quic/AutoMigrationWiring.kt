@@ -338,8 +338,8 @@ private fun after(wait: Duration): Flow<Unit> =
  * **`distinctUntilChanged()`** — the dedupe that stops Android's ~1s `Pending`→`Confirmed` window on one
  * Wi-Fi network from reading as a handoff (RFC_NETWORK_REACHABILITY §5, `isTransient`).
  *
- * **[Attachment], not `drop(1)`** — the first identified link is the connect-time baseline, same
- * contract as before, but *recorded* rather than discarded. That record is what makes the two decisions
+ * **[Attachment], not `drop(1)`** — the link the monitor names when the reactor is wired is the
+ * connect-time baseline (the first identified link, if it names none yet), *recorded* rather than discarded. That record is what makes the two decisions
  * below possible: a flap that returns to the link we are already on is free, and a link we failed to
  * migrate onto is not mistaken for the one we live on.
  *
@@ -471,8 +471,15 @@ internal fun wireAutoMigration(
     // AlwaysAvailable never changes network identity (Android without an installed Context, Wasm) —
     // nothing to observe, so don't even launch a collector.
     if (monitor === NetworkMonitor.AlwaysAvailable) return
+    // Read here, where the connection is made, and not when the collector first runs: a link that changes
+    // before it runs is a handoff, and would otherwise be taken for the link the connection began on.
+    val connectedOn: Attachment =
+        when (val now = monitor.observedLink) {
+            ObservedLink.None -> Attachment.AwaitingBaseline
+            is ObservedLink.Link -> Attachment.On(now.id)
+        }
     connection.launch(CoroutineName("quic-client/auto-migration")) {
-        var attachedTo: Attachment = Attachment.AwaitingBaseline
+        var attachedTo: Attachment = connectedOn
         val standbyReturn = MutableStateFlow<StandbyReturn>(StandbyReturn.Idle)
 
         suspend fun handOff(trigger: MigrationTrigger.Handoff) {

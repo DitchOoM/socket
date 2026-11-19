@@ -33,6 +33,24 @@ gh_escape() {
   printf '%s' "$s"
 }
 
+# One "  class.method: message" line per failed test in the result XML under $1.
+failed_test_names() {
+  local dir="$1" f
+  for f in "$dir"/TEST-*.xml; do
+    [ -f "$f" ] || continue
+    awk '
+      /<testcase / {
+        name = $0; sub(/.* name="/, "", name); sub(/".*/, "", name)
+        cls = $0; sub(/.* classname="/, "", cls); sub(/".*/, "", cls)
+      }
+      /<failure[ >]/ {
+        msg = $0
+        if (msg ~ /<failure message="/) { sub(/.*<failure message="/, "", msg); sub(/".*/, "", msg) } else { sub(/.*<failure>/, "", msg) }
+        printf "  %s.%s: %s\n", cls, name, substr(msg, 1, 200)
+      }' "$f"
+  done
+}
+
 adb root || true
 adb wait-for-device
 
@@ -122,12 +140,23 @@ fi
 #     serial, so `android.experimental.testOptions.installApkTimeout` has no effect. The ADB
 #     INSTALL GUARD below handles a stalled install first (record, kill, one pushed retry, at most
 #     ~3 min); this threshold is the backstop for when that did not end it.
-#   * the script has run for TEST_BUDGET_S. Green runs of this whole step take 5.6-8.3 min,
-#     emulator boot included.
+#   * no test has started or finished for TEST_STALL_S. The longest test gives itself 120 s of
+#     echoes; the longest gap between test events on the slowest API 29 runner seen (run
+#     44484652562) was 54 s.
+#   * the script has run for TEST_BUDGET_S: until the step's deadline (ANDROID_TESTS_STEP_DEADLINE,
+#     set by the workflow) less CAPTURE_MARGIN_S, so a run that is slow but progressing finishes on a
+#     slow runner. Green runs took 512-650 s after boot on API 29; the run above, on a runner 1.3x
+#     slower by its own CORE-CPU line, was still finishing tests when a fixed 660 s ended it.
 # Then the device, host and test engine are captured to $HANG_FILE, a ::error:: annotation says
 # what was hung, and Gradle is stopped. The script then shuts the emulator down as usual and fails.
+# shellcheck source=scripts/android-test-watchdog.sh
+source "$(dirname "${BASH_SOURCE[0]}")/android-test-watchdog.sh"
 INSTALL_STALL_S="${ANDROID_INSTALL_STALL_S:-300}"
-TEST_BUDGET_S="${ANDROID_TEST_BUDGET_S:-660}"
+TEST_STALL_S="${ANDROID_TEST_STALL_S:-300}"
+# The capture, Gradle's stop and the emulator shutdown after a hang: up to about 2 min.
+CAPTURE_MARGIN_S=150
+TEST_BUDGET_S=$(test_run_budget "${ANDROID_TESTS_STEP_DEADLINE:-}" "$(date +%s)" "$CAPTURE_MARGIN_S" "${ANDROID_TEST_BUDGET_S:-660}")
+TEST_BUDGET_S=$((SECONDS + TEST_BUDGET_S))
 HANG_FILE="emulator-diagnostics/test-run-hang-api${API_LEVEL}.txt"
 GRADLE_OUT_FILE="emulator-diagnostics/gradle-connected-api${API_LEVEL}.txt"
 TEST_RUN_HUNG=0
@@ -232,15 +261,21 @@ capture_hang() {
 
 # Watches Gradle (pid $1) until it exits or is declared hung. On a hang: capture, annotate, stop it.
 watch_test_run() {
-  local gradle_pid="$1" install_age install_cmd why test
+  local gradle_pid="$1" install_age install_cmd why events seen=-1 progressed=$SECONDS
   while kill -0 "$gradle_pid" 2>/dev/null; do
     why=""
+    install_age=""
     read -r install_age install_cmd < <(running_installs | head -1) || true
+    events=$(test_run_events "$LOGCAT_FILE")
+    # An install is bounded by INSTALL_STALL_S, so the stall clock waits while one runs.
+    if [ "$events" != "$seen" ] || [ -n "${install_age:-}" ]; then
+      seen=$events
+      progressed=$SECONDS
+    fi
     if [ -n "${install_age:-}" ] && [ "$install_age" -ge "$INSTALL_STALL_S" ]; then
       why="an APK install has not finished after ${install_age}s: ${install_cmd##* }"
-    elif [ "$SECONDS" -ge "$TEST_BUDGET_S" ]; then
-      test=$(running_test)
-      why="still running after ${SECONDS}s (budget ${TEST_BUDGET_S}s). Running test: ${test:-none}"
+    else
+      why=$(test_run_hang "$SECONDS" $((SECONDS - progressed)) "$TEST_STALL_S" "$TEST_BUDGET_S" "$(running_test)")
     fi
     if [ -n "$why" ]; then
       TEST_RUN_HUNG=1
@@ -417,7 +452,11 @@ if [ "$NETWORK_READY" = "1" ]; then
       outcome=$(module_outcome "$module" "$GRADLE_OUT_FILE" "$TEST_EXIT")
       case "$outcome" in
         PASSED*) ;;
-        FAILED*) TESTS_FAILED="${TESTS_FAILED}${module} (${outcome#FAILED } tests failed; report: ${module}/build/reports/androidTests/connected/debug/index.html)"$'\n' ;;
+        FAILED*)
+          TESTS_FAILED="${TESTS_FAILED}${module} (${outcome#FAILED } tests failed; report: ${module}/build/reports/androidTests/connected/debug/index.html)"$'\n'
+          # Name each failing test: the report is an artifact, the annotation is what a reader sees first.
+          TESTS_FAILED="${TESTS_FAILED}$(failed_test_names "${module}/build/outputs/androidTest-results/connected/debug")"
+          ;;
         NOT_STARTED) NOT_STARTED="${NOT_STARTED}${module}"$'\n' ;;
         RAN_NONE*) RAN_NOTHING="${RAN_NOTHING}${module} (tests=${outcome#RAN_NONE })"$'\n' ;;
       esac
@@ -497,6 +536,12 @@ fi
 kill "$LOGCAT_PID" 2>/dev/null || true
 wait "$LOGCAT_PID" 2>/dev/null || true
 
+# What a failed core test logged under the core-flight tag becomes one .trace file per connection.
+if [ "$TEST_EXIT" != "0" ]; then
+  source "$(dirname "${BASH_SOURCE[0]}")/android-core-flight.sh"
+  core_flight_extract "$LOGCAT_FILE" "core-flight" || true
+fi
+
 # A test process that died is named from the logcat: its package, signal, thread, abort message and
 # the test it had started last.
 # shellcheck source=scripts/android-process-death.sh
@@ -524,6 +569,18 @@ echo "logcat capture (API ${API_LEVEL}): ${LOGCAT_LINES} lines -> ${LOGCAT_FILE}
 if [ "$LOGCAT_LINES" = "0" ]; then
   echo "::warning::logcat capture is EMPTY — the Android H3Loopback failure-diagnostics transport is broken"
 fi
+
+# Per-connection CPU of the core's concurrent echo test (CoreServerEchoTests prints it on pass and fail), inline so
+# API levels compare from one run's job logs.
+echo "=== core CPU per connection (API ${API_LEVEL}) ==="
+grep -F "CORE-CPU" "$LOGCAT_FILE" || echo "(no CORE-CPU line)"
+echo "=== end core CPU per connection ==="
+# The guest's clocksource and what the kernel logged about it: on an HPET clocksource (the API 28/29 images) every
+# clock read traps to the host. Apps may not read it, so the script prints it.
+echo "=== guest clocksource (API ${API_LEVEL}) ==="
+timeout 20 adb shell "cat /sys/devices/system/clocksource/clocksource0/current_clocksource /sys/devices/system/clocksource/clocksource0/available_clocksource" || true
+timeout 20 adb shell "dmesg 2>/dev/null | grep -iE 'clocksource|tsc' | tail -40" || true
+echo "=== end guest clocksource ==="
 
 if [ "$TEST_EXIT" != "0" ]; then
   # Inline in the job log too — a failure should be readable without downloading artifacts.
