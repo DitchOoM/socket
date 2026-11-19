@@ -204,7 +204,14 @@ private fun warmUp(
             runBlocking(Dispatchers.IO) {
                 withTimeoutOrNull(WARMUP_BUDGET) {
                     withQuicServer(port = 0, tlsConfig = tls, quicOptions = traced) {
-                        val serving = launch { connections { coroutineScope { streams().collect { stream -> launch { serveRequest(stream, served) } } } } }
+                        val serving =
+                            launch {
+                                connections {
+                                    coroutineScope {
+                                        streams().collect { stream -> launch { serveRequest(stream, served) } }
+                                    }
+                                }
+                            }
                         val warmTest = if (test in setOf("resumption", "zerortt")) test else "handshake"
                         val env =
                             mapOf(
