@@ -7398,7 +7398,9 @@ kotlin {
             compilations["main"].cinterops {
                 create("Quiche") {
                     defFile(generatedDef)
-                    includeDirs("libs/quiche/include")
+                    // src/jni: qnet_streams.h, a connection turn's streams in one call, compiled into this klib.
+                    includeDirs("libs/quiche/include", "src/jni")
+                    tasks.named(interopProcessingTaskName) { inputs.file("src/jni/qnet_streams.h").withPropertyName("qnetStreamsHeader") }
                     tasks.named(interopProcessingTaskName) {
                         dependsOn(genDefTask)
                         // libquiche.a is COPIED INTO this klib (staticLibraries.linux + libraryPaths.linux in
@@ -7451,7 +7453,9 @@ kotlin {
             compilations["main"].cinterops {
                 create("Quiche") {
                     defFile(generatedDef)
-                    includeDirs("libs/quiche/include")
+                    // src/jni: qnet_streams.h, a connection turn's streams in one call, compiled into this klib.
+                    includeDirs("libs/quiche/include", "src/jni")
+                    tasks.named(interopProcessingTaskName) { inputs.file("src/jni/qnet_streams.h").withPropertyName("qnetStreamsHeader") }
                     tasks.named(interopProcessingTaskName) {
                         dependsOn(genDefTask)
                         // libquiche.a is COPIED INTO this klib (staticLibraries.linux + libraryPaths.linux in
@@ -7570,7 +7574,9 @@ kotlin {
             compilations["main"].cinterops {
                 create("Quiche") {
                     defFile(generatedQuicheDef)
-                    includeDirs("libs/quiche/include")
+                    // src/jni: qnet_streams.h, a connection turn's streams in one call, compiled into this klib.
+                    includeDirs("libs/quiche/include", "src/jni")
+                    tasks.named(interopProcessingTaskName) { inputs.file("src/jni/qnet_streams.h").withPropertyName("qnetStreamsHeader") }
                     tasks.named(interopProcessingTaskName) {
                         dependsOn(genDefTask)
                         // libquiche.a is COPIED INTO this klib (staticLibraries/libraryPaths above), so it

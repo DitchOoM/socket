@@ -692,6 +692,19 @@ internal object PathCalls {
     val hPathEventFree: MethodHandle = FfmLibrary.downcall("quiche_path_event_free", FunctionDescriptor.ofVoid(JAVA_LONG))
 }
 
+/**
+ * A connection turn's streams in one downcall (`qnet_streams.h`). The function lives in the JNI shim, which links the
+ * libquiche this backend loaded, so it is bound there ([FfmLibrary.shimDowncall]).
+ */
+internal object StreamCalls {
+    @JvmField
+    val hConnStreams: MethodHandle =
+        FfmLibrary.shimDowncall("qn_conn_streams", FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_INT))
+
+    @JvmField
+    val hConnStreamsLayout: MethodHandle = FfmLibrary.shimDowncall("qn_conn_streams_layout", FunctionDescriptor.of(JAVA_INT))
+}
+
 /** Caller-clock and caller-entropy downcalls of the patched libquiche; deterministic simulation only. */
 internal object SimulationCalls {
     // Caller-clock (RFC §6.1): thread-local virtual clock in the patched libquiche. Simulation-only.

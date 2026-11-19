@@ -2,6 +2,7 @@
 
 package com.ditchoom.socket.quic
 
+import java.lang.foreign.Arena
 import java.lang.foreign.FunctionDescriptor
 import java.lang.foreign.Linker
 import java.lang.foreign.SymbolLookup
@@ -27,6 +28,26 @@ internal object FfmLibrary {
         name: String,
         desc: FunctionDescriptor,
     ): MethodHandle = linker.downcallHandle(quiche.find(name).orElseThrow { UnsatisfiedLinkError("quiche: $name") }, desc)
+
+    /**
+     * The downcall handle for the export [name] of the JNI shim, which carries the native calls written for this library
+     * (`qnet_streams.h`). On Windows the shim is the one library already loaded; elsewhere it is extracted beside the
+     * loaded libquiche and links that same image.
+     */
+    fun shimDowncall(
+        name: String,
+        desc: FunctionDescriptor,
+    ): MethodHandle = linker.downcallHandle(Shim.lookup.find(name).orElseThrow { UnsatisfiedLinkError("quiche shim: $name") }, desc)
+
+    /** Opened on the first [shimDowncall]. Process lifetime, never an unloadable arena: the shim links libquiche. */
+    private object Shim {
+        val lookup: SymbolLookup =
+            if (System.getProperty("os.name").lowercase().contains("windows")) {
+                quiche
+            } else {
+                SymbolLookup.libraryLookup(extractedJniShim(), Arena.global())
+            }
+    }
 
     /**
      * The downcall handle for the C-runtime function [name], which the linker's default lookup finds on every

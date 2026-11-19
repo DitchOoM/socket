@@ -836,6 +836,14 @@ object JniQuicheApi : QuicheApi {
         if (!iter.isExhausted) nStreamIterFree(iter.handle)
     }
 
+    override fun connStreams(
+        conn: QuicheConn,
+        block: Long,
+        capacity: Int,
+    ): Int = nConnStreams(conn.handle, block, capacity)
+
+    override fun connStreamsLayout(): Int = nConnStreamsLayout()
+
     // --- Helpers ---
     override fun recvInfoNew(
         fromAddr: Long,
@@ -1501,6 +1509,16 @@ object JniQuicheApi : QuicheApi {
     private external fun nStreamIterNext(iter: Long): Long
 
     @JvmStatic private external fun nStreamIterFree(iter: Long)
+
+    @FastNative
+    @JvmStatic
+    private external fun nConnStreams(
+        conn: Long,
+        block: Long,
+        capacity: Int,
+    ): Int
+
+    @JvmStatic private external fun nConnStreamsLayout(): Int
 }
 
 /**

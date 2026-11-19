@@ -21,6 +21,7 @@ import com.ditchoom.socket.quic.core.sched.SendPort
 import com.ditchoom.socket.quic.core.sched.WorkInbox
 import com.ditchoom.socket.quic.core.stream.StreamIo
 import com.ditchoom.socket.quic.core.stream.StreamTable
+import com.ditchoom.socket.quic.core.stream.StreamsBlock
 import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.WakeSink
 import com.ditchoom.socket.quic.core.udp.NativeBytes
@@ -28,13 +29,31 @@ import com.ditchoom.socket.quic.core.udp.SockAddr
 import com.ditchoom.socket.quic.trace.TraceCapture
 import kotlin.random.Random
 
-/** The memory one connection is built with: what its loop's connections share, and its own ALPN scratch. */
-internal class ConnMemory(
+/** The memory one connection is built with: what its loop's connections share, and its own scratch. */
+internal class ConnMemory private constructor(
     val shared: LoopMemory,
     val factory: BufferFactory,
     /** Where the negotiated ALPN is copied at establishment. */
     val alpn: NativeBytes,
-)
+    /** Where each turn reads the streams quiche reports ([StreamsBlock]). */
+    val streams: NativeBytes,
+) {
+    companion object {
+        const val MAX_ALPN = 255
+        private const val STREAMS_AT = 256
+        private val STREAMS_BYTES = StreamsBlock.bytesFor(StreamsBlock.IDS)
+
+        /** The bytes of a connection's own [scratch][of]: its ALPN, then its streams block. */
+        val SCRATCH_BYTES = STREAMS_AT + STREAMS_BYTES
+
+        /** A connection's memory, its own carved from [scratch] of [SCRATCH_BYTES]; the ALPN starts at its first byte. */
+        fun of(
+            shared: LoopMemory,
+            factory: BufferFactory,
+            scratch: NativeBytes,
+        ): ConnMemory = ConnMemory(shared, factory, scratch.window(0, MAX_ALPN), scratch.window(STREAMS_AT, STREAMS_BYTES))
+    }
+}
 
 /** Which end of a connection this is, with what that end alone needs. */
 internal sealed interface ConnSide {
@@ -162,7 +181,7 @@ private fun composed(
             role = side.role(),
             life = ConnLife(q, Linger(q, rules.close, memory.factory, counts)),
             handshake = Handshake(q, rules.handshake, clock.now().value, memory.alpn),
-            streams = StreamTable(q, StreamIo(q), side.role(), memory.shared.drains),
+            streams = StreamTable(q, StreamIo(q), side.role(), memory.shared.drains, StreamsBlock(q, memory.streams.address, memory.streams.capacity)),
             timer = ConnTimer(q, port, WakeSink()),
             ingress = Ingress(q, memory.shared, memory.factory, counts, clock),
             egress = Egress(q, counts, clock),

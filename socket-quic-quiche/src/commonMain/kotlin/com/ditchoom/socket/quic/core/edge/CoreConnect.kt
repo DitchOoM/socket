@@ -140,6 +140,7 @@ private suspend fun OnSetupLane.connectOnLane(
     /** Told each time what the setup made passes to a new releaser; last, right before the connection starts. */
     moved: (ClientSetup) -> Unit,
 ): StartedClient {
+    refuseForeignStreamsLayout(api)
     val peer = UdpSocket.resolve(peerHost, port)
     val peerKey = peer.toPathKey()
     val codec = SocketAddressCodec(hostSockAddrLayout)

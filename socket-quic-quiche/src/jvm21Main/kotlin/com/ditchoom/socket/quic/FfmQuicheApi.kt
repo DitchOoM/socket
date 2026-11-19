@@ -1212,6 +1212,14 @@ class FfmQuicheApi private constructor(
         if (!iter.isExhausted) HotCalls.hStreamIterFree.invokeExact(iter.handle)
     }
 
+    override fun connStreams(
+        conn: QuicheConn,
+        block: Long,
+        capacity: Int,
+    ): Int = StreamCalls.hConnStreams.invokeExact(conn.handle, block, capacity) as Int
+
+    override fun connStreamsLayout(): Int = StreamCalls.hConnStreamsLayout.invokeExact() as Int
+
     // --- RecvInfo / SendInfo via FFM Arena-allocated structs ---
     //
     // quiche_recv_info layout (64-bit):

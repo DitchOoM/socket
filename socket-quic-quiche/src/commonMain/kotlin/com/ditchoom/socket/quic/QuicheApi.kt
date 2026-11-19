@@ -1,5 +1,6 @@
 package com.ditchoom.socket.quic
 
+import com.ditchoom.buffer.UnsafeMemory
 import kotlin.time.Duration
 
 /**
@@ -1017,6 +1018,51 @@ interface QuicheApi {
 
     fun streamIterFree(iter: QuicheStreamIter)
 
+    /**
+     * The connection's readable streams, then the writable ones taken from quiche, written as one block at [block]
+     * that holds [capacity] ids after its header, in native byte order; the ids written. The block's layout is
+     * `qnet_streams.h`'s, fingerprinted by [connStreamsLayout]. The backends make it one native call; this default,
+     * for test doubles, walks [connReadable] and [connStreamWritableNext].
+     */
+    fun connStreams(
+        conn: QuicheConn,
+        block: Long,
+        capacity: Int,
+    ): Int {
+        var readable = 0
+        val iter = connReadable(conn)
+        if (!iter.isExhausted) {
+            try {
+                while (true) {
+                    val id = streamIterNextId(iter).fold(end = { -1L }, stream = { it.id })
+                    if (id < 0L) break
+                    if (readable == capacity) {
+                        readable = STREAMS_SPILLED
+                        break
+                    }
+                    UnsafeMemory.putLong(block + STREAMS_IDS + readable++ * STREAMS_ID_BYTES, id)
+                }
+            } finally {
+                streamIterFree(iter)
+            }
+        }
+        var written = if (readable == STREAMS_SPILLED) 0 else readable
+        var writable = 0
+        while (written < capacity) {
+            val id = connStreamWritableNext(conn)
+            if (id < 0L) break
+            UnsafeMemory.putLong(block + STREAMS_IDS + written++ * STREAMS_ID_BYTES, id)
+            writable++
+        }
+        UnsafeMemory.putInt(block + STREAMS_READABLE, readable)
+        UnsafeMemory.putInt(block + STREAMS_WRITABLE, writable)
+        UnsafeMemory.putInt(block + STREAMS_FULL, if (written == capacity) 1 else 0)
+        return written
+    }
+
+    /** The fingerprint of the block layout [connStreams] writes, as the backend was built: `QN_STREAMS_LAYOUT`. */
+    fun connStreamsLayout(): Int = STREAMS_LAYOUT
+
     // --- Helpers ---
 
     fun recvInfoNew(
@@ -1091,6 +1137,21 @@ interface QuicheApi {
         }
     }
 }
+
+/** [QuicheApi.connStreams]' block, as `qnet_streams.h` lays it out: header fields, then 8-byte ids. Public for the FFM compilation. */
+const val STREAMS_READABLE = 0
+const val STREAMS_WRITABLE = 4
+const val STREAMS_FULL = 8
+const val STREAMS_IDS = 16
+const val STREAMS_ID_BYTES = 8
+
+/** [STREAMS_READABLE]'s value when more streams were readable than fit: none of them is written. */
+const val STREAMS_SPILLED = -1
+
+/** `QN_STREAMS_LAYOUT`: the values above folded as `h * 31 + value`, in their order, from 0. */
+val STREAMS_LAYOUT: Int =
+    intArrayOf(STREAMS_READABLE, STREAMS_WRITABLE, STREAMS_FULL, STREAMS_IDS, STREAMS_ID_BYTES, STREAMS_SPILLED)
+        .fold(0) { h, v -> h * 31 + v }
 
 /** What [QuicheApi.connActivePathRttNanos] answers when the connection has no active path. */
 const val NO_RTT_NANOS = -1L

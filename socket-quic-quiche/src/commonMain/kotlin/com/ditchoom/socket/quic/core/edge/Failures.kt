@@ -19,6 +19,7 @@ import com.ditchoom.socket.quic.QuicStreamReadError
 import com.ditchoom.socket.quic.QuicStreamReadException
 import com.ditchoom.socket.quic.QuicStreamSide
 import com.ditchoom.socket.quic.QuicWriteTarget
+import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.QuicheDriver
 import com.ditchoom.socket.quic.RouteProbeFailure
 import com.ditchoom.socket.quic.UnresolvedRouteSourceException
@@ -27,6 +28,9 @@ import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.stream.QUICHE_ERR_INVALID_STREAM_STATE
 import com.ditchoom.socket.quic.core.stream.QUICHE_ERR_STREAM_RESET
 import com.ditchoom.socket.quic.core.stream.QUICHE_ERR_STREAM_STOPPED
+import com.ditchoom.socket.quic.core.stream.StreamsLayoutCheck
+import com.ditchoom.socket.quic.core.stream.StreamsLayoutMismatch
+import com.ditchoom.socket.quic.core.stream.streamsLayoutOf
 import com.ditchoom.socket.quic.core.udp.SpecLayoutMismatch
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.InternalCoroutinesApi
@@ -109,6 +113,11 @@ internal sealed interface Raised : OpFailure {
     /** The loaded `qnet` lays its socket spec block out differently from this code. */
     class SpecLayoutRefused(
         val mismatch: SpecLayoutMismatch,
+    ) : Raised
+
+    /** The loaded native library lays the block of a turn's streams out differently from this code. */
+    class StreamsLayoutRefused(
+        val mismatch: StreamsLayoutMismatch,
     ) : Raised
 
     /** Network.framework failed the client's connection before it was ready. */
@@ -224,6 +233,7 @@ private fun exceptionOf(
         is Raised.LoopsClosed -> CoreLoopsClosed()
         is Raised.SocketRefused -> failure.refusal
         is Raised.SpecLayoutRefused -> CoreSpecLayoutMismatch(failure.mismatch)
+        is Raised.StreamsLayoutRefused -> CoreStreamsLayoutMismatch(failure.mismatch)
         is Raised.NetworkRefused -> failure.refusal
     }
 
@@ -261,6 +271,21 @@ internal class CoreLoopsClosed : IllegalStateException()
 internal class CoreSpecLayoutMismatch(
     val mismatch: SpecLayoutMismatch,
 ) : IllegalStateException()
+
+/** The native library this process loaded does not lay out a turn's streams block as this code does. */
+internal class CoreStreamsLayoutMismatch(
+    val mismatch: StreamsLayoutMismatch,
+) : IllegalStateException()
+
+/**
+ * Raises [Raised.StreamsLayoutRefused] when [api] writes a streams block this code would misread: checked before a
+ * connection or a server is set up, never per turn.
+ */
+internal fun refuseForeignStreamsLayout(api: QuicheApi) =
+    when (val check = streamsLayoutOf(api)) {
+        is StreamsLayoutCheck.Same -> Unit
+        is StreamsLayoutCheck.Differs -> raise(Raised.StreamsLayoutRefused(check.mismatch), QuicCloseCircumstance.HandshakeFailed)
+    }
 
 /** A write quiche refused for a reason of its own, by quiche's code. */
 internal class QuicStreamWriteFailed(

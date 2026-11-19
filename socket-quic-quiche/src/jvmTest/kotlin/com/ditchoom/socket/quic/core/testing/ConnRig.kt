@@ -153,7 +153,7 @@ internal fun testConn(
                 PathKey(4, 50_000, 0L, 0x7F000001L),
                 target,
             ),
-        memory = ConnMemory(testLoopMemory(), BufferFactory.Default, nativeBytes(255)),
+        memory = ConnMemory.of(testLoopMemory(), BufferFactory.Default, nativeBytes(ConnMemory.SCRATCH_BYTES)),
         flight = FlightSize(records = 512),
         capture = capture,
         port = loop.port,

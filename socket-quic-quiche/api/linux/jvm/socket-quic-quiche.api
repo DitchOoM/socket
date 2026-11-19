@@ -231,6 +231,8 @@ public final class com/ditchoom/socket/quic/JniQuicheApi : com/ditchoom/socket/q
 	public fun connStreamSendStep-bIuTHMA (JJJIZ)J
 	public fun connStreamShutdown-OTKbAR0 (JJIJ)I
 	public fun connStreamWritableNext-ObL0uzk (J)J
+	public fun connStreams-RTtnfzo (JJI)I
+	public fun connStreamsLayout ()I
 	public fun connTakeNewToken-RTtnfzo (JJI)I
 	public fun connTimeout-DIP9Sao (J)Lkotlin/time/Duration;
 	public fun connTimeoutNanos-ObL0uzk (J)J
@@ -752,6 +754,8 @@ public abstract interface class com/ditchoom/socket/quic/QuicheApi {
 	public fun connStreamSendStep-bIuTHMA (JJJIZ)J
 	public abstract fun connStreamShutdown-OTKbAR0 (JJIJ)I
 	public abstract fun connStreamWritableNext-ObL0uzk (J)J
+	public fun connStreams-RTtnfzo (JJI)I
+	public fun connStreamsLayout ()I
 	public abstract fun connTakeNewToken-RTtnfzo (JJI)I
 	public abstract fun connTimeout-DIP9Sao (J)Lkotlin/time/Duration;
 	public fun connTimeoutNanos-ObL0uzk (J)J
@@ -802,6 +806,8 @@ public final class com/ditchoom/socket/quic/QuicheApi$DefaultImpls {
 	public static fun connStats-ObL0uzk (Lcom/ditchoom/socket/quic/QuicheApi;J)Lcom/ditchoom/socket/quic/QuicConnStats;
 	public static fun connStreamRecvStep-CtlJxC8 (Lcom/ditchoom/socket/quic/QuicheApi;JJJI)J
 	public static fun connStreamSendStep-bIuTHMA (Lcom/ditchoom/socket/quic/QuicheApi;JJJIZ)J
+	public static fun connStreams-RTtnfzo (Lcom/ditchoom/socket/quic/QuicheApi;JJI)I
+	public static fun connStreamsLayout (Lcom/ditchoom/socket/quic/QuicheApi;)I
 	public static fun connTimeoutNanos-ObL0uzk (Lcom/ditchoom/socket/quic/QuicheApi;J)J
 	public static fun connTraceId-RTtnfzo (Lcom/ditchoom/socket/quic/QuicheApi;JJI)I
 	public static fun sendInfoAtNanos-Ny8-tdU (Lcom/ditchoom/socket/quic/QuicheApi;J)J
@@ -814,6 +820,13 @@ public final class com/ditchoom/socket/quic/QuicheApiKt {
 	public static final field NO_RTT_NANOS J
 	public static final field NO_TIMEOUT_NANOS J
 	public static final field RETIRED_SCID_SLOT_BYTES I
+	public static final field STREAMS_FULL I
+	public static final field STREAMS_IDS I
+	public static final field STREAMS_ID_BYTES I
+	public static final field STREAMS_READABLE I
+	public static final field STREAMS_SPILLED I
+	public static final field STREAMS_WRITABLE I
+	public static final fun getSTREAMS_LAYOUT ()I
 }
 
 public final class com/ditchoom/socket/quic/QuicheApiLoaderKt {

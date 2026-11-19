@@ -80,7 +80,32 @@ class CoreEchoTests {
             }
         }
 
+    /** More streams at once than a turn's streams block holds: a turn that finds more readable walks quiche's list. */
+    @Test
+    fun moreConcurrentStreamsThanATurnsBlockHoldsEachEchoTheirOwnBytes() =
+        coreTest("CoreEchoTests.moreConcurrentStreamsThanATurnsBlockHoldsEachEchoTheirOwnBytes") {
+            withCoreEchoServer { server ->
+                val client = connectCore(server.port, loops = loops)
+                try {
+                    val streams = List(CONCURRENT_STREAMS) { client.connection.openStream() }
+                    val echoed =
+                        streams
+                            .mapIndexed { n, stream ->
+                                async(Dispatchers.IO) {
+                                    val payload = Random(n).nextBytes(1 + n % 300)
+                                    payload to echoOver(stream, payload)
+                                }
+                            }.awaitAll()
+                    echoed.forEachIndexed { n, (sent, back) -> assertContentEquals(sent, back, "stream $n") }
+                    streams.forEach { it.close() }
+                } finally {
+                    client.connection.close(QuicError.NoError)
+                }
+            }
+        }
+
     private companion object {
         const val CONNECTIONS = 64
+        const val CONCURRENT_STREAMS = 96
     }
 }

@@ -426,8 +426,9 @@ public class CoreDefaultsCheck {
         QUICHE_OWNERS.put("connClose|connIsClosed|connIsDraining|connIsTimedOut|connPeerError|connLocalError", List.of("life/ConnLife"));
         QUICHE_OWNERS.put("connStreamDataUnacknowledged", List.of("life/Linger", "life/ConnLife"));
         QUICHE_OWNERS.put("connFree|recvInfoFree|sendInfoFree", List.of("conn/Release"));
-        QUICHE_OWNERS.put("connReadable|connWritable|streamIterFree|streamIterNext|streamIterNextId|connPeerStreamsLeftBidi|connPeerStreamsLeftUni",
-            List.of("stream/StreamTable"));
+        QUICHE_OWNERS.put("connStreams|connStreamsLayout|connReadable|connWritable|connStreamWritableNext|streamIterFree|streamIterNext"
+            + "|streamIterNextId", List.of("stream/StreamsBlock"));
+        QUICHE_OWNERS.put("connPeerStreamsLeftBidi|connPeerStreamsLeftUni", List.of("stream/StreamTable"));
         QUICHE_OWNERS.put("configSetInitialMaxData|configSetInitialMaxStreamDataBidiLocal|configSetInitialMaxStreamDataBidiRemote"
             + "|configSetInitialMaxStreamDataUni|configSetInitialMaxStreamsBidi|configSetInitialMaxStreamsUni"
             + "|configSetMaxConnectionWindow|configSetMaxStreamWindow", List.of("stream/FlowWindows"));

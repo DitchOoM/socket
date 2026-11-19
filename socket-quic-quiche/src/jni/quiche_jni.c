@@ -1188,5 +1188,27 @@ JNIEXPORT jlong JNICALL JNI_FN(nSockAddrV6Lo)(JNIEnv *env, jclass cls, jlong add
     return (jlong)lo;
 }
 
+/* --- A connection turn's streams in one crossing: see qnet_streams.h --- */
+#include "qnet_streams.h"
+
+/* The FFM binding's entry points (JNI's are below): exported by name from this library on every platform. */
+#if defined(_WIN32)
+#define QN_STREAMS_EXPORT __declspec(dllexport)
+#else
+#define QN_STREAMS_EXPORT __attribute__((visibility("default")))
+#endif
+
+QN_STREAMS_EXPORT int32_t qn_conn_streams(int64_t conn, int64_t block, int32_t capacity) {
+    return qn_streams_take(conn, block, capacity);
+}
+
+QN_STREAMS_EXPORT int32_t qn_conn_streams_layout(void) { return qn_streams_layout(); }
+
+JNIEXPORT jint JNICALL JNI_FN(nConnStreams)(JNIEnv *env, jclass cls, jlong conn, jlong block, jint capacity) {
+    return (jint)qn_streams_take((int64_t)conn, (int64_t)block, (int32_t)capacity);
+}
+
+JNIEXPORT jint JNICALL JNI_FN(nConnStreamsLayout)(JNIEnv *env, jclass cls) { return (jint)qn_streams_layout(); }
+
 /* The native stack (poller and UDP socket calls) rides in this library: see qnet.h. */
 #include "qnet_jni.c"

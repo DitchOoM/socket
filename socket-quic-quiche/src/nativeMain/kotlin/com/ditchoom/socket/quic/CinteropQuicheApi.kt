@@ -3,6 +3,8 @@
 package com.ditchoom.socket.quic
 
 import com.ditchoom.socket.quic.quiche.QUICHE_PROTOCOL_VERSION
+import com.ditchoom.socket.quic.quiche.qn_streams_layout
+import com.ditchoom.socket.quic.quiche.qn_streams_take
 import com.ditchoom.socket.quic.quiche.quiche_accept
 import com.ditchoom.socket.quic.quiche.quiche_clear_thread_random_state
 import com.ditchoom.socket.quic.quiche.quiche_clear_virtual_time
@@ -1300,6 +1302,14 @@ internal object CinteropQuicheApi : QuicheApi, QuicheRandomPin {
     override fun streamIterFree(iter: QuicheStreamIter) {
         if (!iter.isExhausted) quiche_stream_iter_free(iter.handle.toCPointer()!!)
     }
+
+    override fun connStreams(
+        conn: QuicheConn,
+        block: Long,
+        capacity: Int,
+    ): Int = qn_streams_take(conn.handle, block, capacity)
+
+    override fun connStreamsLayout(): Int = qn_streams_layout()
 
     // --- Helpers (recvInfo/sendInfo use native heap allocation) ---
 

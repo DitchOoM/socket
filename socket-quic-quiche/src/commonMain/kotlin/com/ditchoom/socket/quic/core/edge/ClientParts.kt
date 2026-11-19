@@ -61,9 +61,9 @@ internal class ClientParts(
     private val io = w.wrapIo(socketIo.io)
     private val loop = w.running.loop
     private val socket = SendPort(io, loop.port, CallerLanes.Of(lanes), SocketDiedNotice(), loop.counts, loop.callerCounts)
-    private val alpn = w.memory.native(MAX_ALPN)
+    private val scratch = w.memory.native(ConnMemory.SCRATCH_BYTES)
     val capture: TraceCapture = traceRecorderFor(w.options)
-    private val edge = EdgeState(alpn.owner, capture, w.tickets)
+    private val edge = EdgeState(scratch.owner, capture, w.tickets)
     val conn: Conn =
         buildConn(
             rules =
@@ -86,7 +86,7 @@ internal class ClientParts(
                     w.socket.local(),
                     SendTarget.ConnectedPeer,
                 ),
-            memory = ConnMemory(w.running.shared, w.memory.factory(), alpn),
+            memory = ConnMemory.of(w.running.shared, w.memory.factory(), scratch),
             flight = w.flight,
             capture = capture,
             port = loop.port,
@@ -146,8 +146,4 @@ internal class ClientParts(
         bind: PathKey,
         prior: RttPrior,
     ) = loop.move(endpoint, bind, prior)
-
-    private companion object {
-        const val MAX_ALPN = 255
-    }
 }

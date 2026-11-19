@@ -104,6 +104,7 @@ internal class ServerSetup(
 
     /** Builds the server, telling [moved] each time what the setup opened passes to a new owner. */
     private fun opened(moved: (SetupOwner) -> Unit): CoreServer {
+        refuseForeignStreamsLayout(api)
         val limits = BatchLimits(maxDatagrams = MAX_BATCH, maxDatagramSize = MAX_DATAGRAM)
         val callerLimits = BatchLimits(maxDatagrams = CALLER_BATCH, maxDatagramSize = MAX_DATAGRAM)
         val send = SendBatch(memory.native(limits.maxDatagrams * limits.maxDatagramSize), limits)

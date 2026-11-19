@@ -43,21 +43,20 @@ internal sealed interface PeerMemoryTake {
 
 /**
  * The native memory one accepted connection holds of its own, from the server's factory, freed once it is released:
- * only its ALPN scratch. Datagram copies and flight payload live in the loop's [LoopMemory], shared by every peer.
+ * its ALPN and streams scratch ([ConnMemory.of]). Datagram copies and flight payload live in the loop's [LoopMemory],
+ * shared by every peer.
  */
 internal class PeerMemory private constructor(
-    val alpn: NativeBytes,
+    val scratch: NativeBytes,
 ) {
-    fun free() = alpn.free()
+    fun free() = scratch.free()
 
     companion object {
         fun of(factory: BufferFactory): PeerMemoryTake =
-            when (val taken = NativeBytes.of(factory.allocate(MAX_ALPN))) {
+            when (val taken = NativeBytes.of(factory.allocate(ConnMemory.SCRATCH_BYTES))) {
                 is Addressed.Native -> PeerMemoryTake.Taken(PeerMemory(taken.bytes))
                 is Addressed.NotAddressable -> PeerMemoryTake.NotNative
             }
-
-        private const val MAX_ALPN = 255
     }
 }
 
@@ -90,7 +89,7 @@ internal class ConnBuild(
     private val inProgress: Counter,
 ) {
     /** Where the connection copies the negotiated ALPN; the edge reads it at establishment. */
-    val alpn: PlatformBuffer get() = memory.alpn.owner
+    val alpn: PlatformBuffer get() = memory.scratch.owner
 
     /** Names the connection's qlog before quiche reads its first datagram. */
     fun nameQlog(
@@ -107,7 +106,7 @@ internal class ConnBuild(
             q = q,
             side = ConnSide.Server,
             address = address,
-            memory = ConnMemory(parts.shared, parts.factory, memory.alpn),
+            memory = ConnMemory.of(parts.shared, parts.factory, memory.scratch),
             flight = parts.flight,
             capture = capture,
             port = parts.port,

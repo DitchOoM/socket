@@ -8,6 +8,7 @@ import com.ditchoom.socket.quic.StreamRecvResult
 import com.ditchoom.socket.quic.StubQuicheApi
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
+import com.ditchoom.socket.quic.core.testing.nativeBytes
 import com.ditchoom.socket.quic.core.testing.testLoopMemory
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -17,7 +18,18 @@ import kotlin.test.assertSame
 class StreamTableTests {
     private val api = StubQuicheApi()
     private val q = QuicheConnRef(api, QuicheConn(1L))
-    private val table = StreamTable(q, StreamIo(q), QuicRole.Client, testLoopMemory().drains)
+
+    private fun blockOf(ids: Int): StreamsBlock =
+        StreamsBlock.bytesFor(ids).let { bytes -> StreamsBlock(q, nativeBytes(bytes).address, bytes) }
+
+    private val table =
+        StreamTable(
+            q,
+            StreamIo(q),
+            QuicRole.Client,
+            testLoopMemory().drains,
+            blockOf(StreamsBlock.IDS),
+        )
 
     private class Counting(
         private val answer: Retry,
@@ -63,6 +75,24 @@ class StreamTableTests {
         table.takeIncoming { incoming += it }
         assertEquals(listOf(QuicStreamId(1L)), incoming)
         assertEquals(2, reader.retries)
+    }
+
+    @Test
+    fun moreReadableAndWritableStreamsThanTheBlockHoldsAreAllServedInOneWake() {
+        val small =
+            StreamTable(q, StreamIo(q), QuicRole.Client, testLoopMemory().drains, blockOf(1))
+        val readers = listOf(4L, 8L).map { id -> Counting(Retry.Again).also { small.entry(QuicStreamId(id)).parkReader(it) } }
+        val writers =
+            listOf(0L, 12L).map { id ->
+                small.wantWritable(QuicStreamId(id))
+                Counting(Retry.Settled).also { small.entry(QuicStreamId(id)).parkWriter(it) }
+            }
+        api.readableStreams.addAll(listOf(4L, 8L))
+        api.writableStreams.addAll(listOf(0L, 12L))
+        small.wake()
+        assertEquals(listOf(1, 1), readers.map { it.retries }, "each readable stream once, through quiche's iterator")
+        assertEquals(listOf(1, 1), writers.map { it.retries }, "each writable stream once: one from the block, one after it")
+        assertEquals(0, api.writableStreams.size)
     }
 
     @Test

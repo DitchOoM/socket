@@ -3,7 +3,6 @@ package com.ditchoom.socket.quic.core.stream
 import com.ditchoom.socket.quic.QuicAppErrorCode
 import com.ditchoom.socket.quic.QuicRole
 import com.ditchoom.socket.quic.QuicStreamId
-import com.ditchoom.socket.quic.QuicheStreamIter
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.observe.Confined
@@ -39,6 +38,7 @@ internal class StreamTable(
     val io: StreamIo,
     private val role: QuicRole,
     drains: FixedPool<DrainSlot>,
+    private val block: StreamsBlock,
 ) {
     private val drain = StreamDrain(io, drains)
 
@@ -197,20 +197,10 @@ internal class StreamTable(
 
     /** Retries what quiche's readable and writable streams, and the peer's stream credit, let go on. */
     fun wake() {
-        val readable = q.api.connReadable(q.handle)
-        if (!readable.isExhausted) wakeReaders(readable)
-        wakeWriters()
+        block.each(readable = { readable(it) }, writable = { writable(it) })
         while (opens.isNotEmpty() && q.api.connPeerStreamsLeftBidi(q.handle) > 0) {
             if (opens.first().retry(this) == Retry.Again) return
             opens.removeFirst()
-        }
-    }
-
-    private fun wakeReaders(readable: QuicheStreamIter) {
-        try {
-            while (q.api.streamIterNextId(readable).fold(end = { false }, stream = { readable(it) })) Unit
-        } finally {
-            q.api.streamIterFree(readable)
         }
     }
 
@@ -228,7 +218,7 @@ internal class StreamTable(
         while (opens.isNotEmpty()) opens.removeFirst().connectionEnded(end)
     }
 
-    private fun readable(id: QuicStreamId): Boolean {
+    private fun readable(id: QuicStreamId) {
         val entry = entries.getOrDefault(id.id, absent)
         when {
             entry !== absent -> arrived(entry)
@@ -242,7 +232,6 @@ internal class StreamTable(
             // reading it) is read, so quiche lets it go.
             else -> drain.drop(id)
         }
-        return true
     }
 
     /** Something arrived on [entry]'s stream: its reader takes it, or, when nobody will read it, it is dropped. */
@@ -270,17 +259,9 @@ internal class StreamTable(
     }
 
     /**
-     * Hands out every stream quiche marked writable: a parked writer retries; a stream nobody writes is asked its
-     * capacity, which is how a stream the peer stopped ends our side and, once over, leaves quiche.
+     * A stream quiche marked writable: a parked writer retries; a stream nobody writes is asked its capacity, which is
+     * how a stream the peer stopped ends our side and, once over, leaves quiche.
      */
-    private fun wakeWriters() {
-        while (true) {
-            val next = q.api.connStreamWritableNext(q.handle)
-            if (next < 0L) return
-            writable(QuicStreamId(next))
-        }
-    }
-
     private fun writable(id: QuicStreamId) {
         if (writeWaiters.remove(id.id)) return entry(id).wakeWriter(this)
         when (io.capacity(id)) {
