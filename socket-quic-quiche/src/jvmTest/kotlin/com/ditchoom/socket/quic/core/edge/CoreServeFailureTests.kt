@@ -8,6 +8,7 @@ import com.ditchoom.socket.quic.NetShim
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.QuicheConfig
+import com.ditchoom.socket.quic.core.conn.MismatchResponse
 import com.ditchoom.socket.quic.core.demux.AddressValidation
 import com.ditchoom.socket.quic.core.demux.ServerConfig
 import com.ditchoom.socket.quic.core.ready.NetStack
@@ -141,6 +142,7 @@ class CoreServeFailureTests {
             clock: LoopClock,
         ) = runBlocking {
             coreServe(
+                mismatch = MismatchResponse.Fail,
                 bind = InetSocketAddress("127.0.0.1", 0).toPathKey(),
                 tls = coreTlsConfig(),
                 options = options(),

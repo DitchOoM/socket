@@ -7,6 +7,7 @@ import com.ditchoom.socket.quic.QuicheSendInfo
 import com.ditchoom.socket.quic.StubQuicheApi
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.testing.ConnRig
+import com.ditchoom.socket.quic.core.testing.CoreTestRules
 import com.ditchoom.socket.quic.core.testing.FakeIo
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.time.WaitResolution
@@ -79,7 +80,7 @@ class ConnPacingTests {
     @Test
     fun aTimeThatIsNotPacingIsNotObeyed() {
         // A reading of some other clock, hours ahead: the datagrams go at once.
-        val rig = Rig(dueTimes = longArrayOf(3_600_000 * ms, 3_600_000 * ms, 3_600_000 * ms))
+        val rig = Rig(dueTimes = longArrayOf(3_600_000 * ms, 3_600_000 * ms, 3_600_000 * ms), rules = SlotRules.Default)
 
         rig.pass(now = 0)
 
@@ -109,7 +110,17 @@ class ConnPacingTests {
             SendBatchResult.AllTaken
         }
         val rig =
-            ConnRig(api, rules = SlotRules.forWaits(WaitResolution(tick), SlotRules.Default.handshake, SlotRules.Default.close), io = io)
+            ConnRig(
+                api,
+                rules =
+                    SlotRules.forWaits(
+                        WaitResolution(tick),
+                        SlotRules.Default.handshake,
+                        SlotRules.Default.close,
+                        mismatch = MismatchResponse.Fail,
+                    ),
+                io = io,
+            )
         api.clock = { rig.clock.at.value }
         repeat(datagrams) { api.stub.connSendQueue.addLast(1200) }
         var now = 0L
@@ -142,11 +153,12 @@ class ConnPacingTests {
 
     private class Rig(
         dueTimes: LongArray,
+        rules: SlotRules = CoreTestRules,
     ) {
         val api = PacedApi(StubQuicheApi(), dueTimes)
         private val io = FakeIo()
         var sent = 0
-        val conn = ConnRig(api, io = io)
+        val conn = ConnRig(api, rules = rules, io = io)
 
         init {
             io.onSend = { pending ->

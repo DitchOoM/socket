@@ -22,6 +22,7 @@ import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicheApi
+import com.ditchoom.socket.quic.core.conn.MismatchResponse
 import com.ditchoom.socket.quic.core.demux.ServerConfig
 import com.ditchoom.socket.quic.core.demux.loopbackV4
 import com.ditchoom.socket.quic.core.testing.platformQuicheApi
@@ -202,6 +203,7 @@ internal suspend fun withCoreServer(
 ) {
     val server =
         coreServe(
+            mismatch = MismatchResponse.Fail,
             bind = bind,
             tls = platformTlsConfig(),
             options = options,

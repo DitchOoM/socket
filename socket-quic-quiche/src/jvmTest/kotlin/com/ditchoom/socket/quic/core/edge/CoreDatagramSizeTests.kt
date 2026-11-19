@@ -7,6 +7,7 @@ import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicOptions
+import com.ditchoom.socket.quic.core.conn.MismatchResponse
 import com.ditchoom.socket.quic.core.demux.withCoreEchoServer
 import com.ditchoom.socket.quic.core.udp.Addressed
 import com.ditchoom.socket.quic.core.udp.BatchLimits
@@ -74,6 +75,7 @@ class CoreDatagramSizeTests {
             val client =
                 try {
                     coreConnect(
+                        mismatch = MismatchResponse.Fail,
                         host = "127.0.0.1",
                         port = server.port,
                         serverName = "localhost",

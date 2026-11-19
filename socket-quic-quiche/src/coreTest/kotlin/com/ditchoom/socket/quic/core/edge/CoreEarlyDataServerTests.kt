@@ -12,6 +12,7 @@ import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicScope
 import com.ditchoom.socket.quic.QuicTlsConfig
+import com.ditchoom.socket.quic.core.conn.MismatchResponse
 import com.ditchoom.socket.quic.core.demux.loopbackV4
 import com.ditchoom.socket.quic.core.testing.platformQuicheApi
 import com.ditchoom.socket.quic.core.testing.platformTlsConfig
@@ -34,6 +35,7 @@ class CoreEarlyDataServerTests : EarlyDataServerTestSuite() {
         val api = HandshakeHoldApi(platformQuicheApi())
         val server =
             coreServe(
+                mismatch = MismatchResponse.Fail,
                 bind = loopbackV4(),
                 tls = testTlsConfig(),
                 options = options,

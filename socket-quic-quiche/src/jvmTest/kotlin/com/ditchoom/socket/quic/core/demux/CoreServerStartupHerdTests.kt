@@ -14,6 +14,7 @@ import com.ditchoom.socket.quic.QuicRole
 import com.ditchoom.socket.quic.QuicheConn
 import com.ditchoom.socket.quic.SendTarget
 import com.ditchoom.socket.quic.applyQuicOptions
+import com.ditchoom.socket.quic.core.conn.MismatchResponse
 import com.ditchoom.socket.quic.core.edge.CoreServer
 import com.ditchoom.socket.quic.core.edge.LoopDriver
 import com.ditchoom.socket.quic.core.edge.addressOf
@@ -116,6 +117,7 @@ class CoreServerStartupHerdTests {
         val network = MemoryNetwork(kernelBuffer)
         val server =
             coreServe(
+                mismatch = MismatchResponse.Fail,
                 bind = InetSocketAddress("127.0.0.1", 0).toPathKey(),
                 tls = coreTlsConfig(),
                 options = coreTestOptions,
