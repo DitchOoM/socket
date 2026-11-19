@@ -52,7 +52,8 @@ class OpDeadlineAllocationTests {
                         var unboundedBytes = 0L
                         repeat(BATCHES) {
                             boundedBytes += allocatedBy(bean, threads) { repeat(BATCH) { parkedEcho(stream, payload, 10.seconds) } }
-                            unboundedBytes += allocatedBy(bean, threads) { repeat(BATCH) { parkedEcho(stream, payload, Duration.INFINITE) } }
+                            unboundedBytes +=
+                                allocatedBy(bean, threads) { repeat(BATCH) { parkedEcho(stream, payload, Duration.INFINITE) } }
                         }
                         val echoes = (BATCHES * BATCH).toDouble()
                         boundedBytes / echoes to unboundedBytes / echoes
