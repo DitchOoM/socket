@@ -1,3 +1,5 @@
+@file:OptIn(ExperimentalForInheritanceCoroutinesApi::class)
+
 package com.ditchoom.socket.quic.core.edge
 
 import com.ditchoom.buffer.BufferFactory
@@ -28,9 +30,13 @@ import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.testkit.trace.TraceSink
 import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.transport.NetworkKind
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.ExperimentalForInheritanceCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlin.random.Random
@@ -51,6 +57,24 @@ import kotlin.time.TimeSource
 class CoreNetworkFeedTests {
     private class FakeMonitor : NetworkMonitor {
         override val state = MutableStateFlow<NetworkState>(UP)
+
+        override fun close() = Unit
+    }
+
+    /**
+     * A monitor whose state the feed subscribes to only once [subscribe] completes, as when the setup lane the feed
+     * starts on is busy: what changed before then is in the state's value when the subscription begins.
+     */
+    private class LateSubscription : NetworkMonitor {
+        val held = MutableStateFlow(WIFI_BEFORE)
+        val subscribe = CompletableDeferred<Unit>()
+        override val state: StateFlow<NetworkState> =
+            object : StateFlow<NetworkState> by held {
+                override suspend fun collect(collector: FlowCollector<NetworkState>): Nothing {
+                    subscribe.await()
+                    held.collect(collector)
+                }
+            }
 
         override fun close() = Unit
     }
@@ -226,6 +250,32 @@ class CoreNetworkFeedTests {
                             assertIs<EdgeEnd.Ended>(client.connection.end()).end
                         }
                     assertSame(ConnEnd.LocalAddressGone, ended, "not an idle timeout read as NetworkLost later")
+                }
+            }
+        }
+
+    /**
+     * A move the monitor reported after the connect returned but before the feed subscribed to it is followed: the feed
+     * compares what it reads first with the network the connect opened on, rather than taking that first reading as it.
+     */
+    @Test
+    fun aMoveReportedBeforeTheFeedSubscribesIsFollowed() =
+        runBlocking {
+            skipOnMissingNativeLib(CoreNetworkFeedTests::class) {
+                withEchoServer { port ->
+                    val monitor = LateSubscription()
+                    var source: RouteSource = RouteSource.Resolved("127.0.0.1")
+                    val client = connectWatched(port, monitor, routeSource = { source })
+                    val warm = Random(1).nextBytes(500)
+                    assertContentEquals(warm, echoOver(client.connection.openStream(), warm))
+
+                    source = WILDCARD
+                    monitor.held.value = WIFI_AFTER
+                    monitor.subscribe.complete(Unit)
+                    withTimeout(5.seconds) { while ("Migrated" !in marksOf(client)) delay(5) }
+                    val payload = Random(7).nextBytes(2_000)
+                    assertContentEquals(payload, withTimeout(5.seconds) { echoOver(client.connection.openStream(), payload) })
+                    client.connection.close(QuicError.NoError)
                 }
             }
         }

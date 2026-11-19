@@ -11,6 +11,7 @@ import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.ConnLife
 import com.ditchoom.socket.quic.core.life.Life
 import com.ditchoom.socket.quic.core.life.SpareId
+import com.ditchoom.socket.quic.core.path.Want
 import com.ditchoom.socket.quic.core.sched.LoopPort
 import com.ditchoom.socket.quic.core.stream.StreamTable
 import com.ditchoom.socket.quic.core.time.LoopClock
@@ -53,6 +54,13 @@ internal class Inside(
     fun end(end: ConnEnd) = turn.finish(clock.now(), end)
 
     fun network(change: NetworkChange) = turn.network(clock.now(), change)
+
+    /** The client's socket is wanted on [wanted]'s address: it moves once the path from there can be probed. */
+    fun moveWanted(wanted: MoveWanted) =
+        when (c.want(clock.now(), wanted)) {
+            Want.Moving, Want.Waiting -> Unit
+            Want.NoUsablePath -> end(ConnEnd.NoUsablePath)
+        }
 
     /** The client's socket now leaves from [to]. */
     fun moved(to: MoveTo) = turn.moved(clock.now(), to)

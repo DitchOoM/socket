@@ -12,6 +12,7 @@ import com.ditchoom.socket.quic.core.path.PathRead
 import com.ditchoom.socket.quic.core.path.PathStep
 import com.ditchoom.socket.quic.core.path.RecvFrom
 import com.ditchoom.socket.quic.core.path.Sorting
+import com.ditchoom.socket.quic.core.path.Want
 import com.ditchoom.socket.quic.core.path.Window
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.time.WakeSink
@@ -176,6 +177,32 @@ internal fun ConnParts.follow(
         },
     )
     return answer
+}
+
+/**
+ * Inside: a client's socket is wanted on [wanted]'s address. Before its handshake is confirmed it moves at once and the
+ * connection, which cannot follow it (RFC 9000 §9), ends; after, it moves once the path from there can be probed.
+ */
+internal fun ConnParts.want(
+    now: Nanos,
+    wanted: MoveWanted,
+): Want {
+    val client =
+        when (val paths = slots.paths) {
+            is Paths.Client -> paths.paths
+            is Paths.Server -> return Want.Moving
+        }
+    val want =
+        when (handshake.confirmation()) {
+            Confirmation.Pending -> client.hold.moveNow(wanted.bind, wanted.prior)
+            Confirmation.Confirmed -> client.hold.want(now, wanted.bind, wanted.prior)
+        }
+    when (want) {
+        Want.Moving -> Unit
+        Want.Waiting -> flight.path(now, PathMark.Held)
+        Want.NoUsablePath -> flight.path(now, PathMark.Refused)
+    }
+    return want
 }
 
 /** Any thread: how many new ids the loop should route to a server connection; taken once. */

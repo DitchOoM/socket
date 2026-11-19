@@ -8,11 +8,12 @@ import kotlinx.coroutines.runBlocking
 
 /** What a failed test's evidence came to. */
 internal sealed interface EvidenceWritten {
-    /** The recordings of [count] connections are in [directory], one trace file each, named for the test. */
+    /** The recordings of [count] connections are in [directory], one trace file each, named for the test; [ends] says how each ended. */
     class Files(
         val directory: String,
         val test: String,
         val count: Int,
+        val ends: String,
     ) : EvidenceWritten
 
     /** The test touched no connection that ended. */
@@ -48,7 +49,8 @@ internal object FailureEvidence {
             ended.withIndex().count { (n, flight) ->
                 writeTextFile("$directory/$method.${nameOf(flight, n)}.trace", linesOf(flight))
             }
-        return if (written == ended.size) EvidenceWritten.Files(directory, method, written) else EvidenceWritten.Unwritable(directory)
+        val ends = ended.withIndex().joinToString { (n, flight) -> "${nameOf(flight, n)} ended ${flight.end}" }
+        return if (written == ended.size) EvidenceWritten.Files(directory, method, written, ends) else EvidenceWritten.Unwritable(directory)
     }
 
     /** The message a failed test carries: names where its recordings went. */
@@ -59,7 +61,7 @@ internal object FailureEvidence {
         original.orEmpty() +
             when (written) {
                 is EvidenceWritten.Files ->
-                    "\nflight recordings (${written.count} connections): ${written.directory}/${written.test}.*.trace"
+                    "\nflight recordings (${written.count} connections: ${written.ends}): ${written.directory}/${written.test}.*.trace"
                 is EvidenceWritten.NoConnections -> "\nflight recordings: no connection ended during the test"
                 is EvidenceWritten.Unwritable -> "\nflight recordings: could not write under ${written.directory}"
             }

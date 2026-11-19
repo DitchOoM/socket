@@ -22,6 +22,7 @@ import com.ditchoom.socket.quic.core.sched.WorkInbox
 import com.ditchoom.socket.quic.core.stream.StreamIo
 import com.ditchoom.socket.quic.core.stream.StreamTable
 import com.ditchoom.socket.quic.core.time.LoopClock
+import com.ditchoom.socket.quic.core.time.RttPrior
 import com.ditchoom.socket.quic.core.time.WakeSink
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 import com.ditchoom.socket.quic.core.udp.SockAddr
@@ -41,7 +42,7 @@ internal sealed interface ConnSide {
     /**
      * A client draws the ids it hands its peer from [ids], offered quiche [offer] before its first flight, and copies
      * its server's session ticket through one of its loop's [scratch] slots; what it took from its stores, [kept], goes
-     * back if it never sent; its server's NEW_TOKEN token goes to [tokens].
+     * back if it never sent; its server's NEW_TOKEN token goes to [tokens]; its socket is moved by [mover].
      */
     class Client(
         val ids: Random,
@@ -49,6 +50,7 @@ internal sealed interface ConnSide {
         val scratch: FixedPool<SessionScratch>,
         val kept: KeptTicket,
         val tokens: TokenHome,
+        val mover: (PathKey, RttPrior) -> Unit,
     ) : ConnSide
 
     /** A server hands its peer the ids its loop routes to it. */
@@ -124,6 +126,7 @@ private fun composed(
                                 IdIssuer(memory.factory),
                                 side.ids,
                                 { info, made -> q.freeInfo(info, made) },
+                                side.mover,
                             ),
                         )
                     is ConnSide.Server ->

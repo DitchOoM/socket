@@ -1,0 +1,124 @@
+package com.ditchoom.socket.quic.core.path
+
+import com.ditchoom.socket.quic.PathKey
+import com.ditchoom.socket.quic.PeerMigrationPermission
+import com.ditchoom.socket.quic.connPeerMigrationPermission
+import com.ditchoom.socket.quic.core.life.QuicheConnRef
+import com.ditchoom.socket.quic.core.observe.Confined
+import com.ditchoom.socket.quic.core.time.Nanos
+import com.ditchoom.socket.quic.core.time.RttPrior
+import com.ditchoom.socket.quic.core.time.WakeSink
+
+/**
+ * Whether a client's socket waits to move. The path from a new address needs a spare destination id, which the peer
+ * sends to the address the socket is on; a socket that left it before the id came could never receive one.
+ */
+internal sealed interface HeldMove {
+    data object None : HeldMove
+
+    /** The socket is wanted on [bind]'s address and waits for a spare id; the move is final once [darkAt] passes in silence. */
+    class Waiting(
+        val bind: PathKey,
+        val prior: RttPrior,
+        val darkAt: Nanos,
+    ) : HeldMove
+}
+
+/** What a client whose socket is wanted on another address answers. */
+internal enum class Want {
+    /** The socket is being moved. */
+    Moving,
+
+    /** The socket waits where it is for a spare id from the peer. */
+    Waiting,
+
+    /** The peer gave no spare id and is silent, so none can come: the connection cannot follow its socket. */
+    NoUsablePath,
+}
+
+/**
+ * Where a client's socket is wanted, and whether it may go yet. It moves through [mover], which moves it to an address
+ * on a port of its own, on a network assumed to have the given round trip. Inside the connection only.
+ */
+@Confined
+internal class MoveHold(
+    private val q: QuicheConnRef,
+    private val ears: PeerHearing,
+    private val mover: (PathKey, RttPrior) -> Unit,
+) {
+    var held: HeldMove = HeldMove.None
+        private set
+
+    /**
+     * The socket is wanted on [bind]'s address. It moves now when the path from there can be probed, or when the peer
+     * forbade migration, which the move then answers. With no spare id it waits where it is: the peer sends the id there,
+     * and could not reach a socket that left. A silent peer can send none, and the move is final.
+     */
+    fun want(
+        now: Nanos,
+        bind: PathKey,
+        prior: RttPrior,
+    ): Want {
+        when (q.api.connPeerMigrationPermission(q.handle)) {
+            is PeerMigrationPermission.Permitted -> Unit
+            is PeerMigrationPermission.Forbidden, is PeerMigrationPermission.NotYetNegotiated -> return moveNow(bind, prior)
+        }
+        if (q.api.connAvailableDcids(q.handle) > 0L) return moveNow(bind, prior)
+        return when (ears.judge(now)) {
+            is Hearing.Dark -> {
+                held = HeldMove.None
+                Want.NoUsablePath
+            }
+            is Hearing.Alive -> {
+                held = HeldMove.Waiting(bind, prior, ears.darkAt())
+                Want.Waiting
+            }
+        }
+    }
+
+    /** The socket moves to [bind]'s address now, in place of any that waited. */
+    fun moveNow(
+        bind: PathKey,
+        prior: RttPrior,
+    ): Want {
+        held = HeldMove.None
+        mover(bind, prior)
+        return Want.Moving
+    }
+
+    /**
+     * A waiting socket moves once the peer's spare id came; what arrives meanwhile shows the peer can still send one, and
+     * silence until [HeldMove.Waiting.darkAt] makes the move final ([PathStep.NoUsablePath]).
+     */
+    fun step(now: Nanos): PathStep {
+        val waiting =
+            when (val h = held) {
+                is HeldMove.None -> return PathStep.Steady
+                is HeldMove.Waiting -> h
+            }
+        if (q.api.connAvailableDcids(q.handle) > 0L) {
+            moveNow(waiting.bind, waiting.prior)
+            return PathStep.Steady
+        }
+        return when (ears.observe(now)) {
+            Observed.Renewed -> {
+                held = HeldMove.Waiting(waiting.bind, waiting.prior, ears.darkAt())
+                PathStep.Steady
+            }
+            Observed.Unchanged ->
+                if (now.value < waiting.darkAt.value) {
+                    PathStep.Steady
+                } else {
+                    held = HeldMove.None
+                    PathStep.NoUsablePath
+                }
+        }
+    }
+
+    /** Offers the time a waiting move turns final; nothing when none waits. */
+    fun offerWake(sink: WakeSink) =
+        when (val h = held) {
+            is HeldMove.Waiting -> sink.offer(h.darkAt)
+            is HeldMove.None -> Unit
+        }
+}

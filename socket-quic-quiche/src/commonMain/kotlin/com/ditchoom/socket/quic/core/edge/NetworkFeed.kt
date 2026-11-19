@@ -2,6 +2,7 @@
 
 package com.ditchoom.socket.quic.core.edge
 
+import com.ditchoom.socket.LinkAddresses
 import com.ditchoom.socket.NetworkMonitor
 import com.ditchoom.socket.NetworkState
 import com.ditchoom.socket.networkId
@@ -16,7 +17,7 @@ import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.dropWhile
 import kotlinx.coroutines.launch
 import kotlin.coroutines.CoroutineContext
 
@@ -39,10 +40,13 @@ internal fun CoroutineScope.feedNetwork(
     onMove: OnMove,
     context: CoroutineContext = setupLane,
     bindKey: suspend (String) -> PathKey = { host -> UdpSocket.resolve(host, 0).toPathKey() },
-): Job =
-    launch(context + CoroutineName("quic-core/network")) {
-        val watch = HomeWatch(boundHost, monitor.state.value.networkId, onMove)
-        combine(monitor.state, monitor.linkAddresses) { state, _ -> state }.drop(1).collect { now ->
+): Job {
+    // Read before the feed starts: what changes while it waits for its context is news, not where the socket opened.
+    val opened = MonitorReading(monitor.state.value, monitor.linkAddresses.value)
+    return launch(context + CoroutineName("quic-core/network")) {
+        val watch = HomeWatch(boundHost, opened.state.networkId, onMove)
+        combine(monitor.state, monitor.linkAddresses, ::MonitorReading).dropWhile { it == opened }.collect { reading ->
+            val now = reading.state
             val step =
                 when (now) {
                     is NetworkState.Unknown -> HomeStep.Stay
@@ -59,3 +63,10 @@ internal fun CoroutineScope.feedNetwork(
             }
         }
     }
+}
+
+/** One reading of a network monitor: its state and the addresses its links carry. */
+private data class MonitorReading(
+    val state: NetworkState,
+    val links: LinkAddresses,
+)
