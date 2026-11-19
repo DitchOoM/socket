@@ -1,4 +1,4 @@
-@file:OptIn(ExperimentalAtomicApi::class)
+@file:OptIn(ExperimentalAtomicApi::class, ExperimentalForeignApi::class)
 
 package com.ditchoom.socket.quic.core.udp
 
@@ -6,10 +6,28 @@ import com.ditchoom.socket.quic.NwConnection
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.copyOut
 import com.ditchoom.socket.quic.core.observe.Queue
+import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.convert
+import platform.darwin.DISPATCH_QUEUE_PRIORITY_DEFAULT
+import platform.darwin.DISPATCH_TIME_NOW
+import platform.darwin.dispatch_after
+import platform.darwin.dispatch_get_global_queue
+import platform.darwin.dispatch_time
 import kotlin.concurrent.atomics.AtomicInt
+import kotlin.concurrent.atomics.AtomicReference
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.concurrent.atomics.decrementAndFetch
 import kotlin.concurrent.atomics.incrementAndFetch
+
+/** Where a wire stands with its connection's cancel. */
+private sealed interface WireEnd {
+    data object Open : WireEnd
+
+    /** Retired with sends still awaiting their completion: the last completion cancels it, or the drain bound does. */
+    data object Draining : WireEnd
+
+    data object Cancelled : WireEnd
+}
 
 /**
  * One Network.framework connection and everything that belongs to it alone: its state, the sends awaiting their
@@ -18,7 +36,9 @@ import kotlin.concurrent.atomics.incrementAndFetch
  * batch, and a completion wakes the loop to send them. Receiving is completion-driven: one receive is armed at a time
  * while the ring has room, and every arrival wakes the loop through [wake]. A connection that failed refuses every
  * later send and receive as closed; Network.framework reports a send's failure only on its completion, so a datagram
- * it could not send counts as lost.
+ * it could not send counts as lost. A retired connection is cancelled once every send handed to it has completed,
+ * since a cancel discards the sends Network.framework still holds: a closing client's last datagram is its
+ * CONNECTION_CLOSE.
  */
 @Queue
 internal class NwWire(
@@ -30,6 +50,7 @@ internal class NwWire(
     private val inFlight = AtomicInt(0)
     private val blocked = AtomicInt(FLOWING)
     private val arming = AtomicInt(ARMED)
+    private val end = AtomicReference<WireEnd>(WireEnd.Open)
     private val arrivals = NwArrivals(MAX_ARRIVALS)
     private val sendOne = connection.sender(::completed)
     private val receiveOne = connection.receiver(::arrived)
@@ -83,15 +104,32 @@ internal class NwWire(
         return if (got > 0) ReceiveBatchResult.Got else ReceiveBatchResult.Nothing
     }
 
-    /** Ends the connection for every later send and receive, and cancels it. */
+    /**
+     * Ends the connection for every later send and receive, and cancels it once the sends it holds have completed, or
+     * [DRAIN_BOUND_NANOS] from now if one never does.
+     */
     fun retire() {
         life.cancelled()
-        connection.cancel()
+        if (!end.compareAndSet(WireEnd.Open, WireEnd.Draining)) return
+        if (inFlight.load() == 0) {
+            cancelOnce()
+        } else {
+            dispatch_after(
+                dispatch_time(DISPATCH_TIME_NOW, DRAIN_BOUND_NANOS),
+                dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT.convert(), 0u),
+            ) {
+                cancelOnce()
+            }
+        }
     }
 
-    /** On Network.framework's queue: a send completed. */
+    private fun cancelOnce() {
+        if (end.compareAndSet(WireEnd.Draining, WireEnd.Cancelled)) connection.cancel()
+    }
+
+    /** On Network.framework's queue: a send completed. The last one of a retired connection cancels it. */
     private fun completed() {
-        inFlight.decrementAndFetch()
+        if (inFlight.decrementAndFetch() == 0 && end.load() == WireEnd.Draining) cancelOnce()
         if (blocked.compareAndSet(BLOCKED, FLOWING)) wake()
     }
 
@@ -111,6 +149,9 @@ internal class NwWire(
 
         /** Datagrams received and not yet read by the loop before receiving pauses. */
         const val MAX_ARRIVALS = 64
+
+        /** How long a retired connection waits for its sends to complete before it is cancelled with them. */
+        const val DRAIN_BOUND_NANOS = 1_000_000_000L
         private const val ARMED = 0
         private const val PAUSED = 1
         private const val FLOWING = 0
