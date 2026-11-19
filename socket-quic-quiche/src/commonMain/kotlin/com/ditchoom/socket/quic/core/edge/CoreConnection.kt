@@ -1,6 +1,7 @@
 package com.ditchoom.socket.quic.core.edge
 
 import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.codec.Codec
 import com.ditchoom.buffer.flow.BytesWritten
 import com.ditchoom.buffer.flow.ConnectedDatagramChannel
@@ -10,6 +11,7 @@ import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.socket.quic.EarlyDataAcceptance
+import com.ditchoom.socket.quic.PeerCertPosition
 import com.ditchoom.socket.quic.QuicAppErrorCode
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicCapabilities
@@ -40,6 +42,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.MainCoroutineDispatcher
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -50,6 +53,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.selects.onTimeout
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import kotlin.coroutines.ContinuationInterceptor
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.resume
@@ -231,6 +235,25 @@ internal class CoreConnection(
                 Arrival.Early -> QuicStreamOrigin.Early(::established)
             },
         )
+
+    /**
+     * Copies the peer's certificate at [position] into [der] inside the connection, with quiche's snprintf contract
+     * (see [com.ditchoom.socket.quic.QuicheApi.connPeerCert]). Returns only once the connection is done with [der]'s
+     * memory, cancelled or not, so the caller may free it at once.
+     */
+    internal suspend fun peerCertificate(
+        position: PeerCertPosition,
+        der: PlatformBuffer,
+        capacity: Int,
+    ): Int {
+        val answer = CompletableDeferred<Int>()
+        conn.submit(PeerCertWork(position, addressOf(der), capacity, answer), placeOf(currentCoroutineContext()))
+        try {
+            return answer.await()
+        } finally {
+            withContext(NonCancellable) { answer.join() }
+        }
+    }
 
     /** Lets a client's first flight, held for 0-RTT, leave. */
     fun releaseFirstFlight() = conn.submit(ReleaseFlight(), CallerPlace.HandToLoop)

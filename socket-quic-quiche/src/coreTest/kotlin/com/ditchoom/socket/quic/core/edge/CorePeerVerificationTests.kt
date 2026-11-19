@@ -63,7 +63,11 @@ class CorePeerVerificationTests {
                     }) { port ->
                         val failure =
                             assertFailsWith<CertificateHashPinningException> {
-                                connectCore(port, loops = loops, options = coreTestOptions.copy(serverCertificateHashes = listOf(pinned.hash)))
+                                connectCore(
+                                    port,
+                                    loops = loops,
+                                    options = coreTestOptions.copy(serverCertificateHashes = listOf(pinned.hash)),
+                                )
                             }
                         val mismatch = assertIs<CertificateHashPinningFailure.HashMismatch>(failure.failure)
                         assertEquals(1, mismatch.pinnedCount)
@@ -83,7 +87,8 @@ class CorePeerVerificationTests {
         coreTest("CorePeerVerificationTests.aClientPinnedToTheServedCertificateConnects") {
             mint().use { served ->
                 withMintedCoreServer(served, onConnection = { awaitCancellation() }) { port ->
-                    val client = connectCore(port, loops = loops, options = coreTestOptions.copy(serverCertificateHashes = listOf(served.hash)))
+                    val client =
+                        connectCore(port, loops = loops, options = coreTestOptions.copy(serverCertificateHashes = listOf(served.hash)))
                     assertIs<EdgeEnd.Open>(client.connection.end(), "a matching pin hands over an open connection")
                     client.connection.close(QuicError.NoError)
                 }
@@ -107,7 +112,10 @@ class CorePeerVerificationTests {
                         assertFailsWith<ServerCertificateRejectedException> {
                             connectCore(port, loops = loops, options = coreTestOptions.copy(serverCertVerifiers = listOf(rejecting)))
                         }
-                    assertEquals<ServerCertificateRejection>(ServerCertificateRejection.RejectedByVerifier("not our key"), failure.rejection)
+                    assertEquals<ServerCertificateRejection>(
+                        ServerCertificateRejection.RejectedByVerifier("not our key"),
+                        failure.rejection,
+                    )
                     assertTrue(leafMatched, "the verifier is handed the served leaf")
                     assertTrue(verifiedOn.isNotEmpty(), "the verifier ran")
                     assertFalse(verifiedOn.startsWith(LOOP_THREAD), "a verifier is user code and never runs on the loop: $verifiedOn")
