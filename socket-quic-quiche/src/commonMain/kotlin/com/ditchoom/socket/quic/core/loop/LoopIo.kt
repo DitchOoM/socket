@@ -12,10 +12,15 @@ internal sealed interface LoopIo {
         val receiveViews: JdkViews,
     ) : LoopIo
 
-    /** The loop's receive records, which a native socket on it hands `qnet` with its buffers' addresses. */
+    /**
+     * The loop's receive records, which a native socket on it hands `qnet` with its buffers' addresses, and its send
+     * records, one per lane ([com.ditchoom.socket.quic.core.udp.SendBatch.lane]): a lane sends from one thread at a time,
+     * whichever of the loop's sockets it sends to.
+     */
     class Native(
         val shim: NetShim,
         val receiveRecords: NativeBytes,
+        val sendRecords: List<NativeBytes>,
     ) : LoopIo
 }
 

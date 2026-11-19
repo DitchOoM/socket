@@ -15,21 +15,23 @@ import java.nio.channels.DatagramChannel
  * A non-blocking [DatagramChannel], one datagram per system call.
  *
  * Receiving is the loop's alone. Sending is safe from any thread, one thread per [SendBatch] at a time: what a send
- * touches besides the channel, which is thread-safe, is kept per lane. [sendViews] holds one view per lane, indexed
- * by [SendBatch.lane]; [receiveViews] one per receive slot, indexed by [ReceiveBuffer.index].
+ * touches besides the channel, which is thread-safe, is kept per lane. [sends] holds a view of one batch per lane,
+ * indexed by [SendBatch.lane]; a lane whose batch is another one now (the loop's lane, after an endpoint kept the loop's
+ * batch) is viewed again. [receiveViews] holds one view per receive slot, indexed by [ReceiveBuffer.index].
  */
 @LoopOnly
 internal class NioOneByOne(
     first: DatagramChannel,
-    sendViews: List<JdkBytes>,
+    sends: List<SendView>,
     private val receiveViews: List<JdkBytes>,
     /** Destinations whose [InetSocketAddress] each lane keeps; a server with more peers than this converts again past it. */
     private val maxCachedTargets: Int = MAX_CACHED_TARGETS,
 ) : DatagramBatchIo {
     override val capability: BatchCapability = BatchCapability.OneByOne
     private val cell = ChannelCell(first)
-    private val sendBuffers: Array<ByteBuffer> = Array(sendViews.size) { sendViews[it].view.duplicate() }
-    private val targets: Array<HashMap<PathKey, InetSocketAddress>> = Array(sendViews.size) { HashMap() }
+    private val sendStorages: Array<NativeBytes> = Array(sends.size) { sends[it].storage }
+    private val sendBuffers: Array<ByteBuffer> = Array(sends.size) { sends[it].bytes.view.duplicate() }
+    private val targets: Array<HashMap<PathKey, InetSocketAddress>> = Array(sends.size) { HashMap() }
     private var lastSender: Sender = Sender.None
 
     /** The channel in use now; [reopen] replaces it. */
@@ -37,6 +39,14 @@ internal class NioOneByOne(
 
     override fun send(batch: SendBatch): SendBatchResult {
         val channel = cell.load()
+        if (sendStorages[batch.lane] !== batch.storage) {
+            when (val backed = JdkBytes.of(batch.storage)) {
+                is JdkBacked.Backed -> sendBuffers[batch.lane] = backed.bytes.view.duplicate()
+                // The loop's spares are refused unless a JDK channel can write them: no datagram can leave from here.
+                is JdkBacked.NotJdkBacked -> return SendBatchResult.Partial(0, UdpError.NoBufferSpace)
+            }
+            sendStorages[batch.lane] = batch.storage
+        }
         val sendView: Buffer = sendBuffers[batch.lane]
         val cache = targets[batch.lane]
         for (n in 0 until batch.pending) {
@@ -125,6 +135,12 @@ internal class NioOneByOne(
         return seen.key
     }
 }
+
+/** A lane's batch memory and the JDK view of it a channel writes from. */
+internal class SendView(
+    val storage: NativeBytes,
+    val bytes: JdkBytes,
+)
 
 private sealed interface Sender {
     data object None : Sender

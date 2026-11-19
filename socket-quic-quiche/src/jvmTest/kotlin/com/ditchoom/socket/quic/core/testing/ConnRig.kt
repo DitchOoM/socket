@@ -25,6 +25,7 @@ import com.ditchoom.socket.quic.core.conn.LoopMemory
 import com.ditchoom.socket.quic.core.conn.MismatchResponse
 import com.ditchoom.socket.quic.core.conn.Offer
 import com.ditchoom.socket.quic.core.conn.Paths
+import com.ditchoom.socket.quic.core.conn.SessionScratch
 import com.ditchoom.socket.quic.core.conn.SlotRules
 import com.ditchoom.socket.quic.core.conn.TokenHome
 import com.ditchoom.socket.quic.core.conn.buildConn
@@ -33,6 +34,7 @@ import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.loop.Endpoint
 import com.ditchoom.socket.quic.core.loop.Loop
+import com.ditchoom.socket.quic.core.loop.OwnBatch
 import com.ditchoom.socket.quic.core.loop.Route
 import com.ditchoom.socket.quic.core.observe.ConnCounts
 import com.ditchoom.socket.quic.core.path.ClientPaths
@@ -133,7 +135,16 @@ internal fun testConn(
     buildConn(
         rules = rules,
         q = QuicheConnRef(api, QuicheConn(1L)),
-        side = ConnSide.Client(Random(1), Offer.NoTicket, nativeBytes(ClientSession.TICKET_BYTES), KeptTicket.None, TokenHome.NotKept),
+        side =
+            ConnSide.Client(
+                Random(1),
+                Offer.NoTicket,
+                FixedPool(1) {
+                    SessionScratch(it, nativeBytes(ClientSession.TICKET_BYTES))
+                },
+                KeptTicket.None,
+                TokenHome.NotKept,
+            ),
         address =
             ConnAddress(
                 SockAddr(0L, 0),
@@ -186,8 +197,7 @@ internal class ConnRig(
             SocketRef(DatagramChannel.open()),
             io,
             socket,
-            SendBatch(nativeBytes(maxDatagrams * 1500), BatchLimits(maxDatagrams, 1500)),
-            Route.Fixed(conn),
+            Route.Fixed(conn, OwnBatch(SendBatch(nativeBytes(maxDatagrams * 1500), BatchLimits(maxDatagrams, 1500)))),
             Runnable { },
         )
 

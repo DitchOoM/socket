@@ -7,6 +7,8 @@ import com.ditchoom.socket.quic.QuicRole
 import com.ditchoom.socket.quic.SessionOffer
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.observe.Confined
+import com.ditchoom.socket.quic.core.pool.FixedPool
+import com.ditchoom.socket.quic.core.pool.Pooled
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 import kotlinx.coroutines.Runnable
 
@@ -77,15 +79,25 @@ internal sealed interface KeptTicket {
 private enum class TicketSeen { NotYet, Taken }
 
 /**
+ * Memory a client connection copies its server's session ticket or NEW_TOKEN token into, lent by its loop for that one
+ * copy: the one who keeps it copies again, so the loop's connections share a few.
+ */
+internal class SessionScratch(
+    index: Int,
+    val bytes: NativeBytes,
+) : Pooled(index)
+
+/**
  * A client connection's resumption: what it offered, whether its first flight is held for 0-RTT, and the first session
- * ticket its server issues after the handshake, copied into [scratch] and handed up once; likewise the first NEW_TOKEN
- * token, kept in [tokens]. A session larger than the scratch is not kept: the scratch bounds what a ticket may hold.
+ * ticket its server issues after the handshake, copied into a [scratch] slot and handed up once; likewise the first
+ * NEW_TOKEN token, kept in [tokens]. A session larger than [ClientSession.TICKET_BYTES] is not kept. With every slot
+ * lent at once, the copy waits for the next serve.
  */
 @Confined
 internal class ClientSession(
     private val q: QuicheConnRef,
     private val offer: Offer,
-    private val scratch: NativeBytes,
+    private val scratch: FixedPool<SessionScratch>,
     private var kept: KeptTicket,
     private val tokens: TokenHome,
 ) {
@@ -146,23 +158,42 @@ internal class ClientSession(
         if (seen == TicketSeen.Taken) return
         val length = q.api.connSession(q.handle, 0L, 0)
         if (length <= 0) return
-        seen = TicketSeen.Taken
-        if (length > scratch.capacity) return
-        if (q.api.connSession(q.handle, scratch.address, length) == length) sink.ticket(scratch, length)
+        if (length > TICKET_BYTES) {
+            seen = TicketSeen.Taken
+            return
+        }
+        scratch.take({ slot ->
+            try {
+                seen = TicketSeen.Taken
+                if (q.api.connSession(q.handle, slot.bytes.address, length) == length) sink.ticket(slot.bytes, length)
+            } finally {
+                scratch.give(slot)
+            }
+        }, { Unit })
     }
 
     /** Established: the first NEW_TOKEN token the server sends is kept for the next connection, once. */
     fun takeToken() {
         if (tokenSeen == TicketSeen.Taken) return
-        val length = q.api.connTakeNewToken(q.handle, scratch.address, scratch.capacity)
-        if (length <= 0) return
-        tokenSeen = TicketSeen.Taken
-        tokens.keep(scratch, length)
+        scratch.take({ slot ->
+            try {
+                val length = q.api.connTakeNewToken(q.handle, slot.bytes.address, TICKET_BYTES)
+                if (length > 0) {
+                    tokenSeen = TicketSeen.Taken
+                    tokens.keep(slot.bytes, length)
+                }
+            } finally {
+                scratch.give(slot)
+            }
+        }, { Unit })
     }
 
     companion object {
         /** A serialized session with the server's certificate chain fits; one that does not is not kept. */
         const val TICKET_BYTES = 16 * 1024
+
+        /** Scratch slots per loop: connections of one loop copying a ticket or token at the same moment. */
+        const val SCRATCH_SLOTS = 2
     }
 }
 

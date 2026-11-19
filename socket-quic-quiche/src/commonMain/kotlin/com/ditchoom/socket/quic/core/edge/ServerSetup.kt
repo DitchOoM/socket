@@ -21,6 +21,7 @@ import com.ditchoom.socket.quic.core.conn.LoopMemory
 import com.ditchoom.socket.quic.core.conn.MismatchResponse
 import com.ditchoom.socket.quic.core.conn.SlotRules
 import com.ditchoom.socket.quic.core.demux.Admission
+import com.ditchoom.socket.quic.core.demux.ChunkMade
 import com.ditchoom.socket.quic.core.demux.Demux
 import com.ditchoom.socket.quic.core.demux.DemuxScratch
 import com.ditchoom.socket.quic.core.demux.InitialBacklog
@@ -33,6 +34,7 @@ import com.ditchoom.socket.quic.core.loop.JdkViewsMade
 import com.ditchoom.socket.quic.core.loop.Loop
 import com.ditchoom.socket.quic.core.loop.LoopIds
 import com.ditchoom.socket.quic.core.loop.LoopIo
+import com.ditchoom.socket.quic.core.loop.OwnBatch
 import com.ditchoom.socket.quic.core.loop.Readiness
 import com.ditchoom.socket.quic.core.loop.Route
 import com.ditchoom.socket.quic.core.loop.SocketDiedNotice
@@ -52,9 +54,11 @@ import com.ditchoom.socket.quic.core.sched.CallerSend
 import com.ditchoom.socket.quic.core.sched.Entrant
 import com.ditchoom.socket.quic.core.sched.SendPort
 import com.ditchoom.socket.quic.core.time.LoopClock
+import com.ditchoom.socket.quic.core.udp.Addressed
 import com.ditchoom.socket.quic.core.udp.BatchLimits
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 import com.ditchoom.socket.quic.core.udp.NativeIo
+import com.ditchoom.socket.quic.core.udp.PeerKeys
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.ReceiveBuffer
 import com.ditchoom.socket.quic.core.udp.SendBatch
@@ -108,7 +112,7 @@ internal class ServerSetup(
                 CallerSend(i, SendBatch(memory.native(callerLimits.maxDatagrams * MAX_DATAGRAM), callerLimits, lane = i + 1))
             }
         val receiveBuffers = List(limits.maxDatagrams) { ReceiveBuffer(it, memory.native(MAX_DATAGRAM)) }
-        val backlog = InitialBacklog(List(config.admission.backlog) { memory.native(MAX_DATAGRAM) })
+        val backlog = InitialBacklog(config.admission.backlog) { backlogChunk() }
         val scratch =
             DemuxScratch(
                 memory.native(DemuxScratch.FIELDS_BYTES),
@@ -124,7 +128,12 @@ internal class ServerSetup(
                         is JdkViewsMade.NotJdkMemory ->
                             raise(Raised.FactoryNotNative(receiveBuffers[0].bytes.owner), QuicCloseCircumstance.HandshakeFailed)
                     }
-                is NetStack.Native -> LoopIo.Native(stack.shim, memory.native(NativeIo.RECV_RECORD * NativeIo.MAX_RECEIVE))
+                is NetStack.Native ->
+                    LoopIo.Native(
+                        stack.shim,
+                        memory.native(NativeIo.RECV_RECORD * NativeIo.MAX_RECEIVE),
+                        List(1 + CALLER_LANES) { memory.native(NativeIo.SEND_RECORD * if (it == 0) MAX_BATCH else CALLER_BATCH) },
+                    )
             }
         val poller =
             when (stack) {
@@ -142,7 +151,7 @@ internal class ServerSetup(
         configure(quicheConfig)
         val socket = openStackSocket(loopIo, memory, bind, SocketPeer.Unconnected, buffers, batching, limits.maxDatagrams)
         val sends = listOf(send.storage) + List(CALLER_LANES) { lanes[it].batch.storage }
-        val socketIo = socket.ioOf(memory, sends, limits.maxDatagrams, MAX_PEERS_CACHED) { }
+        val socketIo = socket.ioOf(sends, MAX_PEERS_CACHED, PeerKeys.SERVER_SETS) { }
         moved(SetupOwner.Opened(memory, poller, quicheConfig, socketIo.io))
         return serve(socket, socketIo, poller, quicheConfig, limits, send, lanes, receiveBuffers, backlog, scratch, moved)
     }
@@ -236,7 +245,7 @@ internal class ServerSetup(
                 LoopDriver.OwnThread -> Readiness.Polled
                 LoopDriver.Caller -> Readiness.EveryPass
             }
-        loop.place(Endpoint(socketIo.ref, io, sendPort, send, Route.Demux(demux), Runnable { loop.close(finished) }, readiness))
+        loop.place(Endpoint(socketIo.ref, io, sendPort, Route.Demux(demux, OwnBatch(send)), Runnable { loop.close(finished) }, readiness))
         moved(SetupOwner.Placed(loop))
         when (driver) {
             LoopDriver.OwnThread -> {
@@ -248,6 +257,13 @@ internal class ServerSetup(
         }
         return CoreServer(localKey.port, loop, demux, counts, accepted, SocketReport(socket.granted(), localKey.port), stopped)
     }
+
+    /** A chunk of the Initial backlog: at setup, then on the loop thread, which owns [memory] from its start. */
+    private fun backlogChunk(): ChunkMade =
+        when (val made = memory.more(InitialBacklog.CHUNK_BYTES)) {
+            is Addressed.Native -> ChunkMade.Made(made.bytes)
+            is Addressed.NotAddressable -> ChunkMade.Refused
+        }
 
     /** The handshake rule every connection of this server is built with. */
     private val handshake = serverHandshakeRule(options)

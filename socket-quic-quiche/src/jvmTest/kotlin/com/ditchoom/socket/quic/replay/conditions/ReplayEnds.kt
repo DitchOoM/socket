@@ -19,10 +19,12 @@ import com.ditchoom.socket.quic.QuicWireConnectionId
 import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.applyQuicOptions
 import com.ditchoom.socket.quic.clientAlpnOffer
+import com.ditchoom.socket.quic.core.conn.ClientSession
 import com.ditchoom.socket.quic.core.conn.FlightArena
 import com.ditchoom.socket.quic.core.conn.LoopMemory
 import com.ditchoom.socket.quic.core.conn.MismatchResponse
 import com.ditchoom.socket.quic.core.conn.Offer
+import com.ditchoom.socket.quic.core.conn.SessionScratch
 import com.ditchoom.socket.quic.core.demux.ServerConfig
 import com.ditchoom.socket.quic.core.edge.ClientParts
 import com.ditchoom.socket.quic.core.edge.ClientWiring
@@ -46,12 +48,15 @@ import com.ditchoom.socket.quic.core.loop.JdkViewsMade
 import com.ditchoom.socket.quic.core.loop.Loop
 import com.ditchoom.socket.quic.core.loop.LoopIds
 import com.ditchoom.socket.quic.core.loop.LoopIo
+import com.ditchoom.socket.quic.core.loop.LoopSend
 import com.ditchoom.socket.quic.core.loop.Readiness
 import com.ditchoom.socket.quic.core.loop.RunningLoop
+import com.ditchoom.socket.quic.core.loop.SpareMade
 import com.ditchoom.socket.quic.core.loop.jdkViewsOf
 import com.ditchoom.socket.quic.core.pool.FixedPool
 import com.ditchoom.socket.quic.core.pool.MemoryHold
 import com.ditchoom.socket.quic.core.ready.jdkStackOfThisRuntime
+import com.ditchoom.socket.quic.core.sched.CallerSend
 import com.ditchoom.socket.quic.core.testing.FakePoller
 import com.ditchoom.socket.quic.core.testing.VirtualClock
 import com.ditchoom.socket.quic.core.time.WaitResolution
@@ -60,6 +65,7 @@ import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 import com.ditchoom.socket.quic.core.udp.GrantedBuffers
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.ReceiveBuffer
+import com.ditchoom.socket.quic.core.udp.SendBatch
 import com.ditchoom.socket.quic.core.udp.SocketBuffers
 import com.ditchoom.socket.quic.core.udp.toPathKey
 import com.ditchoom.socket.quic.encodeAlpnList
@@ -202,6 +208,11 @@ internal fun replayClient(
                 replayLoopMemory(memory),
                 MemoryHold(Runnable { }),
                 WaitResolution(1_000_000L),
+                LoopSend(replayBatch(memory)) { SpareMade.Made(replayBatch(memory)) },
+                FixedPool(
+                    1,
+                ) { CallerSend(it, SendBatch(memory.native(DATAGRAM * LANE_DATAGRAMS), BatchLimits(LANE_DATAGRAMS, DATAGRAM), lane = 1)) },
+                FixedPool(1) { SessionScratch(it, memory.native(ClientSession.TICKET_BYTES)) },
             ),
             StackSocket.Jdk(JdkSocket(channel), loopIo, SocketBound(local.toPathKey(), GrantedBuffers(SocketBuffers.Default, 0, 0))),
             { io },
@@ -232,6 +243,12 @@ internal fun replayClient(
 }
 
 /** The copy slots and flight arena of a replay client's loop, freed with the client's memory. */
+private fun replayBatch(memory: EdgeMemory): SendBatch =
+    SendBatch(memory.native(DATAGRAM * BATCH_DATAGRAMS), BatchLimits(BATCH_DATAGRAMS, DATAGRAM))
+
+private const val BATCH_DATAGRAMS = 64
+private const val LANE_DATAGRAMS = 8
+
 private fun replayLoopMemory(memory: EdgeMemory): LoopMemory =
     LoopMemory(
         List(LoopMemory.COPY_SLOTS) { memory.native(DATAGRAM) },

@@ -72,8 +72,7 @@ class LoopClockReadsTests {
                         SocketRef(channel),
                         io,
                         socket,
-                        SendBatch(nativeBytes(MAX_DATAGRAMS * DATAGRAM), BatchLimits(MAX_DATAGRAMS, DATAGRAM)),
-                        Route.Fixed(conn),
+                        Route.Fixed(conn, OwnBatch(SendBatch(nativeBytes(MAX_DATAGRAMS * DATAGRAM), BatchLimits(MAX_DATAGRAMS, DATAGRAM)))),
                         Runnable { },
                     )
                 loop.attach(endpoint)

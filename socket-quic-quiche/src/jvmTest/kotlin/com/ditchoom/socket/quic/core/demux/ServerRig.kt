@@ -11,6 +11,7 @@ import com.ditchoom.socket.quic.StubQuicheApi
 import com.ditchoom.socket.quic.core.conn.Conn
 import com.ditchoom.socket.quic.core.conn.FlightSize
 import com.ditchoom.socket.quic.core.loop.Endpoint
+import com.ditchoom.socket.quic.core.loop.OwnBatch
 import com.ditchoom.socket.quic.core.loop.Readiness
 import com.ditchoom.socket.quic.core.loop.Route
 import com.ditchoom.socket.quic.core.observe.ServerCounts
@@ -194,7 +195,7 @@ internal class ServerRig(
         Admission(
             api,
             bounds,
-            InitialBacklog(List(backlog) { nativeBytes(1500) }),
+            InitialBacklog(backlog) { ChunkMade.Made(nativeBytes(InitialBacklog.CHUNK_BYTES)) },
             parts,
             hooks,
             MemoryHold(Runnable { }),
@@ -215,8 +216,7 @@ internal class ServerRig(
             SocketRef(DatagramChannel.open()),
             io,
             socket,
-            SendBatch(nativeBytes(64 * 1500), BatchLimits(64, 1500)),
-            Route.Demux(demux),
+            Route.Demux(demux, OwnBatch(SendBatch(nativeBytes(64 * 1500), BatchLimits(64, 1500)))),
             Runnable { },
             Readiness.EveryPass,
         )

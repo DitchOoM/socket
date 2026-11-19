@@ -6,6 +6,7 @@ import com.ditchoom.socket.quic.UdpBatching
 import com.ditchoom.socket.quic.core.conn.Conn
 import com.ditchoom.socket.quic.core.loop.Endpoint
 import com.ditchoom.socket.quic.core.loop.Loop
+import com.ditchoom.socket.quic.core.loop.OwnBatch
 import com.ditchoom.socket.quic.core.loop.Route
 import com.ditchoom.socket.quic.core.loop.startLoopThread
 import com.ditchoom.socket.quic.core.observe.ConnCounts
@@ -113,7 +114,7 @@ internal class NativeEcho(
                 sink,
                 ConnCounts(),
             )
-        loop.place(Endpoint(SocketRef(IntSupplier { io.descriptor() }), io, sendPort, send, Route.Fixed(conn), Runnable { }))
+        loop.place(Endpoint(SocketRef(IntSupplier { io.descriptor() }), io, sendPort, Route.Fixed(conn, OwnBatch(send)), Runnable { }))
         conn.start()
         thread = startLoopThread(loop, threadName)
         return this

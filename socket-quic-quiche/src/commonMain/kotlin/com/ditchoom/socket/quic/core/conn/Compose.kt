@@ -14,6 +14,7 @@ import com.ditchoom.socket.quic.core.path.IdsRetired
 import com.ditchoom.socket.quic.core.path.IdsWanted
 import com.ditchoom.socket.quic.core.path.ServerPaths
 import com.ditchoom.socket.quic.core.path.SinglePath
+import com.ditchoom.socket.quic.core.pool.FixedPool
 import com.ditchoom.socket.quic.core.sched.Entrant
 import com.ditchoom.socket.quic.core.sched.LoopPort
 import com.ditchoom.socket.quic.core.sched.SendPort
@@ -39,13 +40,13 @@ internal class ConnMemory(
 internal sealed interface ConnSide {
     /**
      * A client draws the ids it hands its peer from [ids], offered quiche [offer] before its first flight, and copies
-     * its server's session ticket into [ticket]; what it took from its stores, [kept], goes back if it never sent; its
-     * server's NEW_TOKEN token goes to [tokens].
+     * its server's session ticket through one of its loop's [scratch] slots; what it took from its stores, [kept], goes
+     * back if it never sent; its server's NEW_TOKEN token goes to [tokens].
      */
     class Client(
         val ids: Random,
         val offer: Offer,
-        val ticket: NativeBytes,
+        val scratch: FixedPool<SessionScratch>,
         val kept: KeptTicket,
         val tokens: TokenHome,
     ) : ConnSide
@@ -142,7 +143,7 @@ private fun composed(
                 },
             resumption =
                 when (side) {
-                    is ConnSide.Client -> Resumption.Client(ClientSession(q, side.offer, side.ticket, side.kept, side.tokens))
+                    is ConnSide.Client -> Resumption.Client(ClientSession(q, side.offer, side.scratch, side.kept, side.tokens))
                     is ConnSide.Server -> Resumption.Server(ServerSession(q, rules.earlyData))
                 },
             datagrams =

@@ -16,14 +16,19 @@ internal sealed interface LoopSlot {
 
 /** Where an endpoint's datagrams go. */
 internal sealed interface Route {
-    /** A client's own connected socket carries exactly one connection. */
+    /** A client's own connected socket carries exactly one connection, whose output collects in [out]. */
     class Fixed(
         val conn: Conn,
+        val out: Outbox,
     ) : Route
 
-    /** A server's unconnected socket carries every connection it accepted. */
+    /**
+     * A server's unconnected socket carries every connection it accepted. Its receive phase answers datagrams into [out],
+     * so the batch is the socket's own.
+     */
     class Demux(
         val demux: com.ditchoom.socket.quic.core.demux.Demux,
+        val out: OwnBatch,
     ) : Route
 }
 
@@ -32,6 +37,13 @@ internal fun Route.ended(): Boolean =
     when (this) {
         is Route.Fixed -> conn.life() is Life.Ended
         is Route.Demux -> demux.phase() == ServerPhase.Stopped
+    }
+
+/** Where the route's output collects. */
+internal fun Route.outbox(): Outbox =
+    when (this) {
+        is Route.Fixed -> out
+        is Route.Demux -> out
     }
 
 /** Ends every connection this route carries with [end]. */
