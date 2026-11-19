@@ -25,11 +25,12 @@ import kotlin.test.fail
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * The calls into quiche per 1 KiB echo on one long-lived stream, client and server counted together: every call is a
- * crossing into native code. The ceilings in [CEILING] are what the core makes today, measured on JNI and FFM with a
- * little headroom for scheduling (how many turns an echo takes varies by about 2 %). A function missing from [CEILING]
- * has a ceiling of zero, so a new kind of crossing, or one more call per stream or per turn, fails here instead of
- * growing unseen, for example with the number of streams.
+ * The calls into quiche while 1 KiB echoes run on one long-lived stream per connection, client and server counted
+ * together: every call is a crossing into native code. How many loop turns and datagrams an echo takes depends on timing,
+ * so nothing here is a count per echo. Each call is tied to the work it serves, counted in the same run: a turn
+ * (`connReadable`), a datagram received (`connRecv`), a stream read or write (the `connStreamRecvStep` and
+ * `connStreamSendStep` an echo makes, which do not depend on timing). A call per turn, per datagram or per stream
+ * operation breaks its law whatever the machine's speed; a function with no law fails as a new kind of crossing.
  */
 class CoreNativeCrossingTests {
     @get:Rule
@@ -41,15 +42,14 @@ class CoreNativeCrossingTests {
     fun closeLoops() = loops.close()
 
     @Test
-    fun oneConnectionEchoesCrossIntoQuicheAFewTimesPerEcho() = measure(connections = 1, measured = 2_000, totalCeiling = 90.0)
+    fun oneConnectionEchoesCrossIntoQuicheAFewTimesPerEcho() = measure(connections = 1, measured = 2_000)
 
     @Test
-    fun sixtyFourConnectionsEchoCrossIntoQuicheAFewTimesPerEcho() = measure(connections = 64, measured = 200, totalCeiling = 85.0)
+    fun sixtyFourConnectionsEchoCrossIntoQuicheAFewTimesPerEcho() = measure(connections = 64, measured = 200)
 
     private fun measure(
         connections: Int,
         measured: Int,
-        totalCeiling: Double,
     ) = runBlocking {
         withDescriptorsAbove127 {
             val count = CrossingCount(platformQuicheApi())
@@ -66,13 +66,14 @@ class CoreNativeCrossingTests {
                 val report = count.report(echoes)
                 println("[core native crossings] %d connection(s), per 1 KiB echo:\n%s".format(connections, report))
                 clients.forEach { it.connection.close(QuicError.NoError) }
-                val over =
-                    count.byFunction().filter { (name, n) -> n.toDouble() / echoes > (CEILING[name] ?: 0.0) } +
-                        if (count.total().toDouble() / echoes > totalCeiling) listOf("total" to count.total()) else emptyList()
-                assertTrue(
-                    over.isEmpty(),
-                    "crossings per echo above their ceiling (total ceiling %.1f): %s\n%s".format(totalCeiling, over, report),
-                )
+                val broken =
+                    Laws.broken(
+                        count.byFunction().toMap(),
+                        echoes,
+                        slack =
+                            echoes / SLACK_ECHOES_DIVISOR + SLACK_PER_CONNECTION * connections,
+                    )
+                assertTrue(broken.isEmpty(), "crossings out of line with the work done: %s\n%s".format(broken, report))
             }
         }
     }
@@ -112,22 +113,77 @@ class CoreNativeCrossingTests {
         const val PAYLOAD = 1_024
         const val WARM_UP = 300
 
-        /** Calls per echo each quiche function may make: the largest of the 1 and 64 connection runs, plus headroom. */
-        val CEILING =
-            mapOf(
-                "connStreamWritableNext" to 12.0,
-                "streamIterNextId" to 12.0,
-                "connSend" to 12.0,
-                "connReadable" to 10.0,
-                "connIsClosed" to 10.0,
-                "streamIterFree" to 10.0,
-                "connTimeoutNanos" to 8.0,
-                "connStreamRecvStep" to 4.1,
-                "connRecv" to 4.1,
-                "sendInfoAtNanos" to 4.1,
-                "connStreamCapacity" to 2.1,
-                "connStreamSendStep" to 2.1,
-                "connOnTimeout" to 1.0,
-            )
+        /** Counting starts and stops while work is in flight: a count is off by a few per connection and by 2 % of the echoes. */
+        const val SLACK_ECHOES_DIVISOR = 50L
+        const val SLACK_PER_CONNECTION = 8L
+    }
+
+    /** What each quiche function's count must equal, or stay under, given the work counted in the same run. */
+    private object Laws {
+        /** Stream reads and writes one echo makes, client and server together: they do not depend on timing. */
+        private const val RECV_STEPS_PER_ECHO = 4L
+        private const val SEND_STEPS_PER_ECHO = 2L
+        private const val CAPACITY_CALLS_PER_ECHO = 2L
+
+        fun broken(
+            c: Map<String, Long>,
+            echoes: Int,
+            slack: Long,
+        ): List<String> {
+            fun n(name: String) = c[name] ?: 0L
+            val turns = n("connReadable")
+            val datagrams = n("connRecv")
+            val recvSteps = n("connStreamRecvStep")
+            val sendSteps = n("connStreamSendStep")
+            val laws =
+                listOf(
+                    Law.Near("connStreamRecvStep", recvSteps, RECV_STEPS_PER_ECHO * echoes, slack),
+                    Law.Near("connStreamSendStep", sendSteps, SEND_STEPS_PER_ECHO * echoes, slack),
+                    Law.Near("connStreamCapacity", n("connStreamCapacity"), CAPACITY_CALLS_PER_ECHO * echoes, slack),
+                    // One per turn.
+                    Law.Near("connIsClosed", n("connIsClosed"), turns, slack),
+                    Law.Near("streamIterFree", n("streamIterFree"), turns, slack),
+                    // One per turn, plus one per readable stream reported (a stream read is two recv steps).
+                    Law.Near("streamIterNextId", n("streamIterNextId"), turns + recvSteps / 2, slack),
+                    // One per turn, plus one per stream written.
+                    Law.Near("connStreamWritableNext", n("connStreamWritableNext"), turns + sendSteps, slack),
+                    // One per datagram received.
+                    Law.Near("sendInfoAtNanos", n("sendInfoAtNanos"), datagrams, slack),
+                    // At most one per turn.
+                    Law.AtMost("connTimeoutNanos", n("connTimeoutNanos"), turns),
+                    Law.AtMost("connOnTimeout", n("connOnTimeout"), turns),
+                    // At most one terminating call per turn plus one per datagram sent (about one per datagram received).
+                    Law.AtMost("connSend", n("connSend"), turns + datagrams),
+                )
+            val known = laws.map { it.name }.toSet() + setOf("connReadable", "connRecv")
+            return laws.mapNotNull { it.violation() } + c.keys.filter { it !in known }.map { "$it: no law, a new crossing" }
+        }
+    }
+
+    /** What one function's count must satisfy. */
+    private sealed interface Law {
+        val name: String
+
+        fun violation(): String?
+
+        /** [counted] is within [slack] of [expected]. */
+        class Near(
+            override val name: String,
+            private val counted: Long,
+            private val expected: Long,
+            private val slack: Long,
+        ) : Law {
+            override fun violation() =
+                if (kotlin.math.abs(counted - expected) > slack) "$name: counted $counted, law says about $expected" else null
+        }
+
+        /** [counted] is at most [expected]. */
+        class AtMost(
+            override val name: String,
+            private val counted: Long,
+            private val expected: Long,
+        ) : Law {
+            override fun violation() = if (counted > expected) "$name: counted $counted, law says at most $expected" else null
+        }
     }
 }
