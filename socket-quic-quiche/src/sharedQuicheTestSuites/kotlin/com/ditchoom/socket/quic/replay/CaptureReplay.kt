@@ -134,6 +134,16 @@ internal data class StandInGap(
     val absent: List<PacketKind>,
 )
 
+/**
+ * A timer of our endpoint that fell due in the replay after the capture's firing that stood nearest before it, so it ran at
+ * [ranAt], the capture's next firing, not at its [due] time: the replay's deadline stood later than the capture's.
+ */
+internal data class TimerMissed(
+    val due: Duration,
+    val recorded: Duration,
+    val ranAt: Duration,
+)
+
 internal class ReplayReport(
     val schedule: CaptureSchedule,
     val course: Course,
@@ -148,6 +158,8 @@ internal class ReplayReport(
     /** How many acknowledgements the replay sent that the capture holds no datagram for, and that were set aside. */
     val acksUncaptured: Int,
     val ranFor: Duration,
+    /** Our timers that missed the capture's firing of them, in the order they fell due. */
+    val timersThatMissed: List<TimerMissed> = emptyList(),
 ) {
     /**
      * Whether the replay was the captured connection at least until [at]. A replay that leaves the
@@ -186,6 +198,9 @@ internal class ReplayReport(
             val captured = schedule.steps.filterIsInstance<Step.OursSent>()
             if (acksNotSent.isNotEmpty()) appendLine("  captured acknowledgements not sent: our datagrams $acksNotSent")
             if (acksUncaptured > 0) appendLine("  replayed acknowledgements the capture holds no datagram for: $acksUncaptured")
+            timersThatMissed.forEach {
+                appendLine("  timer due ${it.due} missed the recorded firing ${it.recorded}, so ran at ${it.ranAt}")
+            }
             appendLine("  our datagrams, replayed:")
             sent.forEachIndexed { i, it -> appendLine("    $i: ${it.at.inWholeMicroseconds} us ${it.shape}") }
             appendLine("  our datagrams, captured:")
@@ -349,6 +364,7 @@ private class CaptureReplay(
     private val standInGaps = mutableListOf<StandInGap>()
     private val acksNotSent = mutableListOf<Int>()
     private var acksUncaptured = 0
+    private val timersThatMissed = LinkedHashSet<TimerMissed>()
     private val sent = mutableListOf<SentDatagram>()
     private val receipts = mutableMapOf<Long, StreamReceipt>()
 
@@ -395,6 +411,7 @@ private class CaptureReplay(
             acksNotSent = acksNotSent.toList(),
             acksUncaptured = acksUncaptured,
             ranFor = now,
+            timersThatMissed = timersThatMissed.toList(),
         )
     }
 
@@ -726,7 +743,12 @@ private class CaptureReplay(
         val due = timerAt(ours)
         return when (val timers = schedule.ourTimers) {
             OurTimers.WhenDue -> due
-            is OurTimers.AsRecorded -> maxOf(due, timers.firings.firstOrNull { it >= due - TIMER_PRECISION } ?: due)
+            is OurTimers.AsRecorded -> {
+                val fires = maxOf(due, timers.firings.firstOrNull { it >= due - TIMER_PRECISION } ?: due)
+                val missed = timers.firings.lastOrNull { it < due - TIMER_PRECISION }
+                if (due.isFinite() && missed != null && fires > due) timersThatMissed += TimerMissed(due, missed, fires)
+                fires
+            }
         }
     }
 
