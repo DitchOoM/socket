@@ -10,6 +10,7 @@ import com.ditchoom.socket.quic.core.edge.LOOP_THREAD
 import com.ditchoom.socket.quic.core.edge.connectCore
 import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.testing.allocationSamples
+import com.ditchoom.socket.quic.core.testing.loopGateOfThisStack
 import com.ditchoom.socket.quic.core.testing.withDescriptorsAbove127
 import com.ditchoom.socket.quic.network
 import kotlinx.coroutines.Dispatchers
@@ -31,6 +32,12 @@ import kotlin.time.Duration.Companion.seconds
  * counter after warm-up. Many connections share each loop, so a loop serves several in one pass, callers find lanes and
  * copy slots taken, and connections' timers fire together: work one connection alone never reaches. The echo handlers
  * and callers run on the application's threads and are not counted.
+ *
+ * The gate is the stack's: the native stack allocates nothing per datagram on its own account. The JDK stack, left on
+ * Windows only, adds what NIO allocates inside its own calls: `WEPollSelectorImpl` boxes each ready descriptor (a
+ * Windows socket handle is never in the `Integer` cache), and `DatagramChannel.receive` builds a new
+ * [java.net.InetSocketAddress] for every datagram whose sender is not the previous datagram's, which with 64 peers taking
+ * turns is nearly every one.
  */
 class CoreManyConnectionsAllocationTests {
     @get:Rule
@@ -64,9 +71,10 @@ class CoreManyConnectionsAllocationTests {
                         "[core many-connection allocation] loops %.1f B/echo over %d connections\n%s".format(perEcho, CONNECTIONS, where),
                     )
                     clients.forEach { it.connection.close(QuicError.NoError) }
+                    val gate = loopGateOfThisStack(LOOP_GATE, JDK_LOOP_GATE)
                     assertTrue(
-                        perEcho <= LOOP_GATE,
-                        "the loops allocated %.1f B/echo over %d connections (gate %d):\n%s".format(perEcho, CONNECTIONS, LOOP_GATE, where),
+                        perEcho <= gate,
+                        "the loops allocated %.1f B/echo over %d connections (gate %d):\n%s".format(perEcho, CONNECTIONS, gate, where),
                     )
                 }
             }
@@ -136,5 +144,8 @@ class CoreManyConnectionsAllocationTests {
         const val WARM_UP = 500
         const val MEASURED = 1_000
         const val LOOP_GATE = 16
+
+        /** Measured on Windows at 297 B/echo (run 44471687771), 514 before the receive kept its keys per sender. */
+        const val JDK_LOOP_GATE = 400
     }
 }

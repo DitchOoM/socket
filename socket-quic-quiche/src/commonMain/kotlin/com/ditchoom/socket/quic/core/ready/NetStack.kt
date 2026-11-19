@@ -41,3 +41,23 @@ internal expect fun jdkPoller(
 
 /** How a selector's ready keys are read: the consumer form allocates nothing; the set form allocates a node per key. */
 internal enum class SelectedKeys { ByConsumer, BySet }
+
+/** Where a server bound to a wildcard address sends each reply from, on a stack. */
+internal sealed interface WildcardReplySource {
+    /** From the address the client's datagram arrived on: qnet reads it with `IP_PKTINFO` / `IPV6_PKTINFO` and names it. */
+    data object FromArrival : WildcardReplySource
+
+    /**
+     * From an address the kernel picks: `java.nio` neither reports a datagram's destination nor names a reply's source.
+     * On a host with more than one address the pick can differ from the address the client sent to, and a client whose
+     * socket is connected drops the reply.
+     */
+    data object KernelChooses : WildcardReplySource
+}
+
+internal val NetStack.wildcardReplySource: WildcardReplySource
+    get() =
+        when (this) {
+            is NetStack.Native -> WildcardReplySource.FromArrival
+            is NetStack.Jdk -> WildcardReplySource.KernelChooses
+        }

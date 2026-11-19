@@ -9,6 +9,7 @@ import com.ditchoom.socket.quic.core.edge.coreConnect
 import com.ditchoom.socket.quic.core.edge.coreTestOptions
 import com.ditchoom.socket.quic.core.edge.echoOver
 import com.ditchoom.socket.quic.core.loop.LoopSet
+import com.ditchoom.socket.quic.core.testing.assumeWildcardRepliesLeaveFromArrival
 import com.ditchoom.socket.quic.core.testing.coreTest
 import com.ditchoom.socket.quic.core.testing.platformQuicheApi
 import com.ditchoom.socket.quic.network
@@ -27,7 +28,8 @@ import kotlin.time.Duration.Companion.seconds
  * A server bound to the wildcard answers from the address each client sent to. The client here sends from 127.0.0.1
  * to another of the host's addresses, so the address the kernel would pick for a reply to 127.0.0.1 is not the one
  * the client's connected socket accepts; a peer on another machine meets the same choice whenever the server's host has
- * more than one address, as any IPv6 host with temporary addresses does.
+ * more than one address, as any IPv6 host with temporary addresses does. A stack whose wildcard replies leave from an
+ * address the kernel picks skips it, loudly.
  */
 class CoreWildcardReplySourceTests {
     private val loops = LoopSet(1)
@@ -36,7 +38,8 @@ class CoreWildcardReplySourceTests {
     fun closeLoops() = loops.close()
 
     @Test
-    fun aClientThatSendsFromAnotherOfTheHostsAddressesCompletesAndEchoes() =
+    fun aClientThatSendsFromAnotherOfTheHostsAddressesCompletesAndEchoes() {
+        assumeWildcardRepliesLeaveFromArrival(CoreWildcardReplySourceTests::class)
         coreTest("CoreWildcardReplySourceTests.aClientThatSendsFromAnotherOfTheHostsAddressesCompletesAndEchoes") {
             val dialed = anotherLocalAddress()
             withCoreEchoServer(bind = wildcardV4()) { server ->
@@ -63,6 +66,7 @@ class CoreWildcardReplySourceTests {
                 assertEquals(1L, server.counts.accepted)
             }
         }
+    }
 }
 
 private const val LOOPBACK = "127.0.0.1"

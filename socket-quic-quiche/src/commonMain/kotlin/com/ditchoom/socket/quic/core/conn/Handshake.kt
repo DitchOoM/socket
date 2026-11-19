@@ -21,6 +21,11 @@ internal enum class Confirmation { Pending, Confirmed }
 
 private enum class Progress { Handshaking, Established }
 
+/** Whether the caller is still to be told the handshake completed: once, at the end of the serve that completed it. */
+internal enum class Announcement { Due, None }
+
+private enum class Told { Not, Due, Done }
+
 private sealed interface Phase {
     /** Not confirmed: how far it got. */
     class Pending : Phase {
@@ -54,6 +59,8 @@ internal class Handshake(
 ) {
     private val pending = Phase.Pending()
     private var phase: Phase = pending
+
+    private var told = Told.Not
 
     /** quiche's PTO expiries seen while unconfirmed. */
     private var expiries = 0L
@@ -97,7 +104,10 @@ internal class Handshake(
             is Phase.Pending -> Unit
         }
         val was = pending.progress
-        if (was == Progress.Handshaking && q.api.connIsEstablished(q.handle)) pending.progress = Progress.Established
+        if (was == Progress.Handshaking && q.api.connIsEstablished(q.handle)) {
+            pending.progress = Progress.Established
+            told = Told.Due
+        }
         val reached = pending.progress
         val just = if (was == Progress.Handshaking) HandshakeStep.JustEstablished else HandshakeStep.Established
         if (reached == Progress.Established && q.api.connIsHandshakeConfirmed(q.handle)) {
@@ -110,6 +120,16 @@ internal class Handshake(
             Progress.Established -> just
         }
     }
+
+    /** [Announcement.Due] once, the first time it is asked after [step] answered [HandshakeStep.JustEstablished]. */
+    fun announcement(): Announcement =
+        when (told) {
+            Told.Due -> {
+                told = Told.Done
+                Announcement.Due
+            }
+            Told.Not, Told.Done -> Announcement.None
+        }
 
     /** quiche's timeout ran while the handshake is unconfirmed: its PTO expiries in [read] are counted for the report. */
     fun expired(read: PathRead) {
