@@ -85,7 +85,7 @@ internal class CoreConnection(
 ) : QuicConnection,
     CoroutineScope by scope {
     override val state: StateFlow<QuicConnectionState> = edge.state
-    override val unreadAtClose: StateFlow<QuicUnreadAtClose> = MutableStateFlow(QuicUnreadAtClose.ConnectionOpen)
+    override val unreadAtClose: StateFlow<QuicUnreadAtClose> = edge.unread
     override val capabilities: QuicCapabilities get() = CORE_CAPABILITIES
     override val pathState: StateFlow<QuicPathState> = MutableStateFlow(QuicPathState.Original)
     override val sessionTicket: StateFlow<QuicSessionTicketState> = edge.ticket

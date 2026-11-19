@@ -12,6 +12,7 @@ import com.ditchoom.socket.quic.QuicConnectionState
 import com.ditchoom.socket.quic.QuicSessionTicket
 import com.ditchoom.socket.quic.QuicSessionTicketState
 import com.ditchoom.socket.quic.QuicStreamId
+import com.ditchoom.socket.quic.QuicUnreadAtClose
 import com.ditchoom.socket.quic.core.conn.Arrival
 import com.ditchoom.socket.quic.core.conn.ConnSink
 import com.ditchoom.socket.quic.core.conn.ConnectReport
@@ -70,6 +71,12 @@ internal class EdgeState(
 
     /** A client's: the session ticket its server issued. */
     val ticket = MutableStateFlow<QuicSessionTicketState>(QuicSessionTicketState.NotIssued)
+
+    /**
+     * What the connection still holds for its readers once it closed. The core releases every stream when the
+     * connection ends, so a read after that has nothing to deliver: settled to AllRead with the end, before Closed.
+     */
+    val unread = MutableStateFlow<QuicUnreadAtClose>(QuicUnreadAtClose.ConnectionOpen)
 
     /** The connection's idle read buffer; freed once the connection ends. */
     val reads = IdleRead()
@@ -131,6 +138,7 @@ internal class EdgeState(
     override fun ended(end: ConnEnd) {
         endCell.store(EdgeEnd.Ended(end))
         reads.close()
+        unread.value = QuicUnreadAtClose.AllRead
         val reason = closeReasonOf(end)
         publish(QuicConnectionState.Closed(reason))
         start.compareAndSet(HandlerStart.NotYet, HandlerStart.Never)
