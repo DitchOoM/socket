@@ -5,6 +5,7 @@ package com.ditchoom.socket.quic.core.udp
 import com.ditchoom.socket.quic.NetShim
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.SocketRefusal
+import com.ditchoom.socket.quic.UdpBatching
 import com.ditchoom.socket.quic.core.observe.Published
 import kotlin.concurrent.atomics.AtomicReference
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
@@ -41,6 +42,15 @@ internal sealed interface GroRequest {
 
     /** The socket asks for it; `qnet` keeps the receive scratch of one that got it. */
     data object Requested : GroRequest
+
+    companion object {
+        /** What a socket of [batching] asks for: `UDP_GRO` is the receive half of `UDP_SEGMENT`, so only the batchings that segment ask. */
+        fun of(batching: UdpBatching): GroRequest =
+            when (batching) {
+                UdpBatching.Newest, UdpBatching.PublicCallsOnly -> Requested
+                UdpBatching.WithoutSegments, UdpBatching.OneDatagramPerCall -> Declined
+            }
+    }
 }
 
 /** What a socket's `UDP_GRO` came to, decided at open and again at every reopen. */
