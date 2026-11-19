@@ -738,6 +738,11 @@ object JniQuicheApi : QuicheApi {
         pathAddr: Long,
     ): Int = nConfigLoadVerifyLocationsFromFile(config.handle, pathAddr)
 
+    override fun configLoadVerifyLocationsFromDirectory(
+        config: QuicheConfig,
+        pathAddr: Long,
+    ): Int = nConfigLoadVerifyLocationsFromDirectory(config.handle, pathAddr)
+
     override fun headerInfo(
         buf: Long,
         bufLen: Int,
@@ -1433,6 +1438,11 @@ object JniQuicheApi : QuicheApi {
     ): Int
 
     @JvmStatic private external fun nConfigLoadVerifyLocationsFromFile(
+        config: Long,
+        pathAddr: Long,
+    ): Int
+
+    @JvmStatic private external fun nConfigLoadVerifyLocationsFromDirectory(
         config: Long,
         pathAddr: Long,
     ): Int

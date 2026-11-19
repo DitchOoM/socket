@@ -37,6 +37,12 @@ class LoopClockReadsTests {
         assertEquals(one, many, "clock reads in one idle pass: $one with 1 connection, $many with 64")
     }
 
+    @Test
+    fun anIdlePassReadsNoClockForItsCounters() {
+        val reads = readsInIdlePass(connections = 4)
+        assertEquals(0, reads, "an idle pass takes its time from its caller; its counters read the clock $reads times")
+    }
+
     private class CountingClock : LoopClock {
         var reads = 0
 

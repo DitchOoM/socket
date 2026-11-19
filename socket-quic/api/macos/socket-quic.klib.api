@@ -3043,6 +3043,13 @@ final class com.ditchoom.socket.quic/InvalidSessionTicketKeyException : kotlin/I
         final fun <get-length>(): kotlin/Int // com.ditchoom.socket.quic/InvalidSessionTicketKeyException.length.<get-length>|<get-length>(){}[0]
 }
 
+final class com.ditchoom.socket.quic/NoTrustAnchorsException : kotlin/IllegalStateException { // com.ditchoom.socket.quic/NoTrustAnchorsException|null[0]
+    constructor <init>(kotlin.collections/List<kotlin/String>) // com.ditchoom.socket.quic/NoTrustAnchorsException.<init>|<init>(kotlin.collections.List<kotlin.String>){}[0]
+
+    final val searched // com.ditchoom.socket.quic/NoTrustAnchorsException.searched|{}searched[0]
+        final fun <get-searched>(): kotlin.collections/List<kotlin/String> // com.ditchoom.socket.quic/NoTrustAnchorsException.searched.<get-searched>|<get-searched>(){}[0]
+}
+
 final class com.ditchoom.socket.quic/PeerCertificate : kotlin/AutoCloseable { // com.ditchoom.socket.quic/PeerCertificate|null[0]
     final val hash // com.ditchoom.socket.quic/PeerCertificate.hash|{}hash[0]
         final fun <get-hash>(): com.ditchoom.socket.quic/CertificateHash // com.ditchoom.socket.quic/PeerCertificate.hash.<get-hash>|<get-hash>(){}[0]
