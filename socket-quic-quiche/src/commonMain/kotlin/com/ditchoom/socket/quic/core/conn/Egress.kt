@@ -162,10 +162,16 @@ internal class Egress(
 
     /**
      * When quiche stamped the datagram it just wrote: its send info's time, quiche's own clock read unless its pacer wants
-     * the datagram later, kept between the write's start [from] and now. The write's start is early by every call made
-     * before quiche read its clock, a cold one's by milliseconds.
+     * the datagram later, never before the write's start [from]. The write's start is early by every call made before
+     * quiche read its clock, a cold one's by milliseconds. A time more than [UNREAD_AHEAD] past [from] may be a pacer's:
+     * only then is the clock read, and the datagram is recorded no later than now, when it is in the batch.
      */
-    private fun sentAt(from: Nanos): Nanos = Nanos(lastDueNanos.coerceIn(from.value, maxOf(from.value, clock.now().value)))
+    private fun sentAt(from: Nanos): Nanos =
+        when {
+            lastDueNanos <= from.value -> from
+            lastDueNanos - from.value <= UNREAD_AHEAD -> Nanos(lastDueNanos)
+            else -> Nanos(minOf(lastDueNanos, maxOf(from.value, clock.now().value)))
+        }
 
     private fun kept(
         out: SendBatch,
@@ -210,6 +216,9 @@ internal class Egress(
         flight.datagramOut(clock.now(), out.storage, lastOffset, lastLength)
     }
 }
+
+/** How far past a write's start quiche's send time may be, a warm call's lag, before the clock is read to bound it. */
+private const val UNREAD_AHEAD = 250_000L
 
 /** `AF_INET`'s family as the sockaddr readers report it. */
 private const val V4 = 4
