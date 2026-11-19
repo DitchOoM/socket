@@ -583,7 +583,16 @@
       "goodput": "pass",
       "handshake": "pass",
       "handshakecorruption": "pass",
-      "handshakeloss": "pass",
+      "handshakeloss": {
+        "flaky": {
+          "why": "peer and simulator: one lost ACK of ours made the xquic server take its first RTT sample from our probe 3 s later, so its next probe timeouts were 10 s and 20 s; its one re-send of the Handshake flight inside our 30 s handshake limit was lost, and our client, every packet of its own acknowledged and nothing in flight (RFC 9002 6.2.2.1 leaves the next move to the server), heard nothing from 4.4 s until its timeout at 34.4 s (run 44433727770, both attempts; server log: PTO 10.2 s then 20.4 s, re-sends at 14.3 s and 34.7 s)",
+          "signature": {
+            "kind": "peer-silent-until-our-timeout",
+            "silence_s": 25,
+            "our_wait_s": 8
+          }
+        }
+      },
       "ipv6": "pass",
       "longrtt": "pass",
       "multiplexing": "pass",
