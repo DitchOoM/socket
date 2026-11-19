@@ -125,6 +125,31 @@ class CoreRecordingReplayTests {
         }
     }
 
+    /**
+     * Where a client's recording stands on its close. The close travels in the last datagram the client sent at or before
+     * it recorded closing; until it records closing, the last datagram it holds is an earlier one, and a server closed
+     * on that one's arrival closes before the client's close reaches it.
+     */
+    internal sealed interface RecordedClose {
+        /** The client has not recorded closing. */
+        data object NotYet : RecordedClose
+
+        /** The datagram, as hex, that carried the close. */
+        class Sent(
+            val hex: String,
+        ) : RecordedClose
+
+        companion object {
+            fun of(recording: List<TraceEvent>): RecordedClose {
+                val closing = recording.filterIsInstance<TraceEvent.State>().firstOrNull { it.name.endsWith(CLOSED) } ?: return NotYet
+                val sent = recording.filterIsInstance<TraceEvent.DgramOut>().lastOrNull { it.at <= closing.at } ?: return NotYet
+                return Sent(sent.payloadHex)
+            }
+
+            private const val CLOSED = ".Closed"
+        }
+    }
+
     /** The recordings this test last made or converted: written where CI keeps them when the test fails. */
     private var recordings = Recorded(emptyList(), emptyList(), 0)
 
@@ -248,9 +273,12 @@ class CoreRecordingReplayTests {
             }
             // The server closing first would never read the client's close, and the conversion would have it lost: the
             // server closes once it has recorded it. Seen under a loaded full suite: "expected:<1> but was:<2>".
-            val close = clientRecording.filterIsInstance<TraceEvent.DgramOut>().last().payloadHex
             withTimeoutOrNull(5.seconds) {
-                while (serverRecording.none { it is TraceEvent.DgramIn && it.payloadHex == close }) delay(10.milliseconds)
+                while (true) {
+                    val close = RecordedClose.of(clientRecording)
+                    if (close is RecordedClose.Sent && serverRecording.any { it is TraceEvent.DgramIn && it.payloadHex == close.hex }) break
+                    delay(10.milliseconds)
+                }
             }
         } finally {
             echo.cancel()
@@ -294,6 +322,21 @@ class CoreRecordingReplayTests {
         )
         assertTrue(schedule.steps.any { it is Step.PeerSent && it.fate is Fate.Delivered }, "the server's datagrams arrived")
         return schedule
+    }
+
+    /**
+     * A client's close is sent after the last datagram the link had counted when close() returned: a recording without
+     * the client's closing state has not got the close yet, whatever datagrams it holds (CI JDK 17 / JNI: the server
+     * closed on the 39-byte acknowledgement before the 38-byte close arrived, and the schedule lost both).
+     */
+    @Test
+    fun aClientRecordingHasItsCloseOnlyOnceItRecordsClosing() {
+        val ack = TraceEvent.DgramOut(1.milliseconds, 39, null, "aa")
+        val close = TraceEvent.DgramOut(2.milliseconds, 38, null, "bb")
+        val closing = TraceEvent.State(3.milliseconds, "com.ditchoom.socket.quic.QuicConnectionState.Closed", "local: NoError (0x0)")
+        assertIs<RecordedClose.NotYet>(RecordedClose.of(listOf(ack)), "only an acknowledgement is recorded")
+        assertIs<RecordedClose.NotYet>(RecordedClose.of(listOf(ack, close)), "the close is recorded before the state")
+        assertEquals("bb", assertIs<RecordedClose.Sent>(RecordedClose.of(listOf(ack, close, closing))).hex)
     }
 
     /** Replays [schedule] twice and holds the replay to the recording: followed whole, ended as recorded, identical. */
