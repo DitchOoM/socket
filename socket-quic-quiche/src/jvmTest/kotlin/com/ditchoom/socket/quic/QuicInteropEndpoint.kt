@@ -20,6 +20,7 @@ import java.io.FileOutputStream
 import java.io.IOException
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.nio.file.Files
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
@@ -137,6 +138,7 @@ private fun runServer(
     val traces = TraceDirectory.fromEnvironment()
     val options = traces.serverOptions(interopBaseOptions(streams).copy(enableEarlyData = test == "zerortt" || test == "resumption"))
     val tls = QuicTlsConfig(certChainPath = certs.resolve("cert.pem").path, privKeyPath = certs.resolve("priv.key").path)
+    warmUp(test, interopBaseOptions(streams).copy(enableEarlyData = test == "zerortt" || test == "resumption"), tls, www)
     runBlocking(Dispatchers.IO) {
         val serving =
             launch {
@@ -163,6 +165,93 @@ private fun runServer(
     }
     return 0
 }
+
+/**
+ * Runs the test's own client against a throwaway server of this process, before the real one binds, so the first
+ * datagram of the real run meets loaded classes and compiled code: a cold JVM took 84-130 ms to create the first
+ * connection, which inflated the peer's first RTT sample (31 ms on the wire) and, in `amplificationlimit`, pushed
+ * a neqo that backs off from that sample past the 30 s idle timeout.
+ *
+ * The runner's simulator waits for the server's port before it starts the client (`server:443 is available`, up
+ * to ten seconds), so time spent here delays the start of the test and drops no datagram; [WARMUP_BUDGET] is
+ * well inside that wait. It cannot touch a test connection:
+ *  - It is a second server with its own TLS context, so its session-ticket keys and address-validation tokens
+ *    are random and its tickets decrypt nowhere else; the real server is created afterwards.
+ *  - It binds an ephemeral loopback port, not the runner's, and serves a one-file directory of its own.
+ *  - Its qlog, key log and trace files go to a directory that is deleted, by pointing the `quic.qlog.dir` and
+ *    `quic.keylog.dir` properties there (they win over the environment) for the duration and clearing them.
+ *  - A failure is only logged: the real server starts regardless.
+ */
+private fun warmUp(
+    test: String,
+    options: QuicOptions,
+    tls: QuicTlsConfig,
+    @Suppress("UNUSED_PARAMETER") www: File,
+) {
+    if (System.getenv("INTEROP_WARMUP") == "0") return
+    val started = TimeSource.Monotonic.markNow()
+    val scratch = Files.createTempDirectory("interop-warmup").toFile()
+    val served = scratch.resolve("www").apply { mkdirs() }
+    served.resolve("warm.txt").writeText("warm".repeat(256))
+    val qlogProperty = System.getProperty("quic.qlog.dir")
+    val keylogProperty = System.getProperty("quic.keylog.dir")
+    val artifacts = scratch.resolve("artifacts").apply { mkdirs() }
+    if (System.getenv("QUIC_QLOG_DIR").orEmpty().isNotEmpty()) System.setProperty("quic.qlog.dir", artifacts.path)
+    if (System.getenv("QUIC_KEYLOG_DIR").orEmpty().isNotEmpty()) System.setProperty("quic.keylog.dir", artifacts.path)
+    try {
+        val traced = TraceDirectory.At(artifacts).serverOptions(options)
+        val outcome =
+            runBlocking(Dispatchers.IO) {
+                withTimeoutOrNull(WARMUP_BUDGET) {
+                    withQuicServer(port = 0, tlsConfig = tls, quicOptions = traced) {
+                        val serving = launch { connections { coroutineScope { streams().collect { stream -> launch { serveRequest(stream, served) } } } } }
+                        val warmTest = if (test in setOf("resumption", "zerortt")) test else "handshake"
+                        val env =
+                            mapOf(
+                                "TESTCASE" to warmTest,
+                                "REQUESTS" to "https://127.0.0.1:${this.port}/warm.txt https://127.0.0.1:${this.port}/warm.txt",
+                                "DOWNLOADS" to scratch.resolve("downloads").path,
+                            )
+                        val code = runInteropClient(WarmupHost(env))
+                        serving.cancelAndJoin()
+                        code
+                    }
+                }
+            }
+        println("WARMUP ${if (outcome == 0) "done" else "incomplete ($outcome)"} in ${started.elapsedNow()}")
+    } catch (e: Exception) {
+        System.err.println("warm-up failed, serving cold: $e")
+    } finally {
+        qlogProperty?.let { System.setProperty("quic.qlog.dir", it) } ?: System.clearProperty("quic.qlog.dir")
+        keylogProperty?.let { System.setProperty("quic.keylog.dir", it) } ?: System.clearProperty("quic.keylog.dir")
+        scratch.deleteRecursively()
+    }
+}
+
+/** The shared client's host for [warmUp]: its own environment, downloads kept in memory-sized scratch files, no output. */
+private class WarmupHost(
+    private val env: Map<String, String>,
+) : InteropHost {
+    override fun env(name: String): String = env[name].orEmpty()
+
+    override fun create(path: String): InteropDownload {
+        val target = File(path)
+        target.parentFile?.mkdirs()
+        val out = FileOutputStream(target)
+        return object : InteropDownload {
+            override fun write(bytes: ByteArray) = out.write(bytes)
+
+            override fun close() = out.close()
+        }
+    }
+
+    override fun reportError(line: String) = System.err.println("warm-up client: $line")
+
+    override fun flushOutput() = Unit
+}
+
+/** Well inside the simulator's ten-second wait for the server's port. */
+private val WARMUP_BUDGET = 4.seconds
 
 /** Inside the runner's ten-second stop timeout. */
 private val SHUTDOWN_BUDGET = 5.seconds
