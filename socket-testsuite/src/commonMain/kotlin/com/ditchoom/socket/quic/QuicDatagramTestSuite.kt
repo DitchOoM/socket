@@ -250,13 +250,26 @@ abstract class QuicDatagramTestSuite {
             }
         }
 
+    /**
+     * The server holds each connection until the client closes it: a handler that returns closes its connection, and a
+     * close that reaches the client first fails the send as closed, not as too large.
+     */
     @Test
     fun datagramTooLargeThrows() =
         runQuicTest {
             wrapTestBody {
                 withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = dgramOptions) {
-                    val ready = CompletableDeferred<Unit>()
-                    val serverJob = launch { connections { ready.complete(Unit) } }
+                    val serverJob =
+                        launch {
+                            connections {
+                                while (true) {
+                                    when (val r = datagramChannel().receive()) {
+                                        is DatagramReadResult.Received -> r.datagram.payload.freeIfNeeded()
+                                        is DatagramReadResult.Closed -> break
+                                    }
+                                }
+                            }
+                        }
 
                     try {
                         withQuicConnection("localhost", port, dgramOptions, timeout = 10.seconds) {

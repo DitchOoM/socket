@@ -7,6 +7,7 @@ import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.core.testing.allocationSamples
+import com.ditchoom.socket.quic.core.testing.loopGateOfThisStack
 import com.ditchoom.socket.quic.network
 import com.ditchoom.socket.quic.skipOnMissingNativeLib
 import kotlinx.coroutines.Job
@@ -49,9 +50,10 @@ class LoopRunOpsAllocationTests {
                     println("[core loop-run allocation] loop %.2f B/echo\n%s".format(loop, where))
                     client.connection.close(QuicError.NoError)
                     main.close()
+                    val gate = loopGateOfThisStack(LOOP_GATE, JDK_LOOP_GATE)
                     assertTrue(
-                        loop <= LOOP_GATE,
-                        "the loop allocated %.2f B per echo it ran (gate %.1f), sampled from:\n%s".format(loop, LOOP_GATE, where),
+                        loop <= gate,
+                        "the loop allocated %.2f B per echo it ran (gate %.1f), sampled from:\n%s".format(loop, gate, where),
                     )
                 }
             }
@@ -134,6 +136,9 @@ class LoopRunOpsAllocationTests {
 
         /** JIT noise; the loop's own share of a call is meant to be zero. */
         const val LOOP_GATE = 1.0
+
+        /** The JDK stack's boxed descriptor per selector wake: 31.9 B/echo measured on Windows (run 44471687771). */
+        const val JDK_LOOP_GATE = 64.0
     }
 }
 

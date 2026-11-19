@@ -5,11 +5,12 @@ import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.Life
 import com.ditchoom.socket.quic.core.sched.SendRecord
 import com.ditchoom.socket.quic.core.time.Nanos
+import kotlinx.coroutines.Runnable
 
 /**
  * Serves the handshake. Before it completes, a server that accepted 0-RTT announces it once and hands up the streams
- * that arrived in it as [Arrival.Early]; at completion the report goes up; once complete, streams are woken and a
- * client's first session ticket goes up.
+ * that arrived in it as [Arrival.Early]; once complete, streams are woken and a client's first session ticket goes up.
+ * The report of its completion goes up in [served], after the serve's output.
  */
 internal fun ConnParts.handshakeStep(
     now: Nanos,
@@ -20,15 +21,34 @@ internal fun ConnParts.handshakeStep(
         HandshakeStep.Handshaking -> early()
         HandshakeStep.JustEstablished -> {
             paths.established()
-            // Before the caller is told: it may read the datagram room the moment it resumes.
-            slots.datagrams.wake()
-            sink.established(handshake.report(now, paths.read(), outcome()))
             established(now)
         }
         HandshakeStep.Established -> established(now)
         HandshakeStep.DeadlinePassed -> Unit
     }
     return step
+}
+
+/**
+ * The end of a serve after which the connection is open. A handshake that completed in it is reported now, after its
+ * output: quiche sizes the first packets it sends after the handshake to its path MTU probe and those during it to the
+ * current MTU, and the datagram room is read first, because a caller may read it the moment it resumes. The timer is
+ * armed when the serve collected everything.
+ */
+internal fun ConnParts.served(
+    now: Nanos,
+    paths: Paths,
+    collected: Collected,
+    fire: Runnable,
+) {
+    when (handshake.announcement()) {
+        Announcement.Due -> {
+            slots.datagrams.wake()
+            sink.established(handshake.report(now, paths.read(), outcome()))
+        }
+        Announcement.None -> Unit
+    }
+    if (collected == Collected.Everything) rearm(now, fire)
 }
 
 /** The end of a handshake that passed its deadline: sent to and never answered, or never sent for the network refused each datagram. */

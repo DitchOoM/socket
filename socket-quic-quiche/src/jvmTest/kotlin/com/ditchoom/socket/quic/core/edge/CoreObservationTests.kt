@@ -14,6 +14,7 @@ import com.ditchoom.socket.quic.core.conn.Inside
 import com.ditchoom.socket.quic.core.conn.QuicheWait
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.Life
+import com.ditchoom.socket.quic.core.observe.CountsSeen
 import com.ditchoom.socket.quic.network
 import com.ditchoom.socket.quic.skipOnMissingNativeLib
 import kotlinx.coroutines.async
@@ -69,6 +70,7 @@ class CoreObservationTests {
                     val parked = async { runCatching { stream.read(30.seconds) } }
 
                     val hold = HoldInside()
+                    val before = client.conn.counts.seen()
                     client.conn.submit(hold, CallerPlace.HandToLoop)
                     assertTrue(hold.entered.await(10, TimeUnit.SECONDS), "the hold never got inside")
                     val held = client.connection.stallReport(STALL_BOUND)
@@ -78,7 +80,13 @@ class CoreObservationTests {
 
                     val report = client.connection.stallReport(10.seconds)
                     assertIs<Life.Open>(report.life)
-                    assertTrue(report.counts.handedToLoop > 0, "the hold and the report were handed to the loop")
+                    // Each of the hold and the two reports reached the connection handed to the loop, or left for the
+                    // thread inside when the loop was in it (it serves the parked read's acknowledgements on its own).
+                    val handedOff = { c: CountsSeen -> c.handedToLoop + c.leftForHolder }
+                    assertTrue(
+                        handedOff(report.counts) - handedOff(before) >= HANDED_OFF,
+                        "the hold and both reports were handed to the loop or left for the thread inside",
+                    )
                     val view = assertIs<InsideAnswer.Answered>(report.inside).view
                     assertEquals(1, view.liveStreams)
                     assertEquals(0, view.opensWaiting)
@@ -111,5 +119,8 @@ class CoreObservationTests {
         const val PAYLOAD = 64
         const val MIN_QUIC_MTU = 1200L
         val STALL_BOUND = 200.milliseconds
+
+        /** The hold and the two stall reports. */
+        const val HANDED_OFF = 3L
     }
 }

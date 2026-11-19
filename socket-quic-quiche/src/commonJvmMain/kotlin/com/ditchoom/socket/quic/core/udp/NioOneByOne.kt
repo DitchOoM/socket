@@ -24,7 +24,10 @@ internal class NioOneByOne(
     first: DatagramChannel,
     sends: List<SendView>,
     private val receiveViews: List<JdkBytes>,
-    /** Destinations whose [InetSocketAddress] each lane keeps; a server with more peers than this converts again past it. */
+    /**
+     * Destinations whose [InetSocketAddress] each lane keeps, and senders whose [PathKey] the receive keeps; a server
+     * with more peers than this converts again past it.
+     */
     private val maxCachedTargets: Int = MAX_CACHED_TARGETS,
 ) : DatagramBatchIo {
     override val capability: BatchCapability = BatchCapability.OneByOne
@@ -32,7 +35,7 @@ internal class NioOneByOne(
     private val sendStorages: Array<NativeBytes> = Array(sends.size) { sends[it].storage }
     private val sendBuffers: Array<ByteBuffer> = Array(sends.size) { sends[it].bytes.view.duplicate() }
     private val targets: Array<HashMap<PathKey, InetSocketAddress>> = Array(sends.size) { HashMap() }
-    private var lastSender: Sender = Sender.None
+    private val senders = HashMap<InetSocketAddress, PathKey>()
 
     /** The channel in use now; [reopen] replaces it. */
     val channel: DatagramChannel get() = cell.load()
@@ -117,22 +120,17 @@ internal class NioOneByOne(
         return SocketClosed
     }
 
-    /** The JDK hands back the same sender object while one peer keeps sending; its key is converted once. */
-    private fun keyOf(from: InetSocketAddress): PathKey =
-        when (val last = lastSender) {
-            is Sender.Seen ->
-                if (last.address === from) {
-                    last.key
-                } else {
-                    remember(from)
-                }
-            is Sender.None -> remember(from)
-        }
-
-    private fun remember(from: InetSocketAddress): PathKey {
-        val seen = Sender.Seen(from, from.toPathKey())
-        lastSender = seen
-        return seen.key
+    /**
+     * The key of a sender heard before is the one made the first time: peers take turns on a server's socket, and the
+     * JDK makes a new address object for each sender that is not the previous one, so the lookup is by equality.
+     */
+    private fun keyOf(from: InetSocketAddress): PathKey {
+        val known = senders[from]
+        if (known != null) return known
+        if (senders.size >= maxCachedTargets) senders.clear()
+        val key = from.toPathKey()
+        senders[from] = key
+        return key
     }
 }
 
@@ -141,15 +139,6 @@ internal class SendView(
     val storage: NativeBytes,
     val bytes: JdkBytes,
 )
-
-private sealed interface Sender {
-    data object None : Sender
-
-    class Seen(
-        val address: InetSocketAddress,
-        val key: PathKey,
-    ) : Sender
-}
 
 internal fun InetSocketAddress.toPathKey(): PathKey {
     // java.net.InetAddress hands its bytes out only as a ByteArray.

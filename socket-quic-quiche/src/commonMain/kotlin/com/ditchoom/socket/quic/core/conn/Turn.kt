@@ -72,7 +72,7 @@ internal class Turn(
             }
             val collected = step(now, out)
             when (c.life.view()) {
-                is Life.Open -> if (collected == Collected.Everything) c.rearm(now, fire)
+                is Life.Open -> c.served(now, paths, collected, fire)
                 is Life.Over -> return over(now, out, fire)
             }
             c.flight.toTrace()
