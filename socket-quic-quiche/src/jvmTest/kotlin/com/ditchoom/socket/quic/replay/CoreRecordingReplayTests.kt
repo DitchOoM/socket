@@ -12,6 +12,7 @@ import com.ditchoom.socket.quic.QuicRole
 import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.QuicheConn
 import com.ditchoom.socket.quic.QuicheRecvInfo
+import com.ditchoom.socket.quic.QuicheSendInfo
 import com.ditchoom.socket.quic.ScopedRead
 import com.ditchoom.socket.quic.core.conn.FlightSize
 import com.ditchoom.socket.quic.core.conn.MismatchResponse
@@ -202,6 +203,9 @@ class CoreRecordingReplayTests {
         /** It wakes [LATE] after each of the client's timers falls due. */
         LateForTimers,
 
+        /** Its first send call reaches quiche [ENTRY] after the host read its clock for it, as a cold downcall does. */
+        ColdToSend,
+
         /**
          * After its payload is lost, it reads the server's next datagrams [PAST_THE_PROBE] late, past when the probe for
          * the payload falls due, then stalls [LATE] after sending its answer, before its loop runs again.
@@ -253,6 +257,7 @@ class CoreRecordingReplayTests {
                         when (host) {
                             ClientHost.SlowToAnswer -> SlowToAnswer(loadQuicheApi())
                             ClientHost.LateForTimers -> LateForTimers(loadQuicheApi())
+                            ClientHost.ColdToSend -> ColdToSend(loadQuicheApi())
                             ClientHost.Fast, ClientHost.SlowToRead, ClientHost.StalledAroundConfirmation -> loadQuicheApi()
                         },
                     timeout = 10.seconds,
@@ -435,6 +440,18 @@ class CoreRecordingReplayTests {
         }
 
     /**
+     * A host whose first send call reaches quiche [ENTRY] after it read its clock for the write, as a cold FFM downcall
+     * does: quiche stamps the Initial then and measures its first round trip from then, so the recording has the Initial
+     * leave then. Recorded when the write began, the replay's first round trip was longer and every probe after it fell
+     * due later than the recording's ran (FFM, the JVM's first connection: 0.71 ms, and a probe 2.5 ms late).
+     */
+    @Test
+    fun aRunWhoseClientWasColdToSendIsFollowedWholeByItsReplayTwice() =
+        replayTest("aRunWhoseClientWasColdToSendIsFollowedWholeByItsReplayTwice") {
+            assertFollowedWholeTwice(scheduleOf(recordAnEcho(ClientHost.ColdToSend)))
+        }
+
+    /**
      * A host that confirmed its handshake only after its probe fell due learns of the probe when it next re-arms, after
      * the turn that answers the server, and runs it when its loop next runs, here [LATE] later. The replay's client,
      * told by quiche the probe is overdue as it reads the server's datagram, fired it at once (CI: "our datagram 4
@@ -446,13 +463,37 @@ class CoreRecordingReplayTests {
             assertFollowedWholeTwice(scheduleOf(recordAnEcho(ClientHost.StalledAroundConfirmation)))
         }
 
-    /** quiche whose every timer the host is asked to run [LATE] after it falls due. */
+    /** Whether a call has reached quiche yet. */
+    private enum class Calls { Cold, Warm }
+
+    /** quiche that the first send call reaches [ENTRY] after it was made. */
+    private class ColdToSend(
+        private val real: QuicheApi,
+    ) : QuicheApi by real {
+        private var calls = Calls.Cold
+
+        override fun connSend(
+            conn: QuicheConn,
+            buf: Long,
+            bufLen: Int,
+            sendInfo: QuicheSendInfo,
+        ): Int {
+            if (calls == Calls.Cold) Thread.sleep(ENTRY.inWholeMilliseconds)
+            calls = Calls.Warm
+            return real.connSend(conn, buf, bufLen, sendInfo)
+        }
+    }
+
+    /**
+     * quiche whose every timer the host is asked to run [LATE] after it falls due; once it has fallen due, the host
+     * sees it due, and runs quiche's timeout.
+     */
     private class LateForTimers(
         private val real: QuicheApi,
     ) : QuicheApi by real {
         override fun connTimeoutNanos(conn: QuicheConn): Long =
             when (val wait = real.connTimeoutNanos(conn)) {
-                NO_TIMEOUT_NANOS -> wait
+                NO_TIMEOUT_NANOS, FALLEN_DUE -> wait
                 else -> wait + LATE.inWholeNanoseconds
             }
     }
@@ -587,6 +628,12 @@ class CoreRecordingReplayTests {
 
         /** Longer than the replay's tolerance of a send's time: a replay that fires when due leaves the recording. */
         val LATE = 20.milliseconds
+
+        /** Trebled from a first round trip into its probe, far past the replay's precision on a timer. */
+        val ENTRY = 3.milliseconds
+
+        /** quiche's wait for a timer that has fallen due. */
+        const val FALLEN_DUE = 0L
 
         /** Longer than the probe for the lost payload takes to fall due on loopback (about 30 ms). */
         val PAST_THE_PROBE = 60.milliseconds

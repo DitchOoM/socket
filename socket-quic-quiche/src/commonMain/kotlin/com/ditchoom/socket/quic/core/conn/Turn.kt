@@ -142,8 +142,7 @@ internal class Turn(
      */
     fun expire(now: Nanos) {
         if (c.life.view() !is Life.Open) return
-        c.flight.timerFired(now)
-        c.expired(paths)
+        c.expired(now, paths)
     }
 
     fun network(
