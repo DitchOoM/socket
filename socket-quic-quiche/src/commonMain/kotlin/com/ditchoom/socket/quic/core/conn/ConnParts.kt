@@ -23,4 +23,5 @@ internal class ConnParts(
     val sink: ConnSink,
     val ackReads: AckHoldReads,
     val sends: SendLedger,
+    val endHold: EndHold,
 )

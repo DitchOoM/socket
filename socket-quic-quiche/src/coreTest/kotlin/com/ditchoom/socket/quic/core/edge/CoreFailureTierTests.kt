@@ -12,6 +12,7 @@ import com.ditchoom.socket.quic.core.conn.CallerPlace
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.network
 import com.ditchoom.socket.quic.read
+import com.ditchoom.socket.quic.trace.TraceCapture
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
 import kotlinx.coroutines.async
@@ -52,7 +53,8 @@ class CoreFailureTierTests {
                             Duration.INFINITE,
                             connection.deadlines,
                             rig.conn,
-                            IdleRead(),
+                            // An edge of its own: the planted buffer the read keeps must not reach the other stream's reads.
+                            EdgeState(BufferFactory.network().allocate(ALPN_BYTES), TraceCapture.Off, TicketHome.NotKept),
                             ThrowingFactory(planted),
                             ReadSizing(),
                         )
@@ -180,5 +182,6 @@ class CoreFailureTierTests {
 
     private companion object {
         const val HEAD_BYTES = 1_000
+        const val ALPN_BYTES = 32
     }
 }

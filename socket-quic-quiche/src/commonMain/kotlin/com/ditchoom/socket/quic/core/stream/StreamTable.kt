@@ -102,6 +102,8 @@ internal class StreamTable(
         collect(entry)
     }
 
+    fun forEachEntry(each: (StreamEntry) -> Unit) = entries.forEachValue(each)
+
     /** How many streams hold an entry: the live ones. */
     fun liveStreams(): Int = entries.size
 

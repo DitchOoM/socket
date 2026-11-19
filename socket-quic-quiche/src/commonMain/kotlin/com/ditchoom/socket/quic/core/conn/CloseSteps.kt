@@ -1,8 +1,12 @@
 package com.ditchoom.socket.quic.core.conn
 
+import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.Holding
 import com.ditchoom.socket.quic.core.life.LifeStep
+import com.ditchoom.socket.quic.core.life.errorCode
+import com.ditchoom.socket.quic.core.life.flightCode
 import com.ditchoom.socket.quic.core.path.Outgoing
+import com.ditchoom.socket.quic.core.stream.Side
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.udp.Room
 import com.ditchoom.socket.quic.core.udp.SendBatch
@@ -12,6 +16,38 @@ import kotlinx.coroutines.Runnable
 internal fun ConnParts.wakeStreams(arrival: Arrival) {
     streams.wake()
     streams.takeIncoming { sink.incoming(it, arrival) }
+}
+
+/** Whether the end reads out what quiche holds for the streams, or only notes which were live. */
+internal enum class HoldAtEnd { ReadOut, LiveOnly }
+
+/**
+ * At the end, with quiche still alive: what it holds for every stream still being received, for the reads after the
+ * end, a reader parked on one among them. A handshake that never completed holds nothing, as what it received may be a
+ * 0-RTT replay. Allocates; once per connection.
+ */
+internal fun ConnParts.heldAtEnd(how: HoldAtEnd): HeldReads {
+    val held = HashMap<Long, HeldStream>()
+    val live = HashSet<Long>()
+    val readOut = how == HoldAtEnd.ReadOut && handshake.reached() == Progress.Established
+    streams.forEachEntry { entry ->
+        live.add(entry.id.id)
+        if (readOut && entry.received is Side.Open) {
+            val one = endHold.stream(entry.id)
+            if (one.owed() == Owed.Yes) held[entry.id.id] = one
+        }
+    }
+    return HeldReads(held, live)
+}
+
+/** At the end: a client's unused ticket goes back, and the end goes into the flight recording. */
+internal fun ConnParts.recordEnd(
+    now: Nanos,
+    end: ConnEnd,
+) {
+    ticketAtEnd()
+    flight.ended(now, end.flightCode(), end.errorCode())
+    flight.keepEnded(role, end)
 }
 
 /** Whether a write carried the close's CONNECTION_CLOSE. */

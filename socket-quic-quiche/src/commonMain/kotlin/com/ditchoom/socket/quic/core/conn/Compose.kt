@@ -177,6 +177,7 @@ private fun composed(
             sink = sink,
             ackReads = AckHoldReads(q),
             sends = socket.ledger,
+            endHold = EndHold(StreamIo(q), memory.factory),
         )
     return Conn(Turn(parts, clock, port), port, socket, clock, loopEntrant, counts)
 }
