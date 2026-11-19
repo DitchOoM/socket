@@ -8,8 +8,8 @@ import com.ditchoom.socket.quic.core.time.Nanos
 
 /**
  * Serves the handshake. Before it completes, a server that accepted 0-RTT announces it once and hands up the streams
- * that arrived in it as [Arrival.Early]; at completion the report goes up; once complete, streams are woken and a
- * client's first session ticket goes up.
+ * that arrived in it as [Arrival.Early]; once complete, streams are woken and a client's first session ticket goes up.
+ * The serve that completes it calls [announceEstablished] after its output.
  */
 internal fun ConnParts.handshakeStep(
     now: Nanos,
@@ -20,15 +20,25 @@ internal fun ConnParts.handshakeStep(
         HandshakeStep.Handshaking -> early()
         HandshakeStep.JustEstablished -> {
             paths.established()
-            // Before the caller is told: it may read the datagram room the moment it resumes.
-            slots.datagrams.wake()
-            sink.established(handshake.report(now, paths.read(), outcome()))
             established(now)
         }
         HandshakeStep.Established -> established(now)
         HandshakeStep.DeadlinePassed -> Unit
     }
     return step
+}
+
+/**
+ * Once, after the output of the serve whose [handshakeStep] answered [HandshakeStep.JustEstablished]: the report goes
+ * up. The datagram room is read first, after quiche sized its first datagrams past the handshake: a caller may read the
+ * room the moment it resumes.
+ */
+internal fun ConnParts.announceEstablished(
+    now: Nanos,
+    paths: Paths,
+) {
+    slots.datagrams.wake()
+    sink.established(handshake.report(now, paths.read(), outcome()))
 }
 
 /** The end of a handshake that passed its deadline: sent to and never answered, or never sent for the network refused each datagram. */

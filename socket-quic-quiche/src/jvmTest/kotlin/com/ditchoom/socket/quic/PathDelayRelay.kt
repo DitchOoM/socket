@@ -5,6 +5,7 @@ import java.net.DatagramSocket
 import java.net.InetSocketAddress
 import java.net.SocketException
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.locks.LockSupport
 import kotlin.concurrent.thread
@@ -13,7 +14,8 @@ import kotlin.time.Duration.Companion.seconds
 
 /**
  * A UDP relay on `127.0.0.1` in front of [upstream] that holds every datagram for [oneWay] in each
- * direction, so a path through it has a round-trip time of twice that.
+ * direction, so a path through it has a round-trip time of twice that. Datagrams leave at least [spacing]
+ * apart, so a burst reaches its receiver one datagram per read.
  *
  * Each client address gets a socket of its own towards [upstream]. A client that moves to a new local
  * port therefore reaches the server from a new address, exactly as it would without the relay: the
@@ -26,12 +28,14 @@ import kotlin.time.Duration.Companion.seconds
 internal class PathDelayRelay(
     private val upstream: InetSocketAddress,
     private val oneWay: Duration,
+    private val spacing: Duration = Duration.ZERO,
 ) : AutoCloseable {
     private val listen = DatagramSocket(InetSocketAddress("127.0.0.1", 0))
 
     /** Client address to the socket that carries its datagrams upstream. Written by the listen thread only. */
     private val legs = AtomicReference<Map<InetSocketAddress, DatagramSocket>>(emptyMap())
     private val held = ConcurrentLinkedQueue<Held>()
+    private val lastDue = AtomicLong(Long.MIN_VALUE)
     private val threads = ConcurrentLinkedQueue<Thread>()
     private val sender = start("path-delay-relay/sender") { sendWhenDue() }
 
@@ -71,7 +75,9 @@ internal class PathDelayRelay(
         to: InetSocketAddress,
     ) {
         val copy = DatagramPacket(packet.data.copyOf(packet.length), packet.length, to)
-        held.add(Held(System.nanoTime() + oneWay.inWholeNanoseconds, from, copy))
+        val earliest = System.nanoTime() + oneWay.inWholeNanoseconds
+        val due = lastDue.updateAndGet { last -> if (last == Long.MIN_VALUE) earliest else maxOf(earliest, last + spacing.inWholeNanoseconds) }
+        held.add(Held(due, from, copy))
         LockSupport.unpark(sender)
     }
 
