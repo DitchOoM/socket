@@ -19,6 +19,6 @@ internal fun udpErrorOf(refusal: SocketRefusal): UdpError =
         SocketRefusal.EBadF -> UdpError.SocketClosed
         SocketRefusal.EIo, SocketRefusal.EAddrInUse, SocketRefusal.EAfNoSupport,
         SocketRefusal.ENoMem, SocketRefusal.EInval, SocketRefusal.ENoProtoOpt,
-        SocketRefusal.ENoSys, SocketRefusal.Unmapped,
+        SocketRefusal.ENoSys, SocketRefusal.EPipe, SocketRefusal.Unmapped,
         -> UdpError.Unnamed(Thrown(NativeSocketRefusal(refusal)))
     }

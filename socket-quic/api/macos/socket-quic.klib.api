@@ -1526,6 +1526,22 @@ sealed interface com.ditchoom.socket.quic/QuicConnectionEnd { // com.ditchoom.so
             final fun <get-thrown>(): kotlin/Throwable // com.ditchoom.socket.quic/QuicConnectionEnd.CallerFailed.thrown.<get-thrown>|<get-thrown>(){}[0]
     }
 
+    final class HandshakeSendRefused : com.ditchoom.socket.quic/QuicConnectionEnd { // com.ditchoom.socket.quic/QuicConnectionEnd.HandshakeSendRefused|null[0]
+        constructor <init>(com.ditchoom.socket.quic/QuicHandshakeProgress, com.ditchoom.socket.quic/QuicSendRefusal) // com.ditchoom.socket.quic/QuicConnectionEnd.HandshakeSendRefused.<init>|<init>(com.ditchoom.socket.quic.QuicHandshakeProgress;com.ditchoom.socket.quic.QuicSendRefusal){}[0]
+
+        final val progress // com.ditchoom.socket.quic/QuicConnectionEnd.HandshakeSendRefused.progress|{}progress[0]
+            final fun <get-progress>(): com.ditchoom.socket.quic/QuicHandshakeProgress // com.ditchoom.socket.quic/QuicConnectionEnd.HandshakeSendRefused.progress.<get-progress>|<get-progress>(){}[0]
+        final val refusal // com.ditchoom.socket.quic/QuicConnectionEnd.HandshakeSendRefused.refusal|{}refusal[0]
+            final fun <get-refusal>(): com.ditchoom.socket.quic/QuicSendRefusal // com.ditchoom.socket.quic/QuicConnectionEnd.HandshakeSendRefused.refusal.<get-refusal>|<get-refusal>(){}[0]
+
+        final fun component1(): com.ditchoom.socket.quic/QuicHandshakeProgress // com.ditchoom.socket.quic/QuicConnectionEnd.HandshakeSendRefused.component1|component1(){}[0]
+        final fun component2(): com.ditchoom.socket.quic/QuicSendRefusal // com.ditchoom.socket.quic/QuicConnectionEnd.HandshakeSendRefused.component2|component2(){}[0]
+        final fun copy(com.ditchoom.socket.quic/QuicHandshakeProgress = ..., com.ditchoom.socket.quic/QuicSendRefusal = ...): com.ditchoom.socket.quic/QuicConnectionEnd.HandshakeSendRefused // com.ditchoom.socket.quic/QuicConnectionEnd.HandshakeSendRefused.copy|copy(com.ditchoom.socket.quic.QuicHandshakeProgress;com.ditchoom.socket.quic.QuicSendRefusal){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicConnectionEnd.HandshakeSendRefused.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicConnectionEnd.HandshakeSendRefused.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicConnectionEnd.HandshakeSendRefused.toString|toString(){}[0]
+    }
+
     final class HandshakeTimedOut : com.ditchoom.socket.quic/QuicConnectionEnd { // com.ditchoom.socket.quic/QuicConnectionEnd.HandshakeTimedOut|null[0]
         constructor <init>(com.ditchoom.socket.quic/QuicHandshakeProgress) // com.ditchoom.socket.quic/QuicConnectionEnd.HandshakeTimedOut.<init>|<init>(com.ditchoom.socket.quic.QuicHandshakeProgress){}[0]
 
@@ -2290,6 +2306,51 @@ sealed interface com.ditchoom.socket.quic/QuicRttSample { // com.ditchoom.socket
         final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicRttSample.None.equals|equals(kotlin.Any?){}[0]
         final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicRttSample.None.hashCode|hashCode(){}[0]
         final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicRttSample.None.toString|toString(){}[0]
+    }
+}
+
+sealed interface com.ditchoom.socket.quic/QuicSendRefusal { // com.ditchoom.socket.quic/QuicSendRefusal|null[0]
+    final class Unnamed : com.ditchoom.socket.quic/QuicSendRefusal { // com.ditchoom.socket.quic/QuicSendRefusal.Unnamed|null[0]
+        constructor <init>(kotlin/Throwable) // com.ditchoom.socket.quic/QuicSendRefusal.Unnamed.<init>|<init>(kotlin.Throwable){}[0]
+
+        final val thrown // com.ditchoom.socket.quic/QuicSendRefusal.Unnamed.thrown|{}thrown[0]
+            final fun <get-thrown>(): kotlin/Throwable // com.ditchoom.socket.quic/QuicSendRefusal.Unnamed.thrown.<get-thrown>|<get-thrown>(){}[0]
+    }
+
+    final object HostUnreachable : com.ditchoom.socket.quic/QuicSendRefusal { // com.ditchoom.socket.quic/QuicSendRefusal.HostUnreachable|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicSendRefusal.HostUnreachable.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicSendRefusal.HostUnreachable.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicSendRefusal.HostUnreachable.toString|toString(){}[0]
+    }
+
+    final object MessageTooLarge : com.ditchoom.socket.quic/QuicSendRefusal { // com.ditchoom.socket.quic/QuicSendRefusal.MessageTooLarge|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicSendRefusal.MessageTooLarge.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicSendRefusal.MessageTooLarge.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicSendRefusal.MessageTooLarge.toString|toString(){}[0]
+    }
+
+    final object NetworkUnreachable : com.ditchoom.socket.quic/QuicSendRefusal { // com.ditchoom.socket.quic/QuicSendRefusal.NetworkUnreachable|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicSendRefusal.NetworkUnreachable.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicSendRefusal.NetworkUnreachable.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicSendRefusal.NetworkUnreachable.toString|toString(){}[0]
+    }
+
+    final object NoBufferSpace : com.ditchoom.socket.quic/QuicSendRefusal { // com.ditchoom.socket.quic/QuicSendRefusal.NoBufferSpace|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicSendRefusal.NoBufferSpace.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicSendRefusal.NoBufferSpace.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicSendRefusal.NoBufferSpace.toString|toString(){}[0]
+    }
+
+    final object PermissionDenied : com.ditchoom.socket.quic/QuicSendRefusal { // com.ditchoom.socket.quic/QuicSendRefusal.PermissionDenied|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicSendRefusal.PermissionDenied.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicSendRefusal.PermissionDenied.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicSendRefusal.PermissionDenied.toString|toString(){}[0]
+    }
+
+    final object PortUnreachable : com.ditchoom.socket.quic/QuicSendRefusal { // com.ditchoom.socket.quic/QuicSendRefusal.PortUnreachable|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicSendRefusal.PortUnreachable.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicSendRefusal.PortUnreachable.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicSendRefusal.PortUnreachable.toString|toString(){}[0]
     }
 }
 

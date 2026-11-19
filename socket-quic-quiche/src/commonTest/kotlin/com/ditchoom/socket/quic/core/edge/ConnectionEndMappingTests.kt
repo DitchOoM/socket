@@ -8,12 +8,14 @@ import com.ditchoom.socket.quic.QuicConnectionEnd
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicHandshakeReached
 import com.ditchoom.socket.quic.QuicRttSample
+import com.ditchoom.socket.quic.QuicSendRefusal
 import com.ditchoom.socket.quic.QuicSocketFault
 import com.ditchoom.socket.quic.closeReason
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.HandshakeProgress
 import com.ditchoom.socket.quic.core.life.HandshakeReached
 import com.ditchoom.socket.quic.core.life.RttSample
+import com.ditchoom.socket.quic.core.udp.SendRefusal
 import com.ditchoom.socket.quic.core.udp.SocketFault
 import com.ditchoom.socket.quic.core.udp.Thrown
 import kotlin.test.Test
@@ -54,6 +56,7 @@ class ConnectionEndMappingTests {
             ConnEnd.NetworkLost,
             ConnEnd.LocalAddressGone,
             ConnEnd.NoUsablePath,
+            ConnEnd.HandshakeSendRefused(progress, SendRefusal.PermissionDenied),
         )
 
     /** Exhaustive without `else`: a new [ConnEnd] does not compile until it is numbered here and sampled above. */
@@ -75,6 +78,7 @@ class ConnectionEndMappingTests {
             is ConnEnd.NetworkLost -> 13
             is ConnEnd.LocalAddressGone -> 14
             is ConnEnd.NoUsablePath -> 15
+            is ConnEnd.HandshakeSendRefused -> 16
         }
 
     /** The public variant each end must map to, numbered as [variant] numbers ends. */
@@ -96,6 +100,7 @@ class ConnectionEndMappingTests {
             is QuicConnectionEnd.NetworkLost -> 13
             is QuicConnectionEnd.LocalAddressGone -> 14
             is QuicConnectionEnd.NoUsablePath -> 15
+            is QuicConnectionEnd.HandshakeSendRefused -> 16
             is QuicConnectionEnd.ReasonOnly -> -1
         }
 
@@ -132,6 +137,21 @@ class ConnectionEndMappingTests {
         assertEquals(LinkClass.Wifi, timedOut.progress.link)
         assertEquals(3, timedOut.progress.probes)
         assertEquals(QuicHandshakeReached.PeerAnswered, timedOut.progress.reached)
+
+        val refused =
+            assertIs<QuicConnectionEnd.HandshakeSendRefused>(
+                publicEndOf(ConnEnd.HandshakeSendRefused(progress, SendRefusal.HostUnreachable)),
+            )
+        assertEquals(QuicHandshakeReached.PeerAnswered, refused.progress.reached)
+        assertEquals(QuicSendRefusal.HostUnreachable, refused.refusal)
+        assertSame(
+            boom,
+            assertIs<QuicSendRefusal.Unnamed>(
+                assertIs<QuicConnectionEnd.HandshakeSendRefused>(
+                    publicEndOf(ConnEnd.HandshakeSendRefused(progress, SendRefusal.Unnamed(Thrown(boom)))),
+                ).refusal,
+            ).thrown,
+        )
 
         val socket = assertIs<QuicConnectionEnd.SocketFailed>(publicEndOf(ConnEnd.SocketFailed(SocketFault.Repeated(8, Thrown(boom)))))
         val repeated = assertIs<QuicSocketFault.Repeated>(socket.fault)

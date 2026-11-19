@@ -56,6 +56,7 @@ class SocketErrorsTests {
     fun anUnnamedErrorOnAnOpenSocketIsThatDatagramsAlone() {
         val fault = assertIs<SendFault.Datagram>(errors.classify(unnamed, SocketProbe.Open))
         assertEquals(DatagramFault.Unnamed, fault.why)
+        assertSame(unnamed.thrown, assertIs<SendRefusal.Unnamed>(fault.refusal).thrown)
     }
 
     @Test

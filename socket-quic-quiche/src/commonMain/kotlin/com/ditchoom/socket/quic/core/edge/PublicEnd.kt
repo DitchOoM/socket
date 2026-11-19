@@ -3,10 +3,12 @@ package com.ditchoom.socket.quic.core.edge
 import com.ditchoom.socket.quic.QuicHandshakeProgress
 import com.ditchoom.socket.quic.QuicHandshakeReached
 import com.ditchoom.socket.quic.QuicRttSample
+import com.ditchoom.socket.quic.QuicSendRefusal
 import com.ditchoom.socket.quic.QuicSocketFault
 import com.ditchoom.socket.quic.core.life.HandshakeProgress
 import com.ditchoom.socket.quic.core.life.HandshakeReached
 import com.ditchoom.socket.quic.core.life.RttSample
+import com.ditchoom.socket.quic.core.udp.SendRefusal
 import com.ditchoom.socket.quic.core.udp.SocketFault
 
 /** The public mirror of what a timed-out handshake had reached. */
@@ -36,4 +38,16 @@ internal fun publicFaultOf(fault: SocketFault): QuicSocketFault =
         is SocketFault.ReopenRefused -> QuicSocketFault.ReopenRefused(fault.thrown.throwable)
         is SocketFault.MoveRefused -> QuicSocketFault.MoveRefused(fault.thrown.throwable)
         is SocketFault.Repeated -> QuicSocketFault.Repeated(fault.count, fault.thrown.throwable)
+    }
+
+/** The public mirror of why the network refused a datagram. */
+internal fun publicRefusalOf(refusal: SendRefusal): QuicSendRefusal =
+    when (refusal) {
+        is SendRefusal.TooLarge -> QuicSendRefusal.MessageTooLarge
+        is SendRefusal.NetworkUnreachable -> QuicSendRefusal.NetworkUnreachable
+        is SendRefusal.HostUnreachable -> QuicSendRefusal.HostUnreachable
+        is SendRefusal.PortUnreachable -> QuicSendRefusal.PortUnreachable
+        is SendRefusal.NoBufferSpace -> QuicSendRefusal.NoBufferSpace
+        is SendRefusal.PermissionDenied -> QuicSendRefusal.PermissionDenied
+        is SendRefusal.Unnamed -> QuicSendRefusal.Unnamed(refusal.thrown.throwable)
     }

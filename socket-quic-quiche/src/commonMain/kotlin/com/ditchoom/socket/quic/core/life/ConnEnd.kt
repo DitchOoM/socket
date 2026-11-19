@@ -1,6 +1,7 @@
 package com.ditchoom.socket.quic.core.life
 
 import com.ditchoom.socket.quic.QuicError
+import com.ditchoom.socket.quic.core.udp.SendRefusal
 import com.ditchoom.socket.quic.core.udp.SocketFault
 import com.ditchoom.socket.quic.core.udp.Thrown
 
@@ -22,6 +23,12 @@ internal sealed interface ConnEnd {
 
     class HandshakeTimedOut(
         val progress: HandshakeProgress,
+    ) : ConnEnd
+
+    /** The handshake hit its bound with every datagram refused by the network: nothing was sent. [refusal] is the last. */
+    class HandshakeSendRefused(
+        val progress: HandshakeProgress,
+        val refusal: SendRefusal,
     ) : ConnEnd
 
     class SocketFailed(

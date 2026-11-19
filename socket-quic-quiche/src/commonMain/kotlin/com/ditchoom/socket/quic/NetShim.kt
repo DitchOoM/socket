@@ -126,6 +126,7 @@ internal enum class SocketRefusal(
     ENoProtoOpt(15),
     ENoSys(16),
     EPerm(17),
+    EPipe(18),
     Unmapped(99),
     ;
 

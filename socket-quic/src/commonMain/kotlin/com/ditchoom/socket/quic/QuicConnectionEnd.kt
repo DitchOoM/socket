@@ -28,6 +28,15 @@ sealed interface QuicConnectionEnd {
         val progress: QuicHandshakeProgress,
     ) : QuicConnectionEnd
 
+    /**
+     * The handshake did not complete within its bound, and the network refused every datagram it was handed: nothing was
+     * sent, as distinct from [HandshakeTimedOut], where the peer was sent to and never answered. [refusal] is the last refusal.
+     */
+    data class HandshakeSendRefused(
+        val progress: QuicHandshakeProgress,
+        val refusal: QuicSendRefusal,
+    ) : QuicConnectionEnd
+
     /** The connection's UDP socket failed as [fault] says. */
     class SocketFailed(
         val fault: QuicSocketFault,
@@ -86,6 +95,7 @@ val QuicConnectionEnd.closeReason: QuicCloseReason
             is QuicConnectionEnd.ByLocal -> QuicCloseReason.ByLocal(error)
             is QuicConnectionEnd.IdleTimeout -> QuicCloseReason.ByLocal(QuicError.IdleTimeout)
             is QuicConnectionEnd.HandshakeTimedOut -> QuicCloseReason.ByLocal(QuicError.HandshakeTimeout(progress.waited))
+            is QuicConnectionEnd.HandshakeSendRefused -> QuicCloseReason.ByLocal(QuicError.HandshakeTimeout(progress.waited))
             is QuicConnectionEnd.ProcessingFailed -> QuicCloseReason.ByLocal(QuicError.ProcessingFailed)
             is QuicConnectionEnd.ServerClosed -> QuicCloseReason.ByLocal(QuicError.NoError)
             is QuicConnectionEnd.ServerClosedUnsettled -> QuicCloseReason.ByLocal(QuicError.ServerStoppedBeforeCloseSent)
@@ -122,6 +132,28 @@ sealed interface QuicRttSample {
 
 /** Whether anything came back from the peer during a handshake. */
 enum class QuicHandshakeReached { NothingReceived, PeerAnswered }
+
+/** Why the network refused a datagram. */
+sealed interface QuicSendRefusal {
+    /** The datagram was larger than the path allows. */
+    data object MessageTooLarge : QuicSendRefusal
+
+    data object NetworkUnreachable : QuicSendRefusal
+
+    data object HostUnreachable : QuicSendRefusal
+
+    data object PortUnreachable : QuicSendRefusal
+
+    data object NoBufferSpace : QuicSendRefusal
+
+    /** The operating system denied the send, as a firewall or local-network privacy does. */
+    data object PermissionDenied : QuicSendRefusal
+
+    /** An error the library does not name; [thrown] is the platform's own. */
+    class Unnamed(
+        val thrown: Throwable,
+    ) : QuicSendRefusal
+}
 
 /** How a connection's UDP socket failed. */
 sealed interface QuicSocketFault {
