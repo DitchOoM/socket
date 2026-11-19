@@ -67,11 +67,9 @@ class StreamRecvAfterHandOffTests {
             driver.commands.send(QuicheCmd.Stats(CompletableDeferred()))
             withTimeout(2.seconds) { slot.dataSignal.receive() } // the hand-off is done: the end is latched
 
-            val buf = bufferFactory.allocate(READ_SIZE)
             val answer = CompletableDeferred<StreamRecvResult>()
-            driver.commands.send(QuicheCmd.StreamRecv(slot.id.id, buf.driverOwnedMemory(), READ_SIZE, answer))
+            driver.commands.send(QuicheCmd.StreamRecv(slot, READ_SIZE, answer))
             check(withTimeout(2.seconds) { answer.await() })
-            buf.freeNativeMemory()
             return slot
         } finally {
             driver.destroy()

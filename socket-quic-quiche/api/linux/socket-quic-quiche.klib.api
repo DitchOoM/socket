@@ -704,16 +704,14 @@ sealed interface com.ditchoom.socket.quic/QuicheCmd { // com.ditchoom.socket.qui
     }
 
     final class StreamRecv : com.ditchoom.socket.quic/QuicheCmd { // com.ditchoom.socket.quic/QuicheCmd.StreamRecv|null[0]
-        constructor <init>(kotlin/Long, com.ditchoom.socket.quic/QuicheMemory, kotlin/Int, kotlinx.coroutines/CompletableDeferred<com.ditchoom.socket.quic/StreamRecvResult>) // com.ditchoom.socket.quic/QuicheCmd.StreamRecv.<init>|<init>(kotlin.Long;com.ditchoom.socket.quic.QuicheMemory;kotlin.Int;kotlinx.coroutines.CompletableDeferred<com.ditchoom.socket.quic.StreamRecvResult>){}[0]
+        constructor <init>(com.ditchoom.socket.quic/StreamSlot, kotlin/Int, kotlinx.coroutines/CompletableDeferred<com.ditchoom.socket.quic/StreamRecvResult>) // com.ditchoom.socket.quic/QuicheCmd.StreamRecv.<init>|<init>(com.ditchoom.socket.quic.StreamSlot;kotlin.Int;kotlinx.coroutines.CompletableDeferred<com.ditchoom.socket.quic.StreamRecvResult>){}[0]
 
-        final val buf // com.ditchoom.socket.quic/QuicheCmd.StreamRecv.buf|{}buf[0]
-            final fun <get-buf>(): com.ditchoom.socket.quic/QuicheMemory // com.ditchoom.socket.quic/QuicheCmd.StreamRecv.buf.<get-buf>|<get-buf>(){}[0]
         final val bufLen // com.ditchoom.socket.quic/QuicheCmd.StreamRecv.bufLen|{}bufLen[0]
             final fun <get-bufLen>(): kotlin/Int // com.ditchoom.socket.quic/QuicheCmd.StreamRecv.bufLen.<get-bufLen>|<get-bufLen>(){}[0]
         final val result // com.ditchoom.socket.quic/QuicheCmd.StreamRecv.result|{}result[0]
             final fun <get-result>(): kotlinx.coroutines/CompletableDeferred<com.ditchoom.socket.quic/StreamRecvResult> // com.ditchoom.socket.quic/QuicheCmd.StreamRecv.result.<get-result>|<get-result>(){}[0]
-        final val streamId // com.ditchoom.socket.quic/QuicheCmd.StreamRecv.streamId|{}streamId[0]
-            final fun <get-streamId>(): kotlin/Long // com.ditchoom.socket.quic/QuicheCmd.StreamRecv.streamId.<get-streamId>|<get-streamId>(){}[0]
+        final val slot // com.ditchoom.socket.quic/QuicheCmd.StreamRecv.slot|{}slot[0]
+            final fun <get-slot>(): com.ditchoom.socket.quic/StreamSlot // com.ditchoom.socket.quic/QuicheCmd.StreamRecv.slot.<get-slot>|<get-slot>(){}[0]
     }
 
     final class StreamSend : com.ditchoom.socket.quic/QuicheCmd { // com.ditchoom.socket.quic/QuicheCmd.StreamSend|null[0]
