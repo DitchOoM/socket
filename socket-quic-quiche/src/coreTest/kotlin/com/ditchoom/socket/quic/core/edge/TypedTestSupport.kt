@@ -21,6 +21,7 @@ import com.ditchoom.buffer.stream.StreamProcessor
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicOptions
+import com.ditchoom.socket.quic.QuicTlsConfig
 import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.core.conn.MismatchResponse
 import com.ditchoom.socket.quic.core.demux.ServerConfig
@@ -198,6 +199,7 @@ internal suspend fun withCoreServer(
     bind: PathKey = loopbackV4(),
     api: QuicheApi = platformQuicheApi(),
     options: QuicOptions = coreTestOptions,
+    tls: QuicTlsConfig = platformTlsConfig(),
     onConnection: suspend CoroutineScope.(CoreConnection) -> Unit,
     body: suspend CoroutineScope.(CoreServer) -> Unit,
 ) {
@@ -205,7 +207,7 @@ internal suspend fun withCoreServer(
         coreServe(
             mismatch = MismatchResponse.Fail,
             bind = bind,
-            tls = platformTlsConfig(),
+            tls = tls,
             options = options,
             factory = BufferFactory.network(),
             api = api,
