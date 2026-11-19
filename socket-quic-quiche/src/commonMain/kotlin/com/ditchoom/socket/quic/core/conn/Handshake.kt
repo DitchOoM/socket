@@ -81,7 +81,7 @@ internal class Handshake(
         capacity: Int,
     ): Int =
         when (position) {
-            PeerCertPosition.Leaf -> q.api.connPeerCert(q.handle, address, capacity)
+            is PeerCertPosition.Leaf -> q.api.connPeerCert(q.handle, address, capacity)
             is PeerCertPosition.InChain -> q.api.connPeerCertChainAt(q.handle, position.index, address, capacity)
         }
 

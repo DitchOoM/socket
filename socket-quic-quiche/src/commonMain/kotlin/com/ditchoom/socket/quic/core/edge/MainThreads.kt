@@ -10,17 +10,16 @@ internal sealed interface MainThreads {
     /** The runtime has no main thread of its own: only a main dispatcher marks a main-thread caller. */
     data object ByDispatcher : MainThreads
 
-    /** The runtime has one, which [probe] recognises whatever dispatcher the caller reached it through. */
+    /** The runtime has one, [thread], recognised whatever dispatcher the caller reached it through. */
     class Known(
-        private val probe: MainThreadProbe,
-    ) : MainThreads {
-        fun onIt(): Boolean = probe.onMainThread()
-    }
+        val thread: MainThread,
+    ) : MainThreads
 }
 
-/** Whether the calling thread is the runtime's main thread. */
-internal fun interface MainThreadProbe {
-    fun onMainThread(): Boolean
+/** A runtime's main thread. */
+internal expect class MainThread {
+    /** Whether the calling thread is this one. */
+    fun isCurrent(): Boolean
 }
 
 /** This runtime's [MainThreads]. */
@@ -33,7 +32,7 @@ internal fun callerPlaceOf(
 ): CallerPlace {
     if (context[ContinuationInterceptor] is MainCoroutineDispatcher) return CallerPlace.HandToLoop
     return when (main) {
-        MainThreads.ByDispatcher -> CallerPlace.MayEnter
-        is MainThreads.Known -> if (main.onIt()) CallerPlace.HandToLoop else CallerPlace.MayEnter
+        is MainThreads.ByDispatcher -> CallerPlace.MayEnter
+        is MainThreads.Known -> if (main.thread.isCurrent()) CallerPlace.HandToLoop else CallerPlace.MayEnter
     }
 }

@@ -16,17 +16,17 @@ class CallerPlaceTests {
     @Test
     fun aMainDispatcherHandsWorkToTheLoopWhateverTheRuntime() {
         assertEquals(CallerPlace.HandToLoop, callerPlaceOf(SomeMain, MainThreads.ByDispatcher))
-        assertEquals(CallerPlace.HandToLoop, callerPlaceOf(SomeMain, MainThreads.Known { false }))
+        assertEquals(CallerPlace.HandToLoop, callerPlaceOf(SomeMain, MainThreads.Known(MainThread(Thread()))))
     }
 
     @Test
     fun aCallerOnAKnownMainThreadHandsWorkToTheLoopUnderAnyDispatcher() {
-        assertEquals(CallerPlace.HandToLoop, callerPlaceOf(EmptyCoroutineContext, MainThreads.Known { true }))
+        assertEquals(CallerPlace.HandToLoop, callerPlaceOf(EmptyCoroutineContext, MainThreads.Known(MainThread(Thread.currentThread()))))
     }
 
     @Test
     fun anyOtherCallerMayEnter() {
-        assertEquals(CallerPlace.MayEnter, callerPlaceOf(EmptyCoroutineContext, MainThreads.Known { false }))
+        assertEquals(CallerPlace.MayEnter, callerPlaceOf(EmptyCoroutineContext, MainThreads.Known(MainThread(Thread()))))
         assertEquals(CallerPlace.MayEnter, callerPlaceOf(EmptyCoroutineContext, MainThreads.ByDispatcher))
     }
 
