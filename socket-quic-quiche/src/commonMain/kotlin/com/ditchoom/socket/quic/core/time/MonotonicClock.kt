@@ -7,6 +7,8 @@ package com.ditchoom.socket.quic.core.time
  */
 internal object MonotonicClock : LoopClock {
     override fun now(): Nanos = Nanos(monotonicNanos())
+
+    override fun base(): ClockBase = ClockBase.Libquiche
 }
 
 /** One reading of the clock [MonotonicClock] reports, in nanoseconds. */

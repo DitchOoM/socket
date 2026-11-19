@@ -29,6 +29,7 @@ class HandshakeDeadlineConnTests {
                     WaitResolution(ms),
                     HandshakeRule.adaptive(80 * ms, 25 * ms, bound, LinkClass.Wifi),
                     SlotRules.Default.close,
+                    mismatch = MismatchResponse.Fail,
                 ),
         )
 

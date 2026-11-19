@@ -2,11 +2,11 @@ package com.ditchoom.socket.quic.core.loop
 
 import com.ditchoom.socket.quic.SendTarget
 import com.ditchoom.socket.quic.StubQuicheApi
-import com.ditchoom.socket.quic.core.conn.SlotRules
 import com.ditchoom.socket.quic.core.observe.ConnCounts
 import com.ditchoom.socket.quic.core.ready.SocketRef
 import com.ditchoom.socket.quic.core.sched.CallerLanes
 import com.ditchoom.socket.quic.core.sched.SendPort
+import com.ditchoom.socket.quic.core.testing.CoreTestRules
 import com.ditchoom.socket.quic.core.testing.FakeIo
 import com.ditchoom.socket.quic.core.testing.FakePoller
 import com.ditchoom.socket.quic.core.testing.RecordingSink
@@ -57,7 +57,7 @@ class LoopClockReadsTests {
                 val conn =
                     testConn(
                         StubQuicheApi(),
-                        SlotRules.Default,
+                        CoreTestRules,
                         SendTarget.ConnectedPeer,
                         TraceCapture.Off,
                         loop,

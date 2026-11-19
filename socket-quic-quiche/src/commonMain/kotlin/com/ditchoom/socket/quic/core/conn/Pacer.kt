@@ -6,6 +6,24 @@ import com.ditchoom.socket.quic.core.time.WakeSink
 
 internal enum class PaceState { Free, Holding }
 
+/**
+ * How the pacer judged a datagram's due time against the loop's clock. Each case is an object, so judging allocates
+ * nothing; how far ahead the datagram was due is [Pacer.aheadNanos].
+ */
+internal sealed interface Due {
+    /** Due within the allowance: send it. */
+    data object Now : Due
+
+    /** Due later than the allowance, within a pacing interval's reach: hold the connection's sending until then. */
+    data object Hold : Due
+
+    /**
+     * Due further ahead than a pacing interval can be: quiche stamped it on a clock the loop does not read. Pacing cannot be
+     * kept; the connection answers as its [MismatchResponse] says.
+     */
+    data object ClockMismatch : Due
+}
+
 private sealed interface Pace {
     data object Free : Pace
 
@@ -17,8 +35,7 @@ private sealed interface Pace {
 /**
  * The send hold quiche's pacer asks for. A datagram due later than the allowance stops the write and holds the
  * connection's sending until then; that datagram is already written, so it leaves up to one pacing interval early, and
- * no datagram after it does. A time further ahead than the limit is not pacing (a clock libquiche reads that the loop
- * does not) and is not obeyed.
+ * no datagram after it does. A time further ahead than the limit is not pacing: it is a [Due.ClockMismatch].
  */
 @Confined
 internal class Pacer(
@@ -26,6 +43,7 @@ internal class Pacer(
 ) {
     private val holding = Pace.Holding()
     private var phase: Pace = Pace.Free
+    private var ahead = 0L
 
     /** Whether the connection may write at [now]; a hold due within the allowance is released. */
     fun state(now: Nanos): PaceState =
@@ -44,13 +62,20 @@ internal class Pacer(
     fun sent(
         atNanos: Long,
         now: Nanos,
-    ): PaceState {
-        val ahead = atNanos - now.value
-        if (ahead <= rule.allowanceNanos || ahead > rule.limitNanos) return PaceState.Free
+    ): Due {
+        ahead = atNanos - now.value
+        if (ahead <= rule.allowanceNanos) return Due.Now
+        if (ahead > rule.limitNanos) return Due.ClockMismatch
         holding.untilNanos = atNanos
         phase = holding
-        return PaceState.Holding
+        return Due.Hold
     }
+
+    /** What the connection answers a [Due.ClockMismatch] with. */
+    fun response(): MismatchResponse = rule.mismatch
+
+    /** How far ahead of the loop's clock the datagram of the last [sent] was due; meaningful for [Due.Hold] and [Due.ClockMismatch]. */
+    fun aheadNanos(): Long = ahead
 
     /** Offers the hold's time while holding; offers nothing otherwise. */
     fun offerWake(sink: WakeSink) =

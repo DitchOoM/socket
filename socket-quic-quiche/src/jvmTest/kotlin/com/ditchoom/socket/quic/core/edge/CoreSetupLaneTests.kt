@@ -6,6 +6,7 @@ import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.RouteSource
 import com.ditchoom.socket.quic.UdpSocketChannelFactory
+import com.ditchoom.socket.quic.core.conn.MismatchResponse
 import com.ditchoom.socket.quic.core.demux.withCoreEchoServer
 import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.testing.platformQuicheApi
@@ -95,6 +96,7 @@ class CoreSetupLaneTests {
         routeSource: suspend (UdpSocketChannelFactory) -> RouteSource,
     ): CoreClient =
         coreConnect(
+            mismatch = MismatchResponse.Fail,
             host = "127.0.0.1",
             port = port,
             serverName = "localhost",

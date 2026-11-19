@@ -9,6 +9,7 @@ import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.pool.ThreadingMode
+import com.ditchoom.socket.quic.core.conn.MismatchResponse
 import com.ditchoom.socket.quic.core.edge.coreConnect
 import com.ditchoom.socket.quic.core.edge.coreTestOptions
 import com.ditchoom.socket.quic.core.edge.echoOver
@@ -35,6 +36,7 @@ class ComposedFactoryCoreEchoTests {
                     val counted = ExactLimit(pool).counting()
                     val client =
                         coreConnect(
+                            mismatch = MismatchResponse.Fail,
                             host = "127.0.0.1",
                             port = port,
                             serverName = "localhost",

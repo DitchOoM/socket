@@ -10,6 +10,7 @@ import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicTlsConfig
 import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.UdpBatching
+import com.ditchoom.socket.quic.core.conn.MismatchResponse
 import com.ditchoom.socket.quic.core.demux.Demux
 import com.ditchoom.socket.quic.core.demux.ServerConfig
 import com.ditchoom.socket.quic.core.life.ConnEnd
@@ -123,6 +124,7 @@ internal suspend fun coreServe(
     stack: NetStack = netStackOfThisRuntime,
     batching: UdpBatching = options.udpBatching,
     datagramSize: DatagramSize = DatagramSize.Probed,
+    mismatch: MismatchResponse = MismatchResponse.SendNow,
 ): CoreServer =
     withContext(setupLane) {
         ServerSetup(
@@ -140,6 +142,7 @@ internal suspend fun coreServe(
             driver,
             stack,
             batching,
+            mismatch,
         ).start()
     }
 

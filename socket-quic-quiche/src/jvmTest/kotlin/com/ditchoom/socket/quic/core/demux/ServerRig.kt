@@ -10,7 +10,6 @@ import com.ditchoom.socket.quic.SendTarget
 import com.ditchoom.socket.quic.StubQuicheApi
 import com.ditchoom.socket.quic.core.conn.Conn
 import com.ditchoom.socket.quic.core.conn.FlightSize
-import com.ditchoom.socket.quic.core.conn.SlotRules
 import com.ditchoom.socket.quic.core.loop.Endpoint
 import com.ditchoom.socket.quic.core.loop.Readiness
 import com.ditchoom.socket.quic.core.loop.Route
@@ -22,6 +21,7 @@ import com.ditchoom.socket.quic.core.sched.CallerLanes
 import com.ditchoom.socket.quic.core.sched.CallerSend
 import com.ditchoom.socket.quic.core.sched.Entrant
 import com.ditchoom.socket.quic.core.sched.SendPort
+import com.ditchoom.socket.quic.core.testing.CoreTestRules
 import com.ditchoom.socket.quic.core.testing.FakePoller
 import com.ditchoom.socket.quic.core.testing.RecordingSink
 import com.ditchoom.socket.quic.core.testing.RecordingWork
@@ -168,7 +168,7 @@ internal class ServerRig(
     private val local = sockAddr()
     private val parts =
         ServerParts(
-            SlotRules.Default,
+            CoreTestRules,
             BufferFactory.Default,
             FlightSize(records = 64),
             testLoopMemory(arenaBytes = 8 * 1024),

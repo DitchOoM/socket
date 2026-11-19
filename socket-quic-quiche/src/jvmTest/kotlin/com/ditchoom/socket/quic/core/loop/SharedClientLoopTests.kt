@@ -8,6 +8,7 @@ import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicError
+import com.ditchoom.socket.quic.core.conn.MismatchResponse
 import com.ditchoom.socket.quic.core.demux.withCoreEchoServer
 import com.ditchoom.socket.quic.core.edge.CoreClient
 import com.ditchoom.socket.quic.core.edge.coreConnect
@@ -269,6 +270,7 @@ class SharedClientLoopTests {
         wrapIo: (DatagramBatchIo) -> DatagramBatchIo = { it },
     ): CoreClient =
         coreConnect(
+            mismatch = MismatchResponse.Fail,
             host = "127.0.0.1",
             port = port,
             serverName = "localhost",
