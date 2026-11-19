@@ -5,10 +5,12 @@ import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.core.observe.LoopOnly
 
 /**
- * The receive half of [NativeIo], the loop's alone: it hands `qnet` the addresses of the pool buffers it took, and `qnet`
- * answers how many datagrams came, exactly, and what stopped it. A socket with `UDP_GRO` on ([Receiving.Coalesced]) reads one
- * `recvmmsg` per call and `qnet` splits each message into the batch's slots, so what is handed on is the datagrams as the
- * sender sent them; whole messages that did not fit wait inside `qnet` and the result says so ([ReceiveBatchResult.GotWithBacklog]).
+ * The receive half of [NativeIo], the loop's alone: it hands `qnet` the records of the batch's armed [ReceiveSlots], which
+ * keep their buffers between receives, and
+ * `qnet` answers how many datagrams came, exactly, and what stopped it. A socket with `UDP_GRO` on ([Receiving.Coalesced])
+ * reads one `recvmmsg` per call and `qnet` splits each message into the batch's slots, so what is handed on is the
+ * datagrams as the sender sent them; whole messages that did not fit wait inside `qnet` and the result says so
+ * ([ReceiveBatchResult.GotWithBacklog]).
  */
 @LoopOnly
 internal class NativeReceive(
@@ -19,19 +21,11 @@ internal class NativeReceive(
     private val mode: CapabilityCell,
     private val peers: PeerKeys,
 ) {
-    private val held = ArrayList<ReceiveBuffer>(NativeIo.MAX_RECEIVE)
     private var lastAt: ArrivedOn = ArrivedOn.Unreported
 
     fun receive(into: ReceiveBatch): ReceiveBatchResult {
-        held.clear()
-        while (held.size < NativeIo.MAX_RECEIVE) {
-            val buffer = into.take()
-            if (buffer !is ReceiveBuffer) break
-            receiveRecords.putLong(held.size * NativeIo.RECV_RECORD, buffer.bytes.address)
-            held.add(buffer)
-        }
-        if (held.isEmpty()) return ReceiveBatchResult.Nothing
-        val count = held.size
+        val count = into.slots.arm(receiveRecords)
+        if (count == 0) return ReceiveBatchResult.Nothing
         val result =
             socket.cell.use(
                 call = { fd -> readInto(fd, count, into.limits.maxDatagramSize) },
@@ -41,10 +35,8 @@ internal class NativeReceive(
         val got = NativeResult.count(result)
         for (i in 0 until got) {
             val at = i * NativeIo.RECV_RECORD
-            into.received(held[i], receiveRecords.intAt(at + LENGTH), keyAt(at + SOURCE), arrivedAt(at + NativeIo.RECV_DEST))
+            into.received(into.slots.handUp(i), receiveRecords.intAt(at + LENGTH), keyAt(at + SOURCE), arrivedAt(at + NativeIo.RECV_DEST))
         }
-        for (i in got until held.size) into.giveBack(held[i])
-        held.clear()
         val code = NativeResult.code(result)
         return when {
             code != 0 -> ReceiveBatchResult.Failed(NativeResult.errorOf(code))
