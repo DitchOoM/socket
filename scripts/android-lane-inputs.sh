@@ -17,10 +17,10 @@ LANE_INPUTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # Downloads this run's artifact <name> into the workspace. Retried: a finished artifact can answer
 # 404/5xx for a moment, and one failed download must not fail a lane that has an emulator booted.
-lane_inputs_download() { # <artifact name>
-  local name="$1" attempt
+lane_inputs_download() { # <artifact name> <directory>
+  local name="$1" dir="${2:-.}" attempt
   for attempt in 1 2 3; do
-    if gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "$name" --dir .; then
+    if gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "$name" --dir "$dir"; then
       return 0
     fi
     echo "::warning::download of $name failed (attempt $attempt of 3)"
@@ -47,14 +47,16 @@ lane_inputs_fetch() {
 
   if [ "$with_cache" = "with-build-cache" ]; then
     bash "$LANE_INPUTS_DIR/.github/scripts/await-artifact.sh" android-jvm-build-cache "Android lane inputs (natives" "$wait_min"
-    lane_inputs_download android-jvm-build-cache
+    lane_inputs_download android-jvm-build-cache lane-build-cache/jvm
     bash "$LANE_INPUTS_DIR/.github/scripts/await-artifact.sh" android-kotlin-build-cache "Android Kotlin build cache" "$wait_min"
-    lane_inputs_download android-kotlin-build-cache
-    # Gradle's local build cache (both artifacts unpack into lane-build-cache/): the compiled Kotlin
-    # and the dex of every module. The lane's Gradle takes those from here (FROM-CACHE) instead of
-    # compiling them.
+    lane_inputs_download android-kotlin-build-cache lane-build-cache/kotlin
+    # Gradle's local build cache: the compiled Kotlin and the dex of every module. The lane's Gradle
+    # takes those from here (FROM-CACHE) instead of compiling them. Each artifact has its own
+    # directory (`gh run download` refuses to overwrite a file, and the two hold some entries both),
+    # and the entries are named by their content key, so a repeat is the same file.
     mkdir -p "$HOME/.gradle/caches/build-cache-1"
-    cp -a lane-build-cache/. "$HOME/.gradle/caches/build-cache-1/"
+    cp -a lane-build-cache/jvm/. "$HOME/.gradle/caches/build-cache-1/"
+    cp -a lane-build-cache/kotlin/. "$HOME/.gradle/caches/build-cache-1/"
     echo "build cache entries taken from the shared jobs: $(find "$HOME/.gradle/caches/build-cache-1" -type f | wc -l) ($(du -sh "$HOME/.gradle/caches/build-cache-1" | cut -f1))"
   fi
   echo "lane inputs ready after $((SECONDS - started))s"
