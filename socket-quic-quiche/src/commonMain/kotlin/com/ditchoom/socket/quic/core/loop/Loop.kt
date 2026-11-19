@@ -16,13 +16,13 @@ import com.ditchoom.socket.quic.core.ready.Poller
 import com.ditchoom.socket.quic.core.ready.ReadyTokens
 import com.ditchoom.socket.quic.core.sched.LoopPort
 import com.ditchoom.socket.quic.core.sched.Round
-import com.ditchoom.socket.quic.currentThreadId
 import com.ditchoom.socket.quic.core.sched.SleepPlan
 import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.time.RttPrior
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.Thrown
+import com.ditchoom.socket.quic.currentThreadId
 import com.ditchoom.socket.quic.reportOnThisThread
 import kotlinx.coroutines.Runnable
 

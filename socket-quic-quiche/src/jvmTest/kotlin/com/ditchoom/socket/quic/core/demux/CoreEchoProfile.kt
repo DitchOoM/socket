@@ -11,6 +11,7 @@ import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.core.edge.CoreClient
 import com.ditchoom.socket.quic.core.edge.CoreServer
 import com.ditchoom.socket.quic.core.edge.connectCore
+import com.ditchoom.socket.quic.core.edge.handleStreams
 import com.ditchoom.socket.quic.core.loop.Loop
 import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.network
@@ -71,8 +72,16 @@ private suspend fun profileEchoServer(
         } else {
             ServerConfig()
         }
-    val handlers: kotlinx.coroutines.CoroutineDispatcher =
-        if (System.getProperty("serverDispatch") == "unconfined") Dispatchers.Unconfined else Dispatchers.Default
+    val placement: com.ditchoom.socket.quic.core.sched.HandlerPlacement =
+        when (System.getProperty("serverDispatch")) {
+            "onloop" -> com.ditchoom.socket.quic.core.sched.HandlerPlacement.OnLoop
+            "unconfined" ->
+                com.ditchoom.socket.quic.core.sched.HandlerPlacement
+                    .OffLoop(Dispatchers.Unconfined)
+            else ->
+                com.ditchoom.socket.quic.core.sched.HandlerPlacement
+                    .OffLoop(Dispatchers.Default)
+        }
     val server =
         com.ditchoom.socket.quic.core.edge.coreServe(
             mismatch = com.ditchoom.socket.quic.core.conn.MismatchResponse.Fail,
@@ -96,32 +105,13 @@ private suspend fun profileEchoServer(
         )
     try {
         coroutineScope {
+            server.loop.port.handlers
+                .observe(stallSink)
             val serving =
-                launch(handlers) {
+                launch(Dispatchers.Default) {
                     runCatching {
                         server.connections().collect { connection ->
-                            launch {
-                                runCatching {
-                                    connection.streams().collect { stream ->
-                                        launch {
-                                            runCatching {
-                                                while (stream.read(
-                                                        10.seconds,
-                                                    ) {
-                                                        stream.writeFully(
-                                                            it,
-                                                            10.seconds,
-                                                        )
-                                                    } is com.ditchoom.socket.quic.ScopedRead.Data<*>
-                                                ) {
-                                                    Unit
-                                                }
-                                                stream.close()
-                                            }
-                                        }
-                                    }
-                                }
-                            }
+                            connection.handleStreams(placement) { stream -> serveStream(stream) }
                         }
                     }
                 }
@@ -132,6 +122,88 @@ private suspend fun profileEchoServer(
         server.close()
     }
 }
+
+/** What the bad connection's handler does per request (-Dbad=burn|sleep|offload). */
+private val bad = System.getProperty("bad") ?: "none"
+private const val POISON: Byte = 0x55
+private const val BAD_NANOS = 5_000_000L
+
+private fun burn(nanos: Long) {
+    val end = System.nanoTime() + nanos
+    while (System.nanoTime() < end) Unit
+}
+
+/** Stall observations: count and the sites named, read at the end of a cell. */
+private val stallCount = AtomicLong()
+private val stallMaxNanos = AtomicLong()
+private val stallSites = java.util.concurrent.ConcurrentHashMap<String, Long>()
+private val stallSink =
+    com.ditchoom.socket.quic.core.sched.HandlerSink { o ->
+        when (o) {
+            is com.ditchoom.socket.quic.core.sched.HandlerObservation.Stalled -> {
+                stallCount.incrementAndGet()
+                stallMaxNanos.accumulateAndGet(o.heldNanos) { a, b -> maxOf(a, b) }
+                stallSites.merge(o.site.toString(), 1L, Long::plus)
+            }
+            is com.ditchoom.socket.quic.core.sched.HandlerObservation.Failed -> println("HANDLER-FAILED ${o.site}")
+        }
+    }
+
+/** -Dbulk=up: read and drop until the end, then answer one byte; -Dbulk=down: send -DbulkMiB MiB; else echo. */
+private suspend fun serveStream(stream: QuicByteStream) {
+    when (System.getProperty("bulk")) {
+        "up" -> {
+            while (true) {
+                val r = stream.read(30.seconds)
+                if (r !is ReadResult.Data) break
+                r.buffer.freeIfNeeded()
+            }
+            stream.writeFully(
+                BufferFactory.network().allocate(1).apply {
+                    writeByte(1)
+                    resetForRead()
+                },
+                30.seconds,
+            )
+            stream.close()
+        }
+        "down" -> {
+            val first = stream.read(30.seconds)
+            if (first is ReadResult.Data) first.buffer.freeIfNeeded()
+            val chunk = bulkChunk()
+            repeat(bulkMiB * (1 shl 20) / BULK_CHUNK) {
+                chunk.position(0)
+                stream.writeFully(chunk, 30.seconds)
+            }
+            stream.close()
+        }
+        else -> {
+            while (stream.read(10.seconds) {
+                    if (it.get(it.position()) == POISON) {
+                        when (bad) {
+                            "burn" -> burn(BAD_NANOS)
+                            "sleep" -> Thread.sleep(BAD_NANOS / 1_000_000)
+                            "offload" -> kotlinx.coroutines.withContext(Dispatchers.Default) { burn(BAD_NANOS) }
+                        }
+                    }
+                    stream.writeFully(it, 10.seconds)
+                } is com.ditchoom.socket.quic.ScopedRead.Data<*>
+            ) {
+                Unit
+            }
+            stream.close()
+        }
+    }
+}
+
+private val bulkMiB = (System.getProperty("bulkMiB") ?: "100").toInt()
+private const val BULK_CHUNK = 64 * 1024
+
+private fun bulkChunk(): PlatformBuffer =
+    BufferFactory.network().allocate(BULK_CHUNK).apply {
+        repeat(BULK_CHUNK) { writeByte(it.toByte()) }
+        resetForRead()
+    }
 
 private fun bindOf(
     name: String,
@@ -198,6 +270,8 @@ private fun processKernelCounters(): LongArray {
 private class Snapshot(
     val cpu: Long,
     val nanos: Long,
+    val allocated: Long,
+    val serverLoopAllocated: Long,
     val threadCpu: Map<String, Long>,
     val kernel: LongArray,
     val loops: List<LongArray>,
@@ -218,8 +292,28 @@ private fun loopCounters(loop: Loop): LongArray =
 
 private val LOOP_FIELDS = listOf("passes", "waits", "dgIn", "dgOut", "work", "callerSends", "callerDg", "loopWakes")
 
+private val allocThreads = threads as com.sun.management.ThreadMXBean
+
+private fun allocated(filter: (String) -> Boolean): Long {
+    var sum = 0L
+    for (info in threads.getThreadInfo(threads.allThreadIds)) {
+        if (info == null || !filter(info.threadName)) continue
+        val a = allocThreads.getThreadAllocatedBytes(info.threadId)
+        if (a > 0) sum += a
+    }
+    return sum
+}
+
 private fun snapshot(loops: List<Loop>): Snapshot =
-    Snapshot(os.processCpuTime, System.nanoTime(), threadCpu(), processKernelCounters(), loops.map { loopCounters(it) })
+    Snapshot(
+        os.processCpuTime,
+        System.nanoTime(),
+        allocated { true },
+        allocated { it == "quic-core-server" },
+        threadCpu(),
+        processKernelCounters(),
+        loops.map { loopCounters(it) },
+    )
 
 private fun report(
     role: String,
@@ -242,6 +336,12 @@ private fun report(
             cpu.toDouble() / wall,
         ),
     )
+    sb.append(
+        " alloc_B/op=%.0f serverLoopAlloc_B/op=%.1f".format(
+            (b.allocated - a.allocated).toDouble() / ops,
+            (b.serverLoopAllocated - a.serverLoopAllocated).toDouble() / ops,
+        ),
+    )
     val kc = LongArray(3) { b.kernel[it] - a.kernel[it] }
     sb.append(" csw/op=%.2f sysbsd/op=%.2f sysmach/op=%.2f".format(kc[0].toDouble() / ops, kc[1].toDouble() / ops, kc[2].toDouble() / ops))
     // Loop counters summed per name (client loops summed together).
@@ -262,31 +362,71 @@ private fun report(
     println(sb)
 }
 
+/** Per-echo latencies of each connection in the last measured window, nanoseconds. */
+private class Latencies(
+    connections: Int,
+) {
+    val each = Array(connections) { LongArray(1 shl 16) }
+    val counts = IntArray(connections)
+
+    fun record(
+        i: Int,
+        nanos: Long,
+    ) {
+        val n = counts[i]
+        val arr = each[i]
+        arr[n and (arr.size - 1)] = nanos
+        counts[i] = n + 1
+    }
+
+    fun percentiles(skip: Int): String {
+        val all = ArrayList<Long>()
+        for (i in each.indices) {
+            if (i == skip) continue
+            val n = minOf(counts[i], each[i].size)
+            for (k in 0 until n) all.add(each[i][k])
+        }
+        if (all.isEmpty()) return "p50_us=- p99_us=-"
+        all.sort()
+
+        fun at(q: Double) = all[minOf(all.size - 1, (q * all.size).toInt())] / 1e3
+        return "p50_us=%.1f p99_us=%.1f p999_us=%.1f".format(at(0.50), at(0.99), at(0.999))
+    }
+}
+
+private var lastLatencies = Latencies(0)
+
 private suspend fun runEchoes(
     clients: List<CoreClient>,
     ms: Long,
 ): Long {
     val streams: List<QuicByteStream> = clients.map { it.connection.openStream() }
-    val payloads = List(clients.size) { payload() }
+    val badIndex = if (bad == "none") -1 else 0
+    val payloads = List(clients.size) { payload(if (it == badIndex) POISON else 0) }
     val ops = AtomicLong()
+    val latencies = Latencies(clients.size)
     coroutineScope {
         val end = System.nanoTime() + ms * 1_000_000
         streams.indices
             .map { i ->
                 async(clientDispatcher) {
                     while (System.nanoTime() < end) {
+                        val began = System.nanoTime()
                         roundTrip(streams[i], payloads[i])
-                        ops.incrementAndGet()
+                        latencies.record(i, System.nanoTime() - began)
+                        if (i != badIndex) ops.incrementAndGet()
                     }
                 }
             }.awaitAll()
     }
+    lastLatencies = latencies
     return ops.get()
 }
 
-private fun payload(): PlatformBuffer =
+private fun payload(first: Byte): PlatformBuffer =
     BufferFactory.network().allocate(PAYLOAD).apply {
-        repeat(PAYLOAD) { writeByte(it.toByte()) }
+        writeByte(first)
+        repeat(PAYLOAD - 1) { writeByte((it + 1).toByte()) }
         resetForRead()
     }
 
@@ -328,6 +468,25 @@ private suspend fun cell(
         println("WINDOW-END ${System.currentTimeMillis()} M=$m")
         val b = snapshot(all)
         report(if (server != null) "both" else "client", m, ops, a, b, names)
+        val skip = if (bad == "none") -1 else 0
+        val extra =
+            if (server != null) {
+                val h = server.loop.port.handlers
+                " handlerRuns=%d longestRun_us=%.0f longestServerPass_us=%.0f".format(
+                    h.runs,
+                    h.longestRunNanos / 1e3,
+                    server.loop.counts.longestPassNanos / 1e3,
+                )
+            } else {
+                ""
+            }
+        println(
+            "  latency(good conns): ${lastLatencies.percentiles(skip)} stalls=${stallCount.getAndSet(0)} " +
+                "stallMax_us=%.0f".format(stallMaxNanos.getAndSet(0) / 1e3) +
+                " stallSites=${stallSites.entries.sortedByDescending { it.value }.take(3).map { "${it.key.takeLast(12)}:${it.value}" }}" +
+                extra,
+        )
+        stallSites.clear()
         clients.forEach { runCatching { it.connection.close(QuicError.NoError) } }
         delay(300)
     } finally {
@@ -339,7 +498,10 @@ fun main(args: Array<String>) {
     println(
         "JVM ${System.getProperty(
             "java.version",
-        )} backend=${System.getProperty("quiche.expectedJvmBackend")} pid=${ProcessHandle.current().pid()}",
+        )} backend=${System.getProperty("quiche.expectedJvmBackend")} api=${
+            com.ditchoom.socket.quic.core.testing
+                .platformQuicheApi()::class.simpleName
+        } pid=${ProcessHandle.current().pid()}",
     )
     when (args[0]) {
         "both" -> {
@@ -352,6 +514,7 @@ fun main(args: Array<String>) {
                 }
             }
         }
+        "bulk" -> runBlocking { bulk(args[1].toInt()) }
         "server" -> {
             val port = args[1].toInt()
             val bind = args.getOrElse(2) { "v4" }
@@ -382,4 +545,70 @@ fun main(args: Array<String>) {
         }
     }
     System.exit(0)
+}
+
+/** One connection, one stream per run: -Dbulk=up uploads -DbulkMiB MiB, -Dbulk=down downloads them. */
+private suspend fun bulk(repeats: Int) {
+    profileEchoServer(bindOf("v4", 0)) { server ->
+        val loops = LoopSet(1)
+        try {
+            val client = connectCore(server.port, host = "127.0.0.1", loops = loops)
+            val all = listOf(client.loop, server.loop)
+            val chunk = bulkChunk()
+            repeat(repeats + 1) { run ->
+                val a = snapshot(all)
+                val stream = client.connection.openStream()
+                val began = System.nanoTime()
+                when (System.getProperty("bulk")) {
+                    "up" -> {
+                        repeat(bulkMiB * (1 shl 20) / BULK_CHUNK) {
+                            chunk.position(0)
+                            stream.writeFully(chunk, 30.seconds)
+                        }
+                        stream.shutdownSend()
+                        val r = stream.read(30.seconds)
+                        if (r is ReadResult.Data) r.buffer.freeIfNeeded()
+                    }
+                    else -> {
+                        stream.writeFully(payload(1), 30.seconds)
+                        var got = 0L
+                        while (true) {
+                            val r = stream.read(30.seconds)
+                            if (r !is ReadResult.Data) break
+                            got += r.buffer.remaining()
+                            r.buffer.freeIfNeeded()
+                        }
+                        check(got == bulkMiB.toLong() shl 20) { "got $got" }
+                    }
+                }
+                val wall = System.nanoTime() - began
+                val b = snapshot(all)
+                stream.close()
+                val h = server.loop.port.handlers
+                val serverLoop = "serverLoop:quic-core-server"
+                if (run > 0) {
+                    println(
+                        (
+                            "BULK %s run=%d MiB=%d MiB/s=%.0f cpu_us/MiB=%.0f serverLoopCpu_us/MiB=%.0f " +
+                                "longestHandlerRun_us=%.0f longestServerPass_us=%.0f stalls=%d"
+                        ).format(
+                            System.getProperty("bulk"),
+                            run,
+                            bulkMiB,
+                            bulkMiB * 1e9 / wall,
+                            (b.cpu - a.cpu) / 1e3 / bulkMiB,
+                            ((b.threadCpu[serverLoop] ?: 0L) - (a.threadCpu[serverLoop] ?: 0L)) / 1e3 / bulkMiB,
+                            h.longestRunNanos / 1e3,
+                            server.loop.counts.longestPassNanos / 1e3,
+                            stallCount.getAndSet(0),
+                        ),
+                    )
+                }
+                delay(200)
+            }
+            client.connection.close(QuicError.NoError)
+        } finally {
+            loops.close()
+        }
+    }
 }
