@@ -274,6 +274,7 @@ internal class Loop(
         slots.clear()
         outcome = outcome.then { poller.close() }
         outcome = outcome.then { port.stop(end) }
+        outcome = outcome.then { receive.disarm() }
         return outcome.then { freeOnStop.run() }
     }
 
