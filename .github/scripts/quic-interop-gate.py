@@ -578,6 +578,31 @@ class PeerClientHelloNeverCompleted:
         return NotMatched()
 
 
+class PeerClientHelloOnlyInItsOpeningPacket:
+    """Our server acknowledged the Initial packet that opened the connection, which its qlog does not record, and
+    no later Initial carried CRYPTO: whatever of the ClientHello arrived came in that one packet, the rest never
+    did, so the server sent no CRYPTO of its own, heard nothing in the Handshake space and closed without an error,
+    while the simulator corrupted or dropped at least min_lost of the datagrams one client port sent us."""
+
+    kind = "peer-client-hello-only-in-its-opening-packet"
+
+    def __init__(self, fields):
+        self.min_lost = positive_int(self.kind, fields, "min_lost")
+
+    def match(self, test_evidence, peer_role):
+        lost = [p for p in test_evidence.get("sim_from_peer", []) if p["datagrams"] - p["delivered"] >= self.min_lost]
+        for c in test_evidence.get("connections", []):
+            opened_only = c.get("rx_initial_unlogged", 0) > 0 and c["rx_initial_crypto"] == 0
+            unanswered = c["tx_crypto"] == 0 and c["rx_handshake_crypto"] == 0 and c["rx_handshake_acks"] == 0
+            no_error = all(close["code"] == 0 for close in c["local_closes"])
+            if opened_only and unanswered and no_error and c["fin_sent_streams"] == 0 and lost:
+                gone = lost[0]["datagrams"] - lost[0]["delivered"]
+                return Matched(
+                    f"{c['qlog']}: no CRYPTO after the opening packet; the simulator lost {gone} of {lost[0]['datagrams']} datagrams from port {lost[0]['port']}"
+                )
+        return NotMatched()
+
+
 class PeerServerDidNotChallengeNewPathFirst:
     """The runner failed a rebinding test because the peer server's first packet to our client's new address
     carried no PATH_CHALLENGE, while our client exited 0: the verdict is on the server's own packets."""
@@ -663,6 +688,7 @@ SIGNATURES = {
         PeerHandshakePacketsNeverArrived,
         PeerGoneWhileWeProbed,
         PeerClientHelloNeverCompleted,
+        PeerClientHelloOnlyInItsOpeningPacket,
         PeerIdledOutWhileWeProbed,
         PeerServerHelloStoppedShort,
         PeerNeverAckedEarlyRequest,

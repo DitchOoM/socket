@@ -223,7 +223,8 @@ mkdir -p "$d/server/qlog"
   printf '{"file_schema":"urn:ietf:params:qlog:file:sequential"}\n'
   printf '{"name":"quic:parameters_set","data":{"initiator":"local","initial_max_streams_bidi":100}}\n'
   printf '{"name":"quic:parameters_set","data":{"initiator":"remote","disable_active_migration":true}}\n'
-  printf '{"name":"quic:packet_received","data":{"header":{"packet_type":"initial","scil":0},"frames":[]}}\n'
+  printf '{"name":"quic:packet_received","data":{"header":{"packet_type":"initial","scil":0,"packet_number":1},"frames":[]}}\n'
+  printf '{"name":"quic:packet_sent","data":{"header":{"packet_type":"initial"},"frames":[{"frame_type":"ack","acked_ranges":[[0,1],[4]]}]}}\n'
   printf '{"name":"quic:packet_received","data":{"frames":[{"frame_type":"stream","stream_id":400},{"frame_type":"stream","stream_id":401}]}}\n'
   printf '{"name":"quic:packet_sent","data":{"frames":[{"frame_type":"max_streams","stream_type":"bidirectional","maximum":90}]}}\n'
   printf '{"name":"quic:packet_sent","data":{"frames":[{"frame_type":"connection_close","error_space":"transport","error_code":4}]}}\n'
@@ -236,6 +237,8 @@ ev="$(python3 -c 'import json,sys; t=json.load(open(sys.argv[1]))["tests"]["mult
 expect "the extractor reads limits, streams, one close per code and exits" "$ev" "100 90 101 [{'code': 4, 'space': 'transport'}] True {'client': 0} [0]"
 ev="$(python3 -c 'import json,sys; c=json.load(open(sys.argv[1]))["tests"]["multiplexing"]["connections"][0]; print(c["peer_unfinished_streams"])' "$tmp/ev.json")"
 expect "the extractor counts streams begun without a FIN (400 above is peer-opened, 401 is ours-to-open)" "$ev" "1"
+ev="$(python3 -c 'import json,sys; c=json.load(open(sys.argv[1]))["tests"]["multiplexing"]["connections"][0]; print(c["rx_initial_unlogged"])' "$tmp/ev.json")"
+expect "the extractor counts Initial packets we acknowledged that the qlog never shows arriving (0 and 4; 1 arrived)" "$ev" "2"
 d2="$tmp/logs2/ditchoom_x/multiplexing"
 mkdir -p "$d2/server/qlog" "$d2/client"
 {
@@ -337,6 +340,19 @@ check_kind "two unanswered packets are not the signature" "$gone" our-client "{\
 partial='{"kind":"peer-client-hello-never-completed","min_lost":5}'
 check_kind "a ClientHello that never completed" "$partial" our-server "{\"connections\":[$(hconn a | sed 's/"tx_crypto":1/"tx_crypto":0/;s/"fin_sent_streams":1/"fin_sent_streams":0/')],\"sim_from_peer\":[{\"port\":40869,\"datagrams\":9,\"delivered\":4}]}" Matched
 check_kind "a ClientHello we answered is not the signature" "$partial" our-server "{\"connections\":[$(hconn a | sed 's/"fin_sent_streams":1/"fin_sent_streams":0/')],\"sim_from_peer\":[{\"port\":40869,\"datagrams\":9,\"delivered\":4}]}" NotMatched
+# Run 44484652758, the stock quiche client against our server, handshakeloss: the ClientHello's first packet
+# opened the connection (absent from the server's qlog), the rest never arrived, and only PINGs followed.
+opening='{"kind":"peer-client-hello-only-in-its-opening-packet","min_lost":5}'
+pings='s/"rx_initial_crypto":1,"rx_initial_acks":1,"rx_handshake_crypto":1,"rx_handshake_acks":1/"rx_initial_crypto":0,"rx_initial_acks":0,"rx_handshake_crypto":0,"rx_handshake_acks":0/;s/"tx_crypto":1/"tx_crypto":0/;s/"fin_sent_streams":1/"fin_sent_streams":0/'
+cut38737="\"sim_from_peer\":[{\"port\":38737,\"datagrams\":9,\"delivered\":3}]"
+opened="$(hconn a '"rx_initial_unlogged":1' | sed "$pings;"'s/"local_closes":\[\]/"local_closes":[{"space":"transport","code":0}]/')"
+check_kind "a ClientHello only in its opening packet" "$opening" our-server "{\"connections\":[$opened],$cut38737}" Matched
+check_kind "a later Initial with CRYPTO is not the signature" "$opening" our-server "{\"connections\":[${opened/\"rx_initial_crypto\":0/\"rx_initial_crypto\":1}],$cut38737}" NotMatched
+check_kind "a ClientHello we answered is not the signature" "$opening" our-server "{\"connections\":[${opened/\"tx_crypto\":0/\"tx_crypto\":1}],$cut38737}" NotMatched
+check_kind "a server that closed with an error is not the signature" "$opening" our-server "{\"connections\":[${opened/\"code\":0/\"code\":296}],$cut38737}" NotMatched
+check_kind "an opening packet the qlog recorded is not the signature" "$opening" our-server "{\"connections\":[${opened/\"rx_initial_unlogged\":1/\"rx_initial_unlogged\":0}],$cut38737}" NotMatched
+check_kind "too little loss is not the signature" "$opening" our-server "{\"connections\":[$opened],${cut38737/\"delivered\":3/\"delivered\":5}}" NotMatched
+expect "quiche handshakeloss expects the opening-packet signature as well" "$(python3 -c 'import json,sys; s=json.load(open(sys.argv[1]))["our-server"]["quiche"]["handshakeloss"]["flaky"]["signature"]; print(sorted(x["kind"] for x in s["signatures"]))' "$here/../../../test-harness/quic-interop/expectations.json")" "['peer-client-hello-never-completed', 'peer-client-hello-only-in-its-opening-packet', 'peer-handshake-packets-never-arrived']"
 nochallenge='{"kind":"peer-server-did-not-challenge-new-path-first"}'
 check_kind "the server's first packet on a new path had no challenge" "$nochallenge" our-client "{\"connections\":[$(hconn a)],\"exits\":{\"client\":0},\"runner\":{\"server_first_packets_without_path_challenge\":2}}" Matched
 check_kind "a client that failed is not the signature" "$nochallenge" our-client "{\"connections\":[$(hconn a)],\"exits\":{\"client\":1},\"runner\":{\"server_first_packets_without_path_challenge\":2}}" NotMatched

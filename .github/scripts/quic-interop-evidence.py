@@ -104,6 +104,7 @@ def connection_facts(path, side):
     first_rx, first_tx, fin_sent, copies = {}, {}, set(), {}
     fin_rx, reset_rx = set(), set()
     initial_crypto = []
+    initial_rx, initial_acked = set(), set()
     stream_packets = set()
     last_tx = -1.0
     for record in qlog_records(path):
@@ -125,6 +126,8 @@ def connection_facts(path, side):
             facts["tx_after_last_rx"] = 0
             space = (data.get("header") or {}).get("packet_type", "")
             frames = {f.get("frame_type") for f in data.get("frames") or []}
+            if space == "initial" and "packet_number" in (data.get("header") or {}):
+                initial_rx.add(int(data["header"]["packet_number"]))
             if space in ("initial", "handshake"):
                 facts[f"rx_{space}_crypto"] += "crypto" in frames
                 facts[f"rx_{space}_acks"] += "ack" in frames
@@ -151,6 +154,12 @@ def connection_facts(path, side):
             facts["tx_after_last_rx"] += 1
             facts["pto_expiries_after_last_tx"] = 0
             header = data.get("header") or {}
+            if header.get("packet_type") == "initial":
+                for frame in data.get("frames") or []:
+                    if frame.get("frame_type") == "ack":
+                        for r in frame.get("acked_ranges") or []:
+                            if r:
+                                initial_acked.update(range(int(r[0]), int(r[-1]) + 1))
             carries_stream = any(f.get("frame_type") == "stream" for f in data.get("frames") or [])
             if carries_stream and header.get("packet_type") == "1RTT" and "packet_number" in header:
                 stream_packets.add(int(header["packet_number"]))
@@ -193,6 +202,9 @@ def connection_facts(path, side):
                     if stream_id % 4 == remainder:
                         facts["peer_bidi_streams_opened"] = max(facts["peer_bidi_streams_opened"], stream_id // 4 + 1)
     facts["fin_sent_streams"] = len(fin_sent)
+    # Initial packets we acknowledged that the qlog never shows arriving: a server's qlog opens after the datagram
+    # that created the connection was processed, so that datagram's packet appears only in our acknowledgements.
+    facts["rx_initial_unlogged"] = len(initial_acked - initial_rx)
     # Requests the peer opened and began but never finished: stream data arrived, no FIN and no RESET_STREAM ever did.
     facts["peer_unfinished_streams"] = len([s for s in first_rx if s % 4 == remainder and s not in fin_rx and s not in reset_rx])
     if initial_crypto:
