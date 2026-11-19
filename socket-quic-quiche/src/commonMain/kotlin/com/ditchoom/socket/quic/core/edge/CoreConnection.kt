@@ -10,7 +10,7 @@ import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.flow.WritePolicy
-import com.ditchoom.socket.quic.EarlyDataAcceptance
+import com.ditchoom.socket.quic.HandshakeRecord
 import com.ditchoom.socket.quic.PeerCertPosition
 import com.ditchoom.socket.quic.QuicAppErrorCode
 import com.ditchoom.socket.quic.QuicByteStream
@@ -88,20 +88,20 @@ internal class CoreConnection(
     override val pathState: StateFlow<QuicPathState> = MutableStateFlow(QuicPathState.Original)
     override val sessionTicket: StateFlow<QuicSessionTicketState> = edge.ticket
 
-    /** A server that accepted 0-RTT knows the protocol before its handshake completes. */
+    /** Settled once the handshake completes, or for a server at its accepted 0-RTT, and kept after the connection closes. */
     override val negotiatedAlpn: String
         get() =
-            when (val early = edge.earlyData.value) {
-                is EarlyDataAcceptance.Accepted -> early.negotiatedAlpn
-                EarlyDataAcceptance.None -> super.negotiatedAlpn
+            when (val settled = edge.handshake.value) {
+                is HandshakeRecord.Settled -> settled.negotiatedAlpn
+                HandshakeRecord.Pending -> super.negotiatedAlpn
             }
 
-    /** A server that accepted 0-RTT knows how the handshake used the ticket before it completes. */
+    /** Settled and kept for the reason [negotiatedAlpn] is. */
     override val resumption: QuicResumptionOutcome
         get() =
-            when (val early = edge.earlyData.value) {
-                is EarlyDataAcceptance.Accepted -> early.resumption
-                EarlyDataAcceptance.None -> super.resumption
+            when (val settled = edge.handshake.value) {
+                is HandshakeRecord.Settled -> settled.resumption
+                HandshakeRecord.Pending -> super.resumption
             }
 
     /** The deadlines of this connection's operations that park with a bound, lent from inside. */

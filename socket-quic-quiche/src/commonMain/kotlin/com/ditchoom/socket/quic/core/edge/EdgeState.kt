@@ -6,6 +6,7 @@ import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.socket.quic.EarlyDataAcceptance
 import com.ditchoom.socket.quic.HandlerStart
+import com.ditchoom.socket.quic.HandshakeRecord
 import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicCloseReason
 import com.ditchoom.socket.quic.QuicConnectionState
@@ -66,6 +67,9 @@ internal class EdgeState(
     /** A server's: whether it accepted the client's 0-RTT before the handshake completed. */
     val earlyData = MutableStateFlow<EarlyDataAcceptance>(EarlyDataAcceptance.None)
 
+    /** What the handshake settled, kept after [state] moves on to Closed for a block that outlives the close. */
+    val handshake = MutableStateFlow<HandshakeRecord>(HandshakeRecord.Pending)
+
     /** A server's: when the handler of this connection starts. */
     val start = MutableStateFlow<HandlerStart>(HandlerStart.NotYet)
 
@@ -84,12 +88,16 @@ internal class EdgeState(
     fun end(): EdgeEnd = endCell.load()
 
     override fun established(report: ConnectReport) {
-        publish(QuicConnectionState.Established(alpnOf(report.alpnLength), report.resumption))
+        val alpn = alpnOf(report.alpnLength)
+        handshake.value = HandshakeRecord.Settled(alpn, report.resumption)
+        publish(QuicConnectionState.Established(alpn, report.resumption))
         start.value = HandlerStart.Now
     }
 
     override fun earlyData(report: EarlyReport) {
-        earlyData.value = EarlyDataAcceptance.Accepted(alpnOf(report.alpnLength), report.resumption)
+        val alpn = alpnOf(report.alpnLength)
+        handshake.value = HandshakeRecord.Settled(alpn, report.resumption)
+        earlyData.value = EarlyDataAcceptance.Accepted(alpn, report.resumption)
         start.value = HandlerStart.Now
     }
 
