@@ -7,10 +7,10 @@ import kotlinx.cinterop.allocArray
 import kotlinx.cinterop.convert
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.readBytes
+import kotlinx.cinterop.toKString
 import platform.posix.fclose
 import platform.posix.fopen
 import platform.posix.fread
-import kotlinx.cinterop.toKString
 import platform.posix.getenv
 import kotlin.time.Duration
 

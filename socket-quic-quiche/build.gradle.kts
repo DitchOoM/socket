@@ -7200,6 +7200,12 @@ val generateQuicHarnessConfig =
             val port = env["QUIC_ECHO_PORT"] ?: "14433"
             // The harness CA's path; the PEM is read at run time (see the inputs above).
             val caCertPath = quicHarnessCaCertFile.absolutePath
+            // The path as the body of a Kotlin string literal.
+            val caCertLiteral =
+                caCertPath
+                    .replace("\\", "\\\\")
+                    .replace("\"", "\\\"")
+                    .replace("$", "\\$")
             val pkgDir =
                 quicHarnessGeneratedDir
                     .get()
@@ -7223,7 +7229,7 @@ val generateQuicHarnessConfig =
                     append("    /** ALPN advertised by the harness QUIC echo server (QuicEchoTestServer). */\n")
                     append("    const val alpn: String = \"test\"\n")
                     append("    /** Path of the harness CA (test-harness/tls/certs/ca.crt) on the machine that built this. */\n")
-                    append("    const val caCertPath: String = \"${caCertPath.replace("\\", "\\\\").replace("\"", "\\\"").replace("$", "\\$")}\"\n")
+                    append("    const val caCertPath: String = \"$caCertLiteral\"\n")
                     append("    /**\n")
                     append("     * Harness CA in PEM, read when a test asks, for pinning as a trust anchor where the platform's\n")
                     append("     * default trust rejects the private CA (Apple QUIC - issue #81). Null when the cert matrix\n")
