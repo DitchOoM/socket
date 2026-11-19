@@ -196,7 +196,7 @@ internal class Turn(
         c.timer.disarm()
         c.ticketAtEnd()
         c.flight.ended(now, end.flightCode(), end.errorCode())
-        c.flight.keepEnded(c.role)
+        c.flight.keepEnded(c.role, end)
         c.sink.ended(end)
         c.inbox.shut(end) { it.gone(end) }
         c.streams.endAll(end)

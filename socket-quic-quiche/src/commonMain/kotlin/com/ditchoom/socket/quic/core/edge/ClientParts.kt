@@ -11,6 +11,8 @@ import com.ditchoom.socket.quic.core.conn.Conn
 import com.ditchoom.socket.quic.core.conn.ConnAddress
 import com.ditchoom.socket.quic.core.conn.ConnMemory
 import com.ditchoom.socket.quic.core.conn.ConnSide
+import com.ditchoom.socket.quic.core.conn.MoveWanted
+import com.ditchoom.socket.quic.core.conn.MoveWantedWork
 import com.ditchoom.socket.quic.core.conn.SlotRules
 import com.ditchoom.socket.quic.core.conn.buildConn
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
@@ -77,7 +79,15 @@ internal class ClientParts(
                     mismatch = w.mismatch,
                 ),
             q = QuicheConnRef(w.api, w.handle),
-            side = ConnSide.Client(w.ids, w.offer, w.running.sessions, w.kept, w.tokens),
+            side =
+                ConnSide.Client(
+                    w.ids,
+                    w.offer,
+                    w.running.sessions,
+                    w.kept,
+                    w.tokens,
+                    { bind, prior -> loop.move(endpoint, bind, prior) },
+                ),
             address =
                 ConnAddress(
                     SockAddr(peerSockAddr.address, peerSockAddr.length),
@@ -140,12 +150,12 @@ internal class ClientParts(
 
     /**
      * Any thread, after [start]: the socket moves to [bind]'s address, on a network assumed to have a round trip of
-     * [prior], and the connection migrates with it.
+     * [prior], once the connection can probe the path from there, and the connection migrates with it.
      */
     fun migrate(
         bind: PathKey,
         prior: RttPrior,
-    ) = loop.move(endpoint, bind, prior)
+    ) = conn.submit(MoveWantedWork(MoveWanted(bind, prior)))
 
     private companion object {
         const val MAX_ALPN = 255

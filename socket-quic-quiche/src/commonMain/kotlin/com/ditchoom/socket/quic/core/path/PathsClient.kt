@@ -33,6 +33,7 @@ internal class ClientPaths(
     private val ids: IdIssuer,
     private val random: Random,
     private val free: (QuicheRecvInfo, Made) -> Unit,
+    mover: (PathKey, RttPrior) -> Unit,
 ) {
     private val toPeer = Outgoing.To(first.target)
     private val fixed = Sorting.Fixed(toPeer)
@@ -43,9 +44,11 @@ internal class ClientPaths(
     private val events = PathEvents(q, factory)
     private val peer = TowardPeer(q, first)
     private var previous: Previous = Previous.None
-    private var heard = Heard(0L, Nanos(0L))
-    private var arrived = 0L
+    private val ears = PeerHearing(q)
     private val retiredIds = RetiredReader(factory)
+
+    /** Where the socket is wanted, and whether it waits to move there. */
+    val hold = MoveHold(q, ears, mover)
 
     val sendInfo get() = first.sendInfo
 
@@ -54,7 +57,7 @@ internal class ClientPaths(
     fun stats(): QuicStatsRead = first.stats()
 
     /** What quiche is told about a datagram that arrived: it came on the endpoint [Move.receivesAt] names. */
-    fun recvFrom(): RecvFrom = move.receivesAt().info.also { arrived++ }
+    fun recvFrom(): RecvFrom = move.receivesAt().info.also { ears.arrived() }
 
     fun window(full: Window): Window =
         when (move) {
@@ -88,8 +91,7 @@ internal class ClientPaths(
             is PeerMigrationPermission.Forbidden, is PeerMigrationPermission.NotYetNegotiated -> return MoveAnswer.Refused
         }
         topUp()
-        val hearing = q.hearing(heard, arrived, now)
-        heard = heard.observe(arrived, now)
+        val hearing = ears.judge(now)
         val sockAddr = local.encodeToNative(factory)
         val at = LocalAddr(q.api.decodePathKey(sockAddr.address), peer.recvInfoAt(sockAddr), Made.Here(sockAddr), prior)
         val from = abandon()
@@ -110,15 +112,18 @@ internal class ClientPaths(
      * asked for a fresh PATH_CHALLENGE each time its [Cadence] falls due and abandoned at its end; a move that found no
      * path is probed again when its [Retry] falls due.
      */
-    fun step(now: Nanos): PathStep =
-        when (val moving = move) {
+    fun step(now: Nanos): PathStep {
+        if (hold.step(now) == PathStep.NoUsablePath) return PathStep.NoUsablePath
+        return when (val moving = move) {
             is Move.Probing -> follow(now, moving)
             is Move.Stranded -> reprobe(now, moving)
             is Move.Settled -> PathStep.Steady
         }
+    }
 
     /** Offers the time the next challenge, abandonment or probe of a move falls due; offers nothing when settled. */
     fun offerWake(sink: WakeSink) {
+        hold.offerWake(sink)
         when (val now = move) {
             is Move.Stranded -> sink.offer(now.retry.due)
             is Move.Probing -> {
@@ -133,7 +138,7 @@ internal class ClientPaths(
     fun networkChanged(now: Nanos) = run { move = move.onNewNetwork(now) }
 
     /** Whether the socket's endpoint has no validated path yet: an idle end then means no usable path was found. */
-    fun unsettled(): Boolean = move !is Move.Settled
+    fun unsettled(): Boolean = move !is Move.Settled || hold.held is HeldMove.Waiting
 
     /** Hands [each] every endpoint this connection made, for its release, and frees the paths' own memory. */
     fun made(each: (LocalAddr) -> Unit) {
@@ -162,8 +167,7 @@ internal class ClientPaths(
         }
         if (now.value < stranded.retry.due.value) return PathStep.Steady
         topUp()
-        val hearing = q.hearing(heard, arrived, now)
-        heard = heard.observe(arrived, now)
+        val hearing = ears.judge(now)
         return when (stranded.why) {
             Unprobed.MigrationRefused -> migrate(now, stranded.from, stranded.at, LinkedId.None, stranded.retry.failed)
             Unprobed.NoSpareId, Unprobed.ValidationFailed -> {

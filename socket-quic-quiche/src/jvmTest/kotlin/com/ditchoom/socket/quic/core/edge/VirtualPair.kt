@@ -11,6 +11,7 @@ import com.ditchoom.socket.quic.QuicTlsConfig
 import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.QuicheConn
 import com.ditchoom.socket.quic.QuicheRecvInfo
+import com.ditchoom.socket.quic.SendTarget
 import com.ditchoom.socket.quic.core.demux.ServerConfig
 import com.ditchoom.socket.quic.core.loop.Loop
 import com.ditchoom.socket.quic.core.testing.VirtualClock
@@ -49,6 +50,15 @@ import kotlin.time.Duration.Companion.seconds
 /** Which end of a [VirtualPair]. */
 internal enum class End { Client, Server }
 
+/** Which datagrams toward the client the link delivers. */
+internal enum class Delivery {
+    /** Every one, wherever the server addressed it. */
+    ToEnd,
+
+    /** Only those addressed to the port the client's socket is bound to when they arrive, as real sockets do. */
+    ToAddress,
+}
+
 /** One datagram an end handed its socket, at virtual [at] nanoseconds from the pair's start. */
 internal class Sent(
     val from: End,
@@ -64,6 +74,7 @@ internal class Sent(
 internal class VirtualPair private constructor(
     val oneWay: Duration,
     private val api: QuicheApi,
+    private val delivery: Delivery,
 ) {
     val clock = VirtualClock(Nanos(ORIGIN))
     private val inFlight = PriorityQueue<InFlight>(compareBy<InFlight>({ it.arrives }, { it.order }))
@@ -150,7 +161,7 @@ internal class VirtualPair private constructor(
         repeat(ROUNDS) {
             while (inFlight.isNotEmpty() && inFlight.peek().arrives <= clock.at.value) {
                 val datagram = inFlight.poll()
-                waiting.getValue(datagram.to).addLast(datagram.bytes)
+                if (delivered(datagram)) waiting.getValue(datagram.to).addLast(datagram.bytes)
             }
             val now = clock.at
             due = minOf(passOf(server.loop, now), passOf(client.loop, now))
@@ -164,11 +175,19 @@ internal class VirtualPair private constructor(
         now: Nanos,
     ): Long = loop.pass(now).fold({ Long.MAX_VALUE }, { it })
 
+    private fun delivered(datagram: InFlight): Boolean =
+        when (delivery) {
+            Delivery.ToEnd -> true
+            Delivery.ToAddress -> datagram.to == End.Server || datagram.port == clientKey.port
+        }
+
     private class InFlight(
         val arrives: Long,
         val order: Long,
         val to: End,
         val bytes: ByteArray,
+        /** The port it is addressed to. */
+        val port: Int,
     )
 
     /** The link loses every datagram [end] sent that has not arrived yet; returns how many. */
@@ -197,7 +216,12 @@ internal class VirtualPair private constructor(
                     continue
                 }
                 val to = if (end == End.Client) End.Server else End.Client
-                inFlight.add(InFlight(clock.at.value + oneWay.inWholeNanoseconds, order++, to, bytes))
+                val port =
+                    when (val target = batch.targetOf(n)) {
+                        is SendTarget.ServerReply -> target.to.port
+                        is SendTarget.ConnectedPeer -> if (end == End.Client) serverKey.port else clientKey.port
+                    }
+                inFlight.add(InFlight(clock.at.value + oneWay.inWholeNanoseconds, order++, to, bytes, port))
             }
             return SendBatchResult.AllTaken
         }
@@ -263,10 +287,11 @@ internal class VirtualPair private constructor(
             oneWay: Duration = 30.milliseconds,
             tls: QuicTlsConfig = coreTlsConfig(),
             serverConfig: ServerConfig = ServerConfig(),
+            delivery: Delivery = Delivery.ToEnd,
             body: suspend CoroutineScope.(VirtualPair) -> Unit,
         ) = runBlocking {
             val api = loadQuicheApi()
-            val pair = VirtualPair(oneWay, api)
+            val pair = VirtualPair(oneWay, api, delivery)
             api.setThreadVirtualTimeNanos(ORIGIN)
             try {
                 pair.server = replayServer(api, options, BufferFactory.Default, pair.Socket(End.Server), pair.clock, tls, serverConfig)

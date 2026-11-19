@@ -67,6 +67,7 @@ class CoreMoveBackVirtualTests {
             launch { runCatching { while (true) echoOne(serverSide) } }
             val left = pair.clientPort()
             move(pair)
+            pair.runUntil { pair.clientPort() != left }
             // Written while the new path is probed, for the path quiche is still active on, whose socket is gone.
             var echoed = 0
             launch { echoed = echo(pair) }

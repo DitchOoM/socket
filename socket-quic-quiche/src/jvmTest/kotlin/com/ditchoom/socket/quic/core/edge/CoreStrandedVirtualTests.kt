@@ -79,7 +79,44 @@ class CoreStrandedVirtualTests {
             var seen = emptyList<String>()
             launch { seen = marks(pair) }
             pair.runUntil { seen.isNotEmpty() }
-            assertTrue("Reprobed" in seen, "the move waited for an id: $seen")
+            assertTrue("Held" in seen, "the socket waited for an id before it moved: $seen")
+        }
+
+    /**
+     * On a link that delivers only what is addressed to the port the client's socket holds, as real sockets do: a move
+     * made before the peer's spare id arrived would leave the only address the peer can send that id to. The socket
+     * stays there until the id comes, then moves, and the connection migrates.
+     */
+    @Test
+    fun aMoveWithNoSpareIdStaysWhereThePeerCanSendTheIdUntilItArrives() =
+        VirtualPair.with(limitTwo, oneWay = 100.milliseconds, delivery = Delivery.ToAddress) { pair ->
+            var migrated = 0
+            val counting =
+                launch {
+                    while (true) {
+                        migrated = marks(pair).count { it == "Migrated" }
+                        yield()
+                    }
+                }
+            try {
+                move(pair)
+                pair.runUntil { migrated == 1 }
+                // The id the first move retired is not replaced yet: its RETIRE_CONNECTION_ID has only just reached the peer.
+                pair.runFor(110.milliseconds)
+                assertEquals(0L, pair.clientSpareIds())
+                val port = pair.clientPort()
+                move(pair)
+                pair.runFor(10.milliseconds)
+                assertEquals(port, pair.clientPort(), "the socket waits for the id where the peer sends it")
+                pair.runUntil(within = 5.seconds) {
+                    migrated == 2 || pair.client.connection.end() is EdgeEnd.Ended
+                }
+                val after = pair.client.connection.end()
+                assertIs<EdgeEnd.Open>(after, "ended: ${(after as? EdgeEnd.Ended)?.end} migrated=$migrated")
+                assertTrue(pair.clientPort() != port, "the socket moved once the id came")
+            } finally {
+                counting.cancel()
+            }
         }
 
     @Test
