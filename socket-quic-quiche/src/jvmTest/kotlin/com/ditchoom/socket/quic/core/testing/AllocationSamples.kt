@@ -1,5 +1,7 @@
 package com.ditchoom.socket.quic.core.testing
 
+import com.ditchoom.socket.quic.core.ready.NetStack
+import com.ditchoom.socket.quic.core.ready.netStackOfThisRuntime
 import jdk.jfr.consumer.RecordedEvent
 import jdk.jfr.consumer.RecordingFile
 import java.nio.channels.DatagramChannel
@@ -36,3 +38,17 @@ internal inline fun <T> withDescriptorsAbove127(body: () -> T): T {
         held.forEach { it.close() }
     }
 }
+
+/**
+ * A loop's allocation gate on this process's stack: [native] where `qnet` polls, [jdk] on the JDK stack (Windows only),
+ * whose `WEPollSelectorImpl` boxes every ready socket handle into an `Integer` (a handle is never in the cache), 16 B
+ * per ready key, inside NIO's own calls.
+ */
+internal fun <T> loopGateOfThisStack(
+    native: T,
+    jdk: T,
+): T =
+    when (netStackOfThisRuntime) {
+        is NetStack.Native -> native
+        is NetStack.Jdk -> jdk
+    }

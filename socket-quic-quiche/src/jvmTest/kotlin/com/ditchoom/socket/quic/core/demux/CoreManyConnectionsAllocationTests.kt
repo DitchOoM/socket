@@ -9,9 +9,8 @@ import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.core.edge.LOOP_THREAD
 import com.ditchoom.socket.quic.core.edge.connectCore
 import com.ditchoom.socket.quic.core.loop.LoopSet
-import com.ditchoom.socket.quic.core.ready.NetStack
-import com.ditchoom.socket.quic.core.ready.netStackOfThisRuntime
 import com.ditchoom.socket.quic.core.testing.allocationSamples
+import com.ditchoom.socket.quic.core.testing.loopGateOfThisStack
 import com.ditchoom.socket.quic.core.testing.withDescriptorsAbove127
 import com.ditchoom.socket.quic.network
 import kotlinx.coroutines.Dispatchers
@@ -72,19 +71,13 @@ class CoreManyConnectionsAllocationTests {
                         "[core many-connection allocation] loops %.1f B/echo over %d connections\n%s".format(perEcho, CONNECTIONS, where),
                     )
                     clients.forEach { it.connection.close(QuicError.NoError) }
-                    val gate = loopGate()
+                    val gate = loopGateOfThisStack(LOOP_GATE, JDK_LOOP_GATE)
                     assertTrue(
                         perEcho <= gate,
                         "the loops allocated %.1f B/echo over %d connections (gate %d):\n%s".format(perEcho, CONNECTIONS, gate, where),
                     )
                 }
             }
-        }
-
-    private fun loopGate(): Int =
-        when (netStackOfThisRuntime) {
-            is NetStack.Native -> LOOP_GATE
-            is NetStack.Jdk -> JDK_LOOP_GATE
         }
 
     /** Every connection echoes [count] times, all at once. */
@@ -151,6 +144,8 @@ class CoreManyConnectionsAllocationTests {
         const val WARM_UP = 500
         const val MEASURED = 1_000
         const val LOOP_GATE = 16
-        const val JDK_LOOP_GATE = 640
+
+        /** Measured on Windows at 297 B/echo (run 44471687771), 514 before the receive kept its keys per sender. */
+        const val JDK_LOOP_GATE = 400
     }
 }

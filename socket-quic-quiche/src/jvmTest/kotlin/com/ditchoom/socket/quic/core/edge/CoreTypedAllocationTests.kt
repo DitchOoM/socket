@@ -12,6 +12,7 @@ import com.ditchoom.buffer.stream.StreamProcessor
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.ScopedRead
 import com.ditchoom.socket.quic.core.testing.allocationSamples
+import com.ditchoom.socket.quic.core.testing.loopGateOfThisStack
 import com.ditchoom.socket.quic.core.testing.withDescriptorsAbove127
 import com.ditchoom.socket.quic.network
 import com.ditchoom.socket.quic.skipOnMissingNativeLib
@@ -110,12 +111,13 @@ class CoreTypedAllocationTests {
                     )
                     client.connection.close(QuicError.NoError)
                     dispatcher.close()
+                    val loopGate = loopGateOfThisStack(LOOP_GATE, JDK_LOOP_GATE)
                     assertTrue(
-                        report.loop <= LOOP_GATE && report.caller <= callerGate,
+                        report.loop <= loopGate && report.caller <= callerGate,
                         "$name: loop %.1f B (gate %d), caller total %.1f B (gate %d; the codec and its value alone measure %.1f, %.1f of it the transport), sampled from:\n%s"
                             .format(
                                 report.loop,
-                                LOOP_GATE,
+                                loopGate,
                                 report.caller,
                                 callerGate,
                                 report.codec,
@@ -235,6 +237,9 @@ class CoreTypedAllocationTests {
         const val WARM_UP = 5_000
         const val MEASURED = 20_000
         const val LOOP_GATE = 16
+
+        /** The JDK stack's boxed descriptor per selector wake: 19.2 B/echo measured on Windows (run 44471687771). */
+        const val JDK_LOOP_GATE = 48
         const val PING_PONG_GATE = 520
         const val PIPELINED_GATE = 270
         const val BATCH = 32
