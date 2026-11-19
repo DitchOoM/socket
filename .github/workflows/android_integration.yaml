@@ -1,5 +1,16 @@
 name: "Android Emulator Integration Test"
 on:
+  # A push to main or an integration branch runs only the jobs that fill caches (`natives`,
+  # `kotlin-build`): a cache entry is readable by the ref that wrote it, by pull requests into that
+  # ref, and by the default branch's. Pull requests alone wrote theirs under refs/pull/N/merge, which
+  # no other pull request can read, so every new PR started cold (measured: PR 970 and PR 971 each
+  # built the same natives, digest defa8fc37cabb022, hours apart).
+  push:
+    branches:
+      - main
+      - 'integrate/**'
+    paths-ignore:
+      - '**.md'
   pull_request:
     # See review.yaml: '*' does not match '/', so '*.md' let every docs/**.md change boot an
     # emulator for nothing. '**.md' matches markdown at any depth.
@@ -70,6 +81,18 @@ jobs:
           key: gradle-linux-${{ hashFiles('gradle/libs.versions.toml', '**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
           restore-keys: |
             gradle-linux-
+
+      # Gradle's local build cache for the JVM test classes this job compiles (quicEchoJar). The repo's
+      # Gradle dependency cache holds no build cache (gradle-cache-prune deletes it: 2.7 GB), so this is
+      # its own entry: a new key per commit, restored by prefix, so the previous run's entries start
+      # every run.
+      - name: Cache Gradle build cache (JVM test classes)
+        uses: actions/cache@v6
+        with:
+          path: ~/.gradle/caches/build-cache-1
+          key: android-bc-jvm-v1-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            android-bc-jvm-v1-${{ runner.os }}-
 
       # The toolchain is pinned, not `stable`: the Android cache key below includes the compiler
       # version, so a floating toolchain changed the key (and rebuilt every native) whenever a Rust
@@ -174,6 +197,15 @@ jobs:
           markers=$(find socket-quic-quiche/libs/quiche/linux-x64 -name '.built-*' | wc -l)
           [ "$markers" -gt 0 ] || { echo "::error::no linux-x64 quiche build marker"; exit 1; }
 
+      # The JVM test classes' build-cache entries, for the lanes' `startNetworkControlServer` build
+      # (the same compileTestKotlinJvm): they take these instead of compiling again (3.7 min each).
+      - name: Stage the build-cache entries
+        run: |
+          set -euo pipefail
+          mkdir -p lane-build-cache
+          cp -a "$HOME/.gradle/caches/build-cache-1/." lane-build-cache/
+          echo "build cache entries: $(find lane-build-cache -type f | wc -l), $(du -sh lane-build-cache | cut -f1)"
+
       # ⚠️ include-hidden-files IS LOAD-BEARING: the linux-x64 build markers are dotfiles, and without
       # them every lane would silently rebuild the host libquiche.so if its Gradle graph reaches it.
       - name: Upload the lane inputs
@@ -189,14 +221,98 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
+      # Its own artifact, so a lane takes the natives without waiting for the cache upload. The entries
+      # are gzip files already: no further compression.
+      - name: Upload the JVM build-cache entries
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-jvm-build-cache
+          path: lane-build-cache/
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+
+  # The Android Kotlin compile and dex of every module's debug and androidTest variants, built once per
+  # run into Gradle's build cache and handed to the lanes, which then only package, install and run.
+  # The tasks named here need no natives, so this job runs beside `natives` instead of after it (the
+  # tasks that merge the natives into the APKs, and the packaging, stay in the lanes: they take
+  # seconds). The outputs are the same for every API level, because every module's minSdk is 28.
+  kotlin-build:
+    name: "Android Kotlin build cache"
+    runs-on: ubuntu-latest
+    needs: version
+    timeout-minutes: 25
+    env:
+      ORG_GRADLE_PROJECT_version: ${{ needs.version.outputs.version }}
+      ORG_GRADLE_PROJECT_linuxTargets: "false"
+      ORG_GRADLE_PROJECT_quicheAndroidAbis: x86_64
+    steps:
+      - name: checkout
+        uses: actions/checkout@v7
+      - name: Set up JDK 21
+        uses: actions/setup-java@v6
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+
+      - name: Restore Gradle wrapper distribution
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.gradle/wrapper
+          key: gradle-wrapper-linux-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+
+      - name: Restore Gradle dependency cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.gradle/caches
+          key: gradle-linux-${{ hashFiles('gradle/libs.versions.toml', '**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-linux-
+
+      # This job writes the entry (the post step saves it): the next run of the branch starts from it.
+      - name: Cache Gradle build cache (Android Kotlin)
+        uses: actions/cache@v6
+        with:
+          path: ~/.gradle/caches/build-cache-1
+          key: android-bc-kotlin-v1-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            android-bc-kotlin-v1-${{ runner.os }}-
+
+      # The lanes' own certs step: the harness config and the pinned certs are inputs of the build.
+      - name: Generate harness TLS certs
+        run: bash test-harness/tls/gen-certs.sh
+
+      # The compile and dex tasks of the lanes' connectedAndroidTest (every module's debug variant and
+      # its androidTest variant) and the JVM test classes the network control server runs. Selected by
+      # name, so a module that gains an androidInstrumentedTest source set is included.
+      - name: Compile every module's debug and androidTest variants
+        run: |
+          .github/scripts/gradle-retry.sh             compileDebugKotlinAndroid compileDebugAndroidTestKotlinAndroid dexBuilderDebugAndroidTest             :socket-quic-quiche:compileTestKotlinJvm :socket-quic-quiche:jvmTestProcessResources             --no-configuration-cache
+
+      - name: Stage the build-cache entries
+        run: |
+          set -euo pipefail
+          mkdir -p lane-build-cache
+          cp -a "$HOME/.gradle/caches/build-cache-1/." lane-build-cache/
+          echo "build cache entries: $(find lane-build-cache -type f | wc -l), $(du -sh lane-build-cache | cut -f1)"
+
+      - name: Upload the build-cache entries
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-kotlin-build-cache
+          path: lane-build-cache/
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+
   android-emulator:
     runs-on: ubuntu-latest
     needs: version
-    # Before `run tests` a lane now spends ~3 min (setup, SDK install, waiting for the `natives` job's
-    # artifact, docker bring-up; the natives and the quic-echo jar are built once, not per lane) and
-    # under 1 min after it, so 25 holds a run-tests step of RUN_TESTS_MINUTES while still bounding a
-    # genuine hang (e.g. an emulator that never boots).
-    timeout-minutes: 25
+    if: ${{ github.event_name == 'pull_request' }}
+    # Before `run tests` a lane spends ~2 min (setup, SDK install) and under 1 min after it. The step
+    # holds the emulator's boot, the wait for the shared jobs' inputs and the tests, so 35 holds a step
+    # of RUN_TESTS_STEP_MINUTES while still bounding a genuine hang (e.g. an emulator that never boots).
+    timeout-minutes: 35
     # ANDROID_EMULATOR_WAIT_TIME_BEFORE_KILL is deliberately NOT set job-wide — see the `run tests`
     # step, which is the only step where force-killing the emulator is safe. Setting it here also
     # applied it to the create-AVD step, whose entire purpose is to let the emulator WRITE a
@@ -217,8 +333,13 @@ jobs:
       # native build, so without this the run test step compiled arm64-v8a and armeabi-v7a through
       # cargo-ndk as well (~2.5 minutes) for libraries no test loads. build-linux builds all ABIs.
       ORG_GRADLE_PROJECT_quicheAndroidAbis: x86_64
-      # The `run tests` step's timeout; its watchdog's deadline follows it.
+      # The `run tests` step's budget for the emulator's boot and the tests, as before; the watchdog's
+      # deadline follows it. The wait for the shared jobs' inputs (scripts/android-lane-inputs.sh) is
+      # added to the deadline by the script, as the time it took, and to the step's timeout here:
+      # RUN_TESTS_STEP_MINUTES = RUN_TESTS_MINUTES + LANE_INPUTS_WAIT_MINUTES.
       RUN_TESTS_MINUTES: 17
+      LANE_INPUTS_WAIT_MINUTES: 12
+      RUN_TESTS_STEP_MINUTES: 29
     strategy:
       # Each API level is an independent signal — an API-35-only regression must not cancel the 29 lane
       # (or vice versa) before it reports, or the matrix tells us less than the single lane did.
@@ -308,28 +429,10 @@ jobs:
         run: bash test-harness/tls/gen-certs.sh
 
 
-      # The natives and the quic-echo jar come from the `natives` job (above), which built them once
-      # for every lane. This job starts beside it and waits only here, after its own setup.
-      - uses: ./.github/actions/await-artifact
-        with:
-          name: android-lane-inputs
-          producer: "Android lane inputs"
-          timeout-minutes: 15
-          github-token: ${{ github.token }}
-      - name: Download the lane inputs
-        uses: actions/download-artifact@v8
-        with:
-          name: android-lane-inputs
-          path: .
-      # The Gradle build checks the Android natives are there and skips compiling them; the host
-      # markers are touched so the JNI shim's mtime guard reads "current" (build-linux's trap #2).
-      - name: Use the prebuilt natives
-        run: |
-          echo "ORG_GRADLE_PROJECT_quicheAndroidNativesPrebuilt=true" >> "$GITHUB_ENV"
-          find socket-quic-quiche/libs/quiche/linux-x64 -name '.built-*' -o -name '.jni-built-*' | xargs -r touch
-
-      - name: Bring up quic-echo via the docker harness
-        run: bash test-harness/compose-up-retry.sh quic-echo
+      # The natives, the quic-echo jar and the compiled Kotlin come from the `natives` and `kotlin-build`
+      # jobs, which build them once for every lane. They are taken INSIDE the emulator step below
+      # (scripts/android-lane-inputs.sh), after the emulator has booted, so the boot overlaps the
+      # shared build instead of following it. The quic-echo container comes up there too: it needs the jar.
 
       # sdkmanager reports a corrupt download as a Warning and exits 0 with the package missing, so
       # the emulator-runner action's own install cannot be trusted to fail. This step installs the
@@ -366,13 +469,16 @@ jobs:
         # no test started or finished for 5 min, or the deadline above less the ~2 min the capture,
         # Gradle's stop and the emulator shutdown take. Green API 29 runs took 8.5-10.8 min of
         # script time; RUN_TESTS_MINUTES leaves a runner 1.5x slower room to finish.
-        timeout-minutes: ${{ fromJSON(env.RUN_TESTS_MINUTES) }}
+        timeout-minutes: ${{ fromJSON(env.RUN_TESTS_STEP_MINUTES) }}
         uses: reactivecircus/android-emulator-runner@v2
         # Safe to force-kill HERE and nowhere else: this step runs with `-no-snapshot-save`, so the
         # emulator has nothing to flush on shutdown and waiting 20s for a graceful exit is pure
         # dead time. The create-AVD step above must NOT inherit this — see the job-level note.
         env:
           ANDROID_EMULATOR_WAIT_TIME_BEFORE_KILL: 1
+          # For the script's wait for, and download of, the shared jobs' artifacts.
+          GH_TOKEN: ${{ github.token }}
+          ANDROID_LANE_INPUTS_WAIT_MIN: ${{ env.LANE_INPUTS_WAIT_MINUTES }}
           # A Perfetto ring of the device (scheduling, process stats, ss/am/network atrace for the
           # test APKs), written out only if the run fails or hangs: scripts/android-perfetto-ring.sh.
           # Traced: 29 and 35. UNTRACED: 36 (an instrument has hidden the race it was built to catch
@@ -559,7 +665,8 @@ jobs:
     name: "Android microbenchmarks (R8, emulator)"
     runs-on: ubuntu-latest
     needs: version
-    timeout-minutes: 40
+    if: ${{ github.event_name == 'pull_request' }}
+    timeout-minutes: 50
     env:
       ORG_GRADLE_PROJECT_version: ${{ needs.version.outputs.version }}
       ORG_GRADLE_PROJECT_linuxTargets: "false"
@@ -601,19 +708,7 @@ jobs:
           sudo udevadm trigger --name-match=kvm
 
       # The Android natives come from the `natives` job, which built them once for every Android job.
-      - uses: ./.github/actions/await-artifact
-        with:
-          name: android-lane-inputs
-          producer: "Android lane inputs"
-          timeout-minutes: 15
-          github-token: ${{ github.token }}
-      - name: Download the lane inputs
-        uses: actions/download-artifact@v8
-        with:
-          name: android-lane-inputs
-          path: .
-      - name: Use the prebuilt natives
-        run: echo "ORG_GRADLE_PROJECT_quicheAndroidNativesPrebuilt=true" >> "$GITHUB_ENV"
+      # They are taken inside the emulator step (scripts/android-lane-inputs.sh), after the boot.
 
       - name: Install + verify Android Emulator and system image
         timeout-minutes: 6
@@ -621,10 +716,13 @@ jobs:
 
       # One emulator step, no snapshot: unlike android-emulator this job boots once.
       - name: Run the benchmarks
-        timeout-minutes: 25
+        # 25 for the boot and the runs, as before, plus the wait for the `natives` job (12).
+        timeout-minutes: 37
         uses: reactivecircus/android-emulator-runner@v2
         env:
           ANDROID_EMULATOR_WAIT_TIME_BEFORE_KILL: 1
+          GH_TOKEN: ${{ github.token }}
+          ANDROID_LANE_INPUTS_WAIT_MIN: 12
         with:
           api-level: 34
           target: default
