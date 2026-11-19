@@ -688,7 +688,31 @@ static void reply_source(int mode) {
     qn_close(server);
 }
 
+/* Every errno the senders see that means "this datagram could not leave" has its own code, not QN_OTHER. */
+static void errno_codes(void) {
+    static const struct {
+        int err;
+        int32_t code;
+        const char *name;
+    } table[] = {
+        {EAGAIN, QN_EAGAIN, "EAGAIN"},
+        {EMSGSIZE, QN_EMSGSIZE, "EMSGSIZE"},
+        {ENETUNREACH, QN_ENETUNREACH, "ENETUNREACH"},
+        {EHOSTUNREACH, QN_EHOSTUNREACH, "EHOSTUNREACH"},
+        {ECONNREFUSED, QN_ECONNREFUSED, "ECONNREFUSED"},
+        {EACCES, QN_EACCES, "EACCES"},
+        {EPERM, QN_EPERM, "EPERM"},
+        {EADDRNOTAVAIL, QN_EADDRNOTAVAIL, "EADDRNOTAVAIL"},
+        {EPIPE, QN_EPIPE, "EPIPE"},
+        {EDOM, QN_OTHER, "EDOM (unmapped)"},
+    };
+    for (size_t i = 0; i < sizeof table / sizeof table[0]; i++)
+        CHECK(qn_code(table[i].err) == table[i].code, "%s maps to %d, want %d", table[i].name, qn_code(table[i].err),
+              table[i].code);
+}
+
 int main(void) {
+    errno_codes();
     spec_layout();
     send_base = calloc(SLOTS, STRIDE);
     for (int i = 0; i < 64; i++) recv_bufs[i] = calloc(1, 2048);

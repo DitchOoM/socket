@@ -76,6 +76,7 @@ static int32_t qn_code(int e) {
     case ENOBUFS: return QN_ENOBUFS;
     case EACCES: return QN_EACCES;
     case EPERM: return QN_EPERM;
+    case EPIPE: return QN_EPIPE;
     case EBADF: case ENOTSOCK: return QN_EBADF;
     case EIO: return QN_EIO;
     case EADDRINUSE: return QN_EADDRINUSE;

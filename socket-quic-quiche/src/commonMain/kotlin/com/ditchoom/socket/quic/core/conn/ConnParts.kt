@@ -2,6 +2,7 @@ package com.ditchoom.socket.quic.core.conn
 
 import com.ditchoom.socket.quic.QuicRole
 import com.ditchoom.socket.quic.core.life.ConnLife
+import com.ditchoom.socket.quic.core.sched.SendLedger
 import com.ditchoom.socket.quic.core.sched.WorkInbox
 import com.ditchoom.socket.quic.core.stream.StreamTable
 
@@ -21,4 +22,5 @@ internal class ConnParts(
     val slots: ConnSlots,
     val sink: ConnSink,
     val ackReads: AckHoldReads,
+    val sends: SendLedger,
 )

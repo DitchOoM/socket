@@ -186,7 +186,8 @@ private fun QuicConnectionEnd.thrownForTrace(): Throwable? =
                 is QuicSocketFault.Closed -> null
             }
         is QuicConnectionEnd.ByPeer, is QuicConnectionEnd.ByLocal, is QuicConnectionEnd.IdleTimeout,
-        is QuicConnectionEnd.HandshakeTimedOut, is QuicConnectionEnd.LoopStopped, is QuicConnectionEnd.ServerClosed,
+        is QuicConnectionEnd.HandshakeTimedOut, is QuicConnectionEnd.HandshakeSendRefused, is QuicConnectionEnd.LoopStopped,
+        is QuicConnectionEnd.ServerClosed,
         is QuicConnectionEnd.ServerClosedUnsettled, is QuicConnectionEnd.NoErrorRecorded, is QuicConnectionEnd.Released,
         is QuicConnectionEnd.NetworkLost, is QuicConnectionEnd.LocalAddressGone, is QuicConnectionEnd.NoUsablePath,
         is QuicConnectionEnd.ReasonOnly,

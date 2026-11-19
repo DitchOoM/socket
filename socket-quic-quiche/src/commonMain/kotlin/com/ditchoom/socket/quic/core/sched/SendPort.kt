@@ -43,6 +43,9 @@ internal class SendPort(
     private val errors: SocketErrors = SocketErrors(),
 ) {
     private val health = HealthCell()
+
+    /** What this socket's sends have come to. */
+    val ledger = SendLedger()
     private val gate = LaneGate()
     private val waiting = WaitingLanes()
     private val handOffs: Array<AdoptLane> =
@@ -173,7 +176,10 @@ internal class SendPort(
                     if (who == Who.Loop) loopCounts.refused()
                     when (val fault = errors.classify(result.why, probeOf(result.why))) {
                         is SendFault.Full -> return Flushed.Full
-                        is SendFault.Datagram -> batch.took(1)
+                        is SendFault.Datagram -> {
+                            ledger.refused(fault.refusal)
+                            batch.took(1)
+                        }
                         is SendFault.Socket -> {
                             die(fault.fault)
                             batch.took(batch.pending)
@@ -192,6 +198,7 @@ internal class SendPort(
     ) {
         if (count == 0) return
         errors.taken()
+        ledger.taken()
         when (who) {
             Who.Loop -> loopCounts.sent(count)
             Who.Caller -> callerCounts.sent(count)
