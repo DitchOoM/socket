@@ -928,11 +928,10 @@ public final class com/ditchoom/socket/quic/QuicheCmd$Stats : com/ditchoom/socke
 }
 
 public final class com/ditchoom/socket/quic/QuicheCmd$StreamRecv : com/ditchoom/socket/quic/QuicheCmd {
-	public fun <init> (JLcom/ditchoom/socket/quic/QuicheMemory;ILkotlinx/coroutines/CompletableDeferred;)V
-	public final fun getBuf ()Lcom/ditchoom/socket/quic/QuicheMemory;
+	public fun <init> (Lcom/ditchoom/socket/quic/StreamSlot;ILkotlinx/coroutines/CompletableDeferred;)V
 	public final fun getBufLen ()I
 	public final fun getResult ()Lkotlinx/coroutines/CompletableDeferred;
-	public final fun getStreamId ()J
+	public final fun getSlot ()Lcom/ditchoom/socket/quic/StreamSlot;
 }
 
 public final class com/ditchoom/socket/quic/QuicheCmd$StreamSend : com/ditchoom/socket/quic/QuicheCmd {

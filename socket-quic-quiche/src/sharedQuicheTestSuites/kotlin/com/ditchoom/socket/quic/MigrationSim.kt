@@ -708,6 +708,8 @@ internal suspend fun <R> withMigrationSim(
     silenceThreshold: SilenceThreshold = SILENT_PATH_THRESHOLD,
     /** A link beside the default route that the reactor can move onto — see [StandbyLink]. */
     standby: SimStandby = SimStandby.None,
+    /** What the two connections' drivers allocate from; the pipe keeps its own. */
+    driverBufferFactory: BufferFactory = BufferFactory.network(),
     block: suspend MigrationSimScope.() -> R,
 ): R {
     // First, before anything native is allocated: an incoherent clock fails here, typed, with nothing
@@ -839,7 +841,7 @@ internal suspend fun <R> withMigrationSim(
                     ),
                 rawApi = clientAudit,
                 conn = clientConn,
-                bufferFactory = bufferFactory,
+                bufferFactory = driverBufferFactory,
                 recvInfo = clientRecvInfo,
                 sendInfo = clientSendInfo,
                 udpChannel = primaryPath.channel,
@@ -858,7 +860,7 @@ internal suspend fun <R> withMigrationSim(
                 migration = MigrationCapability.ServerConnection,
                 rawApi = serverAudit,
                 conn = serverConn,
-                bufferFactory = bufferFactory,
+                bufferFactory = driverBufferFactory,
                 recvInfo = serverRecvInfo,
                 sendInfo = serverSendInfo,
                 udpChannel = pipe.serverEgress,
@@ -917,10 +919,11 @@ internal suspend fun <R> withMigrationSim(
         val client =
             SimClientQuicConnection(
                 clientDriver,
-                DriverQuicConnection(clientDriver, bufferFactory, SocketAddress.ofLiteral("127.0.0.1", SERVER_PORT), simScope),
+                DriverQuicConnection(clientDriver, driverBufferFactory, SocketAddress.ofLiteral("127.0.0.1", SERVER_PORT), simScope),
                 now,
             )
-        val server = DriverQuicConnection(serverDriver, bufferFactory, SocketAddress.ofLiteral("127.0.0.1", CLIENT_PORT_BASE), simScope)
+        val server =
+            DriverQuicConnection(serverDriver, driverBufferFactory, SocketAddress.ofLiteral("127.0.0.1", CLIENT_PORT_BASE), simScope)
         val result =
             try {
                 withTimeout(establishTimeout) {

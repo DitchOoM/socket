@@ -19,13 +19,13 @@ import kotlin.time.Duration.Companion.seconds
  * `conn_stream_recv` / `conn_stream_send` into the [ByteStream] contract.
  *
  * Implementations must:
- * - Call quiche `conn_stream_recv` with a buffer from [bufferFactory]
- * - Pass the buffer's native address (zero-copy)
+ * - Call quiche `conn_stream_recv` with a native buffer, holding none while a read waits for bytes
  * - Drive the quiche event loop to flush outgoing packets after writes
  */
 interface QuicheStreamAdapter {
     /**
-     * Read from the quiche stream into a buffer allocated from [bufferFactory].
+     * Read from the quiche stream into a buffer allocated from [bufferFactory], or, in the driver's
+     * adapter, one the driver loop sized to the bytes it received.
      * Returns [ReadResult.Data] with the buffer, [ReadResult.End] on the peer's FIN,
      * [ReadResult.Reset] on the peer's RESET_STREAM, or throws on error/timeout. A connection
      * that ends without either throws [QuicCloseException] — never [ReadResult.End].
