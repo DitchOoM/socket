@@ -26,11 +26,12 @@ import kotlin.time.Duration.Companion.seconds
 
 /**
  * The calls into quiche while 1 KiB echoes run on one long-lived stream per connection, client and server counted
- * together: every call is a crossing into native code. How many loop turns and datagrams an echo takes depends on timing,
- * so nothing here is a count per echo. Each call is tied to the work it serves, counted in the same run: a turn
- * (`connReadable`), a datagram received (`connRecv`), a stream read or write (the `connStreamRecvStep` and
- * `connStreamSendStep` an echo makes, which do not depend on timing). A call per turn, per datagram or per stream
- * operation breaks its law whatever the machine's speed; a function with no law fails as a new kind of crossing.
+ * together: every call is a crossing into native code. Timing decides how many loop turns, datagrams and stream
+ * reads an echo takes (chunks coalesce), so no count here equals a number per echo. Each call has an upper bound
+ * from work that is itself counted in the same run, or a fixed most-per-echo for the stream operations an echo cannot
+ * exceed. A call added per turn, per datagram or per stream operation breaks its bound on any machine, and a function
+ * with no bound fails as a new kind of crossing. The calls one turn makes together (`connReadable`, `connIsClosed`,
+ * `streamIterFree`) are bounded by each other, not by a number.
  */
 class CoreNativeCrossingTests {
     @get:Rule
@@ -118,9 +119,9 @@ class CoreNativeCrossingTests {
         const val SLACK_PER_CONNECTION = 8L
     }
 
-    /** What each quiche function's count must equal, or stay under, given the work counted in the same run. */
+    /** What each quiche function's count must stay under, given the work counted in the same run. */
     private object Laws {
-        /** Stream reads and writes one echo makes, client and server together: they do not depend on timing. */
+        /** The most stream reads and writes an echo makes, client and server together; coalesced chunks make fewer. */
         private const val RECV_STEPS_PER_ECHO = 4L
         private const val SEND_STEPS_PER_ECHO = 2L
         private const val CAPACITY_CALLS_PER_ECHO = 2L
@@ -137,53 +138,47 @@ class CoreNativeCrossingTests {
             val sendSteps = n("connStreamSendStep")
             val laws =
                 listOf(
-                    Law.Near("connStreamRecvStep", recvSteps, RECV_STEPS_PER_ECHO * echoes, slack),
-                    Law.Near("connStreamSendStep", sendSteps, SEND_STEPS_PER_ECHO * echoes, slack),
-                    Law.Near("connStreamCapacity", n("connStreamCapacity"), CAPACITY_CALLS_PER_ECHO * echoes, slack),
-                    // One per turn.
-                    Law.Near("connIsClosed", n("connIsClosed"), turns, slack),
-                    Law.Near("streamIterFree", n("streamIterFree"), turns, slack),
-                    // One per turn, plus one per readable stream reported (a stream read is two recv steps).
-                    Law.Near("streamIterNextId", n("streamIterNextId"), turns + recvSteps / 2, slack),
-                    // One per turn, plus one per stream written.
-                    Law.Near("connStreamWritableNext", n("connStreamWritableNext"), turns + sendSteps, slack),
-                    // One per datagram received.
-                    Law.Near("sendInfoAtNanos", n("sendInfoAtNanos"), datagrams, slack),
+                    Law.atMost("connStreamRecvStep", recvSteps, RECV_STEPS_PER_ECHO * echoes, slack),
+                    Law.atMost("connStreamSendStep", sendSteps, SEND_STEPS_PER_ECHO * echoes, slack),
+                    Law.atMost("connStreamCapacity", n("connStreamCapacity"), CAPACITY_CALLS_PER_ECHO * echoes, slack),
+                    // One turn makes these together: each is bounded by the others.
+                    Law.atMost("connReadable", turns, n("connIsClosed"), slack),
+                    Law.atMost("connIsClosed", n("connIsClosed"), turns, slack),
+                    Law.atMost("streamIterFree", n("streamIterFree"), turns, slack),
+                    // One per turn, plus at most one per stream read (a readable stream is read at least once).
+                    Law.atMost("streamIterNextId", n("streamIterNextId"), turns + recvSteps, slack),
+                    // One per turn, plus at most one per stream write.
+                    Law.atMost("connStreamWritableNext", n("connStreamWritableNext"), turns + sendSteps, slack),
+                    // One per datagram received: both calls serve the same datagram.
+                    Law.atMost("sendInfoAtNanos", n("sendInfoAtNanos"), datagrams, slack),
+                    Law.atMost("connRecv", datagrams, n("sendInfoAtNanos"), slack),
                     // At most one per turn.
-                    Law.AtMost("connTimeoutNanos", n("connTimeoutNanos"), turns),
-                    Law.AtMost("connOnTimeout", n("connOnTimeout"), turns),
+                    Law.atMost("connTimeoutNanos", n("connTimeoutNanos"), turns, slack),
+                    Law.atMost("connOnTimeout", n("connOnTimeout"), turns, slack),
                     // At most one terminating call per turn plus one per datagram sent (about one per datagram received).
-                    Law.AtMost("connSend", n("connSend"), turns + datagrams),
+                    Law.atMost("connSend", n("connSend"), turns + datagrams, slack),
                 )
-            val known = laws.map { it.name }.toSet() + setOf("connReadable", "connRecv")
+            val known = laws.map { it.name }.toSet()
             return laws.mapNotNull { it.violation() } + c.keys.filter { it !in known }.map { "$it: no law, a new crossing" }
         }
     }
 
     /** What one function's count must satisfy. */
-    private sealed interface Law {
-        val name: String
+    private class Law private constructor(
+        val name: String,
+        private val counted: Long,
+        private val bound: Long,
+    ) {
+        fun violation(): String? = if (counted > bound) "$name: counted $counted, bound $bound" else null
 
-        fun violation(): String?
-
-        /** [counted] is within [slack] of [expected]. */
-        class Near(
-            override val name: String,
-            private val counted: Long,
-            private val expected: Long,
-            private val slack: Long,
-        ) : Law {
-            override fun violation() =
-                if (kotlin.math.abs(counted - expected) > slack) "$name: counted $counted, law says about $expected" else null
-        }
-
-        /** [counted] is at most [expected]. */
-        class AtMost(
-            override val name: String,
-            private val counted: Long,
-            private val expected: Long,
-        ) : Law {
-            override fun violation() = if (counted > expected) "$name: counted $counted, law says at most $expected" else null
+        companion object {
+            /** [counted] is at most [bound] plus [slack]: counting starts and stops while work is in flight. */
+            fun atMost(
+                name: String,
+                counted: Long,
+                bound: Long,
+                slack: Long,
+            ) = Law(name, counted, bound + slack)
         }
     }
 }
