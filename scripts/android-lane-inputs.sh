@@ -12,7 +12,7 @@
 # boot: the boot, the SDK install and the runner's own setup overlap the shared build.
 #
 # Needs GH_TOKEN, and the Actions environment (GITHUB_RUN_ID, GITHUB_REPOSITORY). Everything the wait
-# fetches is named by the artifacts of the SAME run, so a lane never reads another run's inputs.
+# fetches is named by the artifacts of the SAME run, so a lane never reads another run's inputs. The wait is part of the lane's step budget.
 
 LANE_INPUTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
