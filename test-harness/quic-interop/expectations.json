@@ -1043,7 +1043,7 @@
       },
       "handshakeloss": {
         "flaky": {
-          "why": "peer and simulator: every Handshake packet of the stock quiche client is lost while half its probes go to 1-RTT packets (run 43687046353); or only part of its two-packet ClientHello ever arrives (run 43687073037)",
+          "why": "peer and simulator: every Handshake packet of the stock quiche client is lost while half its probes go to 1-RTT packets (run 43687046353); or only part of its two-packet ClientHello ever arrives (run 43687073037); or the second packet of its ClientHello (CRYPTO 1133-1496) is sent once and lost, and every probe after it re-sends only the first packet plus a PING (RFC 9002 §6.2.4 leaves the probe's content to the sender), so the ClientHello never completes although its first packet opened our server's connection and two PINGs arrived; each of our three acknowledgements is lost too, and the client idles out with nothing received (run 44484652758)",
           "signature": {
             "kind": "any-of",
             "signatures": [
@@ -1053,6 +1053,10 @@
               },
               {
                 "kind": "peer-client-hello-never-completed",
+                "min_lost": 5
+              },
+              {
+                "kind": "peer-client-hello-only-in-its-opening-packet",
                 "min_lost": 5
               }
             ]
