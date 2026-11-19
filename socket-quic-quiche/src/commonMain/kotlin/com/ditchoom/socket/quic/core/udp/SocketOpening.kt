@@ -23,8 +23,9 @@ internal object SocketOpening {
         if (reported != SpecLayout.FINGERPRINT) {
             return NativeOpened.LayoutMismatch(SpecLayoutMismatch(SpecLayout.FINGERPRINT, reported))
         }
+        val batchesEnough = maxDatagrams >= NativeSocket.GRO_MAX_DATAGRAMS
         val request =
-            if (gro is GroRequest.Requested && GroRequest.of(ceiling) is GroRequest.Requested && maxDatagrams >= NativeSocket.GRO_MAX_DATAGRAMS) {
+            if (batchesEnough && gro is GroRequest.Requested && GroRequest.of(ceiling) is GroRequest.Requested) {
                 GroRequest.Requested
             } else {
                 GroRequest.Declined
