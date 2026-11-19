@@ -47,6 +47,9 @@ internal class FreeCountingFactory(
         SockAddr({ it.methodName == "encodeToNative" }),
         AddressTokens({ it.className == "com.ditchoom.socket.quic.core.demux.AddressTokens" }),
         ConnectArgs({ it.methodName == "nullTerminated" || it.methodName == "generateScid" }),
+
+        /** Any allocation the core makes. */
+        Core({ it.className.startsWith(CORE) && !it.className.startsWith(TEST_FACTORY) }),
     }
 
     override fun allocate(
@@ -61,8 +64,29 @@ internal class FreeCountingFactory(
         }
         val made = inner.allocate(size, byteOrder)
         val site = sites.firstOrNull { stack.any(it.matches) } ?: return made
-        return CountedBuffer(made, site).also { edge.add(it) }
+        return CountedBuffer(made, site, placeOf(stack)).also { edge.add(it) }
     }
+
+    /** The bytes of kept buffers not yet freed, as the inner factory sized them. */
+    fun heldBytes(): Long = edge.filter { it.frees.get() == 0 }.sumOf { it.capacity.toLong() }
+
+    /** [heldBytes] by the core frame that allocated each buffer, largest first. */
+    fun heldByPlace(): Map<String, Long> =
+        edge
+            .filter { it.frees.get() == 0 }
+            .groupBy { it.place }
+            .mapValues { (_, buffers) -> buffers.sumOf { it.capacity.toLong() } }
+
+    private fun placeOf(stack: Array<StackTraceElement>): String =
+        stack
+            .firstOrNull {
+                it.className.startsWith(
+                    CORE,
+                ) &&
+                    !it.className.startsWith(TEST_FACTORY) &&
+                    !it.className.endsWith(".EdgeMemory")
+            }?.let { "${it.className.substringAfterLast('.')}.${it.methodName}:${it.lineNumber}" }
+            ?: "elsewhere"
 
     override fun wrap(
         array: ByteArray,
@@ -79,6 +103,8 @@ internal class FreeCountingFactory(
     class CountedBuffer(
         private val inner: PlatformBuffer,
         val site: Site,
+        /** The core frame that allocated it. */
+        val place: String,
     ) : PlatformBuffer by inner {
         val frees = AtomicInteger()
         val firstFreedOn = AtomicReference<Thread>()
@@ -92,3 +118,6 @@ internal class FreeCountingFactory(
         override fun toString(): String = "$site(${inner.capacity} B, freed ${frees.get()}x)"
     }
 }
+
+private const val CORE = "com.ditchoom.socket.quic.core."
+private const val TEST_FACTORY = "com.ditchoom.socket.quic.core.edge.FreeCountingFactory"

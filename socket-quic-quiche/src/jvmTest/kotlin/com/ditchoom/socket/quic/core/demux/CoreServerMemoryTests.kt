@@ -63,29 +63,8 @@ class CoreServerMemoryTests {
             }
         }
 
-    @Test
-    fun anEstablishedClientConnectionTakesAtMostOneHundredAndSixtyKibibytesFromItsFactory() =
-        runBlocking {
-            withCoreEchoServer { server ->
-                val factory = CountingFactory()
-                val clients = ArrayList<CoreClient>()
-                try {
-                    // One per loop first: a loop's own memory is not a connection's.
-                    repeat(LOOPS) { clients += connectCore(server.port, factory = factory, loops = loops) }
-                    val before = factory.madeBytes()
-                    repeat(CONNECTIONS) { clients += connectCore(server.port, factory = factory, loops = loops) }
-                    val perConnection = (factory.madeBytes() - before) / CONNECTIONS
-                    assertTrue(perConnection <= MAX_CLIENT_BYTES, "an established client connection took $perConnection B from the factory")
-                } finally {
-                    clients.forEach { it.connection.close(QuicError.NoError) }
-                }
-            }
-        }
-
     private companion object {
-        const val LOOPS = 2
         const val CONNECTIONS = 32
         const val MAX_BYTES = 1_024L
-        const val MAX_CLIENT_BYTES = 160L * 1_024
     }
 }

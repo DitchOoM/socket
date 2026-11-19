@@ -7,7 +7,6 @@ import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicConnectionIdentity
 import com.ditchoom.socket.quic.SendTarget
-import com.ditchoom.socket.quic.core.conn.ClientSession
 import com.ditchoom.socket.quic.core.conn.Conn
 import com.ditchoom.socket.quic.core.conn.ConnAddress
 import com.ditchoom.socket.quic.core.conn.ConnMemory
@@ -17,18 +16,16 @@ import com.ditchoom.socket.quic.core.conn.buildConn
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.loop.Endpoint
 import com.ditchoom.socket.quic.core.loop.Route
+import com.ditchoom.socket.quic.core.loop.SharedBatch
 import com.ditchoom.socket.quic.core.loop.SocketDiedNotice
 import com.ditchoom.socket.quic.core.observe.ConnCounts
-import com.ditchoom.socket.quic.core.pool.FixedPool
 import com.ditchoom.socket.quic.core.pool.Hold
 import com.ditchoom.socket.quic.core.sched.CallerLanes
-import com.ditchoom.socket.quic.core.sched.CallerSend
 import com.ditchoom.socket.quic.core.sched.Entrant
 import com.ditchoom.socket.quic.core.sched.SendPort
 import com.ditchoom.socket.quic.core.time.RttPrior
-import com.ditchoom.socket.quic.core.udp.BatchLimits
 import com.ditchoom.socket.quic.core.udp.MAX_CACHED_TARGETS
-import com.ditchoom.socket.quic.core.udp.SendBatch
+import com.ditchoom.socket.quic.core.udp.PeerKeys
 import com.ditchoom.socket.quic.core.udp.SockAddr
 import com.ditchoom.socket.quic.trace.TraceCapture
 import com.ditchoom.socket.quic.traceRecorderFor
@@ -36,8 +33,9 @@ import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.cancel
 
 /**
- * One client connection's parts on its loop: its socket's batches and caller lanes, the connection, the endpoint that
- * carries it, and the release that frees everything once the endpoint left the loop and nobody is inside.
+ * One client connection's parts on its loop: its socket, the connection, the endpoint that carries it, and the release
+ * that frees everything once the endpoint left the loop and nobody is inside. Its output goes through the loop's batch
+ * and lanes, which the loop's connections share.
  */
 internal class ClientParts(
     private val w: ClientWiring,
@@ -52,19 +50,12 @@ internal class ClientParts(
         }
     }
 
-    private val limits = BatchLimits(maxDatagrams = MAX_BATCH, maxDatagramSize = MAX_DATAGRAM)
-    private val callerLimits = BatchLimits(maxDatagrams = CALLER_BATCH, maxDatagramSize = MAX_DATAGRAM)
-    private val send = SendBatch(w.memory.native(limits.maxDatagrams * limits.maxDatagramSize), limits)
-    private val lanes =
-        FixedPool(CALLER_LANES) { i ->
-            CallerSend(i, SendBatch(w.memory.native(callerLimits.maxDatagrams * callerLimits.maxDatagramSize), callerLimits, lane = i + 1))
-        }
+    private val lanes = w.running.lanes
     private val socketIo =
         w.socket.ioOf(
-            w.memory,
-            listOf(send.storage) + List(CALLER_LANES) { lanes[it].batch.storage },
-            limits.maxDatagrams,
+            listOf(w.running.out.first.storage) + List(lanes.size) { lanes[it].batch.storage },
             MAX_CACHED_TARGETS,
+            PeerKeys.CLIENT_SETS,
             w.running.loop.port::poke,
         )
     private val io = w.wrapIo(socketIo.io)
@@ -84,7 +75,7 @@ internal class ClientParts(
                     keepAliveRuleOf(w.options),
                 ),
             q = QuicheConnRef(w.api, w.handle),
-            side = ConnSide.Client(w.ids, w.offer, w.memory.native(ClientSession.TICKET_BYTES), w.kept, w.tokens),
+            side = ConnSide.Client(w.ids, w.offer, w.running.sessions, w.kept, w.tokens),
             address =
                 ConnAddress(
                     SockAddr(peerSockAddr.address, peerSockAddr.length),
@@ -123,7 +114,7 @@ internal class ClientParts(
         identity: QuicConnectionIdentity,
     ): CoreConnection = CoreConnection(conn, edge, factory, remote, identity, w.readPolicy, w.writePolicy, w.scope)
 
-    private val endpoint = Endpoint(socketIo.ref, io, socket, send, Route.Fixed(conn), released, w.readiness)
+    private val endpoint = Endpoint(socketIo.ref, io, socket, Route.Fixed(conn, SharedBatch(w.running.out)), released, w.readiness)
 
     /** The endpoint joins its loop and the connection's first flight goes out in the loop's next pass. */
     fun start() {
@@ -155,16 +146,6 @@ internal class ClientParts(
     ) = loop.move(endpoint, bind, prior)
 
     private companion object {
-        /** Datagrams the loop collects for the network in one pass. */
-        const val MAX_BATCH = 64
-
-        /**
-         * Lanes for threads that send in place, and the datagrams each holds. A thread that finds none free hands the
-         * send to the loop, so the count bounds memory, not correctness: on Android a direct buffer lives on the Java
-         * heap, so per-connection buffers decide how many connections a process holds.
-         */
-        const val CALLER_LANES = 2
-        const val CALLER_BATCH = 8
         const val MAX_ALPN = 255
     }
 }

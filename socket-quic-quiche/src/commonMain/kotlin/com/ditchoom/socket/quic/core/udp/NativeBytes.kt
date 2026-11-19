@@ -16,9 +16,26 @@ internal class NativeBytes private constructor(
     val address: Long,
     val capacity: Int,
     internal val owner: PlatformBuffer,
+    private val ownership: Ownership = Ownership.Owns,
 ) {
-    /** Releases the native memory. The bytes are not used afterwards. */
-    fun free() = owner.freeNativeMemory()
+    /** Releases the native memory. The bytes are not used afterwards. A [window] owns none and releases nothing. */
+    fun free() =
+        when (ownership) {
+            Ownership.Owns -> owner.freeNativeMemory()
+            Ownership.Window -> Unit
+        }
+
+    /**
+     * [length] bytes from [offset], as memory of their own for code that reads or writes by address. Freeing this memory
+     * frees the window's bytes with it; [owner] is the whole memory's buffer.
+     */
+    fun window(
+        offset: Int,
+        length: Int,
+    ): NativeBytes = NativeBytes(address + offset, length, owner, Ownership.Window)
+
+    /** Whether this memory is released when freed, or is a window into memory another one owns. */
+    private enum class Ownership { Owns, Window }
 
     /** Copies [length] bytes from [from] at [fromOffset] to this memory at [toOffset]. Allocates nothing. */
     fun copyFrom(

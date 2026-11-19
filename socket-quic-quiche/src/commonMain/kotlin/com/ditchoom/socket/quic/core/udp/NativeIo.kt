@@ -17,12 +17,14 @@ internal class NativeIo(
     sendRecords: List<NativeBytes>,
     /** The loop's receive records, [RECV_RECORD] bytes per datagram a receive may take. */
     receiveRecords: NativeBytes,
+    /** The peers whose keys the socket keeps: one for a client's, many for a server's. */
+    peers: PeerKeys = PeerKeys(PeerKeys.CLIENT_SETS),
     /** The batching the socket starts at: what its probe found. */
     first: BatchCapability = socket.capability,
 ) : DatagramBatchIo {
     private val mode = CapabilityCell(first)
     private val sending = NativeSend(shim, socket, sendRecords, mode)
-    private val receiving = NativeReceive(shim, socket, receiveRecords, mode)
+    private val receiving = NativeReceive(shim, socket, receiveRecords, mode, peers)
 
     override val capability: BatchCapability get() = mode.load()
 

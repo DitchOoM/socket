@@ -61,16 +61,17 @@ internal actual fun jdkSocketIo(
     sends: List<NativeBytes>,
     maxPeersCached: Int,
 ): SocketIo {
-    val nio = NioOneByOne(socket.socket.channel, sends.map { jdkView(it) }, socket.loop.receiveViews.views, maxPeersCached)
+    sends.forEach { requireJdkBacked(it) }
+    val nio = NioOneByOne(socket.socket.channel, sends, socket.loop.receiveViews.views, maxPeersCached)
     return SocketIo(nio, SocketRef(Supplier { nio.channel }))
 }
 
 internal actual fun descriptorRef(io: NativeIo): SocketRef = SocketRef(IntSupplier { io.descriptor() })
 
-/** The JDK view a channel reads and writes [bytes] through. */
-private fun jdkView(bytes: NativeBytes): JdkBytes =
-    when (val backed = JdkBytes.of(bytes)) {
-        is JdkBacked.Backed -> backed.bytes
+/** Fails the connect or the serve, typed, when a channel cannot write [bytes]. */
+private fun requireJdkBacked(bytes: NativeBytes) =
+    when (JdkBytes.of(bytes)) {
+        is JdkBacked.Backed -> Unit
         is JdkBacked.NotJdkBacked -> raise(Raised.FactoryNotNative(bytes.owner), QuicCloseCircumstance.HandshakeFailed)
     }
 

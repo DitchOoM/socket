@@ -6,6 +6,7 @@ import com.ditchoom.socket.quic.core.conn.Conn
 import com.ditchoom.socket.quic.core.conn.SlotRules
 import com.ditchoom.socket.quic.core.loop.Endpoint
 import com.ditchoom.socket.quic.core.loop.Loop
+import com.ditchoom.socket.quic.core.loop.OwnBatch
 import com.ditchoom.socket.quic.core.loop.Route
 import com.ditchoom.socket.quic.core.loop.startLoopThread
 import com.ditchoom.socket.quic.core.observe.ConnCounts
@@ -58,7 +59,7 @@ internal class NioEcho(
             receive = ReceiveBatch(FixedPool(limits.maxDatagrams) { receiveBuffers[it] }, limits),
             freeOnStop = Runnable { },
         )
-    private val io = NioOneByOne(server, listOf(jdk(send.storage)), receiveBuffers.map { jdk(it.bytes) })
+    private val io = NioOneByOne(server, listOf(send.storage), receiveBuffers.map { jdk(it.bytes) })
     private val socket = SendPort(io, loop.port, CallerLanes.None, RecordingWork(), loop.counts, loop.callerCounts)
     val conn: Conn =
         testConn(
@@ -75,7 +76,7 @@ internal class NioEcho(
     val thread: Thread
 
     init {
-        loop.place(Endpoint(SocketRef(server), io, socket, send, Route.Fixed(conn), Runnable { }))
+        loop.place(Endpoint(SocketRef(server), io, socket, Route.Fixed(conn, OwnBatch(send)), Runnable { }))
         conn.start()
         thread = startLoopThread(loop, threadName)
     }

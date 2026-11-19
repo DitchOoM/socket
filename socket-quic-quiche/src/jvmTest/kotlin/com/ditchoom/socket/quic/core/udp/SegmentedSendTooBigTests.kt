@@ -112,7 +112,7 @@ class SegmentedSendTooBigTests {
                 socket,
                 listOf(native(NativeIo.SEND_RECORD * BATCH)),
                 native(NativeIo.RECV_RECORD * NativeIo.MAX_RECEIVE),
-                BatchCapability.Segmented(BATCH, Gso.On(BATCH), Gro.Off),
+                first = BatchCapability.Segmented(BATCH, Gso.On(BATCH), Gro.Off),
             )
         opened.add(io)
         return io

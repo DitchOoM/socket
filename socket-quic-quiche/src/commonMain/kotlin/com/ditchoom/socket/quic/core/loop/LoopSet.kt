@@ -4,8 +4,10 @@ package com.ditchoom.socket.quic.core.loop
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.socket.quic.SocketRefusal
+import com.ditchoom.socket.quic.core.conn.ClientSession
 import com.ditchoom.socket.quic.core.conn.FlightArena
 import com.ditchoom.socket.quic.core.conn.LoopMemory
+import com.ditchoom.socket.quic.core.conn.SessionScratch
 import com.ditchoom.socket.quic.core.observe.LoopCounts
 import com.ditchoom.socket.quic.core.observe.Published
 import com.ditchoom.socket.quic.core.pool.FixedPool
@@ -15,6 +17,7 @@ import com.ditchoom.socket.quic.core.ready.NetStack
 import com.ditchoom.socket.quic.core.ready.PollerOpened
 import com.ditchoom.socket.quic.core.ready.jdkPoller
 import com.ditchoom.socket.quic.core.ready.netStackOfThisRuntime
+import com.ditchoom.socket.quic.core.sched.CallerSend
 import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.MonotonicClock
 import com.ditchoom.socket.quic.core.time.WaitResolution
@@ -24,21 +27,29 @@ import com.ditchoom.socket.quic.core.udp.NativeBytes
 import com.ditchoom.socket.quic.core.udp.NativeIo
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.ReceiveBuffer
+import com.ditchoom.socket.quic.core.udp.SendBatch
 import kotlinx.coroutines.Runnable
 import kotlin.concurrent.atomics.AtomicArray
 import kotlin.concurrent.atomics.AtomicInt
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.concurrent.atomics.fetchAndIncrement
 
-/** A loop on its thread, with what its sockets receive through and the memory its connections share. */
+/**
+ * A loop on its thread, with what its sockets receive through and the memory its connections share: the batch the loop
+ * collects their output into and the lanes threads that are not the loop send from.
+ */
 internal class RunningLoop(
     val loop: Loop,
     val io: LoopIo,
     val shared: LoopMemory,
-    /** Held by the loop until it stops and by each connection until its memory is freed; frees [shared]. */
+    /** Held by the loop until it stops and by each connection until its memory is freed; frees [shared], [out] and [lanes]. */
     val hold: MemoryHold,
     /** How finely the loop's timed waits wake: what its connections pace within. */
     val waits: WaitResolution,
+    val out: LoopSend,
+    val lanes: FixedPool<CallerSend>,
+    /** What its client connections copy a session ticket or token through. */
+    val sessions: FixedPool<SessionScratch>,
 )
 
 /** What [LoopSet.place] answers. */
@@ -147,54 +158,54 @@ internal class LoopSet(
         seen: Slot,
         factory: BufferFactory,
     ): Placement {
+        val memory = LoopAllocation(factory)
         val limits = BatchLimits(maxDatagrams = RECEIVE_BATCH, maxDatagramSize = MAX_DATAGRAM)
-        val buffers = ArrayList<ReceiveBuffer>(limits.maxDatagrams)
-        for (i in 0 until limits.maxDatagrams) {
-            when (val a = NativeBytes.of(factory.allocate(limits.maxDatagramSize))) {
-                is Addressed.Native -> buffers.add(ReceiveBuffer(i, a.bytes))
-                is Addressed.NotAddressable -> return freed(buffers, emptyList(), Placement.NotJdkMemory)
-            }
-        }
+        val buffers =
+            List(limits.maxDatagrams) { ReceiveBuffer(it, memory.need(MAX_DATAGRAM) { return memory.freed(Placement.NotJdkMemory) }) }
+        val sendBytes = memory.need(SEND_BYTES) { return memory.freed(Placement.NotJdkMemory) }
+        val laneBytes = List(LOOP_LANES) { memory.need(LANE_BYTES) { return memory.freed(Placement.NotJdkMemory) } }
         val io =
             when (stack) {
                 is NetStack.Jdk ->
                     when (val made = jdkViewsOf(stack, buffers)) {
                         is JdkViewsMade.Made -> LoopIo.Jdk(made.views)
-                        is JdkViewsMade.NotJdkMemory -> return freed(buffers, emptyList(), Placement.NotJdkMemory)
+                        is JdkViewsMade.NotJdkMemory -> return memory.freed(Placement.NotJdkMemory)
                     }
                 is NetStack.Native ->
-                    when (val a = NativeBytes.of(factory.allocate(NativeIo.RECV_RECORD * NativeIo.MAX_RECEIVE))) {
-                        is Addressed.Native -> LoopIo.Native(stack.shim, a.bytes)
-                        is Addressed.NotAddressable -> return freed(buffers, emptyList(), Placement.NotJdkMemory)
-                    }
+                    LoopIo.Native(
+                        stack.shim,
+                        memory.need(NativeIo.RECV_RECORD * NativeIo.MAX_RECEIVE) { return memory.freed(Placement.NotJdkMemory) },
+                        List(1 + LOOP_LANES) {
+                            val datagrams = if (it == 0) SEND_LIMITS.maxDatagrams else LANE_LIMITS.maxDatagrams
+                            memory.need(NativeIo.SEND_RECORD * datagrams) { return memory.freed(Placement.NotJdkMemory) }
+                        },
+                    )
             }
+        val copies = List(LoopMemory.COPY_SLOTS) { memory.need(MAX_DATAGRAM) { return memory.freed(Placement.NotJdkMemory) } }
+        val drains = List(LoopMemory.DRAIN_SLOTS) { memory.need(LoopMemory.DRAIN_BYTES) { return memory.freed(Placement.NotJdkMemory) } }
+        val arena = memory.need(flightArenaBytes) { return memory.freed(Placement.NotJdkMemory) }
+        val sessionBytes =
+            List(ClientSession.SCRATCH_SLOTS) { memory.need(ClientSession.TICKET_BYTES) { return memory.freed(Placement.NotJdkMemory) } }
         val poller =
             when (stack) {
                 is NetStack.Jdk -> jdkPoller(clock, stack)
                 is NetStack.Native ->
                     when (val opened = NativePoller.open(stack.shim, clock, READY_EVENTS)) {
                         is PollerOpened.Opened -> opened.poller
-                        is PollerOpened.Refused -> return freed(buffers, ioBytes(io), Placement.PollerRefused(opened.refusal))
+                        is PollerOpened.Refused -> return memory.freed(Placement.PollerRefused(opened.refusal))
                     }
             }
-        val sharedBytes = ArrayList<NativeBytes>(LoopMemory.COPY_SLOTS + LoopMemory.DRAIN_SLOTS + 1)
-        val sizes = List(LoopMemory.COPY_SLOTS) { MAX_DATAGRAM } + List(LoopMemory.DRAIN_SLOTS) { LoopMemory.DRAIN_BYTES }
-        for (size in sizes + flightArenaBytes) {
-            when (val a = NativeBytes.of(factory.allocate(size))) {
-                is Addressed.Native -> sharedBytes.add(a.bytes)
-                is Addressed.NotAddressable -> {
-                    poller.close()
-                    return freed(buffers, sharedBytes + ioBytes(io), Placement.NotJdkMemory)
-                }
-            }
-        }
-        val shared =
-            LoopMemory(
-                sharedBytes.subList(0, LoopMemory.COPY_SLOTS),
-                sharedBytes.subList(LoopMemory.COPY_SLOTS, LoopMemory.COPY_SLOTS + LoopMemory.DRAIN_SLOTS),
-                FlightArena(sharedBytes.last()),
+        val out = LoopSend(SendBatch(sendBytes, SEND_LIMITS), SpareSource { spareOf(factory) })
+        val receiveBytes = buffers.map { it.bytes }
+        // The receive buffers are the loop's alone, freed when it stops; the rest is shared with its connections.
+        val sharedBytes = memory.all().filter { bytes -> bytes !== sendBytes && receiveBytes.none { it === bytes } }
+        val hold =
+            MemoryHold(
+                Runnable {
+                    sharedBytes.forEach { it.free() }
+                    out.free()
+                },
             )
-        val hold = MemoryHold(Runnable { (sharedBytes + ioBytes(io)).forEach { it.free() } })
         val id = LoopIds.next()
         val name = "$THREAD_PREFIX-$id"
         val loop =
@@ -206,11 +217,21 @@ internal class LoopSet(
                 receive = ReceiveBatch(FixedPool(limits.maxDatagrams) { buffers[it] }, limits),
                 freeOnStop =
                     Runnable {
-                        buffers.forEach { it.bytes.free() }
+                        receiveBytes.forEach { it.free() }
                         hold.founding.release()
                     },
             )
-        val running = RunningLoop(loop, io, shared, hold, waitsOf(stack))
+        val running =
+            RunningLoop(
+                loop = loop,
+                io = io,
+                shared = LoopMemory(copies, drains, FlightArena(arena)),
+                hold = hold,
+                waits = waitsOf(stack),
+                out = out,
+                lanes = FixedPool(LOOP_LANES) { CallerSend(it, SendBatch(laneBytes[it], LANE_LIMITS, lane = it + 1)) },
+                sessions = FixedPool(sessionBytes.size) { SessionScratch(it, sessionBytes[it]) },
+            )
         if (!slots.compareAndSetAt(index, seen, Slot.Running(running))) {
             loop.close(Runnable { })
             startLoop(loop, name)
@@ -221,16 +242,6 @@ internal class LoopSet(
         return Placement.Placed(running)
     }
 
-    private fun freed(
-        buffers: List<ReceiveBuffer>,
-        shared: List<NativeBytes>,
-        answer: Placement,
-    ): Placement {
-        buffers.forEach { it.bytes.free() }
-        shared.forEach { it.free() }
-        return answer
-    }
-
     companion object {
         /** The loops every client connection shares unless it is given a set of its own. */
         val shared = LoopSet(DEFAULT_CLIENT_LOOPS)
@@ -239,12 +250,6 @@ internal class LoopSet(
         const val THREAD_PREFIX = "quic-core-client"
     }
 }
-
-private fun ioBytes(io: LoopIo): List<NativeBytes> =
-    when (io) {
-        is LoopIo.Jdk -> emptyList()
-        is LoopIo.Native -> listOf(io.receiveRecords)
-    }
 
 /** How finely a loop on [stack] wakes on a timed wait. */
 internal fun waitsOf(stack: NetStack): WaitResolution =
@@ -269,3 +274,51 @@ private const val RECEIVE_BATCH = 64
 /** The ready sockets one native wait reports: as many as the loop's ready-token array holds. */
 private const val READY_EVENTS = 256
 private const val MAX_DATAGRAM = 1500
+
+/** Datagrams the loop collects for the network in one serve: the batch its connections share, one serve at a time. */
+private val SEND_LIMITS = BatchLimits(maxDatagrams = 64, maxDatagramSize = MAX_DATAGRAM)
+private val SEND_BYTES = SEND_LIMITS.maxDatagrams * SEND_LIMITS.maxDatagramSize
+
+/**
+ * Lanes for threads that send in place, shared by the loop's connections. A thread that finds none free hands its send
+ * to the loop, so the count bounds memory, not correctness. A lane is one of the pool's size classes, filled with datagrams.
+ */
+private const val LOOP_LANES = 8
+private const val LANE_BYTES = 16 * 1024
+private val LANE_LIMITS = BatchLimits(maxDatagrams = LANE_BYTES / MAX_DATAGRAM, maxDatagramSize = MAX_DATAGRAM)
+
+/** A spare batch for a loop's [LoopSend], from the factory its first connection brought. */
+private fun spareOf(factory: BufferFactory): SpareMade =
+    try {
+        when (val made = NativeBytes.of(factory.allocate(SEND_BYTES))) {
+            is Addressed.Native -> SpareMade.Made(SendBatch(made.bytes, SEND_LIMITS))
+            is Addressed.NotAddressable -> SpareMade.Refused
+        }
+    } catch (refused: Exception) {
+        SpareMade.Refused
+    }
+
+/** The native memory a loop starts with, freed together if the start fails part way. */
+private class LoopAllocation(
+    private val factory: BufferFactory,
+) {
+    private val made = ArrayList<NativeBytes>()
+
+    /** [size] bytes, or [otherwise] when the factory's memory has no address. */
+    inline fun need(
+        size: Int,
+        otherwise: () -> Nothing,
+    ): NativeBytes =
+        when (val a = NativeBytes.of(factory.allocate(size))) {
+            is Addressed.Native -> a.bytes.also { made.add(it) }
+            is Addressed.NotAddressable -> otherwise()
+        }
+
+    fun all(): List<NativeBytes> = made
+
+    fun freed(answer: Placement): Placement {
+        made.forEach { it.free() }
+        made.clear()
+        return answer
+    }
+}

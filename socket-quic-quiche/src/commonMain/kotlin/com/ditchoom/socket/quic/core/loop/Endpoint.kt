@@ -23,7 +23,6 @@ import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.ReceiveBatchResult
 import com.ditchoom.socket.quic.core.udp.Reopened
-import com.ditchoom.socket.quic.core.udp.SendBatch
 import com.ditchoom.socket.quic.core.udp.SocketFault
 import com.ditchoom.socket.quic.core.udp.Thrown
 import kotlinx.coroutines.Runnable
@@ -36,7 +35,6 @@ internal class Endpoint(
     val socketRef: SocketRef,
     private val io: DatagramBatchIo,
     private val socket: SendPort,
-    private val send: SendBatch,
     private val route: Route,
     /** Runs on the loop once the socket has left it, after the connection ended and its last output went out. */
     private val onLeft: Runnable,
@@ -49,6 +47,11 @@ internal class Endpoint(
     private var interest = WriteInterest.None
     private var relocating: Relocating = Relocating.No
     private val closing = SocketClose(io, socket)
+    private val out: Outbox =
+        when (route) {
+            is Route.Fixed -> route.out
+            is Route.Demux -> route.out
+        }
 
     fun placed(token: Int) {
         this.token = token
@@ -84,7 +87,7 @@ internal class Endpoint(
             is Route.Demux -> {
                 route.demux.passBegins()
                 receiveWaiting(batch, counts, at)
-                while (budget.state() == Budget.Left && route.demux.admitSome(send) == Admitted.More) {
+                while (budget.state() == Budget.Left && route.demux.admitSome(route.out.batch()) == Admitted.More) {
                     input = ReceiveInput.Maybe
                     receiveWaiting(batch, counts, at)
                 }
@@ -133,6 +136,7 @@ internal class Endpoint(
     ): Stay {
         noticeDeath()
         if (phase == Phase.Live) socket.flushWaiting()
+        val send = out.batch()
         while (true) {
             val collected =
                 when (route) {
@@ -147,8 +151,9 @@ internal class Endpoint(
             }
             if (collected != Collected.MoreWaiting || send.pending > 0) break
         }
+        out.served()
         noticeDeath()
-        if (connEnded() && (send.pending == 0 || phase != Phase.Live) && !socket.hasWaiting()) {
+        if (connEnded() && (!out.holds() || phase != Phase.Live) && !socket.hasWaiting()) {
             when (phase) {
                 Phase.Gone -> Unit
                 Phase.Live, Phase.Dead ->
@@ -163,6 +168,7 @@ internal class Endpoint(
                     }
             }
             if (phase == Phase.Gone) {
+                out.left()
                 onLeft.run()
                 return Stay.Left
             }
@@ -237,6 +243,7 @@ internal class Endpoint(
             leave(poller)
             closing.stopped()
         }
+        out.left()
         onLeft.run()
     }
 
@@ -245,6 +252,7 @@ internal class Endpoint(
         endConn(end)
         phase = Phase.Gone
         closing.stopped()
+        out.left()
         onLeft.run()
     }
 
@@ -272,14 +280,14 @@ internal class Endpoint(
             is Route.Fixed -> for (i in 0 until batch.count) {
                 route.conn.received(batch.bufferAt(i).bytes, batch.lengthAt(i), batch.fromAt(i), at)
             }
-            is Route.Demux -> traced(TraceSection.Demux) { route.demux.route(batch, send, at) }
+            is Route.Demux -> traced(TraceSection.Demux) { route.demux.route(batch, route.out.batch(), at) }
         }
         batch.release()
     }
 
     private fun refreshInterest(poller: Poller) {
         val wanted =
-            if (phase == Phase.Live && (send.pending > 0 || socket.hasWaiting())) WriteInterest.Wanted else WriteInterest.None
+            if (phase == Phase.Live && (out.holds() || socket.hasWaiting())) WriteInterest.Wanted else WriteInterest.None
         if (wanted == interest) return
         interest = wanted
         poller.interest(token, wanted)

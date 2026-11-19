@@ -15,6 +15,7 @@ import com.ditchoom.socket.quic.core.udp.NativeBytes
 import com.ditchoom.socket.quic.core.udp.NativeIo
 import com.ditchoom.socket.quic.core.udp.NativeOpened
 import com.ditchoom.socket.quic.core.udp.NativeSocket
+import com.ditchoom.socket.quic.core.udp.PeerKeys
 import com.ditchoom.socket.quic.core.udp.SocketBuffers
 import com.ditchoom.socket.quic.core.udp.SocketPeer
 import com.ditchoom.socket.quic.isWildcard
@@ -87,22 +88,20 @@ internal class SocketIo(
 )
 
 /**
- * The io of [this] socket over the send batches in [sends] (the loop's batch first, then each caller lane's, by lane),
- * as [memory] holds them. A server's socket keeps up to [maxPeersCached] reply addresses on the JDK stack. A socket
- * that reports by completion calls [wake] when the loop has news to read.
+ * The io of [this] socket over the send batches in [sends] (the loop's batch first, then each caller lane's, by lane). A
+ * server's socket keeps up to [maxPeersCached] reply addresses on the JDK stack, and the keys of [peerSets] pairs of
+ * recent senders on the native stack. A socket that reports by completion calls [wake] when the loop has news to read.
  */
 internal fun StackSocket.ioOf(
-    memory: EdgeMemory,
     sends: List<NativeBytes>,
-    maxDatagrams: Int,
     maxPeersCached: Int,
+    peerSets: Int,
     wake: () -> Unit,
 ): SocketIo =
     when (this) {
         is StackSocket.Jdk -> jdkSocketIo(this, sends, maxPeersCached)
         is StackSocket.Native -> {
-            val records = List(sends.size) { memory.native(NativeIo.SEND_RECORD * maxDatagrams) }
-            val native = NativeIo(loop.shim, socket, records, loop.receiveRecords)
+            val native = NativeIo(loop.shim, socket, loop.sendRecords, loop.receiveRecords, PeerKeys(peerSets))
             SocketIo(native, descriptorRef(native))
         }
         is StackSocket.Network -> nwSocketIo(this, wake)

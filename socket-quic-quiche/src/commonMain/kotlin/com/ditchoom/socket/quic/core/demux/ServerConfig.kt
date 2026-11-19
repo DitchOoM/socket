@@ -42,8 +42,9 @@ internal class AdmissionBounds(
     /** Handshakes begun and not yet complete, in total. */
     val inProgress: Int,
     /**
-     * Initials the server holds, so a small kernel receive buffer never has to. Allocated up front at one 1,500-byte
-     * slot each: the default is 6 MiB of native memory per server.
+     * Initials the server holds, so a small kernel receive buffer never has to: 1,500-byte slots, packed
+     * [InitialBacklog.SLOTS_PER_CHUNK] to a 128 KiB chunk. The server starts with one chunk and takes more only while
+     * Initials wait past it, keeping the most a wave needed: the default reaches 6 MiB of native memory at most.
      */
     val backlog: Int = DEFAULT_BACKLOG,
 ) {

@@ -17,9 +17,9 @@ internal class NativeReceive(
     /** The loop's receive records, [NativeIo.RECV_RECORD] bytes per datagram a receive may take. */
     private val receiveRecords: NativeBytes,
     private val mode: CapabilityCell,
+    private val peers: PeerKeys,
 ) {
     private val held = ArrayList<ReceiveBuffer>(NativeIo.MAX_RECEIVE)
-    private var lastFrom: Sender = Sender.None
     private var lastAt: ArrivedOn = ArrivedOn.Unreported
 
     fun receive(into: ReceiveBatch): ReceiveBatchResult {
@@ -65,27 +65,13 @@ internal class NativeReceive(
             is Receiving.PerDatagram -> shim.udpRecv(fd, modeOf(mode.load()), receiveRecords.address, count, size)
         }
 
-    /** One peer usually sends a run of datagrams: its key is built once per run. */
-    private fun keyAt(offset: Int): PathKey {
-        val family = receiveRecords.intAt(offset)
-        val port = receiveRecords.intAt(offset + 4)
-        val hi = receiveRecords.longAt(offset + 8)
-        val lo = receiveRecords.longAt(offset + 16)
-        when (val last = lastFrom) {
-            is Sender.Seen ->
-                if (last.key.family == family &&
-                    last.key.port == port &&
-                    last.key.hi == hi &&
-                    last.key.lo == lo
-                ) {
-                    return last.key
-                }
-            is Sender.None -> Unit
-        }
-        val key = PathKey(family, port, hi, lo)
-        lastFrom = Sender.Seen(key)
-        return key
-    }
+    private fun keyAt(offset: Int): PathKey =
+        peers.keyOf(
+            receiveRecords.intAt(offset),
+            receiveRecords.intAt(offset + 4),
+            receiveRecords.longAt(offset + 8),
+            receiveRecords.longAt(offset + 16),
+        )
 
     /**
      * The local address the datagram was sent to, on the socket's port, when `qnet` reports it (a wildcard server's
@@ -105,14 +91,6 @@ internal class NativeReceive(
             is ArrivedOn.Unreported -> Unit
         }
         return ArrivedOn.At(PathKey(family, port, hi, lo)).also { lastAt = it }
-    }
-
-    private sealed interface Sender {
-        data object None : Sender
-
-        class Seen(
-            val key: PathKey,
-        ) : Sender
     }
 
     private companion object {
