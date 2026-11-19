@@ -14,9 +14,17 @@ private val SYSTEM_BUNDLES =
         "/etc/ssl/cert.pem", // Alpine/BusyBox
     )
 
+/** The hashed directories, for a host that keeps no bundle file. */
+private val SYSTEM_DIRECTORIES =
+    listOf(
+        "/etc/ssl/certs", // Debian-style
+        "/etc/pki/tls/certs", // RHEL-style
+        "/etc/pki/ca-trust/extracted/pem/directory-hash", // Fedora's extracted store
+    )
+
 /**
- * The first system bundle present. With none, BoringSSL's compiled-in default paths stay, which a container may lack:
- * the handshake then fails verification, typed.
+ * The system store, chosen once: a bundle file, else a hashed directory. A host with neither is refused with
+ * [NoTrustAnchorsException]; the handshake never runs against an empty store.
  */
 internal actual fun loadDefaultTrustAnchors(
     api: QuicheApi,
@@ -24,6 +32,9 @@ internal actual fun loadDefaultTrustAnchors(
     quicOptions: QuicOptions,
     bufferFactory: BufferFactory,
 ) {
-    val bundle = SYSTEM_BUNDLES.firstOrNull { access(it, F_OK) == 0 } ?: return
-    loadAnchorFile(api, config, bundle, bufferFactory)
+    when (val store = systemTrustStore({ access(it, F_OK) == 0 }, SYSTEM_BUNDLES, SYSTEM_DIRECTORIES)) {
+        is SystemTrustStore.BundleFile -> loadAnchorFile(api, config, store.path, bufferFactory)
+        is SystemTrustStore.HashedDirectory -> loadAnchorDirectory(api, config, store.path, bufferFactory)
+        is SystemTrustStore.None -> throw NoTrustAnchorsException(store.searched)
+    }
 }

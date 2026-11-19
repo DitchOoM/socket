@@ -938,6 +938,16 @@ interface QuicheApi {
         pathAddr: Long,
     ): Int
 
+    /**
+     * Load every CA certificate of a hashed directory (`c_rehash` layout) as verification anchors
+     * (`quiche_config_load_verify_locations_from_directory`). [pathAddr] is the native address of a NUL-terminated
+     * path string. Returns 0 on success, negative on error.
+     */
+    fun configLoadVerifyLocationsFromDirectory(
+        config: QuicheConfig,
+        pathAddr: Long,
+    ): Int
+
     fun headerInfo(
         buf: Long,
         bufLen: Int,
