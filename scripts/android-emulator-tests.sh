@@ -140,12 +140,23 @@ fi
 #     serial, so `android.experimental.testOptions.installApkTimeout` has no effect. The ADB
 #     INSTALL GUARD below handles a stalled install first (record, kill, one pushed retry, at most
 #     ~3 min); this threshold is the backstop for when that did not end it.
-#   * the script has run for TEST_BUDGET_S. Green runs of this whole step take 5.6-8.3 min,
-#     emulator boot included.
+#   * no test has started or finished for TEST_STALL_S. The longest test gives itself 120 s of
+#     echoes; the longest gap between test events on the slowest API 29 runner seen (run
+#     44484652562) was 54 s.
+#   * the script has run for TEST_BUDGET_S: until the step's deadline (ANDROID_TESTS_STEP_DEADLINE,
+#     set by the workflow) less CAPTURE_MARGIN_S, so a run that is slow but progressing finishes on a
+#     slow runner. Green runs took 512-650 s after boot on API 29; the run above, on a runner 1.3x
+#     slower by its own CORE-CPU line, was still finishing tests when a fixed 660 s ended it.
 # Then the device, host and test engine are captured to $HANG_FILE, a ::error:: annotation says
 # what was hung, and Gradle is stopped. The script then shuts the emulator down as usual and fails.
+# shellcheck source=scripts/android-test-watchdog.sh
+source "$(dirname "${BASH_SOURCE[0]}")/android-test-watchdog.sh"
 INSTALL_STALL_S="${ANDROID_INSTALL_STALL_S:-300}"
-TEST_BUDGET_S="${ANDROID_TEST_BUDGET_S:-660}"
+TEST_STALL_S="${ANDROID_TEST_STALL_S:-300}"
+# The capture, Gradle's stop and the emulator shutdown after a hang: up to about 2 min.
+CAPTURE_MARGIN_S=150
+TEST_BUDGET_S=$(test_run_budget "${ANDROID_TESTS_STEP_DEADLINE:-}" "$(date +%s)" "$CAPTURE_MARGIN_S" "${ANDROID_TEST_BUDGET_S:-660}")
+TEST_BUDGET_S=$((SECONDS + TEST_BUDGET_S))
 HANG_FILE="emulator-diagnostics/test-run-hang-api${API_LEVEL}.txt"
 GRADLE_OUT_FILE="emulator-diagnostics/gradle-connected-api${API_LEVEL}.txt"
 TEST_RUN_HUNG=0
@@ -250,15 +261,21 @@ capture_hang() {
 
 # Watches Gradle (pid $1) until it exits or is declared hung. On a hang: capture, annotate, stop it.
 watch_test_run() {
-  local gradle_pid="$1" install_age install_cmd why test
+  local gradle_pid="$1" install_age install_cmd why events seen=-1 progressed=$SECONDS
   while kill -0 "$gradle_pid" 2>/dev/null; do
     why=""
+    install_age=""
     read -r install_age install_cmd < <(running_installs | head -1) || true
+    events=$(test_run_events "$LOGCAT_FILE")
+    # An install is bounded by INSTALL_STALL_S, so the stall clock waits while one runs.
+    if [ "$events" != "$seen" ] || [ -n "${install_age:-}" ]; then
+      seen=$events
+      progressed=$SECONDS
+    fi
     if [ -n "${install_age:-}" ] && [ "$install_age" -ge "$INSTALL_STALL_S" ]; then
       why="an APK install has not finished after ${install_age}s: ${install_cmd##* }"
-    elif [ "$SECONDS" -ge "$TEST_BUDGET_S" ]; then
-      test=$(running_test)
-      why="still running after ${SECONDS}s (budget ${TEST_BUDGET_S}s). Running test: ${test:-none}"
+    else
+      why=$(test_run_hang "$SECONDS" $((SECONDS - progressed)) "$TEST_STALL_S" "$TEST_BUDGET_S" "$(running_test)")
     fi
     if [ -n "$why" ]; then
       TEST_RUN_HUNG=1

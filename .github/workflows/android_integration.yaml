@@ -33,11 +33,10 @@ jobs:
   android-emulator:
     runs-on: ubuntu-latest
     needs: version
-    # 25, not 15: a passing run already takes ~14m58s (emulator boot + KVM-accelerated
-    # instrumented tests), so a 15-min cap tips a healthy run into a "cancelled" timeout on
-    # any normal runner-speed jitter. 25 leaves comfortable headroom while still bounding a
-    # genuine hang (e.g. an emulator that never boots).
-    timeout-minutes: 25
+    # The steps before `run tests` take ~6.5 min and the ones after it under 1, so 30 holds a
+    # run-tests step of RUN_TESTS_MINUTES while still bounding a genuine hang (e.g. an emulator
+    # that never boots).
+    timeout-minutes: 30
     # ANDROID_EMULATOR_WAIT_TIME_BEFORE_KILL is deliberately NOT set job-wide — see the `run tests`
     # step, which is the only step where force-killing the emulator is safe. Setting it here also
     # applied it to the create-AVD step, whose entire purpose is to let the emulator WRITE a
@@ -58,6 +57,8 @@ jobs:
       # native build, so without this the run test step compiled arm64-v8a and armeabi-v7a through
       # cargo-ndk as well (~2.5 minutes) for libraries no test loads. build-linux builds all ABIs.
       ORG_GRADLE_PROJECT_quicheAndroidAbis: x86_64
+      # The `run tests` step's timeout; its watchdog's deadline follows it.
+      RUN_TESTS_MINUTES: 20
     strategy:
       # Each API level is an independent signal — an API-35-only regression must not cancel the 29 lane
       # (or vice versa) before it reports, or the matrix tells us less than the single lane did.
@@ -296,22 +297,25 @@ jobs:
           pre-emulator-launch-script: bash scripts/android-sdk-emulator.sh verify ${{ matrix.api-level }}
           script: echo "Generated the AVD + boot snapshot this job's test step will reuse."
 
+      # The run-tests step's deadline, for the script's watchdog to stop a run, capture it and shut
+      # the emulator down before the step's own timeout ends it with nothing captured.
+      - name: run-tests deadline
+        run: echo "ANDROID_TESTS_STEP_DEADLINE=$(( $(date +%s) + RUN_TESTS_MINUTES * 60 ))" >> "$GITHUB_ENV"
+
       - name: run tests
         # Bounded well below the job budget so a HANG fails this step while the job still has time
-        # to run the capture steps below. Without it the only bound is `timeout-minutes: 25` on the
-        # job, and a hung test consumes all of it — then the job is CANCELLED, which is not
-        # `failure()`, so every upload is skipped and the hang leaves nothing to read (#417). That
-        # is not hypothetical: DeviceHandoffProbe once stalled both lanes at 69/153 and produced no
+        # to run the capture steps below. Without it the only bound is the job's timeout-minutes, and
+        # a hung test consumes all of it — then the job is CANCELLED, which is not `failure()`, so
+        # every upload is skipped and the hang leaves nothing to read (#417). That is not
+        # hypothetical: DeviceHandoffProbe once stalled both lanes at 69/153 and produced no
         # artifacts at all.
         #
-        # This timeout is now the backstop. The script's own watchdog (WATCHDOG in
-        # scripts/android-emulator-tests.sh) declares a hang first, when an APK install has run for
-        # 5 min or the script has run for 11 min. It then captures the device, host and test engine,
-        # stops Gradle and shuts the emulator down, which takes up to ~2 more min. 15 leaves room for
-        # that plus the emulator boot before the script. Green runs of this step took 5.6-8.3 min
-        # (48 job-runs on AGP 9.5.1, all four API levels); a stalled install that the adb install
-        # guard recovers adds about 2 min.
-        timeout-minutes: 15
+        # This timeout is the backstop. The script's own watchdog (WATCHDOG in
+        # scripts/android-emulator-tests.sh) declares a hang first: an APK install running for 5 min,
+        # no test started or finished for 5 min, or the deadline above less the ~2 min the capture,
+        # Gradle's stop and the emulator shutdown take. Green API 29 runs took 8.5-10.8 min of
+        # script time; RUN_TESTS_MINUTES leaves a runner 1.5x slower room to finish.
+        timeout-minutes: ${{ fromJSON(env.RUN_TESTS_MINUTES) }}
         uses: reactivecircus/android-emulator-runner@v2
         # Safe to force-kill HERE and nowhere else: this step runs with `-no-snapshot-save`, so the
         # emulator has nothing to flush on shutdown and waiting 20s for a graceful exit is pure
