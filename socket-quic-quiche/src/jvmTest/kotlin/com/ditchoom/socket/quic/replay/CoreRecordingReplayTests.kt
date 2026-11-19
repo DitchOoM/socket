@@ -339,6 +339,45 @@ class CoreRecordingReplayTests {
         assertEquals("bb", assertIs<RecordedClose.Sent>(RecordedClose.of(listOf(ack, close, closing))).hex)
     }
 
+    /**
+     * A replay whose timer fell due after every recorded firing near it ran that timer at a later recorded firing, and its
+     * report says so: the due time, the recorded firing it just missed, and where it ran instead (CI FFM: a probe due at
+     * 185.05 ms, the recorded firing at 182.16 ms, the replay's probe never sent by 186.8 ms).
+     */
+    @Test
+    fun aReportNamesTheTimerThatMissedItsRecordedFiring() {
+        val schedule =
+            CaptureSchedule(
+                name = "timer",
+                ours = QuicRole.Client,
+                alpn = "h3",
+                ourTransport = TransportSetup(),
+                peerTransport = TransportSetup(),
+                peerPackets = PeerPackets.AsQuiche,
+                steps = emptyList(),
+                established = Moment.Never,
+                end = ConnectionEnd.Open,
+                runsFor = Duration.ZERO,
+                tolerance = SendTimeTolerance(),
+            )
+        val report =
+            ReplayReport(
+                schedule = schedule,
+                course = Course.FollowedCapture,
+                established = Moment.Never,
+                end = ConnectionEnd.Open,
+                sent = emptyList(),
+                peerRead = emptyList(),
+                standInGaps = emptyList(),
+                acksNotSent = emptyList(),
+                acksUncaptured = 0,
+                ranFor = Duration.ZERO,
+                timersThatMissed = listOf(TimerMissed(due = 185.milliseconds, recorded = 182.milliseconds, ranAt = 307.milliseconds)),
+            )
+        val described = report.describe()
+        assertTrue("due 185ms" in described && "recorded firing 182ms" in described && "ran at 307ms" in described, described)
+    }
+
     /** Replays [schedule] twice and holds the replay to the recording: followed whole, ended as recorded, identical. */
     private suspend fun assertFollowedWholeTwice(schedule: CaptureSchedule) {
         val first = replayCapture(jvmMigrationSimEnv(), schedule)
