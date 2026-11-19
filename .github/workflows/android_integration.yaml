@@ -30,13 +30,173 @@ jobs:
   version:
     uses: ./.github/workflows/compute-ci-version.yaml
 
+  # The inputs every Android lane shares, built ONCE per run instead of once per lane: the x86_64
+  # Android natives (the emulator's ABI), and the quic-echo fat jar with the host libquiche.so it
+  # carries. Each lane used to rebuild both (2-3 min each, four lanes and the benchmark job), because
+  # the lanes ran concurrently and every one of them missed the cache before any of them saved it.
+  # This job is the single writer of both caches (the rule in .github/actions/linux-quiche-env); the
+  # lanes only take the artifact. The artifact keeps the dotfile build markers (include-hidden-files),
+  # the same trap build-linux.yaml's `natives` job documents.
+  natives:
+    name: "Android lane inputs (natives + quic-echo jar)"
+    runs-on: ubuntu-latest
+    needs: version
+    timeout-minutes: 25
+    env:
+      ORG_GRADLE_PROJECT_version: ${{ needs.version.outputs.version }}
+      ORG_GRADLE_PROJECT_linuxTargets: "false"
+      ORG_GRADLE_PROJECT_quicheAndroidAbis: x86_64
+    steps:
+      - name: checkout
+        uses: actions/checkout@v7
+      - name: Set up JDK 21
+        uses: actions/setup-java@v6
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+
+      - name: Restore Gradle wrapper distribution
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.gradle/wrapper
+          key: gradle-wrapper-linux-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+
+      # The Gradle dependency cache; restore-only, written by native-deps-freshness.yaml's `cache-warm`
+      # and build-linux.yaml's `natives` (see the same step in the lane jobs' history).
+      - name: Restore Gradle dependency cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.gradle/caches
+          key: gradle-linux-${{ hashFiles('gradle/libs.versions.toml', '**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-linux-
+
+      # The toolchain is pinned, not `stable`: the Android cache key below includes the compiler
+      # version, so a floating toolchain changed the key (and rebuilt every native) whenever a Rust
+      # release landed. Bump it here deliberately.
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.100.0
+
+      # One digest of the inputs of a quiche native binary, shared by every writer and reader of these
+      # caches (see .github/scripts/quiche-native-inputs.sh). It used to hash all of
+      # socket-quic-quiche/build.gradle.kts, test configuration included, so the key changed on almost
+      # every commit and every job here compiled quiche from source.
+      - name: Compute quiche native cache key
+        id: qkey
+        uses: ./.github/actions/quiche-native-key
+
+      # quic-echo's libquiche.so and JNI shim (`:quicEchoJar` → buildQuicheSharedLinuxX64). Building
+      # them from source provisions the linuxX64 BoringSSL bundle, which is a GitHub release download.
+      # Same key and path as the other writers (build-linux.yaml `natives` and
+      # native-deps-freshness.yaml `cache-warm`). buildQuicheSharedLinuxX64 skips only when the restored
+      # `.built-<quiche>-…-<native-input digest>` marker matches this tree; otherwise it rebuilds. This
+      # job saves on a miss as well: the first run of a changed native input pays the build once (here,
+      # not once per lane), every later run of the PR hits.
+      - name: Cache quiche Linux x64 natives (quic-echo)
+        id: linux_natives
+        uses: actions/cache@v6
+        with:
+          path: socket-quic-quiche/libs/quiche/linux-x64
+          key: quiche-linux-x64-v9-${{ steps.qkey.outputs.digest }}
+
+      - name: Compute Android quiche native cache key
+        id: qkey_android
+        uses: ./.github/actions/quiche-native-key
+        with:
+          rust: "true"
+
+      - name: Cache quiche Android x86_64 natives
+        id: android_natives
+        uses: actions/cache@v6
+        with:
+          path: socket-quic-quiche/src/androidMain/jniLibs/x86_64
+          key: quiche-android-x86_64-v1-${{ steps.qkey_android.outputs.digest }}
+
+      # cargo-ndk is pinned and its binary cached: `cargo install` compiled it from source on every
+      # lane (25-55 s) and floated with crates.io.
+      - name: Cache cargo-ndk
+        id: cargo_ndk
+        uses: actions/cache@v6
+        with:
+          path: ~/.cargo/bin/cargo-ndk
+          key: cargo-ndk-4.1.2-rustc-1.100.0-${{ runner.os }}
+
+      # libclang is only needed when a native is actually compiled (boring-sys' bindgen), so a run whose
+      # caches both hit installs nothing.
+      - name: Install libclang
+        if: steps.android_natives.outputs.cache-hit != 'true' || steps.linux_natives.outputs.cache-hit != 'true'
+        uses: ./.github/actions/apt-install-cached
+        with:
+          purpose: "android lane inputs: libclang for boring-sys bindgen"
+          packages: libclang-dev
+
+      - name: Install cargo-ndk and the x86_64 Android Rust target
+        if: steps.android_natives.outputs.cache-hit != 'true'
+        run: |
+          rustup target add x86_64-linux-android
+          if [ "${{ steps.cargo_ndk.outputs.cache-hit }}" != "true" ]; then
+            cargo install cargo-ndk --version 4.1.2 --locked
+          fi
+
+      # The Android build only checks that the files are there on a cache hit (-PquicheAndroidNativesPrebuilt):
+      # a fresh runner has no task history and would otherwise compile them again.
+      - name: Use the cached Android natives
+        if: steps.android_natives.outputs.cache-hit == 'true'
+        run: echo "ORG_GRADLE_PROJECT_quicheAndroidNativesPrebuilt=true" >> "$GITHUB_ENV"
+
+      # buildAndroidJniX86_64 emits the dedup'd pair into src/androidMain/jniLibs/x86_64/: a thin
+      # libquiche_jni.so (DT_NEEDED=libquiche.so) beside a self-contained libquiche.so, exactly what
+      # the emulator loads. Via Gradle, so this cannot drift from build.gradle.kts.
+      - name: Build Android QUIC native libs (x86_64, via Gradle)
+        if: steps.android_natives.outputs.cache-hit != 'true'
+        run: .github/scripts/gradle-retry.sh :socket-quic-quiche:buildAndroidJniX86_64 --no-configuration-cache
+
+      - name: Generate harness TLS certs
+        run: bash test-harness/tls/gen-certs.sh
+
+      # The quic-echo fat jar docker compose's `build: ./quic-echo` COPYs (host arch only: the image and
+      # the jar are both linux-x64). Building it compiles the JVM test classes and, on a Linux cache
+      # miss, the host libquiche.so.
+      - name: Build quic-echo fat jar (Linux x64)
+        run: .github/scripts/gradle-retry.sh :socket-quic-quiche:quicEchoJar --no-configuration-cache
+
+      # Not a lane's job to find this out an hour later: the artifact must hold every file the lanes take.
+      - name: Assert the lane inputs are complete
+        run: |
+          set -euo pipefail
+          for f in socket-quic-quiche/src/androidMain/jniLibs/x86_64/libquiche.so \
+                   socket-quic-quiche/src/androidMain/jniLibs/x86_64/libquiche_jni.so \
+                   test-harness/quic-echo/quic-echo.jar \
+                   test-harness/quic-echo/testcerts/cert.crt \
+                   test-harness/quic-echo/testcerts/cert.key; do
+            [ -s "$f" ] || { echo "::error::missing $f"; exit 1; }
+          done
+          markers=$(find socket-quic-quiche/libs/quiche/linux-x64 -name '.built-*' | wc -l)
+          [ "$markers" -gt 0 ] || { echo "::error::no linux-x64 quiche build marker"; exit 1; }
+
+      # ⚠️ include-hidden-files IS LOAD-BEARING: the linux-x64 build markers are dotfiles, and without
+      # them every lane would silently rebuild the host libquiche.so if its Gradle graph reaches it.
+      - name: Upload the lane inputs
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-lane-inputs
+          path: |
+            socket-quic-quiche/src/androidMain/jniLibs/x86_64/
+            socket-quic-quiche/libs/quiche/linux-x64/
+            test-harness/quic-echo/quic-echo.jar
+            test-harness/quic-echo/testcerts/
+          include-hidden-files: true
+          retention-days: 1
+          if-no-files-found: error
+
   android-emulator:
     runs-on: ubuntu-latest
     needs: version
-    # The steps before `run tests` take ~6.5 min and the ones after it under 1, so 30 holds a
-    # run-tests step of RUN_TESTS_MINUTES while still bounding a genuine hang (e.g. an emulator
-    # that never boots).
-    timeout-minutes: 30
+    # Before `run tests` a lane now spends ~3 min (setup, SDK install, waiting for the `natives` job's
+    # artifact, docker bring-up; the natives and the quic-echo jar are built once, not per lane) and
+    # under 1 min after it, so 25 holds a run-tests step of RUN_TESTS_MINUTES while still bounding a
+    # genuine hang (e.g. an emulator that never boots).
+    timeout-minutes: 25
     # ANDROID_EMULATOR_WAIT_TIME_BEFORE_KILL is deliberately NOT set job-wide — see the `run tests`
     # step, which is the only step where force-killing the emulator is safe. Setting it here also
     # applied it to the create-AVD step, whose entire purpose is to let the emulator WRITE a
@@ -58,7 +218,7 @@ jobs:
       # cargo-ndk as well (~2.5 minutes) for libraries no test loads. build-linux builds all ABIs.
       ORG_GRADLE_PROJECT_quicheAndroidAbis: x86_64
       # The `run tests` step's timeout; its watchdog's deadline follows it.
-      RUN_TESTS_MINUTES: 20
+      RUN_TESTS_MINUTES: 17
     strategy:
       # Each API level is an independent signal — an API-35-only regression must not cancel the 29 lane
       # (or vice versa) before it reports, or the matrix tells us less than the single lane did.
@@ -110,91 +270,11 @@ jobs:
           restore-keys: |
             gradle-linux-
 
-      # One digest of the inputs of a quiche native binary, shared by every writer and reader of these
-      # caches (see .github/scripts/quiche-native-inputs.sh). It used to hash all of
-      # socket-quic-quiche/build.gradle.kts, test configuration included, so the key changed on almost
-      # every commit and every job here compiled quiche from source.
-      - name: Compute quiche native cache key
-        id: qkey
-        uses: ./.github/actions/quiche-native-key
-
-      # quic-echo's libquiche.so and JNI shim (`:quicEchoJar` → buildQuicheSharedLinuxX64). Building
-      # them from source provisions the linuxX64 BoringSSL bundle, which is a GitHub release download.
-      # Same key and path as the other writers (build-linux.yaml `natives` and
-      # native-deps-freshness.yaml `cache-warm`). buildQuicheSharedLinuxX64 skips only when the restored
-      # `.built-<quiche>-…-<native-input digest>` marker matches this tree; otherwise it rebuilds. This
-      # job saves on a miss as well, because it runs concurrently with `natives` and cannot wait for it:
-      # the first run of a changed native input pays the build once per job, every later run hits.
-      - name: Cache quiche Linux x64 natives (quic-echo)
-        uses: actions/cache@v6
-        with:
-          path: socket-quic-quiche/libs/quiche/linux-x64
-          key: quiche-linux-x64-v9-${{ steps.qkey.outputs.digest }}
-
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
-
-      # libclang: quiche 0.29 dropped `boringssl-vendored`; the Android build now uses
-      # `boringssl-boring-crate`, whose boring-sys build runs bindgen and needs libclang
-      # on the host (the NDK clang covers the target compile).
-      # This step used to install the GNU aarch64 cross-compiler too, for the root `:buildBoringsslArm64`
-      # task that the aggregate `connectedAndroidTest` graph reached. That task no longer exists (the
-      # BoringSSL bundle comes from the provision plugin), and this lane declares no Linux Kotlin/Native
-      # target (`linuxTargets=false`), so the three cross packages were installed for nothing.
-      # No apt-safe-update step: apt-install-cached supplies its own `apt-get update`, run only
-      # when its cache cannot fully serve — a warm hit touches no mirror.
-      - name: Install libclang
-        uses: ./.github/actions/apt-install-cached
-        with:
-          purpose: "android emulator lane: libclang for boring-sys bindgen"
-          packages: libclang-dev
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      # The Android natives for the emulator's ABI: the thin libquiche_jni.so and the self-contained
-      # libquiche.so it DT_NEEDEDs. The key is the digest of every input of the binary plus the
-      # compiler version (the workflows take rust `stable`, so a compiler update changes the bytes), so a
-      # hit is by construction the library a fresh build would produce. Saves on a miss, like the
-      # Linux x64 entry above.
-      - name: Compute Android quiche native cache key
-        id: qkey_android
-        uses: ./.github/actions/quiche-native-key
-        with:
-          rust: "true"
-
-      - name: Cache quiche Android x86_64 natives
-        id: android_natives
-        uses: actions/cache@v6
-        with:
-          path: socket-quic-quiche/src/androidMain/jniLibs/x86_64
-          key: quiche-android-x86_64-v1-${{ steps.qkey_android.outputs.digest }}
-
-      # A hit: the Gradle build only checks the files are there (-PquicheAndroidNativesPrebuilt), because
-      # a fresh runner has no task history and would otherwise compile them again.
-      - name: Use the cached Android natives
-        if: steps.android_natives.outputs.cache-hit == 'true'
-        run: echo "ORG_GRADLE_PROJECT_quicheAndroidNativesPrebuilt=true" >> "$GITHUB_ENV"
-
-      # A miss: only the emulator's ABI. cargo-ndk fails if its Rust target is missing, and
-      # quicheAndroidAbis (job env) leaves the other ABIs' tasks out of the graph.
-      - name: Install cargo-ndk and the x86_64 Android Rust target
-        if: steps.android_natives.outputs.cache-hit != 'true'
-        run: |
-          rustup target add x86_64-linux-android
-          cargo install cargo-ndk
-
-      # Build the x86_64 (emulator ABI) native libs via Gradle instead of a hand-rolled cargo-ndk +
-      # clang duplicate, so this can't drift from build.gradle.kts. buildAndroidJniX86_64 emits the
-      # dedup'd pair into src/androidMain/jniLibs/x86_64/: a thin libquiche_jni.so (DT_NEEDED=libquiche.so)
-      # beside a self-contained libquiche.so (unversioned soname), exactly what the emulator loads
-      # (libquiche.so first, then the shim). NDK/cargo-ndk/targets/libclang are set up in the steps above.
-      - name: Build Android QUIC native libs (x86_64, via Gradle)
-        if: steps.android_natives.outputs.cache-hit != 'true'
-        run: .github/scripts/gradle-retry.sh :socket-quic-quiche:buildAndroidJniX86_64 --no-configuration-cache
 
       # Bring up the docker quic-echo harness (same image / port as
       # build-linux + build-apple) before the emulator starts.
@@ -227,15 +307,26 @@ jobs:
       - name: Generate harness TLS certs
         run: bash test-harness/tls/gen-certs.sh
 
-      # Build the quic-echo fat jar so docker compose's `build: ./quic-echo`
-      # has the COPY input it needs. Default (host-arch-only) is enough —
-      # the docker image base + jar are both linux-x64 for this job, which
-      # matches the ubuntu-latest runner. The container then exposes
-      # 14433/udp on the host's loopback — the port half of the docker
-      # contract above, which this emulator (and only an emulator) can
-      # address through its 10.0.2.2 alias.
-      - name: Build quic-echo fat jar (Linux x64)
-        run: .github/scripts/gradle-retry.sh :socket-quic-quiche:quicEchoJar --no-configuration-cache
+
+      # The natives and the quic-echo jar come from the `natives` job (above), which built them once
+      # for every lane. This job starts beside it and waits only here, after its own setup.
+      - uses: ./.github/actions/await-artifact
+        with:
+          name: android-lane-inputs
+          producer: "Android lane inputs"
+          timeout-minutes: 15
+          github-token: ${{ github.token }}
+      - name: Download the lane inputs
+        uses: actions/download-artifact@v8
+        with:
+          name: android-lane-inputs
+          path: .
+      # The Gradle build checks the Android natives are there and skips compiling them; the host
+      # markers are touched so the JNI shim's mtime guard reads "current" (build-linux's trap #2).
+      - name: Use the prebuilt natives
+        run: |
+          echo "ORG_GRADLE_PROJECT_quicheAndroidNativesPrebuilt=true" >> "$GITHUB_ENV"
+          find socket-quic-quiche/libs/quiche/linux-x64 -name '.built-*' -o -name '.jni-built-*' | xargs -r touch
 
       - name: Bring up quic-echo via the docker harness
         run: bash test-harness/compose-up-retry.sh quic-echo
@@ -250,52 +341,12 @@ jobs:
         timeout-minutes: 6
         run: bash scripts/android-sdk-emulator.sh install ${{ matrix.api-level }}
 
-      # ⚠️ THERE IS DELIBERATELY NO AVD CACHE HERE — do not "restore" one without re-reading this.
-      #
-      # This is NOT a revert of #333 (72e24e21). #333's substantive fix was moving
-      # ANDROID_EMULATOR_WAIT_TIME_BEFORE_KILL out of the job-level env and onto the `run tests`
-      # step alone, so the create-AVD step below keeps its full shutdown grace period and can flush
-      # a complete snapshot. That fix is untouched (see the job-level note and the `run tests` env).
-      # What is removed is the cached artifact itself, which makes the poisoning failure mode
-      # structurally impossible rather than merely fixed:
-      #   run 1 misses, creates the AVD, passes, saves a snapshot; run 2 restores it and the
-      #   emulator exits before registering with adb —
-      #     FATAL | A snapshot operation for 'test' is pending and timeout has expired. Exiting...
-      #   surfacing only as the boot poller's misleading "Timeout waiting for emulator to boot".
-      #
-      # The economics, measured rather than assumed (2026-08-12):
-      #   create+save on a miss = 71s (api-29) / 83s (api-35); restore on a hit = 19-36s / 10-16s.
-      #   Net saving ~35-52s and ~67-73s, for 1776 MiB of a 10 GiB repo-wide cap — about
-      #   0.07 s/MiB, versus 1-4 s/MiB for the quiche/Konan/Gradle entries it was evicting. And
-      #   `on:` here is `pull_request` only, so the key is written per PR REF and never shared:
-      #   7 distinct refs in 24h = ~12 GiB of AVD writes against a 10 GiB cap.
-      #   This job (13-16 min) is nowhere near review.yaml's 48-55 min critical path, so the
-      #   ~100s costs zero wall-clock on the run as a whole.
-      # Measured 1.0-1.3 min with a warm cache. The cap is for the cold/poisoned-snapshot case,
-      # which surfaces as "Timeout waiting for emulator to boot" and otherwise burns the job budget
-      # before `run tests` even starts (the failure mode #333 fixed).
-      - name: create AVD and generate boot snapshot
-        timeout-minutes: 8
-        uses: reactivecircus/android-emulator-runner@v2
-        with:
-          api-level: ${{ matrix.api-level }}
-          target: default
-          arch: x86_64
-          force-avd-creation: false
-          # The default API-29 userdata partition wants ~7.37 GB, which does not
-          # fit in the ~6.7 GB this job leaves free after the Rust/quiche/docker
-          # native-build steps — the emulator FATAL'd at launch with "Not enough
-          # space to create userdata partition" (device never registered → the
-          # boot poller then timed out with a misleading "emulator to boot"
-          # error). Cap it: this instrumented suite installs a couple of modest
-          # APKs, so 4 GB is ample and drops `need` well under available. Must
-          # match the run-tests step below (that step reuses the AVD this one
-          # creates, in the same job).
-          disk-size: 4096M
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
-          disable-animations: false
-          pre-emulator-launch-script: bash scripts/android-sdk-emulator.sh verify ${{ matrix.api-level }}
-          script: echo "Generated the AVD + boot snapshot this job's test step will reuse."
+      # THERE IS NO "create AVD and generate boot snapshot" STEP any more (it cost 27-55 s per lane).
+      # The step below runs with -writable-system, which the emulator cannot load a quickboot snapshot
+      # with ("Device 'system' does not have the requested snapshot 'default_boot'", then a cold boot),
+      # so the snapshot the removed step booted an emulator to write was never read. The action creates the
+      # AVD itself when it is missing. There is still no AVD cache, for the reason the #333 poisoning
+      # showed: a cached snapshot is what made an emulator exit before registering with adb.
 
       # The run-tests step's deadline, for the script's watchdog to stop a run, capture it and shut
       # the emulator down before the step's own timeout ends it with nothing captured.
@@ -549,44 +600,20 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
-      # libclang for boring-sys' bindgen (the Android quiche build); see the android-emulator job.
-      - name: Install libclang
-        uses: ./.github/actions/apt-install-cached
+      # The Android natives come from the `natives` job, which built them once for every Android job.
+      - uses: ./.github/actions/await-artifact
         with:
-          purpose: "android benchmark lane: libclang for boring-sys bindgen"
-          packages: libclang-dev
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      # The same Android natives, key and cache as the android-emulator job: one digest of every input of
-      # the binary plus the compiler version.
-      - name: Compute Android quiche native cache key
-        id: qkey_android
-        uses: ./.github/actions/quiche-native-key
+          name: android-lane-inputs
+          producer: "Android lane inputs"
+          timeout-minutes: 15
+          github-token: ${{ github.token }}
+      - name: Download the lane inputs
+        uses: actions/download-artifact@v8
         with:
-          rust: "true"
-
-      - name: Cache quiche Android x86_64 natives
-        id: android_natives
-        uses: actions/cache@v6
-        with:
-          path: socket-quic-quiche/src/androidMain/jniLibs/x86_64
-          key: quiche-android-x86_64-v1-${{ steps.qkey_android.outputs.digest }}
-
-      - name: Use the cached Android natives
-        if: steps.android_natives.outputs.cache-hit == 'true'
+          name: android-lane-inputs
+          path: .
+      - name: Use the prebuilt natives
         run: echo "ORG_GRADLE_PROJECT_quicheAndroidNativesPrebuilt=true" >> "$GITHUB_ENV"
-
-      - name: Install cargo-ndk and the x86_64 Android Rust target
-        if: steps.android_natives.outputs.cache-hit != 'true'
-        run: |
-          rustup target add x86_64-linux-android
-          cargo install cargo-ndk
-
-      - name: Build Android QUIC native libs
-        if: steps.android_natives.outputs.cache-hit != 'true'
-        run: .github/scripts/gradle-retry.sh :socket-quic-quiche:buildAndroidNativeLibs --no-configuration-cache
 
       - name: Install + verify Android Emulator and system image
         timeout-minutes: 6
