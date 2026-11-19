@@ -117,6 +117,19 @@ if ! await_default_network "$NETWORK_BUDGET_S"; then
 fi
 echo "Emulator (API ${API_LEVEL}) default network: $(adb shell dumpsys connectivity 2>/dev/null | grep -E '^Active default network' || echo 'unknown')"
 
+# THE SHARED INPUTS ARE TAKEN HERE, AFTER THE BOOT
+# -------------------------------------------------
+# The natives, the quic-echo jar and the compiled Kotlin come from two jobs that build them once for
+# every lane (see scripts/android-lane-inputs.sh). The emulator is already up, so the wait overlaps its
+# boot. The quic-echo container needs the jar, so it comes up here too. The time spent here is part of
+# the step's budget (the deadline below is not extended): the wait is bounded by ANDROID_LANE_INPUTS_WAIT_MIN.
+if [ "$NETWORK_READY" = "1" ]; then
+  # shellcheck source=scripts/android-lane-inputs.sh
+  source "$(dirname "${BASH_SOURCE[0]}")/android-lane-inputs.sh"
+  lane_inputs_fetch "${ANDROID_LANE_INPUTS_WAIT_MIN:-8}" with-build-cache
+  bash test-harness/compose-up-retry.sh quic-echo
+fi
+
 # A scheduling timeline of the device for the test run, in a RING: written out only if the run fails
 # or hangs (see scripts/android-perfetto-ring.sh). API 29+ and PERFETTO_RING=1 only.
 # shellcheck source=scripts/android-perfetto-ring.sh
@@ -398,7 +411,8 @@ fi
 # connectedAndroidTest starts.
 TEST_EXIT=1
 if [ "$NETWORK_READY" = "1" ]; then
-  ./gradlew :socket-quic-quiche:startNetworkControlServer
+  ./gradlew :socket-quic-quiche:startNetworkControlServer 2>&1 | tee emulator-diagnostics/gradle-netctrl-api"${API_LEVEL}".txt
+  echo "startNetworkControlServer build: $(grep -c 'FROM-CACHE$' emulator-diagnostics/gradle-netctrl-api"${API_LEVEL}".txt || true) tasks FROM-CACHE, $(grep -cE '^> Task .*[a-zA-Z]$' emulator-diagnostics/gradle-netctrl-api"${API_LEVEL}".txt || true) executed"
 
   NET_CTRL_PORT_FILE=socket-quic-quiche/build/network-control-server.port
   NET_CTRL_PORT=$(cat "$NET_CTRL_PORT_FILE" 2>/dev/null || true)
@@ -435,6 +449,7 @@ if [ "$NETWORK_READY" = "1" ]; then
   wait "$GRADLE_PID"
   TEST_EXIT=$?
   set -e
+  echo "connectedAndroidTest build: $(grep -c 'FROM-CACHE$' "$GRADLE_OUT_FILE" || true) tasks FROM-CACHE, $(grep -cE '^> Task .*[a-zA-Z]$' "$GRADLE_OUT_FILE" || true) executed (Kotlin compiles executed: $(grep -cE '^> Task .*:compile[A-Za-z]*Kotlin[A-Za-z]*$' "$GRADLE_OUT_FILE" || true))"
 
   # A MODULE THAT RAN NO TESTS IS A FAILURE, NOT A PASS
   # ----------------------------------------------------

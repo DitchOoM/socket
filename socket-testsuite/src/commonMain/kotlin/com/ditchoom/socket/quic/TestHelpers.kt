@@ -274,6 +274,15 @@ suspend fun awaitUntil(
 expect fun isAppleKNative(): Boolean
 
 /**
+ * The text of the PEM file at [path], trimmed, or null when there is no such file (or it is not readable).
+ *
+ * The harness CA is read here, when a test runs, and not embedded in the generated `QuicHarnessConfig` source:
+ * `gen-certs.sh` mints a new CA on every CI run, so an embedded PEM changed the compile inputs of every test
+ * compilation of :socket-quic-quiche on every run and none of them could come from Gradle's build cache.
+ */
+expect fun readHarnessCaCertPem(path: String): String?
+
+/**
  * `true` on every Kotlin/Native target (Apple and Linux), `false` on the JVM and Android.
  *
  * A platform fact, not a skip decision: a test that must not run on K/N because of a filed defect
