@@ -10,8 +10,6 @@ import com.ditchoom.socket.quic.core.life.LifeStep
 import com.ditchoom.socket.quic.core.life.RetiredId
 import com.ditchoom.socket.quic.core.life.SpareId
 import com.ditchoom.socket.quic.core.life.endOf
-import com.ditchoom.socket.quic.core.life.errorCode
-import com.ditchoom.socket.quic.core.life.flightCode
 import com.ditchoom.socket.quic.core.observe.TraceSection
 import com.ditchoom.socket.quic.core.observe.traced
 import com.ditchoom.socket.quic.core.path.MoveAnswer
@@ -194,10 +192,14 @@ internal class Turn(
     ) {
         if (c.life.end(end) == Ending.Already) return
         c.timer.disarm()
-        c.ticketAtEnd()
-        c.flight.ended(now, end.flightCode(), end.errorCode())
-        c.flight.keepEnded(c.role, end)
-        c.sink.ended(end)
+        c.recordEnd(now, end)
+        val held =
+            try {
+                c.heldAtEnd(HoldAtEnd.ReadOut)
+            } catch (again: Exception) {
+                c.heldAtEnd(HoldAtEnd.LiveOnly)
+            }
+        c.sink.ended(end, held)
         c.inbox.shut(end) { it.gone(end) }
         c.streams.endAll(end)
         c.slots.datagrams.endAll(end)

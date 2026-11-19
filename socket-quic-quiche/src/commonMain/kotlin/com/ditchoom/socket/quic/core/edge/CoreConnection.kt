@@ -167,13 +167,19 @@ internal class CoreConnection(
     fun network(change: NetworkChange) = conn.submit(NetworkWork(change), CallerPlace.HandToLoop)
 
     /** The caller closed [stream] without reading it to the end: what still arrives is dropped. */
-    internal fun abandon(stream: QuicStreamId) = conn.submit(AbandonWork(stream), CallerPlace.HandToLoop)
+    internal fun abandon(stream: QuicStreamId) {
+        edge.letGo(stream)
+        conn.submit(AbandonWork(stream), CallerPlace.HandToLoop)
+    }
 
     /** Resets both directions of [stream] with [code]. */
     internal fun resetStream(
         stream: QuicStreamId,
         code: QuicAppErrorCode,
-    ) = conn.submit(ResetWork(stream, code), CallerPlace.HandToLoop)
+    ) {
+        edge.letGo(stream)
+        conn.submit(ResetWork(stream, code), CallerPlace.HandToLoop)
+    }
 
     /** Read inside the connection when asked; nothing is counted for it otherwise. */
     override suspend fun stats(): QuicStatsRead =
@@ -203,7 +209,7 @@ internal class CoreConnection(
         deadline: Duration,
         sizing: ReadSizing,
     ): ReadResult {
-        val op = ReadOp(stream, deadline, deadlines, conn, edge.reads, bufferFactory, sizing)
+        val op = ReadOp(stream, deadline, deadlines, conn, edge, bufferFactory, sizing)
         conn.submit(op, placeOf(currentCoroutineContext()))
         return op.answer()
     }

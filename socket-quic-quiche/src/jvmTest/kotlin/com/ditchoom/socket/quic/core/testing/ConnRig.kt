@@ -20,6 +20,7 @@ import com.ditchoom.socket.quic.core.conn.ConnectReport
 import com.ditchoom.socket.quic.core.conn.EarlyReport
 import com.ditchoom.socket.quic.core.conn.FlightArena
 import com.ditchoom.socket.quic.core.conn.FlightSize
+import com.ditchoom.socket.quic.core.conn.HeldReads
 import com.ditchoom.socket.quic.core.conn.KeptTicket
 import com.ditchoom.socket.quic.core.conn.LoopMemory
 import com.ditchoom.socket.quic.core.conn.MismatchResponse
@@ -86,7 +87,10 @@ internal class RecordingSink : ConnSink {
         length: Int,
     ) = Unit
 
-    override fun ended(end: ConnEnd) {
+    override fun ended(
+        end: ConnEnd,
+        held: HeldReads,
+    ) {
         ended += end
     }
 }

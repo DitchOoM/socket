@@ -38,6 +38,9 @@ internal sealed interface HandPhase<in A : HandAnswer> {
 /** What an operation came to, set once; the caller turns it into its result on its own thread. */
 internal sealed interface HandAnswer : HandPhase<HandAnswer>
 
+/** The caller made its result from the answer that landed: nothing it was handed is in flight any more. */
+internal data object AnswerTaken : HandAnswer
+
 /** Whether an answer was the operation's first, which the caller takes, or came after another and is dropped. */
 internal enum class Landed { First, Late }
 
@@ -93,6 +96,12 @@ internal value class Hand<A : HandAnswer> private constructor(
 
     /** Whether [answer] is the one that landed. */
     fun landed(answer: A): Boolean = phase.load() === answer
+
+    /** Where the operation stands now. */
+    fun current(): HandPhase<A> = phase.load()
+
+    /** The caller, once it made its result from the answer that landed: it no longer holds what the answer handed. */
+    fun taken() = phase.store(AnswerTaken)
 }
 
 /**

@@ -19,7 +19,8 @@ internal enum class HandshakeStep { Handshaking, JustEstablished, Established, D
 /** Whether the handshake still waits for its confirmation. */
 internal enum class Confirmation { Pending, Confirmed }
 
-private enum class Progress { Handshaking, Established }
+/** How far the handshake got: still running, or completed (confirmed or not). */
+internal enum class Progress { Handshaking, Established }
 
 /** Whether the caller is still to be told the handshake completed: once, at the end of the serve that completed it. */
 internal enum class Announcement { Due, None }
@@ -96,6 +97,13 @@ internal class Handshake(
         when (phase) {
             is Phase.Pending -> Confirmation.Pending
             is Phase.Confirmed -> Confirmation.Confirmed
+        }
+
+    /** How far the handshake got as of the last [step]. */
+    fun reached(): Progress =
+        when (phase) {
+            is Phase.Pending -> pending.progress
+            is Phase.Confirmed -> Progress.Established
         }
 
     fun step(now: Nanos): HandshakeStep {
