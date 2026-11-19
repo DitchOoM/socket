@@ -11,7 +11,8 @@
 # started its emulator. The emulator step starts the emulator first, so the wait is here, after the
 # boot: the boot, the SDK install and the runner's own setup overlap the shared build.
 #
-# Needs GH_TOKEN, and the Actions environment (GITHUB_RUN_ID, GITHUB_REPOSITORY).
+# Needs GH_TOKEN, and the Actions environment (GITHUB_RUN_ID, GITHUB_REPOSITORY). Everything the wait
+# fetches is named by the artifacts of the SAME run, so a lane never reads another run's inputs.
 
 LANE_INPUTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
