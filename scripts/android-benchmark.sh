@@ -35,10 +35,10 @@ mkdir -p "$OUT"
 trap 'status=$?; bash scripts/emulator-shutdown.sh "$API_LEVEL" "$status"; exit "$status"' EXIT
 
 # The Android natives come from the `natives` job (scripts/android-lane-inputs.sh). The emulator is
-# already booted, so the wait overlaps its boot. The step's timeout covers the wait.
+# already booted, so the wait overlaps its boot. The wait is inside the step's budget.
 # shellcheck source=scripts/android-lane-inputs.sh
 source "$(dirname "${BASH_SOURCE[0]}")/android-lane-inputs.sh"
-lane_inputs_fetch "${ANDROID_LANE_INPUTS_WAIT_MIN:-12}"
+lane_inputs_fetch "${ANDROID_LANE_INPUTS_WAIT_MIN:-8}"
 
 run() { # <label> <gradle property args...>
   local label="$1"

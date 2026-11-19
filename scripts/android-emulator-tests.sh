@@ -121,17 +121,13 @@ echo "Emulator (API ${API_LEVEL}) default network: $(adb shell dumpsys connectiv
 # -------------------------------------------------
 # The natives, the quic-echo jar and the compiled Kotlin come from two jobs that build them once for
 # every lane (see scripts/android-lane-inputs.sh). The emulator is already up, so the wait overlaps its
-# boot. The quic-echo container needs the jar, so it comes up here too. The time spent here extends the
-# step's deadline: the budget below is for the boot and the tests, not for the other jobs' build.
+# boot. The quic-echo container needs the jar, so it comes up here too. The time spent here is part of
+# the step's budget (the deadline below is not extended): the wait is bounded by ANDROID_LANE_INPUTS_WAIT_MIN.
 if [ "$NETWORK_READY" = "1" ]; then
   # shellcheck source=scripts/android-lane-inputs.sh
   source "$(dirname "${BASH_SOURCE[0]}")/android-lane-inputs.sh"
-  INPUTS_STARTED=$SECONDS
-  lane_inputs_fetch "${ANDROID_LANE_INPUTS_WAIT_MIN:-12}" with-build-cache
+  lane_inputs_fetch "${ANDROID_LANE_INPUTS_WAIT_MIN:-8}" with-build-cache
   bash test-harness/compose-up-retry.sh quic-echo
-  if [ -n "${ANDROID_TESTS_STEP_DEADLINE:-}" ]; then
-    ANDROID_TESTS_STEP_DEADLINE=$((ANDROID_TESTS_STEP_DEADLINE + SECONDS - INPUTS_STARTED))
-  fi
 fi
 
 # A scheduling timeline of the device for the test run, in a RING: written out only if the run fails

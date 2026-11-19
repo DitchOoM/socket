@@ -6,6 +6,14 @@ import kotlin.time.Duration
 
 actual fun isAppleKNative(): Boolean = false
 
+// Android: an instrumented test has no host path, so this is null there, and nothing on Android pins the CA.
+actual fun readHarnessCaCertPem(path: String): String? =
+    java.io
+        .File(path)
+        .takeIf { it.isFile && it.canRead() }
+        ?.readText()
+        ?.trim()
+
 // Android: an instrumented test inherits the DEVICE's environment, so this is off there unless a device sets it.
 internal actual fun traceRingRequested(): Boolean = System.getenv("QUIC_TEST_TRACE_RING") == "1"
 
