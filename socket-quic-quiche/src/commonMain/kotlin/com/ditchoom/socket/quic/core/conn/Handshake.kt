@@ -1,5 +1,6 @@
 package com.ditchoom.socket.quic.core.conn
 
+import com.ditchoom.socket.quic.PeerCertPosition
 import com.ditchoom.socket.quic.PtoCeiling
 import com.ditchoom.socket.quic.QuicResumptionOutcome
 import com.ditchoom.socket.quic.core.life.HandshakeProgress
@@ -76,6 +77,20 @@ internal class Handshake(
                 q.api.connSetHandshakePtoCeiling(q.handle, PtoCeiling.Growing(pto.firstCeilingNanos, GROWTH.toInt(), MAX_CEILING_NANOS))
         }
     }
+
+    /**
+     * Copies the peer's certificate at [position] into the native memory at [address] when it fits in [capacity] bytes;
+     * returns its length either way, or 0 when there is none there (quiche's snprintf contract).
+     */
+    fun peerCertificate(
+        position: PeerCertPosition,
+        address: Long,
+        capacity: Int,
+    ): Int =
+        when (position) {
+            is PeerCertPosition.Leaf -> q.api.connPeerCert(q.handle, address, capacity)
+            is PeerCertPosition.InChain -> q.api.connPeerCertChainAt(q.handle, position.index, address, capacity)
+        }
 
     fun confirmation(): Confirmation =
         when (phase) {

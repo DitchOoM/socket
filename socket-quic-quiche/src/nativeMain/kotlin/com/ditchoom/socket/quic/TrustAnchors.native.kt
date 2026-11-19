@@ -20,10 +20,9 @@ import platform.posix.mkstemp
 import platform.posix.unlink
 
 /**
- * The caller's pinned CAs, through a temporary file (quiche loads anchors only from one). Kotlin/Native loads no
- * platform default store here: a client that verifies its peer without pinned CAs is checked by the platform's own
- * trust where the 4.x engine does so, which the core does not do yet. A bundle quiche refuses leaves the store empty,
- * and the handshake then fails verification: that is the failure the caller sees.
+ * The caller's pinned CAs, through a temporary file (quiche loads anchors only from one); with none pinned and quiche
+ * checking the chain in the handshake, this platform's default anchors ([loadDefaultTrustAnchors]). A bundle quiche
+ * refuses leaves the store empty, and the handshake then fails verification: that is the failure the caller sees.
  */
 internal actual fun loadTrustAnchors(
     api: QuicheApi,
@@ -32,22 +31,57 @@ internal actual fun loadTrustAnchors(
     bufferFactory: BufferFactory,
 ) {
     val pems = quicOptions.trustedCaCertificatesPem
-    if (pems.isEmpty()) return
-    when (val written = writePemBundle(pems.joinToString("\n"))) {
+    if (pems.isNotEmpty()) {
+        loadPemBundle(api, config, pems.joinToString("\n"), bufferFactory)
+        return
+    }
+    if (!resolveVerifyPeer(quicOptions)) return
+    when (platformChainTrust(quicOptions)) {
+        PlatformChainTrust.InHandshake -> loadDefaultTrustAnchors(api, config, quicOptions, bufferFactory)
+        is PlatformChainTrust.AfterHandshake -> Unit
+    }
+}
+
+/** Loads the anchors this platform verifies against when the caller pinned none and quiche checks the chain. */
+internal expect fun loadDefaultTrustAnchors(
+    api: QuicheApi,
+    config: QuicheConfig,
+    quicOptions: QuicOptions,
+    bufferFactory: BufferFactory,
+)
+
+/** Loads [bundle] (PEM) as anchors through a temporary file, removed again once quiche read it. */
+internal fun loadPemBundle(
+    api: QuicheApi,
+    config: QuicheConfig,
+    bundle: String,
+    bufferFactory: BufferFactory,
+) {
+    when (val written = writePemBundle(bundle)) {
         is PemBundle.Written -> {
-            val path = bufferFactory.allocate(written.path.length + 1)
-            path.writeString(written.path, Charset.UTF8)
-            path.writeByte(0)
-            path.resetForRead()
-            when (val access = path.nativeMemoryAccess) {
-                null -> Unit
-                else -> api.configLoadVerifyLocationsFromFile(config, access.nativeAddress.toLong())
-            }
-            path.freeNativeMemory()
+            loadAnchorFile(api, config, written.path, bufferFactory)
             unlink(written.path)
         }
         is PemBundle.NotWritten -> Unit
     }
+}
+
+/** Loads the PEM file at [path] as anchors. */
+internal fun loadAnchorFile(
+    api: QuicheApi,
+    config: QuicheConfig,
+    path: String,
+    bufferFactory: BufferFactory,
+) {
+    val name = bufferFactory.allocate(path.length + 1)
+    name.writeString(path, Charset.UTF8)
+    name.writeByte(0)
+    name.resetForRead()
+    when (val access = name.nativeMemoryAccess) {
+        null -> Unit
+        else -> api.configLoadVerifyLocationsFromFile(config, access.nativeAddress.toLong())
+    }
+    name.freeNativeMemory()
 }
 
 private sealed interface PemBundle {

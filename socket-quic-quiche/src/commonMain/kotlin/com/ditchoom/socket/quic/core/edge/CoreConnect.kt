@@ -9,6 +9,7 @@ import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.use
 import com.ditchoom.socket.networkId
+import com.ditchoom.socket.quic.HandshakeBudget
 import com.ditchoom.socket.quic.LocalEndpointSupport
 import com.ditchoom.socket.quic.NativeSocketRefusal
 import com.ditchoom.socket.quic.QUIC_ISSUED_CONN_ID_LEN
@@ -46,10 +47,11 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.withTimeout
 import kotlin.time.Duration
+import kotlin.time.TimeSource
 
 /**
  * Connects to [host]:[port] (an address literal) on the run-to-completion core and returns once the handshake
- * completed. Setup that opens files, sockets and native libraries runs on the [setupLane], off the caller's thread, so a
+ * completed and the server passed [verifyServer]. Setup that opens files, sockets and native libraries runs on the [setupLane], off the caller's thread, so a
  * caller on a main dispatcher is never blocked; the handshake wait parks on the caller's own context. The connection
  * owns its socket, bound to the address the route to the peer leaves from, and shares a loop thread, the one of [loops]
  * with the fewest connections; the socket ends with the connection.
@@ -77,6 +79,7 @@ internal suspend fun coreConnect(
     tokens: ClientTokens = ClientTokens.NotKept,
     mismatch: MismatchResponse = MismatchResponse.SendNow,
 ): CoreClient {
+    val began = TimeSource.Monotonic.markNow()
     val peerHost = peerHostFor(host)
     val unstarted = ClientSetup.Unstarted(EdgeMemory(factory))
     val sized = options.sizedBy(datagramSize)
@@ -109,7 +112,9 @@ internal suspend fun coreConnect(
                     moved = { setup = it },
                 )
             }
-        return started.established(sized.resumption, timeout).also { setup = ClientSetup.Established }
+        val client = started.established(sized.resumption, timeout)
+        client.connection.verifyServer(serverName, sized, HandshakeBudget(timeout, began))
+        return client.also { setup = ClientSetup.Established }
     } finally {
         setup.endFailed()
     }
