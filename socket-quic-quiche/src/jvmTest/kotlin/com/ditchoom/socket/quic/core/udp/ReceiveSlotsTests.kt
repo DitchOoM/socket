@@ -92,7 +92,15 @@ class ReceiveSlotsTests {
             val held = (0 until batch.count).map { batch.bufferAt(it).index }
             assertEquals(held.size, held.toSet().size, "a buffer handed up twice in one batch")
             for (i in 0 until batch.count) {
-                assertEquals(1, batch.bufferAt(i).bytes.byteAt(0).toInt(), "datagram bytes through the replaced socket")
+                assertEquals(
+                    1,
+                    batch
+                        .bufferAt(i)
+                        .bytes
+                        .byteAt(0)
+                        .toInt(),
+                    "datagram bytes through the replaced socket",
+                )
             }
             total += batch.count
             assertEquals(SLOTS, batch.slots.armed() + batch.count + pool.available(), "a buffer is lost or in two places")
@@ -114,7 +122,16 @@ class ReceiveSlotsTests {
         while (got.size < expected && System.nanoTime() < until) {
             when (io.receive(batch)) {
                 is ReceiveBatchResult.Nothing -> Thread.sleep(1)
-                else -> for (i in 0 until batch.count) got.add(batch.lengthAt(i) to batch.bufferAt(i).bytes.byteAt(0).toInt())
+                else -> for (i in 0 until batch.count) {
+                    got.add(
+                        batch.lengthAt(i) to
+                            batch
+                                .bufferAt(i)
+                                .bytes
+                                .byteAt(0)
+                                .toInt(),
+                    )
+                }
             }
             batch.release()
         }

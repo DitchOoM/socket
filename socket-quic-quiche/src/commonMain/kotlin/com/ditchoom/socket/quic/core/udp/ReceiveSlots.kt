@@ -27,7 +27,7 @@ internal class ReceiveSlots(
      * first are armed: a receive is given that many records, and datagram `i` lands in slot `i`.
      */
     fun arm(records: NativeBytes): Int {
-        if (written.records !== records) rewrite(records)
+        if (!isWrittenIn(records)) rewrite(records)
         var i = 0
         while (i < open) {
             if (slots[i] !is ReceiveBuffer) {
@@ -43,8 +43,8 @@ internal class ReceiveSlots(
     }
 
     /** The buffer of slot [i], which a receive filled: it leaves the slot, and the next [arm] refills it. */
-    fun handUp(i: Int): ReceiveBuffer {
-        val buffer = slots[i] as ReceiveBuffer
+    fun handUp(i: Int): Taken {
+        val buffer = slots[i]
         slots[i] = Taken.Empty
         if (i >= open) open = i + 1
         return buffer
@@ -72,15 +72,17 @@ internal class ReceiveSlots(
         written = Written.In(records)
     }
 
-    private sealed interface Written {
-        val records: NativeBytes?
-
-        data object Nowhere : Written {
-            override val records: NativeBytes? = null
+    private fun isWrittenIn(records: NativeBytes): Boolean =
+        when (val last = written) {
+            is Written.In -> last.records === records
+            is Written.Nowhere -> false
         }
 
+    private sealed interface Written {
+        data object Nowhere : Written
+
         class In(
-            override val records: NativeBytes,
+            val records: NativeBytes,
         ) : Written
     }
 }

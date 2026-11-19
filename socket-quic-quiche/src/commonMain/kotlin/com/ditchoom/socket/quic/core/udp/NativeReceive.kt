@@ -3,6 +3,8 @@ package com.ditchoom.socket.quic.core.udp
 import com.ditchoom.socket.quic.NetShim
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.core.observe.LoopOnly
+import com.ditchoom.socket.quic.core.pool.Pooled
+import com.ditchoom.socket.quic.core.pool.Taken
 
 /**
  * The receive half of [NativeIo], the loop's alone: it hands `qnet` the records of the batch's armed [ReceiveSlots], which
@@ -35,7 +37,12 @@ internal class NativeReceive(
         val got = NativeResult.count(result)
         for (i in 0 until got) {
             val at = i * NativeIo.RECV_RECORD
-            into.received(into.slots.handUp(i), receiveRecords.intAt(at + LENGTH), keyAt(at + SOURCE), arrivedAt(at + NativeIo.RECV_DEST))
+            when (val buffer = into.slots.handUp(i)) {
+                is ReceiveBuffer ->
+                    into.received(buffer, receiveRecords.intAt(at + LENGTH), keyAt(at + SOURCE), arrivedAt(at + NativeIo.RECV_DEST))
+                // A datagram reported past the armed slots cannot be: `qnet` fills at most the records it was given.
+                is Taken.Empty, is Pooled -> Unit
+            }
         }
         val code = NativeResult.code(result)
         return when {
