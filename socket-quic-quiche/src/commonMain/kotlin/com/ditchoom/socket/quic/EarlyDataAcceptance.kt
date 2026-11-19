@@ -14,6 +14,18 @@ internal sealed interface EarlyDataAcceptance {
     ) : EarlyDataAcceptance
 }
 
+/** What a connection's completed handshake settled, for a reader that may come after the connection closed. */
+internal sealed interface HandshakeRecord {
+    /** The handshake has not completed. */
+    data object Pending : HandshakeRecord
+
+    /** The handshake completed with [negotiatedAlpn], and used a session ticket as [resumption] says. */
+    data class Settled(
+        val negotiatedAlpn: String,
+        val resumption: QuicResumptionOutcome,
+    ) : HandshakeRecord
+}
+
 /** How a connection's handshake ended. */
 internal sealed interface HandshakeSettled {
     /**

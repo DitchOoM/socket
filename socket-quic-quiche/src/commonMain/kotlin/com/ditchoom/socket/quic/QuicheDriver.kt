@@ -377,6 +377,14 @@ class QuicheDriver(
     /** Whether this server connection accepted the client's 0-RTT, latched by [updateState]. */
     internal val earlyData: StateFlow<EarlyDataAcceptance> = earlyDataLatch
 
+    private val handshakeLatch = MutableStateFlow<HandshakeRecord>(HandshakeRecord.Pending)
+
+    /**
+     * What the handshake settled, kept after [state] moves on to Closed: a block outlives a peer's close
+     * while a reply is unread, and still reads its ALPN and resumption outcome from here.
+     */
+    internal val handshake: StateFlow<HandshakeRecord> = handshakeLatch
+
     /** How the handshake ended — completed once, at Established or at a close that came first. */
     private val handshakeSettled = CompletableDeferred<HandshakeSettled>()
 
@@ -3156,6 +3164,7 @@ class QuicheDriver(
                     readNegotiatedAlpn(),
                     QuicEarlyDataReason.outcome(role, sessionOffer, api.connIsResumed(conn), api.connEarlyDataReason(conn)),
                 )
+            handshakeLatch.value = HandshakeRecord.Settled(established.negotiatedAlpn, established.resumption)
             _state.value = established
             handshakeSettled.complete(HandshakeSettled.Confirmed(established.resumption))
             qlogEstablished()

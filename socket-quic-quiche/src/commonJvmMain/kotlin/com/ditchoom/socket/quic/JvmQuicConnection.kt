@@ -44,6 +44,22 @@ internal class JvmQuicConnection(
 
     override val quicheDriver: QuicheDriver get() = driver
 
+    /** Still readable once the peer has closed, for a block that outlives the close on an unread reply. */
+    override val negotiatedAlpn: String
+        get() =
+            when (val settled = driver.handshake.value) {
+                is HandshakeRecord.Settled -> settled.negotiatedAlpn
+                HandshakeRecord.Pending -> super.negotiatedAlpn
+            }
+
+    /** Readable after close for the reason [negotiatedAlpn] is. */
+    override val resumption: QuicResumptionOutcome
+        get() =
+            when (val settled = driver.handshake.value) {
+                is HandshakeRecord.Settled -> settled.resumption
+                HandshakeRecord.Pending -> super.resumption
+            }
+
     /**
      * Session id is cached by the driver (it never changes); the wire CID is re-read on every access
      * because it rotates — so this is rebuilt per read rather than stored. Once the connection has
