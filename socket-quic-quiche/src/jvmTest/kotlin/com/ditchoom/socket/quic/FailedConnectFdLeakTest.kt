@@ -91,7 +91,7 @@ class FailedConnectFdLeakTest {
                         "would prove nothing about the failure path.",
                 )
 
-                val leaked = after - before
+                val leaked = after.leakedSince(before)
                 assertTrue(
                     leaked <= MAX_TOLERATED_DESCRIPTORS,
                     "a failed connect leaks its UDP socket (#465): $ATTEMPTS attempts that all failed " +

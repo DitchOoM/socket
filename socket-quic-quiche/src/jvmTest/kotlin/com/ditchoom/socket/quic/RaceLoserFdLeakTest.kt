@@ -146,11 +146,11 @@ class RaceLoserFdLeakTest {
 
     /** What [RACES] measured races left behind, and every one of them that did not have two live candidates. */
     private class Measured(
-        val before: Long,
-        val after: Long,
+        val before: OpenHandleMeter.Handles,
+        val after: OpenHandleMeter.Handles,
         val withoutTwoLiveCandidates: List<String>,
     ) {
-        val leaked: Long get() = after - before
+        val leaked: Long get() = after.leakedSince(before)
         val counts: String get() = "before=$before after=$after"
     }
 
@@ -231,7 +231,7 @@ class RaceLoserFdLeakTest {
         return java.io.File(url.toURI()).absolutePath
     }
 
-    private fun openFileDescriptors(): Long = OpenHandleMeter.forThisProcess().openHandles()
+    private fun openFileDescriptors(): OpenHandleMeter.Handles = OpenHandleMeter.forThisProcess().openHandles()
 
     private companion object {
         const val WARMUP_RACES = 2
