@@ -19,6 +19,7 @@ import com.ditchoom.socket.quic.QuicWireConnectionId
 import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.applyQuicOptions
 import com.ditchoom.socket.quic.clientAlpnOffer
+import com.ditchoom.socket.quic.core.conn.AckRule
 import com.ditchoom.socket.quic.core.conn.ClientSession
 import com.ditchoom.socket.quic.core.conn.FlightArena
 import com.ditchoom.socket.quic.core.conn.LoopMemory
@@ -142,6 +143,7 @@ internal fun replayClient(
     serverPort: Int,
     seed: Long,
     link: LinkClass,
+    ack: AckRule = AckRule.UntilPassEnds,
 ): ReplayClient {
     val memory = EdgeMemory(factory)
     val limits = BatchLimits(maxDatagrams = BATCH, maxDatagramSize = DATAGRAM)
@@ -231,6 +233,7 @@ internal fun replayClient(
             planned.kept,
             plan.tokens,
             MismatchResponse.Fail,
+            ack,
         )
     val parts = ClientParts(wiring, peer, localAddress)
     val connection =

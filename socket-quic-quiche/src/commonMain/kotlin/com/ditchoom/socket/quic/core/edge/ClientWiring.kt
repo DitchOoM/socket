@@ -7,6 +7,7 @@ import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.QuicheConn
 import com.ditchoom.socket.quic.connectionIdRandom
+import com.ditchoom.socket.quic.core.conn.AckRule
 import com.ditchoom.socket.quic.core.conn.FlightSize
 import com.ditchoom.socket.quic.core.conn.HandshakeRule
 import com.ditchoom.socket.quic.core.conn.KeptTicket
@@ -55,4 +56,6 @@ internal class ClientWiring(
     val tokens: TokenHome = TokenHome.NotKept,
     /** What the connection does with a send time on a clock the loop does not read. */
     val mismatch: MismatchResponse = MismatchResponse.SendNow,
+    /** When the connection writes the ACK it owes. */
+    val ack: AckRule = AckRule.UntilPassEnds,
 )

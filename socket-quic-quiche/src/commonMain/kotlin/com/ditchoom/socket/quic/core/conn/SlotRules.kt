@@ -47,6 +47,14 @@ internal sealed interface AckRule {
         val rttShare: Int,
     ) : AckRule
 
+    /**
+     * A turn that resumed a handler with received data holds its ACK while that handler runs ([HandlerHold]): its reply
+     * carries it; a handler that suspends or finishes without one sends it at once; [cap] bounds a handler that runs on.
+     */
+    class UntilHandlerDone(
+        val cap: AckDelayCap,
+    ) : AckRule
+
     companion object {
         /** The max_ack_delay every connection advertises: quiche's default, as no config sets it. */
         val ADVERTISED_MAX_ACK_DELAY = MaxAckDelay(25_000_000L)
@@ -55,6 +63,8 @@ internal sealed interface AckRule {
         const val RTT_SHARE = 4
 
         fun acrossTurns(waits: WaitResolution): AckRule = AcrossTurns(AckDelayCap.within(ADVERTISED_MAX_ACK_DELAY, waits), RTT_SHARE)
+
+        fun untilHandlerDone(waits: WaitResolution): AckRule = UntilHandlerDone(AckDelayCap.within(ADVERTISED_MAX_ACK_DELAY, waits))
     }
 }
 

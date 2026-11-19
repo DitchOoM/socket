@@ -12,6 +12,7 @@ import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.QuicheConn
 import com.ditchoom.socket.quic.QuicheRecvInfo
 import com.ditchoom.socket.quic.SendTarget
+import com.ditchoom.socket.quic.core.conn.AckRule
 import com.ditchoom.socket.quic.core.demux.ServerConfig
 import com.ditchoom.socket.quic.core.loop.Loop
 import com.ditchoom.socket.quic.core.testing.VirtualClock
@@ -288,6 +289,7 @@ internal class VirtualPair private constructor(
             tls: QuicTlsConfig = coreTlsConfig(),
             serverConfig: ServerConfig = ServerConfig(),
             delivery: Delivery = Delivery.ToEnd,
+            clientAck: AckRule = AckRule.UntilPassEnds,
             body: suspend CoroutineScope.(VirtualPair) -> Unit,
         ) = runBlocking {
             val api = loadQuicheApi()
@@ -306,6 +308,7 @@ internal class VirtualPair private constructor(
                         pair.server.port,
                         1L,
                         LinkClass.Ethernet,
+                        clientAck,
                     )
                 pair.clientKey = pair.client.local
                 pair.client.parts.start()

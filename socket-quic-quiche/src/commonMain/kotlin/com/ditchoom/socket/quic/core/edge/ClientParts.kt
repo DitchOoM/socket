@@ -75,6 +75,7 @@ internal class ClientParts(
                     closeRuleOf(w.options),
                     datagramRuleOf(w.options),
                     keepAliveRuleOf(w.options),
+                    ack = w.ack,
                     clock = w.clock.base(),
                     mismatch = w.mismatch,
                 ),
