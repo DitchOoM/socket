@@ -83,6 +83,7 @@ internal class ClientParts(
                     datagramRuleOf(w.options),
                     keepAliveRuleOf(w.options),
                     clock = w.clock.base(),
+                    mismatch = w.mismatch,
                 ),
             q = QuicheConnRef(w.api, w.handle),
             side = ConnSide.Client(w.ids, w.offer, w.memory.native(ClientSession.TICKET_BYTES), w.kept, w.tokens),

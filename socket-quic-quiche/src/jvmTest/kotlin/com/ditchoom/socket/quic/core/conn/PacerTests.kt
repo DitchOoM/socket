@@ -8,7 +8,7 @@ import kotlin.test.assertEquals
 
 class PacerTests {
     private val ms = 1_000_000L
-    private val pacer = Pacer(PacingRule.ByQuiche(allowanceNanos = ms, limitNanos = 1_000 * ms))
+    private val pacer = Pacer(PacingRule.ByQuiche(allowanceNanos = ms, limitNanos = 1_000 * ms, mismatch = MismatchResponse.Fail))
 
     @Test
     fun aDatagramDueWithinTheAllowanceDoesNotHold() {

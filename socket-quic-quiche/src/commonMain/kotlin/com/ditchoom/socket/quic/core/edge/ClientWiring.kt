@@ -10,6 +10,7 @@ import com.ditchoom.socket.quic.connectionIdRandom
 import com.ditchoom.socket.quic.core.conn.FlightSize
 import com.ditchoom.socket.quic.core.conn.HandshakeRule
 import com.ditchoom.socket.quic.core.conn.KeptTicket
+import com.ditchoom.socket.quic.core.conn.MismatchResponse
 import com.ditchoom.socket.quic.core.conn.Offer
 import com.ditchoom.socket.quic.core.conn.TokenHome
 import com.ditchoom.socket.quic.core.loop.Readiness
@@ -52,4 +53,6 @@ internal class ClientWiring(
     val kept: KeptTicket = KeptTicket.None,
     /** Where the NEW_TOKEN token the server issues is kept for the next connection to it. */
     val tokens: TokenHome = TokenHome.NotKept,
+    /** What the connection does with a send time on a clock the loop does not read. */
+    val mismatch: MismatchResponse = MismatchResponse.SendNow,
 )

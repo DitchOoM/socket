@@ -6,9 +6,14 @@ import com.ditchoom.socket.quic.QuicheSendInfo
 import com.ditchoom.socket.quic.StubQuicheApi
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.testing.ConnRig
+import com.ditchoom.socket.quic.core.testing.CoreTestRules
 import com.ditchoom.socket.quic.core.testing.FakeIo
 import com.ditchoom.socket.quic.core.testing.nativeBytes
+import com.ditchoom.socket.quic.core.time.ClockBase
+import com.ditchoom.socket.quic.core.time.LoopClock
+import com.ditchoom.socket.quic.core.time.MonotonicClock
 import com.ditchoom.socket.quic.core.time.Nanos
+import com.ditchoom.socket.quic.core.time.WaitResolution
 import com.ditchoom.socket.quic.core.udp.SendBatchResult
 import com.ditchoom.socket.quic.trace.TraceCapture
 import com.ditchoom.socket.testkit.trace.TraceEvent
@@ -30,9 +35,9 @@ class PacingClockMismatchTests {
 
     @Test
     fun aLoopClockCountedFromAnOriginReportsEveryDatagramAsAMismatch() {
-        val rig = Rig(rawDueTimes = longArrayOf(origin + 2 * ms, origin + 4 * ms, origin + 6 * ms))
+        val rig = Rig(longArrayOf(origin + 2 * ms, origin + 4 * ms, origin + 6 * ms), SlotRules.Default)
 
-        MismatchResponse.sendingNowDuring { rig.conn.pass(at = 0) }
+        rig.conn.pass(at = 0)
 
         assertEquals(3L, rig.conn.counts.pacingClockMismatches, "each of the three datagrams was counted")
         assertEquals(3, rig.sent, "and each was sent at once")
@@ -40,13 +45,9 @@ class PacingClockMismatchTests {
 
     @Test
     fun aMismatchInATestRunEndsTheConnectionWithItsTypedCause() {
-        val rig = Rig(rawDueTimes = longArrayOf(origin + 2 * ms, origin + 4 * ms))
-        val before = MismatchResponse.choose(MismatchResponse.Fail)
-        try {
-            rig.conn.pass(at = 0)
-        } finally {
-            MismatchResponse.choose(before)
-        }
+        val rig = Rig(longArrayOf(origin + 2 * ms, origin + 4 * ms), CoreTestRules)
+
+        rig.conn.pass(at = 0)
 
         val end =
             assertIs<ConnEnd.ProcessingFailed>(
@@ -60,7 +61,7 @@ class PacingClockMismatchTests {
 
     @Test
     fun aRealClockReadingNeverIsAMismatch() {
-        val rig = Rig(rawDueTimes = longArrayOf(2 * ms, 4 * ms, 6 * ms))
+        val rig = Rig(longArrayOf(2 * ms, 4 * ms, 6 * ms), CoreTestRules)
 
         rig.conn.pass(at = 0)
 
@@ -85,13 +86,42 @@ class PacingClockMismatchTests {
         assertTrue("123456" in error.message, error.message)
     }
 
+    @Test
+    fun onlyTheClockLibquicheReadsIsPacedAndEveryOtherClockIsOfItsOwn() {
+        assertEquals(ClockBase.Libquiche, MonotonicClock.base())
+        assertEquals(ClockBase.Own, LoopClock { Nanos(0) }.base())
+        val waits = WaitResolution(ms)
+
+        fun rulesOn(clock: ClockBase) = SlotRules.forWaits(waits, SlotRules.Default.handshake, SlotRules.Default.close, clock = clock)
+        assertIs<PacingRule.ByQuiche>(rulesOn(ClockBase.Libquiche).pacing)
+        assertEquals(PacingRule.Unpaced, rulesOn(ClockBase.Own).pacing)
+    }
+
+    @Test
+    fun theResponseIsTheRulesAndNotAProcessWideSwitch() {
+        val failing = Rig(longArrayOf(origin + 2 * ms), CoreTestRules)
+        val sending = Rig(longArrayOf(origin + 2 * ms), SlotRules.Default)
+
+        failing.conn.pass(at = 0)
+        sending.conn.pass(at = 0)
+
+        assertEquals(1, failing.conn.sink.ended.size, "the rig whose rules fail ended")
+        assertTrue(
+            sending.conn.sink.ended
+                .isEmpty(),
+            "the rig whose rules send at once, built beside it, did not",
+        )
+        assertEquals(1, sending.sent)
+    }
+
     /** A connection over a quiche that stamps each datagram with the given raw due time, whatever the loop's clock reads. */
     private class Rig(
         rawDueTimes: LongArray,
+        rules: SlotRules,
     ) {
         private val io = FakeIo()
         var sent = 0
-        val conn = ConnRig(Stamping(StubQuicheApi(), rawDueTimes), io = io)
+        val conn = ConnRig(Stamping(StubQuicheApi(), rawDueTimes), rules = rules, io = io)
 
         init {
             io.onSend = { pending ->

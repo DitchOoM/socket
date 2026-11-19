@@ -3,6 +3,7 @@ package com.ditchoom.socket.quic.core.edge
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.WritePolicy
+import com.ditchoom.socket.quic.core.conn.MismatchResponse
 import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.testing.platformQuicheApi
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
@@ -47,6 +48,7 @@ class CoreConnectMemoryOwnerTests {
                 val connect =
                     launch(Dispatchers.IO) {
                         coreConnect(
+                            mismatch = MismatchResponse.Fail,
                             host = "127.0.0.1",
                             port = silent.localPort,
                             serverName = "localhost",

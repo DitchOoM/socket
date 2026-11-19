@@ -71,6 +71,9 @@ internal class Pacer(
         return Due.Hold
     }
 
+    /** What the connection answers a [Due.ClockMismatch] with. */
+    fun response(): MismatchResponse = rule.mismatch
+
     /** How far ahead of the loop's clock the datagram of the last [sent] was due; meaningful for [Due.Hold] and [Due.ClockMismatch]. */
     fun aheadNanos(): Long = ahead
 

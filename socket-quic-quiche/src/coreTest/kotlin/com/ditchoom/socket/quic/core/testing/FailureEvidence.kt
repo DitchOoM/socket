@@ -1,7 +1,6 @@
 package com.ditchoom.socket.quic.core.testing
 
 import com.ditchoom.socket.quic.QuicRole
-import com.ditchoom.socket.quic.core.conn.MismatchResponse
 import com.ditchoom.socket.quic.core.observe.EndedFlight
 import com.ditchoom.socket.quic.core.observe.FlightEvidence
 import kotlinx.coroutines.CoroutineScope
@@ -31,11 +30,7 @@ internal sealed interface EvidenceWritten {
  */
 internal object FailureEvidence {
     /** Starts keeping the recording of each connection that ends. */
-    fun begin() {
-        // A datagram due on a clock the loop does not read ends its connection, so the test that caused it fails.
-        MismatchResponse.failTheTest()
-        FlightEvidence.keep()
-    }
+    fun begin() = FlightEvidence.keep()
 
     /** The test passed: what was kept is dropped and nothing is written. */
     fun passed() {

@@ -100,7 +100,7 @@ internal class Egress(
             when (pacer.sent(q.api.sendInfoAtNanos(paths.sendInfo()), at)) {
                 is Due.Now -> Unit
                 is Due.Hold -> return Wrote.All
-                is Due.ClockMismatch -> if (mismatched(pacer.aheadNanos(), at, flight) == Wrote.ClockMismatch) return Wrote.ClockMismatch
+                is Due.ClockMismatch -> if (mismatched(pacer, at, flight) == Wrote.ClockMismatch) return Wrote.ClockMismatch
             }
         }
         return Wrote.BatchFull
@@ -108,16 +108,16 @@ internal class Egress(
 
     /** A due time on a clock the loop does not read: counted and recorded, then answered as [MismatchResponse] says. */
     private fun mismatched(
-        aheadNanos: Long,
+        pacer: Pacer,
         at: Nanos,
         flight: ConnFlight,
     ): Wrote {
         counts.pacingClockMismatch()
-        flight.pacingClockMismatch(at, aheadNanos)
-        return when (MismatchResponse.current()) {
+        flight.pacingClockMismatch(at, pacer.aheadNanos())
+        return when (pacer.response()) {
             is MismatchResponse.SendNow -> Wrote.All
             is MismatchResponse.Fail -> {
-                mismatchAhead = aheadNanos
+                mismatchAhead = pacer.aheadNanos()
                 Wrote.ClockMismatch
             }
         }

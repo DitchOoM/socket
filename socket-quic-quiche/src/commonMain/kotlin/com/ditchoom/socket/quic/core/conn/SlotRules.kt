@@ -10,10 +10,14 @@ import kotlin.jvm.JvmInline
 internal sealed interface PacingRule {
     data object Unpaced : PacingRule
 
-    /** A datagram due within [allowanceNanos] goes now; a time further ahead than [limitNanos] is not pacing. */
+    /**
+     * A datagram due within [allowanceNanos] goes now; a time further ahead than [limitNanos] is a [Due.ClockMismatch],
+     * which [mismatch] answers.
+     */
     class ByQuiche(
         val allowanceNanos: Long,
         val limitNanos: Long,
+        val mismatch: MismatchResponse,
     ) : PacingRule
 }
 
@@ -131,9 +135,15 @@ internal class SlotRules(
             earlyData: EarlyDataRule = EarlyDataRule.Refused,
             ack: AckRule = AckRule.UntilPassEnds,
             clock: ClockBase = ClockBase.Libquiche,
+            mismatch: MismatchResponse = MismatchResponse.SendNow,
         ) = SlotRules(
             when (clock) {
-                is ClockBase.Libquiche -> PacingRule.ByQuiche(allowanceNanos = waits.nanos, limitNanos = 1_000_000_000L)
+                is ClockBase.Libquiche ->
+                    PacingRule.ByQuiche(
+                        allowanceNanos = waits.nanos,
+                        limitNanos = 1_000_000_000L,
+                        mismatch = mismatch,
+                    )
                 is ClockBase.Own -> PacingRule.Unpaced
             },
             ack,
