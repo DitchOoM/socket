@@ -2,7 +2,6 @@
 
 package com.ditchoom.socket.quic
 
-import java.lang.foreign.Arena
 import java.lang.foreign.FunctionDescriptor
 import java.lang.foreign.Linker
 import java.lang.foreign.SymbolLookup
@@ -107,13 +106,13 @@ internal class FfmNetShim private constructor(
 
 /**
  * The `qn_*` downcalls, `static final` so C2 compiles each as a direct native call, not a generic handle
- * invocation. Bound to the JNI shim [extractedJniShim] extracts, for the process lifetime.
+ * invocation. Bound to the JNI shim ([JniShimLibrary]), for the process lifetime.
  */
 internal object NetCalls {
     private val linker: Linker = Linker.nativeLinker()
 
     // Process lifetime, never an unloadable arena: the shim links libquiche, which may not be unloaded.
-    private val lookup: SymbolLookup = SymbolLookup.libraryLookup(extractedJniShim(), Arena.global())
+    private val lookup: SymbolLookup = JniShimLibrary.lookup
 
     private fun downcall(
         name: String,

@@ -18,8 +18,18 @@ internal class CrossingCount(
     @Volatile
     private var counting = false
 
+    /**
+     * The counting api. It is its own identity: `equals` and `hashCode` answer for the proxy, never for [real], because a
+     * key that equals [real] one way and not the other breaks every map the core keys by api (the setup lane's shared
+     * configs freed one still in use).
+     */
     val api: QuicheApi =
-        Proxy.newProxyInstance(QuicheApi::class.java.classLoader, arrayOf(QuicheApi::class.java)) { _, method, args ->
+        Proxy.newProxyInstance(QuicheApi::class.java.classLoader, arrayOf(QuicheApi::class.java)) { proxy, method, args ->
+            when (method.name) {
+                "equals" -> if (method.parameterCount == 1) return@newProxyInstance proxy === args[0]
+                "hashCode" -> if (method.parameterCount == 0) return@newProxyInstance System.identityHashCode(proxy)
+                "toString" -> if (method.parameterCount == 0) return@newProxyInstance "CrossingCount($real)"
+            }
             if (counting) counts.computeIfAbsent(method.name.substringBefore('-')) { LongAdder() }.increment()
             try {
                 method.invoke(real, *(args ?: emptyArray()))

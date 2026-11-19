@@ -2,7 +2,6 @@
 
 package com.ditchoom.socket.quic
 
-import java.lang.foreign.Arena
 import java.lang.foreign.FunctionDescriptor
 import java.lang.foreign.Linker
 import java.lang.foreign.SymbolLookup
@@ -39,14 +38,9 @@ internal object FfmLibrary {
         desc: FunctionDescriptor,
     ): MethodHandle = linker.downcallHandle(Shim.lookup.find(name).orElseThrow { UnsatisfiedLinkError("quiche shim: $name") }, desc)
 
-    /** Opened on the first [shimDowncall]. Process lifetime, never an unloadable arena: the shim links libquiche. */
+    /** Chosen on the first [shimDowncall]. */
     private object Shim {
-        val lookup: SymbolLookup =
-            if (System.getProperty("os.name").lowercase().contains("windows")) {
-                quiche
-            } else {
-                SymbolLookup.libraryLookup(extractedJniShim(), Arena.global())
-            }
+        val lookup: SymbolLookup = if (System.getProperty("os.name").lowercase().contains("windows")) quiche else JniShimLibrary.lookup
     }
 
     /**

@@ -144,10 +144,19 @@ private fun quicheFfmResourceCandidates(): List<String> {
 }
 
 /**
- * The JNI shim's path in [ffmNativeDir], extracted beside the libquiche the FFM backend loaded (loaded first here),
- * so the shim's link to libquiche resolves to that same image. Not on Windows: the native stack has no poller there.
+ * The JNI shim, opened once for the process (never an unloadable arena: it links libquiche) by every FFM binding of its
+ * own exports. Once only: extracting it again rewrites the file the loader has mapped, and the next lookup in it
+ * crashes. Not on Windows, where the shim is the one library [FfmLibrary] already opened.
  */
-internal fun extractedJniShim(): String {
+internal object JniShimLibrary {
+    val lookup: SymbolLookup = SymbolLookup.libraryLookup(extractedJniShim(), Arena.global())
+}
+
+/**
+ * The JNI shim's path in [ffmNativeDir], extracted beside the libquiche the FFM backend loaded (loaded first here),
+ * so the shim's link to libquiche resolves to that same image. Called once, by [JniShimLibrary].
+ */
+private fun extractedJniShim(): String {
     loadQuicheApi()
     val base = quicheFfmResourceCandidates().first()
     val ext = base.substringAfterLast('.')
