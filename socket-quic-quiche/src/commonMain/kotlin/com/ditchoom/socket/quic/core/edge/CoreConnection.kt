@@ -104,6 +104,12 @@ internal class CoreConnection(
                 EarlyDataAcceptance.None -> super.resumption
             }
 
+    /** The loop's handler dispatcher (SPIKE). */
+    internal val loopHandlers get() = conn.handlers
+
+    /** Completes once the connection closed (SPIKE). */
+    internal val closedSignal: CompletableDeferred<*> get() = edge.closed
+
     /** The deadlines of this connection's operations that park with a bound, lent from inside. */
     internal val deadlines = OpDeadlines(conn)
 

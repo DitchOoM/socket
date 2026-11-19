@@ -56,6 +56,9 @@ internal class Conn(
     private val serverClose = ServerCloseCell()
     private var hold = LoopHold.Out
 
+    /** Any thread: the loop's handler dispatcher (SPIKE). */
+    val handlers: com.ditchoom.socket.quic.core.sched.LoopHandlers get() = port.handlers
+
     /** Any thread: whether the connection has ended, and how. */
     fun life(): Life = turn.life()
 
@@ -124,7 +127,14 @@ internal class Conn(
     /** Loop thread, once or more per pass: serves the connection if the loop is inside, and leaves when done. */
     fun turn(out: SendBatch): Collected {
         if (hold == LoopHold.Out) return Collected.Everything
-        if (turn.serve(clock.now(), out, onTimer) == Collected.MoreWaiting) return Collected.MoreWaiting
+        when (turn.serve(clock.now(), out, onTimer)) {
+            Collected.MoreWaiting -> return Collected.MoreWaiting
+            Collected.AckHeld -> {
+                port.handlers.ackHeld()
+                return Collected.AckHeld
+            }
+            Collected.Everything, Collected.Abandoned -> Unit
+        }
         return when (owner.tryLeave(loopEntrant)) {
             Leave.Left -> {
                 hold = LoopHold.Out
@@ -252,7 +262,8 @@ internal class Conn(
                     }
                     is LaneTake.None -> turn.drainAsCaller(now)
                 }
-            if (collected == Collected.MoreWaiting) continue
+            // A caller has no handler phase to wait for: a held ACK is written by its next serve, at once.
+            if (collected == Collected.MoreWaiting || collected == Collected.AckHeld) continue
             if (owner.tryLeave(callerEntrant) == Leave.Left) break
         }
         freeWhenNobodyInside()

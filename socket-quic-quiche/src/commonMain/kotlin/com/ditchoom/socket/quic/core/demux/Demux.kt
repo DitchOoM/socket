@@ -91,7 +91,7 @@ internal class Demux(
             val peer = peers[i]
             when (peer.conn.turn(out)) {
                 Collected.MoreWaiting -> if (out.room() == Room.Full) return Collected.MoreWaiting else continue
-                Collected.Everything, Collected.Abandoned -> Unit
+                Collected.Everything, Collected.Abandoned, Collected.AckHeld -> Unit
             }
             if (peer.conn.life() is Life.Ended) {
                 unroute(peer)

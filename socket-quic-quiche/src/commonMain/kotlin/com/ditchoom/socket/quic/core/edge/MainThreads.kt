@@ -1,6 +1,7 @@
 package com.ditchoom.socket.quic.core.edge
 
 import com.ditchoom.socket.quic.core.conn.CallerPlace
+import com.ditchoom.socket.quic.core.sched.LoopHandlers
 import kotlinx.coroutines.MainCoroutineDispatcher
 import kotlin.coroutines.ContinuationInterceptor
 import kotlin.coroutines.CoroutineContext
@@ -31,6 +32,8 @@ internal fun callerPlaceOf(
     main: MainThreads,
 ): CallerPlace {
     if (context[ContinuationInterceptor] is MainCoroutineDispatcher) return CallerPlace.HandToLoop
+    // SPIKE: a handler on a loop hands its work to the loop's next serve, in the same pass.
+    if (context[ContinuationInterceptor] is LoopHandlers) return CallerPlace.HandToLoop
     return when (main) {
         is MainThreads.ByDispatcher -> CallerPlace.MayEnter
         is MainThreads.Known -> if (main.thread.isCurrent()) CallerPlace.HandToLoop else CallerPlace.MayEnter

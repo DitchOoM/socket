@@ -1,6 +1,7 @@
 package com.ditchoom.socket.quic.core.conn
 
 import com.ditchoom.socket.quic.core.life.Life
+import com.ditchoom.socket.quic.core.sched.HandlerMode
 import com.ditchoom.socket.quic.core.stream.Backlog
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.time.WakeSink
@@ -65,8 +66,12 @@ private fun Datagrams.output(): Long =
     }
 
 /** What a turn whose ACK waits leaves: a serve again in this pass, or nothing until the reply or the deadline. */
-internal fun AckStep.collected(): Collected =
+internal fun AckStep.collected(handlers: HandlerMode): Collected =
     when (this) {
-        AckStep.UntilPassEnds -> Collected.MoreWaiting
+        AckStep.UntilPassEnds ->
+            when (handlers) {
+                HandlerMode.Idle -> Collected.MoreWaiting
+                HandlerMode.Active -> Collected.AckHeld
+            }
         AckStep.Write, AckStep.UntilReply -> Collected.Everything
     }
