@@ -24,7 +24,7 @@ internal object SocketOpening {
             return NativeOpened.LayoutMismatch(SpecLayoutMismatch(SpecLayout.FINGERPRINT, reported))
         }
         val request =
-            if (gro is GroRequest.Requested && ceiling.usesSegments() && maxDatagrams >= NativeSocket.GRO_MAX_DATAGRAMS) {
+            if (gro is GroRequest.Requested && GroRequest.of(ceiling) is GroRequest.Requested && maxDatagrams >= NativeSocket.GRO_MAX_DATAGRAMS) {
                 GroRequest.Requested
             } else {
                 GroRequest.Declined
@@ -85,13 +85,6 @@ internal object SocketOpening {
             gro == Gro.On -> BatchCapability.Segmented(maxDatagrams, Gso.Off, gro)
             multi -> BatchCapability.Multi(maxDatagrams)
             else -> BatchCapability.OneByOne
-        }
-
-    /** Only the batchings that segment ask for `UDP_GRO`: it is the receive half of `UDP_SEGMENT`. */
-    private fun UdpBatching.usesSegments(): Boolean =
-        when (this) {
-            UdpBatching.Newest, UdpBatching.PublicCallsOnly -> true
-            UdpBatching.WithoutSegments, UdpBatching.OneDatagramPerCall -> false
         }
 
     private const val CAP_MULTI = 1

@@ -135,7 +135,7 @@ internal fun openStackSocket(
                         buffers.sendBytes,
                         ceiling,
                         maxDatagrams,
-                        GroRequest.Declined,
+                        GroRequest.of(ceiling),
                     )
             ) {
                 is NativeOpened.Opened -> {
