@@ -5,11 +5,12 @@ import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.Life
 import com.ditchoom.socket.quic.core.sched.SendRecord
 import com.ditchoom.socket.quic.core.time.Nanos
+import kotlinx.coroutines.Runnable
 
 /**
  * Serves the handshake. Before it completes, a server that accepted 0-RTT announces it once and hands up the streams
  * that arrived in it as [Arrival.Early]; once complete, streams are woken and a client's first session ticket goes up.
- * The serve that completes it calls [announceEstablished] after its output.
+ * The report of its completion goes up in [served], after the serve's output.
  */
 internal fun ConnParts.handshakeStep(
     now: Nanos,
@@ -29,16 +30,25 @@ internal fun ConnParts.handshakeStep(
 }
 
 /**
- * Once, after the output of the serve whose [handshakeStep] answered [HandshakeStep.JustEstablished]: the report goes
- * up. The datagram room is read first, after quiche sized its first datagrams past the handshake: a caller may read the
- * room the moment it resumes.
+ * The end of a serve after which the connection is open. A handshake that completed in it is reported now, after its
+ * output: quiche sizes the first packets it sends after the handshake to its path MTU probe and those during it to the
+ * current MTU, and the datagram room is read first, because a caller may read it the moment it resumes. The timer is
+ * armed when the serve collected everything.
  */
-internal fun ConnParts.announceEstablished(
+internal fun ConnParts.served(
     now: Nanos,
     paths: Paths,
+    collected: Collected,
+    fire: Runnable,
 ) {
-    slots.datagrams.wake()
-    sink.established(handshake.report(now, paths.read(), outcome()))
+    when (handshake.announcement()) {
+        Announcement.Due -> {
+            slots.datagrams.wake()
+            sink.established(handshake.report(now, paths.read(), outcome()))
+        }
+        Announcement.None -> Unit
+    }
+    if (collected == Collected.Everything) rearm(now, fire)
 }
 
 /** The end of a handshake that passed its deadline: sent to and never answered, or never sent for the network refused each datagram. */

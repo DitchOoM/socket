@@ -72,7 +72,7 @@ internal class Turn(
             }
             val collected = step(now, out)
             when (c.life.view()) {
-                is Life.Open -> if (collected == Collected.Everything) c.rearm(now, fire)
+                is Life.Open -> c.served(now, paths, collected, fire)
                 is Life.Over -> return over(now, out, fire)
             }
             c.flight.toTrace()
@@ -211,31 +211,12 @@ internal class Turn(
         c.release.free(paths)
     }
 
-    /**
-     * Serves an open connection: the handshake, quiche's own close, a flush that is over, paths, and output. A handshake
-     * that completed in this serve is announced after the output: quiche sizes the first datagrams it sends after the
-     * handshake differently from those during it, and the datagram room a caller reads once told must be the one sends
-     * now go with.
-     */
+    /** Serves an open connection: the handshake, quiche's own close, a flush that is over, paths, and output. */
     private fun step(
         now: Nanos,
         out: SendBatch,
     ): Collected {
-        val shook = c.handshakeStep(now, paths)
-        val collected = afterHandshake(shook, now, out)
-        when (shook) {
-            HandshakeStep.JustEstablished -> if (c.life.view() is Life.Open) c.announceEstablished(now, paths)
-            HandshakeStep.Handshaking, HandshakeStep.Established, HandshakeStep.DeadlinePassed -> Unit
-        }
-        return collected
-    }
-
-    private fun afterHandshake(
-        shook: HandshakeStep,
-        now: Nanos,
-        out: SendBatch,
-    ): Collected {
-        when (shook) {
+        when (c.handshakeStep(now, paths)) {
             HandshakeStep.Handshaking, HandshakeStep.JustEstablished, HandshakeStep.Established -> Unit
             HandshakeStep.DeadlinePassed -> {
                 val end = c.handshakeEnd(now, paths)
