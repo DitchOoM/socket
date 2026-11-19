@@ -112,6 +112,9 @@ internal class Conn(
         }
     }
 
+    /** Any thread: whether callers resumed with data are watched until their handlers suspend. */
+    fun handlerWatch(): HandlerWatch = turn.handlerWatch()
+
     /** Any thread: the bytes one datagram may carry as of the connection's last turn, or 0. */
     fun datagramMaxBytes(): Int = turn.datagramMaxBytes()
 
@@ -283,9 +286,7 @@ internal class Conn(
         }
     }
 
-    private fun scheduleServe() {
-        if (serveQueued.compareAndSet(IDLE, QUEUED)) port.submit(serve)
-    }
+    private fun scheduleServe() = if (serveQueued.compareAndSet(IDLE, QUEUED)) port.submit(serve) else Unit
 
     /** Loop thread: the connection's deadline fell due; quiche's timeout runs inside, with the other work. */
     private fun timerFired() {

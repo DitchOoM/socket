@@ -112,8 +112,9 @@ private fun composed(
             ack =
                 when (val r = rules.ack) {
                     is AckRule.Immediate -> AckCadence.Immediate
-                    is AckRule.UntilPassEnds, is AckRule.UntilHandlerDone -> AckCadence.UntilPassEnds(SamePassHold())
+                    is AckRule.UntilPassEnds -> AckCadence.UntilPassEnds(SamePassHold())
                     is AckRule.AcrossTurns -> AckCadence.AcrossTurns(AckHold(r))
+                    is AckRule.UntilHandlerDone -> AckCadence.UntilHandlerDone(HandlerHold(r, RunningHandlers()))
                 },
             paths =
                 when (side) {

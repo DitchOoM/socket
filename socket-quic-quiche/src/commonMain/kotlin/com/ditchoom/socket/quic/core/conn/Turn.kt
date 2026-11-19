@@ -182,6 +182,8 @@ internal class Turn(
     /** Any thread: the ids this connection's peer retired, taken once. */
     fun idsRetired(): List<RetiredId> = c.slots.paths.idsRetired()
 
+    fun handlerWatch(): HandlerWatch = c.slots.ack.watch()
+
     /** Any thread: the bytes one datagram may carry as of the connection's last turn, or 0. */
     fun datagramMaxBytes(): Int = c.slots.datagrams.maxBytes()
 

@@ -67,6 +67,7 @@ internal class ReadOp(
     private val idle: IdleRead,
     factory: BufferFactory,
     private val sizing: ReadSizing,
+    private val resume: ReadResume = ReadResume.Plain,
 ) : ConnWork(),
     Waiter,
     Bounded {
@@ -83,7 +84,11 @@ internal class ReadOp(
      */
     suspend fun answer(): ReadResult {
         val context = currentCoroutineContext()
-        val answer = hand.await(context) { cancelled() }
+        val answer =
+            when (val r = resume) {
+                is ReadResume.Plain -> hand.await(context) { cancelled() }
+                is ReadWatch -> hand.awaitWatched(context, r) { cancelled() }
+            }
         if (answer is ReadAnswer.Data) sizing.read(asked, answer.buffer.remaining())
         return resultOf(answer, context)
     }

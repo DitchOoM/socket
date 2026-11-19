@@ -26,6 +26,11 @@ internal sealed interface AckCadence {
     class AcrossTurns(
         val hold: AckHold,
     ) : AckCadence
+
+    /** A turn that resumed a handler with received data holds its ACK while that handler runs ([HandlerHold]). */
+    class UntilHandlerDone(
+        val hold: HandlerHold,
+    ) : AckCadence
 }
 
 internal sealed interface Paths {

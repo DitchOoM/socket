@@ -1,54 +1,8 @@
-@file:OptIn(ExperimentalAtomicApi::class)
-
 package com.ditchoom.socket.quic.core.conn
 
 import com.ditchoom.socket.quic.core.observe.Confined
-import com.ditchoom.socket.quic.core.observe.Published
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.time.WakeSink
-import kotlin.concurrent.atomics.AtomicLong
-import kotlin.concurrent.atomics.AtomicReference
-import kotlin.concurrent.atomics.ExperimentalAtomicApi
-import kotlin.concurrent.atomics.decrementAndFetch
-import kotlin.concurrent.atomics.incrementAndFetch
-
-/** Whether an ACK waits for the handlers of received data, as [RunningHandlers] publishes it. */
-internal enum class HandlerAck { Sent, Waiting }
-
-/** Whether the connection must be served now: the last running handler ended while an ACK waits for it. */
-internal enum class ServeNow { No, Yes }
-
-/**
- * The handlers of a connection's received data that run now: a caller resumed with data, from its resumption until it
- * suspends again or finishes. The connection counts a handler in when it resumes the caller; the caller's thread counts
- * it out. Lock-free: whoever counts the last handler out reads [ack] after, and the connection that starts a wait
- * publishes [ack] and reads the count after, so one of the two sees the other and the ACK never waits for nobody.
- */
-@Published
-internal class RunningHandlers {
-    private val running = AtomicLong(0L)
-    private val ack = AtomicReference(HandlerAck.Sent)
-
-    /** Inside: a caller was resumed with data its handler now runs on. */
-    fun began() {
-        running.incrementAndFetch()
-    }
-
-    /** The handler's thread: the handler suspended or finished. */
-    fun ended(): ServeNow =
-        when {
-            running.decrementAndFetch() != 0L -> ServeNow.No
-            ack.load() == HandlerAck.Waiting -> ServeNow.Yes
-            else -> ServeNow.No
-        }
-
-    fun running(): Long = running.load()
-
-    /** Inside: an ACK waits from now; the count is read again after this. */
-    fun waiting() = ack.store(HandlerAck.Waiting)
-
-    fun sent() = ack.store(HandlerAck.Sent)
-}
 
 /** Whether a turn's ACK waits: for nothing, for the serve that ends this pass, or for running handlers. */
 private sealed interface HandlerPhase {
@@ -57,7 +11,7 @@ private sealed interface HandlerPhase {
     data object PassWaiting : HandlerPhase
 
     /** Held until [deadlineNanos] at most; [datagrams] arrived since it began. */
-    class Held : HandlerPhase {
+    class AwaitingHandlers : HandlerPhase {
         var deadlineNanos = 0L
         var datagrams = 0
     }
@@ -81,7 +35,7 @@ internal class HandlerHold(
     private val rule: AckRule.UntilHandlerDone,
     val handlers: RunningHandlers,
 ) {
-    private val held = HandlerPhase.Held()
+    private val held = HandlerPhase.AwaitingHandlers()
     private var phase: HandlerPhase = HandlerPhase.Open
     private var received = 0
     private var asking = 0
@@ -123,7 +77,7 @@ internal class HandlerHold(
         val forced = must
         must = Must.No
         when (val p = phase) {
-            is HandlerPhase.Held -> {
+            is HandlerPhase.AwaitingHandlers -> {
                 p.datagrams += datagrams
                 when {
                     reply -> ended(HandlerEnd.Replied)
@@ -157,14 +111,14 @@ internal class HandlerHold(
             HoldGate.Open -> Unit
             HoldGate.Handshaking, HoldGate.Closing, HoldGate.PathMoving, HoldGate.Backlogged, HoldGate.LossRecent -> {
                 when (phase) {
-                    is HandlerPhase.Held -> ended(HandlerEnd.Capped)
+                    is HandlerPhase.AwaitingHandlers -> ended(HandlerEnd.Capped)
                     is HandlerPhase.Open, is HandlerPhase.PassWaiting -> Unit
                 }
                 return AckStep.Write
             }
         }
         when (phase) {
-            is HandlerPhase.Held -> return AckStep.UntilReply
+            is HandlerPhase.AwaitingHandlers -> return AckStep.UntilReply
             is HandlerPhase.Open, is HandlerPhase.PassWaiting -> Unit
         }
         if (rule.cap.nanos <= 0L) return AckStep.Write
@@ -172,19 +126,20 @@ internal class HandlerHold(
         held.datagrams = asking
         phase = held
         holds++
-        handlers.waiting()
-        // The last handler may have ended before the wait was published: it saw nothing to serve.
-        if (handlers.running() == 0L) {
-            ended(HandlerEnd.Done)
-            return AckStep.Write
+        return when (handlers.waiting()) {
+            Handlers.Running -> AckStep.UntilReply
+            // The last handler ended before the wait was published: it saw nothing to serve.
+            Handlers.NoneRunning -> {
+                ended(HandlerEnd.Done)
+                AckStep.Write
+            }
         }
-        return AckStep.UntilReply
     }
 
     fun offerWake(sink: WakeSink) =
         when (val p = phase) {
             is HandlerPhase.Open, is HandlerPhase.PassWaiting -> Unit
-            is HandlerPhase.Held -> sink.offer(Nanos(p.deadlineNanos))
+            is HandlerPhase.AwaitingHandlers -> sink.offer(Nanos(p.deadlineNanos))
         }
 
     fun deadlineLeft(): Stale = stale.also { stale = Stale.No }

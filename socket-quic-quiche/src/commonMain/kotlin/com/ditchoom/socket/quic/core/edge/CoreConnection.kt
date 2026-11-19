@@ -202,8 +202,9 @@ internal class CoreConnection(
         stream: QuicStreamId,
         deadline: Duration,
         sizing: ReadSizing,
+        resume: ReadResume,
     ): ReadResult {
-        val op = ReadOp(stream, deadline, deadlines, conn, edge.reads, bufferFactory, sizing)
+        val op = ReadOp(stream, deadline, deadlines, conn, edge.reads, bufferFactory, sizing, resume)
         conn.submit(op, placeOf(currentCoroutineContext()))
         return op.answer()
     }
@@ -255,6 +256,8 @@ internal class CoreConnection(
 
     /** Lets a client's first flight, held for 0-RTT, leave. */
     fun releaseFirstFlight() = conn.submit(ReleaseFlight(), CallerPlace.HandToLoop)
+
+    internal fun readResume(): ReadResume = readResumeOf(conn)
 
     /** A caller on a main thread never makes system calls; any other may. See [callerPlaceOf]. */
     internal fun placeOf(context: CoroutineContext): CallerPlace = callerPlaceOf(context, mainThreadsOfThisRuntime)

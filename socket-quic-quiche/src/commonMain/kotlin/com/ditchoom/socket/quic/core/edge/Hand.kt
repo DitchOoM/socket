@@ -67,7 +67,12 @@ internal value class Hand<A : HandAnswer> private constructor(
     fun take(caller: Continuation<A>): Any {
         val first = phase.load()
         if (first is HandAnswer) return first
-        val waiting = HandPhase.Waiting(caller.intercepted())
+        return park(caller.intercepted())
+    }
+
+    /** The caller: leaves [resumes] for whoever answers, or returns the answer that landed first. */
+    fun park(resumes: Continuation<A>): Any {
+        val waiting = HandPhase.Waiting(resumes)
         while (true) {
             when (val now = phase.load()) {
                 is HandAnswer -> return now

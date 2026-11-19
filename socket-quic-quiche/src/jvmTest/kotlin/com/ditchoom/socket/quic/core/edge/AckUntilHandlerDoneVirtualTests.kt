@@ -64,7 +64,11 @@ class AckUntilHandlerDoneVirtualTests {
             val replies = server.filter { it.bytes.size > ACK_ONLY }
             assertEquals(ECHOES, replies.size, "every request was answered: ${shown(server)}")
             for (n in 0 until ECHOES) {
-                assertEquals(requests[n].at + pair.oneWay.inWholeNanoseconds, replies[n].at, "reply $n left the instant its request arrived")
+                assertEquals(
+                    requests[n].at + pair.oneWay.inWholeNanoseconds,
+                    replies[n].at,
+                    "reply $n left the instant its request arrived",
+                )
             }
         }
 
@@ -108,7 +112,7 @@ class AckUntilHandlerDoneVirtualTests {
             stream.write(payload(ECHO), 1.seconds)
             pair.runFor(pair.oneWay * 6)
             running.set(LET_GO)
-            pair.runUntil { running.get() == RUN }
+            driveUntil(pair) { running.get() == RUN }
             parkedOnItsRead()
             val delay = ackDelayOfOneRequest(pair, stream)
             running.set(LET_GO)
@@ -141,10 +145,13 @@ class AckUntilHandlerDoneVirtualTests {
             lost.write(payload(ECHO), 1.seconds)
             kept.write(payload(ECHO), 1.seconds)
             pair.runFor(pair.oneWay * 6)
-            pair.runUntil { accepted.isCompleted }
+            driveUntil(pair) { accepted.isCompleted }
             running.set(RUN)
             parkedOnItsRead()
-            pair.lose(End.Client, 1)
+            // quiche counts a gap of two packet numbers or more: a gap of one it makes itself.
+            pair.lose(End.Client, 2)
+            lost.write(payload(ECHO), 1.seconds)
+            pair.runFor(1.milliseconds)
             lost.write(payload(ECHO), 1.seconds)
             pair.runFor(pair.oneWay)
             val from = pair.now()
@@ -155,6 +162,19 @@ class AckUntilHandlerDoneVirtualTests {
             running.set(LET_GO)
             assertEquals(request.at + pair.oneWay.inWholeNanoseconds, ack.at, "a gap in what arrived is acknowledged at once")
         }
+
+    /** Drives the pair a millisecond of virtual time per millisecond of wall clock until [done]: a thread of its own decides it. */
+    private suspend fun driveUntil(
+        pair: VirtualPair,
+        done: () -> Boolean,
+    ) {
+        val limit = System.nanoTime() + 10.seconds.inWholeNanoseconds
+        while (!done()) {
+            check(System.nanoTime() < limit) { "not done within 10 s of wall clock" }
+            pair.runFor(1.milliseconds)
+            Thread.sleep(1)
+        }
+    }
 
     /** A handler on another thread parks its next read within this wall-clock wait: only a parked read's caller is resumed. */
     private fun parkedOnItsRead() = Thread.sleep(PARK_MILLIS)
@@ -215,7 +235,9 @@ class AckUntilHandlerDoneVirtualTests {
 
         /** Larger than any datagram that carries only an ACK, smaller than one that carries [ECHO] bytes. */
         const val ACK_ONLY = 80
-        const val WARM = 4
+
+        /** Enough round trips at the longest delay for loss seen while the connection's RTT settles to be forgotten. */
+        const val WARM = 10
         const val ECHOES = 16
         const val RUN = 0
         const val LET_GO = 1

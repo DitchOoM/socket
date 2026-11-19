@@ -11,6 +11,7 @@ internal fun AckCadence.received() =
         is AckCadence.Immediate -> Unit
         is AckCadence.UntilPassEnds -> hold.received()
         is AckCadence.AcrossTurns -> hold.received()
+        is AckCadence.UntilHandlerDone -> hold.received()
     }
 
 /** The turn has news that needs a write. */
@@ -18,6 +19,7 @@ internal fun AckCadence.mustWrite() =
     when (this) {
         is AckCadence.Immediate, is AckCadence.UntilPassEnds -> Unit
         is AckCadence.AcrossTurns -> hold.mustWrite()
+        is AckCadence.UntilHandlerDone -> hold.mustWrite()
     }
 
 /** Whether a hold that ended left its deadline armed, taken once: the timer is armed afresh for what is due. */
@@ -25,15 +27,17 @@ internal fun AckCadence.deadlineLeft(): Stale =
     when (this) {
         is AckCadence.Immediate, is AckCadence.UntilPassEnds -> Stale.No
         is AckCadence.AcrossTurns -> hold.deadlineLeft()
+        is AckCadence.UntilHandlerDone -> hold.deadlineLeft()
     }
 
 internal fun AckCadence.offerWake(sink: WakeSink) =
     when (this) {
         is AckCadence.Immediate, is AckCadence.UntilPassEnds -> Unit
         is AckCadence.AcrossTurns -> hold.offerWake(sink)
+        is AckCadence.UntilHandlerDone -> hold.offerWake(sink)
     }
 
-/** Whether the turn at [now] writes, or lets the ACK quiche owes wait for a reply ([SamePassHold], [AckHold]). */
+/** Whether the turn at [now] writes, or lets the ACK quiche owes wait for a reply ([SamePassHold], [AckHold], [HandlerHold]). */
 internal fun ConnParts.ackStep(now: Nanos): AckStep =
     when (val ack = slots.ack) {
         is AckCadence.Immediate -> AckStep.Write
@@ -43,6 +47,19 @@ internal fun ConnParts.ackStep(now: Nanos): AckStep =
                 AckAsk.Write -> AckStep.Write
                 AckAsk.Gate -> ack.hold.gated(now, holdGate(now), ackReads.smoothedRttNanos())
             }
+        is AckCadence.UntilHandlerDone ->
+            when (ack.hold.decide(now, streams.handedUp, streams.io.output + slots.datagrams.output())) {
+                HandlerAsk.Write -> AckStep.Write
+                HandlerAsk.UntilPassEnds -> AckStep.UntilPassEnds
+                HandlerAsk.Gate -> ack.hold.gated(now, holdGate(now))
+            }
+    }
+
+/** Whether callers resumed with received data are watched until their handlers suspend: only for [HandlerHold]. */
+internal fun AckCadence.watch(): HandlerWatch =
+    when (this) {
+        is AckCadence.Immediate, is AckCadence.UntilPassEnds, is AckCadence.AcrossTurns -> HandlerWatch.Off
+        is AckCadence.UntilHandlerDone -> HandlerWatch.On(hold.handlers)
     }
 
 /** Why the connection may not hold its ACK at [now], or [HoldGate.Open]. */
