@@ -41,7 +41,6 @@ import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.MainCoroutineDispatcher
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.Flow
@@ -54,7 +53,6 @@ import kotlinx.coroutines.selects.onTimeout
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
-import kotlin.coroutines.ContinuationInterceptor
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.resume
 import kotlin.time.Duration
@@ -258,9 +256,8 @@ internal class CoreConnection(
     /** Lets a client's first flight, held for 0-RTT, leave. */
     fun releaseFirstFlight() = conn.submit(ReleaseFlight(), CallerPlace.HandToLoop)
 
-    /** A caller on a main dispatcher never makes system calls; any other may. */
-    internal fun placeOf(context: CoroutineContext): CallerPlace =
-        if (context[ContinuationInterceptor] is MainCoroutineDispatcher) CallerPlace.HandToLoop else CallerPlace.MayEnter
+    /** A caller on a main thread never makes system calls; any other may. See [callerPlaceOf]. */
+    internal fun placeOf(context: CoroutineContext): CallerPlace = callerPlaceOf(context, mainThreadsOfThisRuntime)
 }
 
 /** What every core connection requires of a caller's buffers: an address quiche reads in place. */
