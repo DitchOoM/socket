@@ -8,7 +8,7 @@ import com.ditchoom.socket.quic.core.udp.NativeBytes
 /** Whether the backlog took a datagram. */
 internal enum class Held { Yes, Full }
 
-/** What a [BacklogChunks] answers. */
+/** What making a chunk of the backlog answered. */
 internal sealed interface ChunkMade {
     /** At least [InitialBacklog.CHUNK_BYTES] of memory, for the backlog to keep. */
     class Made(
@@ -18,24 +18,56 @@ internal sealed interface ChunkMade {
     data object Refused : ChunkMade
 }
 
-/** Makes the backlog's chunks: the first where the backlog is built, the rest on the loop thread. */
-internal fun interface BacklogChunks {
-    fun make(): ChunkMade
-}
-
 /** [InitialBacklog.SLOTS_PER_CHUNK] slots in one block, filled and emptied in order. */
+@LoopOnly
 private class Chunk(
     bytes: NativeBytes,
 ) {
-    val slots = Array(InitialBacklog.SLOTS_PER_CHUNK) { bytes.window(it * InitialBacklog.SLOT_BYTES, InitialBacklog.SLOT_BYTES) }
-    val lengths = IntArray(InitialBacklog.SLOTS_PER_CHUNK)
-    val froms = Array(InitialBacklog.SLOTS_PER_CHUNK) { EMPTY }
-    val tos = Array<ArrivedOn>(InitialBacklog.SLOTS_PER_CHUNK) { ArrivedOn.Unreported }
-    var read = 0
-    var written = 0
+    private val slots = Array(InitialBacklog.SLOTS_PER_CHUNK) { bytes.window(it * InitialBacklog.SLOT_BYTES, InitialBacklog.SLOT_BYTES) }
+    private val lengths = IntArray(InitialBacklog.SLOTS_PER_CHUNK)
+    private val froms = Array(InitialBacklog.SLOTS_PER_CHUNK) { EMPTY }
+    private val tos = Array<ArrivedOn>(InitialBacklog.SLOTS_PER_CHUNK) { ArrivedOn.Unreported }
+    private var read = 0
+    private var written = 0
+
+    fun hasRoom(): Boolean = written < InitialBacklog.SLOTS_PER_CHUNK
+
+    fun put(
+        datagram: NativeBytes,
+        length: Int,
+        from: PathKey,
+        to: ArrivedOn,
+    ) {
+        slots[written].copyFrom(datagram, 0, 0, length)
+        lengths[written] = length
+        froms[written] = from
+        tos[written] = to
+        written++
+    }
+
+    fun oldest(): NativeBytes = slots[read]
+
+    fun oldestLength(): Int = lengths[read]
+
+    fun oldestFrom(): PathKey = froms[read]
+
+    fun oldestTo(): ArrivedOn = tos[read]
+
+    /** Drops the oldest datagram; answers whether the chunk is empty, and then starts it over. */
+    fun dropOldest(): Emptied {
+        froms[read] = EMPTY
+        tos[read] = ArrivedOn.Unreported
+        read++
+        if (read < written) return Emptied.No
+        read = 0
+        written = 0
+        return Emptied.Yes
+    }
 }
 
-/** Whether the newest chunk has a free slot. */
+private enum class Emptied { Yes, No }
+
+/** Whether the backlog has a slot for one more Initial. */
 private enum class Tail { Room, Full }
 
 /**
@@ -47,7 +79,7 @@ private enum class Tail { Room, Full }
 @LoopOnly
 internal class InitialBacklog(
     private val capacity: Int,
-    private val chunks: BacklogChunks,
+    private val chunks: () -> ChunkMade,
 ) {
     private val filling = ArrayList<Chunk>()
     private val spare = ArrayList<Chunk>()
@@ -55,7 +87,7 @@ internal class InitialBacklog(
     private var made = 0
 
     init {
-        when (val first = chunks.make()) {
+        when (val first = chunks()) {
             is ChunkMade.Made -> spare.add(chunkOf(first.bytes))
             is ChunkMade.Refused -> Unit
         }
@@ -73,37 +105,26 @@ internal class InitialBacklog(
         to: ArrivedOn,
     ): Held {
         if (size == capacity || length > SLOT_BYTES || tail() == Tail.Full) return Held.Full
-        val chunk = filling[filling.size - 1]
-        val at = chunk.written
-        chunk.slots[at].copyFrom(datagram, 0, 0, length)
-        chunk.lengths[at] = length
-        chunk.froms[at] = from
-        chunk.tos[at] = to
-        chunk.written = at + 1
+        filling[filling.size - 1].put(datagram, length, from, to)
         size++
         return Held.Yes
     }
 
     /** The oldest datagram held, valid until [dropOldest]. */
-    fun oldest(): NativeBytes = filling[0].slots[filling[0].read]
+    fun oldest(): NativeBytes = filling[0].oldest()
 
-    fun oldestLength(): Int = filling[0].lengths[filling[0].read]
+    fun oldestLength(): Int = filling[0].oldestLength()
 
-    fun oldestFrom(): PathKey = filling[0].froms[filling[0].read]
+    fun oldestFrom(): PathKey = filling[0].oldestFrom()
 
-    fun oldestTo(): ArrivedOn = filling[0].tos[filling[0].read]
+    fun oldestTo(): ArrivedOn = filling[0].oldestTo()
 
     fun dropOldest() {
         val head = filling[0]
-        head.froms[head.read] = EMPTY
-        head.tos[head.read] = ArrivedOn.Unreported
-        head.read++
         size--
-        if (head.read == head.written) {
-            filling.removeAt(0)
-            head.read = 0
-            head.written = 0
-            spare.add(head)
+        when (head.dropOldest()) {
+            Emptied.No -> Unit
+            Emptied.Yes -> spare.add(filling.removeAt(0))
         }
     }
 
@@ -112,13 +133,13 @@ internal class InitialBacklog(
 
     /** Makes room at the back: the newest chunk's next slot, else a spare chunk or a new one. */
     private fun tail(): Tail {
-        if (filling.isNotEmpty() && filling[filling.size - 1].written < SLOTS_PER_CHUNK) return Tail.Room
+        if (filling.isNotEmpty() && filling[filling.size - 1].hasRoom()) return Tail.Room
         if (spare.isNotEmpty()) {
             filling.add(spare.removeAt(spare.size - 1))
             return Tail.Room
         }
         if (made == maxChunks) return Tail.Full
-        return when (val grown = chunks.make()) {
+        return when (val grown = chunks()) {
             is ChunkMade.Made -> {
                 filling.add(chunkOf(grown.bytes))
                 Tail.Room

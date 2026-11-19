@@ -7,45 +7,12 @@ import com.ditchoom.socket.quic.core.udp.SendBatch
  * Where an endpoint's serve collects its output. Between serves an outbox holds only what its socket refused, so no
  * datagram of one socket is ever in a batch another socket sends. The loop thread only.
  */
-@LoopOnly
-internal sealed interface Outbox {
-    /** The batch this serve collects into and sends from. */
-    fun batch(): SendBatch
-
-    /** After a serve sent what its socket took: what is left in [batch] waits for the socket to be writable. */
-    fun served()
-
-    /** Whether datagrams wait for the socket to be writable. */
-    fun holds(): Boolean
-
-    /** The endpoint left its loop: what it holds is dropped and its batch, if it borrowed one, goes back. */
-    fun left()
-}
+internal sealed interface Outbox
 
 /** A batch only one endpoint collects into: a server's, whose one socket carries every connection. */
-@LoopOnly
 internal class OwnBatch(
-    private val batch: SendBatch,
-) : Outbox {
-    override fun batch(): SendBatch = batch
-
-    override fun served() = Unit
-
-    override fun holds(): Boolean = batch.pending > 0
-
-    override fun left() = batch.took(batch.pending)
-}
-
-/** What a client endpoint holds between serves. */
-private sealed interface Kept {
-    /** Nothing: its next serve collects into the loop's batch. */
-    data object Nothing : Kept
-
-    /** Datagrams its socket refused, in a batch of the loop's that is this endpoint's until they are out. */
-    class Refused(
-        val batch: SendBatch,
-    ) : Kept
-}
+    val batch: SendBatch,
+) : Outbox
 
 /**
  * A client endpoint's outbox: its serves collect into the loop's one batch, which every endpoint of the loop shares, one
@@ -59,13 +26,13 @@ internal class SharedBatch(
 ) : Outbox {
     private var kept: Kept = Kept.Nothing
 
-    override fun batch(): SendBatch =
+    fun collecting(): SendBatch =
         when (val now = kept) {
             is Kept.Nothing -> loop.batch()
             is Kept.Refused -> now.batch
         }
 
-    override fun served() {
+    fun served() {
         when (val now = kept) {
             is Kept.Nothing -> {
                 if (loop.batch().pending == 0) return
@@ -83,13 +50,13 @@ internal class SharedBatch(
         }
     }
 
-    override fun holds(): Boolean =
-        when (val now = kept) {
+    fun holds(): Boolean =
+        when (kept) {
             is Kept.Nothing -> false
             is Kept.Refused -> true
         }
 
-    override fun left() {
+    fun left() {
         when (val now = kept) {
             is Kept.Nothing -> Unit
             is Kept.Refused -> {
@@ -100,6 +67,45 @@ internal class SharedBatch(
         }
     }
 }
+
+/** What a client endpoint holds between serves. */
+private sealed interface Kept {
+    /** Nothing: its next serve collects into the loop's batch. */
+    data object Nothing : Kept
+
+    /** Datagrams its socket refused, in a batch of the loop's that is this endpoint's until they are out. */
+    class Refused(
+        val batch: SendBatch,
+    ) : Kept
+}
+
+/** The batch this serve collects into and sends from. */
+internal fun Outbox.batch(): SendBatch =
+    when (this) {
+        is OwnBatch -> batch
+        is SharedBatch -> collecting()
+    }
+
+/** After a serve sent what its socket took: what is left in [batch] waits for the socket to be writable. */
+internal fun Outbox.served() =
+    when (this) {
+        is OwnBatch -> Unit
+        is SharedBatch -> served()
+    }
+
+/** Whether datagrams wait for the socket to be writable. */
+internal fun Outbox.holds(): Boolean =
+    when (this) {
+        is OwnBatch -> batch.pending > 0
+        is SharedBatch -> holds()
+    }
+
+/** The endpoint left its loop: what it holds is dropped, and a batch it kept goes back to the loop. */
+internal fun Outbox.left() =
+    when (this) {
+        is OwnBatch -> batch.took(batch.pending)
+        is SharedBatch -> left()
+    }
 
 /** What [LoopSend.handOver] answers. */
 internal sealed interface HandOver {
@@ -112,7 +118,7 @@ internal sealed interface HandOver {
     data object NoSpare : HandOver
 }
 
-/** What a [SpareSource] answers. */
+/** What making a spare batch answered. */
 internal sealed interface SpareMade {
     class Made(
         val batch: SendBatch,
@@ -121,22 +127,17 @@ internal sealed interface SpareMade {
     data object Refused : SpareMade
 }
 
-/** Makes a batch like the loop's first, for an endpoint that keeps the loop's batch. */
-internal fun interface SpareSource {
-    fun make(): SpareMade
-}
-
 /**
  * The batch a client loop's endpoints collect into, one serve at a time, and the spares that replace it while endpoints
- * keep what their sockets refused. Spares are made on the first refusal that needs one and kept for the loop's life, so
- * the loop holds as many batches as endpoints ever waited for writable sockets at once, plus one. The loop thread only,
- * and [free] once it stopped.
+ * keep what their sockets refused. Spares come from [spares] on the first refusal that needs one and are kept for the
+ * loop's life, so the loop holds as many batches as endpoints ever waited for writable sockets at once, plus one. The
+ * loop thread only, and [free] once it stopped.
  */
 @LoopOnly
 internal class LoopSend(
     /** The batch the loop starts with: any thread may read which it is, to view its memory once. */
     val first: SendBatch,
-    private val spares: SpareSource,
+    private val spares: () -> SpareMade,
 ) {
     private var current = first
     private val idle = ArrayList<SendBatch>()
@@ -155,7 +156,7 @@ internal class LoopSend(
             if (idle.isNotEmpty()) {
                 idle.removeAt(idle.size - 1)
             } else {
-                when (val made = spares.make()) {
+                when (val made = spares()) {
                     is SpareMade.Made -> made.batch.also { all.add(it) }
                     is SpareMade.Refused -> {
                         dropped += refused.pending

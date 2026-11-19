@@ -20,7 +20,6 @@ import com.ditchoom.socket.quic.core.conn.FlightArena
 import com.ditchoom.socket.quic.core.conn.LoopMemory
 import com.ditchoom.socket.quic.core.conn.SlotRules
 import com.ditchoom.socket.quic.core.demux.Admission
-import com.ditchoom.socket.quic.core.demux.BacklogChunks
 import com.ditchoom.socket.quic.core.demux.ChunkMade
 import com.ditchoom.socket.quic.core.demux.Demux
 import com.ditchoom.socket.quic.core.demux.DemuxScratch
@@ -54,6 +53,7 @@ import com.ditchoom.socket.quic.core.sched.CallerSend
 import com.ditchoom.socket.quic.core.sched.Entrant
 import com.ditchoom.socket.quic.core.sched.SendPort
 import com.ditchoom.socket.quic.core.time.LoopClock
+import com.ditchoom.socket.quic.core.udp.Addressed
 import com.ditchoom.socket.quic.core.udp.BatchLimits
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 import com.ditchoom.socket.quic.core.udp.NativeIo
@@ -107,10 +107,10 @@ internal class ServerSetup(
         val send = SendBatch(memory.native(limits.maxDatagrams * limits.maxDatagramSize), limits)
         val lanes =
             FixedPool(CALLER_LANES) { i ->
-                CallerSend(i, SendBatch(memory.native(CALLER_LANE_BYTES), callerLimits, lane = i + 1))
+                CallerSend(i, SendBatch(memory.native(callerLimits.maxDatagrams * MAX_DATAGRAM), callerLimits, lane = i + 1))
             }
         val receiveBuffers = List(limits.maxDatagrams) { ReceiveBuffer(it, memory.native(MAX_DATAGRAM)) }
-        val backlog = InitialBacklog(config.admission.backlog, BacklogChunks { backlogChunk() })
+        val backlog = InitialBacklog(config.admission.backlog) { backlogChunk() }
         val scratch =
             DemuxScratch(
                 memory.native(DemuxScratch.FIELDS_BYTES),
@@ -256,10 +256,9 @@ internal class ServerSetup(
 
     /** A chunk of the Initial backlog: at setup, then on the loop thread, which owns [memory] from its start. */
     private fun backlogChunk(): ChunkMade =
-        try {
-            ChunkMade.Made(memory.native(InitialBacklog.CHUNK_BYTES))
-        } catch (refused: Exception) {
-            ChunkMade.Refused
+        when (val made = memory.more(InitialBacklog.CHUNK_BYTES)) {
+            is Addressed.Native -> ChunkMade.Made(made.bytes)
+            is Addressed.NotAddressable -> ChunkMade.Refused
         }
 
     /** The handshake rule every connection of this server is built with. */
@@ -279,10 +278,7 @@ internal class ServerSetup(
         const val QUIC_V1 = 1
         const val MAX_BATCH = 64
         const val CALLER_LANES = 16
-
-        /** A lane is one of the buffer pool's size classes, filled with datagrams. */
-        const val CALLER_LANE_BYTES = 32 * 1024
-        const val CALLER_BATCH = CALLER_LANE_BYTES / MAX_DATAGRAM
+        const val CALLER_BATCH = 16
         const val SCID_BYTES = 16
         const val MAX_PEERS_CACHED = 1 shl 16
 

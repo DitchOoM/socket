@@ -47,11 +47,7 @@ internal class Endpoint(
     private var interest = WriteInterest.None
     private var relocating: Relocating = Relocating.No
     private val closing = SocketClose(io, socket)
-    private val out: Outbox =
-        when (route) {
-            is Route.Fixed -> route.out
-            is Route.Demux -> route.out
-        }
+    private val out: Outbox = route.outbox()
 
     fun placed(token: Int) {
         this.token = token
@@ -87,7 +83,7 @@ internal class Endpoint(
             is Route.Demux -> {
                 route.demux.passBegins()
                 receiveWaiting(batch, counts, at)
-                while (budget.state() == Budget.Left && route.demux.admitSome(route.out.batch()) == Admitted.More) {
+                while (budget.state() == Budget.Left && route.demux.admitSome(route.out.batch) == Admitted.More) {
                     input = ReceiveInput.Maybe
                     receiveWaiting(batch, counts, at)
                 }
@@ -153,7 +149,7 @@ internal class Endpoint(
         }
         out.served()
         noticeDeath()
-        if (connEnded() && (!out.holds() || phase != Phase.Live) && !socket.hasWaiting()) {
+        if (route.ended() && (!out.holds() || phase != Phase.Live) && !socket.hasWaiting()) {
             when (phase) {
                 Phase.Gone -> Unit
                 Phase.Live, Phase.Dead ->
@@ -256,8 +252,6 @@ internal class Endpoint(
         onLeft.run()
     }
 
-    private fun connEnded(): Boolean = route.ended()
-
     private fun noticeDeath() {
         when (val health = socket.health()) {
             is SocketHealth.Live -> Unit
@@ -280,7 +274,7 @@ internal class Endpoint(
             is Route.Fixed -> for (i in 0 until batch.count) {
                 route.conn.received(batch.bufferAt(i).bytes, batch.lengthAt(i), batch.fromAt(i), at)
             }
-            is Route.Demux -> traced(TraceSection.Demux) { route.demux.route(batch, route.out.batch(), at) }
+            is Route.Demux -> traced(TraceSection.Demux) { route.demux.route(batch, route.out.batch, at) }
         }
         batch.release()
     }

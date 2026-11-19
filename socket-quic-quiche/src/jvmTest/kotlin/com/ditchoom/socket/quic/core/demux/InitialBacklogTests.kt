@@ -10,10 +10,10 @@ import kotlin.test.assertEquals
 class InitialBacklogTests {
     private class CountingChunks(
         private val refuseAfter: Int = Int.MAX_VALUE,
-    ) : BacklogChunks {
+    ) : () -> ChunkMade {
         var made = 0
 
-        override fun make(): ChunkMade =
+        override fun invoke(): ChunkMade =
             if (made >= refuseAfter) {
                 ChunkMade.Refused
             } else {

@@ -11,6 +11,7 @@ import com.ditchoom.socket.quic.core.udp.JdkBytes
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 import com.ditchoom.socket.quic.core.udp.NativeIo
 import com.ditchoom.socket.quic.core.udp.NioOneByOne
+import com.ditchoom.socket.quic.core.udp.SendView
 import com.ditchoom.socket.quic.core.udp.SocketBuffers
 import com.ditchoom.socket.quic.core.udp.SocketPeer
 import com.ditchoom.socket.quic.core.udp.applyTo
@@ -61,17 +62,16 @@ internal actual fun jdkSocketIo(
     sends: List<NativeBytes>,
     maxPeersCached: Int,
 ): SocketIo {
-    sends.forEach { requireJdkBacked(it) }
-    val nio = NioOneByOne(socket.socket.channel, sends, socket.loop.receiveViews.views, maxPeersCached)
+    val nio = NioOneByOne(socket.socket.channel, sends.map { SendView(it, jdkView(it)) }, socket.loop.receiveViews.views, maxPeersCached)
     return SocketIo(nio, SocketRef(Supplier { nio.channel }))
 }
 
 internal actual fun descriptorRef(io: NativeIo): SocketRef = SocketRef(IntSupplier { io.descriptor() })
 
-/** Fails the connect or the serve, typed, when a channel cannot write [bytes]. */
-private fun requireJdkBacked(bytes: NativeBytes) =
-    when (JdkBytes.of(bytes)) {
-        is JdkBacked.Backed -> Unit
+/** The JDK view a channel writes [bytes] through. */
+private fun jdkView(bytes: NativeBytes): JdkBytes =
+    when (val backed = JdkBytes.of(bytes)) {
+        is JdkBacked.Backed -> backed.bytes
         is JdkBacked.NotJdkBacked -> raise(Raised.FactoryNotNative(bytes.owner), QuicCloseCircumstance.HandshakeFailed)
     }
 

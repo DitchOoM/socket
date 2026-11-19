@@ -39,6 +39,13 @@ internal fun Route.ended(): Boolean =
         is Route.Demux -> demux.phase() == ServerPhase.Stopped
     }
 
+/** Where the route's output collects. */
+internal fun Route.outbox(): Outbox =
+    when (this) {
+        is Route.Fixed -> out
+        is Route.Demux -> out
+    }
+
 /** Ends every connection this route carries with [end]. */
 internal fun Route.endWith(end: ConnEnd) =
     when (this) {

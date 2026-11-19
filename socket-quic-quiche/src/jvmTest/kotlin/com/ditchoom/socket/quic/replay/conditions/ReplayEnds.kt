@@ -51,7 +51,6 @@ import com.ditchoom.socket.quic.core.loop.LoopSend
 import com.ditchoom.socket.quic.core.loop.Readiness
 import com.ditchoom.socket.quic.core.loop.RunningLoop
 import com.ditchoom.socket.quic.core.loop.SpareMade
-import com.ditchoom.socket.quic.core.loop.SpareSource
 import com.ditchoom.socket.quic.core.loop.jdkViewsOf
 import com.ditchoom.socket.quic.core.pool.FixedPool
 import com.ditchoom.socket.quic.core.pool.MemoryHold
@@ -207,7 +206,7 @@ internal fun replayClient(
                 replayLoopMemory(memory),
                 MemoryHold(Runnable { }),
                 WaitResolution(1_000_000L),
-                LoopSend(replayBatch(memory), SpareSource { SpareMade.Made(replayBatch(memory)) }),
+                LoopSend(replayBatch(memory)) { SpareMade.Made(replayBatch(memory)) },
                 FixedPool(
                     1,
                 ) { CallerSend(it, SendBatch(memory.native(DATAGRAM * LANE_DATAGRAMS), BatchLimits(LANE_DATAGRAMS, DATAGRAM), lane = 1)) },

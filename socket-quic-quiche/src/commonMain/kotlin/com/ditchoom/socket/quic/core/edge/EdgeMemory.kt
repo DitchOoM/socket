@@ -31,6 +31,17 @@ internal class EdgeMemory(
         }
     }
 
+    /** [size] bytes more, on the owner's thread once it runs: memory without an address is freed and answered as such. */
+    fun more(size: Int): Addressed {
+        val buffer = factory.allocate(size)
+        val addressed = NativeBytes.of(buffer)
+        when (addressed) {
+            is Addressed.Native -> owned.add(addressed.bytes)
+            is Addressed.NotAddressable -> buffer.freeNativeMemory()
+        }
+        return addressed
+    }
+
     fun factory(): BufferFactory = factory
 
     fun freeAll() {

@@ -25,6 +25,7 @@ import com.ditchoom.socket.quic.core.udp.NioOneByOne
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.ReceiveBuffer
 import com.ditchoom.socket.quic.core.udp.SendBatch
+import com.ditchoom.socket.quic.core.udp.SendView
 import com.ditchoom.socket.quic.core.udp.toPathKey
 import com.ditchoom.socket.quic.trace.TraceCapture
 import kotlinx.coroutines.Runnable
@@ -59,7 +60,7 @@ internal class NioEcho(
             receive = ReceiveBatch(FixedPool(limits.maxDatagrams) { receiveBuffers[it] }, limits),
             freeOnStop = Runnable { },
         )
-    private val io = NioOneByOne(server, listOf(send.storage), receiveBuffers.map { jdk(it.bytes) })
+    private val io = NioOneByOne(server, listOf(SendView(send.storage, jdk(send.storage))), receiveBuffers.map { jdk(it.bytes) })
     private val socket = SendPort(io, loop.port, CallerLanes.None, RecordingWork(), loop.counts, loop.callerCounts)
     val conn: Conn =
         testConn(

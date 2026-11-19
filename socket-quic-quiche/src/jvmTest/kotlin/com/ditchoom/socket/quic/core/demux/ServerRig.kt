@@ -195,7 +195,7 @@ internal class ServerRig(
         Admission(
             api,
             bounds,
-            InitialBacklog(backlog, BacklogChunks { ChunkMade.Made(nativeBytes(InitialBacklog.CHUNK_BYTES)) }),
+            InitialBacklog(backlog) { ChunkMade.Made(nativeBytes(InitialBacklog.CHUNK_BYTES)) },
             parts,
             hooks,
             MemoryHold(Runnable { }),

@@ -34,24 +34,6 @@ import kotlin.concurrent.atomics.AtomicInt
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.concurrent.atomics.fetchAndIncrement
 
-/**
- * A loop on its thread, with what its sockets receive through and the memory its connections share: the batch the loop
- * collects their output into and the lanes threads that are not the loop send from.
- */
-internal class RunningLoop(
-    val loop: Loop,
-    val io: LoopIo,
-    val shared: LoopMemory,
-    /** Held by the loop until it stops and by each connection until its memory is freed; frees [shared], [out] and [lanes]. */
-    val hold: MemoryHold,
-    /** How finely the loop's timed waits wake: what its connections pace within. */
-    val waits: WaitResolution,
-    val out: LoopSend,
-    val lanes: FixedPool<CallerSend>,
-    /** What its client connections copy a session ticket or token through. */
-    val sessions: FixedPool<SessionScratch>,
-)
-
 /** What [LoopSet.place] answers. */
 internal sealed interface Placement {
     class Placed(
@@ -195,7 +177,7 @@ internal class LoopSet(
                         is PollerOpened.Refused -> return memory.freed(Placement.PollerRefused(opened.refusal))
                     }
             }
-        val out = LoopSend(SendBatch(sendBytes, SEND_LIMITS), SpareSource { spareOf(factory) })
+        val out = LoopSend(SendBatch(sendBytes, SEND_LIMITS), { spareOf(factory, stack) })
         val receiveBytes = buffers.map { it.bytes }
         // The receive buffers are the loop's alone, freed when it stops; the rest is shared with its connections.
         val sharedBytes = memory.all().filter { bytes -> bytes !== sendBytes && receiveBytes.none { it === bytes } }
@@ -273,30 +255,7 @@ private const val RECEIVE_BATCH = 64
 
 /** The ready sockets one native wait reports: as many as the loop's ready-token array holds. */
 private const val READY_EVENTS = 256
-private const val MAX_DATAGRAM = 1500
-
-/** Datagrams the loop collects for the network in one serve: the batch its connections share, one serve at a time. */
-private val SEND_LIMITS = BatchLimits(maxDatagrams = 64, maxDatagramSize = MAX_DATAGRAM)
-private val SEND_BYTES = SEND_LIMITS.maxDatagrams * SEND_LIMITS.maxDatagramSize
-
-/**
- * Lanes for threads that send in place, shared by the loop's connections. A thread that finds none free hands its send
- * to the loop, so the count bounds memory, not correctness. A lane is one of the pool's size classes, filled with datagrams.
- */
-private const val LOOP_LANES = 8
-private const val LANE_BYTES = 16 * 1024
-private val LANE_LIMITS = BatchLimits(maxDatagrams = LANE_BYTES / MAX_DATAGRAM, maxDatagramSize = MAX_DATAGRAM)
-
-/** A spare batch for a loop's [LoopSend], from the factory its first connection brought. */
-private fun spareOf(factory: BufferFactory): SpareMade =
-    try {
-        when (val made = NativeBytes.of(factory.allocate(SEND_BYTES))) {
-            is Addressed.Native -> SpareMade.Made(SendBatch(made.bytes, SEND_LIMITS))
-            is Addressed.NotAddressable -> SpareMade.Refused
-        }
-    } catch (refused: Exception) {
-        SpareMade.Refused
-    }
+internal const val MAX_DATAGRAM = 1500
 
 /** The native memory a loop starts with, freed together if the start fails part way. */
 private class LoopAllocation(

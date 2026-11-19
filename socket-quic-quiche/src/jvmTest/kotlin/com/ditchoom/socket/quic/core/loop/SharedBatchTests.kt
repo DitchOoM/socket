@@ -17,12 +17,12 @@ class SharedBatchTests {
 
     private class Spares(
         private val make: () -> SpareMade,
-    ) : SpareSource {
+    ) : () -> SpareMade {
         var asked = 0
 
-        override fun make(): SpareMade {
+        override fun invoke(): SpareMade {
             asked++
-            return make.invoke()
+            return make()
         }
     }
 
