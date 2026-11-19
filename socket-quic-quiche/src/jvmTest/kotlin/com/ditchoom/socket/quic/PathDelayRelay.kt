@@ -76,7 +76,7 @@ internal class PathDelayRelay(
     ) {
         val copy = DatagramPacket(packet.data.copyOf(packet.length), packet.length, to)
         val earliest = System.nanoTime() + oneWay.inWholeNanoseconds
-        val due = lastDue.updateAndGet { last -> if (last == Long.MIN_VALUE) earliest else maxOf(earliest, last + spacing.inWholeNanoseconds) }
+        val due = lastDue.updateAndGet { last -> maxOf(earliest, last + spacing.inWholeNanoseconds) }
         held.add(Held(due, from, copy))
         LockSupport.unpark(sender)
     }
