@@ -1,6 +1,7 @@
 package com.ditchoom.socket.quic.core.conn
 
 import com.ditchoom.socket.quic.SendTarget
+import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.observe.Confined
 import com.ditchoom.socket.quic.core.observe.ConnCounts
@@ -11,9 +12,17 @@ import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.udp.Room
 import com.ditchoom.socket.quic.core.udp.SendBatch
+import com.ditchoom.socket.quic.core.udp.Thrown
 
-/** Whether a write collected everything quiche had, or the batch filled first. */
-internal enum class Wrote { All, BatchFull }
+/** Whether a write collected everything quiche had, the batch filled first, or a due time was another clock's and the response is to end. */
+internal enum class Wrote { All, BatchFull, ClockMismatch }
+
+/** What a serve left after a write that ended as [this]. */
+internal fun Wrote.collected(): Collected =
+    when (this) {
+        Wrote.All, Wrote.ClockMismatch -> Collected.Everything
+        Wrote.BatchFull -> Collected.MoreWaiting
+    }
 
 /** What became of the last datagram quiche wrote: none was written, it is in the batch, or no socket of ours took it. */
 internal enum class LastOut { None, Kept, Dropped }
@@ -40,6 +49,10 @@ internal class Egress(
     private var lastLength = 0
     private var lastTarget: SendTarget = SendTarget.ConnectedPeer
     private var first = FirstOut.NotYet
+    private var mismatchAhead = 0L
+
+    /** The end of a connection whose write ended as [Wrote.ClockMismatch]: processing failed with a [PacingClockMismatch]. */
+    fun mismatchEnd(): ConnEnd = ConnEnd.ProcessingFailed(Thrown(PacingClockMismatch(mismatchAhead)))
 
     /** Whether quiche has written any datagram of this connection, kept or dropped. */
     fun firstOut(): FirstOut = first
@@ -84,9 +97,30 @@ internal class Egress(
         if (pacer.state(at) == PaceState.Holding) return Wrote.All
         while (out.room() == Room.Open) {
             if (one(out, paths, flight, at) <= 0) return Wrote.All
-            if (pacer.sent(q.api.sendInfoAtNanos(paths.sendInfo()), at) == PaceState.Holding) return Wrote.All
+            when (pacer.sent(q.api.sendInfoAtNanos(paths.sendInfo()), at)) {
+                is Due.Now -> Unit
+                is Due.Hold -> return Wrote.All
+                is Due.ClockMismatch -> if (mismatched(pacer, at, flight) == Wrote.ClockMismatch) return Wrote.ClockMismatch
+            }
         }
         return Wrote.BatchFull
+    }
+
+    /** A due time on a clock the loop does not read: counted and recorded, then answered as [MismatchResponse] says. */
+    private fun mismatched(
+        pacer: Pacer,
+        at: Nanos,
+        flight: ConnFlight,
+    ): Wrote {
+        counts.pacingClockMismatch()
+        flight.pacingClockMismatch(at, pacer.aheadNanos())
+        return when (pacer.response()) {
+            is MismatchResponse.SendNow -> Wrote.All
+            is MismatchResponse.Fail -> {
+                mismatchAhead = pacer.aheadNanos()
+                Wrote.ClockMismatch
+            }
+        }
     }
 
     private fun one(

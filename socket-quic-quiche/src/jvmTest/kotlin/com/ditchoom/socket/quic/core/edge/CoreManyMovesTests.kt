@@ -13,6 +13,7 @@ import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.QuicheRecvInfo
 import com.ditchoom.socket.quic.RouteSource
+import com.ditchoom.socket.quic.core.conn.MismatchResponse
 import com.ditchoom.socket.quic.core.demux.withCoreEchoServer
 import com.ditchoom.socket.quic.loadQuicheApi
 import com.ditchoom.socket.quic.skipOnMissingNativeLib
@@ -79,6 +80,7 @@ class CoreManyMovesTests {
                     val client =
                         onIo {
                             coreConnect(
+                                mismatch = MismatchResponse.Fail,
                                 host = "127.0.0.1",
                                 port = server.port,
                                 serverName = "localhost",

@@ -15,6 +15,7 @@ import com.ditchoom.socket.quic.QuicheConfig
 import com.ditchoom.socket.quic.QuicheConn
 import com.ditchoom.socket.quic.QuicheRecvInfo
 import com.ditchoom.socket.quic.QuicheSendInfo
+import com.ditchoom.socket.quic.core.conn.MismatchResponse
 import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.ready.NetStack
 import com.ditchoom.socket.quic.core.ready.netStackOfThisRuntime
@@ -156,6 +157,7 @@ class CoreConnectSetupFailureTests {
                     runCatching {
                         withContext(Dispatchers.IO) {
                             coreConnect(
+                                mismatch = MismatchResponse.Fail,
                                 host = "127.0.0.1",
                                 port = silent.localPort,
                                 serverName = "localhost",

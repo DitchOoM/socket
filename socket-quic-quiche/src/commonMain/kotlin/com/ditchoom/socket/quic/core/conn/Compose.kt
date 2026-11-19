@@ -173,6 +173,7 @@ private fun composed(
             slots = chosen,
             sink = sink,
             ackReads = AckHoldReads(q),
+            sends = socket.ledger,
         )
     return Conn(Turn(parts, clock, port), port, socket, clock, loopEntrant, counts)
 }

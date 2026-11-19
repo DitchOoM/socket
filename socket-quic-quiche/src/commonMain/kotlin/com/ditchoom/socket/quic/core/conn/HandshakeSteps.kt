@@ -1,7 +1,9 @@
 package com.ditchoom.socket.quic.core.conn
 
 import com.ditchoom.socket.quic.QuicResumptionOutcome
+import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.Life
+import com.ditchoom.socket.quic.core.sched.SendRecord
 import com.ditchoom.socket.quic.core.time.Nanos
 
 /**
@@ -27,6 +29,18 @@ internal fun ConnParts.handshakeStep(
         HandshakeStep.DeadlinePassed -> Unit
     }
     return step
+}
+
+/** The end of a handshake that passed its deadline: sent to and never answered, or never sent for the network refused each datagram. */
+internal fun ConnParts.handshakeEnd(
+    now: Nanos,
+    paths: Paths,
+): ConnEnd {
+    val progress = handshake.progress(now, paths.read())
+    return when (val record = sends.view()) {
+        is SendRecord.Refused -> ConnEnd.HandshakeSendRefused(progress, record.last)
+        is SendRecord.Quiet, is SendRecord.Taking -> ConnEnd.HandshakeTimedOut(progress)
+    }
 }
 
 /**

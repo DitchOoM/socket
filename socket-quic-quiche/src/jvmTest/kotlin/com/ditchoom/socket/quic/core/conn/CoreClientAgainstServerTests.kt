@@ -11,6 +11,7 @@ import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicTlsConfig
 import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.core.conn.MismatchResponse
 import com.ditchoom.socket.quic.core.edge.EdgeEnd
 import com.ditchoom.socket.quic.core.edge.coreConnect
 import com.ditchoom.socket.quic.core.edge.coreTlsConfig
@@ -100,6 +101,7 @@ class CoreClientAgainstServerTests {
     ): Pair<String, ByteArray> {
         val client =
             coreConnect(
+                mismatch = MismatchResponse.Fail,
                 host = "127.0.0.1",
                 port = port,
                 serverName = "localhost",

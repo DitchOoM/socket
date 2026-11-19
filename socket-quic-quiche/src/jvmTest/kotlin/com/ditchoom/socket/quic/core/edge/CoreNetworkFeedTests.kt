@@ -12,6 +12,7 @@ import com.ditchoom.socket.quic.NetworkMonitorSource
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.RouteProbeFailure
 import com.ditchoom.socket.quic.RouteSource
+import com.ditchoom.socket.quic.core.conn.MismatchResponse
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.testing.FakeIo
 import com.ditchoom.socket.quic.core.testing.SocketView
@@ -98,6 +99,7 @@ class CoreNetworkFeedTests {
     ): CoreClient =
         onIo {
             coreConnect(
+                mismatch = MismatchResponse.Fail,
                 host = "127.0.0.1",
                 port = port,
                 serverName = "localhost",

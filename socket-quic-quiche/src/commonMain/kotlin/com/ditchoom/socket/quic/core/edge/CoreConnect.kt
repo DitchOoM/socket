@@ -24,6 +24,7 @@ import com.ditchoom.socket.quic.UdpBatching
 import com.ditchoom.socket.quic.UdpSocketChannelFactory
 import com.ditchoom.socket.quic.core.conn.ClientTokens
 import com.ditchoom.socket.quic.core.conn.FlightSize
+import com.ditchoom.socket.quic.core.conn.MismatchResponse
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.loop.Placement
@@ -74,6 +75,7 @@ internal suspend fun coreConnect(
     ride: ClientRide = clientRideOfThisPlatform,
     datagramSize: DatagramSize = DatagramSize.Probed,
     tokens: ClientTokens = ClientTokens.NotKept,
+    mismatch: MismatchResponse = MismatchResponse.SendNow,
 ): CoreClient {
     val peerHost = peerHostFor(host)
     val unstarted = ClientSetup.Unstarted(EdgeMemory(factory))
@@ -103,6 +105,7 @@ internal suspend fun coreConnect(
                     batching,
                     ride,
                     tokens,
+                    mismatch,
                     moved = { setup = it },
                 )
             }
@@ -133,6 +136,7 @@ private suspend fun OnSetupLane.connectOnLane(
     batching: UdpBatching,
     ride: ClientRide,
     tokens: ClientTokens,
+    mismatch: MismatchResponse,
     /** Told each time what the setup made passes to a new releaser; last, right before the connection starts. */
     moved: (ClientSetup) -> Unit,
 ): StartedClient {
@@ -226,6 +230,7 @@ private suspend fun OnSetupLane.connectOnLane(
                     tickets = plan.home,
                     kept = planned.kept,
                     tokens = plan.tokens,
+                    mismatch = mismatch,
                 ),
                 peerSockAddr,
                 localSockAddr,

@@ -4,7 +4,6 @@ import com.ditchoom.socket.quic.ReplySource
 import com.ditchoom.socket.quic.SendTarget
 import com.ditchoom.socket.quic.UdpBatching
 import com.ditchoom.socket.quic.core.conn.Conn
-import com.ditchoom.socket.quic.core.conn.SlotRules
 import com.ditchoom.socket.quic.core.loop.Endpoint
 import com.ditchoom.socket.quic.core.loop.Loop
 import com.ditchoom.socket.quic.core.loop.OwnBatch
@@ -106,7 +105,7 @@ internal class NativeEcho(
         conn =
             testConn(
                 EchoQuiche(),
-                SlotRules.Default,
+                CoreTestRules,
                 SendTarget.ServerReply(client.toPathKey(), ReplySource.Undecodable),
                 TraceCapture.Off,
                 loop,

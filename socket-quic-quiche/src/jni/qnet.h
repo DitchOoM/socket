@@ -37,6 +37,7 @@
 #define QN_ENOPROTOOPT 15
 #define QN_ENOSYS 16
 #define QN_EPERM 17
+#define QN_EPIPE 18
 #define QN_OTHER 99
 
 /* qn_poller_wait modes. */

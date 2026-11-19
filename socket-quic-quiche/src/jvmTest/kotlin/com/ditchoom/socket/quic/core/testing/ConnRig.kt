@@ -22,6 +22,7 @@ import com.ditchoom.socket.quic.core.conn.FlightArena
 import com.ditchoom.socket.quic.core.conn.FlightSize
 import com.ditchoom.socket.quic.core.conn.KeptTicket
 import com.ditchoom.socket.quic.core.conn.LoopMemory
+import com.ditchoom.socket.quic.core.conn.MismatchResponse
 import com.ditchoom.socket.quic.core.conn.Offer
 import com.ditchoom.socket.quic.core.conn.Paths
 import com.ditchoom.socket.quic.core.conn.SessionScratch
@@ -47,6 +48,7 @@ import com.ditchoom.socket.quic.core.sched.Entrant
 import com.ditchoom.socket.quic.core.sched.SendPort
 import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.Nanos
+import com.ditchoom.socket.quic.core.time.WaitResolution
 import com.ditchoom.socket.quic.core.udp.BatchLimits
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 import com.ditchoom.socket.quic.core.udp.NativeBytes
@@ -162,13 +164,22 @@ internal fun testConn(
         counts = counts,
     )
 
+/** The rules every core test rig builds its connections with: the production defaults, except that a pacing clock mismatch fails. */
+internal val CoreTestRules: SlotRules =
+    SlotRules.forWaits(
+        WaitResolution(1_000_000L),
+        SlotRules.Default.handshake,
+        SlotRules.Default.close,
+        mismatch = MismatchResponse.Fail,
+    )
+
 /**
  * One connection built the way a connect builds one, over a scripted quiche, a fake socket and a virtual clock, on a
  * loop with no thread. [pass] runs one loop pass at the clock's time.
  */
 internal class ConnRig(
     val api: QuicheApi = StubQuicheApi(),
-    rules: SlotRules = SlotRules.Default,
+    rules: SlotRules = CoreTestRules,
     val io: DatagramBatchIo = FakeIo(),
     target: SendTarget = SendTarget.ConnectedPeer,
     maxDatagrams: Int = 64,

@@ -10,6 +10,7 @@ internal class ConnCounts {
     private val late = Counter()
     private val resent = Counter()
     private val overflowed = Counter()
+    private val mismatched = Counter()
 
     /** Times a caller entered a free connection and served it on its own thread. */
     val enteredInPlace: Long get() = entered.value()
@@ -35,6 +36,9 @@ internal class ConnCounts {
     /** Received RFC 9221 datagrams dropped because the connection's receive queue was full and nobody was receiving. */
     val datagramsOverflowed: Long get() = overflowed.value()
 
+    /** Datagrams whose due time quiche stamped on a clock the loop does not read: each was sent at once, unpaced. */
+    val pacingClockMismatches: Long get() = mismatched.value()
+
     fun enteredInPlace() = entered.increment()
 
     fun leftForHolder() = busy.increment()
@@ -51,6 +55,8 @@ internal class ConnCounts {
 
     fun datagramOverflowed() = overflowed.increment()
 
+    fun pacingClockMismatch() = mismatched.increment()
+
     /** Every count, read now. */
     fun seen(): CountsSeen =
         CountsSeen(
@@ -60,6 +66,7 @@ internal class ConnCounts {
             datagramsCopied = datagramsCopied,
             datagramsDropped = datagramsDropped,
             lateDatagrams = lateDatagrams,
+            pacingClockMismatches = pacingClockMismatches,
         )
 }
 
@@ -71,4 +78,5 @@ internal class CountsSeen(
     val datagramsCopied: Long,
     val datagramsDropped: Long,
     val lateDatagrams: Long,
+    val pacingClockMismatches: Long,
 )

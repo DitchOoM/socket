@@ -2,6 +2,9 @@
 
 package com.ditchoom.socket.quic
 
+import java.lang.foreign.Arena
+import java.lang.foreign.SymbolLookup
+
 /**
  * JDK 21+ shadow of [loadQuicheApi] — returns [FfmQuicheApi] using Panama FFM downcalls.
  * Zero-copy: no JNI boundary, MemorySegment passed directly to quiche.
@@ -34,7 +37,16 @@ private val ffmQuicheApi: QuicheApi by lazy { maybeGuardRecvInfo(ffmBackend) }
 /** The bare backend under [ffmQuicheApi]'s guard — what [loadQuicheRandomPin] binds. */
 private val ffmBackend: FfmQuicheApi by lazy { loadFfmBackend() }
 
-private fun loadFfmBackend(): FfmQuicheApi {
+private fun loadFfmBackend(): FfmQuicheApi =
+    try {
+        FfmQuicheApi.create()
+    } catch (e: ExceptionInInitializerError) {
+        // FfmLibrary's initialiser failed: surface the packaging error it carries, not the wrapper.
+        throw e.cause ?: e
+    }
+
+/** The process-lifetime lookup over the first libquiche resource that loads; [FfmLibrary]'s one call. */
+internal fun openFfmQuicheLibrary(): SymbolLookup {
     val classLoader =
         QuicheApi::class.java.classLoader
             ?: error("Cannot load quiche FFM backend: no class loader for QuicheApi")
@@ -55,7 +67,11 @@ private fun loadFfmBackend(): FfmQuicheApi {
         }
         stream.close()
         try {
-            return FfmQuicheApi.create(extractToTemp(resourcePath))
+            // Arena.global(), NEVER an unloadable arena: libquiche statically links BoringSSL, which registers
+            // pthread TLS destructors that glibc does not unregister on dlclose. An auto/confined arena lets the
+            // JVM dlclose the library once unreachable, and any thread that ever called into it then jumps to
+            // unmapped memory when it exits (CI SIGSEGV SEGV_ACCERR). The mapping must live for the process.
+            return SymbolLookup.libraryLookup(extractToTemp(resourcePath), Arena.global())
         } catch (t: Throwable) {
             failures += "$resourcePath (${t.message})"
         }

@@ -18,6 +18,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlin.test.fail
 import kotlin.time.Duration.Companion.seconds
@@ -68,6 +69,7 @@ class CorePacingClockTests {
                         }
                     }
                     client.connection.close(QuicError.NoError)
+                    assertEquals(0L, client.conn.counts.pacingClockMismatches, "no datagram's due time was on another clock")
                 }
                 println(
                     "[pacing clock] ${api.reads.get()} datagrams; earliest ${api.earliest.get() / 1_000} us, latest ${api.latest.get() / 1_000} us from now",

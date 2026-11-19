@@ -12,15 +12,36 @@ internal sealed interface SendFault {
     /** The socket is full: wait until it is writable. */
     data object Full : SendFault
 
-    /** This datagram only; the socket is fine. One preallocated instance per [DatagramFault]. */
+    /** This datagram only; the socket is fine. One preallocated instance per named [DatagramFault]; an unnamed one is made. */
     class Datagram(
         val why: DatagramFault,
+        val refusal: SendRefusal,
     ) : SendFault
 
     /** The socket is gone. */
     class Socket(
         val fault: SocketFault,
     ) : SendFault
+}
+
+/** Why the network refused a datagram. */
+internal sealed interface SendRefusal {
+    data object TooLarge : SendRefusal
+
+    data object NetworkUnreachable : SendRefusal
+
+    data object HostUnreachable : SendRefusal
+
+    data object PortUnreachable : SendRefusal
+
+    data object NoBufferSpace : SendRefusal
+
+    data object PermissionDenied : SendRefusal
+
+    /** An error the mapping does not name, with the platform's own exception. */
+    class Unnamed(
+        val thrown: Thrown,
+    ) : SendRefusal
 }
 
 internal enum class DatagramFault {
@@ -70,7 +91,12 @@ internal enum class SocketProbe { Open, Closed }
 @Published
 internal class SocketErrors {
     private val unnamedRun = AtomicLong(0L)
-    private val datagrams = Array(DatagramFault.entries.size) { SendFault.Datagram(DatagramFault.entries[it]) }
+    private val tooLarge = SendFault.Datagram(DatagramFault.TooLarge, SendRefusal.TooLarge)
+    private val networkUnreachable = SendFault.Datagram(DatagramFault.NetworkUnreachable, SendRefusal.NetworkUnreachable)
+    private val hostUnreachable = SendFault.Datagram(DatagramFault.HostUnreachable, SendRefusal.HostUnreachable)
+    private val portUnreachable = SendFault.Datagram(DatagramFault.PortUnreachable, SendRefusal.PortUnreachable)
+    private val noBufferSpace = SendFault.Datagram(DatagramFault.NoBufferSpace, SendRefusal.NoBufferSpace)
+    private val permissionDenied = SendFault.Datagram(DatagramFault.PermissionDenied, SendRefusal.PermissionDenied)
 
     fun classify(
         error: UdpError,
@@ -78,12 +104,12 @@ internal class SocketErrors {
     ): SendFault =
         when (error) {
             is UdpError.WouldBlock, is UdpError.Replaced -> SendFault.Full
-            is UdpError.MessageTooLarge -> datagram(DatagramFault.TooLarge)
-            is UdpError.NetworkUnreachable -> datagram(DatagramFault.NetworkUnreachable)
-            is UdpError.HostUnreachable -> datagram(DatagramFault.HostUnreachable)
-            is UdpError.PortUnreachable -> datagram(DatagramFault.PortUnreachable)
-            is UdpError.NoBufferSpace -> datagram(DatagramFault.NoBufferSpace)
-            is UdpError.PermissionDenied -> datagram(DatagramFault.PermissionDenied)
+            is UdpError.MessageTooLarge -> tooLarge
+            is UdpError.NetworkUnreachable -> networkUnreachable
+            is UdpError.HostUnreachable -> hostUnreachable
+            is UdpError.PortUnreachable -> portUnreachable
+            is UdpError.NoBufferSpace -> noBufferSpace
+            is UdpError.PermissionDenied -> permissionDenied
             is UdpError.SocketClosed -> SendFault.Socket(SocketFault.Closed)
             is UdpError.Unnamed -> unnamed(error.thrown, probe)
         }
@@ -104,12 +130,10 @@ internal class SocketErrors {
                 if (run >= REPEATED_LIMIT) {
                     SendFault.Socket(SocketFault.Repeated(run, thrown))
                 } else {
-                    datagram(DatagramFault.Unnamed)
+                    SendFault.Datagram(DatagramFault.Unnamed, SendRefusal.Unnamed(thrown))
                 }
             }
         }
-
-    private fun datagram(why: DatagramFault): SendFault = datagrams[why.ordinal]
 
     companion object {
         /** Consecutive unnamed refusals that end a socket that keeps reporting itself open. */

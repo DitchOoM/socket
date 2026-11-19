@@ -395,7 +395,7 @@ public class CoreDefaultsCheck {
     static final Set<String> EXTERNAL_ENUM_ENTRIES = Set.of("Client", "Server", "Ethernet", "Wifi", "Cellular", "Satellite", "Unknown",
         // SocketRefusal (NetShim.kt): qnet's errno codes.
         "EAgain", "EMsgSize", "ENetUnreach", "EHostUnreach", "EConnRefused", "ENoBufs", "EAcces", "EBadF", "EIo",
-        "EAddrInUse", "EAddrNotAvail", "EAfNoSupport", "ENoMem", "EInval", "ENoProtoOpt", "ENoSys", "EPerm", "Unmapped",
+        "EAddrInUse", "EAddrNotAvail", "EAfNoSupport", "ENoMem", "EInval", "ENoProtoOpt", "ENoSys", "EPerm", "EPipe", "Unmapped",
         // UdpBatching (:socket-quic).
         "Newest", "PublicCallsOnly", "WithoutSegments", "OneDatagramPerCall");
 

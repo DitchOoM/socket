@@ -219,7 +219,7 @@ internal class Turn(
         when (c.handshakeStep(now, paths)) {
             HandshakeStep.Handshaking, HandshakeStep.JustEstablished, HandshakeStep.Established -> Unit
             HandshakeStep.DeadlinePassed -> {
-                val end = ConnEnd.HandshakeTimedOut(c.handshake.progress(now, paths.read()))
+                val end = c.handshakeEnd(now, paths)
                 c.life.close(QuicError.NoError, end, CloseHow.Now, now)
                 finish(now, end)
                 return Collected.Everything
@@ -251,10 +251,8 @@ internal class Turn(
                 is Life.Running, is Life.Over -> Unit
             }
         }
-        return when (wrote) {
-            Wrote.All -> Collected.Everything
-            Wrote.BatchFull -> Collected.MoreWaiting
-        }
+        if (wrote == Wrote.ClockMismatch) finish(now, c.egress.mismatchEnd())
+        return wrote.collected()
     }
 
     /** [over], where quiche may fail again while the connection is already ending: then nothing more goes out. */

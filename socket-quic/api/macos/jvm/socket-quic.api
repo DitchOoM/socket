@@ -1263,6 +1263,19 @@ public final class com/ditchoom/socket/quic/QuicConnectionEnd$CallerFailed : com
 	public final fun getThrown ()Ljava/lang/Throwable;
 }
 
+public final class com/ditchoom/socket/quic/QuicConnectionEnd$HandshakeSendRefused : com/ditchoom/socket/quic/QuicConnectionEnd {
+	public fun <init> (Lcom/ditchoom/socket/quic/QuicHandshakeProgress;Lcom/ditchoom/socket/quic/QuicSendRefusal;)V
+	public final fun component1 ()Lcom/ditchoom/socket/quic/QuicHandshakeProgress;
+	public final fun component2 ()Lcom/ditchoom/socket/quic/QuicSendRefusal;
+	public final fun copy (Lcom/ditchoom/socket/quic/QuicHandshakeProgress;Lcom/ditchoom/socket/quic/QuicSendRefusal;)Lcom/ditchoom/socket/quic/QuicConnectionEnd$HandshakeSendRefused;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/quic/QuicConnectionEnd$HandshakeSendRefused;Lcom/ditchoom/socket/quic/QuicHandshakeProgress;Lcom/ditchoom/socket/quic/QuicSendRefusal;ILjava/lang/Object;)Lcom/ditchoom/socket/quic/QuicConnectionEnd$HandshakeSendRefused;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getProgress ()Lcom/ditchoom/socket/quic/QuicHandshakeProgress;
+	public final fun getRefusal ()Lcom/ditchoom/socket/quic/QuicSendRefusal;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
 public final class com/ditchoom/socket/quic/QuicConnectionEnd$HandshakeTimedOut : com/ditchoom/socket/quic/QuicConnectionEnd {
 	public fun <init> (Lcom/ditchoom/socket/quic/QuicHandshakeProgress;)V
 	public final fun component1 ()Lcom/ditchoom/socket/quic/QuicHandshakeProgress;
@@ -2274,6 +2287,56 @@ public final class com/ditchoom/socket/quic/QuicScope$DefaultImpls {
 	public static fun receiveDatagram (Lcom/ditchoom/socket/quic/QuicScope;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public static fun sendDatagram (Lcom/ditchoom/socket/quic/QuicScope;Lcom/ditchoom/buffer/ReadBuffer;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public static fun stats (Lcom/ditchoom/socket/quic/QuicScope;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public abstract interface class com/ditchoom/socket/quic/QuicSendRefusal {
+}
+
+public final class com/ditchoom/socket/quic/QuicSendRefusal$HostUnreachable : com/ditchoom/socket/quic/QuicSendRefusal {
+	public static final field INSTANCE Lcom/ditchoom/socket/quic/QuicSendRefusal$HostUnreachable;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/quic/QuicSendRefusal$MessageTooLarge : com/ditchoom/socket/quic/QuicSendRefusal {
+	public static final field INSTANCE Lcom/ditchoom/socket/quic/QuicSendRefusal$MessageTooLarge;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/quic/QuicSendRefusal$NetworkUnreachable : com/ditchoom/socket/quic/QuicSendRefusal {
+	public static final field INSTANCE Lcom/ditchoom/socket/quic/QuicSendRefusal$NetworkUnreachable;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/quic/QuicSendRefusal$NoBufferSpace : com/ditchoom/socket/quic/QuicSendRefusal {
+	public static final field INSTANCE Lcom/ditchoom/socket/quic/QuicSendRefusal$NoBufferSpace;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/quic/QuicSendRefusal$PermissionDenied : com/ditchoom/socket/quic/QuicSendRefusal {
+	public static final field INSTANCE Lcom/ditchoom/socket/quic/QuicSendRefusal$PermissionDenied;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/quic/QuicSendRefusal$PortUnreachable : com/ditchoom/socket/quic/QuicSendRefusal {
+	public static final field INSTANCE Lcom/ditchoom/socket/quic/QuicSendRefusal$PortUnreachable;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/quic/QuicSendRefusal$Unnamed : com/ditchoom/socket/quic/QuicSendRefusal {
+	public fun <init> (Ljava/lang/Throwable;)V
+	public final fun getThrown ()Ljava/lang/Throwable;
 }
 
 public abstract interface class com/ditchoom/socket/quic/QuicServer {

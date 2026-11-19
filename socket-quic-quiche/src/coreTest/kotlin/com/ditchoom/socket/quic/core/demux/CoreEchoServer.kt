@@ -8,6 +8,7 @@ import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.core.conn.MismatchResponse
 import com.ditchoom.socket.quic.core.edge.CoreConnection
 import com.ditchoom.socket.quic.core.edge.CoreServer
 import com.ditchoom.socket.quic.core.edge.coreServe
@@ -45,6 +46,7 @@ internal suspend fun withCoreEchoServer(
 ) {
     val server =
         coreServe(
+            mismatch = MismatchResponse.Fail,
             bind = bind,
             tls = platformTlsConfig(),
             options = coreTestOptions,

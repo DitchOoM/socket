@@ -22,6 +22,7 @@ import com.ditchoom.socket.quic.clientAlpnOffer
 import com.ditchoom.socket.quic.core.conn.ClientSession
 import com.ditchoom.socket.quic.core.conn.FlightArena
 import com.ditchoom.socket.quic.core.conn.LoopMemory
+import com.ditchoom.socket.quic.core.conn.MismatchResponse
 import com.ditchoom.socket.quic.core.conn.Offer
 import com.ditchoom.socket.quic.core.conn.SessionScratch
 import com.ditchoom.socket.quic.core.demux.ServerConfig
@@ -112,6 +113,7 @@ internal suspend fun replayServer(
     config: ServerConfig = ServerConfig(),
 ): CoreServer =
     coreServe(
+        mismatch = MismatchResponse.Fail,
         bind = InetSocketAddress(LOCALHOST, 0).toPathKey(),
         tls = tls,
         options = options,
@@ -228,6 +230,7 @@ internal fun replayClient(
             plan.home,
             planned.kept,
             plan.tokens,
+            MismatchResponse.Fail,
         )
     val parts = ClientParts(wiring, peer, localAddress)
     val connection =

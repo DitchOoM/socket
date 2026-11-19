@@ -8,17 +8,18 @@ import kotlin.test.assertEquals
 
 class PacerTests {
     private val ms = 1_000_000L
-    private val pacer = Pacer(PacingRule.ByQuiche(allowanceNanos = ms, limitNanos = 1_000 * ms))
+    private val pacer = Pacer(PacingRule.ByQuiche(allowanceNanos = ms, limitNanos = 1_000 * ms, mismatch = MismatchResponse.Fail))
 
     @Test
     fun aDatagramDueWithinTheAllowanceDoesNotHold() {
-        assertEquals(PaceState.Free, pacer.sent(atNanos = ms, now = Nanos(0)))
+        assertEquals(Due.Now, pacer.sent(atNanos = ms, now = Nanos(0)))
         assertEquals(PaceState.Free, pacer.state(Nanos(0)))
     }
 
     @Test
     fun aDatagramDueLaterHoldsUntilItsTimeAndOffersIt() {
-        assertEquals(PaceState.Holding, pacer.sent(atNanos = 5 * ms, now = Nanos(0)))
+        assertEquals(Due.Hold, pacer.sent(atNanos = 5 * ms, now = Nanos(0)))
+        assertEquals(5 * ms, pacer.aheadNanos())
         assertEquals(PaceState.Holding, pacer.state(Nanos(3 * ms)))
         val sink = WakeSink()
         pacer.offerWake(sink)
@@ -28,8 +29,9 @@ class PacerTests {
     }
 
     @Test
-    fun aTimeBeyondTheLimitIsNotPacing() {
-        assertEquals(PaceState.Free, pacer.sent(atNanos = 3_600_000 * ms, now = Nanos(0)))
+    fun aTimeBeyondTheLimitIsAClockMismatchAndHoldsNothing() {
+        assertEquals(Due.ClockMismatch, pacer.sent(atNanos = 3_600_000 * ms, now = Nanos(0)))
+        assertEquals(3_600_000 * ms, pacer.aheadNanos())
         val sink = WakeSink()
         pacer.offerWake(sink)
         assertEquals(WakeState.NotAsked, sink.state())

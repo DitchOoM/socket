@@ -14,6 +14,7 @@ import com.ditchoom.socket.quic.QuicheConn
 import com.ditchoom.socket.quic.QuicheRecvInfo
 import com.ditchoom.socket.quic.ScopedRead
 import com.ditchoom.socket.quic.core.conn.FlightSize
+import com.ditchoom.socket.quic.core.conn.MismatchResponse
 import com.ditchoom.socket.quic.core.demux.ServerConfig
 import com.ditchoom.socket.quic.core.edge.DatagramSize
 import com.ditchoom.socket.quic.core.edge.TestCertificate
@@ -189,6 +190,7 @@ class CoreRecordingReplayTests {
         val serverRecording = CopyOnWriteArrayList<TraceEvent>()
         val server =
             coreServe(
+                mismatch = MismatchResponse.Fail,
                 bind = InetSocketAddress("127.0.0.1", 0).toPathKey(),
                 // The replay's modelled server serves the RSA certificate: the recorded flight must have its shape.
                 tls = coreTlsConfig(TestCertificate.Rsa2048),
@@ -216,6 +218,7 @@ class CoreRecordingReplayTests {
         try {
             val client =
                 coreConnect(
+                    mismatch = MismatchResponse.Fail,
                     host = "127.0.0.1",
                     port = server.port,
                     serverName = "localhost",

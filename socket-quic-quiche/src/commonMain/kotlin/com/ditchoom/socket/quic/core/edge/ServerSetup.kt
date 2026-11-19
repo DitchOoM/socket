@@ -18,6 +18,7 @@ import com.ditchoom.socket.quic.applyQuicOptions
 import com.ditchoom.socket.quic.applySessionTicketKeys
 import com.ditchoom.socket.quic.core.conn.FlightArena
 import com.ditchoom.socket.quic.core.conn.LoopMemory
+import com.ditchoom.socket.quic.core.conn.MismatchResponse
 import com.ditchoom.socket.quic.core.conn.SlotRules
 import com.ditchoom.socket.quic.core.demux.Admission
 import com.ditchoom.socket.quic.core.demux.ChunkMade
@@ -87,6 +88,7 @@ internal class ServerSetup(
     private val driver: LoopDriver,
     private val stack: NetStack,
     private val batching: UdpBatching,
+    private val mismatch: MismatchResponse,
 ) {
     /** The memory this server holds from [factory]: freed by the setup's [SetupOwner] until the loop is built, then by the loop. */
     private val memory = EdgeMemory(factory)
@@ -212,6 +214,8 @@ internal class ServerSetup(
                     keepAliveRuleOf(options),
                     earlyDataRuleOf(options),
                     config.ack,
+                    clock.base(),
+                    mismatch,
                 ),
                 factory,
                 config.flight,
