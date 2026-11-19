@@ -34,9 +34,9 @@ internal enum class FirstOut { NotYet, Written }
  * Datagrams out: the only file that asks quiche for output and reads its send infos. Each datagram goes where the
  * connection's [Paths] say: all to one target, or each by the address quiche wrote it for; one for a path no socket
  * of ours holds is dropped and recorded ([DropWhy.NoSocketForPath]). Remembers what became of the last datagram of its
- * last write: the write that makes quiche drain ends with its CONNECTION_CLOSE. A write's datagrams are recorded at the time
- * the write began, read from [clock] once: the turn's time can be well before then, as the turn runs its work first, and
- * a replay sends at the recorded time. They leave together, in one batch.
+ * last write: the write that makes quiche drain ends with its CONNECTION_CLOSE. Each datagram is recorded at the time
+ * quiche stamped it with, which its round trips and probes are measured from and which a replay sends it at ([sentAt]).
+ * A write's datagrams leave together, in one batch.
  */
 @Confined
 internal class Egress(
@@ -50,6 +50,9 @@ internal class Egress(
     private var lastTarget: SendTarget = SendTarget.ConnectedPeer
     private var first = FirstOut.NotYet
     private var mismatchAhead = 0L
+
+    /** When quiche wants the last datagram it wrote on the wire, on the loop's clock. */
+    private var lastDueNanos = 0L
 
     /** The end of a connection whose write ended as [Wrote.ClockMismatch]: processing failed with a [PacingClockMismatch]. */
     fun mismatchEnd(): ConnEnd = ConnEnd.ProcessingFailed(Thrown(PacingClockMismatch(mismatchAhead)))
@@ -97,7 +100,7 @@ internal class Egress(
         if (pacer.state(at) == PaceState.Holding) return Wrote.All
         while (out.room() == Room.Open) {
             if (one(out, paths, flight, at) <= 0) return Wrote.All
-            when (pacer.sent(q.api.sendInfoAtNanos(paths.sendInfo()), at)) {
+            when (pacer.sent(lastDueNanos, at)) {
                 is Due.Now -> Unit
                 is Due.Hold -> return Wrote.All
                 is Due.ClockMismatch -> if (mismatched(pacer, at, flight) == Wrote.ClockMismatch) return Wrote.ClockMismatch
@@ -137,8 +140,10 @@ internal class Egress(
         first = FirstOut.Written
         lastOffset = offset
         lastLength = written
+        lastDueNanos = q.api.sendInfoAtNanos(info)
+        val sent = sentAt(at)
         when (val sorting = paths.sorting()) {
-            is Sorting.Fixed -> kept(out, sorting.to, at, flight)
+            is Sorting.Fixed -> kept(out, sorting.to, sent, flight)
             is Sorting.ByAddress -> {
                 // The address that names the datagram's path: a client's own, the peer's for a server.
                 val address =
@@ -147,13 +152,20 @@ internal class Egress(
                         is Paths.Server -> q.api.sendInfoToAddr(info)
                     }
                 when (val to = paths.outgoing(address)) {
-                    is Outgoing.To -> kept(out, to, at, flight)
-                    is Outgoing.Dropped -> dropped(address, at, flight)
+                    is Outgoing.To -> kept(out, to, sent, flight)
+                    is Outgoing.Dropped -> dropped(address, sent, flight)
                 }
             }
         }
         return written
     }
+
+    /**
+     * When quiche stamped the datagram it just wrote: its send info's time, quiche's own clock read unless its pacer wants
+     * the datagram later, kept between the write's start [from] and now. The write's start is early by every call made
+     * before quiche read its clock, a cold one's by milliseconds.
+     */
+    private fun sentAt(from: Nanos): Nanos = Nanos(lastDueNanos.coerceIn(from.value, maxOf(from.value, clock.now().value)))
 
     private fun kept(
         out: SendBatch,
