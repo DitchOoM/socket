@@ -87,6 +87,23 @@ head -c 3000000 /dev/urandom >"$work/out3/logs/big.bin"
 out="$(CAPTURE_TOTAL_CAP_KB=500 GITHUB_WORKSPACE="$work/empty" "$script" collect "$work/cap3" "$work/out3" 2>&1)"
 [ ! -e "$work/out3/logs/big.bin" ] && [ -f "$work/out3/crash-reports/new3.ips" ] && ok "cap: over the total cap the biggest log goes, the crash report stays" || bad "cap: wrong file dropped" "$out"
 
+# ── 3b. only OUR processes' reports are errors; OS noise is listed, kept, and does not fail ─────
+"$script" start "$work/cap3b" 0 0 >/dev/null
+sleep 1
+printf 'noise\n' >"$diag/healthd-2026-11-19-101010.diag"
+out="$(GITHUB_STEP_SUMMARY="$work/summary3b" GITHUB_WORKSPACE="$work/empty" "$script" collect "$work/cap3b" "$work/out3b" 2>&1)"
+case "$out" in *"::error title=Crash report"*) bad "ours-only: healthd.diag failed the capture" "$out" ;; *) ok "ours-only: a healthd report is not an error" ;; esac
+expect "ours-only: healthd is announced as informational" "::notice title=Other reports" "$out"
+expect "ours-only: healthd is in the job summary" "healthd-2026-11-19-101010.diag" "$(cat "$work/summary3b" 2>/dev/null)"
+[ -f "$work/out3b/crash-reports/healthd-2026-11-19-101010.diag" ] && ok "ours-only: the other report is still uploaded" || bad "ours-only: healthd report not in bundle"
+"$script" start "$work/cap3c" 0 0 >/dev/null
+sleep 1
+printf 'noise\n' >"$diag/healthd-2026-11-19-101011.diag"
+printf 'ours\n' >"$diag/test.kexe-2026-11-19-101012.ips"
+out="$(GITHUB_STEP_SUMMARY="$work/summary3c" GITHUB_WORKSPACE="$work/empty" "$script" collect "$work/cap3c" "$work/out3c" 2>&1)"
+expect "ours-only: a test.kexe report is an error" "::error title=Crash report::1 crash/hang report(s) written during this job: test.kexe-2026-11-19-101012.ips" "$out"
+rm -f "$diag"/healthd-* "$diag"/test.kexe-*
+
 # ── 4. the hang watchdog: stacks first, then (kill=1) the process ends ───────────────────────────
 if command -v cc >/dev/null 2>&1; then
   mkdir -p "$work/bin"

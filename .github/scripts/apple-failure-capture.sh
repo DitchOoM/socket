@@ -39,6 +39,10 @@ RING_XCTRACE_SAVE_WAIT="${CAPTURE_RING_XCTRACE_SAVE_WAIT:-45}" # xctrace needs t
 NATIVE_NAME="${CAPTURE_NATIVE_NAME:-test.kexe}"        # exact process name of a K/N test binary
 JVM_PATTERN="${CAPTURE_JVM_PATTERN:-GradleWorkerMain}" # command-line match for a Gradle test worker
 KILL_PATTERNS="${CAPTURE_KILL_PATTERNS:-$JVM_PATTERN GradleDaemon}"
+# Processes whose crash/hang reports are OURS (extended regex on the process name taken from the
+# report's file name). Everything else the runner wrote (healthd, mds_stores, gtar, ...) is listed
+# as information and uploaded, but never fails the job.
+OURS_PATTERN="${CAPTURE_OURS_PATTERN:-^(${NATIVE_NAME}|[^ ]*\.kexe|java|quic-echo[^ ]*|[^ ]*-echo|xctest|xcodebuild|GradleWorkerMain|Gradle[^ ]*|kotlin-[^ ]*)$}"
 DIAG_DIRS="${CAPTURE_DIAG_DIRS:-$HOME/Library/Logs/DiagnosticReports:/Library/Logs/DiagnosticReports}"
 
 # Run a command for at most <secs>; macOS has no `timeout`. Output goes wherever the caller pointed
@@ -329,6 +333,10 @@ find_reports() { # <dir>/marker -> report paths newer than the marker
   done
 }
 
+report_proc() { # <report file name> -> the process name (text before the _/- date suffix)
+  echo "$1" | sed -E 's/\.(ips|crash|diag|spin|hang)$//; s/[-_][0-9]{4}-[0-9]{2}-[0-9]{2}.*$//'
+}
+
 PREDICATE='(process CONTAINS "test.kexe") OR (process == "java") OR (process IN {"trustd","nsurlsessiond","mDNSResponder","networkd","nehelper","symptomsd","ReportCrash"}) OR (subsystem BEGINSWITH "com.apple.network")'
 
 collect() { # <dir> <out> [udid]
@@ -393,6 +401,7 @@ collect() { # <dir> <out> [udid]
   if [ -z "$reports" ]; then
     echo "no crash report was written under $DIAG_DIRS after the marker (waited ${waited}s)"
   else
+    ours="" others=""
     while IFS= read -r f; do
       [ -n "$f" ] || continue
       base=$(basename "$f")
@@ -404,8 +413,20 @@ collect() { # <dir> <out> [udid]
         *) head -40 "$f" | sed 's/^/  /' ;;
       esac
       echo "::endgroup::"
+      if echo "$(report_proc "$base")" | grep -Eq "$OURS_PATTERN"; then ours="$ours $base"; else others="$others $base"; fi
     done <<<"$reports"
-    echo "::error title=Crash report::$(echo "$reports" | grep -c .) crash/hang report(s) written during this job: $(echo "$reports" | xargs -n1 basename 2>/dev/null | tr '\n' ' ')"
+    if [ -n "$others" ]; then
+      echo "::notice title=Other reports (not ours)::$(echo $others | wc -w | tr -d ' ') report(s) from processes outside the allowlist (informational, do not fail the job): ${others# }"
+      [ -n "${GITHUB_STEP_SUMMARY:-}" ] && {
+        echo "### Crash/hang reports from other processes (informational)"
+        for b in $others; do echo "- \`$b\`"; done
+      } >>"$GITHUB_STEP_SUMMARY"
+    fi
+    if [ -n "$ours" ]; then
+      echo "::error title=Crash report::$(echo $ours | wc -w | tr -d ' ') crash/hang report(s) written during this job: ${ours# }"
+    else
+      echo "no crash/hang report from our processes (allowlist: $OURS_PATTERN)"
+    fi
   fi
 
   # Simulator crashes land in the HOST's DiagnosticReports (covered above); the device's own logs.
