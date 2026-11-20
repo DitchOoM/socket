@@ -59,10 +59,19 @@
       "handshake": "pass",
       "handshakecorruption": {
         "flaky": {
-          "why": "simulator: every datagram to one of our client's ports corrupted (9 of 9, burst_to_client=3), so the connection hears nothing (run 43562639832)",
+          "why": "simulator: every datagram to one of our client's ports corrupted (9 of 9, burst_to_client=3), so the connection hears nothing (run 43562639832); or aioquic's response, sent after our request was acknowledged, is corrupted on every copy (its probes before that carry only HANDSHAKE_DONE and PING, or come 7 s and 14 s apart) until our idle timeout, with nothing of ours in flight (runs 44581373101, 44493515904, 44480518107)",
           "signature": {
-            "kind": "sim-lost-every-datagram-to-us",
-            "min_datagrams": 5
+            "kind": "any-of",
+            "signatures": [
+              {
+                "kind": "sim-lost-every-datagram-to-us",
+                "min_datagrams": 5
+              },
+              {
+                "kind": "peer-move-never-reached-us",
+                "idle_s": 30
+              }
+            ]
           }
         }
       },
@@ -116,9 +125,18 @@
       "handshake": "pass",
       "handshakecorruption": {
         "flaky": {
-          "why": "peer: haproxy resets a request stream (final size 0) when a duplicate of the request arrives with the original before its handshake completes; RFC 9000 §2.2 has a receiver discard duplicates (run 43609318908: 1 reset in 76 duplicates)",
+          "why": "peer: haproxy resets a request stream (final size 0) when a duplicate of the request arrives with the original before its handshake completes; RFC 9000 §2.2 has a receiver discard duplicates (run 43609318908: 1 reset in 76 duplicates); or haproxy acknowledges our Handshake PINGs (our anti-deadlock duty ends, RFC 9002 §6.2.2.1) and every Handshake datagram it sends is corrupted; its next retransmission comes 0.65 s after our 30 s idle timeout (run 44546515447)",
           "signature": {
-            "kind": "peer-reset-duplicated-request"
+            "kind": "any-of",
+            "signatures": [
+              {
+                "kind": "peer-reset-duplicated-request"
+              },
+              {
+                "kind": "peer-move-never-reached-us",
+                "idle_s": 30
+              }
+            ]
           }
         }
       },
@@ -444,7 +462,7 @@
       },
       "handshakeloss": {
         "flaky": {
-          "why": "peer: the stock quiche server drops our request when it arrives before its handshake completes (it buffers no early 1-RTT), our retransmissions 12 s and 36 s later (a 4 s first RTT sample, the server's acknowledgement of our Initial having ridden its own 4 s PTO) are lost or late, and it idles out 30 s after its last packet (run 44177059008); or, its congestion window spent on Handshake packets we cannot read, it never re-sends the last 31 bytes of its ServerHello and acknowledges our Initial probes for the whole time limit (run 44177059008 retry: 2722 acknowledgements, the ServerHello stopped at byte 59 of 90)",
+          "why": "peer: the stock quiche server drops our request when it arrives before its handshake completes (it buffers no early 1-RTT), our retransmissions 12 s and 36 s later (a 4 s first RTT sample, the server's acknowledgement of our Initial having ridden its own 4 s PTO) are lost or late, and it idles out 30 s after its last packet (run 44177059008); or, its congestion window spent on Handshake packets we cannot read, it never re-sends the last 31 bytes of its ServerHello and acknowledges our Initial probes for the whole time limit (run 44177059008 retry: 2722 acknowledgements, the ServerHello stopped at byte 59 of 90); or the server's ServerHello is lost five times, its Handshake packets that arrived before it could not be read (we had no Handshake keys yet), our Finished and request ride every PTO probe of ours on time but the server's HANDSHAKE_DONE, sent once, is lost and its next PTO (smoothed RTT 12 s) falls after our idle timeout (runs 44564256526, 44547126262); or the server acknowledges our Handshake PING (our anti-deadlock duty ends, RFC 9002 §6.2.2.1), its one Handshake CRYPTO retransmission is lost and it sends nothing more before our idle timeout (run 44549152631)",
           "signature": {
             "kind": "any-of",
             "signatures": [
@@ -456,6 +474,15 @@
               {
                 "kind": "peer-server-hello-stopped-short",
                 "min_acks": 1000
+              },
+              {
+                "kind": "peer-packets-lost-while-we-probed-on-time",
+                "ended_by": "our-idle-timeout",
+                "idle_s": 30
+              },
+              {
+                "kind": "peer-move-never-reached-us",
+                "idle_s": 30
               }
             ]
           }
@@ -1043,7 +1070,7 @@
       },
       "handshakeloss": {
         "flaky": {
-          "why": "peer and simulator: every Handshake packet of the stock quiche client is lost while half its probes go to 1-RTT packets (run 43687046353); or only part of its two-packet ClientHello ever arrives (run 43687073037); or the second packet of its ClientHello (CRYPTO 1133-1496) is sent once and lost, and every probe after it re-sends only the first packet plus a PING (RFC 9002 §6.2.4 leaves the probe's content to the sender), so the ClientHello never completes although its first packet opened our server's connection and two PINGs arrived; each of our three acknowledgements is lost too, and the client idles out with nothing received (run 44484652758)",
+          "why": "peer and simulator: every Handshake packet of the stock quiche client is lost while half its probes go to 1-RTT packets (run 43687046353); or only part of its two-packet ClientHello ever arrives (run 43687073037); or the second packet of its ClientHello (CRYPTO 1133-1496) is sent once and lost, and every probe after it re-sends only the first packet plus a PING (RFC 9002 §6.2.4 leaves the probe's content to the sender), so the ClientHello never completes although its first packet opened our server's connection and two PINGs arrived; each of our three acknowledgements is lost too, and the client idles out with nothing received (run 44484652758); or every copy of the client's request is lost (five), its Finished reaches us only at 16.6 s so our first RTT sample is 15.6 s and our next PTO 47 s, every probe of ours before that is on time and covers each space, nothing of the client's after our last receipt reaches us, and the client's own log names this connection's port among the requests it gave up on (run 44540058179)",
           "signature": {
             "kind": "any-of",
             "signatures": [
@@ -1058,6 +1085,10 @@
               {
                 "kind": "peer-client-hello-only-in-its-opening-packet",
                 "min_lost": 5
+              },
+              {
+                "kind": "peer-packets-lost-while-we-probed-on-time",
+                "ended_by": "peer-gave-up"
               }
             ]
           }
@@ -1103,7 +1134,7 @@
       },
       "handshakeloss": {
         "flaky": {
-          "why": "peer: the client acknowledges our handshake flight but never re-sends its lost Finished (runs 43556869462, 43604040594, 43609318908); or it acknowledges our HANDSHAKE_DONE and never sends its request; or no Handshake packet of its arrives at all while the simulator loses its datagrams (run 43687073037)",
+          "why": "peer: the client acknowledges our handshake flight but never re-sends its lost Finished (runs 43556869462, 43604040594, 43609318908); or it acknowledges our HANDSHAKE_DONE and never sends its request; or no Handshake packet of its arrives at all while the simulator loses its datagrams (run 43687073037); or the simulator drops quinn's request, the only packet it sends after acknowledging our HANDSHAKE_DONE, and quinn sends nothing at all for the next 30 s although its smoothed RTT is about 2 s, so our server, with everything of its own acknowledged and nothing of quinn's left unread on the wire, idles out (run 44543141897: quinn's Finished on another connection of the same run waited 25 s, eight PTOs, consistent with a PTO backoff kept across the Initial key discard that RFC 9002 §6.2.1 resets)",
           "signature": {
             "kind": "any-of",
             "signatures": [
@@ -1117,6 +1148,10 @@
               {
                 "kind": "peer-handshake-packets-never-arrived",
                 "min_lost": 5
+              },
+              {
+                "kind": "peer-move-never-reached-us",
+                "idle_s": 30
               }
             ]
           }
