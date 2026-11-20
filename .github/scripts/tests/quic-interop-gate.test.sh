@@ -461,14 +461,14 @@ result = gate.SIGNATURES[kind](raw).match(test, gate.peer_role(evidence["directi
 # The symptom alone: nothing more arrived until the connection ended (or the peer says it gave up), with our data
 # in flight for the probing kind and none for the other.
 silent = c["end_ms"] - c["last_rx_ms"] >= 30000 or test.get("peer_unanswered_requests", 0) > 0 or bool(c.get("peer_closes"))
-naive = silent and (c["bytes_in_flight_at_end"] > 0) == (kind == "peer-packets-lost-while-we-probed-on-time")
+naive = silent and (c["bytes_in_flight_before_close"] > 0) == (kind == "peer-packets-lost-while-we-probed-on-time")
 print(f"{sys.argv[5]}: {type(result).__name__}, naive {'Matched' if naive else 'NotMatched'}")
 PY
 }
 check_conn() { # <name> <evidence> <kind> <mutation> <kind result> <naive result>
   expect "$1" "$(conn_case "$1" "$2" "$3" "$4")" "$1: $5, naive $6"
 }
-move='{"kind":"peer-move-never-reached-us","idle_s":30}'
+move='{"kind":"peer-move-never-reached-us","ended_by":"our-idle-timeout","idle_s":30}'
 probed='{"kind":"peer-packets-lost-while-we-probed-on-time","ended_by":"our-idle-timeout","idle_s":30}'
 gaveup='{"kind":"peer-packets-lost-while-we-probed-on-time","ended_by":"peer-gave-up"}'
 quinn="$tmp/fx-our-server-quinn.json"
@@ -482,7 +482,7 @@ check_conn "a packet of the peer's that reached us and was never read" "$haproxy
 check_conn "a connection our server closed itself instead of idling out" "$quinn" "$move" 'c["local_closes"] = [{"space": "transport", "code": 0}]' NotMatched Matched
 check_conn "a sibling connection whose request arrived and was answered" "$quinn" "$move" 'c["first_request_ms"] = 3300.0; c["fin_sent_streams"] = 1' NotMatched Matched
 check_conn "a connection the captures do not tie to its 4-tuple" "$quinn" "$move" 'del c["wire"]' NotMatched Matched
-check_conn "data of ours still in flight is not the peer's move" "$quinn" "$move" 'c["bytes_in_flight_at_end"] = 1200' NotMatched NotMatched
+check_conn "data of ours still in flight is not the peer's move" "$quinn" "$move" 'c["bytes_in_flight_at_end"] = c["bytes_in_flight_before_close"] = 1200' NotMatched NotMatched
 check_conn "a probe that left out a space with unacknowledged data" "$qclient" "$probed" 'c["probes_missing_a_space"] = 1' NotMatched Matched
 check_conn "a probe later than its PTO, doubled per expiry" "$qclient" "$probed" 'c["late_probes"] = 1' NotMatched Matched
 check_conn "a packet of the peer's that reached us while we probed and was never read" "$qclient" "$probed" 'c["wire"]["peer_packets_unread"] = 1' NotMatched Matched
@@ -502,6 +502,12 @@ check_conn "the stock quiche client's request lost twice, then only its acknowle
 # expiry quiche logged, and before confirmation only Handshake sends arm the timer. Stock quiche: with nothing in
 # flight and no Handshake ACK yet, the anti-deadlock timer runs from our last receipt (§6.2.2.1).
 check_conn "the xquic client's request lost three times, then nothing for 30 s and an exit 0 (run 44700038452)" "$tmp/fx-our-server-xquic.json" "$move" '' Matched Matched
+# Run 44694699576 (#912), s2n-quic against our server, both attempts (their captures are 0.9 MB each: s2n reuses one
+# port for every connection; the extracted evidence is the fixture).
+check_conn "s2n-quic's request lost, its probes only its Finished, our HANDSHAKE_DONE lost three times" "$fx/our-server-s2n-confirmation-lost.evidence.json" "$probed" '' Matched Matched
+check_conn "s2n-quic's request lost twice, then only PINGs until it gave up on this connection" "$fx/our-server-s2n-request-lost.evidence.json" '{"kind":"peer-move-never-reached-us","ended_by":"peer-gave-up"}' '' Matched Matched
+check_conn "a connection we closed with an error is not one the peer gave up on" "$fx/our-server-s2n-request-lost.evidence.json" '{"kind":"peer-move-never-reached-us","ended_by":"peer-gave-up"}' 'c["local_closes"] = [{"space": "transport", "code": 10}]' NotMatched Matched
+check_conn "data of ours in flight before our close is not the peer's move" "$fx/our-server-s2n-request-lost.evidence.json" '{"kind":"peer-move-never-reached-us","ended_by":"peer-gave-up"}' 'c["bytes_in_flight_before_close"] = 1200' NotMatched NotMatched
 # Run 44695470583's nginx connection ran 61 s (4 MB of captures); its extracted evidence is the fixture.
 check_conn "nginx's ServerHello in 6 of 400 probes, all corrupted, then its NO_ERROR close (run 44695470583)" "$fx/our-client-nginx.evidence.json" '{"kind":"peer-packets-lost-while-we-probed-on-time","ended_by":"peer-closed"}' 'assert c["late_probes"] == 0 and c["wire"]["peer_packets_unread"] == 0' Matched Matched
 check_conn "kwik never sending HANDSHAKE_DONE nor its lost answer while we re-sent our Finished on time (run 44690803861)" "$tmp/fx-our-client-kwik.json" "$probed" 'assert c["late_probes"] == 0, c["late_probes"]' Matched Matched
@@ -539,6 +545,21 @@ check_conn "the extractor sees a probe a doubling late" "$tmp/mut-late.json" "$p
 # No probe at all after our last receipt, with our Finished and request unacknowledged.
 mutated our-client-quiche our-client quiche 'lines = [l for l in lines if not (l.get("name") == "quic:packet_sent" and l["time"] > 139100)]' "$tmp/mut-silent.json"
 check_conn "the extractor sees a timer that never fired" "$tmp/mut-silent.json" "$probed" 'assert c["late_probes"] == 1, c["late_probes"]' NotMatched Matched
+# A peer report that names no port is tied to connections by elimination: as many of our server's connections never
+# received a request as the peer says it gave up on.
+python3 - "$extract" <<'PY' >"$tmp/elim.out"
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ev", sys.argv[1])
+ev = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(ev)
+def conns():
+    return [{"qlog": "a", "wire": {}, "first_request_ms": 1.0, "peer_gave_up_requests": 0}, {"qlog": "b", "wire": {}, "peer_gave_up_requests": 0}]
+one = conns(); ev.attribute_by_elimination(one, "server", {}, 1)
+two = conns(); ev.attribute_by_elimination(two, "server", {}, 2)
+named = conns(); ev.attribute_by_elimination(named, "server", {40000: 1}, 1)
+print([c["peer_gave_up_requests"] for c in one], [c["peer_gave_up_requests"] for c in two], [c["peer_gave_up_requests"] for c in named])
+PY
+expect "elimination ties the report to the one connection without a request, and only then" "$(cat "$tmp/elim.out")" "[0, 1] [0, 0] [0, 0]"
 # The idled-out kind judges the lost datagrams on the probing connection's own port, not on any port of the test.
 idled='{"kind":"peer-idled-out-while-we-probed","min_probes":3,"min_lost":5}'
 probing="$(hconn a '"tx_after_last_rx":15,"wire":{"port":39352,"peer_sent_after_last_rx":0,"peer_delivered_after_last_rx":0,"peer_packets_unread":0}')"

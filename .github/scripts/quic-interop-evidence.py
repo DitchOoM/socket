@@ -111,6 +111,7 @@ def connection_facts(path, side):
         "tx_after_last_rx": 0,
         "pto_expiries_after_last_tx": 0,
         "bytes_in_flight_at_end": 0,
+        "bytes_in_flight_before_close": 0,
         "longest_wait_in_flight_ms": 0.0,
         "fin_sent_streams": 0,
         "peer_resets": [],
@@ -122,6 +123,7 @@ def connection_facts(path, side):
     initial_rx, initial_acked = set(), set()
     stream_packets = set()
     last_tx = -1.0
+    closing = False
     for record in qlog_records(path):
         name = record.get("name", "")
         data = record.get("data") or {}
@@ -131,6 +133,10 @@ def connection_facts(path, side):
             facts["end_ms"] = at
         if name.endswith("recovery_metrics_updated") and "bytes_in_flight" in data:
             facts["bytes_in_flight_at_end"] = int(data["bytes_in_flight"])
+            if not closing:
+                facts["bytes_in_flight_before_close"] = int(data["bytes_in_flight"])
+        if name.endswith("packet_sent") and any(f.get("frame_type") == "connection_close" for f in data.get("frames") or []):
+            closing = True  # what we still had in flight is judged before our CONNECTION_CLOSE, not with it
         if name.endswith("recovery_metrics_updated") and int(data.get("pto_count", 0)) > 0:
             facts["pto_expiries_after_last_tx"] += 1
         if name.endswith("connection_closed") and data.get("reason"):
@@ -692,6 +698,17 @@ def timer_and_wire(path, side, captures, gave_up):
     return facts
 
 
+def attribute_by_elimination(connections, side, gave_up, unanswered):
+    """A peer whose report names no port (s2n-quic names request paths) gave up on unanswered requests; when exactly
+    that many connections of our server never received a request (one request per connection), those are the ones."""
+    if side != "server" or gave_up or not unanswered:
+        return
+    never = [c for c in connections if "wire" in c and "first_request_ms" not in c]
+    if len(never) == unanswered:
+        for c in never:
+            c["peer_gave_up_requests"] = 1
+
+
 def evidence(logs, direction, peer):
     side = our_side(direction)
     pair = f"ditchoom_{peer}" if side == "server" else f"{peer}_ditchoom"
@@ -710,8 +727,13 @@ def evidence(logs, direction, peer):
         )
         captures = {s: read_capture(os.path.join(test_dir, "sim", CAPTURE[s])) for s in CAPTURE}
         gave_up = peer_gave_up_by_port(os.path.join(test_dir, "client", "log.txt")) if side == "server" else collections.Counter()
+        connections = [timer_and_wire(os.path.join(qlog_dir, q), side, captures, gave_up) for q in qlogs]
+        unanswered = peer_idle_timeouts(
+            os.path.join(test_dir, "client" if side == "server" else "server", "log.txt"), os.path.join(test_dir, "output.txt")
+        )
+        attribute_by_elimination(connections, side, gave_up, unanswered)
         tests[test] = {
-            "connections": [timer_and_wire(os.path.join(qlog_dir, q), side, captures, gave_up) for q in qlogs],
+            "connections": connections,
             "exits": exits,
             "migrations": migrations,
             "runner": runner,
@@ -719,9 +741,7 @@ def evidence(logs, direction, peer):
             "sim_to_peer": to_peer,
             "sim_from_peer": from_peer,
             "sim_droplist_from_peer": droplist_from_peer,
-            "peer_unanswered_requests": peer_idle_timeouts(
-                os.path.join(test_dir, "client" if side == "server" else "server", "log.txt"), os.path.join(test_dir, "output.txt")
-            ),
+            "peer_unanswered_requests": unanswered,
         }
     return tests
 

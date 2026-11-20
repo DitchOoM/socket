@@ -6,6 +6,7 @@
    "connections": [
     {
      "bytes_in_flight_at_end": 213,
+     "bytes_in_flight_before_close": 213,
      "close_reason": "Failed to establish connection",
      "end_ms": 61136.233,
      "fin_sent_streams": 0,
