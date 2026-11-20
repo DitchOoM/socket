@@ -301,6 +301,32 @@ internal class QuichePairByHand private constructor(
      */
     fun lastSendEnd(conn: QuicheConn): Int = sendEnds[conn] ?: QuicheDriver.QUICHE_ERR_DONE
 
+    /** What one `quiche_conn_send` gave: a datagram and the time quiche's pacer wants it on the wire, or nothing. */
+    sealed interface Written {
+        data object Nothing : Written
+
+        class One(
+            val datagram: Datagram,
+            /** The send info's `at`, on the pair's clock ([nowNanos]). */
+            val dueNanos: Long,
+        ) : Written
+    }
+
+    /** The pair's clock as [conn]'s quiche reads it, in nanoseconds: the time its send infos are stamped on. */
+    fun nowNanos(conn: QuicheConn): Long = (now + lead(conn)).inWholeNanoseconds
+
+    /** One datagram [from] writes now, with its pacer's time; [Written.Nothing] when quiche has none (or refuses: [lastSendEnd]). */
+    fun sendOne(from: QuicheConn): Written {
+        val n = at(lead(from)) { api.connSend(from, datagram.nativeMemoryAccess!!.nativeAddress.toLong(), MAX_DATAGRAM, sendInfo) }
+        if (n <= 0) {
+            sendEnds[from] = n
+            return Written.Nothing
+        }
+        val clientSide = if (from == client) api.sendInfoFromAddr(sendInfo) else api.sendInfoToAddr(sendInfo)
+        datagram.position(0)
+        return Written.One(Datagram(datagram.readByteArray(n), endpointAt(api.sockAddrPort(clientSide))), api.sendInfoAtNanos(sendInfo))
+    }
+
     /** Every datagram [from] writes now, until quiche has nothing more to send (or refuses: [lastSendEnd]). */
     fun sends(from: QuicheConn): List<Datagram> =
         buildList {

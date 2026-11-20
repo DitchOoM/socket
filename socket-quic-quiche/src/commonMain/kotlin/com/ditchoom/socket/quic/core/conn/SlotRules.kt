@@ -2,7 +2,6 @@ package com.ditchoom.socket.quic.core.conn
 
 import com.ditchoom.socket.quic.LinkClass
 import com.ditchoom.socket.quic.core.life.CloseRule
-import com.ditchoom.socket.quic.core.time.ClockBase
 import com.ditchoom.socket.quic.core.time.WaitResolution
 import kotlin.jvm.JvmInline
 
@@ -11,12 +10,11 @@ internal sealed interface PacingRule {
     data object Unpaced : PacingRule
 
     /**
-     * A datagram due within [allowanceNanos] goes now; a time further ahead than [limitNanos] is a [Due.ClockMismatch],
-     * which [mismatch] answers.
+     * A datagram due within [allowanceNanos] goes now and a later one is held for, however much later. A connection whose
+     * first datagram finds libquiche on another clock ([ClockVerdict.Differs]) answers as [mismatch] says.
      */
     class ByQuiche(
         val allowanceNanos: Long,
-        val limitNanos: Long,
         val mismatch: MismatchResponse,
     ) : PacingRule
 }
@@ -123,8 +121,8 @@ internal class SlotRules(
 
         /**
          * quiche's pacing within one step of the loop's wait is sent at once: holding it would sleep a whole step
-         * (16 ms on Windows) for what is due sooner. Beyond a second it is a different clock's reading. A loop on a clock
-         * of its own ([ClockBase.Own]) is not paced: libquiche's times are not on it.
+         * (16 ms on Windows) for what is due sooner. A connection on a clock of its own is not paced,
+         * libquiche's times not being on it; [buildConn] reads that off the connection's clock.
          */
         fun forWaits(
             waits: WaitResolution,
@@ -134,18 +132,9 @@ internal class SlotRules(
             keepAlive: KeepAliveRule = KeepAliveRule.Off,
             earlyData: EarlyDataRule = EarlyDataRule.Refused,
             ack: AckRule = AckRule.UntilPassEnds,
-            clock: ClockBase = ClockBase.Libquiche,
-            mismatch: MismatchResponse = MismatchResponse.SendNow,
+            mismatch: MismatchResponse = MismatchResponse.Unpaced,
         ) = SlotRules(
-            when (clock) {
-                is ClockBase.Libquiche ->
-                    PacingRule.ByQuiche(
-                        allowanceNanos = waits.nanos,
-                        limitNanos = 1_000_000_000L,
-                        mismatch = mismatch,
-                    )
-                is ClockBase.Own -> PacingRule.Unpaced
-            },
+            PacingRule.ByQuiche(allowanceNanos = waits.nanos, mismatch = mismatch),
             ack,
             handshake,
             close,

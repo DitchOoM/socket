@@ -77,7 +77,7 @@ internal suspend fun coreConnect(
     ride: ClientRide = clientRideOfThisPlatform,
     datagramSize: DatagramSize = DatagramSize.Probed,
     tokens: ClientTokens = ClientTokens.NotKept,
-    mismatch: MismatchResponse = MismatchResponse.SendNow,
+    mismatch: MismatchResponse = MismatchResponse.Unpaced,
 ): CoreClient {
     val began = TimeSource.Monotonic.markNow()
     val peerHost = peerHostFor(host)

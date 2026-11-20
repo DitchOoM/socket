@@ -2,6 +2,8 @@
 
 package com.ditchoom.socket.quic
 
+import com.ditchoom.socket.quic.core.time.LoopClock
+import com.ditchoom.socket.quic.core.time.Nanos
 import kotlin.concurrent.Volatile
 import kotlin.concurrent.atomics.AtomicReference
 import kotlin.time.Duration
@@ -16,7 +18,13 @@ import kotlin.time.Duration
  * lane. It is `internal`, so each compilation gets its own — there is no cross-source-set leak. See
  * DitchOoM/socket#390.
  */
-internal class StubQuicheApi : QuicheApi {
+internal class StubQuicheApi(
+    /**
+     * The time each datagram is stamped with ([sendInfoAtNanos]): quiche's own now, read as it writes, which a real
+     * quiche stamps its first datagram with. Zero unless the stub shares a clock with the loop it runs on.
+     */
+    private val sendStamp: LoopClock = LoopClock { Nanos(0L) },
+) : QuicheApi {
     @Volatile var established = true
 
     @Volatile var closed = false
@@ -716,6 +724,8 @@ internal class StubQuicheApi : QuicheApi {
     override fun recvInfoFree(info: QuicheRecvInfo) {}
 
     override fun sendInfoNew() = QuicheSendInfo(1L)
+
+    override fun sendInfoAtNanos(info: QuicheSendInfo): Long = sendStamp.now().value
 
     override fun sendInfoFree(info: QuicheSendInfo) {}
 

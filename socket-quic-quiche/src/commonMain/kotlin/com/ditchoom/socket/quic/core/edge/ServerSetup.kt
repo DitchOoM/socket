@@ -216,7 +216,6 @@ internal class ServerSetup(
                     keepAliveRuleOf(options),
                     earlyDataRuleOf(options),
                     config.ack,
-                    clock.base(),
                     mismatch,
                 ),
                 factory,

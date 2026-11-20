@@ -54,5 +54,5 @@ internal class ClientWiring(
     /** Where the NEW_TOKEN token the server issues is kept for the next connection to it. */
     val tokens: TokenHome = TokenHome.NotKept,
     /** What the connection does with a send time on a clock the loop does not read. */
-    val mismatch: MismatchResponse = MismatchResponse.SendNow,
+    val mismatch: MismatchResponse = MismatchResponse.Unpaced,
 )

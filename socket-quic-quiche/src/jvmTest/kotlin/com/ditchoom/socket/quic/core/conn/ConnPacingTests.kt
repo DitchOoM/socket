@@ -9,6 +9,8 @@ import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.testing.ConnRig
 import com.ditchoom.socket.quic.core.testing.CoreTestRules
 import com.ditchoom.socket.quic.core.testing.FakeIo
+import com.ditchoom.socket.quic.core.testing.VirtualClock
+import com.ditchoom.socket.quic.core.time.ClockBase
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.time.WaitResolution
 import com.ditchoom.socket.quic.core.udp.SendBatchResult
@@ -63,23 +65,25 @@ class ConnPacingTests {
     /**
      * The hold is measured from when quiche wrote the datagram, not from when the turn began. A starved loop's turn on the
      * API 35 emulator began over a second before its write: a datagram due 300 ms after it was written looked more than a
-     * second ahead, was taken for another clock's reading and not obeyed, and quiche's pacer ran 2.3 s ahead of now.
+     * second ahead, and quiche's pacer ran 2.3 s ahead of now. The first datagram, stamped when it was written, is on the
+     * loop's clock too.
      */
     @Test
     fun aDatagramDueSoonAfterAWriteThatCameLongAfterTheTurnBeganIsStillHeld() {
         val written = 1_500 * ms
-        val rig = Rig(dueTimes = longArrayOf(written + 300 * ms, written + 310 * ms))
+        val rig = Rig(dueTimes = longArrayOf(written, written + 300 * ms, written + 310 * ms))
         rig.conn.conn.submit(SlowWork(rig, written))
 
         val next = rig.pass(now = 0)
 
-        assertEquals(1, rig.sent, "the first datagram is written when its time is read; the second waits for it")
+        assertEquals(0L, rig.conn.counts.pacingClockMismatches, "the first stamp is on the loop's clock")
+        assertEquals(2, rig.sent, "the second datagram is written when its time is read; the third waits for it")
         assertEquals(NextDue.at(written + 300 * ms), next, "the loop wakes at the held datagram's time")
     }
 
     @Test
-    fun aTimeThatIsNotPacingIsNotObeyed() {
-        // A reading of some other clock, hours ahead: the datagrams go at once.
+    fun aTimeOnAnotherClockIsNotObeyed() {
+        // The first datagram stamped on some other clock, hours ahead: the connection runs unpaced, its datagrams go at once.
         val rig = Rig(dueTimes = longArrayOf(3_600_000 * ms, 3_600_000 * ms, 3_600_000 * ms), rules = SlotRules.Default)
 
         rig.pass(now = 0)
@@ -120,6 +124,7 @@ class ConnPacingTests {
                         mismatch = MismatchResponse.Fail,
                     ),
                 io = io,
+                clock = VirtualClock(base = ClockBase.Libquiche),
             )
         api.clock = { rig.clock.at.value }
         repeat(datagrams) { api.stub.connSendQueue.addLast(1200) }
@@ -158,7 +163,7 @@ class ConnPacingTests {
         val api = PacedApi(StubQuicheApi(), dueTimes)
         private val io = FakeIo()
         var sent = 0
-        val conn = ConnRig(api, rules = rules, io = io)
+        val conn = ConnRig(api, rules = rules, io = io, clock = VirtualClock(base = ClockBase.Libquiche))
 
         init {
             io.onSend = { pending ->

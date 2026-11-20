@@ -124,7 +124,7 @@ internal suspend fun coreServe(
     stack: NetStack = netStackOfThisRuntime,
     batching: UdpBatching = options.udpBatching,
     datagramSize: DatagramSize = DatagramSize.Probed,
-    mismatch: MismatchResponse = MismatchResponse.SendNow,
+    mismatch: MismatchResponse = MismatchResponse.Unpaced,
 ): CoreServer =
     withContext(setupLane) {
         ServerSetup(
