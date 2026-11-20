@@ -2,6 +2,7 @@ package com.ditchoom.socket.quic.core.testing
 
 import com.ditchoom.socket.quic.ReplySource
 import com.ditchoom.socket.quic.SendTarget
+import com.ditchoom.socket.quic.StubQuicheApi
 import com.ditchoom.socket.quic.core.conn.Conn
 import com.ditchoom.socket.quic.core.loop.Endpoint
 import com.ditchoom.socket.quic.core.loop.Loop
@@ -63,7 +64,8 @@ internal class NioEcho(
     private val socket = SendPort(io, loop.port, CallerLanes.None, RecordingWork(), loop.counts, loop.callerCounts)
     val conn: Conn =
         testConn(
-            EchoQuiche(),
+            // quiche stamps its datagrams on the clock the loop reads, as libquiche does.
+                EchoQuiche(StubQuicheApi { MonotonicClock.now().value }),
             CoreTestRules,
             SendTarget.ServerReply(client.toPathKey(), ReplySource.Undecodable),
             TraceCapture.Off,

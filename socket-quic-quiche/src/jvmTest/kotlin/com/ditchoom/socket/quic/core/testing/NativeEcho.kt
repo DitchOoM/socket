@@ -2,6 +2,7 @@ package com.ditchoom.socket.quic.core.testing
 
 import com.ditchoom.socket.quic.ReplySource
 import com.ditchoom.socket.quic.SendTarget
+import com.ditchoom.socket.quic.StubQuicheApi
 import com.ditchoom.socket.quic.UdpBatching
 import com.ditchoom.socket.quic.core.conn.Conn
 import com.ditchoom.socket.quic.core.loop.Endpoint
@@ -104,7 +105,8 @@ internal class NativeEcho(
     fun start(client: InetSocketAddress): NativeEcho {
         conn =
             testConn(
-                EchoQuiche(),
+                // quiche stamps its datagrams on the clock the loop reads, as libquiche does.
+                EchoQuiche(StubQuicheApi { MonotonicClock.now().value }),
                 CoreTestRules,
                 SendTarget.ServerReply(client.toPathKey(), ReplySource.Undecodable),
                 TraceCapture.Off,

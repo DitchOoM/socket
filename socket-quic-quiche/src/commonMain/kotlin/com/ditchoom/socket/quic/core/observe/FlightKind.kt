@@ -13,7 +13,7 @@ package com.ditchoom.socket.quic.core.observe
  * | [QuichePathEvent] | the path's address ids | 0 | quiche's event type | detail | detail |
  * | [ConnEnd] | 0 | 0 | the end's kind | error code | 0 |
  * | [DatagramDropped] | the address it was for or from, the peer's | datagram bytes | why it was dropped | 0 | 0 |
- * | [PacingClockMismatch] | 0, the peer's address id | 0 | 0 | how far ahead of the loop's clock the due time was, in ns | 0 |
+ * | [PacingClockMismatch] | 0, the peer's address id | 0 | 0 | the first datagram's send time off the loop's clock, in ns, ahead when positive | 0 |
  */
 internal enum class FlightKind {
     DatagramIn,

@@ -21,6 +21,7 @@ import com.ditchoom.socket.quic.core.sched.SendPort
 import com.ditchoom.socket.quic.core.sched.WorkInbox
 import com.ditchoom.socket.quic.core.stream.StreamIo
 import com.ditchoom.socket.quic.core.stream.StreamTable
+import com.ditchoom.socket.quic.core.time.ClockBase
 import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.QuicheTime
 import com.ditchoom.socket.quic.core.time.RttPrior
@@ -126,7 +127,11 @@ private fun composed(
             pacing =
                 when (val r = rules.pacing) {
                     is PacingRule.Unpaced -> Pacing.Unpaced
-                    is PacingRule.ByQuiche -> Pacing.ByQuiche(Pacer(r))
+                    is PacingRule.ByQuiche ->
+                        when (turnClock.base()) {
+                            is ClockBase.Libquiche -> Pacing.ByQuiche(Pacer(r, turnClock.firstVerdict()))
+                            is ClockBase.Own -> Pacing.Unpaced
+                        }
                 },
             ack =
                 when (val r = rules.ack) {

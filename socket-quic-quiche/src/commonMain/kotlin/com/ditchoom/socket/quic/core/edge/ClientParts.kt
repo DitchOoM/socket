@@ -75,7 +75,6 @@ internal class ClientParts(
                     closeRuleOf(w.options),
                     datagramRuleOf(w.options),
                     keepAliveRuleOf(w.options),
-                    clock = w.clock.base(),
                     mismatch = w.mismatch,
                 ),
             q = QuicheConnRef(w.api, w.handle),

@@ -121,11 +121,11 @@ internal class ConnFlight(
         lo: Long,
     ) = ring.put(FlightKind.DatagramDropped, now.value, why.ordinal, ring.bindAddress(family, port, hi, lo), peerId, length, 0L, 0L)
 
-    /** A datagram's due time was [aheadNanos] ahead of the loop's clock at [now]: another clock's reading. */
+    /** The connection's first datagram was stamped [offsetNanos] off the loop's clock at [now] (ahead when positive): another clock's reading. */
     fun pacingClockMismatch(
         now: Nanos,
-        aheadNanos: Long,
-    ) = ring.event(FlightKind.PacingClockMismatch, now.value, 0, 0, peerId, aheadNanos, 0L)
+        offsetNanos: Long,
+    ) = ring.event(FlightKind.PacingClockMismatch, now.value, 0, 0, peerId, offsetNanos, 0L)
 
     /** The connection's deadline fell due and quiche's timeout runs at [now]. */
     fun timerFired(now: Nanos) = ring.event(FlightKind.TimerFire, now.value, 0, 0, peerId, 0L, 0L)
@@ -251,7 +251,7 @@ internal class ConnFlight(
         return TraceEvent.Drop(sinceOrigin(i), DropWhy.entries[ring.subAt(i)].type, "${ring.lengthAt(i)} bytes, address $address")
     }
 
-    private fun mismatchText(aheadNanos: Long) = "a due time $aheadNanos ns ahead of the loop's clock"
+    private fun mismatchText(offsetNanos: Long) = "the first datagram's send time was $offsetNanos ns off the loop's clock"
 
     private fun sinceOrigin(i: Int) = (ring.nanosAt(i) - originNanos).nanoseconds
 

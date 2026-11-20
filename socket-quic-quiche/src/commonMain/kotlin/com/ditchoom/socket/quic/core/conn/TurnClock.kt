@@ -55,6 +55,13 @@ internal class TurnClock(
 
     override fun base(): ClockBase = clock.base()
 
+    /** Where a connection's clock verdict starts: [ClockVerdict.Pinned] when libquiche reads what this holds, else unjudged. */
+    fun firstVerdict(): ClockVerdict =
+        when (time) {
+            is TurnTime.Held -> ClockVerdict.Pinned
+            is TurnTime.Live -> ClockVerdict.Unjudged
+        }
+
     /** A reading of the clock itself, for whoever has not entered. */
     fun live(): Nanos = clock.now()
 

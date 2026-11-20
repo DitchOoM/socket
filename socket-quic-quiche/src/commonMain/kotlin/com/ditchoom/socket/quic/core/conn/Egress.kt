@@ -14,7 +14,7 @@ import com.ditchoom.socket.quic.core.udp.Room
 import com.ditchoom.socket.quic.core.udp.SendBatch
 import com.ditchoom.socket.quic.core.udp.Thrown
 
-/** Whether a write collected everything quiche had, the batch filled first, or a due time was another clock's and the response is to end. */
+/** Whether a write collected everything quiche had, the batch filled first, or the first datagram found another clock and the response is to end. */
 internal enum class Wrote { All, BatchFull, ClockMismatch }
 
 /** What a serve left after a write that ended as [this]. */
@@ -49,13 +49,13 @@ internal class Egress(
     private var lastLength = 0
     private var lastTarget: SendTarget = SendTarget.ConnectedPeer
     private var first = FirstOut.NotYet
-    private var mismatchAhead = 0L
+    private var mismatchOffset = 0L
 
     /** When quiche wants the last datagram it wrote on the wire, on the loop's clock. */
     private var lastDueNanos = 0L
 
     /** The end of a connection whose write ended as [Wrote.ClockMismatch]: processing failed with a [PacingClockMismatch]. */
-    fun mismatchEnd(): ConnEnd = ConnEnd.ProcessingFailed(Thrown(PacingClockMismatch(mismatchAhead)))
+    fun mismatchEnd(): ConnEnd = ConnEnd.ProcessingFailed(Thrown(PacingClockMismatch(mismatchOffset)))
 
     /** Whether quiche has written any datagram of this connection, kept or dropped. */
     fun firstOut(): FirstOut = first
@@ -87,7 +87,8 @@ internal class Egress(
 
     /**
      * Writes quiche's output into [out] at the pace [pacer] holds it to, judged at the time the write began: quiche's
-     * pacer reads its clock when it writes, and a starved turn can begin seconds before its write.
+     * pacer reads its clock when it writes, and a starved turn can begin seconds before its write. The connection's
+     * first datagram judges the clocks first; a connection on another clock that does not end is written unpaced.
      */
     fun writePaced(
         out: SendBatch,
@@ -100,30 +101,48 @@ internal class Egress(
         if (pacer.state(at) == PaceState.Holding) return Wrote.All
         while (out.room() == Room.Open) {
             if (one(out, paths, flight, at) <= 0) return Wrote.All
-            when (pacer.sent(lastDueNanos, at)) {
-                is Due.Now -> Unit
-                is Due.Hold -> return Wrote.All
-                is Due.ClockMismatch -> if (mismatched(pacer, at, flight) == Wrote.ClockMismatch) return Wrote.ClockMismatch
+            when (judged(pacer, at, flight)) {
+                is ClockVerdict.Differs ->
+                    when (pacer.response()) {
+                        is MismatchResponse.Unpaced -> Unit
+                        is MismatchResponse.Fail -> return Wrote.ClockMismatch
+                    }
+                is ClockVerdict.Unjudged, is ClockVerdict.Pinned, is ClockVerdict.Agrees ->
+                    when (pacer.sent(lastDueNanos, at)) {
+                        is Due.Now -> Unit
+                        is Due.Hold -> return Wrote.All
+                    }
             }
         }
         return Wrote.BatchFull
     }
 
-    /** A due time on a clock the loop does not read: counted and recorded, then answered as [MismatchResponse] says. */
-    private fun mismatched(
+    /**
+     * The connection's clock verdict, judged by the datagram just written when it is the first; the write began at [at]
+     * and the clock is read again now, so the readings bracket quiche's. A mismatch is counted and recorded then, once.
+     */
+    private fun judged(
         pacer: Pacer,
         at: Nanos,
         flight: ConnFlight,
-    ): Wrote {
-        counts.pacingClockMismatch()
-        flight.pacingClockMismatch(at, pacer.aheadNanos())
-        return when (pacer.response()) {
-            is MismatchResponse.SendNow -> Wrote.All
-            is MismatchResponse.Fail -> {
-                mismatchAhead = pacer.aheadNanos()
-                Wrote.ClockMismatch
-            }
+    ): ClockVerdict =
+        when (val v = pacer.verdict()) {
+            is ClockVerdict.Unjudged ->
+                when (val judged = pacer.judge(lastDueNanos, at, clock.now())) {
+                    is ClockVerdict.Differs -> judged.also { mismatched(it, at, flight) }
+                    is ClockVerdict.Unjudged, is ClockVerdict.Pinned, is ClockVerdict.Agrees -> judged
+                }
+            is ClockVerdict.Pinned, is ClockVerdict.Agrees, is ClockVerdict.Differs -> v
         }
+
+    private fun mismatched(
+        verdict: ClockVerdict.Differs,
+        at: Nanos,
+        flight: ConnFlight,
+    ) {
+        counts.pacingClockMismatch()
+        flight.pacingClockMismatch(at, verdict.offsetNanos)
+        mismatchOffset = verdict.offsetNanos
     }
 
     private fun one(
