@@ -20,14 +20,21 @@ internal object JvmSocketAddressResolver : SocketAddressResolver {
     override suspend fun resolve(
         host: String,
         port: Int,
+    ): SocketAddress = resolveWith(host, port, InetAddress::getByName)
+
+    /** [resolve] with the lookup it makes named, so a test can see which thread runs it. */
+    internal suspend fun resolveWith(
+        host: String,
+        port: Int,
+        lookup: (String) -> InetAddress,
     ): SocketAddress {
         require(port in 0..65535) { "port out of range: $port" }
         val address =
             if (isAddressLiteral(host)) {
                 // getByName checks a literal's format and parses it; it never asks DNS.
-                InetAddress.getByName(host)
+                lookup(host)
             } else {
-                runInterruptible(Dispatchers.IO) { InetAddress.getByName(host) }
+                runInterruptible(Dispatchers.IO) { lookup(host) }
             }
         return InternedJvmSocketAddress(InetSocketAddress(address, port))
     }
