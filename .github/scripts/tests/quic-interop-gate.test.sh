@@ -440,7 +440,7 @@ expect "the extractor reads crypto coverage, the request's timeline, PTO expirie
 # we did right on that connection; every negative below is a look-alike in which we did something wrong, and each
 # is first shown to match the symptom alone (the naive check), so the kind is what keeps it red.
 fx="$here/fixtures/quic-interop-handshake"
-for cell in our-server-quinn:our-server:quinn our-server-quiche:our-server:quiche our-client-quiche:our-client:quiche our-client-haproxy:our-client:haproxy; do
+for cell in our-server-quinn:our-server:quinn our-server-quiche:our-server:quiche our-server-quiche-answer-lost:our-server:quiche our-client-quiche:our-client:quiche our-client-haproxy:our-client:haproxy; do
   IFS=: read -r name direction peer <<<"$cell"
   python3 -I "$extract" "$fx/$name/logs" "$direction" "$peer" "$tmp/fx-$name.json"
   expect_rc "the extractor reads the $name capture" $? 0
@@ -493,6 +493,9 @@ check_conn "quinn's request, dropped once and never sent again in 30 s (run 4454
 check_conn "haproxy's Handshake flight corrupted until our idle timeout (run 44546515447)" "$haproxy" "$move" '' Matched Matched
 check_conn "the stock quiche server's HANDSHAKE_DONE lost while we probed on time (run 44564256526)" "$qclient" "$probed" '' Matched Matched
 check_conn "the stock quiche client's request lost five times, the client gave up on this connection (run 44540058179)" "$qserver" "$gaveup" '' Matched Matched
+# Run 44685812497: our answer lost three times; its probes waited the PTO of the RTT estimate when each fired (1.3 s
+# smoothed after later samples), not of the estimate when the answer went out (1.9 s), so neither is late.
+check_conn "the stock quiche client gave up while our answer was lost on every PTO (run 44685812497)" "$tmp/fx-our-server-quiche-answer-lost.json" "$gaveup" 'assert c["late_probes"] == 0 and c["fin_sent_streams"] == 1' Matched Matched
 for e in "$quinn" "$haproxy" "$qclient" "$qserver"; do
   ev="$(python3 -c 'import json,sys; c=next(iter(json.load(open(sys.argv[1]))["tests"].values()))["connections"][0]; print(c["probes_missing_a_space"], c["late_probes"], c["wire"]["peer_packets_unread"], c["wire"]["peer_delivered_after_last_rx"])' "$e")"
   expect "on time, every space, every packet read: $(basename "$e")" "$ev" "0 0 0 0"
