@@ -60,6 +60,7 @@ import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.nanoseconds
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -495,6 +496,111 @@ class CoreRecordingReplayTests {
             assertFollowedWholeTwice(scheduleOf(recordAnEcho(ClientHost.StalledPastItsNextProbe)))
         }
 
+    /**
+     * A server that read the client's close late, with no timer of the client's recorded after it: nothing happens between
+     * the close and the end of the capture, and the replay's connection, closed by its own action, still ends closed by us
+     * (CI FFM, slow to read: the close read 259 ms after it left, "end: replay Open, capture ClosedByUs").
+     */
+    @Test
+    fun aCloseWhoseArrivalTheCaptureEndsBeforeIsStillTheReplaysEnd() =
+        replayTest("aCloseWhoseArrivalTheCaptureEndsBeforeIsStillTheReplaysEnd") {
+            val recorded = scheduleOf(recordAnEcho())
+            val closedAt = assertIs<ConnectionEnd.ClosedByUs>(recorded.end).at
+            val close = recorded.steps.filterIsInstance<Step.OursSent>().last()
+            assertTrue(close.at >= closedAt, "the client's last datagram is its close")
+            val readLate = close.copy(fate = Fate.Delivered(close.at + CLOSE_READ_LATE))
+            val timers =
+                when (val ourTimers = recorded.ourTimers) {
+                    OurTimers.WhenDue -> ourTimers
+                    is OurTimers.AsRecorded -> OurTimers.AsRecorded(ourTimers.firings.filter { it < closedAt })
+                }
+            assertFollowedWholeTwice(
+                CaptureSchedule(
+                    name = "${recorded.name}, its close read late",
+                    ours = recorded.ours,
+                    alpn = recorded.alpn,
+                    ourTransport = recorded.ourTransport,
+                    peerTransport = recorded.peerTransport,
+                    peerPackets = recorded.peerPackets,
+                    peerApp = recorded.peerApp,
+                    ourApp = recorded.ourApp,
+                    steps = recorded.steps.map { if (it === close) readLate else it },
+                    established = recorded.established,
+                    end = recorded.end,
+                    runsFor = recorded.runsFor,
+                    tolerance = recorded.tolerance,
+                    idsAtEstablishment = recorded.idsAtEstablishment,
+                    ourTimers = timers,
+                ),
+            )
+        }
+
+    /**
+     * A client stalled far past its handshake probe ran its timer once, at the recorded firing, and probed once: one
+     * Handshake datagram, then its 1-RTT data. quiche re-arms that probe from the last packet it sent, so until the probe
+     * is sent the re-armed timer is overdue too; the replay that ran the timer while it stayed due probed twice (CI macOS
+     * JDK 25 FFM, the four-tuple run: "our datagram 4 is [Handshake], the capture's is [OneRtt] at 44.647834ms").
+     */
+    @Test
+    fun aTimerOverdueByMoreThanItsBackOffFiresOncePerRecordedFiring() =
+        replayTest("aTimerOverdueByMoreThanItsBackOffFiresOncePerRecordedFiring") {
+            val schedule =
+                CaptureSchedule(
+                    name = "core client stalled past its handshake probe (CI job 136431650679)",
+                    ours = QuicRole.Client,
+                    alpn = coreTestOptions.alpnProtocols.single(),
+                    ourTransport = TransportSetup(idleTimeout = coreTestOptions.idleTimeout),
+                    peerTransport = TransportSetup(idleTimeout = coreTestOptions.idleTimeout),
+                    peerPackets = PeerPackets.AsQuiche,
+                    peerApp = PeerApp.Echoes,
+                    ourApp = OurApp.Reads,
+                    steps =
+                        listOf(
+                            Step.OursSent(0.nanoseconds, listOf(PacketKind.Initial), Fate.Delivered(2_078_626.nanoseconds)),
+                            Step.PeerSent(
+                                3_545_209.nanoseconds,
+                                listOf(PacketKind.Initial, PacketKind.Handshake),
+                                Fate.Delivered(4_504_834.nanoseconds),
+                            ),
+                            Step.PeerSent(3_572_043.nanoseconds, listOf(PacketKind.Handshake), Fate.Delivered(4_637_043.nanoseconds)),
+                            Step.OursSent(
+                                4_838_710.nanoseconds,
+                                listOf(PacketKind.Initial, PacketKind.Handshake, PacketKind.OneRtt),
+                                Fate.Delivered(44_533_001.nanoseconds),
+                            ),
+                            Step.OursDid(44_313_584.nanoseconds, OurAction.Write(stream = 0, bytes = PAYLOAD, end = StreamEnd.Open)),
+                            Step.OursSent(44_313_584.nanoseconds, listOf(PacketKind.OneRtt), Fate.Lost),
+                            Step.OursSent(44_616_876.nanoseconds, listOf(PacketKind.Handshake), Fate.Delivered(44_616_876.nanoseconds)),
+                            Step.OursSent(44_647_834.nanoseconds, listOf(PacketKind.OneRtt), Fate.Delivered(45_757_043.nanoseconds)),
+                            Step.PeerSent(44_654_043.nanoseconds, listOf(PacketKind.OneRtt), Fate.Delivered(47_158_668.nanoseconds)),
+                            Step.PeerSent(45_668_751.nanoseconds, listOf(PacketKind.OneRtt), Fate.Delivered(47_247_001.nanoseconds)),
+                            Step.PeerSent(45_825_418.nanoseconds, listOf(PacketKind.OneRtt), Fate.Delivered(47_264_001.nanoseconds)),
+                            Step.PeerSent(46_262_542.nanoseconds, listOf(PacketKind.OneRtt), Fate.Delivered(47_273_376.nanoseconds)),
+                            Step.OursSent(
+                                47_539_627.nanoseconds,
+                                listOf(PacketKind.OneRtt),
+                                Fate.Delivered(47_792_501.nanoseconds),
+                                Carries.AcksOnly,
+                            ),
+                            Step.OursDid(674_425_709.nanoseconds, OurAction.Close),
+                            Step.OursSent(
+                                674_425_709.nanoseconds,
+                                listOf(PacketKind.OneRtt),
+                                Fate.Delivered(675_483_293.nanoseconds),
+                                Carries.AcksOnly,
+                            ),
+                        ),
+                    established = Moment.At(4_838_710.nanoseconds),
+                    end = ConnectionEnd.ClosedByUs(674_425_709.nanoseconds),
+                    runsFor = 674_425_709.nanoseconds,
+                    tolerance = SendTimeTolerance(),
+                    idsAtEstablishment = SPARE_IDS,
+                    ourTimers = OurTimers.AsRecorded(listOf(44_566_584.nanoseconds, 55_400_959.nanoseconds)),
+                )
+            recordings = Recorded(emptyList(), emptyList(), 1)
+            assertFollowedWholeTwice(schedule)
+        }
+
     /** Whether a call has reached quiche yet. */
     private enum class Calls { Cold, Warm }
 
@@ -654,6 +760,9 @@ class CoreRecordingReplayTests {
         const val MOVED_PORT = 40_000
         const val MOVED_ADDRESS = 0x7f000002L
         val LINGER_STEP = 100.milliseconds
+
+        /** Far past the replay's tolerance of the close's time: no arrival of it ends the capture's run. */
+        val CLOSE_READ_LATE = 300.milliseconds
 
         /** Longer than the replay's tolerance of a send's time: a replay that answers at once leaves the recording. */
         val SLOW = 15.milliseconds

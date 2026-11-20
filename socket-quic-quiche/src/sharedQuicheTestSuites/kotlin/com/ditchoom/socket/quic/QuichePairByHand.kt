@@ -228,6 +228,14 @@ internal class QuichePairByHand private constructor(
         now = until
     }
 
+    /**
+     * Run [conn]'s quiche timeout once, now, as a driver does when its deadline falls due. A timer quiche re-arms
+     * already overdue waits for the caller's next pass, after it has sent what this one wrote.
+     */
+    fun runTimeout(conn: QuicheConn) {
+        at(lead(conn)) { api.connOnTimeout(conn) }
+    }
+
     /** Run [block] on [conn]'s clock: quiche calls a driver makes outside this class read the pair's time. */
     fun <T> onClock(
         conn: QuicheConn,
