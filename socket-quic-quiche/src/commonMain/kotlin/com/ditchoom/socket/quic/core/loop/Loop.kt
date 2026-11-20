@@ -15,12 +15,14 @@ import com.ditchoom.socket.quic.core.pool.IntStack
 import com.ditchoom.socket.quic.core.ready.Poller
 import com.ditchoom.socket.quic.core.ready.ReadyTokens
 import com.ditchoom.socket.quic.core.sched.LoopPort
+import com.ditchoom.socket.quic.core.sched.Round
 import com.ditchoom.socket.quic.core.sched.SleepPlan
 import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.time.RttPrior
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.Thrown
+import com.ditchoom.socket.quic.currentThreadId
 import com.ditchoom.socket.quic.reportOnThisThread
 import kotlinx.coroutines.Runnable
 
@@ -161,6 +163,7 @@ internal class Loop(
 
     private fun passInside(now: Nanos): NextDue {
         counts.passed()
+        port.handlers.passBegins(currentThreadId())
         port.fireDue(now)
         for (i in 0 until ready.count) {
             when (val slot = slots[ready.tokenAt(i)]) {
@@ -183,6 +186,25 @@ internal class Loop(
             }
         }
         counts.ran(port.runWork())
+        var backlog = serveAll(now)
+        // SPIKE: the handler phase. Continuations resumed during receive and serve run here, never inside quiche's
+        // processing; what they hand the connections is written by the serve that follows, with any ACK held for them.
+        val handlers = port.handlers
+        while (handlers.nextRound() == Round.Due) {
+            handlers.runReady(clock)
+            counts.ran(port.runWork())
+            if (serveAll(now)) backlog = true
+        }
+        if (handlers.hasReady()) backlog = true
+        val due = port.nextDue(now)
+        // Datagrams the io holds are invisible to the poller: with any, the next pass is due now (a poll of zero), whatever
+        // cut this one short (the per-pass bound included).
+        return if (backlog) NextDue.at(now.value) else due
+    }
+
+    /** Serves every socket's connections; returns whether one holds datagrams the poller will not signal. */
+    private fun serveAll(now: Nanos): Boolean {
+        port.handlers.serving()
         var backlog = false
         for (i in slots.indices) {
             when (val slot = slots[i]) {
@@ -195,10 +217,7 @@ internal class Loop(
                 is LoopSlot.Empty -> Unit
             }
         }
-        val due = port.nextDue(now)
-        // Datagrams the io holds are invisible to the poller: with any, the next pass is due now (a poll of zero), whatever
-        // cut this one short (the per-pass bound included).
-        return if (backlog) NextDue.at(now.value) else due
+        return backlog
     }
 
     internal fun attach(endpoint: Endpoint) {
@@ -274,6 +293,7 @@ internal class Loop(
         slots.clear()
         outcome = outcome.then { poller.close() }
         outcome = outcome.then { port.stop(end) }
+        outcome = outcome.then { port.handlers.stop() }
         outcome = outcome.then { receive.disarm() }
         return outcome.then { freeOnStop.run() }
     }

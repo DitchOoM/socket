@@ -49,6 +49,9 @@ internal class LoopPort(
     private val sleepsUntil = AtomicLong(0L)
     private val runner: (LoopWork) -> Unit = { it.run(this) }
 
+    /** The loop as a coroutine dispatcher for handlers placed on it (SPIKE). */
+    val handlers = LoopHandlers(this)
+
     /** Any thread. */
     fun submit(work: LoopWork) {
         when (val pushed = inbox.push(work)) {

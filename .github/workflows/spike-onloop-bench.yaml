@@ -1,0 +1,93 @@
+name: "Spike: on-loop handlers bench"
+
+# SPIKE (spike/core-suspend-handlers-on-loop): Linux numbers for CoreEchoProfile with stream handlers
+# off the loop (today) and on it. Measurements only; never fails on a number. Delete with the spike.
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    paths:
+      - '.github/workflows/spike-onloop-bench.yaml'
+      - 'socket-quic-quiche/src/jvmTest/kotlin/com/ditchoom/socket/quic/core/demux/CoreEchoProfile.kt'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: spike-onloop-bench-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bench:
+    name: "On-loop handlers (Linux, JNI + FFM)"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      ORG_GRADLE_PROJECT_version: "0.0.0-spike"
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Find a quiche natives artifact to borrow
+        id: natives
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          RID=$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=quiche-linux-natives-full&per_page=100" \
+                  --jq '[.artifacts[] | select(.expired == false)] | sort_by(.created_at) | reverse | .[0].workflow_run.id // empty')
+          if [ -z "$RID" ]; then
+            echo "::error::No unexpired quiche-linux-natives-full artifact exists."
+            exit 1
+          fi
+          echo "run-id=$RID" >> "$GITHUB_OUTPUT"
+
+      - uses: ./.github/actions/linux-quiche-env
+        with:
+          natives-run-id: ${{ steps.natives.outputs.run-id }}
+          github-token: ${{ github.token }}
+
+      - name: Build the profile classpath
+        run: |
+          set -euo pipefail
+          ./gradlew :socket-quic-quiche:generateLocalhostCert :socket-quic-quiche:jvmTestProcessResources \
+            :socket-quic-quiche:stageQuicheNativeResources :socket-quic-quiche:compileJava21KotlinJvm \
+            :socket-quic-quiche:netnsQuicProbeClasspath -PlinuxTargets=false --no-configuration-cache
+          cp socket-quic-quiche/build/netns/jvm-test-classpath.txt /tmp/jni-cp.txt
+          echo "$PWD/socket-quic-quiche/build/classes/kotlin/jvm/java21:$(cat /tmp/jni-cp.txt)" > /tmp/ffm-cp.txt
+          cat socket-quic-quiche/build/netns/java21-launcher.txt > /tmp/java.txt
+          echo "nproc=$(nproc) load=$(uptime | sed 's/.*average[s]*://')"
+
+      - name: Measure
+        run: |
+          set -uo pipefail
+          J=$(cat /tmp/java.txt)
+          mkdir -p /tmp/res
+          run() { # backend out props... -- args...
+            local b=$1 out=$2; shift 2
+            local props=(); while [ "$1" != "--" ]; do props+=("$1"); shift; done; shift
+            timeout 300 "$J" -Xmx2g --enable-native-access=ALL-UNNAMED --add-opens java.base/java.nio=ALL-UNNAMED \
+              -Dquiche.expectedJvmBackend=$b "${props[@]}" -cp "$(cat /tmp/$b-cp.txt)" \
+              com.ditchoom.socket.quic.core.demux.CoreEchoProfileKt "$@" > "/tmp/res/$out.txt" 2>&1 || echo "$out exited $?"
+          }
+          for i in 1 2 3; do
+            for b in jni ffm; do
+              for m in default onloop; do run $b echo-$b-$m-$i -DserverDispatch=$m -- both 1,64 3 5; done
+            done
+          done
+          for b in jni ffm; do
+            for dir in up down; do
+              for m in default onloop; do run $b bulk-$b-$dir-$m -DserverDispatch=$m -Dbulk=$dir -DbulkMiB=100 -- bulk 3; done
+            done
+          done
+          for bad in none burn sleep offload; do
+            for m in onloop default; do run jni iso-$bad-$m-1 -DserverDispatch=$m -Dbad=$bad -- both 64 3 5; done
+          done
+          for f in /tmp/res/*.txt; do echo "== $(basename $f)"; grep -v WINDOW "$f" | grep -v "^WARNING"; done | tee /tmp/res/all.log
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: spike-onloop-bench
+          path: /tmp/res

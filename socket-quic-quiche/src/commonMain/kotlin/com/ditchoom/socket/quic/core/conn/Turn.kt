@@ -25,7 +25,14 @@ import com.ditchoom.socket.testkit.trace.TraceSink
 import kotlinx.coroutines.Runnable
 
 /** What a serve left: everything collected, a batch that filled with more waiting, or a caller that had to leave. */
-internal enum class Collected { Everything, MoreWaiting, Abandoned }
+internal enum class Collected {
+    Everything,
+    MoreWaiting,
+    Abandoned,
+
+    /** SPIKE: the ACK waits in the loop, which still holds the connection, for the pass's handler phase. */
+    AckHeld,
+}
 
 /**
  * The order of one serve, and the connection-tier containment site: an exception thrown by work or by a step ends
@@ -40,6 +47,7 @@ internal class Turn(
     private val inside = Inside(c, clock, port, this)
     private val runWork: (ConnWork) -> Unit = { runOne(it) }
     private val paths: Paths = c.slots.paths
+    private val handlers = port.handlers
 
     fun push(work: ConnWork): Pushed = c.inbox.push(work)
 
@@ -239,7 +247,7 @@ internal class Turn(
             return Collected.Everything
         }
         if (c.firstFlight() == FlightGate.Held) return Collected.Everything
-        c.ackStep(now).let { if (it != AckStep.Write) return it.collected() }
+        c.ackStep(now).let { if (it != AckStep.Write) return it.collected(handlers.mode()) }
         val wrote =
             when (val pacing = c.slots.pacing) {
                 is Pacing.Unpaced -> c.egress.write(out, paths, c.flight)
