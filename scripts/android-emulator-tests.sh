@@ -120,13 +120,13 @@ echo "Emulator (API ${API_LEVEL}) default network: $(adb shell dumpsys connectiv
 # THE SHARED INPUTS ARE TAKEN HERE, AFTER THE BOOT
 # -------------------------------------------------
 # The natives, the quic-echo jar and the compiled Kotlin come from two jobs that build them once for
-# every lane (see scripts/android-lane-inputs.sh). The emulator is already up, so the wait overlaps its
-# boot. The quic-echo container needs the jar, so it comes up here too. The time spent here is part of
-# the step's budget (the deadline below is not extended): the wait is bounded by ANDROID_LANE_INPUTS_WAIT_MIN.
+# every lane (see scripts/android-lane-inputs.sh). This job `needs` both, so here they are only
+# downloaded, in seconds; no wait for them counts against the step's deadline. The quic-echo container
+# needs the jar, so it comes up here too.
 if [ "$NETWORK_READY" = "1" ]; then
   # shellcheck source=scripts/android-lane-inputs.sh
   source "$(dirname "${BASH_SOURCE[0]}")/android-lane-inputs.sh"
-  lane_inputs_fetch "${ANDROID_LANE_INPUTS_WAIT_MIN:-8}" with-build-cache
+  lane_inputs_fetch with-build-cache
   LANE_INPUTS_TAKEN_S=$SECONDS
   bash test-harness/compose-up-retry.sh quic-echo
 fi
@@ -162,8 +162,9 @@ fi
 #     slow runner. Green runs took 512-650 s after boot on API 29; the run above, on a runner 1.3x
 #     slower by its own CORE-CPU line, was still finishing tests when a fixed 660 s ended it.
 #     A run stopped here while tests still progress is reported OUT OF TIME, not hung, with how the
-#     script's time split between the wait for the lane inputs and the tests: run 44683082787 (API 29)
-#     spent 312 s of its 960 s waiting for the inputs, and its "hang" named a test 1 s old.
+#     script's time split between taking the lane inputs and the tests: run 44683082787 (API 29)
+#     spent 312 s of its 960 s waiting for the inputs (the job did not yet `need` their jobs), and
+#     its "hang" named a test 1 s old.
 # Then the device, host and test engine are captured to $HANG_FILE, a ::error:: annotation says
 # what was hung, and Gradle is stopped. The script then shuts the emulator down as usual and fails.
 # shellcheck source=scripts/android-test-watchdog.sh

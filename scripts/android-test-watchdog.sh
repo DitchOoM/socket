@@ -32,13 +32,13 @@ test_run_stop_kind() { # <reason>
   esac
 }
 
-# Where the script's time went, so a run out of time says whether the wait for the shared jobs' inputs
-# or the tests took it.
+# Where the script's time went, so a run out of time says whether taking the shared jobs' inputs or
+# the tests took it.
 test_run_time_split() { # <s when the lane inputs were taken, or empty> <elapsed s>
   if [ -n "$1" ]; then
-    echo "of ${2}s: 0-${1}s waiting for and taking the lane inputs, ${1}-${2}s building and running the tests"
+    echo "of ${2}s: 0-${1}s taking the lane inputs, ${1}-${2}s building and running the tests"
   else
-    echo "of ${2}s: 0-${2}s waiting for and taking the lane inputs, not yet taken"
+    echo "of ${2}s: 0-${2}s taking the lane inputs, not yet taken"
   fi
 }
 

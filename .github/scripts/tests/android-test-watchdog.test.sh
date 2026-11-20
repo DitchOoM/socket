@@ -51,10 +51,10 @@ check "a stall is titled a hang" "hung" "$(test_run_stop_kind "no test started o
 check "an install that never finished is titled a hang" "hung" "$(test_run_stop_kind "an APK install has not finished after 300s: x.apk")"
 check "the total bound is titled out of time" "out of time" "$(test_run_stop_kind "$(test_run_hang 960 1 300 959 "$closed")")"
 check "the time split says what took the script's time before and after the tests began" \
-  "of 960s: 0-312s waiting for and taking the lane inputs, 312-960s building and running the tests" \
+  "of 960s: 0-312s taking the lane inputs, 312-960s building and running the tests" \
   "$(test_run_time_split 312 960)"
 check "a run stopped before the inputs arrived says so" \
-  "of 400s: 0-400s waiting for and taking the lane inputs, not yet taken" \
+  "of 400s: 0-400s taking the lane inputs, not yet taken" \
   "$(test_run_time_split "" 400)"
 
 echo "android-test-watchdog: $pass passed, $fail failed"

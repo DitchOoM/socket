@@ -2,19 +2,17 @@
 # Sourced by scripts/android-emulator-tests.sh and scripts/android-benchmark.sh, from INSIDE the
 # emulator step.
 #
-# WHY THE LANES TAKE THEIR INPUTS HERE AND NOT IN AN EARLIER STEP
-# ---------------------------------------------------------------
+# THE LANES NEED THE JOBS THAT BUILD THESE, SO NOTHING HERE WAITS
+# ----------------------------------------------------------------
 # Two jobs of android_integration.yaml build what every lane shares, once per run: `natives` (the
 # x86_64 natives, the quic-echo jar, and the JVM test classes' build-cache entries) and `kotlin-build`
-# (the Android Kotlin compile and dex, as build-cache entries). A lane that waited for them in a step
-# BEFORE the emulator step sat idle for the whole build (6 min cold, run 44532703402) and only then
-# started its emulator. The emulator step starts the emulator first, so the wait is here, after the
-# boot: the boot, the SDK install and the runner's own setup overlap the shared build.
+# (the Android Kotlin compile and dex, as build-cache entries). The lanes `need` them. They used to
+# start beside them and wait here, inside the emulator step, so the boot overlapped the shared build;
+# but the wait then counted against the step's deadline, and run 44683082787 (API 29) spent 312 s of
+# its 960 s waiting and ran out of time while its tests still passed.
 #
-# Needs GH_TOKEN, and the Actions environment (GITHUB_RUN_ID, GITHUB_REPOSITORY). Everything the wait
-# fetches is named by the artifacts of the SAME run, so a lane never reads another run's inputs. The wait is part of the lane's step budget.
-
-LANE_INPUTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Needs GH_TOKEN, and the Actions environment (GITHUB_RUN_ID, GITHUB_REPOSITORY). Everything fetched
+# is named by the artifacts of the SAME run, so a lane never reads another run's inputs.
 
 # Downloads this run's artifact <name> into the workspace. Retried: a finished artifact can answer
 # 404/5xx for a moment, and one failed download must not fail a lane that has an emulator booted.
@@ -31,15 +29,13 @@ lane_inputs_download() { # <artifact name> <directory>
   return 1
 }
 
-# Waits for and applies the shared inputs, then prints the seconds it took.
-#   $1  minutes to wait for the artifacts
-#   $2  "with-build-cache": also take the Gradle build-cache entries (the test lanes; the benchmark
+# Downloads and applies the shared inputs, then prints the seconds it took.
+#   $1  "with-build-cache": also take the Gradle build-cache entries (the test lanes; the benchmark
 #       job builds release variants and takes only the natives)
 lane_inputs_fetch() {
-  local wait_min="$1" with_cache="${2:-}" started=$SECONDS
+  local with_cache="${1:-}" started=$SECONDS
   : "${GH_TOKEN:?GH_TOKEN is not set: the emulator step passes github.token}"
 
-  bash "$LANE_INPUTS_DIR/.github/scripts/await-artifact.sh" android-lane-inputs "Android lane inputs (natives" "$wait_min"
   lane_inputs_download android-lane-inputs
   # The Gradle build checks the Android natives are there and skips compiling them; the host markers
   # are touched so the JNI shim's mtime guard reads "current" (build-linux's trap #2).
@@ -47,9 +43,7 @@ lane_inputs_fetch() {
   find socket-quic-quiche/libs/quiche/linux-x64 \( -name '.built-*' -o -name '.jni-built-*' \) -print0 | xargs -0 -r touch
 
   if [ "$with_cache" = "with-build-cache" ]; then
-    bash "$LANE_INPUTS_DIR/.github/scripts/await-artifact.sh" android-jvm-build-cache "Android lane inputs (natives" "$wait_min"
     lane_inputs_download android-jvm-build-cache lane-build-cache/jvm
-    bash "$LANE_INPUTS_DIR/.github/scripts/await-artifact.sh" android-kotlin-build-cache "Android Kotlin build cache" "$wait_min"
     lane_inputs_download android-kotlin-build-cache lane-build-cache/kotlin
     # Gradle's local build cache: the compiled Kotlin and the dex of every module. The lane's Gradle
     # takes those from here (FROM-CACHE) instead of compiling them. Each artifact has its own
