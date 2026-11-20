@@ -736,15 +736,18 @@ private class CaptureReplay(
     private fun nextArrival(): List<InFlight> = inFlight.sortedWith(compareBy<InFlight> { it.arrives }.thenBy { it.order }).take(1)
 
     /**
-     * When our endpoint's next timer fires: when it falls due, or when the capture's host next ran a timer from then on. A
-     * firing within [TIMER_PRECISION] before it is the one the capture's timer fired at, a hair before the replay's is due.
+     * When our endpoint's next timer fires: when it falls due, or when the capture's host next ran a timer from then on;
+     * never on the capture when its host ran none from then on. A firing within [TIMER_PRECISION] before it is the one the
+     * capture's timer fired at, a hair before the replay's is due.
      */
     private fun ourTimerFires(): Duration {
         val due = timerAt(ours)
         return when (val timers = schedule.ourTimers) {
             OurTimers.WhenDue -> due
             is OurTimers.AsRecorded -> {
-                val fires = maxOf(due, timers.firings.firstOrNull { it >= due - TIMER_PRECISION } ?: due)
+                // The recording holds every timer its host ran: one that ran none after this fell due ran none at all.
+                val next = timers.firings.firstOrNull { it >= due - TIMER_PRECISION } ?: return Duration.INFINITE
+                val fires = maxOf(due, next)
                 val missed = timers.firings.lastOrNull { it < due - TIMER_PRECISION }
                 if (due.isFinite() && missed != null && fires > due) timersThatMissed += TimerMissed(due, missed, fires)
                 fires
