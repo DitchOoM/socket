@@ -565,6 +565,8 @@ private class CaptureReplay(
         if (!runUntil(step.at)) return
         stepNext++
         act(step.action)
+        // A close ends the connection at the action itself: nothing else that happens later need be there to see it.
+        noteOurState()
         answer()
     }
 

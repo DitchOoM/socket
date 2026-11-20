@@ -495,6 +495,45 @@ class CoreRecordingReplayTests {
             assertFollowedWholeTwice(scheduleOf(recordAnEcho(ClientHost.StalledPastItsNextProbe)))
         }
 
+    /**
+     * A server that read the client's close late, with no timer of the client's recorded after it: nothing happens between
+     * the close and the end of the capture, and the replay's connection, closed by its own action, still ends closed by us
+     * (CI FFM, slow to read: the close read 259 ms after it left, "end: replay Open, capture ClosedByUs").
+     */
+    @Test
+    fun aCloseWhoseArrivalTheCaptureEndsBeforeIsStillTheReplaysEnd() =
+        replayTest("aCloseWhoseArrivalTheCaptureEndsBeforeIsStillTheReplaysEnd") {
+            val recorded = scheduleOf(recordAnEcho())
+            val closedAt = assertIs<ConnectionEnd.ClosedByUs>(recorded.end).at
+            val close = recorded.steps.filterIsInstance<Step.OursSent>().last()
+            assertTrue(close.at >= closedAt, "the client's last datagram is its close")
+            val readLate = close.copy(fate = Fate.Delivered(close.at + CLOSE_READ_LATE))
+            val timers =
+                when (val ourTimers = recorded.ourTimers) {
+                    OurTimers.WhenDue -> ourTimers
+                    is OurTimers.AsRecorded -> OurTimers.AsRecorded(ourTimers.firings.filter { it < closedAt })
+                }
+            assertFollowedWholeTwice(
+                CaptureSchedule(
+                    name = "${recorded.name}, its close read late",
+                    ours = recorded.ours,
+                    alpn = recorded.alpn,
+                    ourTransport = recorded.ourTransport,
+                    peerTransport = recorded.peerTransport,
+                    peerPackets = recorded.peerPackets,
+                    peerApp = recorded.peerApp,
+                    ourApp = recorded.ourApp,
+                    steps = recorded.steps.map { if (it === close) readLate else it },
+                    established = recorded.established,
+                    end = recorded.end,
+                    runsFor = recorded.runsFor,
+                    tolerance = recorded.tolerance,
+                    idsAtEstablishment = recorded.idsAtEstablishment,
+                    ourTimers = timers,
+                ),
+            )
+        }
+
     /** Whether a call has reached quiche yet. */
     private enum class Calls { Cold, Warm }
 
@@ -654,6 +693,9 @@ class CoreRecordingReplayTests {
         const val MOVED_PORT = 40_000
         const val MOVED_ADDRESS = 0x7f000002L
         val LINGER_STEP = 100.milliseconds
+
+        /** Far past the replay's tolerance of the close's time: no arrival of it ends the capture's run. */
+        val CLOSE_READ_LATE = 300.milliseconds
 
         /** Longer than the replay's tolerance of a send's time: a replay that answers at once leaves the recording. */
         val SLOW = 15.milliseconds
