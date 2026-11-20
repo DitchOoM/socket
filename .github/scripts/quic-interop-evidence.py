@@ -434,7 +434,7 @@ def probe_facts(records, side):
     acked_pns = collections.defaultdict(set)
     discarded = set()
     rtt, in_flight, max_ack_delay, closed = (333.0, 166.5, 0.0), 0, DEFAULT_MAX_ACK_DELAY_MS, False
-    bursts = []  # [time, spaces it carried data in, spaces with unacknowledged data before it, its PTO's rtt]
+    bursts = []  # [time, spaces it carried data in, spaces with unacknowledged data before it, rtt estimate then]
     last_eliciting = None  # (time, rtt) of our last ack-eliciting send at or before our last receipt
     for r in timed:
         name, data, at = r["name"], r.get("data") or {}, float(r["time"])
@@ -485,17 +485,18 @@ def probe_facts(records, side):
     # Each ack-eliciting send re-arms the timer (RFC 9002 §6.2.1). A burst at least half its due PTO after the send
     # before it is the timer's probe; one sooner is a send of the connection's own (a NEW_CONNECTION_ID after an
     # acknowledgement), which re-arms the timer without an expiry.
+    # The PTO is the one the RTT estimate gives when the timer fires: samples taken after the send re-arm it.
     missing = late = 0
     if last_eliciting is not None:
-        ref, ref_rtt, expiries = last_eliciting[0], last_eliciting[1], 0
+        ref, expiries = last_eliciting[0], 0
         for at, carried, owed, before in bursts:
-            due = pto_ms(ref_rtt) * 2 ** expiries
+            due = pto_ms(before) * 2 ** expiries
             if at - ref >= due / 2:
                 missing += bool(owed - carried)
                 late += at - ref > due * PTO_TOLERANCE + PTO_SLACK_MS
                 expiries += 1
-            ref, ref_rtt = at, before
-        if in_flight > 0 and not closed and end - ref > pto_ms(ref_rtt) * 2 ** expiries * PTO_TOLERANCE + PTO_SLACK_MS:
+            ref = at
+        if in_flight > 0 and not closed and end - ref > pto_ms(rtt) * 2 ** expiries * PTO_TOLERANCE + PTO_SLACK_MS:
             late += 1
     return missing, late
 
