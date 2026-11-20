@@ -440,7 +440,7 @@ expect "the extractor reads crypto coverage, the request's timeline, PTO expirie
 # we did right on that connection; every negative below is a look-alike in which we did something wrong, and each
 # is first shown to match the symptom alone (the naive check), so the kind is what keeps it red.
 fx="$here/fixtures/quic-interop-handshake"
-for cell in our-server-quinn:our-server:quinn our-server-quiche:our-server:quiche our-server-quiche-answer-lost:our-server:quiche our-server-quiche-request-lost:our-server:quiche our-client-quiche:our-client:quiche our-client-quiche-anti-deadlock:our-client:quiche our-client-kwik:our-client:kwik our-client-haproxy:our-client:haproxy; do
+for cell in our-server-quinn:our-server:quinn our-server-quiche:our-server:quiche our-server-quiche-answer-lost:our-server:quiche our-server-quiche-request-lost:our-server:quiche our-server-xquic:our-server:xquic our-client-quiche:our-client:quiche our-client-quiche-anti-deadlock:our-client:quiche our-client-kwik:our-client:kwik our-client-haproxy:our-client:haproxy; do
   IFS=: read -r name direction peer <<<"$cell"
   python3 -I "$extract" "$fx/$name/logs" "$direction" "$peer" "$tmp/fx-$name.json"
   expect_rc "the extractor reads the $name capture" $? 0
@@ -501,6 +501,7 @@ check_conn "the stock quiche client's request lost twice, then only its acknowle
 # Run 44690803861: our probes judged from the timer as RFC 9002 arms it. kwik: a probe 2 ms after a receipt is the
 # expiry quiche logged, and before confirmation only Handshake sends arm the timer. Stock quiche: with nothing in
 # flight and no Handshake ACK yet, the anti-deadlock timer runs from our last receipt (§6.2.2.1).
+check_conn "the xquic client's request lost three times, then nothing for 30 s and an exit 0 (run 44700038452)" "$tmp/fx-our-server-xquic.json" "$move" '' Matched Matched
 # Run 44695470583's nginx connection ran 61 s (4 MB of captures); its extracted evidence is the fixture.
 check_conn "nginx's ServerHello in 6 of 400 probes, all corrupted, then its NO_ERROR close (run 44695470583)" "$fx/our-client-nginx.evidence.json" '{"kind":"peer-packets-lost-while-we-probed-on-time","ended_by":"peer-closed"}' 'assert c["late_probes"] == 0 and c["wire"]["peer_packets_unread"] == 0' Matched Matched
 check_conn "kwik never sending HANDSHAKE_DONE nor its lost answer while we re-sent our Finished on time (run 44690803861)" "$tmp/fx-our-client-kwik.json" "$probed" 'assert c["late_probes"] == 0, c["late_probes"]' Matched Matched

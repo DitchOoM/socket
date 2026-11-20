@@ -1259,10 +1259,19 @@
       },
       "handshakeloss": {
         "flaky": {
-          "why": "peer: the xquic client waits about 10 s on each stream-close and draining timer, so 50 connections outlast the runner's 300 s while our server answers each request in milliseconds (run 43553738743)",
+          "why": "peer: the xquic client waits about 10 s on each stream-close and draining timer, so 50 connections outlast the runner's 300 s while our server answers each request in milliseconds (run 43553738743); or the xquic client sends its request 1.2 s after acknowledging our HANDSHAKE_DONE, all three copies (the last two 10.7 s later) are lost, it sends nothing more for 30 s and then exits 0 with that download empty, while our server, with everything of its own acknowledged, idles out (run 44700038452)",
           "signature": {
-            "kind": "runner-time-limit-while-we-answered",
-            "answer_ms": 5000
+            "kind": "any-of",
+            "signatures": [
+              {
+                "kind": "runner-time-limit-while-we-answered",
+                "answer_ms": 5000
+              },
+              {
+                "kind": "peer-move-never-reached-us",
+                "idle_s": 30
+              }
+            ]
           }
         }
       },
