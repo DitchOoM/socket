@@ -352,7 +352,7 @@ check_kind "a ClientHello we answered is not the signature" "$opening" our-serve
 check_kind "a server that closed with an error is not the signature" "$opening" our-server "{\"connections\":[${opened/\"code\":0/\"code\":296}],$cut38737}" NotMatched
 check_kind "an opening packet the qlog recorded is not the signature" "$opening" our-server "{\"connections\":[${opened/\"rx_initial_unlogged\":1/\"rx_initial_unlogged\":0}],$cut38737}" NotMatched
 check_kind "too little loss is not the signature" "$opening" our-server "{\"connections\":[$opened],${cut38737/\"delivered\":3/\"delivered\":5}}" NotMatched
-expect "quiche handshakeloss expects the opening-packet signature as well" "$(python3 -c 'import json,sys; s=json.load(open(sys.argv[1]))["our-server"]["quiche"]["handshakeloss"]["flaky"]["signature"]; print(sorted(x["kind"] for x in s["signatures"]))' "$here/../../../test-harness/quic-interop/expectations.json")" "['peer-client-hello-never-completed', 'peer-client-hello-only-in-its-opening-packet', 'peer-handshake-packets-never-arrived', 'peer-packets-lost-while-we-probed-on-time']"
+expect "quiche handshakeloss expects the opening-packet signature as well" "$(python3 -c 'import json,sys; s=json.load(open(sys.argv[1]))["our-server"]["quiche"]["handshakeloss"]["flaky"]["signature"]; print(sorted(x["kind"] for x in s["signatures"]))' "$here/../../../test-harness/quic-interop/expectations.json")" "['peer-client-hello-never-completed', 'peer-client-hello-only-in-its-opening-packet', 'peer-handshake-packets-never-arrived', 'peer-move-never-reached-us', 'peer-packets-lost-while-we-probed-on-time']"
 nochallenge='{"kind":"peer-server-did-not-challenge-new-path-first"}'
 check_kind "the server's first packet on a new path had no challenge" "$nochallenge" our-client "{\"connections\":[$(hconn a)],\"exits\":{\"client\":0},\"runner\":{\"server_first_packets_without_path_challenge\":2}}" Matched
 check_kind "a client that failed is not the signature" "$nochallenge" our-client "{\"connections\":[$(hconn a)],\"exits\":{\"client\":1},\"runner\":{\"server_first_packets_without_path_challenge\":2}}" NotMatched
@@ -440,7 +440,7 @@ expect "the extractor reads crypto coverage, the request's timeline, PTO expirie
 # we did right on that connection; every negative below is a look-alike in which we did something wrong, and each
 # is first shown to match the symptom alone (the naive check), so the kind is what keeps it red.
 fx="$here/fixtures/quic-interop-handshake"
-for cell in our-server-quinn:our-server:quinn our-server-quiche:our-server:quiche our-server-quiche-answer-lost:our-server:quiche our-client-quiche:our-client:quiche our-client-haproxy:our-client:haproxy; do
+for cell in our-server-quinn:our-server:quinn our-server-quiche:our-server:quiche our-server-quiche-answer-lost:our-server:quiche our-server-quiche-request-lost:our-server:quiche our-client-quiche:our-client:quiche our-client-haproxy:our-client:haproxy; do
   IFS=: read -r name direction peer <<<"$cell"
   python3 -I "$extract" "$fx/$name/logs" "$direction" "$peer" "$tmp/fx-$name.json"
   expect_rc "the extractor reads the $name capture" $? 0
@@ -496,6 +496,7 @@ check_conn "the stock quiche client's request lost five times, the client gave u
 # Run 44685812497: our answer lost three times; its probes waited the PTO of the RTT estimate when each fired (1.3 s
 # smoothed after later samples), not of the estimate when the answer went out (1.9 s), so neither is late.
 check_conn "the stock quiche client gave up while our answer was lost on every PTO (run 44685812497)" "$tmp/fx-our-server-quiche-answer-lost.json" "$gaveup" 'assert c["late_probes"] == 0 and c["fin_sent_streams"] == 1' Matched Matched
+check_conn "the stock quiche client's request lost twice, then only its acknowledgements for 30 s (run 44683082845)" "$tmp/fx-our-server-quiche-request-lost.json" "$move" '' Matched Matched
 for e in "$quinn" "$haproxy" "$qclient" "$qserver"; do
   ev="$(python3 -c 'import json,sys; c=next(iter(json.load(open(sys.argv[1]))["tests"].values()))["connections"][0]; print(c["probes_missing_a_space"], c["late_probes"], c["wire"]["peer_packets_unread"], c["wire"]["peer_delivered_after_last_rx"])' "$e")"
   expect "on time, every space, every packet read: $(basename "$e")" "$ev" "0 0 0 0"
