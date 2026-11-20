@@ -102,15 +102,17 @@ internal class Loop(
     fun run() {
         if (run is Run.Stopped) return
         try {
+            // Two clock reads per iteration: one after the pass and one after the wait, which is the next pass's time.
+            var began = clock.now()
             while (true) {
-                val began = clock.now()
                 val next = pass(began)
                 val ended = clock.now()
                 counts.timedPass(ended.value - began.value)
                 when (val now = run) {
                     is Run.Running -> {
                         sleep(next)
-                        counts.timedWait(clock.now().value - ended.value)
+                        began = clock.now()
+                        counts.timedWait(began.value - ended.value)
                     }
                     is Run.Closing -> {
                         val stopped = stop(ConnEnd.LoopStopped)
@@ -159,7 +161,6 @@ internal class Loop(
 
     private fun passInside(now: Nanos): NextDue {
         counts.passed()
-        val began = clock.now().value
         port.fireDue(now)
         for (i in 0 until ready.count) {
             when (val slot = slots[ready.tokenAt(i)]) {
@@ -168,9 +169,8 @@ internal class Loop(
             }
         }
         ready.clear()
-        val fired = clock.now().value
         // The clock is read again only after a socket gave datagrams: a pass's reads follow its work, not its connections.
-        var at = Nanos(fired)
+        var at = now
         budget.begin(at)
         for (i in slots.indices) {
             when (val slot = slots[i]) {
@@ -182,32 +182,19 @@ internal class Loop(
                 is LoopSlot.Empty -> Unit
             }
         }
-        val received = clock.now().value
         counts.ran(port.runWork())
-        val worked = clock.now().value
         var backlog = false
-        var slowest = 0L
-        // A serve is timed only when it sent, from the end of the last one that did: idle serves read no clock.
-        var lastSent = worked
         for (i in slots.indices) {
             when (val slot = slots[i]) {
                 is LoopSlot.Taken -> {
-                    val before = counts.datagramsOut
                     when (slot.endpoint.serve(poller, now, port)) {
                         Stay.Left -> vacate(slot.endpoint)
                         Stay.Stays -> if (slot.endpoint.hasBacklog()) backlog = true
-                    }
-                    if (counts.datagramsOut != before) {
-                        val sent = clock.now().value
-                        slowest = maxOf(slowest, sent - lastSent)
-                        lastSent = sent
                     }
                 }
                 is LoopSlot.Empty -> Unit
             }
         }
-        val served = clock.now().value
-        counts.phased(fired - began, received - fired, worked - received, served - worked, slowest)
         val due = port.nextDue(now)
         // Datagrams the io holds are invisible to the poller: with any, the next pass is due now (a poll of zero), whatever
         // cut this one short (the per-pass bound included).
@@ -287,6 +274,7 @@ internal class Loop(
         slots.clear()
         outcome = outcome.then { poller.close() }
         outcome = outcome.then { port.stop(end) }
+        outcome = outcome.then { receive.disarm() }
         return outcome.then { freeOnStop.run() }
     }
 

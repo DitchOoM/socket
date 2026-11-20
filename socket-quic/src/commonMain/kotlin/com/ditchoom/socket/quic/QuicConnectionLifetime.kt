@@ -78,7 +78,7 @@ suspend fun <R> QuicConnection.runUntilClosed(
                     val close =
                         QuicCloseException(
                             closed.reason,
-                            "connection closed while its block was running",
+                            "connection closed while its block was running (unread at close: ${unreadAtClose.value})",
                             attribution = QuicCloseAttribution.Attributed(identity, networkAtClose),
                         )
                     diedFirst.complete(close)

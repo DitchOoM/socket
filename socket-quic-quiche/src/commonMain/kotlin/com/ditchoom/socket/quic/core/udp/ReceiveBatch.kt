@@ -19,6 +19,9 @@ internal class ReceiveBatch(
     private val froms = ArrayList<PathKey>(limits.maxDatagrams)
     private val tos = ArrayList<ArrivedOn>(limits.maxDatagrams)
 
+    /** The slots a native socket receives into; they stay armed between receives. */
+    val slots = ReceiveSlots(pool, minOf(NativeIo.MAX_RECEIVE, pool.size, limits.maxDatagrams))
+
     val count: Int get() = held.size
 
     /** A buffer to receive the next datagram into, or [Taken.Empty] when the batch is full or the pool is empty. */
@@ -46,6 +49,9 @@ internal class ReceiveBatch(
     fun fromAt(i: Int): PathKey = froms[i]
 
     fun toAt(i: Int): ArrivedOn = tos[i]
+
+    /** Gives the armed slots' buffers back to the pool: the loop's last step before its memory is freed. */
+    fun disarm() = slots.disarm()
 
     /** Gives every buffer back; the datagrams are not read afterwards. */
     fun release() {

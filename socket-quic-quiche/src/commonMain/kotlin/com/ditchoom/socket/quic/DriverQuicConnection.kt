@@ -50,7 +50,11 @@ internal class DriverQuicConnection(
         get() =
             when (val early = driver.earlyData.value) {
                 is EarlyDataAcceptance.Accepted -> early.negotiatedAlpn
-                EarlyDataAcceptance.None -> super.negotiatedAlpn
+                EarlyDataAcceptance.None ->
+                    when (val settled = driver.handshake.value) {
+                        is HandshakeRecord.Settled -> settled.negotiatedAlpn
+                        HandshakeRecord.Pending -> super.negotiatedAlpn
+                    }
             }
 
     /** Readable before the handshake completes for the reason [negotiatedAlpn] is. */
@@ -58,7 +62,11 @@ internal class DriverQuicConnection(
         get() =
             when (val early = driver.earlyData.value) {
                 is EarlyDataAcceptance.Accepted -> early.resumption
-                EarlyDataAcceptance.None -> super.resumption
+                EarlyDataAcceptance.None ->
+                    when (val settled = driver.handshake.value) {
+                        is HandshakeRecord.Settled -> settled.resumption
+                        HandshakeRecord.Pending -> super.resumption
+                    }
             }
 
     override suspend fun stats(): QuicStatsRead = driver.publicStats()

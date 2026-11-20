@@ -598,6 +598,11 @@ internal class StubQuicheApi : QuicheApi {
         pathAddr: Long,
     ) = 0
 
+    override fun configLoadVerifyLocationsFromDirectory(
+        config: QuicheConfig,
+        pathAddr: Long,
+    ) = 0
+
     override fun headerInfo(
         buf: Long,
         bufLen: Int,

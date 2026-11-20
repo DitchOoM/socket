@@ -142,6 +142,7 @@ public final class com/ditchoom/socket/quic/JniQuicheApi : com/ditchoom/socket/q
 	public fun configGrease-656eFbI (JZ)V
 	public fun configLoadCertChainFromPemFile-656eFbI (JJ)I
 	public fun configLoadPrivKeyFromPemFile-656eFbI (JJ)I
+	public fun configLoadVerifyLocationsFromDirectory-656eFbI (JJ)I
 	public fun configLoadVerifyLocationsFromFile-656eFbI (JJ)I
 	public fun configLogKeys-N7TAlBc (J)V
 	public fun configNew-sPSOTuY (I)J
@@ -663,6 +664,7 @@ public abstract interface class com/ditchoom/socket/quic/QuicheApi {
 	public abstract fun configGrease-656eFbI (JZ)V
 	public abstract fun configLoadCertChainFromPemFile-656eFbI (JJ)I
 	public abstract fun configLoadPrivKeyFromPemFile-656eFbI (JJ)I
+	public abstract fun configLoadVerifyLocationsFromDirectory-656eFbI (JJ)I
 	public abstract fun configLoadVerifyLocationsFromFile-656eFbI (JJ)I
 	public fun configLogKeys-N7TAlBc (J)V
 	public abstract fun configNew-sPSOTuY (I)J
@@ -926,11 +928,10 @@ public final class com/ditchoom/socket/quic/QuicheCmd$Stats : com/ditchoom/socke
 }
 
 public final class com/ditchoom/socket/quic/QuicheCmd$StreamRecv : com/ditchoom/socket/quic/QuicheCmd {
-	public fun <init> (JLcom/ditchoom/socket/quic/QuicheMemory;ILkotlinx/coroutines/CompletableDeferred;)V
-	public final fun getBuf ()Lcom/ditchoom/socket/quic/QuicheMemory;
+	public fun <init> (Lcom/ditchoom/socket/quic/StreamSlot;ILkotlinx/coroutines/CompletableDeferred;)V
 	public final fun getBufLen ()I
 	public final fun getResult ()Lkotlinx/coroutines/CompletableDeferred;
-	public final fun getStreamId ()J
+	public final fun getSlot ()Lcom/ditchoom/socket/quic/StreamSlot;
 }
 
 public final class com/ditchoom/socket/quic/QuicheCmd$StreamSend : com/ditchoom/socket/quic/QuicheCmd {

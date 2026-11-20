@@ -485,6 +485,13 @@ internal object ConfigCalls {
             "quiche_config_load_verify_locations_from_file",
             FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG),
         )
+
+    @JvmField
+    val hLoadVerifyDirectory: MethodHandle =
+        FfmLibrary.downcall(
+            "quiche_config_load_verify_locations_from_directory",
+            FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG),
+        )
 }
 
 /** Stateless server-side packet downcalls: header parse, accept, version negotiation, retry. */

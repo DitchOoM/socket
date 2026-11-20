@@ -606,6 +606,7 @@ final fun com.ditchoom.socket.quic/armStallDump(kotlin.time/Duration, kotlin/Str
 final fun com.ditchoom.socket.quic/isAppleKNative(): kotlin/Boolean // com.ditchoom.socket.quic/isAppleKNative|isAppleKNative(){}[0]
 final fun com.ditchoom.socket.quic/isKotlinNative(): kotlin/Boolean // com.ditchoom.socket.quic/isKotlinNative|isKotlinNative(){}[0]
 final fun com.ditchoom.socket.quic/quicHarnessAvailability(): com.ditchoom.socket.quic/QuicHarnessAvailability // com.ditchoom.socket.quic/quicHarnessAvailability|quicHarnessAvailability(){}[0]
+final fun com.ditchoom.socket.quic/readHarnessCaCertPem(kotlin/String): kotlin/String? // com.ditchoom.socket.quic/readHarnessCaCertPem|readHarnessCaCertPem(kotlin.String){}[0]
 final fun com.ditchoom.socket.quic/runQuicTest(kotlin.time/Duration = ..., kotlin.coroutines/SuspendFunction1<kotlinx.coroutines/CoroutineScope, kotlin/Unit>) // com.ditchoom.socket.quic/runQuicTest|runQuicTest(kotlin.time.Duration;kotlin.coroutines.SuspendFunction1<kotlinx.coroutines.CoroutineScope,kotlin.Unit>){}[0]
 final fun com.ditchoom.socket.quic/testTimeScale(): kotlin/Double // com.ditchoom.socket.quic/testTimeScale|testTimeScale(){}[0]
 final suspend fun com.ditchoom.socket.quic/awaitUntil(kotlin.time/Duration, kotlin/String, kotlin/Function0<kotlin/Boolean>) // com.ditchoom.socket.quic/awaitUntil|awaitUntil(kotlin.time.Duration;kotlin.String;kotlin.Function0<kotlin.Boolean>){}[0]

@@ -8,11 +8,12 @@ import com.ditchoom.socket.testkit.trace.TraceEvent
 import kotlin.concurrent.atomics.AtomicReference
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 
-/** One connection's flight recording as it stood when the connection ended. */
+/** One connection's flight recording as it stood when the connection ended, and the name of how it ended. */
 internal class EndedFlight(
     val role: QuicRole,
     val peer: PathKey,
     val events: List<TraceEvent>,
+    val end: String,
 )
 
 /** The recordings kept so far, newest first. */

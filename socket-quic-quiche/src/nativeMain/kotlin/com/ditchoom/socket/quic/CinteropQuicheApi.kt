@@ -15,6 +15,7 @@ import com.ditchoom.socket.quic.quiche.quiche_config_free
 import com.ditchoom.socket.quic.quiche.quiche_config_grease
 import com.ditchoom.socket.quic.quiche.quiche_config_load_cert_chain_from_pem_file
 import com.ditchoom.socket.quic.quiche.quiche_config_load_priv_key_from_pem_file
+import com.ditchoom.socket.quic.quiche.quiche_config_load_verify_locations_from_directory
 import com.ditchoom.socket.quic.quiche.quiche_config_load_verify_locations_from_file
 import com.ditchoom.socket.quic.quiche.quiche_config_log_keys
 import com.ditchoom.socket.quic.quiche.quiche_config_new
@@ -1170,6 +1171,15 @@ internal object CinteropQuicheApi : QuicheApi, QuicheRandomPin {
         pathAddr: Long,
     ): Int =
         quiche_config_load_verify_locations_from_file(
+            config.handle.toCPointer()!!,
+            pathAddr.toCPointer<ByteVar>()!!.toKString(),
+        )
+
+    override fun configLoadVerifyLocationsFromDirectory(
+        config: QuicheConfig,
+        pathAddr: Long,
+    ): Int =
+        quiche_config_load_verify_locations_from_directory(
             config.handle.toCPointer()!!,
             pathAddr.toCPointer<ByteVar>()!!.toKString(),
         )

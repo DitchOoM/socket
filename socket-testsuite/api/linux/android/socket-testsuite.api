@@ -85,6 +85,7 @@ public final class com/ditchoom/socket/quic/PlatformActualsKt {
 	public static final fun isAppleKNative ()Z
 	public static final fun isKotlinNative ()Z
 	public static final fun quicHarnessAvailability ()Lcom/ditchoom/socket/quic/QuicHarnessAvailability;
+	public static final fun readHarnessCaCertPem (Ljava/lang/String;)Ljava/lang/String;
 }
 
 public abstract class com/ditchoom/socket/quic/QuicActiveMigrationTestSuite {

@@ -1,24 +1,86 @@
 package com.ditchoom.socket.quic
 
 import com.sun.management.UnixOperatingSystemMXBean
+import java.io.File
 import java.lang.management.ManagementFactory
+import java.nio.file.Files
 
 /**
- * How this test JVM counts what a leaked socket holds: open file descriptors on POSIX, the UDP endpoints
- * the process owns on Windows.
+ * How this test JVM finds what a leaked socket holds: the sockets on POSIX, the UDP endpoints the
+ * process owns on Windows.
+ *
+ * A leak is a handle that appeared during the window and is still open at its end ([Handles.leakedSince]),
+ * never a difference of process-wide counts: a closed channel registered with a selector releases its
+ * descriptor only at that loop's next `select()`, so descriptors an earlier test closed vanish
+ * mid-window and cancel the ones a leak adds.
  */
 internal sealed interface OpenHandleMeter {
     /** A human-readable name for the failure message, so a red run says how it was measured. */
     val description: String
 
-    fun openHandles(): Long
+    fun openHandles(): Handles
 
-    class PosixDescriptors(
-        private val bean: UnixOperatingSystemMXBean,
-    ) : OpenHandleMeter {
-        override val description = "UnixOperatingSystemMXBean.openFileDescriptorCount"
+    /** What was open at one instant; compared with an earlier one to find what stayed. */
+    sealed interface Handles {
+        /** How many handles appeared since [before] and are still open. */
+        fun leakedSince(before: Handles): Long
 
-        override fun openHandles(): Long = bean.openFileDescriptorCount
+        /** Linux: sockets by kernel inode, which is never reused while its socket lives. */
+        class SocketInodes(
+            val inodes: Set<String>,
+        ) : Handles {
+            override fun leakedSince(before: Handles): Long = (inodes - (before as SocketInodes).inodes).size.toLong()
+
+            override fun toString() = "${inodes.size} sockets"
+        }
+
+        /** No `/proc`: descriptor numbers. A freed number can be reused by a leak, which hides one no larger than the churn. */
+        class Numbers(
+            val fds: Set<String>,
+        ) : Handles {
+            override fun leakedSince(before: Handles): Long = (fds - (before as Numbers).fds).size.toLong()
+
+            override fun toString() = "${fds.size} descriptors"
+        }
+
+        /** A bare count, for the platform that can offer nothing finer. */
+        class Count(
+            val n: Long,
+        ) : Handles {
+            override fun leakedSince(before: Handles): Long = n - (before as Count).n
+
+            override fun toString() = "$n endpoints"
+        }
+    }
+
+    data object PosixDescriptors : OpenHandleMeter {
+        override val description = "/proc/self/fd socket inodes, else /dev/fd numbers"
+
+        override fun openHandles(): Handles {
+            val procFd = File("/proc/self/fd")
+            if (!procFd.isDirectory) {
+                val devFd = File("/dev/fd")
+                // The listing holds a directory descriptor of its own; a directory is no socket.
+                return Handles.Numbers(
+                    devFd
+                        .list()
+                        .orEmpty()
+                        .filterNot { Files.isDirectory(File(devFd, it).toPath()) }
+                        .toSet(),
+                )
+            }
+            return Handles.SocketInodes(
+                procFd
+                    .list()
+                    .orEmpty()
+                    .mapNotNull { fd ->
+                        // A descriptor closed between the listing and the read is gone.
+                        runCatching { Files.readSymbolicLink(File(procFd, fd).toPath()).toString() }
+                            .getOrNull()
+                            ?.takeIf { it.startsWith("socket:[") }
+                    }.toSet(),
+            )
+        }
     }
 
     /**
@@ -29,7 +91,7 @@ internal sealed interface OpenHandleMeter {
     data object WindowsUdpEndpoints : OpenHandleMeter {
         override val description = "Get-NetUDPEndpoint -OwningProcess"
 
-        override fun openHandles(): Long {
+        override fun openHandles(): Handles {
             val pid = ProcessHandle.current().pid()
             val process =
                 ProcessBuilder(
@@ -42,15 +104,15 @@ internal sealed interface OpenHandleMeter {
             val out = process.inputStream.use { it.bufferedReader().readText().trim() }
             process.outputStream.close()
             check(process.waitFor() == 0 && out.isNotEmpty()) { "Get-NetUDPEndpoint gave no count for pid $pid: $out" }
-            return out.toLong()
+            return Handles.Count(out.toLong())
         }
     }
 
     companion object {
         /** The meter for this host. */
         fun forThisProcess(): OpenHandleMeter =
-            when (val bean = ManagementFactory.getOperatingSystemMXBean()) {
-                is UnixOperatingSystemMXBean -> PosixDescriptors(bean)
+            when (ManagementFactory.getOperatingSystemMXBean()) {
+                is UnixOperatingSystemMXBean -> PosixDescriptors
                 else -> WindowsUdpEndpoints
             }
     }

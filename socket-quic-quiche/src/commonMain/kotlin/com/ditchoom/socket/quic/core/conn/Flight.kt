@@ -2,6 +2,7 @@ package com.ditchoom.socket.quic.core.conn
 
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicRole
+import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.observe.Confined
 import com.ditchoom.socket.quic.core.observe.EndedFlight
 import com.ditchoom.socket.quic.core.observe.Evidence
@@ -35,6 +36,9 @@ internal enum class PathMark {
 
     /** The path being validated was asked for a fresh PATH_CHALLENGE. */
     Challenged,
+
+    /** The client's socket was wanted on another address and waits where it is for a spare id from the peer. */
+    Held,
 }
 
 /** Why a connection dropped a datagram, as its flight recording names it: a trace line `DROP <type> <detail>`. */
@@ -142,15 +146,17 @@ internal class ConnFlight(
      * The connection ended: when [FlightEvidence] is keeping, the whole recording is handed to it while the payload is
      * still in the arena. Costs one read when it is not.
      */
-    fun keepEnded(role: QuicRole) =
-        when (FlightEvidence.current()) {
-            is Evidence.Off -> Unit
-            is Evidence.Keeping -> {
-                val events = ArrayList<TraceEvent>()
-                write(0L, TraceSink { events += it })
-                FlightEvidence.add(EndedFlight(role, peerKey, events))
-            }
+    fun keepEnded(
+        role: QuicRole,
+        end: ConnEnd,
+    ) = when (FlightEvidence.current()) {
+        is Evidence.Off -> Unit
+        is Evidence.Keeping -> {
+            val events = ArrayList<TraceEvent>()
+            write(0L, TraceSink { events += it })
+            FlightEvidence.add(EndedFlight(role, peerKey, events, end::class.simpleName.orEmpty()))
         }
+    }
 
     /** Writes what was recorded since the last call to the connection's trace, when the trace is on. */
     fun toTrace() =

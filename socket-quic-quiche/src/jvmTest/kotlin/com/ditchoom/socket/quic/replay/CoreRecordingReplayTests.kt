@@ -12,6 +12,7 @@ import com.ditchoom.socket.quic.QuicRole
 import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.QuicheConn
 import com.ditchoom.socket.quic.QuicheRecvInfo
+import com.ditchoom.socket.quic.QuicheSendInfo
 import com.ditchoom.socket.quic.ScopedRead
 import com.ditchoom.socket.quic.core.conn.FlightSize
 import com.ditchoom.socket.quic.core.conn.MismatchResponse
@@ -125,6 +126,31 @@ class CoreRecordingReplayTests {
         }
     }
 
+    /**
+     * Where a client's recording stands on its close. The close travels in the last datagram the client sent at or before
+     * it recorded closing; until it records closing, the last datagram it holds is an earlier one, and a server closed
+     * on that one's arrival closes before the client's close reaches it.
+     */
+    internal sealed interface RecordedClose {
+        /** The client has not recorded closing. */
+        data object NotYet : RecordedClose
+
+        /** The datagram, as hex, that carried the close. */
+        class Sent(
+            val hex: String,
+        ) : RecordedClose
+
+        companion object {
+            fun of(recording: List<TraceEvent>): RecordedClose {
+                val closing = recording.filterIsInstance<TraceEvent.State>().firstOrNull { it.name.endsWith(CLOSED) } ?: return NotYet
+                val sent = recording.filterIsInstance<TraceEvent.DgramOut>().lastOrNull { it.at <= closing.at } ?: return NotYet
+                return Sent(sent.payloadHex)
+            }
+
+            private const val CLOSED = ".Closed"
+        }
+    }
+
     /** The recordings this test last made or converted: written where CI keeps them when the test fails. */
     private var recordings = Recorded(emptyList(), emptyList(), 0)
 
@@ -177,6 +203,9 @@ class CoreRecordingReplayTests {
         /** It wakes [LATE] after each of the client's timers falls due. */
         LateForTimers,
 
+        /** Its first send call reaches quiche [ENTRY] after the host read its clock for it, as a cold downcall does. */
+        ColdToSend,
+
         /**
          * After its payload is lost, it reads the server's next datagrams [PAST_THE_PROBE] late, past when the probe for
          * the payload falls due, then stalls [LATE] after sending its answer, before its loop runs again.
@@ -228,6 +257,7 @@ class CoreRecordingReplayTests {
                         when (host) {
                             ClientHost.SlowToAnswer -> SlowToAnswer(loadQuicheApi())
                             ClientHost.LateForTimers -> LateForTimers(loadQuicheApi())
+                            ClientHost.ColdToSend -> ColdToSend(loadQuicheApi())
                             ClientHost.Fast, ClientHost.SlowToRead, ClientHost.StalledAroundConfirmation -> loadQuicheApi()
                         },
                     timeout = 10.seconds,
@@ -248,9 +278,12 @@ class CoreRecordingReplayTests {
             }
             // The server closing first would never read the client's close, and the conversion would have it lost: the
             // server closes once it has recorded it. Seen under a loaded full suite: "expected:<1> but was:<2>".
-            val close = clientRecording.filterIsInstance<TraceEvent.DgramOut>().last().payloadHex
             withTimeoutOrNull(5.seconds) {
-                while (serverRecording.none { it is TraceEvent.DgramIn && it.payloadHex == close }) delay(10.milliseconds)
+                while (true) {
+                    val close = RecordedClose.of(clientRecording)
+                    if (close is RecordedClose.Sent && serverRecording.any { it is TraceEvent.DgramIn && it.payloadHex == close.hex }) break
+                    delay(10.milliseconds)
+                }
             }
         } finally {
             echo.cancel()
@@ -294,6 +327,60 @@ class CoreRecordingReplayTests {
         )
         assertTrue(schedule.steps.any { it is Step.PeerSent && it.fate is Fate.Delivered }, "the server's datagrams arrived")
         return schedule
+    }
+
+    /**
+     * A client's close is sent after the last datagram the link had counted when close() returned: a recording without
+     * the client's closing state has not got the close yet, whatever datagrams it holds (CI JDK 17 / JNI: the server
+     * closed on the 39-byte acknowledgement before the 38-byte close arrived, and the schedule lost both).
+     */
+    @Test
+    fun aClientRecordingHasItsCloseOnlyOnceItRecordsClosing() {
+        val ack = TraceEvent.DgramOut(1.milliseconds, 39, null, "aa")
+        val close = TraceEvent.DgramOut(2.milliseconds, 38, null, "bb")
+        val closing = TraceEvent.State(3.milliseconds, "com.ditchoom.socket.quic.QuicConnectionState.Closed", "local: NoError (0x0)")
+        assertIs<RecordedClose.NotYet>(RecordedClose.of(listOf(ack)), "only an acknowledgement is recorded")
+        assertIs<RecordedClose.NotYet>(RecordedClose.of(listOf(ack, close)), "the close is recorded before the state")
+        assertEquals("bb", assertIs<RecordedClose.Sent>(RecordedClose.of(listOf(ack, close, closing))).hex)
+    }
+
+    /**
+     * A replay whose timer fell due after every recorded firing near it ran that timer at a later recorded firing, and its
+     * report says so: the due time, the recorded firing it just missed, and where it ran instead (CI FFM: a probe due at
+     * 185.05 ms, the recorded firing at 182.16 ms, the replay's probe never sent by 186.8 ms).
+     */
+    @Test
+    fun aReportNamesTheTimerThatMissedItsRecordedFiring() {
+        val schedule =
+            CaptureSchedule(
+                name = "timer",
+                ours = QuicRole.Client,
+                alpn = "h3",
+                ourTransport = TransportSetup(),
+                peerTransport = TransportSetup(),
+                peerPackets = PeerPackets.AsQuiche,
+                steps = emptyList(),
+                established = Moment.Never,
+                end = ConnectionEnd.Open,
+                runsFor = Duration.ZERO,
+                tolerance = SendTimeTolerance(),
+            )
+        val report =
+            ReplayReport(
+                schedule = schedule,
+                course = Course.FollowedCapture,
+                established = Moment.Never,
+                end = ConnectionEnd.Open,
+                sent = emptyList(),
+                peerRead = emptyList(),
+                standInGaps = emptyList(),
+                acksNotSent = emptyList(),
+                acksUncaptured = 0,
+                ranFor = Duration.ZERO,
+                timersThatMissed = listOf(TimerMissed(due = 185.milliseconds, recorded = 182.milliseconds, ranAt = 307.milliseconds)),
+            )
+        val described = report.describe()
+        assertTrue("due 185ms" in described && "recorded firing 182ms" in described && "ran at 307ms" in described, described)
     }
 
     /** Replays [schedule] twice and holds the replay to the recording: followed whole, ended as recorded, identical. */
@@ -353,6 +440,18 @@ class CoreRecordingReplayTests {
         }
 
     /**
+     * A host whose first send call reaches quiche [ENTRY] after it read its clock for the write, as a cold FFM downcall
+     * does: quiche stamps the Initial then and measures its first round trip from then, so the recording has the Initial
+     * leave then. Recorded when the write began, the replay's first round trip was longer and every probe after it fell
+     * due later than the recording's ran (FFM, the JVM's first connection: 0.71 ms, and a probe 2.5 ms late).
+     */
+    @Test
+    fun aRunWhoseClientWasColdToSendIsFollowedWholeByItsReplayTwice() =
+        replayTest("aRunWhoseClientWasColdToSendIsFollowedWholeByItsReplayTwice") {
+            assertFollowedWholeTwice(scheduleOf(recordAnEcho(ClientHost.ColdToSend)))
+        }
+
+    /**
      * A host that confirmed its handshake only after its probe fell due learns of the probe when it next re-arms, after
      * the turn that answers the server, and runs it when its loop next runs, here [LATE] later. The replay's client,
      * told by quiche the probe is overdue as it reads the server's datagram, fired it at once (CI: "our datagram 4
@@ -364,13 +463,37 @@ class CoreRecordingReplayTests {
             assertFollowedWholeTwice(scheduleOf(recordAnEcho(ClientHost.StalledAroundConfirmation)))
         }
 
-    /** quiche whose every timer the host is asked to run [LATE] after it falls due. */
+    /** Whether a call has reached quiche yet. */
+    private enum class Calls { Cold, Warm }
+
+    /** quiche that the first send call reaches [ENTRY] after it was made. */
+    private class ColdToSend(
+        private val real: QuicheApi,
+    ) : QuicheApi by real {
+        private var calls = Calls.Cold
+
+        override fun connSend(
+            conn: QuicheConn,
+            buf: Long,
+            bufLen: Int,
+            sendInfo: QuicheSendInfo,
+        ): Int {
+            if (calls == Calls.Cold) Thread.sleep(ENTRY.inWholeMilliseconds)
+            calls = Calls.Warm
+            return real.connSend(conn, buf, bufLen, sendInfo)
+        }
+    }
+
+    /**
+     * quiche whose every timer the host is asked to run [LATE] after it falls due; once it has fallen due, the host
+     * sees it due, and runs quiche's timeout.
+     */
     private class LateForTimers(
         private val real: QuicheApi,
     ) : QuicheApi by real {
         override fun connTimeoutNanos(conn: QuicheConn): Long =
             when (val wait = real.connTimeoutNanos(conn)) {
-                NO_TIMEOUT_NANOS -> wait
+                NO_TIMEOUT_NANOS, FALLEN_DUE -> wait
                 else -> wait + LATE.inWholeNanoseconds
             }
     }
@@ -505,6 +628,12 @@ class CoreRecordingReplayTests {
 
         /** Longer than the replay's tolerance of a send's time: a replay that fires when due leaves the recording. */
         val LATE = 20.milliseconds
+
+        /** Trebled from a first round trip into its probe, far past the replay's precision on a timer. */
+        val ENTRY = 3.milliseconds
+
+        /** quiche's wait for a timer that has fallen due. */
+        const val FALLEN_DUE = 0L
 
         /** Longer than the probe for the lost payload takes to fall due on loopback (about 30 ms). */
         val PAST_THE_PROBE = 60.milliseconds

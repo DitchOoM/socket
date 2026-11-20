@@ -41,14 +41,22 @@ class OpDeadlineAllocationTests {
                         val stream = client.connection.openStream()
                         val payload = payload()
                         val threads = listOf(threadId(CALLER_THREAD), threadId(client.loop.name))
-                        // Alternating rounds, the least of each: the coroutine machinery's own noise is larger than the margin.
-                        var bounded = Double.MAX_VALUE
-                        var unbounded = Double.MAX_VALUE
-                        repeat(ROUNDS) {
-                            bounded = minOf(bounded, bytesPerEcho(threads) { parkedEcho(stream, payload, 10.seconds) })
-                            unbounded = minOf(unbounded, bytesPerEcho(threads) { parkedEcho(stream, payload, Duration.INFINITE) })
+                        // One run, the two reads alternating in short batches: whatever drifts over it (compilation tiers, the
+                        // collector, the loop's wakeups) lands on both sums alike, which two separate runs cannot promise.
+                        val bean = ManagementFactory.getThreadMXBean() as com.sun.management.ThreadMXBean
+                        repeat(WARM_UP) {
+                            parkedEcho(stream, payload, 10.seconds)
+                            parkedEcho(stream, payload, Duration.INFINITE)
                         }
-                        bounded to unbounded
+                        var boundedBytes = 0L
+                        var unboundedBytes = 0L
+                        repeat(BATCHES) {
+                            boundedBytes += allocatedBy(bean, threads) { repeat(BATCH) { parkedEcho(stream, payload, 10.seconds) } }
+                            unboundedBytes +=
+                                allocatedBy(bean, threads) { repeat(BATCH) { parkedEcho(stream, payload, Duration.INFINITE) } }
+                        }
+                        val echoes = (BATCHES * BATCH).toDouble()
+                        boundedBytes / echoes to unboundedBytes / echoes
                     }.startCoroutine(Continuation(dispatcher + Job()) { done.complete(it) })
                     val (bounded, unbounded) = done.get(120, TimeUnit.SECONDS).getOrThrow()
                     client.connection.close(QuicError.NoError)
@@ -78,15 +86,14 @@ class OpDeadlineAllocationTests {
         }
     }
 
-    private suspend fun bytesPerEcho(
+    private suspend fun allocatedBy(
+        bean: com.sun.management.ThreadMXBean,
         threads: List<Long>,
-        echo: suspend () -> Unit,
-    ): Double {
-        val bean = ManagementFactory.getThreadMXBean() as com.sun.management.ThreadMXBean
-        repeat(WARM_UP) { echo() }
+        batch: suspend () -> Unit,
+    ): Long {
         val before = threads.sumOf { bean.getThreadAllocatedBytes(it) }
-        repeat(ECHOES) { echo() }
-        return (threads.sumOf { bean.getThreadAllocatedBytes(it) } - before).toDouble() / ECHOES
+        batch()
+        return threads.sumOf { bean.getThreadAllocatedBytes(it) } - before
     }
 
     private fun payload(): PlatformBuffer =
@@ -106,8 +113,8 @@ class OpDeadlineAllocationTests {
         const val CALLER_THREAD = "op-deadline-caller"
         const val PAYLOAD = 64
         const val WARM_UP = 2_000
-        const val ECHOES = 4_000
+        const val BATCH = 50
+        const val BATCHES = 160
         const val MORE_AT_MOST = 8
-        const val ROUNDS = 3
     }
 }

@@ -17,7 +17,13 @@ internal interface Waiter {
 
     /** The connection ended with the operation still parked. */
     fun connectionEnded(end: ConnEnd)
+
+    /** Whether a read's caller still has to take bytes it was handed; nothing else ever holds any. */
+    fun inHand(): InHand = InHand.No
 }
+
+/** Whether a read's caller still has to take bytes it was handed. */
+internal enum class InHand { Yes, No }
 
 /** The slot of a stream that nothing waits on. */
 internal object Nobody : Waiter {

@@ -61,6 +61,9 @@ internal class FixedPool<T : Pooled>(
         }
     }
 
+    /** Takes and gives that succeeded so far, modulo 2^32: each one stamps the head. Tests count a call's pool operations with it. */
+    fun operations(): Long = stampOf(head.load())
+
     /** Items in the pool now. Diagnostics and tests: it can be stale by the time it returns. */
     fun available(): Int {
         var count = 0

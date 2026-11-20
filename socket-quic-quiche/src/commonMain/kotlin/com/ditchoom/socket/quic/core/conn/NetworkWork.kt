@@ -20,6 +20,21 @@ internal class MoveTo(
     val prior: RttPrior,
 )
 
+/** Where a client's socket is wanted: [bind]'s address, on a network assumed to have a round trip of [prior]. */
+internal class MoveWanted(
+    val bind: PathKey,
+    val prior: RttPrior,
+)
+
+/** Inside: the client's socket is wanted on another address ([Inside.moveWanted]). */
+internal class MoveWantedWork(
+    private val wanted: MoveWanted,
+) : ConnWork() {
+    override fun run(inside: Inside) = inside.moveWanted(wanted)
+
+    override fun gone(end: ConnEnd) = Unit
+}
+
 /** Inside: the client's socket was moved and now leaves from [to]. */
 internal class MovedWork(
     private val to: MoveTo,

@@ -73,16 +73,37 @@ internal fun loadAnchorFile(
     path: String,
     bufferFactory: BufferFactory,
 ) {
+    withNativePath(path, bufferFactory) { api.configLoadVerifyLocationsFromFile(config, it) }
+}
+
+/** Loads the hashed certificate directory at [path] as anchors; quiche's return code, 0 on success. */
+internal fun loadAnchorDirectory(
+    api: QuicheApi,
+    config: QuicheConfig,
+    path: String,
+    bufferFactory: BufferFactory,
+): Int = withNativePath(path, bufferFactory) { api.configLoadVerifyLocationsFromDirectory(config, it) } ?: NO_NATIVE_MEMORY
+
+/** Hands [use] the native address of [path] as a NUL-terminated string; null when [bufferFactory] has no native memory. */
+private inline fun withNativePath(
+    path: String,
+    bufferFactory: BufferFactory,
+    use: (Long) -> Int,
+): Int? {
     val name = bufferFactory.allocate(path.length + 1)
     name.writeString(path, Charset.UTF8)
     name.writeByte(0)
     name.resetForRead()
-    when (val access = name.nativeMemoryAccess) {
-        null -> Unit
-        else -> api.configLoadVerifyLocationsFromFile(config, access.nativeAddress.toLong())
-    }
+    val result =
+        when (val access = name.nativeMemoryAccess) {
+            null -> null
+            else -> use(access.nativeAddress.toLong())
+        }
     name.freeNativeMemory()
+    return result
 }
+
+private const val NO_NATIVE_MEMORY = -1
 
 private sealed interface PemBundle {
     class Written(

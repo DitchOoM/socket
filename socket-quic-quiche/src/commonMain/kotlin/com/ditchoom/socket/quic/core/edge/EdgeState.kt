@@ -6,6 +6,7 @@ import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.socket.quic.EarlyDataAcceptance
 import com.ditchoom.socket.quic.HandlerStart
+import com.ditchoom.socket.quic.HandshakeRecord
 import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicCloseReason
 import com.ditchoom.socket.quic.QuicConnectionState
@@ -17,6 +18,9 @@ import com.ditchoom.socket.quic.core.conn.Arrival
 import com.ditchoom.socket.quic.core.conn.ConnSink
 import com.ditchoom.socket.quic.core.conn.ConnectReport
 import com.ditchoom.socket.quic.core.conn.EarlyReport
+import com.ditchoom.socket.quic.core.conn.HeldReads
+import com.ditchoom.socket.quic.core.conn.HeldTake
+import com.ditchoom.socket.quic.core.conn.Owed
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.observe.Published
 import com.ditchoom.socket.quic.core.udp.NativeBytes
@@ -25,6 +29,7 @@ import com.ditchoom.socket.quic.trace.record
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.update
 import kotlin.concurrent.atomics.AtomicReference
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 
@@ -32,8 +37,10 @@ import kotlin.concurrent.atomics.ExperimentalAtomicApi
 internal sealed interface EdgeEnd {
     data object Open : EdgeEnd
 
+    /** Ended with [end]; [held] is what it had received that no read returned. */
     class Ended(
         val end: ConnEnd,
+        val held: HeldReads,
     ) : EdgeEnd
 }
 
@@ -66,6 +73,9 @@ internal class EdgeState(
     /** A server's: whether it accepted the client's 0-RTT before the handshake completed. */
     val earlyData = MutableStateFlow<EarlyDataAcceptance>(EarlyDataAcceptance.None)
 
+    /** What the handshake settled, kept after [state] moves on to Closed for a block that outlives the close. */
+    val handshake = MutableStateFlow<HandshakeRecord>(HandshakeRecord.Pending)
+
     /** A server's: when the handler of this connection starts. */
     val start = MutableStateFlow<HandlerStart>(HandlerStart.NotYet)
 
@@ -73,10 +83,14 @@ internal class EdgeState(
     val ticket = MutableStateFlow<QuicSessionTicketState>(QuicSessionTicketState.NotIssued)
 
     /**
-     * What the connection still holds for its readers once it closed. The core releases every stream when the
-     * connection ends, so a read after that has nothing to deliver: settled to AllRead with the end, before Closed.
+     * What the connection still holds for its readers once it closed: the streams the end held something for, and those
+     * whose bytes a read handed its caller, who had not taken them. Settled with the end, before Closed; a stream leaves
+     * it once a read of it returned with nothing more owed, or its caller let it go.
      */
     val unread = MutableStateFlow<QuicUnreadAtClose>(QuicUnreadAtClose.ConnectionOpen)
+
+    /** Inside only: the reads that handed their caller bytes it has not taken yet. */
+    val handed = HandedReads()
 
     /** The connection's idle read buffer; freed once the connection ends. */
     val reads = IdleRead()
@@ -84,12 +98,16 @@ internal class EdgeState(
     fun end(): EdgeEnd = endCell.load()
 
     override fun established(report: ConnectReport) {
-        publish(QuicConnectionState.Established(alpnOf(report.alpnLength), report.resumption))
+        val alpn = alpnOf(report.alpnLength)
+        handshake.value = HandshakeRecord.Settled(alpn, report.resumption)
+        publish(QuicConnectionState.Established(alpn, report.resumption))
         start.value = HandlerStart.Now
     }
 
     override fun earlyData(report: EarlyReport) {
-        earlyData.value = EarlyDataAcceptance.Accepted(alpnOf(report.alpnLength), report.resumption)
+        val alpn = alpnOf(report.alpnLength)
+        handshake.value = HandshakeRecord.Settled(alpn, report.resumption)
+        earlyData.value = EarlyDataAcceptance.Accepted(alpn, report.resumption)
         start.value = HandlerStart.Now
     }
 
@@ -135,10 +153,17 @@ internal class EdgeState(
      * [closed] resume callers, and a resumed caller may run on its own thread at once, so whatever it reads must
      * already say how the connection ended.
      */
-    override fun ended(end: ConnEnd) {
-        endCell.store(EdgeEnd.Ended(end))
+    override fun ended(
+        end: ConnEnd,
+        held: HeldReads,
+    ) {
+        endCell.store(EdgeEnd.Ended(end, held))
         reads.close()
-        unread.value = QuicUnreadAtClose.AllRead
+        val inHand = handed.atEnd()
+        val owing = held.owing() + inHand.streams()
+        unread.value = if (owing.isEmpty()) QuicUnreadAtClose.AllRead else QuicUnreadAtClose.Unread(owing)
+        // A caller that took its bytes before the line above found nothing to leave yet: it leaves here.
+        inHand.forEachTaken(::returned)
         val reason = closeReasonOf(end)
         publish(QuicConnectionState.Closed(reason))
         start.compareAndSet(HandlerStart.NotYet, HandlerStart.Never)
@@ -153,6 +178,30 @@ internal class EdgeState(
         incoming.close(endedWith(end, QuicCloseCircumstance.Ended))
         closed.complete(reason)
     }
+
+    /** Any thread, after the end: what a read of [stream] gets next. */
+    fun take(stream: QuicStreamId): HeldTake =
+        when (val now = endCell.load()) {
+            is EdgeEnd.Open -> HeldTake.Closed
+            is EdgeEnd.Ended -> now.held.take(stream)
+        }
+
+    /** Any thread: a read of [stream] returned to its caller; the stream leaves [unread] once it owes nothing more. */
+    fun returned(stream: QuicStreamId) {
+        val now = endCell.load()
+        if (now is EdgeEnd.Ended && now.held.owed(stream) == Owed.No) leave(stream)
+    }
+
+    /** Any thread: the caller let [stream] go; what was held for it is freed. */
+    fun letGo(stream: QuicStreamId) {
+        val now = endCell.load()
+        if (now !is EdgeEnd.Ended) return
+        now.held.free(stream)
+        leave(stream)
+    }
+
+    private fun leave(stream: QuicStreamId) =
+        unread.update { now -> if (now is QuicUnreadAtClose.Unread && stream in now.streams) now.without(stream) else now }
 
     private fun publish(now: QuicConnectionState) {
         state.value = now

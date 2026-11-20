@@ -557,6 +557,11 @@ public final class com/ditchoom/socket/quic/NetworkMonitorSource$Supplied : com/
 	public fun toString ()Ljava/lang/String;
 }
 
+public final class com/ditchoom/socket/quic/NoTrustAnchorsException : java/lang/IllegalStateException {
+	public fun <init> (Ljava/util/List;)V
+	public final fun getSearched ()Ljava/util/List;
+}
+
 public abstract interface class com/ditchoom/socket/quic/P256KeyPair : java/lang/AutoCloseable {
 	public abstract fun close ()V
 	public abstract fun sign (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/WriteBuffer;)V

@@ -166,14 +166,11 @@ class ReactiveDriverTests {
             driver.start(this)
 
             try {
-                val buf = bufferFactory.allocate(1024)
-
                 val deferred = CompletableDeferred<StreamRecvResult>()
-                driver.commands.send(QuicheCmd.StreamRecv(0L, buf.driverOwnedMemory(), 1024, deferred))
+                driver.commands.send(QuicheCmd.StreamRecv(StreamSlot(QuicStreamId(0L)), 1024, deferred))
                 val result = withTimeout(2.seconds) { deferred.await() }
 
                 assertIs<StreamRecvResult.Done>(result)
-                buf.freeNativeMemory()
             } finally {
                 driver.destroy()
             }
@@ -188,15 +185,12 @@ class ReactiveDriverTests {
             driver.start(this)
 
             try {
-                val buf = bufferFactory.allocate(1024)
-
                 val deferred = CompletableDeferred<StreamRecvResult>()
-                driver.commands.send(QuicheCmd.StreamRecv(0L, buf.driverOwnedMemory(), 1024, deferred))
+                driver.commands.send(QuicheCmd.StreamRecv(StreamSlot(QuicStreamId(0L)), 1024, deferred))
                 val result = withTimeout(2.seconds) { deferred.await() }
 
                 assertIs<StreamRecvResult.Data>(result)
                 assertEquals(42, result.bytesRead)
-                buf.freeNativeMemory()
             } finally {
                 driver.destroy()
             }

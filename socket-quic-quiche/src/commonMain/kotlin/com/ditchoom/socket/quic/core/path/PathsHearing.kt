@@ -3,6 +3,7 @@ package com.ditchoom.socket.quic.core.path
 import com.ditchoom.socket.quic.ProbeOutcome
 import com.ditchoom.socket.quic.QUICHE_ERR_OUT_OF_IDENTIFIERS
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
+import com.ditchoom.socket.quic.core.observe.Confined
 import com.ditchoom.socket.quic.core.time.Nanos
 
 /** What a client last heard of its peer: the datagrams that had reached its socket ([recv]), as of [at]. */
@@ -40,3 +41,33 @@ internal fun QuicheConnRef.hearing(
 
 /** Whether this refusal ends the move: quiche has no spare connection id (not another reason that may pass) and none can come. */
 internal fun ProbeOutcome.Rejected.endsMove(hearing: Hearing): Boolean = code == QUICHE_ERR_OUT_OF_IDENTIFIERS && hearing is Hearing.Dark
+
+/** Whether datagrams reached the socket since the last observation. */
+internal enum class Observed { Renewed, Unchanged }
+
+/** What a client hears of its peer: the datagrams that reach its socket, and when it last observed them. Inside only. */
+@Confined
+internal class PeerHearing(
+    private val q: QuicheConnRef,
+) {
+    private var heard = Heard(0L, Nanos(0L))
+    private var arrived = 0L
+
+    /** A datagram reached the socket. */
+    fun arrived() {
+        arrived++
+    }
+
+    /** How the peer is heard at [now] against the last observation, which is then renewed if datagrams arrived. */
+    fun judge(now: Nanos): Hearing = q.hearing(heard, arrived, now).also { heard = heard.observe(arrived, now) }
+
+    /** Renews the observation at [now] if datagrams arrived since it was taken. */
+    fun observe(now: Nanos): Observed {
+        if (arrived == heard.recv) return Observed.Unchanged
+        heard = heard.observe(arrived, now)
+        return Observed.Renewed
+    }
+
+    /** When the peer is [Hearing.Dark] if nothing arrives after the last observation. */
+    fun darkAt(): Nanos = Nanos(heard.at.value + ABANDON_PTOS * q.activeBasePto())
+}

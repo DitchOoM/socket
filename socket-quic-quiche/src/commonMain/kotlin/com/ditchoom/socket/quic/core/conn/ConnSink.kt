@@ -66,5 +66,9 @@ internal interface ConnSink {
         length: Int,
     )
 
-    fun ended(end: ConnEnd)
+    /** The connection ended with [end]; [held] is what it received that no read returned, for the reads after it. */
+    fun ended(
+        end: ConnEnd,
+        held: HeldReads,
+    )
 }

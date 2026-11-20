@@ -144,13 +144,11 @@ sealed interface QuicheCmd {
     ) : QuicheCmd
 
     /**
-     * Read data from a QUIC stream into [buf]. quiche WRITES into that memory on the driver loop
-     * long after the reader that enqueued this command may have stopped naming its buffer, which is
-     * why [buf] carries the owner and not a bare address — see [QuicheMemory].
+     * Read up to [bufLen] bytes of [slot]'s stream. The loop takes them into a buffer of its own and queues
+     * it on [StreamSlot.pendingData] before answering, so the read that asks holds no buffer while it waits.
      */
     class StreamRecv(
-        val streamId: Long,
-        val buf: QuicheMemory,
+        val slot: StreamSlot,
         val bufLen: Int,
         val result: CompletableDeferred<StreamRecvResult>,
     ) : QuicheCmd

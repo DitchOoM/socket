@@ -194,11 +194,13 @@ class ReadHandOffAtCloseTests {
                 settle(reader) // the cancelled read resumes, and must give back what it was handed
 
                 assertIs<QuicCloseException>(outcome.getCompleted())
-                val pool = (driver.streamReadPool as DriverBuffers.Owned).pool.stats()
+                // The handed-off bytes are short, so they travelled in a chunk-pool buffer.
+                val pool = (driver.streamChunkPool as DriverBuffers.Owned).pool.stats()
+                assertEquals(1L, pool.totalAllocations, "the hand-off took one chunk: $pool")
                 assertEquals(
                     pool.totalAllocations.toInt(),
                     pool.currentPoolSize,
-                    "every stream read buffer must be back in the pool; stranded: $pool",
+                    "every stream chunk must be back in the pool; stranded: $pool",
                 )
             } finally {
                 connJob.cancel()

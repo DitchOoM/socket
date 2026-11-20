@@ -8,10 +8,12 @@ import com.ditchoom.socket.quic.QuicStreamId
 import com.ditchoom.socket.quic.core.conn.CallerPlace
 import com.ditchoom.socket.quic.core.conn.Conn
 import com.ditchoom.socket.quic.core.conn.ConnWork
+import com.ditchoom.socket.quic.core.conn.HeldTake
 import com.ditchoom.socket.quic.core.conn.Inside
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.observe.CallerSide
 import com.ditchoom.socket.quic.core.observe.Confined
+import com.ditchoom.socket.quic.core.stream.InHand
 import com.ditchoom.socket.quic.core.stream.ReadChunk
 import com.ditchoom.socket.quic.core.stream.Retry
 import com.ditchoom.socket.quic.core.stream.Side
@@ -64,12 +66,13 @@ internal class ReadOp(
     private val bound: Duration,
     private val deadlines: OpDeadlines,
     private val conn: Conn,
-    private val idle: IdleRead,
+    private val edge: EdgeState,
     factory: BufferFactory,
     private val sizing: ReadSizing,
 ) : ConnWork(),
     Waiter,
     Bounded {
+    private val idle = edge.reads
     private val asked = sizing.chunk
     private var spare: Spare = idle.take(asked.bytes, factory)
     private var lease: Lease = Lease.None
@@ -84,9 +87,17 @@ internal class ReadOp(
     suspend fun answer(): ReadResult {
         val context = currentCoroutineContext()
         val answer = hand.await(context) { cancelled() }
-        if (answer is ReadAnswer.Data) sizing.read(asked, answer.buffer.remaining())
-        return resultOf(answer, context)
+        try {
+            if (answer is ReadAnswer.Data) sizing.read(asked, answer.buffer.remaining())
+            return resultOf(answer, context)
+        } finally {
+            hand.taken()
+            edge.returned(stream)
+        }
     }
+
+    /** Any thread: whether the caller still has to take bytes this read handed it. */
+    override fun inHand(): InHand = if (hand.current() is ReadAnswer.Data) InHand.Yes else InHand.No
 
     /** The cancelling thread: a read not answered yet is answered Cancelled and handed back to the connection. */
     private fun cancelled() {
@@ -132,10 +143,18 @@ internal class ReadOp(
         return answer
     }
 
+    /** The connection ended first: the read gets what the end held for its stream, or the close. */
     override fun connectionEnded(end: ConnEnd) {
         lease = deadlines.disarm(lease)
         release()
-        settle(ReadAnswer.Failed(Raised.ConnEnded(end), QuicCloseCircumstance.Ended))
+        settle(
+            when (val held = edge.take(stream)) {
+                is HeldTake.Bytes -> ReadAnswer.Data(held.buffer)
+                is HeldTake.Finished -> ReadAnswer.End
+                is HeldTake.Reset -> ReadAnswer.Reset
+                is HeldTake.Closed -> ReadAnswer.Failed(Raised.ConnEnded(end), QuicCloseCircumstance.Ended)
+            },
+        )
     }
 
     override fun gone(end: ConnEnd) = connectionEnded(end)
@@ -187,13 +206,18 @@ internal class ReadOp(
         return answer
     }
 
+    /** Hands [read] bytes to the caller; until the caller takes them, an end counts the stream as unread. */
     private fun data(
         into: ReadAnswer.Data,
         read: Int,
     ): Retry {
         into.buffer.position(0)
         into.buffer.setLimit(read)
-        return settle(into)
+        when (hand.answer(into)) {
+            Landed.First -> edge.handed.add(stream, this)
+            Landed.Late -> into.buffer.freeIfNeeded()
+        }
+        return Retry.Settled
     }
 
     /** Parks on [into]; a retry that finds nothing again holds the same buffer and answer and allocates nothing. */

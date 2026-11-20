@@ -25,6 +25,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.random.Random
 import kotlin.test.Test
@@ -105,7 +106,7 @@ class CoreManyMovesTests {
                         // The wildcard and the loopback address alternate: each is another address than the socket leaves from.
                         source = RouteSource.Resolved(if (move % 2 == 1) "0.0.0.0" else "127.0.0.1")
                         monitor.state.value = if (move % 2 == 1) WIFI_AFTER else WIFI_BEFORE
-                        withTimeout(10.seconds) { while (migrated(client) < move) delay(10) }
+                        awaitMove(client, move)
                         val payload = Random(move).nextBytes(1_000)
                         val echoed = withTimeout(10.seconds) { echoOver(client.connection.openStream(), payload) }
                         assertContentEquals(payload, echoed, "echo after move $move")
@@ -120,11 +121,34 @@ class CoreManyMovesTests {
             }
         }
 
-    private suspend fun migrated(client: CoreClient): Int {
+    private suspend fun migrated(client: CoreClient): Int = marks(client).count { it == "Migrated" }
+
+    private suspend fun marks(client: CoreClient): List<String> {
         val recorded = ArrayList<TraceEvent>()
         client.connection.dumpFlight(TraceSink { recorded += it })
-        return recorded.filterIsInstance<TraceEvent.PathState>().count { it.phase == "Migrated" }
+        return recorded.filterIsInstance<TraceEvent.PathState>().map { it.phase }
     }
+
+    /** Waits for [move] to migrate; a move that does not, or a connection that ended, fails naming what it saw. */
+    private suspend fun awaitMove(
+        client: CoreClient,
+        move: Int,
+    ) {
+        withTimeoutOrNull(10.seconds) {
+            while (migrated(client) < move && client.connection.end() is EdgeEnd.Open) delay(10)
+        }
+        val marks = marks(client)
+        assertTrue(
+            marks.count { it == "Migrated" } >= move,
+            "move $move did not migrate: connection ${endOf(client)}, path marks $marks",
+        )
+    }
+
+    private fun endOf(client: CoreClient): String =
+        when (val end = client.connection.end()) {
+            is EdgeEnd.Open -> "open"
+            is EdgeEnd.Ended -> "ended ${end.end}"
+        }
 
     private companion object {
         const val MOVES = 50

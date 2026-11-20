@@ -20,6 +20,7 @@ import com.ditchoom.socket.quic.core.conn.ConnectReport
 import com.ditchoom.socket.quic.core.conn.EarlyReport
 import com.ditchoom.socket.quic.core.conn.FlightArena
 import com.ditchoom.socket.quic.core.conn.FlightSize
+import com.ditchoom.socket.quic.core.conn.HeldReads
 import com.ditchoom.socket.quic.core.conn.KeptTicket
 import com.ditchoom.socket.quic.core.conn.LoopMemory
 import com.ditchoom.socket.quic.core.conn.MismatchResponse
@@ -48,6 +49,7 @@ import com.ditchoom.socket.quic.core.sched.Entrant
 import com.ditchoom.socket.quic.core.sched.SendPort
 import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.Nanos
+import com.ditchoom.socket.quic.core.time.RttPrior
 import com.ditchoom.socket.quic.core.time.WaitResolution
 import com.ditchoom.socket.quic.core.udp.BatchLimits
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
@@ -85,7 +87,10 @@ internal class RecordingSink : ConnSink {
         length: Int,
     ) = Unit
 
-    override fun ended(end: ConnEnd) {
+    override fun ended(
+        end: ConnEnd,
+        held: HeldReads,
+    ) {
         ended += end
     }
 }
@@ -144,6 +149,7 @@ internal fun testConn(
                 },
                 KeptTicket.None,
                 TokenHome.NotKept,
+                NO_MOVES,
             ),
         address =
             ConnAddress(
@@ -226,5 +232,9 @@ internal fun stubClientPaths(
             IdIssuer(BufferFactory.Default),
             Random(1),
             { info, made -> q.freeInfo(info, made) },
+            NO_MOVES,
         ),
     )
+
+/** A rig's socket is never moved. */
+private val NO_MOVES: (PathKey, RttPrior) -> Unit = { _, _ -> }

@@ -1082,6 +1082,11 @@ class FfmQuicheApi private constructor(
         pathAddr: Long,
     ): Int = ConfigCalls.hLoadVerify.invokeExact(config.handle, pathAddr) as Int
 
+    override fun configLoadVerifyLocationsFromDirectory(
+        config: QuicheConfig,
+        pathAddr: Long,
+    ): Int = ConfigCalls.hLoadVerifyDirectory.invokeExact(config.handle, pathAddr) as Int
+
     override fun headerInfo(
         buf: Long,
         bufLen: Int,
