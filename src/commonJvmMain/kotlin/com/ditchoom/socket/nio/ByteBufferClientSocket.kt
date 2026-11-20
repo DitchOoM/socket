@@ -39,10 +39,11 @@ abstract class ByteBufferClientSocket<T : NetworkChannel>(
     protected val isSocketInitialized: Boolean
         get() = ::socket.isInitialized
 
+    /** False from the moment [close] begins, not from when the channel finishes closing: a read ended by that close sees it. */
     override val isOpen: Boolean
         get() =
             try {
-                isSocketInitialized && socket.isOpen
+                closeState.get() == CloseState.Open && isSocketInitialized && socket.isOpen
             } catch (e: Throwable) {
                 false
             }
