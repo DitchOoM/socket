@@ -22,7 +22,7 @@ class LoopDeadlineWakeTests {
     @Test
     fun deadlinesArmedFromOtherThreadsAllFireOnTime() {
         val clock = MonotonicClock
-        val loop = loopOver(SelectorPoller(clock, jdkStackOfThisRuntime().scan), clock, maxDatagrams = 4)
+        val loop = loopOver(SelectorPoller(jdkStackOfThisRuntime().scan), clock, maxDatagrams = 4)
         startLoopThread(loop, "core-deadline-wake")
 
         val armers = 4

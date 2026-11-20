@@ -2,6 +2,8 @@ package com.ditchoom.socket.quic.core.loop
 
 import com.ditchoom.socket.quic.NextDue
 import com.ditchoom.socket.quic.PathKey
+import com.ditchoom.socket.quic.PinAnswer
+import com.ditchoom.socket.quic.QuicheClockPin
 import com.ditchoom.socket.quic.SendTarget
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.sched.LoopPort
@@ -9,7 +11,9 @@ import com.ditchoom.socket.quic.core.sched.LoopWork
 import com.ditchoom.socket.quic.core.testing.ConnRig
 import com.ditchoom.socket.quic.core.testing.EchoQuiche
 import com.ditchoom.socket.quic.core.testing.VirtualClock
+import com.ditchoom.socket.quic.core.time.ClockBase
 import com.ditchoom.socket.quic.core.time.Nanos
+import com.ditchoom.socket.quic.core.time.QuicheTime
 import com.ditchoom.socket.quic.core.udp.ArrivedOn
 import com.ditchoom.socket.quic.core.udp.BatchCapability
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
@@ -149,6 +153,24 @@ class LoopPassTests {
     }
 
     @Test
+    fun aPassThatPinsLibquicheEchoesTwentyDatagramsWithNoClockReadAndPinsItOnceAtThePassesTime() {
+        // On the Android 9 and 10 emulators a clock read traps to the host (HPET, ~13 us), and the core and libquiche read
+        // it some 60 times per echo between them. A pinned pass is one reading: quiche, the turn, the write and the
+        // recording all take the pass's time.
+        val clock = VirtualClock(Nanos(PASS_AT), ClockBase.Libquiche)
+        val pin = RecordingPin()
+        val io = ScriptedIo()
+        repeat(20) { io.arrive(byteArrayOf(it.toByte()), peer(it)) }
+        val rig = ConnRig(EchoQuiche(), io = io, clock = clock, time = QuicheTime.Pinned(pin))
+        clock.reads = 0
+        rig.loop.pass(Nanos(PASS_AT))
+        assertEquals(20, io.sent.size, "every datagram was echoed")
+        assertEquals(0L, clock.reads, "clock reads in a pinned pass that echoed 20 datagrams")
+        assertEquals(listOf(PASS_AT), pin.pins, "libquiche was pinned once, at the pass's time")
+        assertEquals(1, pin.unpins, "and released when the pass ended")
+    }
+
+    @Test
     fun datagramsTheIoHoldsAreReadWithoutWaitingForAnotherOne() {
         // Whole messages waiting inside the io are invisible to the poller: a pass cut short by the per-pass bound must
         // leave the loop's next pass due at once, and that pass must finish the backlog with nothing new arriving.
@@ -200,6 +222,23 @@ class LoopPassTests {
     }
 
     private fun peer(n: Int) = PathKey(family = 4, port = 1000 + n, hi = 0L, lo = 0x7F000001L)
+}
+
+private const val PASS_AT = 5_000_000L
+
+/** A clock pin that records each pin's time and counts its releases. */
+private class RecordingPin : QuicheClockPin {
+    val pins = ArrayList<Long>()
+    var unpins = 0
+
+    override fun pinMonotonic(nanos: Long): PinAnswer {
+        pins += nanos
+        return PinAnswer.Pinned
+    }
+
+    override fun unpin() {
+        unpins++
+    }
 }
 
 private class ScriptedIo : DatagramBatchIo {

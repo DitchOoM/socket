@@ -49,6 +49,7 @@ import com.ditchoom.socket.quic.core.sched.Entrant
 import com.ditchoom.socket.quic.core.sched.SendPort
 import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.Nanos
+import com.ditchoom.socket.quic.core.time.QuicheTime
 import com.ditchoom.socket.quic.core.time.RttPrior
 import com.ditchoom.socket.quic.core.time.WaitResolution
 import com.ditchoom.socket.quic.core.udp.BatchLimits
@@ -100,6 +101,7 @@ internal fun loopOver(
     poller: Poller,
     clock: LoopClock,
     maxDatagrams: Int = 64,
+    time: QuicheTime = QuicheTime.Own,
 ): Loop =
     Loop(
         id = 1,
@@ -112,6 +114,7 @@ internal fun loopOver(
                 BatchLimits(maxDatagrams = maxDatagrams, maxDatagramSize = 1500),
             ),
         freeOnStop = Runnable { },
+        time = time,
     )
 
 /** A loop's shared memory for a test: [copies] copy slots and an arena of [arenaBytes]. */
@@ -165,6 +168,7 @@ internal fun testConn(
         port = loop.port,
         socket = socket,
         clock = clock,
+        time = loop.time,
         sink = sink,
         loopEntrant = Entrant.loopTurn(loop.id, 1),
         counts = counts,
@@ -192,10 +196,11 @@ internal class ConnRig(
     capture: TraceCapture = TraceCapture.Off,
     val clock: VirtualClock = VirtualClock(),
     poller: Poller = FakePoller(),
+    time: QuicheTime = QuicheTime.Own,
 ) {
     val sink = RecordingSink()
     val counts = ConnCounts()
-    val loop = loopOver(poller, clock, maxDatagrams)
+    val loop = loopOver(poller, clock, maxDatagrams, time)
     val socket = SendPort(io, loop.port, CallerLanes.None, RecordingWork(), loop.counts, loop.callerCounts)
     val conn: Conn = testConn(api, rules, target, capture, loop, socket, clock, sink, counts)
     val endpoint =

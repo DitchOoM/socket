@@ -86,7 +86,7 @@ internal class NativeEcho(
             id = 3,
             name = threadName,
             poller =
-                when (val opened = NativePoller.open(shim, MonotonicClock, 64)) {
+                when (val opened = NativePoller.open(shim, 64)) {
                     is PollerOpened.Opened -> opened.poller
                     is PollerOpened.Refused -> throw AssertionError("qnet refused the poller: ${opened.refusal}")
                 },

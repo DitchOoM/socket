@@ -20,7 +20,6 @@ import com.ditchoom.socket.quic.core.sched.Pushed
 import com.ditchoom.socket.quic.core.sched.SendPort
 import com.ditchoom.socket.quic.core.sched.Shut
 import com.ditchoom.socket.quic.core.sched.WorkLeft
-import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 import com.ditchoom.socket.quic.core.udp.SendBatch
@@ -42,7 +41,7 @@ internal class Conn(
     private val turn: Turn,
     private val port: LoopPort,
     private val socket: SendPort,
-    private val clock: LoopClock,
+    private val clock: TurnClock,
     private val loopEntrant: Entrant,
     val counts: ConnCounts,
 ) {
@@ -96,10 +95,7 @@ internal class Conn(
         touch()
     }
 
-    /**
-     * Loop thread: a datagram for this connection from [from], at the start of [bytes], read in the receive phase that
-     * began [at]; copied when a caller is inside. Its recording takes the time quiche reads it.
-     */
+    /** Loop thread: a datagram from [from] at the start of [bytes], read in the pass at [at]; copied when a caller is inside. */
     fun received(
         bytes: NativeBytes,
         length: Int,
@@ -107,7 +103,7 @@ internal class Conn(
         at: Nanos,
     ) {
         when (touch()) {
-            LoopHold.In -> turn.receive(bytes, length, from, at)
+            LoopHold.In -> turn.receive(bytes, length, from, clock.held(at))
             LoopHold.Out -> copyForHolder(bytes, length, from)
         }
     }
@@ -121,10 +117,13 @@ internal class Conn(
     /** Any thread: the ids this connection's peer retired since the last call, taken once. */
     fun idsRetired(): List<RetiredId> = turn.idsRetired()
 
-    /** Loop thread, once or more per pass: serves the connection if the loop is inside, and leaves when done. */
-    fun turn(out: SendBatch): Collected {
+    /** Loop thread, once or more per pass at its time [now]: serves the connection if the loop is inside, and leaves when done. */
+    fun turn(
+        out: SendBatch,
+        now: Nanos,
+    ): Collected {
         if (hold == LoopHold.Out) return Collected.Everything
-        if (turn.serve(clock.now(), out, onTimer) == Collected.MoreWaiting) return Collected.MoreWaiting
+        if (turn.serve(clock.held(now), out, onTimer) == Collected.MoreWaiting) return Collected.MoreWaiting
         return when (owner.tryLeave(loopEntrant)) {
             Leave.Left -> {
                 hold = LoopHold.Out
@@ -242,7 +241,7 @@ internal class Conn(
     private fun serveAsCaller(first: CallerSend) {
         var lane: LaneTake = first
         while (true) {
-            val now = clock.now()
+            val now = clock.live().also(clock::pinHere)
             val collected =
                 when (val held = lane) {
                     is CallerSend -> {
@@ -255,6 +254,7 @@ internal class Conn(
             if (collected == Collected.MoreWaiting) continue
             if (owner.tryLeave(callerEntrant) == Leave.Left) break
         }
+        clock.unpinHere()
         freeWhenNobodyInside()
         when (val last = lane) {
             is CallerSend -> {
@@ -279,7 +279,7 @@ internal class Conn(
         if (turn.releaseAsked() == ReleaseAsk.No) return
         when (owner.tryEnter(loopEntrant)) {
             Entry.Busy -> Unit
-            Entry.Entered -> turn.free(clock.now())
+            Entry.Entered -> turn.free(clock.live())
         }
     }
 

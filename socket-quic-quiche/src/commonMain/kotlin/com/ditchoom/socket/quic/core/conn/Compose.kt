@@ -22,6 +22,7 @@ import com.ditchoom.socket.quic.core.sched.WorkInbox
 import com.ditchoom.socket.quic.core.stream.StreamIo
 import com.ditchoom.socket.quic.core.stream.StreamTable
 import com.ditchoom.socket.quic.core.time.LoopClock
+import com.ditchoom.socket.quic.core.time.QuicheTime
 import com.ditchoom.socket.quic.core.time.RttPrior
 import com.ditchoom.socket.quic.core.time.WakeSink
 import com.ditchoom.socket.quic.core.udp.NativeBytes
@@ -78,12 +79,29 @@ internal fun buildConn(
     port: LoopPort,
     socket: SendPort,
     clock: LoopClock,
+    time: QuicheTime,
     sink: ConnSink,
     loopEntrant: Entrant,
     counts: ConnCounts,
 ): Conn =
     q.composedAround(SinglePath(q, address.peer, address.local, address.target)) { first ->
-        composed(rules, q, side, address, memory, flight, capture, port, socket, clock, sink, loopEntrant, counts, first)
+        composed(
+            rules,
+            q,
+            side,
+            address,
+            memory,
+            flight,
+            capture,
+            port,
+            socket,
+            clock,
+            TurnClock(TurnTime.of(time, clock), clock),
+            sink,
+            loopEntrant,
+            counts,
+            first,
+        )
     }
 
 private fun composed(
@@ -97,6 +115,7 @@ private fun composed(
     port: LoopPort,
     socket: SendPort,
     clock: LoopClock,
+    turnClock: TurnClock,
     sink: ConnSink,
     loopEntrant: Entrant,
     counts: ConnCounts,
@@ -167,8 +186,8 @@ private fun composed(
             handshake = Handshake(q, rules.handshake, clock.now().value, memory.alpn),
             streams = StreamTable(q, StreamIo(q), side.role(), memory.shared.drains),
             timer = ConnTimer(q, port, WakeSink()),
-            ingress = Ingress(q, memory.shared, memory.factory, counts, clock),
-            egress = Egress(q, counts, clock),
+            ingress = Ingress(q, memory.shared, memory.factory, counts, turnClock),
+            egress = Egress(q, counts, turnClock),
             release = Release(q),
             network = NetworkWatch(),
             flight = ConnFlight(flight, memory.shared.arena, address.peerKey, capture, clock.now().value),
@@ -179,7 +198,7 @@ private fun composed(
             sends = socket.ledger,
             endHold = EndHold(StreamIo(q), memory.factory),
         )
-    return Conn(Turn(parts, clock, port), port, socket, clock, loopEntrant, counts)
+    return Conn(Turn(parts, turnClock, port), port, socket, turnClock, loopEntrant, counts)
 }
 
 private fun ConnSide.role(): QuicRole =

@@ -587,6 +587,19 @@ object JniQuicheApi : QuicheApi {
             override fun clearThreadRandomState() = nClearThreadRandomState()
         }
 
+    /** This backend's clock pin: a loop pins libquiche to the instant it read for its pass. */
+    internal val clockPin: QuicheClockPin =
+        object : QuicheClockPin {
+            override fun pinMonotonic(nanos: Long): PinAnswer =
+                if (nPinMonotonicTimeNanos(nanos) == PINNED) PinAnswer.Pinned else PinAnswer.Unsupported
+
+            override fun unpin() = nClearVirtualTime()
+        }
+
+    init {
+        QuicheClockPins.bind(this, clockPin)
+    }
+
     override fun connSendAckEliciting(conn: QuicheConn): Int = nConnSendAckEliciting(conn.handle).toInt()
 
     override fun connProbeNow(conn: QuicheConn): Int = nConnProbeNow(conn.handle).toInt()
@@ -885,6 +898,9 @@ object JniQuicheApi : QuicheApi {
     }
 
     private const val QUICHE_ERR_DONE = -1L
+
+    /** What `quiche_pin_monotonic_time_nanos` returns when it pinned. */
+    private const val PINNED = 1
     private const val CONN_STATS_SLOTS = 13 // quiche_jni.c nConnStats slot count
     private const val CONN_STATS_LOST_SLOT = 2
     private const val CONN_STATS_RETRANS_SLOT = 4
@@ -1261,6 +1277,8 @@ object JniQuicheApi : QuicheApi {
     @JvmStatic private external fun nSetVirtualTimeNanos(nanos: Long)
 
     @JvmStatic private external fun nClearVirtualTime()
+
+    @JvmStatic private external fun nPinMonotonicTimeNanos(nanos: Long): Int
 
     @JvmStatic private external fun nSetThreadRandomState(state: Long)
 

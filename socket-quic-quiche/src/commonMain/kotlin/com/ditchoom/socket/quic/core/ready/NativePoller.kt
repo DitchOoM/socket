@@ -8,7 +8,7 @@ import com.ditchoom.socket.quic.checkedModify
 import com.ditchoom.socket.quic.checkedWait
 import com.ditchoom.socket.quic.checkedWake
 import com.ditchoom.socket.quic.core.observe.LoopOnly
-import com.ditchoom.socket.quic.core.time.LoopClock
+import com.ditchoom.socket.quic.core.time.Nanos
 
 /** What opening a [NativePoller] did. */
 internal sealed interface PollerOpened {
@@ -31,7 +31,6 @@ internal sealed interface PollerOpened {
 @LoopOnly
 internal class NativePoller private constructor(
     private val shim: NetShim,
-    private val clock: LoopClock,
     raw: Long,
 ) : Poller {
     private val handle = NativeHandle(raw) { shim.pollerClose(it) }
@@ -76,21 +75,23 @@ internal class NativePoller private constructor(
     override fun await(
         until: NextDue,
         ready: ReadyTokens,
+        now: Nanos,
     ): WakeCause {
         ready.clear()
-        return handle.use({ waitOn(it, until, ready) }, { WakeCause.Woken })
+        return handle.use({ waitOn(it, until, ready, now) }, { WakeCause.Woken })
     }
 
     private fun waitOn(
         poller: Long,
         until: NextDue,
         ready: ReadyTokens,
+        now: Nanos,
     ): WakeCause {
         val result =
             until.fold(
                 none = { shim.checkedWait(poller, WAIT_FOREVER, 0L) },
                 due = { due ->
-                    val nanos = due - clock.now().value
+                    val nanos = due - now.value
                     if (nanos <= 0) shim.checkedWait(poller, WAIT_NOW, 0L) else shim.checkedWait(poller, WAIT_TIMED, nanos)
                 },
             )
@@ -125,7 +126,6 @@ internal class NativePoller private constructor(
     companion object {
         fun open(
             shim: NetShim,
-            clock: LoopClock,
             capacity: Int,
         ): PollerOpened {
             val handle = shim.pollerOpen(capacity)
@@ -134,7 +134,7 @@ internal class NativePoller private constructor(
             return if (handle < 0 && -handle <= MAX_CODE) {
                 PollerOpened.Refused(SocketRefusal.of((-handle).toInt()))
             } else {
-                PollerOpened.Opened(NativePoller(shim, clock, handle))
+                PollerOpened.Opened(NativePoller(shim, handle))
             }
         }
 

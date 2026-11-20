@@ -12,6 +12,7 @@ import com.ditchoom.socket.quic.core.testing.EchoQuiche
 import com.ditchoom.socket.quic.core.testing.FakeIo
 import com.ditchoom.socket.quic.core.testing.VirtualClock
 import com.ditchoom.socket.quic.core.testing.nativeBytes
+import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.udp.BatchLimits
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
@@ -119,6 +120,7 @@ private class CountingPoller(
     override fun await(
         until: NextDue,
         ready: ReadyTokens,
+        now: Nanos,
     ): WakeCause = WakeCause.Woken
 
     override fun wake() = Unit

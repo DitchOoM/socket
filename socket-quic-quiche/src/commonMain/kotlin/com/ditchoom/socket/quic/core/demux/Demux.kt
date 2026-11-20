@@ -70,12 +70,14 @@ internal class Demux(
         for (i in 0 until batch.count) routeOne(batch.bufferAt(i).bytes, batch.lengthAt(i), batch.fromAt(i), batch.toAt(i), out, at)
     }
 
-    /** Starts a chunk of the held Initials, oldest first; [Admitted.More] when the loop should read and come back. */
-    fun admitSome(out: SendBatch): Admitted {
+    /** Starts a chunk of the held Initials, oldest first, at the pass's time [at]; [Admitted.More] when the loop should read again. */
+    fun admitSome(
+        out: SendBatch,
+        at: Nanos,
+    ): Admitted {
         admission.chunkBegins()
         mode = Mode.Admitting
         val backlog = admission.backlog
-        val at = clock.now()
         while (admission.mayTakeMore()) {
             routeOne(backlog.oldest(), backlog.oldestLength(), backlog.oldestFrom(), backlog.oldestTo(), out, at)
             backlog.dropOldest()
@@ -84,12 +86,15 @@ internal class Demux(
         return admission.afterChunk()
     }
 
-    /** Serves every connection the loop is inside, removes the ended ones, and steps the shutdown. */
-    fun turn(out: SendBatch): Collected {
+    /** Serves every connection the loop is inside at [now], the pass's time, removes the ended ones, and steps the shutdown. */
+    fun turn(
+        out: SendBatch,
+        now: Nanos,
+    ): Collected {
         var i = 0
         while (i < peers.size) {
             val peer = peers[i]
-            when (peer.conn.turn(out)) {
+            when (peer.conn.turn(out, now)) {
                 Collected.MoreWaiting -> if (out.room() == Room.Full) return Collected.MoreWaiting else continue
                 Collected.Everything, Collected.Abandoned -> Unit
             }
@@ -101,7 +106,7 @@ internal class Demux(
                 i++
             }
         }
-        when (life.step(clock.now(), unsettled())) {
+        when (life.step(now, unsettled())) {
             ServerStep.Serving -> Unit
             ServerStep.Finish -> endAll(ConnEnd.ServerClosed)
             ServerStep.FinishAtBound -> endAtBound()

@@ -118,6 +118,7 @@ import com.ditchoom.socket.quic.quiche.quiche_path_event_pmtu_updated
 import com.ditchoom.socket.quic.quiche.quiche_path_event_type
 import com.ditchoom.socket.quic.quiche.quiche_path_event_validated
 import com.ditchoom.socket.quic.quiche.quiche_path_stats
+import com.ditchoom.socket.quic.quiche.quiche_pin_monotonic_time_nanos
 import com.ditchoom.socket.quic.quiche.quiche_recv_info
 import com.ditchoom.socket.quic.quiche.quiche_retry
 import com.ditchoom.socket.quic.quiche.quiche_send_info
@@ -161,7 +162,11 @@ import kotlin.time.Duration.Companion.nanoseconds
  * The only platform-specific read is the sockaddr family byte layout, [readSockAddrFamily].
  * All `memScoped` blocks use stack allocation — fast, no GC pressure.
  */
-internal object CinteropQuicheApi : QuicheApi, QuicheRandomPin {
+internal object CinteropQuicheApi : QuicheApi, QuicheRandomPin, QuicheClockPin {
+    init {
+        QuicheClockPins.bind(this, this)
+    }
+
     private fun Long.toNativePtr(): NativePtr = requireNotNull(this.toCPointer<ByteVar>()) { "null pointer" }.rawValue
 
     // --- Config ---
@@ -825,6 +830,12 @@ internal object CinteropQuicheApi : QuicheApi, QuicheRandomPin {
 
     override fun clearThreadVirtualTime() = quiche_clear_virtual_time()
 
+    // Monotonic pin: production; the loop's one clock read per pass becomes libquiche's clock on this thread.
+    override fun pinMonotonic(nanos: Long): PinAnswer =
+        if (quiche_pin_monotonic_time_nanos(nanos.convert()) == PINNED) PinAnswer.Pinned else PinAnswer.Unsupported
+
+    override fun unpin() = quiche_clear_virtual_time()
+
     // Caller-entropy: thread-local seeded random stream in the patched libquiche. Simulation-only.
     override fun setThreadRandomState(state: Long) = quiche_set_thread_random_state(state.convert())
 
@@ -1428,6 +1439,9 @@ internal object CinteropQuicheApi : QuicheApi, QuicheRandomPin {
         }
 
     private const val QUICHE_ERR_DONE = -1
+
+    /** What `quiche_pin_monotonic_time_nanos` returns when it pinned. */
+    private const val PINNED = 1
 
     private const val QUICHE_ERR_STREAM_RESET = -16
 }

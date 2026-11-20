@@ -1,6 +1,5 @@
 package com.ditchoom.socket.quic.core.ready
 
-import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.WaitResolution
 import com.ditchoom.socket.quic.loadNetShim
 import java.nio.channels.Selector
@@ -29,10 +28,7 @@ internal fun jdkStackOfThisRuntime(): NetStack.Jdk {
 /** Made only here, on a JVM. */
 internal actual class JdkRuntime
 
-internal actual fun jdkPoller(
-    clock: LoopClock,
-    stack: NetStack.Jdk,
-): Poller = SelectorPoller(clock, stack.scan)
+internal actual fun jdkPoller(stack: NetStack.Jdk): Poller = SelectorPoller(stack.scan)
 
 private fun isWindows(): Boolean = System.getProperty("os.name").lowercase().contains("win")
 
