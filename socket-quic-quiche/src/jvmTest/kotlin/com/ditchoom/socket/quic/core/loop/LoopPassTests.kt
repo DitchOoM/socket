@@ -3,7 +3,10 @@ package com.ditchoom.socket.quic.core.loop
 import com.ditchoom.socket.quic.NextDue
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.PinAnswer
+import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.QuicheClockPin
+import com.ditchoom.socket.quic.QuicheConn
+import com.ditchoom.socket.quic.QuicheRecvInfo
 import com.ditchoom.socket.quic.SendTarget
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.sched.LoopPort
@@ -177,6 +180,21 @@ class LoopPassTests {
     }
 
     @Test
+    fun aStallInsideASocketReadIsInTheTimeLibquicheReadsItsDatagramsAt() {
+        // A slow host can stall between its poll and the read returning datagrams. quiche measures its round trips to when
+        // it read them, so the pin it reads them under is taken after the read, not when the pass began.
+        val clock = VirtualClock(Nanos(PASS_AT), ClockBase.Libquiche)
+        val pin = RecordingPin()
+        val io = ScriptedIo()
+        io.arrive(byteArrayOf(1), peer(0))
+        io.duringReceive = { clock.at = Nanos(PASS_AT + READ_STALL) }
+        val quiche = PinReadingEcho(pin)
+        val rig = ConnRig(quiche, io = io, clock = clock, time = QuicheTime.Pinned(pin))
+        rig.loop.pass(Nanos(PASS_AT))
+        assertEquals(listOf(PASS_AT + READ_STALL), quiche.readAt, "the time libquiche read the datagram at")
+    }
+
+    @Test
     fun datagramsTheIoHoldsAreReadWithoutWaitingForAnotherOne() {
         // Whole messages waiting inside the io are invisible to the poller: a pass cut short by the per-pass bound must
         // leave the loop's next pass due at once, and that pass must finish the backlog with nothing new arriving.
@@ -232,6 +250,26 @@ class LoopPassTests {
 
 private const val PASS_AT = 5_000_000L
 
+private const val READ_STALL = 30_000_000L
+
+/** An echo that notes the instant libquiche is pinned to as it reads each datagram. */
+private class PinReadingEcho(
+    private val pin: RecordingPin,
+    private val echo: EchoQuiche = EchoQuiche(),
+) : QuicheApi by echo {
+    val readAt = ArrayList<Long>()
+
+    override fun connRecv(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+        recvInfo: QuicheRecvInfo,
+    ): Int {
+        readAt += pin.pins.last()
+        return echo.connRecv(conn, buf, bufLen, recvInfo)
+    }
+}
+
 /** A clock pin that records each pin's time and counts its releases. */
 private class RecordingPin : QuicheClockPin {
     val pins = ArrayList<Long>()
@@ -286,7 +324,11 @@ private class ScriptedIo : DatagramBatchIo {
         return SendBatchResult.AllTaken
     }
 
+    /** Runs inside each receive call, before it returns: a slow host's stall in its socket read. */
+    var duringReceive: () -> Unit = {}
+
     override fun receive(into: ReceiveBatch): ReceiveBatchResult {
+        duringReceive()
         var got = 0
         while (arrivals.isNotEmpty()) {
             val buffer = into.take()

@@ -182,16 +182,11 @@ internal class Loop(
             }
         }
         ready.clear()
-        // The clock is read again only after a socket gave datagrams: a pass's reads follow its work, not its connections.
-        var at = now
-        budget.begin(at)
+        // The clock is read only after a socket read that returned datagrams: a pass's reads follow its work.
+        budget.begin(now)
         for (i in slots.indices) {
             when (val slot = slots[i]) {
-                is LoopSlot.Taken -> {
-                    val before = counts.datagramsIn
-                    receiveOn(slot.endpoint, at)
-                    if (counts.datagramsIn != before) at = clock.now()
-                }
+                is LoopSlot.Taken -> receiveOn(slot.endpoint)
                 is LoopSlot.Empty -> Unit
             }
         }
@@ -237,12 +232,9 @@ internal class Loop(
         }
     }
 
-    private fun receiveOn(
-        endpoint: Endpoint,
-        at: Nanos,
-    ) {
+    private fun receiveOn(endpoint: Endpoint) {
         try {
-            endpoint.receive(receive, counts, at, budget)
+            endpoint.receive(receive, counts, clock, budget)
         } catch (failure: Exception) {
             receive.release()
             endpoint.ioThrew(Thrown(failure))
