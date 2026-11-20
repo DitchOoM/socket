@@ -556,6 +556,7 @@ jobs:
       await-natives: true
       apple-natives-run-id: ${{ github.run_id }}
       windows-natives-run-id: ${{ github.run_id }}
+      linux-natives-run-id: ${{ github.run_id }}
       stale: fail
 
   build-windows:

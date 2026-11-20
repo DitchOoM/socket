@@ -173,12 +173,15 @@ class RaceLoserFdLeakTest {
             // Pays for the quiche dlopen, the pools and the dispatcher threads before the baseline, so
             // none of it can be mistaken for a leak.
             repeat(WARMUP_RACES) { race(gate, peer, options, transport) }
+            everyQuicLoopSelects()
 
             val before = openFileDescriptors()
             val withoutTwoLiveCandidates =
                 (1..RACES).mapNotNull { n ->
                     race(gate, peer, options, transport).takeUnless { it.hadTwoLiveCandidates() }?.let { "race $n: $it" }
                 }
+            // The last races' sockets are released by their loops' next selection, not by close().
+            everyQuicLoopSelects()
             val after = openFileDescriptors()
             Measured(before, after, withoutTwoLiveCandidates)
         }

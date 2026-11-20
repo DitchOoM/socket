@@ -8,7 +8,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
-import kotlinx.coroutines.withTimeoutOrNull
 import java.net.SocketAddress
 import java.nio.ByteBuffer
 import java.nio.channels.CancelledKeyException
@@ -21,6 +20,7 @@ import java.nio.channels.SocketChannel
 import java.nio.channels.WritableByteChannel
 import java.nio.channels.spi.AbstractSelectableChannel
 import java.util.concurrent.TimeoutException
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.coroutines.suspendCoroutine
@@ -110,9 +110,7 @@ private suspend fun SelectableChannel.awaitReady(
     ops: Int,
     timeout: Duration,
 ) {
-    val loop = SelectorLoop.of(selector)
-    withTimeoutOrNull(timeout) { loop.awaitReady(this@awaitReady, ops) }
-        ?: throw SocketTimeoutException("Selector timed out after waiting $timeout for interest ops $ops")
+    SelectorLoop.of(selector).awaitReady(this, ops, timeout)
 }
 
 suspend fun SocketChannel.aConnect(
@@ -181,47 +179,87 @@ suspend fun SelectableChannel.aConfigureBlocking(block: Boolean) =
         }
     }
 
-private suspend fun AbstractSelectableChannel.suspendNonBlockingSelector(
-    selector: Selector?,
+private suspend fun AbstractSelectableChannel.awaitReadiness(
+    loop: SelectorLoop,
     op: Int,
     timeout: Duration,
 ) {
-    if (isBlocking) {
-        return
-    }
-    val selectorNonNull =
-        selector
-            ?: throw IllegalArgumentException("Selector must be provided if it is a non-blocking channel")
-    suspendUntilReady(selectorNonNull, op, timeout)
+    loop.awaitReady(this, op, timeout)
+    if (!isOpen) throw SocketClosedException.General("Socket closed while waiting for it to be ready")
 }
+
+/** The loop a non-blocking channel's waits run on: the one that owns the caller's [Selector], else a shared one. */
+private fun Selector?.loopOrShared(): SelectorLoop = if (this == null) SelectorLoopGroup.shared.next() else SelectorLoop.of(this)
 
 suspend fun <T> T.read(
     buffer: ByteBuffer,
     selector: Selector?,
     timeout: Duration,
 ): Int where T : AbstractSelectableChannel, T : ReadableByteChannel =
-    if (isBlocking) {
-        withContext(Dispatchers.IO) {
-            suspendRead(buffer)
+    if (isBlocking) readBlocking(buffer) else read(buffer, selector.loopOrShared(), timeout, ReadPacing())
+
+internal suspend fun <T> T.readBlocking(buffer: ByteBuffer): Int where T : AbstractSelectableChannel, T : ReadableByteChannel =
+    withContext(Dispatchers.IO) { suspendRead(buffer) }
+
+/**
+ * Whether the next read on a connection registers for readiness before it reads. A request/response
+ * connection finds nothing queued almost every time it reads, so a speculative read is a wasted system call;
+ * a streaming one finds data every time, so registering first is a wasted wake-up. A connection that had to
+ * wait registers first next time, until a read fills the whole buffer.
+ */
+internal enum class ReadStep { ReadFirst, RegisterFirst }
+
+/** The [ReadStep] of one connection. */
+internal class ReadPacing {
+    private val step = AtomicReference(ReadStep.ReadFirst)
+
+    fun next(): ReadStep = step.get()
+
+    fun then(step: ReadStep) = this.step.set(step)
+}
+
+internal suspend fun <T> T.read(
+    buffer: ByteBuffer,
+    loop: SelectorLoop,
+    timeout: Duration,
+    pacing: ReadPacing,
+): Int where T : AbstractSelectableChannel, T : ReadableByteChannel {
+    val capacity = buffer.remaining()
+    var waited = pacing.next() == ReadStep.RegisterFirst
+    if (waited) awaitReadiness(loop, SelectionKey.OP_READ, timeout)
+    while (true) {
+        val read = read(buffer)
+        if (read != 0 || capacity == 0) {
+            pacing.then(if (waited && read < capacity) ReadStep.RegisterFirst else ReadStep.ReadFirst)
+            return read
         }
-    } else {
-        suspendNonBlockingSelector(selector, SelectionKey.OP_READ, timeout)
-        suspendRead(buffer)
+        waited = true
+        awaitReadiness(loop, SelectionKey.OP_READ, timeout)
     }
+}
 
 suspend fun <T> T.write(
     buffer: ByteBuffer,
     selector: Selector?,
     timeout: Duration,
 ): Int where T : AbstractSelectableChannel, T : WritableByteChannel =
-    if (isBlocking) {
-        withContext(Dispatchers.IO) {
-            suspendWrite(buffer)
-        }
-    } else {
-        suspendNonBlockingSelector(selector, SelectionKey.OP_WRITE, timeout)
-        suspendWrite(buffer)
+    if (isBlocking) writeBlocking(buffer) else write(buffer, selector.loopOrShared(), timeout)
+
+internal suspend fun <T> T.writeBlocking(buffer: ByteBuffer): Int where T : AbstractSelectableChannel, T : WritableByteChannel =
+    withContext(Dispatchers.IO) { suspendWrite(buffer) }
+
+internal suspend fun <T> T.write(
+    buffer: ByteBuffer,
+    loop: SelectorLoop,
+    timeout: Duration,
+): Int where T : AbstractSelectableChannel, T : WritableByteChannel {
+    // Write first: a send buffer with room takes the bytes without registering OP_WRITE at all.
+    while (true) {
+        val written = write(buffer)
+        if (written != 0 || !buffer.hasRemaining()) return written
+        awaitReadiness(loop, SelectionKey.OP_WRITE, timeout)
     }
+}
 
 fun NetworkChannel.closeOnCancel(cont: CancellableContinuation<*>) {
     cont.invokeOnCancellation {

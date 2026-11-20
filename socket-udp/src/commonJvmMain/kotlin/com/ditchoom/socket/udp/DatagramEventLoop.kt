@@ -235,14 +235,20 @@ class DatagramEventLoop internal constructor(
     }
 
     /**
-     * [channel] is being closed: wake everything waiting on it here, so each waiter finds it closed.
-     * A closed channel's key is cancelled, and a cancelled key is never selected, so without this a
-     * waiter would wait forever. Safe from any thread, before or after the close.
+     * [channel] is being closed: wake everything waiting on it here, so each waiter finds it closed, and
+     * drop its key from this loop's selector. A closed channel's key is cancelled, and a cancelled key is
+     * never selected, so without the wake a waiter would wait forever. Safe from any thread, before or
+     * after the close.
+     *
+     * The key is cancelled here, on the loop, because a selector releases a closed channel's descriptor
+     * only in its next selection. Cancelled by `close()` alone, after this thread had parked again, the
+     * key would hold the descriptor and its port until something else woke the loop. Cancelled here, the
+     * selection that follows this task drops it, whichever of this task and `close()` runs first.
      */
     fun channelClosing(channel: SelectableChannel) {
         onLoop {
-            val interest = interests.remove(channel) ?: return@onLoop
-            waiters -= interest.resumeAll()
+            interests.remove(channel)?.let { waiters -= it.resumeAll() }
+            selector?.let { channel.keyFor(it) }?.cancel()
         }
     }
 

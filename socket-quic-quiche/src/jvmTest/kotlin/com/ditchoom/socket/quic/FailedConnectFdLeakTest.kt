@@ -76,9 +76,12 @@ class FailedConnectFdLeakTest {
                 val (before, after, failures) =
                     holdingEveryQuicLoop {
                         repeat(WARMUP_ATTEMPTS) { attemptConnect(options, transport) }
+                        everyQuicLoopSelects()
                         val before = meter.openHandles()
                         var failures = 0
                         repeat(ATTEMPTS) { if (!attemptConnect(options, transport)) failures++ }
+                        // A closed socket is released by its loop's next selection, not by close().
+                        everyQuicLoopSelects()
                         Triple(before, meter.openHandles(), failures)
                     }
 

@@ -83,17 +83,26 @@ class CoreRecordingReplayTests {
         /** How many datagrams each receive call returned, in order. */
         val received = CopyOnWriteArrayList<Int>()
 
-        /** Where a [ClientHost.StalledAroundConfirmation] host's two stalls stand. */
+        /** Where a stalling host's two stalls stand. */
         @Volatile private var stall = Stall.Ahead
+
+        /** How late a stalling host reads the server's datagrams after its payload is lost; zero for any other host. */
+        private val readStall =
+            when (host) {
+                ClientHost.StalledAroundConfirmation -> PAST_THE_PROBE
+                ClientHost.StalledPastItsNextProbe -> PAST_THE_NEXT_PROBE
+                ClientHost.Fast, ClientHost.SlowToRead, ClientHost.SlowToAnswer, ClientHost.LateForTimers, ClientHost.ColdToSend ->
+                    Duration.ZERO
+            }
 
         override fun receive(into: ReceiveBatch): ReceiveBatchResult =
             real.receive(into).also {
                 if (it is ReceiveBatchResult.Got) received += into.count
                 // A slow host reaches quiche well after its socket read returned.
                 if (host == ClientHost.SlowToRead && into.count > 0) Thread.sleep(SLOW.inWholeMilliseconds)
-                if (host == ClientHost.StalledAroundConfirmation && stall == Stall.Ahead && dropped.isNotEmpty() && into.count > 0) {
+                if (readStall > Duration.ZERO && stall == Stall.Ahead && dropped.isNotEmpty() && into.count > 0) {
                     stall = Stall.ReadLate
-                    Thread.sleep(PAST_THE_PROBE.inWholeMilliseconds)
+                    Thread.sleep(readStall.inWholeMilliseconds)
                 }
             }
 
@@ -211,6 +220,12 @@ class CoreRecordingReplayTests {
          * the payload falls due, then stalls [LATE] after sending its answer, before its loop runs again.
          */
         StalledAroundConfirmation,
+
+        /**
+         * As [StalledAroundConfirmation], but it reads the server's datagrams [PAST_THE_NEXT_PROBE] late, past when its
+         * next probe falls due too; reading them, it learns the probe is not needed, and never runs that timer.
+         */
+        StalledPastItsNextProbe,
     }
 
     /** An echo of [PAYLOAD] bytes between a core client and a core server on [host], as the two of them recorded it. */
@@ -258,7 +273,11 @@ class CoreRecordingReplayTests {
                             ClientHost.SlowToAnswer -> SlowToAnswer(loadQuicheApi())
                             ClientHost.LateForTimers -> LateForTimers(loadQuicheApi())
                             ClientHost.ColdToSend -> ColdToSend(loadQuicheApi())
-                            ClientHost.Fast, ClientHost.SlowToRead, ClientHost.StalledAroundConfirmation -> loadQuicheApi()
+                            ClientHost.Fast,
+                            ClientHost.SlowToRead,
+                            ClientHost.StalledAroundConfirmation,
+                            ClientHost.StalledPastItsNextProbe,
+                            -> loadQuicheApi()
                         },
                     timeout = 10.seconds,
                     readPolicy = ReadPolicy.Bounded(10.seconds),
@@ -463,6 +482,19 @@ class CoreRecordingReplayTests {
             assertFollowedWholeTwice(scheduleOf(recordAnEcho(ClientHost.StalledAroundConfirmation)))
         }
 
+    /**
+     * A host stalled past its next probe as well: by the time it reads the server's answer to its first probe, the next
+     * has fallen due, but the answer acknowledges what it would probe, so the host never runs that timer, and its
+     * recording holds no firing after the first probe's. The replay's client, with no recorded firing left, fired the
+     * probe when it fell due (CI, macOS: a [PAST_THE_PROBE] stall that overran to 194 ms, "our datagram 5 [OneRtt] is
+     * one more than the capture holds" at 112 ms).
+     */
+    @Test
+    fun aRunWhoseClientStalledPastItsNextProbeIsFollowedWholeByItsReplayTwice() =
+        replayTest("aRunWhoseClientStalledPastItsNextProbeIsFollowedWholeByItsReplayTwice") {
+            assertFollowedWholeTwice(scheduleOf(recordAnEcho(ClientHost.StalledPastItsNextProbe)))
+        }
+
     /** Whether a call has reached quiche yet. */
     private enum class Calls { Cold, Warm }
 
@@ -637,6 +669,9 @@ class CoreRecordingReplayTests {
 
         /** Longer than the probe for the lost payload takes to fall due on loopback (about 30 ms). */
         val PAST_THE_PROBE = 60.milliseconds
+
+        /** Longer than the probe for the lost payload and the next one after it take to fall due on loopback (about 110 ms). */
+        val PAST_THE_NEXT_PROBE = 200.milliseconds
         val BIG = FlightSize(records = 4096)
     }
 }

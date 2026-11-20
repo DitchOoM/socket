@@ -1,0 +1,13 @@
+sim     | Dropping 1200 bytes 193.167.0.100:36758 -> 193.167.100.100:443, dropped 200/647 (30.9%)
+sim     | Dropping 1200 bytes 193.167.100.100:443 -> 193.167.0.100:36758, dropped 119/422 (28.2%)
+sim     | Dropping 1200 bytes 193.167.100.100:443 -> 193.167.0.100:36758, dropped 121/425 (28.5%)
+sim     | Forwarding 1200 bytes 193.167.0.100:36758 -> 193.167.100.100:443, dropped 201/650 (30.9%)
+sim     | Forwarding 770 bytes 193.167.100.100:443 -> 193.167.0.100:36758, dropped 121/426 (28.4%)
+sim     | Dropping 66 bytes 193.167.100.100:443 -> 193.167.0.100:36758, dropped 122/427 (28.6%)
+sim     | Dropping 1200 bytes 193.167.100.100:443 -> 193.167.0.100:36758, dropped 123/428 (28.7%)
+sim     | Dropping 1200 bytes 193.167.100.100:443 -> 193.167.0.100:36758, dropped 124/430 (28.8%)
+sim     | Forwarding 66 bytes 193.167.100.100:443 -> 193.167.0.100:36758, dropped 125/432 (28.9%)
+sim     | Forwarding 1200 bytes 193.167.100.100:443 -> 193.167.0.100:36758, dropped 126/436 (28.9%)
+sim     | Forwarding 71 bytes 193.167.0.100:36758 -> 193.167.100.100:443, dropped 204/655 (31.1%)
+client exited with code 1
+2026-11-20 07:08:16,104 Container exits: b'\x1b[Kclient exited with code 1'

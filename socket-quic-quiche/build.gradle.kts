@@ -360,6 +360,10 @@ fun downloadQuicheSource(
     // A server buffers 1-RTT packets that arrive before its handshake completes and processes them once it
     // does, as it already did 0-RTT ones. Idempotent, fails loudly on drift. See the KDoc.
     patchQuicheEarlyOneRttIsBuffered(sourceDir)
+    // A client keeps the first few Handshake packets that arrive before it has Handshake keys and reads them once
+    // it does (RFC 9001 §4.1.4), so a lost ServerHello does not cost the server its whole flight. Applied after
+    // patchQuicheEarlyOneRttIsBuffered, whose edits it extends. Idempotent, fails loudly on drift. See the KDoc.
+    patchQuicheClientKeepsEarlyHandshakePackets(sourceDir)
     // Export whether the handshake is CONFIRMED (RFC 9001 §4.1.2), which the C API lacks: a client must not
     // migrate before it (RFC 9000 §9), and is complete one round trip earlier. Idempotent, fails loudly on
     // drift OR on an upstream export. See the KDoc.
@@ -3000,6 +3004,145 @@ fun patchQuicheEarlyOneRttIsBuffered(sourceDir: File) {
     )
     libRs.writeText(text)
     logger.lifecycle("Patched quiche source: a server buffers 1-RTT packets that arrive before its handshake completes")
+}
+
+/**
+ * A client keeps the Handshake packets that arrive before it has Handshake keys, and reads them once the
+ * ServerHello installs the keys.
+ *
+ * **Why.** RFC 9000 §5.2.1 and RFC 9001 §4.1.4 let an endpoint buffer packets it cannot decrypt yet; quiche
+ * dropped a client's. When only the datagram carrying the ServerHello was lost, the server had to send its
+ * whole Handshake flight again after a PTO. In the quic-interop-runner the server's Handshake data reached
+ * our client intact 1.1 s before the ServerHello and was dropped, and the handshake failed. Reproduced by
+ * `MigrationSimTestSuite.aClientReadsTheHandshakePacketsThatArrivedBeforeTheServerHello`.
+ *
+ * The edit, on [patchQuicheEarlyOneRttIsBuffered]'s buffer (`undecryptable_pkts`): a client that is not
+ * established and has no Handshake key keeps a Handshake packet, first come, while fewer than
+ * `SOCKET_MAX_EARLY_HANDSHAKE_PACKETS` are kept; the rest are dropped as before. Six: before it validates
+ * the client's address a server may send three times what it received (RFC 9000 §8.1), and a client's
+ * first flight is one or two 1200-byte Initials, so the server's first flight is at most six datagrams.
+ * The replay at the end of `recv` reads each once the Handshake key is in; one that fails to decrypt is
+ * dropped there like any other, so nothing kept changes state before its AEAD check. Kept Handshake
+ * packets are also discarded with the Handshake keys and when the connection closes. No new state: the
+ * count is taken over the buffer, at most `MAX_UNDECRYPTABLE_PACKETS` + 6 entries.
+ *
+ * **Idempotent and loud** (the [patchQuicheForCallerClock] discipline).
+ */
+fun patchQuicheClientKeepsEarlyHandshakePackets(sourceDir: File) {
+    val marker = "socket-client-keeps-early-handshake"
+    val libRs = sourceDir.resolve("quiche/src/lib.rs")
+    if (!libRs.exists()) return
+    var text = libRs.readText()
+    if (text.contains(marker)) return
+
+    fun edit(
+        anchor: String,
+        replacement: String,
+    ) {
+        if (text.split(anchor).size != 2) {
+            throw GradleException(
+                "$marker: an anchor was not found exactly once in quiche's lib.rs — a quiche bump (or a change to " +
+                    "patchQuicheEarlyOneRttIsBuffered) moved it. Re-fit patchQuicheClientKeepsEarlyHandshakePackets " +
+                    "(or delete it if quiche now buffers a client's early Handshake packets) and re-verify with " +
+                    "MigrationSimTestSuite.aClientReadsTheHandshakePacketsThatArrivedBeforeTheServerHello. Anchor:\n$anchor",
+            )
+        }
+        text = text.replace(anchor, replacement)
+    }
+
+    edit(
+        """
+        |const MAX_UNDECRYPTABLE_PACKETS: usize = 10;
+        |
+        """.trimMargin(),
+        """
+        |const MAX_UNDECRYPTABLE_PACKETS: usize = 10;
+        |
+        |// $marker: the Handshake packets a client keeps before it has the keys. A
+        |// server's flight before address validation is at most 3x the client's one
+        |// or two 1200-byte Initials (RFC 9000 §8.1): six datagrams.
+        |const SOCKET_MAX_EARLY_HANDSHAKE_PACKETS: usize = 6;
+        |
+        |// $marker: a v1 long header of type Handshake; neither bit is header-protected.
+        |fn socket_is_handshake_pkt(pkt: &[u8]) -> bool {
+        |    pkt.first().is_some_and(|b| b & 0xb0 == 0xa0)
+        |}
+        |
+        """.trimMargin(),
+    )
+    edit(
+        """
+        |                if (hdr.ty == Type::ZeroRTT ||
+        |                    (hdr.ty == Type::Short && self.is_server)) &&
+        |                    self.undecryptable_pkts.len() < MAX_UNDECRYPTABLE_PACKETS &&
+        |                    !self.is_established()
+        |                {
+        """.trimMargin(),
+        """
+        |                // $marker: and a client's Handshake packets before it has
+        |                // the keys (RFC 9001 §4.1.4), first come, up to a cap of their own.
+        |                let socket_keep = if hdr.ty == Type::Handshake {
+        |                    !self.is_server &&
+        |                        self.undecryptable_pkts
+        |                            .iter()
+        |                            .filter(|(p, _)| socket_is_handshake_pkt(p))
+        |                            .count() <
+        |                            SOCKET_MAX_EARLY_HANDSHAKE_PACKETS
+        |                } else {
+        |                    (hdr.ty == Type::ZeroRTT ||
+        |                        (hdr.ty == Type::Short && self.is_server)) &&
+        |                        self.undecryptable_pkts.len() < MAX_UNDECRYPTABLE_PACKETS
+        |                };
+        |                if socket_keep && !self.is_established() {
+        """.trimMargin(),
+    )
+    edit(
+        """
+        |            let ready = if pkt.first().is_some_and(|b| b & 0x80 == 0) {
+        |                self.handshake_completed
+        |            } else {
+        """.trimMargin(),
+        """
+        |            let ready = if pkt.first().is_some_and(|b| b & 0x80 == 0) {
+        |                self.handshake_completed
+        |            } else if socket_is_handshake_pkt(&pkt) {
+        |                // $marker: once the Handshake key is in.
+        |                self.crypto_ctx[packet::Epoch::Handshake].crypto_open.is_some()
+        |            } else {
+        """.trimMargin(),
+    )
+    edit(
+        """
+        |        crypto_ctx.clear();
+        |        self.pkt_num_spaces[epoch].clear();
+        |
+        """.trimMargin(),
+        """
+        |        crypto_ctx.clear();
+        |        self.pkt_num_spaces[epoch].clear();
+        |
+        |        // $marker: Handshake packets kept for keys now gone.
+        |        if epoch == packet::Epoch::Handshake {
+        |            self.undecryptable_pkts
+        |                .retain(|(p, _)| !socket_is_handshake_pkt(p));
+        |        }
+        |
+        """.trimMargin(),
+    )
+    edit(
+        """
+        |    fn mark_closed(&mut self) {
+        |
+        """.trimMargin(),
+        """
+        |    fn mark_closed(&mut self) {
+        |        // $marker: nothing kept can be read once the connection is closed.
+        |        self.undecryptable_pkts.clear();
+        |
+        """.trimMargin(),
+    )
+    libRs.writeText(text)
+    logger.lifecycle("Patched quiche source: a client keeps Handshake packets that arrive before its Handshake keys")
 }
 
 /**

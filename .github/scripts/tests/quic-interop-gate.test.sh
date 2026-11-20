@@ -352,7 +352,7 @@ check_kind "a ClientHello we answered is not the signature" "$opening" our-serve
 check_kind "a server that closed with an error is not the signature" "$opening" our-server "{\"connections\":[${opened/\"code\":0/\"code\":296}],$cut38737}" NotMatched
 check_kind "an opening packet the qlog recorded is not the signature" "$opening" our-server "{\"connections\":[${opened/\"rx_initial_unlogged\":1/\"rx_initial_unlogged\":0}],$cut38737}" NotMatched
 check_kind "too little loss is not the signature" "$opening" our-server "{\"connections\":[$opened],${cut38737/\"delivered\":3/\"delivered\":5}}" NotMatched
-expect "quiche handshakeloss expects the opening-packet signature as well" "$(python3 -c 'import json,sys; s=json.load(open(sys.argv[1]))["our-server"]["quiche"]["handshakeloss"]["flaky"]["signature"]; print(sorted(x["kind"] for x in s["signatures"]))' "$here/../../../test-harness/quic-interop/expectations.json")" "['peer-client-hello-never-completed', 'peer-client-hello-only-in-its-opening-packet', 'peer-handshake-packets-never-arrived']"
+expect "quiche handshakeloss expects the opening-packet signature as well" "$(python3 -c 'import json,sys; s=json.load(open(sys.argv[1]))["our-server"]["quiche"]["handshakeloss"]["flaky"]["signature"]; print(sorted(x["kind"] for x in s["signatures"]))' "$here/../../../test-harness/quic-interop/expectations.json")" "['peer-client-hello-never-completed', 'peer-client-hello-only-in-its-opening-packet', 'peer-handshake-packets-never-arrived', 'peer-move-never-reached-us', 'peer-packets-lost-while-we-probed-on-time']"
 nochallenge='{"kind":"peer-server-did-not-challenge-new-path-first"}'
 check_kind "the server's first packet on a new path had no challenge" "$nochallenge" our-client "{\"connections\":[$(hconn a)],\"exits\":{\"client\":0},\"runner\":{\"server_first_packets_without_path_challenge\":2}}" Matched
 check_kind "a client that failed is not the signature" "$nochallenge" our-client "{\"connections\":[$(hconn a)],\"exits\":{\"client\":1},\"runner\":{\"server_first_packets_without_path_challenge\":2}}" NotMatched
@@ -384,7 +384,7 @@ check_kind "a server that heard a second datagram is not the signature" "$amp" o
 check_kind "a server that sent less than its budget is not the signature" "$amp" our-server "{\"connections\":[${limited/3660/2400}],\"sim_droplist_from_peer\":6}" NotMatched
 check_kind "a server that sent on its PTO is not the signature" "$amp" our-server "{\"connections\":[${limited/\"pto_expiries_after_last_tx\":4/\"pto_expiries_after_last_tx\":0}],\"sim_droplist_from_peer\":6}" NotMatched
 check_kind "fewer drops than the drop list is not the signature" "$amp" our-server "{\"connections\":[$limited],\"sim_droplist_from_peer\":2}" NotMatched
-expect "quiche handshakeloss expects both of its signatures" "$(python3 -c 'import json,sys; s=json.load(open(sys.argv[1]))["our-client"]["quiche"]["handshakeloss"]["flaky"]["signature"]; print(sorted(x["kind"] for x in s["signatures"]))' "$here/../../../test-harness/quic-interop/expectations.json")" "['peer-never-acked-early-request', 'peer-server-hello-stopped-short']"
+expect "quiche handshakeloss expects both of its signatures" "$(python3 -c 'import json,sys; s=json.load(open(sys.argv[1]))["our-client"]["quiche"]["handshakeloss"]["flaky"]["signature"]; print(sorted(x["kind"] for x in s["signatures"]))' "$here/../../../test-harness/quic-interop/expectations.json")" "['peer-move-never-reached-us', 'peer-never-acked-early-request', 'peer-packets-lost-while-we-probed-on-time', 'peer-server-hello-stopped-short']"
 anyof='{"kind":"any-of","signatures":[{"kind":"peer-request-arrived-late","after_s":20},{"kind":"sim-lost-every-datagram-to-the-peer","min_datagrams":5}]}'
 check_kind "any-of matches its second signature" "$anyof" our-server "{\"connections\":[$(hconn a '"tx_crypto":0')],\"sim_to_peer\":[{\"port\":40390,\"datagrams\":5,\"delivered\":0}]}" Matched
 check_kind "any-of matches neither" "$anyof" our-server "{\"connections\":[$(hconn a)]}" NotMatched
@@ -433,6 +433,152 @@ ev="$(python3 -c 'import json,sys; t=json.load(open(sys.argv[1]))["tests"]["hand
 expect "the extractor reads the handshake facts" "$ev" "1 0 1 1090.0 31091.0 0 1000.0 [{'final_size': 0, 'our_copies': 2, 'stream_id': 0}] Failed to establish connection {'handshakes': {'expected': 50, 'got': 51}, 'server_first_packets_without_path_challenge': 1} [{'datagrams': 1, 'delivered': 0, 'port': 40000}, {'datagrams': 1, 'delivered': 1, 'port': 40001}]"
 ev="$(python3 -c 'import json,sys; t=json.load(open(sys.argv[1]))["tests"]["handshake"]; c=t["connections"][0]; print(c["rx_initial_crypto_end"], c["first_stream_tx_ms"], c["handshake_done_rx_ms"], c["first_stream_ack_ms"], c["max_stream_copies"], c["pto_expiries_after_last_tx"], t["sim_droplist_from_peer"])' "$tmp/ev2.json")"
 expect "the extractor reads crypto coverage, the request's timeline, PTO expiries and the drop list" "$ev" "59 20.0 30.0 40.0 1 2 1"
+
+# The handshake family judged on the one connection that failed, from real captures (2026-11-19 runs 44543141897,
+# 44540058179, 44564256526 and 44546515447, each trimmed to the failing connection: our qlog, the simulator's two
+# captures on its 4-tuple, the runner's lines for its port, the peer's log lines naming it). Each kind asserts what
+# we did right on that connection; every negative below is a look-alike in which we did something wrong, and each
+# is first shown to match the symptom alone (the naive check), so the kind is what keeps it red.
+fx="$here/fixtures/quic-interop-handshake"
+for cell in our-server-quinn:our-server:quinn our-server-quiche:our-server:quiche our-server-quiche-answer-lost:our-server:quiche our-server-quiche-request-lost:our-server:quiche our-server-xquic:our-server:xquic our-client-quiche:our-client:quiche our-client-quiche-anti-deadlock:our-client:quiche our-client-kwik:our-client:kwik our-client-s2n-request-lost:our-client:s2n-quic our-client-haproxy:our-client:haproxy; do
+  IFS=: read -r name direction peer <<<"$cell"
+  python3 -I "$extract" "$fx/$name/logs" "$direction" "$peer" "$tmp/fx-$name.json"
+  expect_rc "the extractor reads the $name capture" $? 0
+done
+conn_case() { # <name> <evidence json> <kind json> <python statements on c, the test's only connection, and test>
+  python3 - "$script" "$2" "$3" "$4" "$1" <<'PY'
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("gate", sys.argv[1])
+gate = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(gate)
+evidence = json.load(open(sys.argv[2]))
+test = next(iter(evidence["tests"].values()))
+c = test["connections"][0]
+exec(sys.argv[4])
+raw = json.loads(sys.argv[3])
+kind = raw.pop("kind")
+result = gate.SIGNATURES[kind](raw).match(test, gate.peer_role(evidence["direction"]))
+# The symptom alone: nothing more arrived until the connection ended (or the peer says it gave up), with our data
+# in flight for the probing kind and none for the other.
+silent = c["end_ms"] - c["last_rx_ms"] >= 30000 or test.get("peer_unanswered_requests", 0) > 0 or bool(c.get("peer_closes"))
+naive = silent and (c["bytes_in_flight_before_close"] > 0) == (kind == "peer-packets-lost-while-we-probed-on-time")
+print(f"{sys.argv[5]}: {type(result).__name__}, naive {'Matched' if naive else 'NotMatched'}")
+PY
+}
+check_conn() { # <name> <evidence> <kind> <mutation> <kind result> <naive result>
+  expect "$1" "$(conn_case "$1" "$2" "$3" "$4")" "$1: $5, naive $6"
+}
+move='{"kind":"peer-move-never-reached-us","ended_by":"our-idle-timeout","idle_s":30}'
+probed='{"kind":"peer-packets-lost-while-we-probed-on-time","ended_by":"our-idle-timeout","idle_s":30}'
+gaveup='{"kind":"peer-packets-lost-while-we-probed-on-time","ended_by":"peer-gave-up"}'
+quinn="$tmp/fx-our-server-quinn.json"
+haproxy="$tmp/fx-our-client-haproxy.json"
+qclient="$tmp/fx-our-client-quiche.json"
+qserver="$tmp/fx-our-server-quiche.json"
+# Negatives first: each matches the symptom, and must not match the kind.
+check_conn "a client that went quiet before any Handshake ACK (its anti-deadlock duty, RFC 9002 §6.2.2.1)" "$haproxy" "$move" 'c["rx_handshake_acks"] = 0' NotMatched Matched
+check_conn "a datagram of the peer's that reached us unchanged after our last receipt" "$quinn" "$move" 'c["wire"]["peer_delivered_after_last_rx"] = 1' NotMatched Matched
+check_conn "a packet of the peer's that reached us and was never read" "$haproxy" "$move" 'c["wire"]["peer_packets_unread"] = 1' NotMatched Matched
+check_conn "a connection our server closed itself instead of idling out" "$quinn" "$move" 'c["local_closes"] = [{"space": "transport", "code": 0}]' NotMatched Matched
+check_conn "a sibling connection whose request arrived and was answered" "$quinn" "$move" 'c["first_request_ms"] = 3300.0; c["fin_sent_streams"] = 1' NotMatched Matched
+check_conn "a connection the captures do not tie to its 4-tuple" "$quinn" "$move" 'del c["wire"]' NotMatched Matched
+check_conn "data of ours still in flight is not the peer's move" "$quinn" "$move" 'c["bytes_in_flight_at_end"] = c["bytes_in_flight_before_close"] = 1200' NotMatched NotMatched
+check_conn "a probe that left out a space with unacknowledged data" "$qclient" "$probed" 'c["probes_missing_a_space"] = 1' NotMatched Matched
+check_conn "a probe later than its PTO, doubled per expiry" "$qclient" "$probed" 'c["late_probes"] = 1' NotMatched Matched
+check_conn "a packet of the peer's that reached us while we probed and was never read" "$qclient" "$probed" 'c["wire"]["peer_packets_unread"] = 1' NotMatched Matched
+check_conn "a peer report that names another connection" "$qserver" "$gaveup" 'c["peer_gave_up_requests"] = 0; test["peer_unanswered_requests"] = 1' NotMatched Matched
+check_conn "a request that reached our server whole and got no answer" "$qserver" "$gaveup" 'c["first_request_ms"] = 16600.0; c["peer_bidi_streams_opened"] = 1' NotMatched Matched
+check_conn "a peer that closed with an error code, a complaint about us" "$fx/our-client-nginx.evidence.json" '{"kind":"peer-packets-lost-while-we-probed-on-time","ended_by":"peer-closed"}' 'c["peer_closes"] = [{"space": "transport", "code": 10}]' NotMatched Matched
+# The real failures match.
+check_conn "quinn's request, dropped once and never sent again in 30 s (run 44543141897)" "$quinn" "$move" '' Matched Matched
+check_conn "haproxy's Handshake flight corrupted until our idle timeout (run 44546515447)" "$haproxy" "$move" '' Matched Matched
+check_conn "the stock quiche server's HANDSHAKE_DONE lost while we probed on time (run 44564256526)" "$qclient" "$probed" '' Matched Matched
+check_conn "the stock quiche client's request lost five times, the client gave up on this connection (run 44540058179)" "$qserver" "$gaveup" '' Matched Matched
+# Run 44685812497: our answer lost three times; its probes waited the PTO of the RTT estimate when each fired (1.3 s
+# smoothed after later samples), not of the estimate when the answer went out (1.9 s), so neither is late.
+check_conn "the stock quiche client gave up while our answer was lost on every PTO (run 44685812497)" "$tmp/fx-our-server-quiche-answer-lost.json" "$gaveup" 'assert c["late_probes"] == 0 and c["fin_sent_streams"] == 1' Matched Matched
+check_conn "the stock quiche client's request lost twice, then only its acknowledgements for 30 s (run 44683082845)" "$tmp/fx-our-server-quiche-request-lost.json" "$move" '' Matched Matched
+# Run 44690803861: our probes judged from the timer as RFC 9002 arms it. kwik: a probe 2 ms after a receipt is the
+# expiry quiche logged, and before confirmation only Handshake sends arm the timer. Stock quiche: with nothing in
+# flight and no Handshake ACK yet, the anti-deadlock timer runs from our last receipt (§6.2.2.1).
+check_conn "the xquic client's request lost three times, then nothing for 30 s and an exit 0 (run 44700038452)" "$tmp/fx-our-server-xquic.json" "$move" '' Matched Matched
+# Run 44694699576 (#912), s2n-quic against our server, both attempts (their captures are 0.9 MB each: s2n reuses one
+# port for every connection; the extracted evidence is the fixture).
+check_conn "s2n-quic's request lost, its probes only its Finished, our HANDSHAKE_DONE lost three times" "$fx/our-server-s2n-confirmation-lost.evidence.json" "$probed" '' Matched Matched
+check_conn "s2n-quic's request lost twice, then only PINGs until it gave up on this connection" "$fx/our-server-s2n-request-lost.evidence.json" '{"kind":"peer-move-never-reached-us","ended_by":"peer-gave-up"}' '' Matched Matched
+check_conn "a connection we closed with an error is not one the peer gave up on" "$fx/our-server-s2n-request-lost.evidence.json" '{"kind":"peer-move-never-reached-us","ended_by":"peer-gave-up"}' 'c["local_closes"] = [{"space": "transport", "code": 10}]' NotMatched Matched
+check_conn "data of ours in flight before our close is not the peer's move" "$fx/our-server-s2n-request-lost.evidence.json" '{"kind":"peer-move-never-reached-us","ended_by":"peer-gave-up"}' 'c["bytes_in_flight_before_close"] = 1200' NotMatched NotMatched
+# Run 44712666803 (#991): every copy of our request to s2n-quic and every acknowledgement it sent back were lost.
+check_conn "our request to s2n-quic lost on all five PTO copies (run 44712666803)" "$tmp/fx-our-client-s2n-request-lost.json" "$probed" '' Matched Matched
+check_conn "the same connection with our request held back a doubling" "$tmp/fx-our-client-s2n-request-lost.json" "$probed" 'c["late_probes"] = 1' NotMatched Matched
+# Run 44695470583's nginx connection ran 61 s (4 MB of captures); its extracted evidence is the fixture.
+check_conn "nginx's ServerHello in 6 of 400 probes, all corrupted, then its NO_ERROR close (run 44695470583)" "$fx/our-client-nginx.evidence.json" '{"kind":"peer-packets-lost-while-we-probed-on-time","ended_by":"peer-closed"}' 'assert c["late_probes"] == 0 and c["wire"]["peer_packets_unread"] == 0' Matched Matched
+check_conn "kwik never sending HANDSHAKE_DONE nor its lost answer while we re-sent our Finished on time (run 44690803861)" "$tmp/fx-our-client-kwik.json" "$probed" 'assert c["late_probes"] == 0, c["late_probes"]' Matched Matched
+check_conn "the stock quiche server's Handshake flight unread before its ServerHello, our anti-deadlock PINGs on time (run 44690803861)" "$tmp/fx-our-client-quiche-anti-deadlock.json" "$probed" 'assert c["late_probes"] == 0, c["late_probes"]' Matched Matched
+for e in "$quinn" "$haproxy" "$qclient" "$qserver"; do
+  ev="$(python3 -c 'import json,sys; c=next(iter(json.load(open(sys.argv[1]))["tests"].values()))["connections"][0]; print(c["probes_missing_a_space"], c["late_probes"], c["wire"]["peer_packets_unread"], c["wire"]["peer_delivered_after_last_rx"])' "$e")"
+  expect "on time, every space, every packet read: $(basename "$e")" "$ev" "0 0 0 0"
+done
+expect "the stock quiche client's report is tied to its port" "$(python3 -c 'import json,sys; c=next(iter(json.load(open(sys.argv[1]))["tests"].values()))["connections"][0]; print(c["wire"]["port"], c["peer_gave_up_requests"])' "$qserver")" "49436 1"
+# The same bugs from the raw captures: our qlog edited as a buggy endpoint would have written it.
+mutated() { # <fixture> <direction> <peer> <python statements on lines, the qlog's records> <out evidence>
+  rm -rf "$tmp/mut" && cp -R "$fx/$1" "$tmp/mut"
+  local q
+  q="$(find "$tmp/mut" -name '*.sqlog')"
+  python3 - "$q" "$4" <<'PY'
+import json, sys
+path = sys.argv[1]
+head, *lines = open(path).read().splitlines()
+lines = [json.loads(l.lstrip("\x1e")) for l in lines if l.strip()]
+exec(sys.argv[2])
+open(path, "w").write("\n".join([head] + [json.dumps(l) for l in lines]) + "\n")
+PY
+  python3 -I "$extract" "$tmp/mut/logs" "$2" "$3" "$5"
+}
+# haproxy's Initial ACK at 7.04 s reached us unchanged, before two it sent later that we read; a qlog without it is an
+# endpoint that dropped it.
+mutated our-client-haproxy our-client haproxy 'lines = [l for l in lines if not (l.get("name") == "quic:packet_received" and l["data"]["header"].get("packet_number") == 7)]' "$tmp/mut-unread.json"
+check_conn "the extractor sees a packet that reached us unread" "$tmp/mut-unread.json" "$move" 'assert c["wire"]["peer_packets_unread"] == 1, c["wire"]' NotMatched Matched
+# Our probe at 150.97 s carried our Finished and our request; without the request it covers one space only.
+mutated our-client-quiche our-client quiche 'lines = [l for l in lines if not (l.get("name") == "quic:packet_sent" and l["data"]["header"].get("packet_number") == 22)]' "$tmp/mut-space.json"
+check_conn "the extractor sees a probe that left the request out" "$tmp/mut-space.json" "$probed" 'assert c["probes_missing_a_space"] == 1, c["probes_missing_a_space"]' NotMatched Matched
+# The same probe one doubling later: a backoff that was never reset.
+mutated our-client-quiche our-client quiche 'lines = [dict(l, time=l["time"] + 11950) if 150900 < l.get("time", 0) < 151000 else l for l in lines]' "$tmp/mut-late.json"
+check_conn "the extractor sees a probe a doubling late" "$tmp/mut-late.json" "$probed" 'assert c["late_probes"] == 1, c["late_probes"]' NotMatched Matched
+# No probe at all after our last receipt, with our Finished and request unacknowledged.
+mutated our-client-quiche our-client quiche 'lines = [l for l in lines if not (l.get("name") == "quic:packet_sent" and l["time"] > 139100)]' "$tmp/mut-silent.json"
+check_conn "the extractor sees a timer that never fired" "$tmp/mut-silent.json" "$probed" 'assert c["late_probes"] == 1, c["late_probes"]' NotMatched Matched
+# A peer report that names no port is tied to connections by elimination: as many of our server's connections never
+# received a request as the peer says it gave up on.
+python3 - "$extract" <<'PY' >"$tmp/elim.out"
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ev", sys.argv[1])
+ev = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(ev)
+def conns():
+    return [{"qlog": "a", "wire": {}, "first_request_ms": 1.0, "peer_gave_up_requests": 0}, {"qlog": "b", "wire": {}, "peer_gave_up_requests": 0}]
+one = conns(); ev.attribute_by_elimination(one, "server", {}, 1)
+two = conns(); ev.attribute_by_elimination(two, "server", {}, 2)
+named = conns(); ev.attribute_by_elimination(named, "server", {40000: 1}, 1)
+print([c["peer_gave_up_requests"] for c in one], [c["peer_gave_up_requests"] for c in two], [c["peer_gave_up_requests"] for c in named])
+PY
+expect "elimination ties the report to the one connection without a request, and only then" "$(cat "$tmp/elim.out")" "[0, 1] [0, 0] [0, 0]"
+# Run 44717833402: every Initial of one quinn connection was lost, so our server never began that connection.
+fromlost='{"kind":"sim-lost-every-datagram-from-the-peer","min_datagrams":5}'
+wired="$(hconn a '"wire":{"port":33276,"peer_sent_after_last_rx":0,"peer_delivered_after_last_rx":0,"peer_packets_unread":0}')"
+check_kind "a peer port whose every datagram was lost, with no connection of ours there" "$fromlost" our-server "{\"connections\":[$wired],\"sim_from_peer\":[{\"port\":41604,\"datagrams\":8,\"delivered\":0},{\"port\":33276,\"datagrams\":9,\"delivered\":6}]}" Matched
+check_kind "a datagram from that port that reached us, and no connection of ours (we dropped it), is not the signature" "$fromlost" our-server "{\"connections\":[$wired],\"sim_from_peer\":[{\"port\":41604,\"datagrams\":8,\"delivered\":1}]}" NotMatched
+check_kind "a port a connection of ours is tied to is not the signature" "$fromlost" our-server "{\"connections\":[$wired],\"sim_from_peer\":[{\"port\":33276,\"datagrams\":8,\"delivered\":0}]}" NotMatched
+# The idled-out kind judges the lost datagrams on the probing connection's own port, not on any port of the test.
+idled='{"kind":"peer-idled-out-while-we-probed","min_probes":3,"min_lost":5}'
+probing="$(hconn a '"tx_after_last_rx":15,"wire":{"port":39352,"peer_sent_after_last_rx":0,"peer_delivered_after_last_rx":0,"peer_packets_unread":0}')"
+check_kind "our probes lost on the probing connection's port (run 43947308066)" "$idled" our-server "{\"connections\":[$probing],\"peer_unanswered_requests\":1,\"sim_to_peer\":[{\"port\":39352,\"datagrams\":9,\"delivered\":2}]}" Matched
+check_kind "datagrams lost on another connection's port are not the signature" "$idled" our-server "{\"connections\":[$probing],\"peer_unanswered_requests\":1,\"sim_to_peer\":[{\"port\":40001,\"datagrams\":9,\"delivered\":2}]}" NotMatched
+check_kind "a probing connection the captures do not tie to a port is not the signature" "$idled" our-server "{\"connections\":[$(hconn a '"tx_after_last_rx":15')],\"peer_unanswered_requests\":1,\"sim_to_peer\":[{\"port\":39352,\"datagrams\":9,\"delivered\":2}]}" NotMatched
+bad="$(python3 "$script" judge <(echo '{"our-client":{"p":{"handshakeloss":{"flaky":{"why":"x","signature":{"kind":"peer-packets-lost-while-we-probed-on-time","ended_by":"peer-gave-up","idle_s":30}}}}}}') "$tmp/ok" 2>&1 >/dev/null)"
+expect "peer-gave-up takes no idle_s" "$bad" "takes exactly ['ended_by']"
+bad="$(python3 "$script" judge <(echo '{"our-client":{"p":{"handshakeloss":{"flaky":{"why":"x","signature":{"kind":"peer-packets-lost-while-we-probed-on-time","ended_by":"whenever"}}}}}}') "$tmp/ok" 2>&1 >/dev/null)"
+expect "ended_by is a closed set" "$bad" "ended_by is one of ['our-idle-timeout', 'peer-gave-up', 'peer-closed']"
 
 echo "quic-interop-gate: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
