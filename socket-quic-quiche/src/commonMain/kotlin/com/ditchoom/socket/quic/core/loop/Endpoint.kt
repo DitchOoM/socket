@@ -83,7 +83,7 @@ internal class Endpoint(
             is Route.Demux -> {
                 route.demux.passBegins()
                 receiveWaiting(batch, counts, at)
-                while (budget.state() == Budget.Left && route.demux.admitSome(route.out.batch, at) == Admitted.More) {
+                while (budget.state() == Budget.Left && route.demux.admitSome(route.out.batch) == Admitted.More) {
                     input = ReceiveInput.Maybe
                     receiveWaiting(batch, counts, at)
                 }
@@ -136,8 +136,8 @@ internal class Endpoint(
         while (true) {
             val collected =
                 when (route) {
-                    is Route.Fixed -> route.conn.turn(send, now)
-                    is Route.Demux -> route.demux.turn(send, now)
+                    is Route.Fixed -> route.conn.turn(send)
+                    is Route.Demux -> route.demux.turn(send)
                 }
             if (send.pending > 0) {
                 when (phase) {

@@ -66,7 +66,6 @@ internal class Loop(
     private val receive: ReceiveBatch,
     /** What the loop frees when it stops: its receive memory. */
     private val freeOnStop: Runnable,
-    /** Whose clock libquiche reads in this loop's passes. */
     val time: QuicheTime = QuicheTime.Own,
 ) {
     val counts = LoopCounts()
@@ -105,7 +104,7 @@ internal class Loop(
     fun run() {
         if (run is Run.Stopped) return
         try {
-            // Two clock reads per iteration, none inside a pass: after the pass, timing the wait, and after the wait.
+            // A reading after the pass times the wait; one after the wait is the next pass's time.
             var began = clock.now()
             while (true) {
                 val next = pass(began)
@@ -155,10 +154,7 @@ internal class Loop(
         }
     }
 
-    /**
-     * One pass at [now], the time of all of it: libquiche reads it too while the loop [QuicheTime.Pinned] it. Returns
-     * when the loop next needs to run without input; a stopped loop needs nothing.
-     */
+    /** One pass at [now], libquiche's time too where [QuicheTime.Pinned]; returns when the loop next needs to run without input. */
     fun pass(now: Nanos): NextDue =
         when (run) {
             is Run.Stopped -> NextDue.None
@@ -186,11 +182,16 @@ internal class Loop(
             }
         }
         ready.clear()
-        // Every datagram this pass reads was in the kernel when the pass began: each is handed over at [now].
-        budget.begin(now)
+        // The clock is read again only after a socket gave datagrams: a pass's reads follow its work, not its connections.
+        var at = now
+        budget.begin(at)
         for (i in slots.indices) {
             when (val slot = slots[i]) {
-                is LoopSlot.Taken -> receiveOn(slot.endpoint, now)
+                is LoopSlot.Taken -> {
+                    val before = counts.datagramsIn
+                    receiveOn(slot.endpoint, at)
+                    if (counts.datagramsIn != before) at = clock.now()
+                }
                 is LoopSlot.Empty -> Unit
             }
         }
@@ -254,7 +255,6 @@ internal class Loop(
         connections.decrement()
     }
 
-    /** Waits for input or [next], timed from [now], the reading that ended the pass. */
     private fun sleep(
         next: NextDue,
         now: Nanos,

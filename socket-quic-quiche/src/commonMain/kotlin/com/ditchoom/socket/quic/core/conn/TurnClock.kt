@@ -58,9 +58,12 @@ internal class TurnClock(
     /** A reading of the clock itself, for whoever has not entered. */
     fun live(): Nanos = clock.now()
 
+    /** The loop begins a turn at one reading of the clock, so a stall earlier in the pass is in the time libquiche reads. */
+    fun begins(): Nanos = held(clock.now())
+
     /**
-     * The loop enters at its pass's instant [at], which it pinned libquiche to, or at the later one a caller last served
-     * the connection at, so its time never runs backwards; returns the instant held.
+     * The loop enters at [at], pinning libquiche to it on its thread, or at the later time a caller last served the
+     * connection at, so its time never runs backwards; returns the instant held.
      */
     fun held(at: Nanos): Nanos {
         if (at > this.at) this.at = at

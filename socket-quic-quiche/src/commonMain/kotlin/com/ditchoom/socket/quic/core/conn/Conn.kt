@@ -117,13 +117,10 @@ internal class Conn(
     /** Any thread: the ids this connection's peer retired since the last call, taken once. */
     fun idsRetired(): List<RetiredId> = turn.idsRetired()
 
-    /** Loop thread, once or more per pass at its time [now]: serves the connection if the loop is inside, and leaves when done. */
-    fun turn(
-        out: SendBatch,
-        now: Nanos,
-    ): Collected {
+    /** Loop thread, once or more per pass: serves the connection at one clock reading if the loop is inside, and leaves. */
+    fun turn(out: SendBatch): Collected {
         if (hold == LoopHold.Out) return Collected.Everything
-        if (turn.serve(clock.held(now), out, onTimer) == Collected.MoreWaiting) return Collected.MoreWaiting
+        if (turn.serve(clock.begins(), out, onTimer) == Collected.MoreWaiting) return Collected.MoreWaiting
         return when (owner.tryLeave(loopEntrant)) {
             Leave.Left -> {
                 hold = LoopHold.Out

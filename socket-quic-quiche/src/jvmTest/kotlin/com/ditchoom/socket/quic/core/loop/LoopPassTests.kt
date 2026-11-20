@@ -153,21 +153,27 @@ class LoopPassTests {
     }
 
     @Test
-    fun aPassThatPinsLibquicheEchoesTwentyDatagramsWithNoClockReadAndPinsItOnceAtThePassesTime() {
+    fun aPassThatPinsLibquicheReadsTheClockPerSocketAndPerTurnNeverPerDatagram() {
         // On the Android 9 and 10 emulators a clock read traps to the host (HPET, ~13 us), and the core and libquiche read
-        // it some 60 times per echo between them. A pinned pass is one reading: quiche, the turn, the write and the
-        // recording all take the pass's time.
-        val clock = VirtualClock(Nanos(PASS_AT), ClockBase.Libquiche)
-        val pin = RecordingPin()
-        val io = ScriptedIo()
-        repeat(20) { io.arrive(byteArrayOf(it.toByte()), peer(it)) }
-        val rig = ConnRig(EchoQuiche(), io = io, clock = clock, time = QuicheTime.Pinned(pin))
-        clock.reads = 0
-        rig.loop.pass(Nanos(PASS_AT))
-        assertEquals(20, io.sent.size, "every datagram was echoed")
-        assertEquals(0L, clock.reads, "clock reads in a pinned pass that echoed 20 datagrams")
-        assertEquals(listOf(PASS_AT), pin.pins, "libquiche was pinned once, at the pass's time")
-        assertEquals(1, pin.unpins, "and released when the pass ended")
+        // it some 60 times per echo between them. Pinned, libquiche reads none: the core reads once after a socket gave
+        // datagrams and once per turn, and quiche, the write and the recording take those readings.
+        fun echo(datagrams: Int): Pair<Long, List<Long>> {
+            val clock = VirtualClock(Nanos(PASS_AT), ClockBase.Libquiche)
+            val pin = RecordingPin()
+            val io = ScriptedIo()
+            repeat(datagrams) { io.arrive(byteArrayOf(it.toByte()), peer(it)) }
+            val rig = ConnRig(EchoQuiche(), io = io, clock = clock, time = QuicheTime.Pinned(pin))
+            clock.reads = 0
+            rig.loop.pass(Nanos(PASS_AT))
+            assertEquals(datagrams, io.sent.size, "every datagram was echoed")
+            assertEquals(1, pin.unpins, "libquiche was released when the pass ended")
+            return clock.reads to pin.pins
+        }
+        val (one, onePins) = echo(1)
+        val (twenty, twentyPins) = echo(20)
+        assertEquals(one, twenty, "clock reads to echo 1 datagram and 20 in one pinned pass")
+        assertTrue(twenty <= 2, "one read after the socket gave datagrams and one for the turn: $twenty")
+        assertEquals(onePins, twentyPins, "libquiche was pinned as often for 20 datagrams as for 1")
     }
 
     @Test

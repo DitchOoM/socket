@@ -162,15 +162,12 @@ internal object RecordingToSchedule {
 
     private fun bytesOf(hex: String): ByteArray = ByteArray(hex.length / 2) { hex.substring(2 * it, 2 * it + 2).toInt(HEX).toByte() }
 
-    /**
-     * At one instant, in the order a loop pass runs: what our endpoint received, then what it did, then what it sent. A
-     * pass reads the clock once, so a reply recorded in the pass that received its cause carries the cause's time.
-     */
+    /** At one instant: what our endpoint did, then what it sent, then what it received. */
     private fun orderOf(step: Step): Int =
         when (step) {
-            is Step.PeerSent -> 0
-            is Step.OursDid -> 1
-            is Step.OursSent -> 2
+            is Step.OursDid -> 0
+            is Step.OursSent -> 1
+            is Step.PeerSent -> 2
         }
 
     private const val HEX = 16
