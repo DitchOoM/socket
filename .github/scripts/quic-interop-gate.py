@@ -350,11 +350,11 @@ class SimLostEveryDatagramToThePeer:
 
 
 class PeerIdledOutWhileWeProbed:
-    """The peer's own report says it gave up on requests after its idle timeout, while a
-    connection of ours had answered, heard nothing more and probed at least min_probes times, and the simulator
-    corrupted or dropped at least min_lost of the datagrams we sent to one of the peer's ports: every probe of ours
-    that could have re-sent the answer was lost, and the peer, which sends nothing while it waits, had nothing to
-    prompt us with before it idled out."""
+    """The peer's own report says it gave up on requests after its idle timeout, while one connection of ours had
+    answered, heard nothing more and probed at least min_probes times, and the simulator corrupted or dropped at
+    least min_lost of the datagrams we sent on that same connection's port: every probe of ours that could have
+    re-sent the answer was lost, and the peer, which sends nothing while it waits, had nothing to prompt us with
+    before it idled out."""
 
     kind = "peer-idled-out-while-we-probed"
 
@@ -366,14 +366,16 @@ class PeerIdledOutWhileWeProbed:
 
     def match(self, test_evidence, peer_role):
         unanswered = test_evidence.get("peer_unanswered_requests", 0)
-        probing = [c for c in test_evidence.get("connections", []) if c["fin_sent_streams"] > 0 and c["tx_after_last_rx"] >= self.min_probes]
-        lost = [p for p in test_evidence.get("sim_to_peer", []) if p["datagrams"] - p["delivered"] >= self.min_lost]
-        if unanswered and probing and lost:
-            return Matched(
-                f"peer gave up on {unanswered} request(s) after its idle timeout; "
-                f"{probing[0]['qlog']} probed {probing[0]['tx_after_last_rx']} times; the simulator lost "
-                f"{lost[0]['datagrams'] - lost[0]['delivered']} of {lost[0]['datagrams']} datagrams to port {lost[0]['port']}"
-            )
+        lost = {p["port"]: p["datagrams"] - p["delivered"] for p in test_evidence.get("sim_to_peer", [])}
+        for c in test_evidence.get("connections", []):
+            if "wire" not in c or c["fin_sent_streams"] == 0 or c["tx_after_last_rx"] < self.min_probes:
+                continue
+            gone = lost.get(c["wire"]["port"], 0)
+            if unanswered and gone >= self.min_lost:
+                return Matched(
+                    f"peer gave up on {unanswered} request(s) after its idle timeout; {c['qlog']} probed "
+                    f"{c['tx_after_last_rx']} times; the simulator lost {gone} of our datagrams to its port {c['wire']['port']}"
+                )
         return NotMatched()
 
 
@@ -619,6 +621,115 @@ class PeerServerDidNotChallengeNewPathFirst:
         return NotMatched()
 
 
+class EndedBy(enum.Enum):
+    """How a connection whose peer went missing ended: our idle timer expired (RFC 9000 §10.1), the peer's own
+    report names the connection among those it gave up on (we then closed with the rest of the endpoint), or the
+    peer closed it with NO_ERROR (its own timeout; an error code would be a complaint about us)."""
+
+    OUR_IDLE_TIMEOUT = "our-idle-timeout"
+    PEER_GAVE_UP = "peer-gave-up"
+    PEER_CLOSED = "peer-closed"
+
+
+def nothing_reached_us_unread(c):
+    """The wire shows nothing of the peer's reached us unchanged after our last receipt, and every packet of its
+    that reached us in a space we held keys for was read: we dropped nothing we should have processed."""
+    return "wire" in c and c["wire"]["peer_delivered_after_last_rx"] == 0 and c["wire"]["peer_packets_unread"] == 0
+
+
+def failed_here(c, peer_role):
+    """This connection is one that failed, not a sibling that finished: our client never established it or a
+    request of ours never got a whole response; at our server no request ever arrived, or the peer's own report
+    names it among those it gave up on."""
+    if peer_role == "server":
+        return c.get("close_reason") == NOT_ESTABLISHED or c["our_streams_unfinished"] > 0
+    return "first_request_ms" not in c or c.get("peer_gave_up_requests", 0) > 0
+
+
+def answered_every_request(c):
+    """Every request that reached us whole got our answer: the streams the peer opened are those we finished plus
+    those it never finished itself."""
+    return c["fin_sent_streams"] + c.get("peer_unfinished_streams", 0) >= c["peer_bidi_streams_opened"]
+
+
+def idled_out(c, idle_ms):
+    """We closed silently (no CONNECTION_CLOSE) no sooner than our idle timeout after our last receipt."""
+    return not c["local_closes"] and "last_rx_ms" in c and "end_ms" in c and c["end_ms"] - c["last_rx_ms"] >= idle_ms
+
+
+class Ending:
+    """How the failing connection ended, from a signature's fields: {"ended_by": "our-idle-timeout", "idle_s": n},
+    {"ended_by": "peer-gave-up"} or {"ended_by": "peer-closed"}."""
+
+    def __init__(self, kind, fields):
+        try:
+            self.ended_by = EndedBy(fields.get("ended_by"))
+        except ValueError:
+            raise ExpectationError(f"{kind}: ended_by is one of {[e.value for e in EndedBy]}, got {fields!r}") from None
+        expected = {"ended_by", "idle_s"} if self.ended_by is EndedBy.OUR_IDLE_TIMEOUT else {"ended_by"}
+        if set(fields) != expected:
+            raise ExpectationError(f"{kind} with ended_by {self.ended_by.value} takes exactly {sorted(expected)}, got {sorted(fields)}")
+        self.idle_ms = positive_int(kind, {"idle_s": fields["idle_s"]}, "idle_s") * 1000 if "idle_s" in fields else 0
+
+    def ended(self, c):
+        quiet_close = all(close["code"] == 0 for close in c["local_closes"])
+        if self.ended_by is EndedBy.OUR_IDLE_TIMEOUT:
+            return idled_out(c, self.idle_ms)
+        if self.ended_by is EndedBy.PEER_CLOSED:
+            return bool(c["peer_closes"]) and all(close["code"] == 0 for close in c["peer_closes"]) and not c["local_closes"]
+        return c.get("peer_gave_up_requests", 0) > 0 and quiet_close
+
+
+class PeerMoveNeverReachedUs:
+    """On one connection that failed (failed_here) everything of ours was acknowledged before any close of ours and
+    the next move was the peer's (we are the server, or our client holds the HANDSHAKE_DONE, or the server
+    acknowledged a Handshake packet of ours, which ends our client's anti-deadlock duty, RFC 9002 §6.2.2.1); nothing
+    the peer sent after our last receipt reached us unchanged, every packet of its that did reach us was read, and
+    the connection ended as ended_by says."""
+
+    kind = "peer-move-never-reached-us"
+
+    def __init__(self, fields):
+        self.ending = Ending(self.kind, fields)
+
+    def match(self, test_evidence, peer_role):
+        for c in test_evidence.get("connections", []):
+            peers_move = peer_role == "client" or "handshake_done_rx_ms" in c or c["rx_handshake_acks"] > 0
+            settled = c["bytes_in_flight_before_close"] == 0 and peers_move and failed_here(c, peer_role)
+            if settled and nothing_reached_us_unread(c) and self.ending.ended(c):
+                return Matched(
+                    f"{c['qlog']}: everything of ours acknowledged, the next move the peer's; it sent "
+                    f"{c['wire']['peer_sent_after_last_rx']} datagram(s) after our last receipt and none reached us; "
+                    f"ended: {self.ending.ended_by.value} {(c['end_ms'] - c['last_rx_ms']) / 1000:.1f} s after it"
+                )
+        return NotMatched()
+
+
+class PeerPacketsLostWhileWeProbedOnTime:
+    """On one connection that failed (failed_here) we had answered every whole request that reached us, data of ours
+    was still unacknowledged before any close of ours, and after our last receipt every probe of ours came within
+    its PTO, doubled per expiry, and carried the unacknowledged CRYPTO or STREAM data of every packet number space
+    that had some (RFC 9002 §6.2); nothing the peer sent after our last receipt reached us unchanged, every packet of
+    its that did reach us was read, and the connection ended as ended_by says."""
+
+    kind = "peer-packets-lost-while-we-probed-on-time"
+
+    def __init__(self, fields):
+        self.ending = Ending(self.kind, fields)
+
+    def match(self, test_evidence, peer_role):
+        for c in test_evidence.get("connections", []):
+            on_time = c["probes_missing_a_space"] == 0 and c["late_probes"] == 0
+            owed = c["bytes_in_flight_before_close"] > 0 and failed_here(c, peer_role) and answered_every_request(c)
+            if owed and on_time and nothing_reached_us_unread(c) and self.ending.ended(c):
+                return Matched(
+                    f"{c['qlog']}: {c['tx_after_last_rx']} packet(s) of ours after our last receipt, every probe on time "
+                    f"and carrying every space's data; the peer sent {c['wire']['peer_sent_after_last_rx']} datagram(s) "
+                    f"after it and none reached us; ended: {self.ending.ended_by.value}"
+                )
+        return NotMatched()
+
+
 class AnyOf:
     """The cell has more than one proven failure; a failure must match one of the listed signatures (each a
     {"kind": ..., ...fields} of another kind)."""
@@ -693,6 +804,8 @@ SIGNATURES = {
         PeerServerHelloStoppedShort,
         PeerNeverAckedEarlyRequest,
         PeerGaveUpWhileWeWereAmplificationLimited,
+        PeerMoveNeverReachedUs,
+        PeerPacketsLostWhileWeProbedOnTime,
         AnyOf,
     )
 }

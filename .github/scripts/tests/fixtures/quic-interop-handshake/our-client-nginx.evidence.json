@@ -1,0 +1,61 @@
+{
+ "direction": "our-client",
+ "peer": "nginx",
+ "tests": {
+  "handshakecorruption": {
+   "connections": [
+    {
+     "bytes_in_flight_at_end": 213,
+     "bytes_in_flight_before_close": 213,
+     "close_reason": "Failed to establish connection",
+     "end_ms": 61136.233,
+     "fin_sent_streams": 0,
+     "last_rx_ms": 61032.938,
+     "late_probes": 0,
+     "local_closes": [],
+     "local_initial_max_streams_bidi": 100,
+     "longest_wait_in_flight_ms": 1874.679,
+     "max_streams_bidi_sent": 0,
+     "our_streams_unfinished": 0,
+     "peer_bidi_streams_opened": 0,
+     "peer_closes": [
+      {
+       "code": 0,
+       "space": "transport"
+      }
+     ],
+     "peer_gave_up_requests": 0,
+     "peer_resets": [],
+     "peer_source_cid_lengths": [
+      20
+     ],
+     "peer_unfinished_streams": 0,
+     "probes_missing_a_space": 0,
+     "pto_expiries_after_last_tx": 0,
+     "qlog": "quiche-client-1ec61246faba190ee88e0937f01cd5ae.sqlog",
+     "remote_disable_active_migration": false,
+     "rx_handshake_acks": 0,
+     "rx_handshake_crypto": 0,
+     "rx_initial_acks": 522,
+     "rx_initial_crypto": 0,
+     "rx_initial_unlogged": 0,
+     "rx_packets": 537,
+     "tx_after_last_rx": 0,
+     "tx_crypto": 6,
+     "wire": {
+      "peer_delivered_after_last_rx": 0,
+      "peer_packets_unread": 0,
+      "peer_sent_after_last_rx": 0,
+      "port": 51608
+     }
+    }
+   ],
+   "exits": {
+    "client": 1
+   },
+   "migrations": [],
+   "peer_unanswered_requests": 0,
+   "runner": {}
+  }
+ }
+}
