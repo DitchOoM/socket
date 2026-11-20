@@ -440,7 +440,7 @@ expect "the extractor reads crypto coverage, the request's timeline, PTO expirie
 # we did right on that connection; every negative below is a look-alike in which we did something wrong, and each
 # is first shown to match the symptom alone (the naive check), so the kind is what keeps it red.
 fx="$here/fixtures/quic-interop-handshake"
-for cell in our-server-quinn:our-server:quinn our-server-quiche:our-server:quiche our-server-quiche-answer-lost:our-server:quiche our-server-quiche-request-lost:our-server:quiche our-server-xquic:our-server:xquic our-client-quiche:our-client:quiche our-client-quiche-anti-deadlock:our-client:quiche our-client-kwik:our-client:kwik our-client-haproxy:our-client:haproxy; do
+for cell in our-server-quinn:our-server:quinn our-server-quiche:our-server:quiche our-server-quiche-answer-lost:our-server:quiche our-server-quiche-request-lost:our-server:quiche our-server-xquic:our-server:xquic our-client-quiche:our-client:quiche our-client-quiche-anti-deadlock:our-client:quiche our-client-kwik:our-client:kwik our-client-s2n-request-lost:our-client:s2n-quic our-client-haproxy:our-client:haproxy; do
   IFS=: read -r name direction peer <<<"$cell"
   python3 -I "$extract" "$fx/$name/logs" "$direction" "$peer" "$tmp/fx-$name.json"
   expect_rc "the extractor reads the $name capture" $? 0
@@ -508,6 +508,9 @@ check_conn "s2n-quic's request lost, its probes only its Finished, our HANDSHAKE
 check_conn "s2n-quic's request lost twice, then only PINGs until it gave up on this connection" "$fx/our-server-s2n-request-lost.evidence.json" '{"kind":"peer-move-never-reached-us","ended_by":"peer-gave-up"}' '' Matched Matched
 check_conn "a connection we closed with an error is not one the peer gave up on" "$fx/our-server-s2n-request-lost.evidence.json" '{"kind":"peer-move-never-reached-us","ended_by":"peer-gave-up"}' 'c["local_closes"] = [{"space": "transport", "code": 10}]' NotMatched Matched
 check_conn "data of ours in flight before our close is not the peer's move" "$fx/our-server-s2n-request-lost.evidence.json" '{"kind":"peer-move-never-reached-us","ended_by":"peer-gave-up"}' 'c["bytes_in_flight_before_close"] = 1200' NotMatched NotMatched
+# Run 44712666803 (#991): every copy of our request to s2n-quic and every acknowledgement it sent back were lost.
+check_conn "our request to s2n-quic lost on all five PTO copies (run 44712666803)" "$tmp/fx-our-client-s2n-request-lost.json" "$probed" '' Matched Matched
+check_conn "the same connection with our request held back a doubling" "$tmp/fx-our-client-s2n-request-lost.json" "$probed" 'c["late_probes"] = 1' NotMatched Matched
 # Run 44695470583's nginx connection ran 61 s (4 MB of captures); its extracted evidence is the fixture.
 check_conn "nginx's ServerHello in 6 of 400 probes, all corrupted, then its NO_ERROR close (run 44695470583)" "$fx/our-client-nginx.evidence.json" '{"kind":"peer-packets-lost-while-we-probed-on-time","ended_by":"peer-closed"}' 'assert c["late_probes"] == 0 and c["wire"]["peer_packets_unread"] == 0' Matched Matched
 check_conn "kwik never sending HANDSHAKE_DONE nor its lost answer while we re-sent our Finished on time (run 44690803861)" "$tmp/fx-our-client-kwik.json" "$probed" 'assert c["late_probes"] == 0, c["late_probes"]' Matched Matched

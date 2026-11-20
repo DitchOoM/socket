@@ -629,11 +629,21 @@
       "handshakecorruption": "pass",
       "handshakeloss": {
         "flaky": {
-          "why": "peer: s2n-quic leaves the rest of a response unsent while our client, nothing in flight, waits until its idle timeout (run 43612995827)",
+          "why": "peer and simulator: s2n-quic leaves the rest of a response unsent while our client, nothing in flight, waits until its idle timeout (run 43612995827); or the simulator loses all five copies of our request (sent on every PTO, on time) and every acknowledgement s2n-quic sends after its HANDSHAKE_DONE, so our client idles out with the request unacknowledged (run 44712666803)",
           "signature": {
-            "kind": "peer-silent-until-our-timeout",
-            "silence_s": 25,
-            "our_wait_s": 8
+            "kind": "any-of",
+            "signatures": [
+              {
+                "kind": "peer-silent-until-our-timeout",
+                "silence_s": 25,
+                "our_wait_s": 8
+              },
+              {
+                "kind": "peer-packets-lost-while-we-probed-on-time",
+                "ended_by": "our-idle-timeout",
+                "idle_s": 30
+              }
+            ]
           }
         }
       },
