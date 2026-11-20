@@ -6565,6 +6565,7 @@ val stageCoreAndroidTests =
                 "loop/EndpointRehomeTests.kt",
                 "conn/ConnTests.kt",
                 "conn/ConnPacingTests.kt",
+                "conn/TurnClockTests.kt",
                 "loop/SharedClientLoopTests.kt",
                 "loop/NioLoopEchoTests.kt",
                 "loop/LoopDeadlineWakeTests.kt",

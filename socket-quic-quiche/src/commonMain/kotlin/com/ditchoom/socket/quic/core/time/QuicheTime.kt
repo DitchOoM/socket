@@ -5,6 +5,7 @@ import com.ditchoom.socket.quic.PinLookup
 import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.QuicheClockPin
 import com.ditchoom.socket.quic.QuicheClockPins
+import com.ditchoom.socket.quic.core.observe.LoopOnly
 
 /**
  * Whose clock libquiche reads on a loop, chosen once when the loop is made. A clock read is a system call on some
@@ -18,7 +19,10 @@ internal sealed interface QuicheTime {
     /** libquiche reads the instant the loop read for its pass: one reading serves the pass, quiche's and the core's. */
     class Pinned(
         val pin: QuicheClockPin,
-    ) : QuicheTime
+    ) : QuicheTime {
+        /** The pin on the loop's own thread. */
+        val loop = LoopPin(pin)
+    }
 
     companion object {
         /**
@@ -43,4 +47,28 @@ internal sealed interface QuicheTime {
             }
         }
     }
+}
+
+/**
+ * libquiche's pin on a loop's thread: the pass's instant, moved for one connection to a later instant a caller served
+ * it at, so no connection's time runs backwards. Pins again only when the instant changes.
+ */
+@LoopOnly
+internal class LoopPin(
+    private val pin: QuicheClockPin,
+) {
+    private var pinned = 0L
+
+    fun pass(now: Nanos) {
+        pinned = now.value
+        pin.pinMonotonic(pinned)
+    }
+
+    fun to(at: Nanos) {
+        if (at.value == pinned) return
+        pinned = at.value
+        pin.pinMonotonic(pinned)
+    }
+
+    fun release() = pin.unpin()
 }

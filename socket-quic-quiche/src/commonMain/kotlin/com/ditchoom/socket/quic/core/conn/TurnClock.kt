@@ -4,6 +4,7 @@ import com.ditchoom.socket.quic.QuicheClockPin
 import com.ditchoom.socket.quic.core.observe.Confined
 import com.ditchoom.socket.quic.core.time.ClockBase
 import com.ditchoom.socket.quic.core.time.LoopClock
+import com.ditchoom.socket.quic.core.time.LoopPin
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.time.QuicheTime
 
@@ -12,6 +13,7 @@ internal sealed interface TurnTime {
     /** libquiche reads the instant whoever entered held, so every read inside is that instant and none touches the clock. */
     class Held(
         val pin: QuicheClockPin,
+        val loop: LoopPin,
     ) : TurnTime
 
     /** libquiche reads its own clock: reads inside stay live, so they stay comparable with its stamps. */
@@ -27,7 +29,7 @@ internal sealed interface TurnTime {
                 is QuicheTime.Own -> Live
                 is QuicheTime.Pinned ->
                     when (clock.base()) {
-                        is ClockBase.Libquiche -> Held(time.pin)
+                        is ClockBase.Libquiche -> Held(time.pin, time.loop)
                         is ClockBase.Own -> Live
                     }
             }
@@ -56,17 +58,24 @@ internal class TurnClock(
     /** A reading of the clock itself, for whoever has not entered. */
     fun live(): Nanos = clock.now()
 
-    /** The loop enters at its pass's instant [at], which it pinned libquiche to; returns [at]. */
+    /**
+     * The loop enters at its pass's instant [at], which it pinned libquiche to, or at the later one a caller last served
+     * the connection at, so its time never runs backwards; returns the instant held.
+     */
     fun held(at: Nanos): Nanos {
-        this.at = at
-        return at
+        if (at > this.at) this.at = at
+        when (time) {
+            is TurnTime.Held -> time.loop.to(this.at)
+            is TurnTime.Live -> Unit
+        }
+        return this.at
     }
 
     /** A caller enters at [at], its own reading; libquiche reads it too until [unpinHere]. */
     fun pinHere(at: Nanos) {
-        this.at = at
+        if (at > this.at) this.at = at
         when (time) {
-            is TurnTime.Held -> time.pin.pinMonotonic(at.value)
+            is TurnTime.Held -> time.pin.pinMonotonic(this.at.value)
             is TurnTime.Live -> Unit
         }
     }

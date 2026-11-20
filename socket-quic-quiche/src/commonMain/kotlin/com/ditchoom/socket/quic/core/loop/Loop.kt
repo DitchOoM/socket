@@ -166,11 +166,11 @@ internal class Loop(
                 when (val t = time) {
                     is QuicheTime.Own -> traced(TraceSection.LoopPass) { passInside(now) }
                     is QuicheTime.Pinned -> {
-                        t.pin.pinMonotonic(now.value)
+                        t.loop.pass(now)
                         try {
                             traced(TraceSection.LoopPass) { passInside(now) }
                         } finally {
-                            t.pin.unpin()
+                            t.loop.release()
                         }
                     }
                 }
