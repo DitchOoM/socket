@@ -106,7 +106,7 @@ internal class NativeEcho(
         conn =
             testConn(
                 // quiche stamps its datagrams on the clock the loop reads, as libquiche does.
-                EchoQuiche(StubQuicheApi { MonotonicClock.now().value }),
+                EchoQuiche(StubQuicheApi(MonotonicClock)),
                 CoreTestRules,
                 SendTarget.ServerReply(client.toPathKey(), ReplySource.Undecodable),
                 TraceCapture.Off,
