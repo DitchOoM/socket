@@ -622,11 +622,13 @@ class PeerServerDidNotChallengeNewPathFirst:
 
 
 class EndedBy(enum.Enum):
-    """How a connection whose peer went missing ended: our idle timer expired (RFC 9000 §10.1), or the peer's own
-    report names the connection among those it gave up on (we then closed with the rest of the endpoint)."""
+    """How a connection whose peer went missing ended: our idle timer expired (RFC 9000 §10.1), the peer's own
+    report names the connection among those it gave up on (we then closed with the rest of the endpoint), or the
+    peer closed it with NO_ERROR (its own timeout; an error code would be a complaint about us)."""
 
     OUR_IDLE_TIMEOUT = "our-idle-timeout"
     PEER_GAVE_UP = "peer-gave-up"
+    PEER_CLOSED = "peer-closed"
 
 
 def nothing_reached_us_unread(c):
@@ -701,6 +703,8 @@ class PeerPacketsLostWhileWeProbedOnTime:
     def ended(self, c):
         if self.ended_by is EndedBy.OUR_IDLE_TIMEOUT:
             return idled_out(c, self.idle_ms)
+        if self.ended_by is EndedBy.PEER_CLOSED:
+            return bool(c["peer_closes"]) and all(close["code"] == 0 for close in c["peer_closes"]) and not c["local_closes"]
         return c.get("peer_gave_up_requests", 0) > 0
 
     def match(self, test_evidence, peer_role):

@@ -460,7 +460,7 @@ kind = raw.pop("kind")
 result = gate.SIGNATURES[kind](raw).match(test, gate.peer_role(evidence["direction"]))
 # The symptom alone: nothing more arrived until the connection ended (or the peer says it gave up), with our data
 # in flight for the probing kind and none for the other.
-silent = c["end_ms"] - c["last_rx_ms"] >= 30000 or test.get("peer_unanswered_requests", 0) > 0
+silent = c["end_ms"] - c["last_rx_ms"] >= 30000 or test.get("peer_unanswered_requests", 0) > 0 or bool(c.get("peer_closes"))
 naive = silent and (c["bytes_in_flight_at_end"] > 0) == (kind == "peer-packets-lost-while-we-probed-on-time")
 print(f"{sys.argv[5]}: {type(result).__name__}, naive {'Matched' if naive else 'NotMatched'}")
 PY
@@ -488,6 +488,7 @@ check_conn "a probe later than its PTO, doubled per expiry" "$qclient" "$probed"
 check_conn "a packet of the peer's that reached us while we probed and was never read" "$qclient" "$probed" 'c["wire"]["peer_packets_unread"] = 1' NotMatched Matched
 check_conn "a peer report that names another connection" "$qserver" "$gaveup" 'c["peer_gave_up_requests"] = 0; test["peer_unanswered_requests"] = 1' NotMatched Matched
 check_conn "a request that reached our server whole and got no answer" "$qserver" "$gaveup" 'c["first_request_ms"] = 16600.0; c["peer_bidi_streams_opened"] = 1' NotMatched Matched
+check_conn "a peer that closed with an error code, a complaint about us" "$fx/our-client-nginx.evidence.json" '{"kind":"peer-packets-lost-while-we-probed-on-time","ended_by":"peer-closed"}' 'c["peer_closes"] = [{"space": "transport", "code": 10}]' NotMatched Matched
 # The real failures match.
 check_conn "quinn's request, dropped once and never sent again in 30 s (run 44543141897)" "$quinn" "$move" '' Matched Matched
 check_conn "haproxy's Handshake flight corrupted until our idle timeout (run 44546515447)" "$haproxy" "$move" '' Matched Matched
@@ -500,6 +501,8 @@ check_conn "the stock quiche client's request lost twice, then only its acknowle
 # Run 44690803861: our probes judged from the timer as RFC 9002 arms it. kwik: a probe 2 ms after a receipt is the
 # expiry quiche logged, and before confirmation only Handshake sends arm the timer. Stock quiche: with nothing in
 # flight and no Handshake ACK yet, the anti-deadlock timer runs from our last receipt (§6.2.2.1).
+# Run 44695470583's nginx connection ran 61 s (4 MB of captures); its extracted evidence is the fixture.
+check_conn "nginx's ServerHello in 6 of 400 probes, all corrupted, then its NO_ERROR close (run 44695470583)" "$fx/our-client-nginx.evidence.json" '{"kind":"peer-packets-lost-while-we-probed-on-time","ended_by":"peer-closed"}' 'assert c["late_probes"] == 0 and c["wire"]["peer_packets_unread"] == 0' Matched Matched
 check_conn "kwik never sending HANDSHAKE_DONE nor its lost answer while we re-sent our Finished on time (run 44690803861)" "$tmp/fx-our-client-kwik.json" "$probed" 'assert c["late_probes"] == 0, c["late_probes"]' Matched Matched
 check_conn "the stock quiche server's Handshake flight unread before its ServerHello, our anti-deadlock PINGs on time (run 44690803861)" "$tmp/fx-our-client-quiche-anti-deadlock.json" "$probed" 'assert c["late_probes"] == 0, c["late_probes"]' Matched Matched
 for e in "$quinn" "$haproxy" "$qclient" "$qserver"; do
@@ -544,7 +547,7 @@ check_kind "a probing connection the captures do not tie to a port is not the si
 bad="$(python3 "$script" judge <(echo '{"our-client":{"p":{"handshakeloss":{"flaky":{"why":"x","signature":{"kind":"peer-packets-lost-while-we-probed-on-time","ended_by":"peer-gave-up","idle_s":30}}}}}}') "$tmp/ok" 2>&1 >/dev/null)"
 expect "peer-gave-up takes no idle_s" "$bad" "takes exactly ['ended_by']"
 bad="$(python3 "$script" judge <(echo '{"our-client":{"p":{"handshakeloss":{"flaky":{"why":"x","signature":{"kind":"peer-packets-lost-while-we-probed-on-time","ended_by":"whenever"}}}}}}') "$tmp/ok" 2>&1 >/dev/null)"
-expect "ended_by is a closed set" "$bad" "ended_by is one of ['our-idle-timeout', 'peer-gave-up']"
+expect "ended_by is a closed set" "$bad" "ended_by is one of ['our-idle-timeout', 'peer-gave-up', 'peer-closed']"
 
 echo "quic-interop-gate: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

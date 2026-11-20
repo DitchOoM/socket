@@ -316,11 +316,20 @@
       "handshake": "pass",
       "handshakecorruption": {
         "flaky": {
-          "why": "peer: nginx acknowledges our Handshake packet, sends no Handshake flight and stays silent with nothing of ours in flight until our timeout (run 43687081807; 1 of 12 runs)",
+          "why": "peer: nginx acknowledges our Handshake packet, sends no Handshake flight and stays silent with nothing of ours in flight until our timeout (run 43687081807; 1 of 12 runs); or for 60 s nginx answers our Initial probes with PINGs and re-sends its ServerHello in only 6 of about 400 Initial packets (RFC 9002 §6.2.4 has a probe carry unacknowledged data), the simulator corrupts all 6, so we never hold Handshake keys, and nginx closes with NO_ERROR while our anti-deadlock probes keep coming on time (run 44695470583)",
           "signature": {
-            "kind": "peer-silent-until-our-timeout",
-            "silence_s": 25,
-            "our_wait_s": 8
+            "kind": "any-of",
+            "signatures": [
+              {
+                "kind": "peer-silent-until-our-timeout",
+                "silence_s": 25,
+                "our_wait_s": 8
+              },
+              {
+                "kind": "peer-packets-lost-while-we-probed-on-time",
+                "ended_by": "peer-closed"
+              }
+            ]
           }
         }
       },

@@ -101,6 +101,7 @@ def connection_facts(path, side):
         "max_streams_bidi_sent": 0,
         "peer_bidi_streams_opened": 0,
         "local_closes": [],
+        "peer_closes": [],
         "rx_packets": 0,
         "rx_initial_crypto": 0,
         "rx_initial_acks": 0,
@@ -207,6 +208,10 @@ def connection_facts(path, side):
                         {"space": frame.get("error_space", ""), "code": int(frame.get("error_code", 0))}
                     )
         elif name.endswith("packet_received"):
+            facts["peer_closes"] += [
+                {"space": f.get("error_space", ""), "code": int(f.get("error_code", 0))}
+                for f in data.get("frames") or [] if f.get("frame_type") == "connection_close"
+            ]
             header = data.get("header") or {}
             if header.get("packet_type") == "initial" and "scil" in header and int(header["scil"]) not in facts["peer_source_cid_lengths"]:
                 facts["peer_source_cid_lengths"].append(int(header["scil"]))
@@ -239,6 +244,7 @@ def connection_facts(path, side):
         facts["first_request_ms"] = min(requests)
     # One close per connection is what is judged; quiche repeats it in every packet of the closing period.
     facts["local_closes"] = [dict(t) for t in {tuple(sorted(c.items())) for c in facts["local_closes"]}]
+    facts["peer_closes"] = [dict(t) for t in {tuple(sorted(c.items())) for c in facts["peer_closes"]}]
     return facts
 
 
