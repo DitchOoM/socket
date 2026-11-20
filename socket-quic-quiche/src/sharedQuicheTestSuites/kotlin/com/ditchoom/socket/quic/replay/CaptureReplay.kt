@@ -566,7 +566,7 @@ private class CaptureReplay(
         stepNext++
         act(step.action)
         // A close ends the connection at the action itself: nothing else that happens later need be there to see it.
-        noteOurState()
+        noteOurEnd()
         answer()
     }
 
@@ -671,8 +671,8 @@ private class CaptureReplay(
                     peerNext++
                     peerSends(peerSend.first(), peerNext - 1)
                 }
-                // quiche's timeout runs now for each of our timers that has fallen due.
-                else -> pair.elapse(Duration.ZERO, listOf(ours))
+                // quiche's timeout runs once, as the core's does: what it re-arms overdue fires after its probes are sent.
+                else -> pair.runTimeout(ours)
             }
             when (endpoint) {
                 OurEndpoint.Free -> {
@@ -805,6 +805,11 @@ private class CaptureReplay(
             established = Moment.At(now)
             if (schedule.idsAtEstablishment > 0) pair.issueSpareCids(ours, atMost = schedule.idsAtEstablishment)
         }
+        noteOurEnd()
+    }
+
+    /** How our connection ended, if it has: read only, so it moves neither establishment nor the ids issued with it. */
+    private fun noteOurEnd() {
         if (end == ConnectionEnd.Open) {
             end =
                 when (pair.ending(ours)) {
