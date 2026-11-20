@@ -3,6 +3,7 @@
 package com.ditchoom.socket.quic.core.loop
 
 import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.SocketRefusal
 import com.ditchoom.socket.quic.core.conn.ClientSession
 import com.ditchoom.socket.quic.core.conn.FlightArena
@@ -20,6 +21,7 @@ import com.ditchoom.socket.quic.core.ready.netStackOfThisRuntime
 import com.ditchoom.socket.quic.core.sched.CallerSend
 import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.MonotonicClock
+import com.ditchoom.socket.quic.core.time.QuicheTime
 import com.ditchoom.socket.quic.core.time.WaitResolution
 import com.ditchoom.socket.quic.core.udp.Addressed
 import com.ditchoom.socket.quic.core.udp.BatchLimits
@@ -78,7 +80,10 @@ internal class LoopSet(
     private val slots = AtomicArray(Array<Slot>(size) { Slot.Unstarted })
 
     /** Any thread: the loop for the next connection, counted against it, started if it had not started. */
-    fun place(factory: BufferFactory): Placement {
+    fun place(
+        factory: BufferFactory,
+        api: QuicheApi,
+    ): Placement {
         var best = 0
         var bestCount = 0L
         for (i in 0 until size) {
@@ -97,7 +102,7 @@ internal class LoopSet(
         }
         return when (val slot = slots.loadAt(best)) {
             is Slot.Closed -> Placement.SetClosed
-            is Slot.Unstarted -> start(best, slot, factory)
+            is Slot.Unstarted -> start(best, slot, factory, api)
             is Slot.Running ->
                 when (
                     slot.running.loop.life
@@ -110,7 +115,7 @@ internal class LoopSet(
                     }
                     LoopLife.Stopped -> {
                         slots.compareAndSetAt(best, slot, Slot.Unstarted)
-                        place(factory)
+                        place(factory, api)
                     }
                 }
         }
@@ -139,6 +144,7 @@ internal class LoopSet(
         index: Int,
         seen: Slot,
         factory: BufferFactory,
+        api: QuicheApi,
     ): Placement {
         val memory = LoopAllocation(factory)
         val limits = BatchLimits(maxDatagrams = RECEIVE_BATCH, maxDatagramSize = MAX_DATAGRAM)
@@ -170,9 +176,9 @@ internal class LoopSet(
             List(ClientSession.SCRATCH_SLOTS) { memory.need(ClientSession.TICKET_BYTES) { return memory.freed(Placement.NotJdkMemory) } }
         val poller =
             when (stack) {
-                is NetStack.Jdk -> jdkPoller(clock, stack)
+                is NetStack.Jdk -> jdkPoller(stack)
                 is NetStack.Native ->
-                    when (val opened = NativePoller.open(stack.shim, clock, READY_EVENTS)) {
+                    when (val opened = NativePoller.open(stack.shim, READY_EVENTS)) {
                         is PollerOpened.Opened -> opened.poller
                         is PollerOpened.Refused -> return memory.freed(Placement.PollerRefused(opened.refusal))
                     }
@@ -202,6 +208,7 @@ internal class LoopSet(
                         receiveBytes.forEach { it.free() }
                         hold.founding.release()
                     },
+                time = QuicheTime.of(api, clock),
             )
         val running =
             RunningLoop(
@@ -217,7 +224,7 @@ internal class LoopSet(
         if (!slots.compareAndSetAt(index, seen, Slot.Running(running))) {
             loop.close(Runnable { })
             startLoop(loop, name)
-            return place(factory)
+            return place(factory, api)
         }
         loop.connections.increment()
         startLoop(loop, name)

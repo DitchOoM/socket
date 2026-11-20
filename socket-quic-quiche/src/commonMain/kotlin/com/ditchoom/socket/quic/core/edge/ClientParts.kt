@@ -102,6 +102,7 @@ internal class ClientParts(
             port = loop.port,
             socket = socket,
             clock = w.clock,
+            time = loop.time,
             sink = edge,
             loopEntrant = Entrant.loopTurn(loop.id, 1),
             counts = ConnCounts(),

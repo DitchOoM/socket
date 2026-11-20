@@ -176,6 +176,7 @@ internal class ServerRig(
             loop.port,
             socket,
             clock,
+            loop.time,
             Entrant.loopTurn(loop.id, 1),
             QuicheConfig(1L),
             local,

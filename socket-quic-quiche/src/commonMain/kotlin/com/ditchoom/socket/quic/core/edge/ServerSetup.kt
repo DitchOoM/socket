@@ -54,6 +54,7 @@ import com.ditchoom.socket.quic.core.sched.CallerSend
 import com.ditchoom.socket.quic.core.sched.Entrant
 import com.ditchoom.socket.quic.core.sched.SendPort
 import com.ditchoom.socket.quic.core.time.LoopClock
+import com.ditchoom.socket.quic.core.time.QuicheTime
 import com.ditchoom.socket.quic.core.udp.Addressed
 import com.ditchoom.socket.quic.core.udp.BatchLimits
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
@@ -137,9 +138,9 @@ internal class ServerSetup(
             }
         val poller =
             when (stack) {
-                is NetStack.Jdk -> jdkPoller(clock, stack)
+                is NetStack.Jdk -> jdkPoller(stack)
                 is NetStack.Native ->
-                    when (val opened = NativePoller.open(stack.shim, clock, READY_EVENTS)) {
+                    when (val opened = NativePoller.open(stack.shim, READY_EVENTS)) {
                         is PollerOpened.Opened -> opened.poller
                         is PollerOpened.Refused ->
                             raise(Raised.SocketRefused(NativeSocketRefusal(opened.refusal)), QuicCloseCircumstance.HandshakeFailed)
@@ -198,6 +199,7 @@ internal class ServerSetup(
                 clock = clock,
                 receive = ReceiveBatch(FixedPool(limits.maxDatagrams) { receiveBuffers[it] }, limits),
                 freeOnStop = Runnable { hold.founding.release() },
+                time = QuicheTime.of(api, clock),
             )
         moved(SetupOwner.Built(loop, socketIo.io))
         val sendPort = SendPort(io, loop.port, CallerLanes.Of(lanes), SocketDiedNotice(), loop.counts, loop.callerCounts)
@@ -227,6 +229,7 @@ internal class ServerSetup(
                 loop.port,
                 sendPort,
                 clock,
+                loop.time,
                 Entrant.loopTurn(loop.id, 1),
                 quicheConfig,
                 local,

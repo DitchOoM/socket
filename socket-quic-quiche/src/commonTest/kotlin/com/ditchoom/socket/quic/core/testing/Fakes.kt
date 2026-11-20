@@ -13,6 +13,7 @@ import com.ditchoom.socket.quic.core.ready.WakeCause
 import com.ditchoom.socket.quic.core.ready.WriteInterest
 import com.ditchoom.socket.quic.core.sched.LoopPort
 import com.ditchoom.socket.quic.core.sched.LoopWork
+import com.ditchoom.socket.quic.core.time.ClockBase
 import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.udp.Addressed
@@ -50,6 +51,7 @@ internal class FakePoller : Poller {
     override fun await(
         until: NextDue,
         ready: ReadyTokens,
+        now: Nanos,
     ): WakeCause = WakeCause.Woken
 
     override fun wake() {
@@ -62,6 +64,8 @@ internal class FakePoller : Poller {
 /** Time that moves only when a test says so; counts how often it was read. */
 internal class VirtualClock(
     var at: Nanos = Nanos(0L),
+    /** What its readings count on: a clock of its own unless a test stands it in for libquiche's. */
+    private val base: ClockBase = ClockBase.Own,
 ) : LoopClock {
     var reads = 0L
 
@@ -69,6 +73,8 @@ internal class VirtualClock(
         reads++
         return at
     }
+
+    override fun base(): ClockBase = base
 }
 
 /** A [DatagramBatchIo] whose answer to each send is scripted by the test; it never takes a datagram itself. */

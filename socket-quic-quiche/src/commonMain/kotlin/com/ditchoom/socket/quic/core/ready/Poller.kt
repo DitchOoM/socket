@@ -1,6 +1,7 @@
 package com.ditchoom.socket.quic.core.ready
 
 import com.ditchoom.socket.quic.NextDue
+import com.ditchoom.socket.quic.core.time.Nanos
 
 /** The loop's one blocking call and readiness, one implementation per [NetStack] variant. */
 internal interface Poller {
@@ -18,10 +19,14 @@ internal interface Poller {
         write: WriteInterest,
     )
 
-    /** Blocks until a socket is ready, [wake] is called or [until] passes; fills [ready] with the ready tokens. */
+    /**
+     * Blocks until a socket is ready, [wake] is called or [until] passes, timed from [now], the loop's reading as its pass
+     * ended; fills [ready] with the ready tokens.
+     */
     fun await(
         until: NextDue,
         ready: ReadyTokens,
+        now: Nanos,
     ): WakeCause
 
     /** Any thread. Makes the current or next [await] return. */

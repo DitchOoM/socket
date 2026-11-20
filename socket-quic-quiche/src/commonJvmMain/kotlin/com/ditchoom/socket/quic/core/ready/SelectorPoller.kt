@@ -2,7 +2,7 @@ package com.ditchoom.socket.quic.core.ready
 
 import com.ditchoom.socket.quic.NextDue
 import com.ditchoom.socket.quic.core.observe.LoopOnly
-import com.ditchoom.socket.quic.core.time.LoopClock
+import com.ditchoom.socket.quic.core.time.Nanos
 import java.nio.channels.SelectionKey
 import java.nio.channels.Selector
 import java.util.function.Consumer
@@ -23,7 +23,6 @@ private sealed interface Scanner {
  */
 @LoopOnly
 internal class SelectorPoller(
-    private val clock: LoopClock,
     scan: SelectedKeys,
 ) : Poller {
     private val selector: Selector = Selector.open()
@@ -81,6 +80,7 @@ internal class SelectorPoller(
     override fun await(
         until: NextDue,
         ready: ReadyTokens,
+        now: Nanos,
     ): WakeCause {
         ready.clear()
         current = ready
@@ -88,7 +88,7 @@ internal class SelectorPoller(
         until.fold(
             none = { select(Wait.Forever, 0L) },
             due = { due ->
-                val nanos = due - clock.now().value
+                val nanos = due - now.value
                 // The selector counts whole milliseconds; a shorter wait rounds up so a deadline is never early.
                 if (nanos <= 0) {
                     select(Wait.Now, 0L)

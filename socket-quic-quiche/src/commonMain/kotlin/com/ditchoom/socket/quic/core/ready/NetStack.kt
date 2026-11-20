@@ -1,7 +1,6 @@
 package com.ditchoom.socket.quic.core.ready
 
 import com.ditchoom.socket.quic.NetShim
-import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.WaitResolution
 
 /**
@@ -34,10 +33,7 @@ internal expect class JdkRuntime
 internal expect val netStackOfThisRuntime: NetStack
 
 /** The JDK stack's poller: NIO's selector. */
-internal expect fun jdkPoller(
-    clock: LoopClock,
-    stack: NetStack.Jdk,
-): Poller
+internal expect fun jdkPoller(stack: NetStack.Jdk): Poller
 
 /** How a selector's ready keys are read: the consumer form allocates nothing; the set form allocates a node per key. */
 internal enum class SelectedKeys { ByConsumer, BySet }

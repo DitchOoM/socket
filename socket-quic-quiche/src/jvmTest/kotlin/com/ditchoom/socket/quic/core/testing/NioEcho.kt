@@ -54,7 +54,7 @@ internal class NioEcho(
         Loop(
             id = 2,
             name = threadName,
-            poller = SelectorPoller(MonotonicClock, jdkStackOfThisRuntime().scan),
+            poller = SelectorPoller(jdkStackOfThisRuntime().scan),
             clock = MonotonicClock,
             receive = ReceiveBatch(FixedPool(limits.maxDatagrams) { receiveBuffers[it] }, limits),
             freeOnStop = Runnable { },

@@ -646,6 +646,11 @@ JNIEXPORT void JNICALL JNI_FN(nClearVirtualTime)(JNIEnv *env, jclass cls) {
     quiche_clear_virtual_time();
 }
 
+/* Monotonic pin: production. The loop's one clock read per pass becomes libquiche's clock on this thread. */
+JNIEXPORT jint JNICALL JNI_FN(nPinMonotonicTimeNanos)(JNIEnv *env, jclass cls, jlong nanos) {
+    return (jint)quiche_pin_monotonic_time_nanos((uint64_t)nanos);
+}
+
 /* Caller-entropy: pin/release this thread's seeded random stream in the patched libquiche. Thread-local,
    no conn handle. Simulation-only — never called on production paths. */
 JNIEXPORT void JNICALL JNI_FN(nSetThreadRandomState)(JNIEnv *env, jclass cls, jlong state) {

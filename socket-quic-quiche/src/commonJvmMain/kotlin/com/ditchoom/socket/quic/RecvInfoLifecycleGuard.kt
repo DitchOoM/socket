@@ -110,6 +110,14 @@ internal class RecvInfoGuardQuicheApi(
     // report green having silently run JNI.
     internal val delegate: QuicheApi,
 ) : QuicheApi by delegate {
+    init {
+        // Every call but the recv_info lifecycle is forwarded, so the backend's clock pin is this wrapper's too.
+        when (val bound = QuicheClockPins.of(delegate)) {
+            is PinLookup.Bound -> QuicheClockPins.bind(this, bound.pin)
+            is PinLookup.NotBound -> Unit
+        }
+    }
+
     override fun recvInfoNew(
         fromAddr: Long,
         fromAddrLen: Int,

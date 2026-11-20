@@ -42,14 +42,14 @@ class NativePollerTests {
             object : com.ditchoom.socket.quic.NetShim by shim {
                 override fun pollerOpen(capacity: Int): Long = -0x4BFF_FF8E_DCBA_9880L
             }
-        assertIs<PollerOpened.Opened>(NativePoller.open(tagged, MonotonicClock, 16))
+        assertIs<PollerOpened.Opened>(NativePoller.open(tagged, 16))
         val refused =
             object : com.ditchoom.socket.quic.NetShim by shim {
                 override fun pollerOpen(capacity: Int): Long = -13L
             }
         assertEquals(
             com.ditchoom.socket.quic.SocketRefusal.ENoMem,
-            assertIs<PollerOpened.Refused>(NativePoller.open(refused, MonotonicClock, 16)).refusal,
+            assertIs<PollerOpened.Refused>(NativePoller.open(refused, 16)).refusal,
         )
     }
 
@@ -58,7 +58,7 @@ class NativePollerTests {
         val poller = open()
         val ready = ReadyTokens(8)
         Thread { poller.wake() }.start()
-        assertEquals(WakeCause.Woken, poller.await(NextDue.None, ready))
+        assertEquals(WakeCause.Woken, poller.await(NextDue.None, ready, MonotonicClock.now()))
         poller.close()
     }
 
@@ -66,7 +66,7 @@ class NativePollerTests {
     fun aTimedWaitEndsAtItsDeadlineAndNotBefore() {
         val poller = open()
         val start = MonotonicClock.now().value
-        assertEquals(WakeCause.Deadline, poller.await(NextDue.at(start + 20_000_000L), ReadyTokens(8)))
+        assertEquals(WakeCause.Deadline, poller.await(NextDue.at(start + 20_000_000L), ReadyTokens(8), MonotonicClock.now()))
         assertTrue(MonotonicClock.now().value - start >= 20_000_000L, "woke early")
         poller.close()
     }
@@ -87,7 +87,8 @@ class NativePollerTests {
         val seen = HashSet<Int>()
         val until = System.nanoTime() + 5_000_000_000L
         while (!(3 in seen && 9 in seen) && System.nanoTime() < until) {
-            poller.await(NextDue.at(MonotonicClock.now().value + 100_000_000L), ready)
+            val now = MonotonicClock.now()
+            poller.await(NextDue.at(now.value + 100_000_000L), ready, now)
             for (i in 0 until ready.count) seen.add(ready.tokenAt(i))
             Thread.sleep(2)
         }
@@ -115,7 +116,7 @@ class NativePollerTests {
                     return shim.pollerWake(poller)
                 }
             }
-        val poller = assertIs<PollerOpened.Opened>(NativePoller.open(counting, MonotonicClock, 16)).poller
+        val poller = assertIs<PollerOpened.Opened>(NativePoller.open(counting, 16)).poller
         poller.wake()
         poller.close()
         poller.close()
@@ -146,7 +147,7 @@ class NativePollerTests {
                         return shim.pollerWake(poller)
                     }
                 }
-            val poller = assertIs<PollerOpened.Opened>(NativePoller.open(counting, MonotonicClock, 16)).poller
+            val poller = assertIs<PollerOpened.Opened>(NativePoller.open(counting, 16)).poller
             val start = java.util.concurrent.CountDownLatch(1)
             val wakers =
                 List(3) {
@@ -165,7 +166,7 @@ class NativePollerTests {
 
     private fun open(): NativePoller {
         assumeNativeStack()
-        return assertIs<PollerOpened.Opened>(NativePoller.open(shim, MonotonicClock, 16)).poller
+        return assertIs<PollerOpened.Opened>(NativePoller.open(shim, 16)).poller
     }
 
     private fun socket(peer: SocketPeer): NativeSocket =

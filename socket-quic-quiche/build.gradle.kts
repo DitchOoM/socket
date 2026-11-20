@@ -4546,6 +4546,14 @@ fun patchQuicheForCallerClock(sourceDir: File) {
             |pub extern "C" fn quiche_clear_virtual_time() {
             |    crate::clear_virtual_time();
             |}
+            |
+            |// socket-monotonic-pin: production. Pins this thread's clock to `nanos` of the platform monotonic
+            |// clock, the instant a run-to-completion loop read once for its pass; 1 when pinned, 0 where an
+            |// Instant is not a monotonic timespec (Apple, Windows) and nothing was pinned.
+            |#[no_mangle]
+            |pub extern "C" fn quiche_pin_monotonic_time_nanos(nanos: u64) -> i32 {
+            |    crate::pin_monotonic_time_nanos(nanos)
+            |}
             """.trimMargin()
         ffiRs.appendText("\n" + ffiBlock + "\n")
     }
@@ -4565,6 +4573,11 @@ fun patchQuicheForCallerClock(sourceDir: File) {
             |// deterministic simulation. Simulation-only; unset in production.
             |void quiche_set_virtual_time_nanos(uint64_t nanos);
             |void quiche_clear_virtual_time(void);
+            |
+            |// socket-monotonic-pin: pin this thread's clock to a CLOCK_MONOTONIC reading in nanoseconds;
+            |// returns 1 when pinned, 0 where the platform's Instant is not that clock (nothing pinned).
+            |// Released by quiche_clear_virtual_time.
+            |int quiche_pin_monotonic_time_nanos(uint64_t nanos);
             |
             |#if defined(__cplusplus)
             |}  // extern C
@@ -4622,6 +4635,22 @@ fun patchQuicheForCallerClock(sourceDir: File) {
         |/// Release the calling thread's pin, restoring the real clock.
         |pub(crate) fn clear_virtual_time() {
         |    SOCKET_VIRTUAL_NOW.with(|c| c.set(None));
+        |}
+        |
+        |/// Pin the calling thread's clock to `nanos` of CLOCK_MONOTONIC: an Instant here IS that timespec, as
+        |/// ffi.rs's std_time_to_c relies on too. 1 when pinned.
+        |#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "windows")))]
+        |pub(crate) fn pin_monotonic_time_nanos(nanos: u64) -> i32 {
+        |    const MONOTONIC_ZERO: std::time::Instant = unsafe { std::mem::transmute(std::time::UNIX_EPOCH) };
+        |    let t = MONOTONIC_ZERO + std::time::Duration::from_nanos(nanos);
+        |    SOCKET_VIRTUAL_NOW.with(|c| c.set(Some(t)));
+        |    1
+        |}
+        |
+        |/// Apple and Windows: an Instant is not a monotonic timespec, so nothing is pinned. 0.
+        |#[cfg(any(target_os = "macos", target_os = "ios", target_os = "windows"))]
+        |pub(crate) fn pin_monotonic_time_nanos(_nanos: u64) -> i32 {
+        |    0
         |}
         |// ---- end socket-caller-clock ----
         """.trimMargin()
@@ -6536,11 +6565,13 @@ val stageCoreAndroidTests =
                 "loop/EndpointRehomeTests.kt",
                 "conn/ConnTests.kt",
                 "conn/ConnPacingTests.kt",
+                "conn/TurnClockTests.kt",
                 "loop/SharedClientLoopTests.kt",
                 "loop/NioLoopEchoTests.kt",
                 "loop/LoopDeadlineWakeTests.kt",
                 "loop/LoopPassTests.kt",
                 "loop/LoopClockReadsTests.kt",
+                "time/QuicheTimeTests.kt",
                 "conn/CoreClientAgainstServerTests.kt",
                 "conn/NetworkWatchTests.kt",
                 "udp/SocketBuffersEchoTests.kt",

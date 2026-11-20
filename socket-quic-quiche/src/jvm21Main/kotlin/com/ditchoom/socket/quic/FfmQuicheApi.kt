@@ -783,6 +783,21 @@ class FfmQuicheApi private constructor(
             }
         }
 
+    /** This backend's clock pin: a loop pins libquiche to the instant it read for its pass. */
+    internal val clockPin: QuicheClockPin =
+        object : QuicheClockPin {
+            override fun pinMonotonic(nanos: Long): PinAnswer =
+                if (SimulationCalls.hPinMonotonicTimeNanos.invokeExact(nanos) as Int == PINNED) PinAnswer.Pinned else PinAnswer.Unsupported
+
+            override fun unpin() {
+                SimulationCalls.hClearVirtualTime.invokeExact()
+            }
+        }
+
+    init {
+        QuicheClockPins.bind(this, clockPin)
+    }
+
     override fun connSendAckEliciting(conn: QuicheConn): Int = (HotCalls.hSendAckEliciting.invokeExact(conn.handle) as Long).toInt()
 
     override fun connProbeNow(conn: QuicheConn): Int = (HotCalls.hProbeNow.invokeExact(conn.handle) as Long).toInt()
@@ -1381,6 +1396,9 @@ class FfmQuicheApi private constructor(
             }
 
         private const val QUICHE_ERR_DONE = -1L
+
+        /** What `quiche_pin_monotonic_time_nanos` returns when it pinned. */
+        private const val PINNED = 1
         private const val CONN_STATS_SIZE = 208L // quiche_stats: 25×8-byte fields + trailing bool, 8-aligned
 
         // quiche_transport_params layout (64-bit): 10 consecutive uint64 fields [0..72], then the

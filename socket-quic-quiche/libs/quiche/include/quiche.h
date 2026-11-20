@@ -1299,6 +1299,11 @@ void quiche_h3_conn_free(quiche_h3_conn *conn);
 void quiche_set_virtual_time_nanos(uint64_t nanos);
 void quiche_clear_virtual_time(void);
 
+// socket-monotonic-pin: production. Pin this thread's clock to a CLOCK_MONOTONIC reading in nanoseconds,
+// the instant a run-to-completion loop read once for its pass, so libquiche reads no clock of its own until
+// released by quiche_clear_virtual_time. Returns 1 when pinned; 0 on Apple and Windows, where nothing is pinned.
+int quiche_pin_monotonic_time_nanos(uint64_t nanos);
+
 // socket-caller-entropy: pin / release this thread's seeded random stream, so a simulation's quiche draws (packet-number skips, path-challenge data) follow its seed. Backed by the
 // marker-guarded source patch in socket-quic-quiche/build.gradle.kts (patchQuicheForCallerEntropy).
 // Simulation-only; unset in production.

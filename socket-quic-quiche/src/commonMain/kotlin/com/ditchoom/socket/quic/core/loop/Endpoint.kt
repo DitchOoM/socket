@@ -17,6 +17,7 @@ import com.ditchoom.socket.quic.core.sched.LoopPort
 import com.ditchoom.socket.quic.core.sched.SendPort
 import com.ditchoom.socket.quic.core.sched.Shutdown
 import com.ditchoom.socket.quic.core.sched.SocketHealth
+import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.time.RttPrior
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
@@ -68,7 +69,7 @@ internal class Endpoint(
     fun receive(
         batch: ReceiveBatch,
         counts: LoopCounts,
-        at: Nanos,
+        clock: LoopClock,
         budget: ReceiveBudget,
     ) {
         if (phase != Phase.Live) return
@@ -78,24 +79,24 @@ internal class Endpoint(
                     is Relocating.Yes -> relocating = route.answered(io.settleMove(), moving.prior)
                     is Relocating.No -> Unit
                 }
-                receiveWaiting(batch, counts, at)
+                receiveWaiting(batch, counts, clock)
             }
             is Route.Demux -> {
                 route.demux.passBegins()
-                receiveWaiting(batch, counts, at)
+                receiveWaiting(batch, counts, clock)
                 while (budget.state() == Budget.Left && route.demux.admitSome(route.out.batch) == Admitted.More) {
                     input = ReceiveInput.Maybe
-                    receiveWaiting(batch, counts, at)
+                    receiveWaiting(batch, counts, clock)
                 }
             }
         }
     }
 
-    /** Reads until the socket is drained or [MAX_PER_PASS]; each datagram of this phase is handed over at [at]. */
+    /** Reads until drained or [MAX_PER_PASS]; a read's datagrams go to quiche at one [clock] reading taken after it returns. */
     private fun receiveWaiting(
         batch: ReceiveBatch,
         counts: LoopCounts,
-        at: Nanos,
+        clock: LoopClock,
     ) {
         if (input == ReceiveInput.Drained && readiness == Readiness.Polled) return
         var taken = 0
@@ -104,14 +105,14 @@ internal class Endpoint(
                 is ReceiveBatchResult.Got, is ReceiveBatchResult.GotWithBacklog -> {
                     input = if (got is ReceiveBatchResult.GotWithBacklog) ReceiveInput.Backlog else ReceiveInput.Maybe
                     taken += batch.count
-                    deliver(batch, at)
+                    deliver(batch, clock.now())
                 }
                 is ReceiveBatchResult.Nothing -> {
                     input = ReceiveInput.Drained
                     break
                 }
                 is ReceiveBatchResult.Failed -> {
-                    deliver(batch, at)
+                    deliver(batch, clock.now())
                     input = ReceiveInput.Drained
                     socket.receiveFailed(got.error)
                     break

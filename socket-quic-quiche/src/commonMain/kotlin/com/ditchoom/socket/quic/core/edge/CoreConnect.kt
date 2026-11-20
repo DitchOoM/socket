@@ -150,7 +150,7 @@ private suspend fun OnSetupLane.connectOnLane(
     val codec = SocketAddressCodec(hostSockAddrLayout)
     val route = UdpSocketChannelFactory(peer, codec, factory, factory, MAX_DATAGRAM, LocalEndpointSupport.Bindable)
     val running =
-        when (val placed = loops.place(factory)) {
+        when (val placed = loops.place(factory, api)) {
             is Placement.Placed -> placed.running
             is Placement.SetClosed -> raise(Raised.LoopsClosed, QuicCloseCircumstance.HandshakeFailed)
             is Placement.NotJdkMemory -> raise(Raised.FactoryNotNative(factory.allocate(1)), QuicCloseCircumstance.HandshakeFailed)

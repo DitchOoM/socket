@@ -18,6 +18,7 @@ import com.ditchoom.socket.quic.core.sched.LoopPort
 import com.ditchoom.socket.quic.core.sched.SleepPlan
 import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.Nanos
+import com.ditchoom.socket.quic.core.time.QuicheTime
 import com.ditchoom.socket.quic.core.time.RttPrior
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.Thrown
@@ -65,6 +66,7 @@ internal class Loop(
     private val receive: ReceiveBatch,
     /** What the loop frees when it stops: its receive memory. */
     private val freeOnStop: Runnable,
+    val time: QuicheTime = QuicheTime.Own,
 ) {
     val counts = LoopCounts()
     val callerCounts = CallerCounts()
@@ -102,7 +104,7 @@ internal class Loop(
     fun run() {
         if (run is Run.Stopped) return
         try {
-            // Two clock reads per iteration: one after the pass and one after the wait, which is the next pass's time.
+            // A reading after the pass times the wait; one after the wait is the next pass's time.
             var began = clock.now()
             while (true) {
                 val next = pass(began)
@@ -110,7 +112,7 @@ internal class Loop(
                 counts.timedPass(ended.value - began.value)
                 when (val now = run) {
                     is Run.Running -> {
-                        sleep(next)
+                        sleep(next, ended)
                         began = clock.now()
                         counts.timedWait(began.value - ended.value)
                     }
@@ -152,11 +154,22 @@ internal class Loop(
         }
     }
 
-    /** One pass at [now]. Returns when the loop next needs to run without input; a stopped loop needs nothing. */
+    /** One pass at [now], libquiche's time too where [QuicheTime.Pinned]; returns when the loop next needs to run without input. */
     fun pass(now: Nanos): NextDue =
         when (run) {
             is Run.Stopped -> NextDue.None
-            is Run.Running, is Run.Closing -> traced(TraceSection.LoopPass) { passInside(now) }
+            is Run.Running, is Run.Closing ->
+                when (val t = time) {
+                    is QuicheTime.Own -> traced(TraceSection.LoopPass) { passInside(now) }
+                    is QuicheTime.Pinned -> {
+                        t.loop.pass(now)
+                        try {
+                            traced(TraceSection.LoopPass) { passInside(now) }
+                        } finally {
+                            t.loop.release()
+                        }
+                    }
+                }
         }
 
     private fun passInside(now: Nanos): NextDue {
@@ -169,16 +182,11 @@ internal class Loop(
             }
         }
         ready.clear()
-        // The clock is read again only after a socket gave datagrams: a pass's reads follow its work, not its connections.
-        var at = now
-        budget.begin(at)
+        // The clock is read only after a socket read that returned datagrams: a pass's reads follow its work.
+        budget.begin(now)
         for (i in slots.indices) {
             when (val slot = slots[i]) {
-                is LoopSlot.Taken -> {
-                    val before = counts.datagramsIn
-                    receiveOn(slot.endpoint, at)
-                    if (counts.datagramsIn != before) at = clock.now()
-                }
+                is LoopSlot.Taken -> receiveOn(slot.endpoint)
                 is LoopSlot.Empty -> Unit
             }
         }
@@ -224,12 +232,9 @@ internal class Loop(
         }
     }
 
-    private fun receiveOn(
-        endpoint: Endpoint,
-        at: Nanos,
-    ) {
+    private fun receiveOn(endpoint: Endpoint) {
         try {
-            endpoint.receive(receive, counts, at, budget)
+            endpoint.receive(receive, counts, clock, budget)
         } catch (failure: Exception) {
             receive.release()
             endpoint.ioThrew(Thrown(failure))
@@ -242,11 +247,14 @@ internal class Loop(
         connections.decrement()
     }
 
-    private fun sleep(next: NextDue) {
+    private fun sleep(
+        next: NextDue,
+        now: Nanos,
+    ) {
         when (port.beginSleep(next)) {
             SleepPlan.Await -> {
                 counts.waited()
-                traced(TraceSection.PollWait) { poller.await(next, ready) }
+                traced(TraceSection.PollWait) { poller.await(next, ready, now) }
             }
             SleepPlan.Skip -> Unit
         }

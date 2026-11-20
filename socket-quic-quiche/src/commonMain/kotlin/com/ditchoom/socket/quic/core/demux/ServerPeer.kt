@@ -25,6 +25,7 @@ import com.ditchoom.socket.quic.core.sched.Entrant
 import com.ditchoom.socket.quic.core.sched.LoopPort
 import com.ditchoom.socket.quic.core.sched.SendPort
 import com.ditchoom.socket.quic.core.time.LoopClock
+import com.ditchoom.socket.quic.core.time.QuicheTime
 import com.ditchoom.socket.quic.core.udp.Addressed
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 import com.ditchoom.socket.quic.nameQlog
@@ -71,6 +72,8 @@ internal class ServerParts(
     val port: LoopPort,
     val socket: SendPort,
     val clock: LoopClock,
+    /** Whose clock libquiche reads on the server's loop. */
+    val time: QuicheTime,
     val loopEntrant: Entrant,
     val config: QuicheConfig,
     /** The socket's bound address as quiche reads it, and as a key. */
@@ -113,6 +116,7 @@ internal class ConnBuild(
             port = parts.port,
             socket = parts.socket,
             clock = parts.clock,
+            time = parts.time,
             sink = HandshakeSink(sink, inProgress),
             loopEntrant = parts.loopEntrant,
             counts = ConnCounts(),

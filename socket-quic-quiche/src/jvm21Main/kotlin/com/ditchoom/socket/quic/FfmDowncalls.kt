@@ -708,6 +708,11 @@ internal object SimulationCalls {
     @JvmField
     val hClearVirtualTime: MethodHandle = FfmLibrary.downcall("quiche_clear_virtual_time", FunctionDescriptor.ofVoid())
 
+    // Monotonic pin: production; the loop's one clock read per pass becomes libquiche's clock on this thread.
+    @JvmField
+    val hPinMonotonicTimeNanos: MethodHandle =
+        FfmLibrary.downcall("quiche_pin_monotonic_time_nanos", FunctionDescriptor.of(JAVA_INT, JAVA_LONG))
+
     // Caller-entropy: thread-local seeded random stream in the patched libquiche. Simulation-only.
     @JvmField
     val hSetThreadRandomState: MethodHandle = FfmLibrary.downcall("quiche_set_thread_random_state", FunctionDescriptor.ofVoid(JAVA_LONG))

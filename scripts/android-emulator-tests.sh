@@ -599,6 +599,19 @@ fi
 echo "=== core CPU per connection (API ${API_LEVEL}) ==="
 grep -F "CORE-CPU" "$LOGCAT_FILE" || echo "(no CORE-CPU line)"
 echo "=== end core CPU per connection ==="
+# Per-test durations of the quiche suite, inline on every run (green too): the result XML is uploaded only on
+# failure, and comparing API levels needs the time each test took, not just the step's wall clock.
+echo "=== quiche suite per-test seconds, slowest 40 (API ${API_LEVEL}) ==="
+for f in socket-quic-quiche/build/outputs/androidTest-results/connected/debug/TEST-*.xml; do
+  [ -f "$f" ] || continue
+  awk '/<testcase / {
+      name = $0; sub(/.* name="/, "", name); sub(/".*/, "", name)
+      cls = $0; sub(/.* classname="/, "", cls); sub(/".*/, "", cls); sub(/.*\./, "", cls)
+      t = $0; sub(/.* time="/, "", t); sub(/".*/, "", t)
+      printf "%9.3f %s.%s\n", t, cls, name
+    }' "$f"
+done | sort -rn | awk '{ total += $1; if (NR <= 40) print } END { printf "%9.3f TOTAL (%d tests)\n", total, NR }'
+echo "=== end quiche suite per-test seconds ==="
 # The guest's clocksource and what the kernel logged about it: on an HPET clocksource (the API 28/29 images) every
 # clock read traps to the host. Apps may not read it, so the script prints it.
 echo "=== guest clocksource (API ${API_LEVEL}) ==="
