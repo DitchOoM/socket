@@ -563,6 +563,12 @@ named = conns(); ev.attribute_by_elimination(named, "server", {40000: 1}, 1)
 print([c["peer_gave_up_requests"] for c in one], [c["peer_gave_up_requests"] for c in two], [c["peer_gave_up_requests"] for c in named])
 PY
 expect "elimination ties the report to the one connection without a request, and only then" "$(cat "$tmp/elim.out")" "[0, 1] [0, 0] [0, 0]"
+# Run 44717833402: every Initial of one quinn connection was lost, so our server never began that connection.
+fromlost='{"kind":"sim-lost-every-datagram-from-the-peer","min_datagrams":5}'
+wired="$(hconn a '"wire":{"port":33276,"peer_sent_after_last_rx":0,"peer_delivered_after_last_rx":0,"peer_packets_unread":0}')"
+check_kind "a peer port whose every datagram was lost, with no connection of ours there" "$fromlost" our-server "{\"connections\":[$wired],\"sim_from_peer\":[{\"port\":41604,\"datagrams\":8,\"delivered\":0},{\"port\":33276,\"datagrams\":9,\"delivered\":6}]}" Matched
+check_kind "a datagram from that port that reached us, and no connection of ours (we dropped it), is not the signature" "$fromlost" our-server "{\"connections\":[$wired],\"sim_from_peer\":[{\"port\":41604,\"datagrams\":8,\"delivered\":1}]}" NotMatched
+check_kind "a port a connection of ours is tied to is not the signature" "$fromlost" our-server "{\"connections\":[$wired],\"sim_from_peer\":[{\"port\":33276,\"datagrams\":8,\"delivered\":0}]}" NotMatched
 # The idled-out kind judges the lost datagrams on the probing connection's own port, not on any port of the test.
 idled='{"kind":"peer-idled-out-while-we-probed","min_probes":3,"min_lost":5}'
 probing="$(hconn a '"tx_after_last_rx":15,"wire":{"port":39352,"peer_sent_after_last_rx":0,"peer_delivered_after_last_rx":0,"peer_packets_unread":0}')"

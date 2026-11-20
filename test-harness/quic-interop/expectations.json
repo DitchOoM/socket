@@ -1194,7 +1194,7 @@
       },
       "handshakeloss": {
         "flaky": {
-          "why": "peer: the client acknowledges our handshake flight but never re-sends its lost Finished (runs 43556869462, 43604040594, 43609318908); or it acknowledges our HANDSHAKE_DONE and never sends its request; or no Handshake packet of its arrives at all while the simulator loses its datagrams (run 43687073037); or the simulator drops quinn's request, the only packet it sends after acknowledging our HANDSHAKE_DONE, and quinn sends nothing at all for the next 30 s although its smoothed RTT is about 2 s, so our server, with everything of its own acknowledged and nothing of quinn's left unread on the wire, idles out (run 44543141897: quinn's Finished on another connection of the same run waited 25 s, eight PTOs, consistent with a PTO backoff kept across the Initial key discard that RFC 9002 §6.2.1 resets)",
+          "why": "peer: the client acknowledges our handshake flight but never re-sends its lost Finished (runs 43556869462, 43604040594, 43609318908); or it acknowledges our HANDSHAKE_DONE and never sends its request; or no Handshake packet of its arrives at all while the simulator loses its datagrams (run 43687073037); or the simulator drops quinn's request, the only packet it sends after acknowledging our HANDSHAKE_DONE, and quinn sends nothing at all for the next 30 s although its smoothed RTT is about 2 s, so our server, with everything of its own acknowledged and nothing of quinn's left unread on the wire, idles out (run 44543141897: quinn's Finished on another connection of the same run waited 25 s, eight PTOs, consistent with a PTO backoff kept across the Initial key discard that RFC 9002 §6.2.1 resets); or the simulator loses all thirteen of one quinn connection's Initial datagrams, so that connection never begins on our side and quinn times out (run 44717833402)",
           "signature": {
             "kind": "any-of",
             "signatures": [
@@ -1213,6 +1213,10 @@
                 "kind": "peer-move-never-reached-us",
                 "idle_s": 30,
                 "ended_by": "our-idle-timeout"
+              },
+              {
+                "kind": "sim-lost-every-datagram-from-the-peer",
+                "min_datagrams": 5
               }
             ]
           }

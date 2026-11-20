@@ -330,6 +330,24 @@ class SimLostEveryDatagramToUs:
         return NotMatched()
 
 
+class SimLostEveryDatagramFromThePeer:
+    """The simulator corrupted or dropped every one of at least min_datagrams datagrams one peer port sent us, and no
+    connection of ours is tied to that port in the captures: the connection never began on our side, so there was
+    nothing for us to answer."""
+
+    kind = "sim-lost-every-datagram-from-the-peer"
+
+    def __init__(self, fields):
+        self.min_datagrams = positive_int(self.kind, fields, "min_datagrams")
+
+    def match(self, test_evidence, peer_role):
+        ours = {c["wire"]["port"] for c in test_evidence.get("connections", []) if "wire" in c}
+        for p in test_evidence.get("sim_from_peer", []):
+            if p["delivered"] == 0 and p["datagrams"] >= self.min_datagrams and p["port"] not in ours:
+                return Matched(f"the simulator delivered 0 of {p['datagrams']} datagrams from port {p['port']}; no connection of ours began there")
+        return NotMatched()
+
+
 class SimLostEveryDatagramToThePeer:
     """A connection of ours received the peer's handshake CRYPTO data but could not answer it (it sent no CRYPTO of
     its own: the ClientHello never arrived whole), and the simulator corrupted or dropped every one of at least
@@ -792,6 +810,7 @@ SIGNATURES = {
         PeerRequestArrivedLate,
         SimLostEveryDatagramToUs,
         SimLostEveryDatagramToThePeer,
+        SimLostEveryDatagramFromThePeer,
         PeerLeftADownloadEmpty,
         PeerLeftARequestUnfinished,
         PeerRequestNeverArrived,
