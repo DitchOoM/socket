@@ -6,7 +6,9 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.lang.management.ManagementFactory
 import java.nio.file.Files
+import java.util.concurrent.TimeUnit
 import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * How this test JVM finds what a leaked socket holds: the sockets on POSIX, the UDP endpoints the
@@ -87,28 +89,29 @@ internal sealed interface OpenHandleMeter {
     }
 
     /**
-     * The UDP endpoints the process owns, from `Get-NetUDPEndpoint`. Narrower than the process handle
-     * count, which also moves with every thread and event the JVM creates lazily; a leaked QUIC path is
-     * exactly one of these.
+     * The UDP endpoints the process owns, from the kernel's UDP table as `netstat -ano` prints it. Narrower
+     * than the process handle count, which also moves with every thread and event the JVM creates lazily;
+     * a leaked QUIC path is exactly one of these.
+     *
+     * Not `Get-NetUDPEndpoint`: that starts PowerShell and a CIM provider, whose first run in a process costs
+     * 3–10 s on an idle runner and is unbounded on a loaded one. `netstat` reads the same table through the
+     * IP helper API, with no runtime to start.
      */
     data object WindowsUdpEndpoints : OpenHandleMeter {
-        override val description = "Get-NetUDPEndpoint -OwningProcess"
+        override val description = "netstat -ano UDP endpoints owned by this process"
 
         override fun openHandles(): Handles {
-            val pid = ProcessHandle.current().pid()
-            val process =
-                ProcessBuilder(
-                    "powershell",
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-Command",
-                    "@(Get-NetUDPEndpoint -OwningProcess $pid -ErrorAction SilentlyContinue).Count",
-                ).redirectErrorStream(true).start()
-            val out = process.inputStream.use { it.bufferedReader().readText().trim() }
-            process.outputStream.close()
-            check(process.waitFor() == 0 && out.isNotEmpty()) { "Get-NetUDPEndpoint gave no count for pid $pid: $out" }
-            return Handles.Count(out.toLong())
+            val pid = ProcessHandle.current().pid().toString()
+            val owned =
+                runMeterCommand(listOf("netstat", "-ano"))
+                    .lineSequence()
+                    .map { it.trim().split(WHITESPACE) }
+                    // `UDP <local> <foreign> <pid>`: UDP rows have no state column.
+                    .count { it.size >= 4 && it.first() == "UDP" && it.last() == pid }
+            return Handles.Count(owned.toLong())
         }
+
+        private val WHITESPACE = Regex("\\s+")
     }
 
     companion object {
@@ -120,6 +123,48 @@ internal sealed interface OpenHandleMeter {
             }
     }
 }
+
+/** [command] did not finish within [budget]; it was killed. */
+internal class MeterCommandTimedOutException(
+    val command: List<String>,
+    val budget: kotlin.time.Duration,
+) : IllegalStateException("$command did not finish within $budget")
+
+/**
+ * Runs [command] and returns its output, or kills it and throws [MeterCommandTimedOutException] once it
+ * has run for [budget]. The wait is a plain JVM wait, which no coroutine deadline can interrupt, so the
+ * bound has to be here.
+ */
+internal fun runMeterCommand(
+    command: List<String>,
+    budget: kotlin.time.Duration = METER_COMMAND_BUDGET,
+): String {
+    // Output goes to a file, not a pipe: a full pipe would block the command and look like a slow one.
+    val output = File.createTempFile("handle-meter", ".txt")
+    try {
+        val process =
+            ProcessBuilder(command)
+                .redirectErrorStream(true)
+                .redirectOutput(output)
+                .redirectInput(ProcessBuilder.Redirect.from(NULL_INPUT))
+                .start()
+        if (!process.waitFor(budget.inWholeMilliseconds, TimeUnit.MILLISECONDS)) {
+            process.descendants().forEach { it.destroyForcibly() }
+            process.destroyForcibly()
+            throw MeterCommandTimedOutException(command, budget)
+        }
+        val out = output.readText()
+        check(process.exitValue() == 0) { "$command exited ${process.exitValue()}: $out" }
+        return out
+    } finally {
+        output.delete()
+    }
+}
+
+/** Far above a meter command's normal cost (well under a second), far below a leak test's budget. */
+private val METER_COMMAND_BUDGET = 20.seconds
+
+private val NULL_INPUT = File(if (System.getProperty("os.name").startsWith("Windows")) "NUL" else "/dev/null")
 
 /**
  * Runs [block] with every QUIC event loop held, so each loop's thread and selector (a few descriptors:
