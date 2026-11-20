@@ -101,7 +101,8 @@ internal sealed interface OurTimers {
     /**
      * At the first of [firings], the times the capture's host ran quiche's timeout, at or after quiche says one falls
      * due. A host runs a timer only when its loop starts a pass: one that stalled, mid-pass or between passes, ran it
-     * when it next did, and every timer armed after that one moves with it. Past the last, when due.
+     * when it next did, and every timer armed after that one moves with it. Past the last, never on the capture: the
+     * recording holds every timer its host ran, and one that fell due after the last was never run.
      */
     data class AsRecorded(
         val firings: List<Duration>,
