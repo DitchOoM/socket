@@ -1,9 +1,12 @@
 package com.ditchoom.socket.quic
 
 import com.sun.management.UnixOperatingSystemMXBean
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.lang.management.ManagementFactory
 import java.nio.file.Files
+import kotlin.time.Duration.Companion.milliseconds
 
 /**
  * How this test JVM finds what a leaked socket holds: the sockets on POSIX, the UDP endpoints the
@@ -132,4 +135,15 @@ internal inline fun <T> holdingEveryQuicLoop(block: () -> T): T {
     } finally {
         holds.forEach { it.release() }
     }
+}
+
+/**
+ * Returns once every QUIC event loop has made a selection that began after this call. A closed channel's
+ * descriptor is released by its loop's selector in the selection that follows the close, on the loop's
+ * thread, so a descriptor count read straight after `close()` returns can still include it. A loop
+ * timer is what guarantees the selection: the loop cannot fire it without selecting first.
+ */
+@OptIn(com.ditchoom.socket.udp.InternalDatagramLoopApi::class)
+internal suspend fun everyQuicLoopSelects() {
+    for (loop in quicLoopGroup.loops) withContext(loop) { delay(1.milliseconds) }
 }
