@@ -4,6 +4,7 @@ import com.ditchoom.socket.nwhelpers.nw_helper_create_tcp_connection
 import com.ditchoom.socket.nwhelpers.nw_helper_force_cancel
 import com.ditchoom.socket.nwhelpers.nw_helper_set_state_handler
 import com.ditchoom.socket.nwhelpers.nw_helper_start
+import com.ditchoom.socket.nwhelpers.nw_helper_unsatisfied_reason
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
@@ -121,7 +122,14 @@ class NWClientSocketWrapper(
             val outcome: Result<Unit>? =
                 when (state) {
                     3 -> Result.success(Unit) // ready
-                    1, 4 -> Result.failure(mapSocketException(errorDomain, errorDesc, hostname = hostname)) // waiting or failed
+                    // waiting or failed: the user's settings first, since a denied app also sees no route
+                    1, 4 ->
+                        Result.failure(
+                            when (val withheld = withheldAccess(nw_helper_unsatisfied_reason(conn))) {
+                                WithheldAccess.None -> mapSocketException(errorDomain, errorDesc, hostname = hostname)
+                                is WithheldAccess.Known -> withheld.connectFailure(hostname)
+                            },
+                        )
                     5 -> Result.failure(SocketIOException(errorDesc ?: "Connection cancelled")) // cancelled
                     else -> null
                 }
