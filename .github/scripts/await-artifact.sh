@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 #
-# Waits until this workflow run holds the named artifact. Used by .github/actions/await-artifact and,
-# from inside an emulator step, by scripts/android-lane-inputs.sh (the emulator boots while it waits).
+# Waits until this workflow run holds the named artifact. Used by .github/actions/await-artifact.
 #
 # Usage: await-artifact.sh <artifact name> <producing job name, or a unique part of it> <timeout minutes>
 # Needs GH_TOKEN (actions: read) and the Actions environment (GITHUB_REPOSITORY, GITHUB_RUN_ID).

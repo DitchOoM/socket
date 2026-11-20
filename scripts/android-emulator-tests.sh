@@ -120,13 +120,14 @@ echo "Emulator (API ${API_LEVEL}) default network: $(adb shell dumpsys connectiv
 # THE SHARED INPUTS ARE TAKEN HERE, AFTER THE BOOT
 # -------------------------------------------------
 # The natives, the quic-echo jar and the compiled Kotlin come from two jobs that build them once for
-# every lane (see scripts/android-lane-inputs.sh). The emulator is already up, so the wait overlaps its
-# boot. The quic-echo container needs the jar, so it comes up here too. The time spent here is part of
-# the step's budget (the deadline below is not extended): the wait is bounded by ANDROID_LANE_INPUTS_WAIT_MIN.
+# every lane (see scripts/android-lane-inputs.sh). This job `needs` both, so here they are only
+# downloaded, in seconds; no wait for them counts against the step's deadline. The quic-echo container
+# needs the jar, so it comes up here too.
 if [ "$NETWORK_READY" = "1" ]; then
   # shellcheck source=scripts/android-lane-inputs.sh
   source "$(dirname "${BASH_SOURCE[0]}")/android-lane-inputs.sh"
-  lane_inputs_fetch "${ANDROID_LANE_INPUTS_WAIT_MIN:-8}" with-build-cache
+  lane_inputs_fetch with-build-cache
+  LANE_INPUTS_TAKEN_S=$SECONDS
   bash test-harness/compose-up-retry.sh quic-echo
 fi
 
@@ -160,6 +161,10 @@ fi
 #     set by the workflow) less CAPTURE_MARGIN_S, so a run that is slow but progressing finishes on a
 #     slow runner. Green runs took 512-650 s after boot on API 29; the run above, on a runner 1.3x
 #     slower by its own CORE-CPU line, was still finishing tests when a fixed 660 s ended it.
+#     A run stopped here while tests still progress is reported OUT OF TIME, not hung, with how the
+#     script's time split between taking the lane inputs and the tests: run 44683082787 (API 29)
+#     spent 312 s of its 960 s waiting for the inputs (the job did not yet `need` their jobs), and
+#     its "hang" named a test 1 s old.
 # Then the device, host and test engine are captured to $HANG_FILE, a ::error:: annotation says
 # what was hung, and Gradle is stopped. The script then shuts the emulator down as usual and fails.
 # shellcheck source=scripts/android-test-watchdog.sh
@@ -173,6 +178,8 @@ TEST_BUDGET_S=$((SECONDS + TEST_BUDGET_S))
 HANG_FILE="emulator-diagnostics/test-run-hang-api${API_LEVEL}.txt"
 GRADLE_OUT_FILE="emulator-diagnostics/gradle-connected-api${API_LEVEL}.txt"
 TEST_RUN_HUNG=0
+# When the lane inputs were taken, for the capture's time split; empty until then.
+LANE_INPUTS_TAKEN_S=""
 
 # "<seconds> <command line>" of each APK install adb is running, oldest first. Only processes that
 # ARE adb (or the adb install guard script, run by bash) count: a shell whose own command line
@@ -217,8 +224,9 @@ capture_hang() {
   # The package of the instrumentation adb is running, if any: `am instrument ... <pkg>/<runner>`.
   pkg=$(ps -eo args= | awk '/[a]m instrument/ { n = split($NF, a, "/"); print a[1]; exit }')
   {
-    echo "Instrumented test run hung (API ${API_LEVEL}): $why"
+    echo "Instrumented test run $(test_run_stop_kind "$why") (API ${API_LEVEL}): $why"
     echo "captured $(date -u +%FT%TZ), ${SECONDS}s into the run-tests script"
+    echo "the script's time, $(test_run_time_split "$LANE_INPUTS_TAKEN_S" "$SECONDS")"
     # Gradle starts these as soon as their APKs are built; each then waits for the device, so the
     # last one started is not necessarily the one on the device.
     echo "connected-test tasks Gradle has started, in order:" \
@@ -298,7 +306,8 @@ watch_test_run() {
       echo "::group::Hung test run capture (API ${API_LEVEL}) -> ${HANG_FILE}"
       cat "$HANG_FILE"
       echo "::endgroup::"
-      echo "::error title=Instrumented tests hung (API ${API_LEVEL})::$(gh_escape "$why
+      echo "::error title=Instrumented tests $(test_run_stop_kind "$why") (API ${API_LEVEL})::$(gh_escape "$why
+The script's time, $(test_run_time_split "$LANE_INPUTS_TAKEN_S" "$SECONDS").
 Full capture: ${HANG_FILE} (artifact android-test-reports-${API_LEVEL})")"
       # Cancels the build in the daemon. SIGKILL only if the client ignores that.
       kill "$gradle_pid" 2>/dev/null || true
