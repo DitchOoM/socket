@@ -277,6 +277,16 @@ void nw_helper_force_cancel(nw_connection_t _Nonnull conn)
 // Connection info
 // ============================================================
 
+int32_t nw_helper_unsatisfied_reason(nw_connection_t _Nonnull conn)
+{
+    nw_path_t path = nw_connection_copy_current_path(conn);
+    if (path == NULL || nw_path_get_status(path) != nw_path_status_unsatisfied) return 0;
+    if (@available(macOS 11.0, iOS 14.2, watchOS 7.1, tvOS 14.2, *)) {
+        return (int32_t)nw_path_get_unsatisfied_reason(path);
+    }
+    return 0;
+}
+
 int32_t nw_helper_local_port(nw_connection_t _Nonnull conn)
 {
     nw_path_t path = nw_connection_copy_current_path(conn);

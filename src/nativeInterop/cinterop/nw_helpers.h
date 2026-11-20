@@ -106,6 +106,11 @@ void nw_helper_force_cancel(nw_connection_t _Nonnull conn);
 // Connection info
 // ============================================================
 
+// Why the connection's current path is unsatisfied (nw_path_unsatisfied_reason_t): 1=cellular denied,
+// 2=Wi-Fi denied, 3=local network denied, 4=a required VPN is inactive. 0 when the path is not
+// unsatisfied, gives no reason, or the system predates the reason (macOS 11 / iOS 14.2).
+int32_t nw_helper_unsatisfied_reason(nw_connection_t _Nonnull conn);
+
 int32_t nw_helper_local_port(nw_connection_t _Nonnull conn);
 int32_t nw_helper_remote_port(nw_connection_t _Nonnull conn);
 

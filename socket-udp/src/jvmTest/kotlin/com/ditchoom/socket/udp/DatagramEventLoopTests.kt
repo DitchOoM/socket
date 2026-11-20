@@ -19,6 +19,8 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.yield
+import java.net.BindException
+import java.net.InetSocketAddress
 import java.util.Collections
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.CountDownLatch
@@ -352,6 +354,85 @@ class DatagramEventLoopTests {
             Unit
         }
 
+    /**
+     * The descriptor of a channel registered with a selector is released by that selector's next
+     * selection, not by `close()`. A loop told of the close and parked again before `close()` runs must
+     * therefore have dropped the key already: nothing else would wake it, and the descriptor and its
+     * port would stay held for as long as the loop stayed idle.
+     */
+    @Test
+    fun aChannelClosedAfterItsLoopParkedAgainGivesItsPortBackWithoutAnotherWake() =
+        runBlocking {
+            val loop = loop()
+            val hold = loop.hold() // parked in select() with no deadline once it has nothing to run
+            val channel =
+                java.nio.channels.DatagramChannel
+                    .open()
+            try {
+                channel.configureBlocking(false)
+                channel.bind(InetSocketAddress("127.0.0.1", 0))
+                val port = (channel.localAddress as InetSocketAddress).port
+                val waiter = launch(loop) { loop.awaitReadable(channel) }
+                delay(50)
+                loop.channelClosing(channel)
+                withTimeout(5.seconds) { waiter.join() }
+                delay(200) // the loop has run that task and is parked; this test wakes it no more
+                channel.close()
+                java.nio.channels.DatagramChannel.open().use { next ->
+                    try {
+                        next.bind(InetSocketAddress("127.0.0.1", port))
+                    } catch (held: BindException) {
+                        throw AssertionError("port $port is still bound after close(): $HELD_BY_PARKED_LOOP", held)
+                    }
+                }
+            } finally {
+                runCatching { channel.close() }
+                hold.release()
+            }
+            Unit
+        }
+
+    /**
+     * The same, when the close is left to a socket call in progress on another thread ([SocketCalls]):
+     * the loop was told long before the channel is closed, and is parked when it is.
+     */
+    @Test
+    fun aCloseLeftToACallInProgressStillGivesThePortBack() =
+        runBlocking {
+            val loop = loop()
+            val hold = loop.hold()
+            val channel =
+                java.nio.channels.DatagramChannel
+                    .open()
+            try {
+                channel.configureBlocking(false)
+                channel.bind(InetSocketAddress("127.0.0.1", 0))
+                val port = (channel.localAddress as InetSocketAddress).port
+                val calls = SocketCalls { channel.close() }
+                val waiter = launch(loop) { loop.awaitReadable(channel) }
+                delay(50)
+                calls.begin() // a receive in progress on another thread
+                loop.channelClosing(channel)
+                calls.close()
+                assertTrue(channel.isOpen, "the close is left to the call in progress")
+                withTimeout(5.seconds) { waiter.join() }
+                delay(200) // the loop is parked; this test wakes it no more
+                calls.end()
+                assertTrue(!channel.isOpen, "the call in progress closed the channel as it returned")
+                java.nio.channels.DatagramChannel.open().use { next ->
+                    try {
+                        next.bind(InetSocketAddress("127.0.0.1", port))
+                    } catch (held: BindException) {
+                        throw AssertionError("port $port is still bound after the deferred close: $HELD_BY_PARKED_LOOP", held)
+                    }
+                }
+            } finally {
+                runCatching { channel.close() }
+                hold.release()
+            }
+            Unit
+        }
+
     @Test
     fun aCancelledReceiveOnTheLoopLeavesTheSocketOpenAndUsable() =
         runBlocking {
@@ -410,3 +491,5 @@ class DatagramEventLoopTests {
             assertEquals(listOf("before yield", "other", "after yield"), order)
         }
 }
+
+private const val HELD_BY_PARKED_LOOP = "the parked loop's selector holds the descriptor"

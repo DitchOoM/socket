@@ -937,6 +937,153 @@ abstract class MigrationSimTestSuite {
         }
 
     /**
+     * A client keeps the server's Handshake packets that arrive before the ServerHello and reads them once
+     * it has the keys, so losing only the datagram that carries the ServerHello costs the server one
+     * datagram sent again, not its Handshake flight.
+     *
+     * RFC 9000 §5.2.1 and RFC 9001 §4.1.4 let an endpoint buffer packets it has no keys for yet. quiche
+     * dropped a client's. In the quic-interop-runner the server's whole Handshake flight reached our client
+     * intact 1.1 s before the ServerHello and was dropped, and the handshake failed.
+     */
+    @Test
+    fun aClientReadsTheHandshakePacketsThatArrivedBeforeTheServerHello() =
+        runTest {
+            wrapTestBody {
+                val pair = QuichePairByHand.open(simEnv())
+                try {
+                    val flight = pair.serverFirstFlight()
+                    // Only the datagram that carries the ServerHello is lost.
+                    pair.elapse(DEFAULT_PATH_LATENCY)
+                    pair.deliver(flight.drop(1), pair.client)
+                    assertFalse(pair.established(pair.client), "the client cannot complete without the ServerHello")
+
+                    val resent = pair.serverDatagramsUntilTheClientCompletes()
+                    assertEquals(
+                        1,
+                        resent.size,
+                        "the client must complete on the one datagram that brings the ServerHello again, reading the " +
+                            "Handshake packets it kept; the server had to send ${resent.shape()}",
+                    )
+                } finally {
+                    pair.close()
+                }
+            }
+        }
+
+    /**
+     * Junk Handshake packets that arrive after the server's genuine ones, before the ServerHello, are
+     * dropped: the genuine ones are kept and read, and the junk changes nothing.
+     */
+    @Test
+    fun junkHandshakePacketsBehindTheGenuineOnesAreDroppedAndTheGenuineOnesRead() =
+        runTest {
+            wrapTestBody {
+                val pair = QuichePairByHand.open(simEnv())
+                try {
+                    val flight = pair.serverFirstFlight()
+                    pair.elapse(DEFAULT_PATH_LATENCY)
+                    pair.deliver(flight.drop(1), pair.client)
+                    pair.deliver(junkHandshakeDatagrams(flight.last()), pair.client)
+
+                    val resent = pair.serverDatagramsUntilTheClientCompletes()
+                    assertEquals(
+                        1,
+                        resent.size,
+                        "the junk must not displace the genuine Handshake packets kept before it; the server had to " +
+                            "send ${resent.shape()}",
+                    )
+                    assertEquals("open", pair.closed(pair.client), "junk the client cannot decrypt must not close it")
+                } finally {
+                    pair.close()
+                }
+            }
+        }
+
+    /**
+     * A client keeps only the first few Handshake packets that arrive before the ServerHello: a flood of
+     * junk fills the buffer, the genuine packets behind it are dropped as quiche always did, and the
+     * handshake still completes once the server sends them again.
+     */
+    @Test
+    fun aFloodOfJunkHandshakePacketsBeforeTheServerHelloIsCappedAndTheHandshakeStillCompletes() =
+        runTest {
+            wrapTestBody {
+                val pair = QuichePairByHand.open(simEnv())
+                try {
+                    val flight = pair.serverFirstFlight()
+                    pair.elapse(DEFAULT_PATH_LATENCY)
+                    pair.deliver(junkHandshakeDatagrams(flight.last()), pair.client)
+                    pair.deliver(flight.drop(1), pair.client)
+
+                    val resent = pair.serverDatagramsUntilTheClientCompletes()
+                    assertTrue(
+                        resent.size > 1,
+                        "a client whose buffer junk filled first must not also keep the genuine packets behind it " +
+                            "(the buffer is bounded, first come first kept); it completed on ${resent.shape()}",
+                    )
+                    assertEquals("open", pair.closed(pair.client), "junk the client cannot decrypt must not close it")
+                } finally {
+                    pair.close()
+                }
+            }
+        }
+
+    /**
+     * The client sends its ClientHello and the server answers it; returns the server's first flight, whose
+     * first datagram alone carries the ServerHello and whose Handshake packets span at least two datagrams.
+     */
+    private fun QuichePairByHand.serverFirstFlight(): List<QuichePairByHand.Datagram> {
+        val hello = sends(client)
+        elapse(DEFAULT_PATH_LATENCY)
+        deliver(hello, server)
+        val flight = sends(server)
+        assertTrue(
+            flight.size >= 2 &&
+                "Initial" in flight.first().packetTypes &&
+                flight.drop(1).all { it.packetTypes == listOf("Handshake") },
+            "the server's flight must be the ServerHello's datagram then Handshake-only ones; it is ${flight.shape()}",
+        )
+        return flight
+    }
+
+    /**
+     * Run timers and carry every datagram, client to server whole and server to client one at a time, until
+     * the client's handshake completes; returns the server datagrams the client received on the way.
+     */
+    private fun QuichePairByHand.serverDatagramsUntilTheClientCompletes(): List<QuichePairByHand.Datagram> {
+        val received = mutableListOf<QuichePairByHand.Datagram>()
+        repeat(HANDSHAKE_ROUNDS) {
+            val toServer = sends(client)
+            if (toServer.isNotEmpty()) {
+                elapse(DEFAULT_PATH_LATENCY)
+                deliver(toServer, server)
+            }
+            val toClient = sends(server)
+            if (toClient.isNotEmpty()) elapse(DEFAULT_PATH_LATENCY)
+            for (datagram in toClient) {
+                deliver(listOf(datagram), client)
+                received += datagram
+                if (established(client)) return received
+            }
+            if (toServer.isEmpty() && toClient.isEmpty()) {
+                elapse(listOfNotNull(nextTimer(client), nextTimer(server)).minOrNull() ?: error("no timer is armed"))
+            }
+        }
+        error("the client had not completed its handshake after $HANDSHAKE_ROUNDS rounds; it received ${received.shape()}")
+    }
+
+    /** [JUNK_HANDSHAKE_PACKETS] copies of [genuine]'s Handshake packet whose AEAD tag no longer matches. */
+    private fun junkHandshakeDatagrams(genuine: QuichePairByHand.Datagram): List<QuichePairByHand.Datagram> =
+        List(JUNK_HANDSHAKE_PACKETS) { i ->
+            val bytes = genuine.packet("Handshake")
+            bytes[bytes.lastIndex] = (bytes[bytes.lastIndex].toInt() xor (i + 1)).toByte()
+            QuichePairByHand.Datagram(bytes, genuine.clientEndpoint)
+        }
+
+    private fun List<QuichePairByHand.Datagram>.shape(): String =
+        "$size datagrams of ${sumOf { it.bytes.size }} bytes ${map { it.packetTypes }}"
+
+    /**
      * Every PTO probe of a server carries a HANDSHAKE_DONE the client has not acknowledged, so whichever
      * probe reaches the client confirms its handshake. Before, only a probe that re-sent the packet
      * HANDSHAKE_DONE first rode in did, and only when that packet also carried CRYPTO or STREAM data:
@@ -5609,6 +5756,12 @@ abstract class MigrationSimTestSuite {
 
         /** PTOs in a row that lose the client's Finished; the second is the first one quiche gave to 1-RTT. */
         const val LOST_FINISHED_PTOS = 3
+
+        /** Well past the few Handshake packets a client keeps before the ServerHello. */
+        const val JUNK_HANDSHAKE_PACKETS = 64
+
+        /** Exchange rounds a handshake that lost its ServerHello has to complete in; each one fires at most one PTO. */
+        const val HANDSHAKE_ROUNDS = 32
 
         /** Well above any PTO of the pair's 120 ms round trip, and far below its idle timeout. */
         val CLIENT_PTO_CEILING = 10.seconds

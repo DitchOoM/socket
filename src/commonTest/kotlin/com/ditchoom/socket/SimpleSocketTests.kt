@@ -10,6 +10,7 @@ import com.ditchoom.data.readInto
 import com.ditchoom.data.readString
 import com.ditchoom.data.writeString
 import com.ditchoom.socket.harness.HarnessConfig
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -167,15 +168,18 @@ class SimpleSocketTests {
             var acceptedSocket: ClientSocket? = null
             val serverToClientMutex = Mutex(locked = true)
             val flow = server.bind()
+            val accepts = AcceptLog()
             launch(Dispatchers.Default) {
                 flow.collect { serverToClient ->
-                    serverToClient.closeAfter {
-                        acceptedSocket = serverToClient
-                        val buffer = serverToClient.readBuffer(1.seconds)
-                        val dataReceivedFromClient = buffer.readString(buffer.remaining(), Charset.UTF8)
-                        assertEquals(text, dataReceivedFromClient)
-                        serverToClientPort = serverToClient.localPort()
-                        assertTrue(serverToClientPort > 0, "No port number: serverToClientPort")
+                    accepts.serve(serverToClient) {
+                        serverToClient.closeAfter {
+                            acceptedSocket = serverToClient
+                            val buffer = serverToClient.readBuffer(1.seconds)
+                            val dataReceivedFromClient = buffer.readString(buffer.remaining(), Charset.UTF8)
+                            assertEquals(text, dataReceivedFromClient)
+                            serverToClientPort = serverToClient.localPort()
+                            assertTrue(serverToClientPort > 0, "No port number: serverToClientPort")
+                        }
                     }
                     serverToClientMutex.unlock()
                 }
@@ -184,8 +188,18 @@ class SimpleSocketTests {
             assertTrue(serverPort > 0, "No port ($serverPort) number from server")
             val clientToServer = ClientSocket.allocate(TransportConfig(connectTimeout = 5.seconds))
             clientToServer.open(serverPort)
+            accepts.client(clientToServer)
             clientToServer.write(text.toReadBuffer(Charset.UTF8), 1.seconds)
-            serverToClientMutex.lockWithTimeout()
+            accepts.note("client wrote ${text.length} bytes: $clientToServer")
+            try {
+                serverToClientMutex.lockWithTimeout()
+            } catch (e: Throwable) {
+                if (e is CancellationException && e !is TimeoutCancellationException) throw e
+                throw AssertionError(
+                    "the server never finished with the client's bytes: $clientToServer; server: $server\n${accepts.describe()}",
+                    e,
+                )
+            }
             val clientToServerPort = clientToServer.localPort()
             assertTrue(clientToServerPort > 0, "Invalid clientToServerPort local port.")
             clientToServer.close()
@@ -202,13 +216,16 @@ class SimpleSocketTests {
             var acceptedSocket: ClientSocket? = null
             val serverToClientMutex = Mutex(locked = true)
             val acceptedClientFlow = server.bind()
+            val accepts = AcceptLog()
             launch(Dispatchers.Default) {
                 acceptedClientFlow.collect { serverToClient ->
-                    serverToClient.closeAfter {
-                        acceptedSocket = serverToClient
-                        serverToClientPort = serverToClient.localPort()
-                        assertTrue { serverToClientPort > 0 }
-                        serverToClient.writeString(text, Charset.UTF8, 5.seconds)
+                    accepts.serve(serverToClient) {
+                        serverToClient.closeAfter {
+                            acceptedSocket = serverToClient
+                            serverToClientPort = serverToClient.localPort()
+                            assertTrue { serverToClientPort > 0 }
+                            serverToClient.writeString(text, Charset.UTF8, 5.seconds)
+                        }
                     }
                     serverToClientMutex.unlock()
                     return@collect
@@ -218,7 +235,13 @@ class SimpleSocketTests {
             val serverPort = server.port()
             assertTrue(serverPort > 0, "No port number from server")
             clientToServer.open(serverPort)
-            val buffer = clientToServer.readBuffer(5.seconds)
+            accepts.client(clientToServer)
+            val buffer =
+                try {
+                    clientToServer.readBuffer(5.seconds)
+                } catch (e: SocketTimeoutException) {
+                    throw AssertionError("the client's read timed out: $clientToServer; server: $server\n${accepts.describe()}", e)
+                }
             val dataReceivedFromServer = buffer.readString(buffer.remaining(), Charset.UTF8)
             serverToClientMutex.lockWithTimeout()
             assertEquals(text, dataReceivedFromServer)
