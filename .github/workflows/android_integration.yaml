@@ -98,7 +98,7 @@ jobs:
       # version, so a floating toolchain changed the key (and rebuilt every native) whenever a Rust
       # release landed. Bump it here deliberately.
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@1.100.0
+        uses: dtolnay/rust-toolchain@1.120.0
 
       # One digest of the inputs of a quiche native binary, shared by every writer and reader of these
       # caches (see .github/scripts/quiche-native-inputs.sh). It used to hash all of
