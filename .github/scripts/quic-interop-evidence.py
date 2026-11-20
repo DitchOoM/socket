@@ -26,8 +26,8 @@ A third source, the simulator's captures (sim/trace_node_left.pcap on the client
 trace_node_right.pcap on the server's), ties each connection to its UDP 4-tuple through the source connection id
 of our long-header packets, which travels in the clear (the peer's datagrams are those addressed to a connection id
 of ours). Its "wire" record says what the peer sent between our last receipt and the connection's end and how much
-of it reached us unchanged, and how many of the peer's packets reached us unchanged, in a space we had already used,
-with no logged receipt while a later packet of that space was read: a packet we should have read and did not. A
+of it reached us unchanged in a space we held keys for, and how many of the peer's packets reached us unchanged while
+we held their space's keys, with no logged receipt while a later packet of that space was read: a packet we should have read and did not. A
 peer report tied to the tuple (the stock quiche client names its local port before it gives up on requests) is
 "peer_gave_up_requests".
 
@@ -253,6 +253,8 @@ WIRE_SLACK_MS = 5.0
 READ_LAG_MS = 250.0
 # A burst of probes: our ack-eliciting packets sent this close together answer one timer expiry.
 BURST_MS = 2.0
+# A burst this soon after our qlog shows the PTO count rise is that expiry's probe.
+EXPIRY_TO_PROBE_MS = 10.0
 # A probe is late when it waits longer than its PTO times this, plus PTO_SLACK_MS (max_ack_delay, timer slack).
 PTO_TOLERANCE, PTO_SLACK_MS = 1.1, 50.0
 DEFAULT_MAX_ACK_DELAY_MS = 25.0  # RFC 9000 §18.2
@@ -370,6 +372,7 @@ def wire_facts(records, side, facts, captures):
         return None
     _, _, our_port, _, peer_port, _ = first_ours
     offset = first_ours[0] - first_tx  # capture ms minus qlog ms
+    windows = key_windows(records, side)
 
     def from_peer(d):
         packets = wire_packets(d[5], len(scid))
@@ -390,27 +393,54 @@ def wire_facts(records, side, facts, captures):
     return {
         "port": our_port if side == "client" else peer_port,
         "peer_sent_after_last_rx": sent_after,
-        "peer_delivered_after_last_rx": sum(last_rx + WIRE_SLACK_MS < t <= end for t, _ in delivered),
-        "peer_packets_unread": unread_packets(records, sorted(delivered), len(scid)),
+        "peer_delivered_after_last_rx": sum(
+            1 for t, payload in delivered if last_rx + WIRE_SLACK_MS < t <= end
+            for space, _, _ in wire_packets(payload, len(scid)) if readable(windows, space, t)
+        ),
+        "peer_packets_unread": unread_packets(records, side, sorted(delivered), len(scid)),
     }
 
 
-def unread_packets(records, delivered, short_dcid_length):
-    """How many packets of the peer's reached us unchanged, after we first logged a packet of their space, without
-    a logged receipt of that space within READ_LAG_MS (our endpoint's own scheduling), while a later packet of the
-    same space that reached us was read: a gap in our reading, not keys we had already discarded."""
-    first_logged, logged_rx = {}, collections.defaultdict(list)
+def key_windows(records, side):
+    """{space: (first packet of it we logged, when we discarded its keys)}: a packet of the space arriving between
+    the two is one we could read. RFC 9001 §4.9: a client drops Initial keys on its first Handshake packet sent and
+    Handshake keys on HANDSHAKE_DONE; a server drops Initial keys on its first Handshake packet received and
+    Handshake keys once it completes (sends HANDSHAKE_DONE). Once the peer's CONNECTION_CLOSE arrives we read nothing
+    more (RFC 9000 §10.2.2)."""
+    first, dropped, draining = {}, {}, float("inf")
     for r in records:
-        name = r.get("name", "")
-        if (name.endswith("packet_sent") or name.endswith("packet_received")) and isinstance(r.get("time"), (int, float)):
-            space = ((r.get("data") or {}).get("header") or {}).get("packet_type", "")
-            first_logged.setdefault(space, float(r["time"]))
-            if name.endswith("packet_received"):
-                logged_rx[space].append(float(r["time"]))
+        name, data = r.get("name", ""), r.get("data") or {}
+        if not (name.endswith("packet_sent") or name.endswith("packet_received")) or not isinstance(r.get("time"), (int, float)):
+            continue
+        at, sent = float(r["time"]), name.endswith("packet_sent")
+        space = (data.get("header") or {}).get("packet_type", "")
+        first.setdefault(space, at)
+        if space == "handshake" and sent == (side == "client"):
+            dropped.setdefault("initial", at)
+        kinds = {f.get("frame_type") for f in data.get("frames") or []}
+        if "handshake_done" in kinds:
+            dropped.setdefault("handshake", at)
+        if "connection_close" in kinds and not sent:
+            draining = min(draining, at)  # RFC 9000 §10.2.2: a draining endpoint reads nothing more
+    return {space: (at, min(dropped.get(space, float("inf")), draining)) for space, at in first.items()}
+
+
+def readable(windows, space, t):
+    return space in windows and windows[space][0] < t <= windows[space][1]
+
+
+def unread_packets(records, side, delivered, short_dcid_length):
+    """How many packets of the peer's reached us unchanged while we held their space's keys, without a logged
+    receipt of that space within READ_LAG_MS (our endpoint's own scheduling), while a later packet of the same space
+    that reached us was read: a gap in our reading."""
+    windows, logged_rx = key_windows(records, side), collections.defaultdict(list)
+    for r in records:
+        if r.get("name", "").endswith("packet_received") and isinstance(r.get("time"), (int, float)):
+            logged_rx[((r.get("data") or {}).get("header") or {}).get("packet_type", "")].append(float(r["time"]))
     unmatched, last_read = collections.defaultdict(list), {}
     for t, payload in delivered:
         for space, _, _ in wire_packets(payload, short_dcid_length):
-            if space not in first_logged or t <= first_logged[space]:
+            if not readable(windows, space, t):
                 continue
             match = next((i for i, at in enumerate(logged_rx[space]) if t - WIRE_SLACK_MS <= at <= t + READ_LAG_MS), None)
             if match is None:
@@ -434,8 +464,13 @@ def probe_facts(records, side):
     acked_pns = collections.defaultdict(set)
     discarded = set()
     rtt, in_flight, max_ack_delay, closed = (333.0, 166.5, 0.0), 0, DEFAULT_MAX_ACK_DELAY_MS, False
-    bursts = []  # [time, spaces it carried data in, spaces with unacknowledged data before it, rtt estimate then]
-    last_eliciting = None  # (time, rtt) of our last ack-eliciting send at or before our last receipt
+    bursts = []  # [time, spaces with data in it, spaces owing data before it, rtt then, arms the timer, a timer probe]
+    last_eliciting = None  # time of our last timer-arming send at or before our last receipt
+    confirmed = False  # RFC 9002 §6.2.1: no Application Data PTO before the handshake is confirmed
+    pto_count, expired_at = 0, float("-inf")  # quiche's expiry count, and when it last rose
+    eliciting_pns = collections.defaultdict(set)  # space -> our timer-arming packets
+    flight_at_first_burst = True
+    validated = side == "server"  # our client knows the server validated its address (RFC 9002 §6.2.2.1)
     for r in timed:
         name, data, at = r["name"], r.get("data") or {}, float(r["time"])
         space = ((data.get("header") or {}).get("packet_type", "")).replace("0RTT", "1RTT")
@@ -443,6 +478,9 @@ def probe_facts(records, side):
         kinds = {f.get("frame_type") for f in frames}
         closed |= "connection_close" in kinds
         if name.endswith("recovery_metrics_updated"):
+            if int(data.get("pto_count", pto_count)) > pto_count:
+                expired_at = at
+            pto_count = int(data.get("pto_count", pto_count))
             rtt = (float(data.get("smoothed_rtt", rtt[0])), float(data.get("rtt_variance", rtt[1])), rtt[2])
             in_flight = int(data.get("bytes_in_flight", in_flight))
         elif name.endswith("parameters_set") and data.get("initiator") == "remote" and "max_ack_delay" in data:
@@ -460,21 +498,29 @@ def probe_facts(records, side):
             if "handshake_done" in kinds:
                 discarded.add("handshake")
                 rtt = (rtt[0], rtt[1], max_ack_delay)
+            validated |= "handshake_done" in kinds or (space == "handshake" and "ack" in kinds)
+            confirmed |= "handshake_done" in kinds
         elif name.endswith("packet_sent"):
             units = data_units(frames)
             eliciting = bool(kinds - NOT_ACK_ELICITING)
-            if eliciting and at > last_rx + WIRE_SLACK_MS:
+            arms = eliciting and (confirmed or space != "1RTT")
+            if eliciting and at > last_rx:
                 if bursts and at - bursts[-1][0] <= BURST_MS:
                     if units:
                         bursts[-1][1].add(space)
+                    bursts[-1][4] |= arms
                 else:
                     owed = {s for s, packets in sent_data.items() if s not in discarded and unacked(packets, acked_pns[s])}
-                    bursts.append([at, {space} if units else set(), owed, rtt])
-            elif eliciting:
-                last_eliciting = (at, rtt)
+                    if not bursts:
+                        flight_at_first_burst = any(eliciting_pns[s] - acked_pns[s] for s in eliciting_pns if s not in discarded)
+                    bursts.append([at, {space} if units else set(), owed, rtt, arms, at - expired_at <= EXPIRY_TO_PROBE_MS])
+            elif arms:
+                last_eliciting = at
             pn = (data.get("header") or {}).get("packet_number")
             if pn is not None and units:
                 sent_data[space][int(pn)] = units
+            if pn is not None and arms:
+                eliciting_pns[space].add(int(pn))
             # RFC 9001 §4.9: a client drops Initial keys on its first Handshake packet, a server its Handshake keys
             # once its handshake completes (it sends HANDSHAKE_DONE).
             if space == "handshake" and side == "client":
@@ -482,20 +528,25 @@ def probe_facts(records, side):
             if "handshake_done" in kinds:
                 discarded.add("handshake")
                 rtt = (rtt[0], rtt[1], max_ack_delay)
-    # Each ack-eliciting send re-arms the timer (RFC 9002 §6.2.1). A burst at least half its due PTO after the send
-    # before it is the timer's probe; one sooner is a send of the connection's own (a NEW_CONNECTION_ID after an
-    # acknowledgement), which re-arms the timer without an expiry.
+                confirmed = True
+    # Each ack-eliciting send re-arms the timer (RFC 9002 §6.2.1), a 1-RTT one only once the handshake is confirmed.
+    # A burst our qlog shows right after an expiry is the timer's probe, judged by when it came and what it carried;
+    # any other is a send of the connection's own (an answer, a NEW_CONNECTION_ID). A timer that should have fired
+    # and did not shows as the next burst, or the end, coming late.
     # The PTO is the one the RTT estimate gives when the timer fires: samples taken after the send re-arm it.
     missing = late = 0
     if last_eliciting is not None:
-        ref, expiries = last_eliciting[0], 0
-        for at, carried, owed, before in bursts:
+        # With nothing ack-eliciting in flight, a client the server has not yet validated arms its anti-deadlock
+        # timer from now (RFC 9002 §6.2.2.1, A.8): from its last receipt.
+        ref, expiries = (max(last_eliciting, last_rx) if not validated and not flight_at_first_burst else last_eliciting), 0
+        for at, carried, owed, before, arms, probe in bursts:
             due = pto_ms(before) * 2 ** expiries
-            if at - ref >= due / 2:
+            if probe:
                 missing += bool(owed - carried)
                 late += at - ref > due * PTO_TOLERANCE + PTO_SLACK_MS
                 expiries += 1
-            ref = at
+            if arms:
+                ref = at
         if in_flight > 0 and not closed and end - ref > pto_ms(rtt) * 2 ** expiries * PTO_TOLERANCE + PTO_SLACK_MS:
             late += 1
     return missing, late

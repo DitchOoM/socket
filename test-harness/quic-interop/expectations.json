@@ -171,7 +171,7 @@
       "handshake": "pass",
       "handshakecorruption": {
         "flaky": {
-          "why": "peer: kwik re-sends a lost response 10 s and then 21 s later; our client, nothing in flight, idles out first (run 43569919260); or it acknowledges our Initials for the whole 300 s time limit (2578 acknowledgements, answered by our probes) but never re-sends the lost ServerHello (run 43769452583)",
+          "why": "peer: kwik re-sends a lost response 10 s and then 21 s later; our client, nothing in flight, idles out first (run 43569919260); or it acknowledges our Initials for the whole 300 s time limit (2578 acknowledgements, answered by our probes) but never re-sends the lost ServerHello (run 43769452583); or kwik completes its handshake on our Finished (it answers our request at once, that answer is corrupted), then neither acknowledges a Handshake packet of ours nor sends HANDSHAKE_DONE for 28 s (RFC 9001 §4.1.2) and never re-sends the answer, while our client re-sends its Finished on every PTO, on time, until its idle timeout (run 44690803861)",
           "signature": {
             "kind": "any-of",
             "signatures": [
@@ -183,6 +183,11 @@
               {
                 "kind": "peer-acked-initials-without-server-hello",
                 "min_acks": 1000
+              },
+              {
+                "kind": "peer-packets-lost-while-we-probed-on-time",
+                "ended_by": "our-idle-timeout",
+                "idle_s": 30
               }
             ]
           }
@@ -462,7 +467,7 @@
       },
       "handshakeloss": {
         "flaky": {
-          "why": "peer: the stock quiche server drops our request when it arrives before its handshake completes (it buffers no early 1-RTT), our retransmissions 12 s and 36 s later (a 4 s first RTT sample, the server's acknowledgement of our Initial having ridden its own 4 s PTO) are lost or late, and it idles out 30 s after its last packet (run 44177059008); or, its congestion window spent on Handshake packets we cannot read, it never re-sends the last 31 bytes of its ServerHello and acknowledges our Initial probes for the whole time limit (run 44177059008 retry: 2722 acknowledgements, the ServerHello stopped at byte 59 of 90); or the server's ServerHello is lost five times, its Handshake packets that arrived before it could not be read (we had no Handshake keys yet), our Finished and request ride every PTO probe of ours on time but the server's HANDSHAKE_DONE, sent once, is lost and its next PTO (smoothed RTT 12 s) falls after our idle timeout (runs 44564256526, 44547126262); or the server acknowledges our Handshake PING (our anti-deadlock duty ends, RFC 9002 §6.2.2.1), its one Handshake CRYPTO retransmission is lost and it sends nothing more before our idle timeout (run 44549152631)",
+          "why": "peer: the stock quiche server drops our request when it arrives before its handshake completes (it buffers no early 1-RTT), our retransmissions 12 s and 36 s later (a 4 s first RTT sample, the server's acknowledgement of our Initial having ridden its own 4 s PTO) are lost or late, and it idles out 30 s after its last packet (run 44177059008); or, its congestion window spent on Handshake packets we cannot read, it never re-sends the last 31 bytes of its ServerHello and acknowledges our Initial probes for the whole time limit (run 44177059008 retry: 2722 acknowledgements, the ServerHello stopped at byte 59 of 90); or the server's ServerHello is lost five times, its Handshake packets that arrived before it could not be read (we had no Handshake keys yet), our Finished and request ride every PTO probe of ours on time but the server's HANDSHAKE_DONE, sent once, is lost and its next PTO (smoothed RTT 12 s) falls after our idle timeout (runs 44564256526, 44547126262; in 44690803861 its Handshake flight arrived before its ServerHello, so we could not read it, its one retransmission was lost, and it sent no other Handshake data in the 39 s our anti-deadlock PINGs kept the connection open); or the server acknowledges our Handshake PING (our anti-deadlock duty ends, RFC 9002 §6.2.2.1), its one Handshake CRYPTO retransmission is lost and it sends nothing more before our idle timeout (run 44549152631)",
           "signature": {
             "kind": "any-of",
             "signatures": [

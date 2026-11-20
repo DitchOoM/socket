@@ -440,7 +440,7 @@ expect "the extractor reads crypto coverage, the request's timeline, PTO expirie
 # we did right on that connection; every negative below is a look-alike in which we did something wrong, and each
 # is first shown to match the symptom alone (the naive check), so the kind is what keeps it red.
 fx="$here/fixtures/quic-interop-handshake"
-for cell in our-server-quinn:our-server:quinn our-server-quiche:our-server:quiche our-server-quiche-answer-lost:our-server:quiche our-server-quiche-request-lost:our-server:quiche our-client-quiche:our-client:quiche our-client-haproxy:our-client:haproxy; do
+for cell in our-server-quinn:our-server:quinn our-server-quiche:our-server:quiche our-server-quiche-answer-lost:our-server:quiche our-server-quiche-request-lost:our-server:quiche our-client-quiche:our-client:quiche our-client-quiche-anti-deadlock:our-client:quiche our-client-kwik:our-client:kwik our-client-haproxy:our-client:haproxy; do
   IFS=: read -r name direction peer <<<"$cell"
   python3 -I "$extract" "$fx/$name/logs" "$direction" "$peer" "$tmp/fx-$name.json"
   expect_rc "the extractor reads the $name capture" $? 0
@@ -497,6 +497,11 @@ check_conn "the stock quiche client's request lost five times, the client gave u
 # smoothed after later samples), not of the estimate when the answer went out (1.9 s), so neither is late.
 check_conn "the stock quiche client gave up while our answer was lost on every PTO (run 44685812497)" "$tmp/fx-our-server-quiche-answer-lost.json" "$gaveup" 'assert c["late_probes"] == 0 and c["fin_sent_streams"] == 1' Matched Matched
 check_conn "the stock quiche client's request lost twice, then only its acknowledgements for 30 s (run 44683082845)" "$tmp/fx-our-server-quiche-request-lost.json" "$move" '' Matched Matched
+# Run 44690803861: our probes judged from the timer as RFC 9002 arms it. kwik: a probe 2 ms after a receipt is the
+# expiry quiche logged, and before confirmation only Handshake sends arm the timer. Stock quiche: with nothing in
+# flight and no Handshake ACK yet, the anti-deadlock timer runs from our last receipt (§6.2.2.1).
+check_conn "kwik never sending HANDSHAKE_DONE nor its lost answer while we re-sent our Finished on time (run 44690803861)" "$tmp/fx-our-client-kwik.json" "$probed" 'assert c["late_probes"] == 0, c["late_probes"]' Matched Matched
+check_conn "the stock quiche server's Handshake flight unread before its ServerHello, our anti-deadlock PINGs on time (run 44690803861)" "$tmp/fx-our-client-quiche-anti-deadlock.json" "$probed" 'assert c["late_probes"] == 0, c["late_probes"]' Matched Matched
 for e in "$quinn" "$haproxy" "$qclient" "$qserver"; do
   ev="$(python3 -c 'import json,sys; c=next(iter(json.load(open(sys.argv[1]))["tests"].values()))["connections"][0]; print(c["probes_missing_a_space"], c["late_probes"], c["wire"]["peer_packets_unread"], c["wire"]["peer_delivered_after_last_rx"])' "$e")"
   expect "on time, every space, every packet read: $(basename "$e")" "$ev" "0 0 0 0"
