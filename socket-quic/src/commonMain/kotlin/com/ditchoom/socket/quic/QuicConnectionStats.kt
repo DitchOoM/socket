@@ -38,6 +38,10 @@ data class QuicConnectionStats(
     /** Paths the connection knows, validated or not. */
     val paths: Int,
     val activePath: QuicActivePathStats,
+    /** Datagrams a send refused because the send queue was full; [datagramsSent] counts only those the queue took. */
+    val datagramsRefusedQueueFull: Long = 0,
+    /** Received datagrams dropped, oldest first, because the receive queue was full; [datagramsReceived] counts them. */
+    val datagramsDroppedReceiveQueue: Long = 0,
 )
 
 /** The path the connection sends on, or none while it switches paths. */

@@ -36,6 +36,7 @@ import com.ditchoom.socket.quic.core.conn.Inside
 import com.ditchoom.socket.quic.core.conn.NetworkChange
 import com.ditchoom.socket.quic.core.conn.NetworkWork
 import com.ditchoom.socket.quic.core.life.ConnEnd
+import com.ditchoom.socket.quic.core.observe.withDatagramCounts
 import com.ditchoom.socket.testkit.trace.TraceSink
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CompletableDeferred
@@ -183,9 +184,7 @@ internal class CoreConnection(
 
     /** Read inside the connection when asked; nothing is counted for it otherwise. */
     override suspend fun stats(): QuicStatsRead =
-        suspendCancellableCoroutine { cont ->
-            conn.submit(StatsWork(cont), CallerPlace.HandToLoop)
-        }
+        suspendCancellableCoroutine { cont -> conn.submit(StatsWork(cont), CallerPlace.HandToLoop) }.withDatagramCounts(conn.counts)
 
     /** What the connection waits on: its published life and counts, and what the thread inside saw, if one answers within [bound]. */
     @OptIn(ExperimentalCoroutinesApi::class)

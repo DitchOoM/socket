@@ -1,5 +1,7 @@
 package com.ditchoom.socket.quic.core.observe
 
+import com.ditchoom.socket.quic.QuicStatsRead
+
 /** What a connection did with the threads and datagrams that reached it: any thread counts, tests read. */
 internal class ConnCounts {
     private val entered = Counter()
@@ -10,6 +12,7 @@ internal class ConnCounts {
     private val late = Counter()
     private val resent = Counter()
     private val overflowed = Counter()
+    private val refused = Counter()
     private val mismatched = Counter()
 
     /** Times a caller entered a free connection and served it on its own thread. */
@@ -36,6 +39,9 @@ internal class ConnCounts {
     /** Received RFC 9221 datagrams dropped because the connection's receive queue was full and nobody was receiving. */
     val datagramsOverflowed: Long get() = overflowed.value()
 
+    /** RFC 9221 datagrams the connection's send queue refused because it was full: the caller was told, nothing was queued. */
+    val datagramsRefusedQueueFull: Long get() = refused.value()
+
     /** Datagrams whose due time quiche stamped on a clock the loop does not read: each was sent at once, unpaced. */
     val pacingClockMismatches: Long get() = mismatched.value()
 
@@ -54,6 +60,8 @@ internal class ConnCounts {
     fun closeResent() = resent.increment()
 
     fun datagramOverflowed() = overflowed.increment()
+
+    fun datagramRefusedQueueFull() = refused.increment()
 
     fun pacingClockMismatch() = mismatched.increment()
 
@@ -80,3 +88,16 @@ internal class CountsSeen(
     val lateDatagrams: Long,
     val pacingClockMismatches: Long,
 )
+
+/** This read with the datagrams [counts] saw refused at the sender and dropped at the receiver; a read that has no statistics has none. */
+internal fun QuicStatsRead.withDatagramCounts(counts: ConnCounts): QuicStatsRead =
+    when (this) {
+        is QuicStatsRead.Read ->
+            QuicStatsRead.Read(
+                stats.copy(
+                    datagramsRefusedQueueFull = counts.datagramsRefusedQueueFull,
+                    datagramsDroppedReceiveQueue = counts.datagramsOverflowed,
+                ),
+            )
+        is QuicStatsRead.Ended, is QuicStatsRead.NotReported -> this
+    }
