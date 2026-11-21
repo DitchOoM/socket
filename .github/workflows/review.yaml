@@ -36,6 +36,16 @@ jobs:
             echo "== $t"
             bash "$t"
           done
+      - name: Set up JDK 21
+        uses: actions/setup-java@v6
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+      - name: No public entry point depends on a 4.x internal
+        run: |
+          set -euo pipefail
+          java scripts/EntryPointIsolationCheck.java --selftest
+          java scripts/EntryPointIsolationCheck.java .
 
   build-linux:
     needs: version
