@@ -41,6 +41,8 @@ import com.ditchoom.socket.quic.nameQlog
 import com.ditchoom.socket.quic.nameTrafficSecretsLog
 import com.ditchoom.socket.quic.resolveNetworkMonitor
 import com.ditchoom.socket.quic.toPathKey
+import com.ditchoom.socket.quic.trace.TraceCapture
+import com.ditchoom.socket.quic.traceRecorderFor
 import com.ditchoom.socket.quic.wireClientConnectivityTap
 import com.ditchoom.socket.udp.SocketAddressCodec
 import com.ditchoom.socket.udp.UdpSocket
@@ -79,7 +81,11 @@ internal suspend fun coreConnect(
     datagramSize: DatagramSize = DatagramSize.Probed,
     tokens: ClientTokens = ClientTokens.NotKept,
     mismatch: MismatchResponse = MismatchResponse.Unpaced,
+    standby: StandbyRadio = standbyRadioOfThisPlatform,
 ): CoreClient {
+    val capture = traceRecorderFor(options)
+    // Before the setup lane, a socket or a file: a connect that cannot be honoured opens nothing.
+    verdictOn(options, QuicRole.Client, capture, standby).orRefuse()
     val began = TimeSource.Monotonic.markNow()
     val peerHost = peerHostFor(host)
     val unstarted = ClientSetup.Unstarted(EdgeMemory(factory))
@@ -95,6 +101,7 @@ internal suspend fun coreConnect(
                     port,
                     serverName,
                     sized,
+                    capture,
                     unstarted.memory,
                     factory,
                     api,
@@ -128,6 +135,7 @@ private suspend fun OnSetupLane.connectOnLane(
     port: Int,
     serverName: String,
     options: QuicOptions,
+    capture: TraceCapture,
     memory: EdgeMemory,
     factory: BufferFactory,
     api: QuicheApi,
@@ -237,6 +245,7 @@ private suspend fun OnSetupLane.connectOnLane(
                     kept = planned.kept,
                     tokens = plan.tokens,
                     mismatch = mismatch,
+                    capture = capture,
                 ),
                 peerSockAddr,
                 localSockAddr,

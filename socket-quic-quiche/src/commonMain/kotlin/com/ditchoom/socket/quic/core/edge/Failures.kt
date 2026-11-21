@@ -5,12 +5,14 @@ package com.ditchoom.socket.quic.core.edge
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.socket.quic.NativeSocketRefusal
 import com.ditchoom.socket.quic.NetworkRefusal
+import com.ditchoom.socket.quic.PinnedRadioRefusedException
 import com.ditchoom.socket.quic.QuicAppErrorCode
 import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicCloseReason
 import com.ditchoom.socket.quic.QuicConnectionEnd
 import com.ditchoom.socket.quic.QuicNativeMemoryRequiredException
+import com.ditchoom.socket.quic.QuicOptionRefusedException
 import com.ditchoom.socket.quic.QuicStreamAbort
 import com.ditchoom.socket.quic.QuicStreamClosedException
 import com.ditchoom.socket.quic.QuicStreamException
@@ -138,6 +140,15 @@ internal fun raiseFailure(
         is OpFailure.DeadlinePassed -> throw deadlineException(failure.bound)
         is Raised -> raise(failure, during)
     }
+
+/** Raises an option refusal on the caller's thread, before anything is opened; a honoured verdict raises nothing. */
+internal fun OptionVerdict.orRefuse() {
+    when (this) {
+        is OptionVerdict.Honoured -> Unit
+        is OptionVerdict.Refused -> throw QuicOptionRefusedException(refusal)
+        is OptionVerdict.PinRefused -> throw PinnedRadioRefusedException(radio, refusal)
+    }
+}
 
 /** Raises, on the caller's thread, the cancellation of the job in [context], which a caller that was cancelled has. */
 @OptIn(InternalCoroutinesApi::class)

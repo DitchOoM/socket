@@ -7,6 +7,7 @@ import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicOptions
+import com.ditchoom.socket.quic.QuicRole
 import com.ditchoom.socket.quic.QuicTlsConfig
 import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.UdpBatching
@@ -26,6 +27,7 @@ import com.ditchoom.socket.quic.core.time.MonotonicClock
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 import com.ditchoom.socket.quic.core.udp.SocketBuffers
 import com.ditchoom.socket.quic.core.udp.SocketReport
+import com.ditchoom.socket.quic.trace.TraceCapture
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
@@ -125,8 +127,11 @@ internal suspend fun coreServe(
     batching: UdpBatching = options.udpBatching,
     datagramSize: DatagramSize = DatagramSize.Probed,
     mismatch: MismatchResponse = MismatchResponse.Unpaced,
-): CoreServer =
-    withContext(setupLane) {
+    standby: StandbyRadio = standbyRadioOfThisPlatform,
+): CoreServer {
+    // A connection's capture is made as the server accepts it, so only the options are judged here; before the setup lane.
+    verdictOn(options, QuicRole.Server, TraceCapture.Off, standby).orRefuse()
+    return withContext(setupLane) {
         ServerSetup(
             bind,
             tls,
@@ -145,6 +150,7 @@ internal suspend fun coreServe(
             mismatch,
         ).start()
     }
+}
 
 /** The name of the server loop's thread. */
 internal const val SERVER_THREAD = "quic-core-server"

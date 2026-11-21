@@ -95,6 +95,19 @@ final enum class com.ditchoom.socket.quic/QuicHandshakeReached : kotlin/Enum<com
     final fun values(): kotlin/Array<com.ditchoom.socket.quic/QuicHandshakeReached> // com.ditchoom.socket.quic/QuicHandshakeReached.values|values#static(){}[0]
 }
 
+final enum class com.ditchoom.socket.quic/QuicOptionName : kotlin/Enum<com.ditchoom.socket.quic/QuicOptionName> { // com.ditchoom.socket.quic/QuicOptionName|null[0]
+    enum entry Migration // com.ditchoom.socket.quic/QuicOptionName.Migration|null[0]
+    enum entry StandbyLink // com.ditchoom.socket.quic/QuicOptionName.StandbyLink|null[0]
+    enum entry StreamOpenPolicy // com.ditchoom.socket.quic/QuicOptionName.StreamOpenPolicy|null[0]
+    enum entry Trace // com.ditchoom.socket.quic/QuicOptionName.Trace|null[0]
+
+    final val entries // com.ditchoom.socket.quic/QuicOptionName.entries|#static{}entries[0]
+        final fun <get-entries>(): kotlin.enums/EnumEntries<com.ditchoom.socket.quic/QuicOptionName> // com.ditchoom.socket.quic/QuicOptionName.entries.<get-entries>|<get-entries>#static(){}[0]
+
+    final fun valueOf(kotlin/String): com.ditchoom.socket.quic/QuicOptionName // com.ditchoom.socket.quic/QuicOptionName.valueOf|valueOf#static(kotlin.String){}[0]
+    final fun values(): kotlin/Array<com.ditchoom.socket.quic/QuicOptionName> // com.ditchoom.socket.quic/QuicOptionName.values|values#static(){}[0]
+}
+
 final enum class com.ditchoom.socket.quic/UdpBatching : kotlin/Enum<com.ditchoom.socket.quic/UdpBatching> { // com.ditchoom.socket.quic/UdpBatching|null[0]
     enum entry Newest // com.ditchoom.socket.quic/UdpBatching.Newest|null[0]
     enum entry OneDatagramPerCall // com.ditchoom.socket.quic/UdpBatching.OneDatagramPerCall|null[0]
@@ -1134,7 +1147,10 @@ sealed interface com.ditchoom.socket.quic/PeerCertificateSupport { // com.ditcho
     }
 }
 
-sealed interface com.ditchoom.socket.quic/PinnedRadioRefusal { // com.ditchoom.socket.quic/PinnedRadioRefusal|null[0]
+sealed interface com.ditchoom.socket.quic/PinnedRadioRefusal : com.ditchoom.socket.quic/QuicOptionRefusal { // com.ditchoom.socket.quic/PinnedRadioRefusal|null[0]
+    open val option // com.ditchoom.socket.quic/PinnedRadioRefusal.option|{}option[0]
+        open fun <get-option>(): com.ditchoom.socket.quic/QuicOptionName // com.ditchoom.socket.quic/PinnedRadioRefusal.option.<get-option>|<get-option>(){}[0]
+
     final object EngineCannotPin : com.ditchoom.socket.quic/PinnedRadioRefusal { // com.ditchoom.socket.quic/PinnedRadioRefusal.EngineCannotPin|null[0]
         final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/PinnedRadioRefusal.EngineCannotPin.equals|equals(kotlin.Any?){}[0]
         final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/PinnedRadioRefusal.EngineCannotPin.hashCode|hashCode(){}[0]
@@ -2109,6 +2125,50 @@ sealed interface com.ditchoom.socket.quic/QuicFullHandshakeReason { // com.ditch
         final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicFullHandshakeReason.TicketNotResumed.equals|equals(kotlin.Any?){}[0]
         final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicFullHandshakeReason.TicketNotResumed.hashCode|hashCode(){}[0]
         final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicFullHandshakeReason.TicketNotResumed.toString|toString(){}[0]
+    }
+}
+
+sealed interface com.ditchoom.socket.quic/QuicOptionRefusal { // com.ditchoom.socket.quic/QuicOptionRefusal|null[0]
+    abstract val option // com.ditchoom.socket.quic/QuicOptionRefusal.option|{}option[0]
+        abstract fun <get-option>(): com.ditchoom.socket.quic/QuicOptionName // com.ditchoom.socket.quic/QuicOptionRefusal.option.<get-option>|<get-option>(){}[0]
+
+    final class QlogNotBudgeted : com.ditchoom.socket.quic/QuicOptionRefusal { // com.ditchoom.socket.quic/QuicOptionRefusal.QlogNotBudgeted|null[0]
+        constructor <init>(com.ditchoom.socket.quic.trace/QlogTarget.Budgeted) // com.ditchoom.socket.quic/QuicOptionRefusal.QlogNotBudgeted.<init>|<init>(com.ditchoom.socket.quic.trace.QlogTarget.Budgeted){}[0]
+
+        final val option // com.ditchoom.socket.quic/QuicOptionRefusal.QlogNotBudgeted.option|{}option[0]
+            final fun <get-option>(): com.ditchoom.socket.quic/QuicOptionName // com.ditchoom.socket.quic/QuicOptionRefusal.QlogNotBudgeted.option.<get-option>|<get-option>(){}[0]
+        final val target // com.ditchoom.socket.quic/QuicOptionRefusal.QlogNotBudgeted.target|{}target[0]
+            final fun <get-target>(): com.ditchoom.socket.quic.trace/QlogTarget.Budgeted // com.ditchoom.socket.quic/QuicOptionRefusal.QlogNotBudgeted.target.<get-target>|<get-target>(){}[0]
+
+        final fun component1(): com.ditchoom.socket.quic.trace/QlogTarget.Budgeted // com.ditchoom.socket.quic/QuicOptionRefusal.QlogNotBudgeted.component1|component1(){}[0]
+        final fun copy(com.ditchoom.socket.quic.trace/QlogTarget.Budgeted = ...): com.ditchoom.socket.quic/QuicOptionRefusal.QlogNotBudgeted // com.ditchoom.socket.quic/QuicOptionRefusal.QlogNotBudgeted.copy|copy(com.ditchoom.socket.quic.trace.QlogTarget.Budgeted){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicOptionRefusal.QlogNotBudgeted.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicOptionRefusal.QlogNotBudgeted.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicOptionRefusal.QlogNotBudgeted.toString|toString(){}[0]
+    }
+
+    final class StreamOpenNotBounded : com.ditchoom.socket.quic/QuicOptionRefusal { // com.ditchoom.socket.quic/QuicOptionRefusal.StreamOpenNotBounded|null[0]
+        constructor <init>(kotlin.time/Duration) // com.ditchoom.socket.quic/QuicOptionRefusal.StreamOpenNotBounded.<init>|<init>(kotlin.time.Duration){}[0]
+
+        final val deadline // com.ditchoom.socket.quic/QuicOptionRefusal.StreamOpenNotBounded.deadline|{}deadline[0]
+            final fun <get-deadline>(): kotlin.time/Duration // com.ditchoom.socket.quic/QuicOptionRefusal.StreamOpenNotBounded.deadline.<get-deadline>|<get-deadline>(){}[0]
+        final val option // com.ditchoom.socket.quic/QuicOptionRefusal.StreamOpenNotBounded.option|{}option[0]
+            final fun <get-option>(): com.ditchoom.socket.quic/QuicOptionName // com.ditchoom.socket.quic/QuicOptionRefusal.StreamOpenNotBounded.option.<get-option>|<get-option>(){}[0]
+
+        final fun component1(): kotlin.time/Duration // com.ditchoom.socket.quic/QuicOptionRefusal.StreamOpenNotBounded.component1|component1(){}[0]
+        final fun copy(kotlin.time/Duration = ...): com.ditchoom.socket.quic/QuicOptionRefusal.StreamOpenNotBounded // com.ditchoom.socket.quic/QuicOptionRefusal.StreamOpenNotBounded.copy|copy(kotlin.time.Duration){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicOptionRefusal.StreamOpenNotBounded.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicOptionRefusal.StreamOpenNotBounded.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicOptionRefusal.StreamOpenNotBounded.toString|toString(){}[0]
+    }
+
+    final object StandbyRadioNotHeld : com.ditchoom.socket.quic/QuicOptionRefusal { // com.ditchoom.socket.quic/QuicOptionRefusal.StandbyRadioNotHeld|null[0]
+        final val option // com.ditchoom.socket.quic/QuicOptionRefusal.StandbyRadioNotHeld.option|{}option[0]
+            final fun <get-option>(): com.ditchoom.socket.quic/QuicOptionName // com.ditchoom.socket.quic/QuicOptionRefusal.StandbyRadioNotHeld.option.<get-option>|<get-option>(){}[0]
+
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicOptionRefusal.StandbyRadioNotHeld.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicOptionRefusal.StandbyRadioNotHeld.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicOptionRefusal.StandbyRadioNotHeld.toString|toString(){}[0]
     }
 }
 
@@ -3125,7 +3185,7 @@ final class com.ditchoom.socket.quic/PeerCertificateValidity { // com.ditchoom.s
     }
 }
 
-final class com.ditchoom.socket.quic/PinnedRadioRefusedException : kotlin/UnsupportedOperationException { // com.ditchoom.socket.quic/PinnedRadioRefusedException|null[0]
+final class com.ditchoom.socket.quic/PinnedRadioRefusedException : com.ditchoom.socket.quic/QuicOptionRefusedException { // com.ditchoom.socket.quic/PinnedRadioRefusedException|null[0]
     constructor <init>(com.ditchoom.socket.transport/NetworkKind.Radio, com.ditchoom.socket.quic/PinnedRadioRefusal) // com.ditchoom.socket.quic/PinnedRadioRefusedException.<init>|<init>(com.ditchoom.socket.transport.NetworkKind.Radio;com.ditchoom.socket.quic.PinnedRadioRefusal){}[0]
 
     final val radio // com.ditchoom.socket.quic/PinnedRadioRefusedException.radio|{}radio[0]
@@ -3676,6 +3736,13 @@ final value class com.ditchoom.socket.quic/QuicStreamId : kotlin/Comparable<com.
     final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicStreamId.equals|equals(kotlin.Any?){}[0]
     final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicStreamId.hashCode|hashCode(){}[0]
     final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicStreamId.toString|toString(){}[0]
+}
+
+open class com.ditchoom.socket.quic/QuicOptionRefusedException : kotlin/UnsupportedOperationException { // com.ditchoom.socket.quic/QuicOptionRefusedException|null[0]
+    constructor <init>(com.ditchoom.socket.quic/QuicOptionRefusal, kotlin/String = ...) // com.ditchoom.socket.quic/QuicOptionRefusedException.<init>|<init>(com.ditchoom.socket.quic.QuicOptionRefusal;kotlin.String){}[0]
+
+    open val refusal // com.ditchoom.socket.quic/QuicOptionRefusedException.refusal|{}refusal[0]
+        open fun <get-refusal>(): com.ditchoom.socket.quic/QuicOptionRefusal // com.ditchoom.socket.quic/QuicOptionRefusedException.refusal.<get-refusal>|<get-refusal>(){}[0]
 }
 
 final const val com.ditchoom.socket.quic/P256_MAX_SIGNATURE_BYTES // com.ditchoom.socket.quic/P256_MAX_SIGNATURE_BYTES|{}P256_MAX_SIGNATURE_BYTES[0]
