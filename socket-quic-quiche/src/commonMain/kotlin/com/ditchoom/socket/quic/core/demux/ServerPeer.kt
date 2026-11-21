@@ -29,6 +29,7 @@ import com.ditchoom.socket.quic.core.time.QuicheTime
 import com.ditchoom.socket.quic.core.udp.Addressed
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 import com.ditchoom.socket.quic.nameQlog
+import com.ditchoom.socket.quic.nameTrafficSecretsLog
 import com.ditchoom.socket.quic.trace.TraceCapture
 import kotlinx.coroutines.Runnable
 
@@ -100,6 +101,12 @@ internal class ConnBuild(
         capture: TraceCapture,
         session: QuicSessionId,
     ) = q.api.nameQlog(q.handle, capture, QuicRole.Server, session)
+
+    /** Names the connection's TLS key log before quiche reads its first datagram. */
+    fun nameTrafficSecretsLog(
+        capture: TraceCapture,
+        session: QuicSessionId,
+    ) = q.api.nameTrafficSecretsLog(q.handle, capture, QuicRole.Server) { session }
 
     fun build(
         sink: ConnSink,
