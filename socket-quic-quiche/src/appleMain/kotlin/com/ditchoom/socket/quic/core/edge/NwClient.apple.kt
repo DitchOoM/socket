@@ -5,6 +5,7 @@ import com.ditchoom.socket.quic.NetworkRefusal
 import com.ditchoom.socket.quic.NwConnection
 import com.ditchoom.socket.quic.NwCreated
 import com.ditchoom.socket.quic.PathKey
+import com.ditchoom.socket.quic.QuicAccessDenial
 import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.core.ready.PollHandle
 import com.ditchoom.socket.quic.core.ready.SocketRef
@@ -12,6 +13,7 @@ import com.ditchoom.socket.quic.core.udp.NwIo
 import com.ditchoom.socket.quic.core.udp.NwLife
 import com.ditchoom.socket.quic.core.udp.NwSettled
 import com.ditchoom.socket.quic.core.udp.NwVerdict
+import com.ditchoom.socket.quic.core.udp.NwWithheld
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 
@@ -47,8 +49,8 @@ internal actual suspend fun NwConnector.connect(
     val life = NwLife()
     val verdict =
         suspendCancellableCoroutine { waiting ->
-            connection.start { state, domain, code, path ->
-                when (val settled = life.changed(state, domain, code, path)) {
+            connection.start { state, domain, code, path, unsatisfied ->
+                when (val settled = life.changed(state, domain, code, path, unsatisfied)) {
                     is NwSettled.First -> waiting.resume(settled.verdict)
                     is NwSettled.Not -> Unit
                 }
@@ -66,7 +68,11 @@ internal actual suspend fun NwConnector.connect(
         }
         is NwVerdict.Refused -> {
             connection.cancel()
-            raise(Raised.NetworkRefused(verdict.refusal), QuicCloseCircumstance.HandshakeFailed)
+            when (val withheld = verdict.withheld) {
+                is NwWithheld.Access ->
+                    raise(Raised.AccessDenied(QuicAccessDenial.AppleSettings(withheld.access)), QuicCloseCircumstance.HandshakeFailed)
+                is NwWithheld.None -> raise(Raised.NetworkRefused(verdict.refusal), QuicCloseCircumstance.HandshakeFailed)
+            }
         }
     }
 }

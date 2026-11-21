@@ -30,9 +30,12 @@ import platform.posix.memcpy
 internal class NwConnection private constructor(
     private val conn: nw_connection_t,
 ) {
-    /** Starts it; [changed] is told every state change: `nw_connection_state_t`, error domain, error code, path status. */
-    fun start(changed: (Int, Int, Int, Int) -> Unit) {
-        nw_udp_set_state_handler(conn) { state, domain, code, _, path, _, _ -> changed(state, domain, code, path) }
+    /**
+     * Starts it; [changed] is told every state change: `nw_connection_state_t`, error domain, error code, path status,
+     * and the path's `nw_path_unsatisfied_reason_t`.
+     */
+    fun start(changed: (Int, Int, Int, Int, Int) -> Unit) {
+        nw_udp_set_state_handler(conn) { state, domain, code, _, path, reason, _ -> changed(state, domain, code, path, reason) }
         nw_udp_start(conn)
     }
 

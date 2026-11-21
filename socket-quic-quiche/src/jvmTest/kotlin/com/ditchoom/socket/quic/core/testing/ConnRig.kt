@@ -9,6 +9,7 @@ import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.QuicheConn
 import com.ditchoom.socket.quic.SendTarget
 import com.ditchoom.socket.quic.StubQuicheApi
+import com.ditchoom.socket.quic.core.conn.AccessGuard
 import com.ditchoom.socket.quic.core.conn.Arrival
 import com.ditchoom.socket.quic.core.conn.ClientSession
 import com.ditchoom.socket.quic.core.conn.Conn
@@ -139,6 +140,8 @@ internal fun testConn(
     clock: LoopClock,
     sink: ConnSink,
     counts: ConnCounts,
+    access: AccessGuard = AccessGuard.Unguarded,
+    peer: PathKey = PathKey(4, 443, 0L, 0x7F000001L),
 ): Conn =
     buildConn(
         rules = rules,
@@ -153,12 +156,13 @@ internal fun testConn(
                 KeptTicket.None,
                 TokenHome.NotKept,
                 NO_MOVES,
+                access,
             ),
         address =
             ConnAddress(
                 SockAddr(0L, 0),
                 SockAddr(0L, 0),
-                PathKey(4, 443, 0L, 0x7F000001L),
+                peer,
                 PathKey(4, 50_000, 0L, 0x7F000001L),
                 target,
             ),
@@ -197,12 +201,14 @@ internal class ConnRig(
     val clock: VirtualClock = VirtualClock(),
     poller: Poller = FakePoller(),
     time: QuicheTime = QuicheTime.Own,
+    access: AccessGuard = AccessGuard.Unguarded,
+    peer: PathKey = PathKey(4, 443, 0L, 0x7F000001L),
 ) {
     val sink = RecordingSink()
     val counts = ConnCounts()
     val loop = loopOver(poller, clock, maxDatagrams, time)
     val socket = SendPort(io, loop.port, CallerLanes.None, RecordingWork(), loop.counts, loop.callerCounts)
-    val conn: Conn = testConn(api, rules, target, capture, loop, socket, clock, sink, counts)
+    val conn: Conn = testConn(api, rules, target, capture, loop, socket, clock, sink, counts, access, peer)
     val endpoint =
         Endpoint(
             SocketRef(DatagramChannel.open()),

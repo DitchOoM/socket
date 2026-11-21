@@ -23,9 +23,11 @@ import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.RouteSource
 import com.ditchoom.socket.quic.UdpBatching
 import com.ditchoom.socket.quic.UdpSocketChannelFactory
+import com.ditchoom.socket.quic.core.conn.AccessGuard
 import com.ditchoom.socket.quic.core.conn.ClientTokens
 import com.ditchoom.socket.quic.core.conn.FlightSize
 import com.ditchoom.socket.quic.core.conn.MismatchResponse
+import com.ditchoom.socket.quic.core.conn.accessGuardOfThisPlatform
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.loop.Placement
@@ -78,6 +80,7 @@ internal suspend fun coreConnect(
     datagramSize: DatagramSize = DatagramSize.Probed,
     tokens: ClientTokens = ClientTokens.NotKept,
     mismatch: MismatchResponse = MismatchResponse.Unpaced,
+    access: AccessGuard = accessGuardOfThisPlatform,
 ): CoreClient {
     val began = TimeSource.Monotonic.markNow()
     val peerHost = peerHostFor(host)
@@ -109,6 +112,7 @@ internal suspend fun coreConnect(
                     ride,
                     tokens,
                     mismatch,
+                    access,
                     moved = { setup = it },
                 )
             }
@@ -142,6 +146,7 @@ private suspend fun OnSetupLane.connectOnLane(
     ride: ClientRide,
     tokens: ClientTokens,
     mismatch: MismatchResponse,
+    access: AccessGuard,
     /** Told each time what the setup made passes to a new releaser; last, right before the connection starts. */
     moved: (ClientSetup) -> Unit,
 ): StartedClient {
@@ -169,7 +174,11 @@ private suspend fun OnSetupLane.connectOnLane(
                     when (val source = routeSource(route)) {
                         is RouteSource.Resolved -> source.host
                         is RouteSource.PlatformAssigned -> anyHostFor(peer)
-                        is RouteSource.Unresolved -> raise(Raised.RouteUnresolved(source.reason), QuicCloseCircumstance.HandshakeFailed)
+                        is RouteSource.Unresolved ->
+                            raise(
+                                unresolved(source.reason, peerKey, access),
+                                QuicCloseCircumstance.HandshakeFailed,
+                            )
                     }
                 val bind = UdpSocket.resolve(bindHost, 0).toPathKey()
                 openStackSocket(running.io, memory, bind, SocketPeer.Connected(peerKey), buffers, batching, CLIENT_BATCH)
@@ -230,6 +239,7 @@ private suspend fun OnSetupLane.connectOnLane(
                     scope,
                     flight,
                     handshake,
+                    access,
                     readiness = socket.readiness(),
                     offer = offer,
                     tickets = plan.home,

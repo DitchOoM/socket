@@ -218,8 +218,8 @@ internal class Turn(
         out: SendBatch,
     ): Collected {
         when (c.handshakeStep(now, paths)) {
-            HandshakeStep.Handshaking, HandshakeStep.JustEstablished, HandshakeStep.Established -> Unit
-            HandshakeStep.DeadlinePassed -> {
+            HandshakeServe.Open -> Unit
+            HandshakeServe.Over -> {
                 val end = c.handshakeEnd(now, paths)
                 c.life.close(QuicError.NoError, end, CloseHow.Now, now)
                 finish(now, end)

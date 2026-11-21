@@ -2,6 +2,7 @@
 
 package com.ditchoom.socket.quic.core.udp
 
+import com.ditchoom.socket.NetworkAccess
 import com.ditchoom.socket.quic.NetworkErrorDomain
 import com.ditchoom.socket.quic.NetworkRefusal
 import com.ditchoom.socket.quic.core.observe.Published
@@ -24,9 +25,20 @@ internal sealed interface NwState {
 internal sealed interface NwVerdict {
     data object Ready : NwVerdict
 
+    /** Failed, or waiting on a path that cannot be satisfied; [withheld] says whether the user's settings are why. */
     class Refused(
         val refusal: NetworkRefusal,
+        val withheld: NwWithheld,
     ) : NwVerdict
+}
+
+/** Whether Network.framework found no path because the user withholds a kind of network access from this app. */
+internal sealed interface NwWithheld {
+    data object None : NwWithheld
+
+    class Access(
+        val access: NetworkAccess,
+    ) : NwWithheld
 }
 
 /** Whether a state change settled the connect: the first ready or refusal does, once. */
@@ -48,12 +60,13 @@ internal class NwLife {
 
     fun view(): NwState = state.load()
 
-    /** Records one state change (`nw_connection_state_t`, NW's error domain and code, the path's status). */
+    /** Records one state change (`nw_connection_state_t`, NW's error domain and code, the path's status and unsatisfied reason). */
     fun changed(
         nwState: Int,
         domain: Int,
         code: Int,
         pathStatus: Int,
+        unsatisfied: Int,
     ): NwSettled {
         val next =
             when (nwState) {
@@ -76,7 +89,7 @@ internal class NwLife {
                 is NwState.Starting ->
                     if (state.compareAndSet(seen, next)) {
                         return when (next) {
-                            is NwState.Ended -> NwSettled.First(NwVerdict.Refused(next.refusal))
+                            is NwState.Ended -> NwSettled.First(NwVerdict.Refused(next.refusal, withheld(pathStatus, unsatisfied)))
                             is NwState.Ready, is NwState.Starting -> NwSettled.First(NwVerdict.Ready)
                         }
                     }
@@ -87,6 +100,20 @@ internal class NwLife {
     /** Our own cancel: the connection is ended for every later send and receive. */
     fun cancelled() {
         state.store(NwState.Ended(NetworkRefusal(NetworkErrorDomain.Unreported, 0)))
+    }
+
+    /** The user's settings, read off an unsatisfied path: a denied app also has no route, but retrying cannot help it. */
+    private fun withheld(
+        pathStatus: Int,
+        unsatisfied: Int,
+    ): NwWithheld {
+        if (pathStatus != PATH_UNSATISFIED) return NwWithheld.None
+        return when (unsatisfied) {
+            UNSATISFIED_CELLULAR_DENIED -> NwWithheld.Access(NetworkAccess.CellularData)
+            UNSATISFIED_WIFI_DENIED -> NwWithheld.Access(NetworkAccess.WifiData)
+            UNSATISFIED_LOCAL_NETWORK_DENIED -> NwWithheld.Access(NetworkAccess.LocalNetwork)
+            else -> NwWithheld.None
+        }
     }
 
     private fun domainOf(domain: Int): NetworkErrorDomain =
@@ -104,6 +131,11 @@ internal class NwLife {
         const val NW_FAILED = 4
         const val NW_CANCELLED = 5
         const val PATH_UNSATISFIED = 2
+
+        // nw_path_unsatisfied_reason_t; 4 (a required VPN is inactive) is a missing route, not a user's setting.
+        const val UNSATISFIED_CELLULAR_DENIED = 1
+        const val UNSATISFIED_WIFI_DENIED = 2
+        const val UNSATISFIED_LOCAL_NETWORK_DENIED = 3
         const val DOMAIN_NONE = 0
         const val DOMAIN_POSIX = 1
         const val DOMAIN_DNS = 2

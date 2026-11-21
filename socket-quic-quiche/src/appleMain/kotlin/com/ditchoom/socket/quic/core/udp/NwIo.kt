@@ -76,8 +76,8 @@ internal class NwIo(
                 val candidate = NwWire(created.connection, NwLife(), wake)
                 val starting = NwMove.Starting(candidate)
                 cancelled(move.exchange(starting))
-                candidate.connection.start { state, domain, code, path ->
-                    when (val settled = candidate.life.changed(state, domain, code, path)) {
+                candidate.connection.start { state, domain, code, path, unsatisfied ->
+                    when (val settled = candidate.life.changed(state, domain, code, path, unsatisfied)) {
                         is NwSettled.First ->
                             when (val verdict = settled.verdict) {
                                 is NwVerdict.Ready -> move.compareAndSet(starting, NwMove.Ready(candidate))

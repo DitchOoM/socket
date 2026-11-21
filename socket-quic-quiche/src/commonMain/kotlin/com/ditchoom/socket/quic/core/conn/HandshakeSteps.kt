@@ -7,27 +7,48 @@ import com.ditchoom.socket.quic.core.sched.SendRecord
 import com.ditchoom.socket.quic.core.time.Nanos
 import kotlinx.coroutines.Runnable
 
+/** Whether a serve's handshake leaves the connection open, or ends it ([handshakeEnd] says how). */
+internal enum class HandshakeServe { Open, Over }
+
 /**
  * Serves the handshake. Before it completes, a server that accepted 0-RTT announces it once and hands up the streams
  * that arrived in it as [Arrival.Early]; once complete, streams are woken and a client's first session ticket goes up.
- * The report of its completion goes up in [served], after the serve's output.
+ * The report of its completion goes up in [served], after the serve's output. It is over when its deadline passed, or
+ * when the system refused every send of it as it refuses an app the access it lacks.
  */
 internal fun ConnParts.handshakeStep(
     now: Nanos,
     paths: Paths,
-): HandshakeStep {
-    val step = handshake.step(now)
-    when (step) {
-        HandshakeStep.Handshaking -> early()
+): HandshakeServe =
+    when (handshake.step(now)) {
+        HandshakeStep.Handshaking -> {
+            early()
+            when (accessStep()) {
+                is AccessVerdict.NotDenied -> HandshakeServe.Open
+                is AccessVerdict.Denied -> HandshakeServe.Over
+            }
+        }
         HandshakeStep.JustEstablished -> {
             paths.established()
             established(now)
+            HandshakeServe.Open
         }
-        HandshakeStep.Established -> established(now)
-        HandshakeStep.DeadlinePassed -> Unit
+        HandshakeStep.Established -> {
+            established(now)
+            HandshakeServe.Open
+        }
+        HandshakeStep.DeadlinePassed -> HandshakeServe.Over
     }
-    return step
-}
+
+/**
+ * What a handshake still under way whose every datagram the network refused says about the app's access to its peer. A
+ * handshake that completed was sent to, so a refusal after it never denies the connect.
+ */
+internal fun ConnParts.accessStep(): AccessVerdict =
+    when (handshake.reached()) {
+        Progress.Handshaking -> access.judge(sends.view())
+        Progress.Established -> AccessVerdict.NotDenied
+    }
 
 /**
  * The end of a serve after which the connection is open. A handshake that completed in it is reported now, after its
@@ -51,11 +72,18 @@ internal fun ConnParts.served(
     if (collected == Collected.Everything) rearm(now, fire)
 }
 
-/** The end of a handshake that passed its deadline: sent to and never answered, or never sent for the network refused each datagram. */
+/**
+ * The end of a handshake that is over: denied the access it needs; else past its deadline, sent to and never answered,
+ * or never sent for the network refused each datagram.
+ */
 internal fun ConnParts.handshakeEnd(
     now: Nanos,
     paths: Paths,
 ): ConnEnd {
+    when (val verdict = accessStep()) {
+        is AccessVerdict.Denied -> return ConnEnd.AccessDenied(verdict.denial)
+        is AccessVerdict.NotDenied -> Unit
+    }
     val progress = handshake.progress(now, paths.read())
     return when (val record = sends.view()) {
         is SendRecord.Refused -> ConnEnd.HandshakeSendRefused(progress, record.last)

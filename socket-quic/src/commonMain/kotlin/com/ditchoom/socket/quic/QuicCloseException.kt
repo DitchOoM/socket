@@ -71,7 +71,7 @@ class QuicCloseException private constructor(
         end: QuicConnectionEnd,
         circumstance: QuicCloseCircumstance,
         attribution: QuicCloseAttribution = QuicCloseAttribution.Unattributed,
-    ) : this(end, circumstance, circumstance.summary(), end.thrownForTrace(), attribution)
+    ) : this(end, circumstance, end.summaryDuring(circumstance), end.thrownForTrace(), attribution)
 
     /** A close described by its reason alone: [end] is [QuicConnectionEnd.ReasonOnly]. */
     constructor(
@@ -171,6 +171,13 @@ internal fun QuicCloseReason.errorOrNoError(): QuicError =
         QuicCloseReason.Graceful, QuicCloseReason.Unspecified -> QuicError.NoError
     }
 
+/** The message of a close that ended with [this] while the endpoint was in [circumstance]: a denial names its remedy. */
+private fun QuicConnectionEnd.summaryDuring(circumstance: QuicCloseCircumstance): String =
+    when (this) {
+        is QuicConnectionEnd.AccessDenied -> "${circumstance.summary()}: ${denial.access.description}; ${denial.remedy}"
+        else -> circumstance.summary()
+    }
+
 /** The thrown object [this] end carries, kept as an exception's cause for stack traces only. */
 private fun QuicConnectionEnd.thrownForTrace(): Throwable? =
     when (this) {
@@ -186,7 +193,8 @@ private fun QuicConnectionEnd.thrownForTrace(): Throwable? =
                 is QuicSocketFault.Closed -> null
             }
         is QuicConnectionEnd.ByPeer, is QuicConnectionEnd.ByLocal, is QuicConnectionEnd.IdleTimeout,
-        is QuicConnectionEnd.HandshakeTimedOut, is QuicConnectionEnd.HandshakeSendRefused, is QuicConnectionEnd.LoopStopped,
+        is QuicConnectionEnd.HandshakeTimedOut, is QuicConnectionEnd.HandshakeSendRefused, is QuicConnectionEnd.AccessDenied,
+        is QuicConnectionEnd.LoopStopped,
         is QuicConnectionEnd.ServerClosed,
         is QuicConnectionEnd.ServerClosedUnsettled, is QuicConnectionEnd.NoErrorRecorded, is QuicConnectionEnd.Released,
         is QuicConnectionEnd.NetworkLost, is QuicConnectionEnd.LocalAddressGone, is QuicConnectionEnd.NoUsablePath,

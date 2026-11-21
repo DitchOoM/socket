@@ -5,6 +5,7 @@ package com.ditchoom.socket.quic.core.edge
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.socket.quic.NativeSocketRefusal
 import com.ditchoom.socket.quic.NetworkRefusal
+import com.ditchoom.socket.quic.QuicAccessDenial
 import com.ditchoom.socket.quic.QuicAppErrorCode
 import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicCloseException
@@ -115,6 +116,11 @@ internal sealed interface Raised : OpFailure {
     class NetworkRefused(
         val refusal: NetworkRefusal,
     ) : Raised
+
+    /** The system refused the client's socket the network access it needs, before its connection was built. */
+    class AccessDenied(
+        val denial: QuicAccessDenial,
+    ) : Raised
 }
 
 /** The one place the edge hands a caller a failure: [failure] resumes this continuation as an exception. */
@@ -174,6 +180,7 @@ internal fun publicEndOf(end: ConnEnd): QuicConnectionEnd =
         is ConnEnd.HandshakeTimedOut -> QuicConnectionEnd.HandshakeTimedOut(publicProgressOf(end.progress))
         is ConnEnd.HandshakeSendRefused ->
             QuicConnectionEnd.HandshakeSendRefused(publicProgressOf(end.progress), publicRefusalOf(end.refusal))
+        is ConnEnd.AccessDenied -> QuicConnectionEnd.AccessDenied(end.denial)
         is ConnEnd.SocketFailed -> QuicConnectionEnd.SocketFailed(publicFaultOf(end.fault))
         is ConnEnd.ProcessingFailed -> QuicConnectionEnd.ProcessingFailed(end.thrown.throwable)
         is ConnEnd.CallerFailed -> QuicConnectionEnd.CallerFailed(end.thrown.throwable)
@@ -225,6 +232,11 @@ private fun exceptionOf(
         is Raised.SocketRefused -> failure.refusal
         is Raised.SpecLayoutRefused -> CoreSpecLayoutMismatch(failure.mismatch)
         is Raised.NetworkRefused -> failure.refusal
+        is Raised.AccessDenied ->
+            QuicCloseException(
+                end = QuicConnectionEnd.AccessDenied(failure.denial),
+                circumstance = QuicCloseCircumstance.HandshakeFailed,
+            )
     }
 
 /** The close exception for [end]: its public end and the circumstance it names. */
@@ -240,7 +252,7 @@ private fun ConnEnd.circumstance(during: QuicCloseCircumstance): QuicCloseCircum
         is ConnEnd.CallerFailed -> QuicCloseCircumstance.CallerThreadFailed
         is ConnEnd.Released -> QuicCloseCircumstance.Released
         is ConnEnd.ByPeer, is ConnEnd.ByLocal, is ConnEnd.IdleTimeout, is ConnEnd.HandshakeTimedOut,
-        is ConnEnd.HandshakeSendRefused,
+        is ConnEnd.HandshakeSendRefused, is ConnEnd.AccessDenied,
         is ConnEnd.SocketFailed, is ConnEnd.LoopStopped, is ConnEnd.ServerClosed, is ConnEnd.NoErrorRecorded,
         is ConnEnd.NetworkLost, is ConnEnd.LocalAddressGone, is ConnEnd.ServerClosedUnsettled, is ConnEnd.NoUsablePath,
         -> during

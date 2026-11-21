@@ -142,7 +142,7 @@ internal class Endpoint(
                 }
             if (send.pending > 0) {
                 when (phase) {
-                    Phase.Live -> traced(TraceSection.SendBatch) { socket.flush(send) }
+                    Phase.Live -> traced(TraceSection.SendBatch) { route.flush(socket, send) }
                     Phase.Dead, Phase.Gone -> send.took(send.pending)
                 }
             }

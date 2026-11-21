@@ -1,9 +1,13 @@
 package com.ditchoom.socket.quic.core.loop
 
 import com.ditchoom.socket.quic.core.conn.Conn
+import com.ditchoom.socket.quic.core.conn.SendsRefusedWork
 import com.ditchoom.socket.quic.core.demux.ServerPhase
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.Life
+import com.ditchoom.socket.quic.core.sched.SendPort
+import com.ditchoom.socket.quic.core.sched.SendRecord
+import com.ditchoom.socket.quic.core.udp.SendBatch
 
 /** A place in a loop's socket table: an endpoint, or empty. */
 internal sealed interface LoopSlot {
@@ -52,6 +56,20 @@ internal fun Route.endWith(end: ConnEnd) =
         is Route.Fixed -> conn.endWithLoop(end)
         is Route.Demux -> demux.endAll(end)
     }
+
+/** Sends [send] through [socket]; the network refusing the first datagram it was handed is news a client's connection judges. */
+internal fun Route.flush(
+    socket: SendPort,
+    send: SendBatch,
+) {
+    val before = socket.ledger.view()
+    socket.flush(send)
+    if (before !is SendRecord.Quiet || socket.ledger.view() !is SendRecord.Refused) return
+    when (this) {
+        is Route.Fixed -> conn.submitFromLoop(SendsRefusedWork())
+        is Route.Demux -> Unit
+    }
+}
 
 /** Whether an endpoint is still on its loop after a serve. */
 internal enum class Stay { Stays, Left }

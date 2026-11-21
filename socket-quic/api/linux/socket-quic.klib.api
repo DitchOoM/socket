@@ -1195,6 +1195,65 @@ sealed interface com.ditchoom.socket.quic/PinnedRadioUnavailable { // com.ditcho
     }
 }
 
+sealed interface com.ditchoom.socket.quic/QuicAccessDenial { // com.ditchoom.socket.quic/QuicAccessDenial|null[0]
+    abstract val access // com.ditchoom.socket.quic/QuicAccessDenial.access|{}access[0]
+        abstract fun <get-access>(): com.ditchoom.socket/NetworkAccess // com.ditchoom.socket.quic/QuicAccessDenial.access.<get-access>|<get-access>(){}[0]
+    abstract val remedy // com.ditchoom.socket.quic/QuicAccessDenial.remedy|{}remedy[0]
+        abstract fun <get-remedy>(): kotlin/String // com.ditchoom.socket.quic/QuicAccessDenial.remedy.<get-remedy>|<get-remedy>(){}[0]
+
+    sealed interface Likely : com.ditchoom.socket.quic/QuicAccessDenial // com.ditchoom.socket.quic/QuicAccessDenial.Likely|null[0]
+
+    sealed interface Reported : com.ditchoom.socket.quic/QuicAccessDenial // com.ditchoom.socket.quic/QuicAccessDenial.Reported|null[0]
+
+    final class AppleSettings : com.ditchoom.socket.quic/QuicAccessDenial.Reported { // com.ditchoom.socket.quic/QuicAccessDenial.AppleSettings|null[0]
+        constructor <init>(com.ditchoom.socket/NetworkAccess) // com.ditchoom.socket.quic/QuicAccessDenial.AppleSettings.<init>|<init>(com.ditchoom.socket.NetworkAccess){}[0]
+
+        final val access // com.ditchoom.socket.quic/QuicAccessDenial.AppleSettings.access|{}access[0]
+            final fun <get-access>(): com.ditchoom.socket/NetworkAccess // com.ditchoom.socket.quic/QuicAccessDenial.AppleSettings.access.<get-access>|<get-access>(){}[0]
+        final val remedy // com.ditchoom.socket.quic/QuicAccessDenial.AppleSettings.remedy|{}remedy[0]
+            final fun <get-remedy>(): kotlin/String // com.ditchoom.socket.quic/QuicAccessDenial.AppleSettings.remedy.<get-remedy>|<get-remedy>(){}[0]
+
+        final fun component1(): com.ditchoom.socket/NetworkAccess // com.ditchoom.socket.quic/QuicAccessDenial.AppleSettings.component1|component1(){}[0]
+        final fun copy(com.ditchoom.socket/NetworkAccess = ...): com.ditchoom.socket.quic/QuicAccessDenial.AppleSettings // com.ditchoom.socket.quic/QuicAccessDenial.AppleSettings.copy|copy(com.ditchoom.socket.NetworkAccess){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicAccessDenial.AppleSettings.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicAccessDenial.AppleSettings.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicAccessDenial.AppleSettings.toString|toString(){}[0]
+    }
+
+    final object AndroidPermissionNotHeld : com.ditchoom.socket.quic/QuicAccessDenial.Reported { // com.ditchoom.socket.quic/QuicAccessDenial.AndroidPermissionNotHeld|null[0]
+        final val access // com.ditchoom.socket.quic/QuicAccessDenial.AndroidPermissionNotHeld.access|{}access[0]
+            final fun <get-access>(): com.ditchoom.socket/NetworkAccess // com.ditchoom.socket.quic/QuicAccessDenial.AndroidPermissionNotHeld.access.<get-access>|<get-access>(){}[0]
+        final val remedy // com.ditchoom.socket.quic/QuicAccessDenial.AndroidPermissionNotHeld.remedy|{}remedy[0]
+            final fun <get-remedy>(): kotlin/String // com.ditchoom.socket.quic/QuicAccessDenial.AndroidPermissionNotHeld.remedy.<get-remedy>|<get-remedy>(){}[0]
+
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicAccessDenial.AndroidPermissionNotHeld.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicAccessDenial.AndroidPermissionNotHeld.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicAccessDenial.AndroidPermissionNotHeld.toString|toString(){}[0]
+    }
+
+    final object AndroidSendsNotPermitted : com.ditchoom.socket.quic/QuicAccessDenial.Likely { // com.ditchoom.socket.quic/QuicAccessDenial.AndroidSendsNotPermitted|null[0]
+        final val access // com.ditchoom.socket.quic/QuicAccessDenial.AndroidSendsNotPermitted.access|{}access[0]
+            final fun <get-access>(): com.ditchoom.socket/NetworkAccess // com.ditchoom.socket.quic/QuicAccessDenial.AndroidSendsNotPermitted.access.<get-access>|<get-access>(){}[0]
+        final val remedy // com.ditchoom.socket.quic/QuicAccessDenial.AndroidSendsNotPermitted.remedy|{}remedy[0]
+            final fun <get-remedy>(): kotlin/String // com.ditchoom.socket.quic/QuicAccessDenial.AndroidSendsNotPermitted.remedy.<get-remedy>|<get-remedy>(){}[0]
+
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicAccessDenial.AndroidSendsNotPermitted.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicAccessDenial.AndroidSendsNotPermitted.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicAccessDenial.AndroidSendsNotPermitted.toString|toString(){}[0]
+    }
+
+    final object MacosNoRouteOnLink : com.ditchoom.socket.quic/QuicAccessDenial.Likely { // com.ditchoom.socket.quic/QuicAccessDenial.MacosNoRouteOnLink|null[0]
+        final val access // com.ditchoom.socket.quic/QuicAccessDenial.MacosNoRouteOnLink.access|{}access[0]
+            final fun <get-access>(): com.ditchoom.socket/NetworkAccess // com.ditchoom.socket.quic/QuicAccessDenial.MacosNoRouteOnLink.access.<get-access>|<get-access>(){}[0]
+        final val remedy // com.ditchoom.socket.quic/QuicAccessDenial.MacosNoRouteOnLink.remedy|{}remedy[0]
+            final fun <get-remedy>(): kotlin/String // com.ditchoom.socket.quic/QuicAccessDenial.MacosNoRouteOnLink.remedy.<get-remedy>|<get-remedy>(){}[0]
+
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicAccessDenial.MacosNoRouteOnLink.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicAccessDenial.MacosNoRouteOnLink.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicAccessDenial.MacosNoRouteOnLink.toString|toString(){}[0]
+    }
+}
+
 sealed interface com.ditchoom.socket.quic/QuicActivePathStats { // com.ditchoom.socket.quic/QuicActivePathStats|null[0]
     final class Measured : com.ditchoom.socket.quic/QuicActivePathStats { // com.ditchoom.socket.quic/QuicActivePathStats.Measured|null[0]
         constructor <init>(kotlin.time/Duration, kotlin.time/Duration, kotlin.time/Duration, kotlin.time/Duration, kotlin/Long, kotlin/Long, kotlin/Long, kotlin/Long, kotlin/Long, kotlin/Long, kotlin/Long) // com.ditchoom.socket.quic/QuicActivePathStats.Measured.<init>|<init>(kotlin.time.Duration;kotlin.time.Duration;kotlin.time.Duration;kotlin.time.Duration;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long){}[0]
@@ -1493,6 +1552,19 @@ sealed interface com.ditchoom.socket.quic/QuicCloseReason { // com.ditchoom.sock
 }
 
 sealed interface com.ditchoom.socket.quic/QuicConnectionEnd { // com.ditchoom.socket.quic/QuicConnectionEnd|null[0]
+    final class AccessDenied : com.ditchoom.socket.quic/QuicConnectionEnd { // com.ditchoom.socket.quic/QuicConnectionEnd.AccessDenied|null[0]
+        constructor <init>(com.ditchoom.socket.quic/QuicAccessDenial) // com.ditchoom.socket.quic/QuicConnectionEnd.AccessDenied.<init>|<init>(com.ditchoom.socket.quic.QuicAccessDenial){}[0]
+
+        final val denial // com.ditchoom.socket.quic/QuicConnectionEnd.AccessDenied.denial|{}denial[0]
+            final fun <get-denial>(): com.ditchoom.socket.quic/QuicAccessDenial // com.ditchoom.socket.quic/QuicConnectionEnd.AccessDenied.denial.<get-denial>|<get-denial>(){}[0]
+
+        final fun component1(): com.ditchoom.socket.quic/QuicAccessDenial // com.ditchoom.socket.quic/QuicConnectionEnd.AccessDenied.component1|component1(){}[0]
+        final fun copy(com.ditchoom.socket.quic/QuicAccessDenial = ...): com.ditchoom.socket.quic/QuicConnectionEnd.AccessDenied // com.ditchoom.socket.quic/QuicConnectionEnd.AccessDenied.copy|copy(com.ditchoom.socket.quic.QuicAccessDenial){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicConnectionEnd.AccessDenied.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicConnectionEnd.AccessDenied.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicConnectionEnd.AccessDenied.toString|toString(){}[0]
+    }
+
     final class ByLocal : com.ditchoom.socket.quic/QuicConnectionEnd { // com.ditchoom.socket.quic/QuicConnectionEnd.ByLocal|null[0]
         constructor <init>(com.ditchoom.socket.quic/QuicError) // com.ditchoom.socket.quic/QuicConnectionEnd.ByLocal.<init>|<init>(com.ditchoom.socket.quic.QuicError){}[0]
 

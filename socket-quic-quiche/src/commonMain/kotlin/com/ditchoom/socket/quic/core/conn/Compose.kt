@@ -44,7 +44,8 @@ internal sealed interface ConnSide {
     /**
      * A client draws the ids it hands its peer from [ids], offered quiche [offer] before its first flight, and copies
      * its server's session ticket through one of its loop's [scratch] slots; what it took from its stores, [kept], goes
-     * back if it never sent; its server's NEW_TOKEN token goes to [tokens]; its socket is moved by [mover].
+     * back if it never sent; its server's NEW_TOKEN token goes to [tokens]; its socket is moved by [mover]; a handshake
+     * the system refused every send of is judged by [access].
      */
     class Client(
         val ids: Random,
@@ -53,6 +54,7 @@ internal sealed interface ConnSide {
         val kept: KeptTicket,
         val tokens: TokenHome,
         val mover: (PathKey, RttPrior) -> Unit,
+        val access: AccessGuard,
     ) : ConnSide
 
     /** A server hands its peer the ids its loop routes to it. */
@@ -201,6 +203,11 @@ private fun composed(
             sink = sink,
             ackReads = AckHoldReads(q),
             sends = socket.ledger,
+            access =
+                when (side) {
+                    is ConnSide.Client -> PeerAccess(side.access, address.peerKey)
+                    is ConnSide.Server -> PeerAccess(AccessGuard.Unguarded, address.peerKey)
+                },
             endHold = EndHold(StreamIo(q), memory.factory),
         )
     return Conn(Turn(parts, turnClock, port), port, socket, turnClock, loopEntrant, counts)
