@@ -116,8 +116,9 @@ class OptionVerdictTests {
     }
 
     @Test
-    fun theDefaultOptionsAreHonouredWhereThereIsNoStandbyRadio() {
-        assertHonoured(verdict(base))
-        assertHonoured(verdict(base, role = QuicRole.Server))
+    fun theDefaultOptionsAreHonouredEvenWhereThereIsAStandbyRadio() {
+        assertEquals(StandbyLink.OnDemand, base.standbyLink)
+        assertHonoured(verdict(base, standby = StandbyRadio.Present))
+        assertHonoured(verdict(base, role = QuicRole.Server, standby = StandbyRadio.Present))
     }
 }

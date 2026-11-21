@@ -8,7 +8,6 @@ import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.ScopedRead
-import com.ditchoom.socket.quic.StandbyLink
 import com.ditchoom.socket.quic.core.conn.ClientTokens
 import com.ditchoom.socket.quic.core.conn.FlightSize
 import com.ditchoom.socket.quic.core.conn.MismatchResponse
@@ -25,9 +24,9 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import kotlin.time.Duration.Companion.seconds
 
-/** The options every core test connects with. The core holds no standby radio, so a phone must not be asked to. */
+/** The options every core test connects with. */
 internal val coreTestOptions =
-    QuicOptions(alpnProtocols = listOf("test"), verifyPeer = false, idleTimeout = 10.seconds, standbyLink = StandbyLink.OnDemand)
+    QuicOptions(alpnProtocols = listOf("test"), verifyPeer = false, idleTimeout = 10.seconds)
 
 /** The prefix of the loop threads' names, as [coreConnect] starts them. */
 internal const val LOOP_THREAD = "quic-core-client"

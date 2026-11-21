@@ -11,7 +11,6 @@ import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicTlsConfig
 import com.ditchoom.socket.quic.ScopedRead
-import com.ditchoom.socket.quic.StandbyLink
 import com.ditchoom.socket.quic.core.conn.MismatchResponse
 import com.ditchoom.socket.quic.core.edge.EdgeEnd
 import com.ditchoom.socket.quic.core.edge.coreConnect
@@ -41,7 +40,7 @@ import kotlin.time.Duration.Companion.seconds
  */
 class CoreClientAgainstServerTests {
     private val options =
-        QuicOptions(alpnProtocols = listOf("test"), verifyPeer = false, idleTimeout = 10.seconds, standbyLink = StandbyLink.OnDemand)
+        QuicOptions(alpnProtocols = listOf("test"), verifyPeer = false, idleTimeout = 10.seconds)
 
     /**
      * The server keeps each connection open after its handler returns until the client closes it. With the default

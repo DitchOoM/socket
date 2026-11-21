@@ -452,10 +452,10 @@ data class QuicOptions(
     val resumption: QuicResumption = QuicResumption.None,
     /**
      * **Client-side, under [MigrationPolicy.Automatic]**: whether a second link is kept attached for a
-     * dead path to move onto. Defaults to [StandbyLink.KeepCellularReady]; a no-op off Android. Ignored
+     * dead path to move onto. Defaults to [StandbyLink.OnDemand]; [StandbyLink.KeepCellularReady] is held only by the 4.x engine on Android, and the core refuses it there with [QuicOptionRefusal.StandbyRadioNotHeld]; a no-op off Android. Ignored
      * for the server role and under every other [MigrationPolicy], none of which migrates on its own.
      */
-    val standbyLink: StandbyLink = StandbyLink.KeepCellularReady,
+    val standbyLink: StandbyLink = StandbyLink.OnDemand,
     /**
      * **Client-side**: verifiers consulted in order with the server's whole certificate chain after the
      * handshake and before the connection is handed to the caller; the first rejection fails the connect.
