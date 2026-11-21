@@ -95,7 +95,7 @@ internal class WriteOp(
         guarded(::failed) {
             when (val state = inside.streams.state) {
                 is Streams.Ended -> return connectionEnded(state.end)
-                is Streams.Open -> Unit
+                is Streams.Live -> Unit
             }
             if (!caller.isActive) return settle(WriteAnswer.Cancelled)
             if (attempt(inside.streams) == Retry.Again) {
@@ -125,16 +125,29 @@ internal class WriteOp(
     override fun gone(end: ConnEnd) = connectionEnded(end)
 
     private fun attempt(table: StreamTable): Retry {
+        val send =
+            when (val state = table.state) {
+                is Streams.Open -> state.send
+                is Streams.Closing -> {
+                    lease = deadlines.disarm(lease)
+                    settle(WriteAnswer.Failed(Raised.PastClose(state.end), QuicCloseCircumstance.Closing))
+                    return Retry.Settled
+                }
+                is Streams.Ended -> {
+                    connectionEnded(state.end)
+                    return Retry.Settled
+                }
+            }
         val answer =
             when (source) {
                 is WriteSource.Bytes -> {
                     val at = source.buffer.position()
                     val length = source.buffer.remaining()
-                    table.io.send(stream, source.address + at, length, WriteEnd.More).also {
+                    send.send(stream, source.address + at, length, WriteEnd.More).also {
                         if (it.code() > 0) source.buffer.position(at + it.code())
                     }
                 }
-                is WriteSource.FinOnly -> table.io.send(stream, 0L, 0, WriteEnd.Finish)
+                is WriteSource.FinOnly -> send.send(stream, 0L, 0, WriteEnd.Finish)
             }
         val taken = answer.code()
         return when {

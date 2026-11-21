@@ -72,7 +72,7 @@ internal class ClientParts(
                 SlotRules.forWaits(
                     w.running.waits,
                     w.handshake,
-                    closeRuleOf(w.options),
+                    closeChoiceOf(w.options),
                     datagramRuleOf(w.options),
                     keepAliveRuleOf(w.options),
                     mismatch = w.mismatch,

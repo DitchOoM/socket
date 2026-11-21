@@ -53,6 +53,11 @@ internal sealed interface Raised : OpFailure {
         val end: ConnEnd,
     ) : Raised
 
+    /** A write or an open came after the close point of a close that ends with [end]: nothing of it was sent. */
+    class PastClose(
+        val end: ConnEnd,
+    ) : Raised
+
     /** quiche refused a write with [code]; a stopped or reset stream carries the peer's [peer] code. */
     class WriteRefused(
         val stream: QuicStreamId,
@@ -194,6 +199,7 @@ private fun exceptionOf(
 ): Exception =
     when (failure) {
         is Raised.ConnEnded -> closeOf(failure.end, during)
+        is Raised.PastClose -> QuicCloseException(end = publicEndOf(failure.end), circumstance = QuicCloseCircumstance.Closing)
         is Raised.WriteRefused ->
             when (failure.code) {
                 QUICHE_ERR_STREAM_STOPPED -> QuicStreamException(failure.stream.id, QuicStreamAbort.StopSending(failure.peer))

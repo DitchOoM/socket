@@ -1,6 +1,7 @@
 package com.ditchoom.socket.quic.core.demux
 
 import com.ditchoom.socket.quic.DeadlineNode
+import com.ditchoom.socket.quic.core.life.CloseChoice
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.observe.LoopOnly
 import com.ditchoom.socket.quic.core.sched.LoopPort
@@ -35,12 +36,21 @@ private sealed interface Phase {
 }
 
 /**
- * A server's shutdown order: stop taking connections and tell each to close, and stop once every CONNECTION_CLOSE is
- * out of whoever was inside its connection, or at [DRAIN_BOUND] when one is not. Nothing polls: a caller that sends a
- * close in place wakes the loop, and a deadline wakes it at the bound. A sub-part of [Demux]; loop thread only.
+ * A server's shutdown order: stop taking connections and tell each to close as [close] says, and stop once every
+ * CONNECTION_CLOSE is out of whoever was inside its connection, or at the drain bound when one is not: the close's
+ * limit, and [SETTLE_MARGIN] for a thread inside that stalls. Nothing polls: a caller that sends a close in place wakes
+ * the loop, and a deadline wakes it at the bound. A sub-part of [Demux]; loop thread only.
  */
 @LoopOnly
-internal class ServerLife {
+internal class ServerLife(
+    close: CloseChoice,
+) {
+    private val bound =
+        SETTLE_MARGIN +
+            when (close) {
+                is CloseChoice.Graceful -> close.limitNanos
+                is CloseChoice.Immediate -> 0L
+            }
     private val atBound = Runnable { }
     private var phase: Phase = Phase.Running
 
@@ -57,7 +67,7 @@ internal class ServerLife {
         port: LoopPort,
     ): ServerPhase {
         if (phase !is Phase.Running) return view()
-        val until = now + DRAIN_BOUND
+        val until = now + bound
         phase = Phase.Draining(until, port.arm(until, atBound))
         return ServerPhase.Running
     }
@@ -87,12 +97,11 @@ internal class ServerLife {
 
     private companion object {
         /**
-         * How long a server waits for its connections' closes. A close goes out in the pass after it is asked for, or
-         * as soon as the caller inside leaves, in microseconds; the bound matters only when a thread inside a
-         * connection stalls. A second covers a descheduled thread on a loaded device and keeps a close well inside
-         * its callers' timeouts.
+         * How long past its limit a server waits for a connection's close. A close goes out in the pass its limit or
+         * its delivery falls in, or as soon as the caller inside leaves; the margin matters only when a thread inside
+         * a connection stalls. A second covers a descheduled thread on a loaded device.
          */
-        const val DRAIN_BOUND = 1_000_000_000L
+        const val SETTLE_MARGIN = 1_000_000_000L
     }
 }
 

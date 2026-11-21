@@ -211,6 +211,7 @@ internal class ServerRig(
             loop.port,
             clock,
             counts,
+            ServerLife(CoreTestRules.close),
         )
     val endpoint =
         Endpoint(

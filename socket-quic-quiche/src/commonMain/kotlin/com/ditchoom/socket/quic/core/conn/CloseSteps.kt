@@ -1,8 +1,11 @@
 package com.ditchoom.socket.quic.core.conn
 
+import com.ditchoom.socket.quic.core.life.CloseChoice
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.Holding
+import com.ditchoom.socket.quic.core.life.Life
 import com.ditchoom.socket.quic.core.life.LifeStep
+import com.ditchoom.socket.quic.core.life.endOf
 import com.ditchoom.socket.quic.core.life.errorCode
 import com.ditchoom.socket.quic.core.life.flightCode
 import com.ditchoom.socket.quic.core.path.Outgoing
@@ -16,6 +19,38 @@ import kotlinx.coroutines.Runnable
 internal fun ConnParts.wakeStreams(arrival: Arrival) {
     streams.wake()
     streams.takeIncoming { sink.incoming(it, arrival) }
+}
+
+/**
+ * The close point, at [now], in the connection's order of work: the close [choice] asks for begins, to end with [end],
+ * and from here no stream accepts data. What was accepted before it is delivered as [choice] says.
+ */
+internal fun ConnParts.close(
+    choice: CloseChoice,
+    end: ConnEnd,
+    now: Nanos,
+) {
+    life.close(choice, end, now)
+    when (val at = life.view()) {
+        is Life.Closing -> streams.closePoint(endOf(at))
+        is Life.Running, is Life.Over -> Unit
+    }
+}
+
+/**
+ * How the connection ended once quiche [said][LifeStep] it closed or drains. A drain, the peer's CONNECTION_CLOSE having
+ * arrived, ends it for its callers now, while it keeps its ids until quiche's draining time.
+ */
+internal fun ConnParts.quicheEnded(
+    now: Nanos,
+    quiche: LifeStep,
+    paths: Paths,
+): ConnEnd {
+    when (quiche) {
+        LifeStep.Draining -> life.drains(timer.drainEnds(now))
+        LifeStep.Open, LifeStep.Closed -> Unit
+    }
+    return paths.endOf(network.endOf(life.quicheEnd()))
 }
 
 /** Whether the end reads out what quiche holds for the streams, or only notes which were live. */

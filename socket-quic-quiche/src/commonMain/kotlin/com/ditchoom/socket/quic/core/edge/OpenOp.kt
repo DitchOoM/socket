@@ -60,6 +60,7 @@ internal class OpenOp(
         guarded(::failed) {
             when (val state = inside.streams.state) {
                 is Streams.Ended -> return connectionEnded(state.end)
+                is Streams.Closing -> return refused(state.end)
                 is Streams.Open -> Unit
             }
             if (inside.streams.opensWaiting() > 0 || retry(inside.streams) == Retry.Again) inside.streams.waitToOpen(this)
@@ -67,7 +68,19 @@ internal class OpenOp(
 
     override fun retry(table: StreamTable): Retry {
         if (hand.landed(OpenAnswer.Cancelled)) return Retry.Settled
-        return when (table.tryOpen()) {
+        val send =
+            when (val state = table.state) {
+                is Streams.Open -> state.send
+                is Streams.Closing -> {
+                    refused(state.end)
+                    return Retry.Settled
+                }
+                is Streams.Ended -> {
+                    connectionEnded(state.end)
+                    return Retry.Settled
+                }
+            }
+        return when (table.tryOpen(send)) {
             Opened.AtLimit -> Retry.Again
             Opened.Opened -> {
                 opened = table.lastOpened().id
@@ -82,6 +95,11 @@ internal class OpenOp(
     }
 
     override fun gone(end: ConnEnd) = connectionEnded(end)
+
+    /** The open came after the close point of a close that ends with [end]. */
+    private fun refused(end: ConnEnd) {
+        hand.answer(OpenAnswer.Failed(Raised.PastClose(end), QuicCloseCircumstance.Closing))
+    }
 
     private fun failed(failure: Exception) {
         hand.answer(OpenAnswer.Failed(Raised.Thrown(failure), QuicCloseCircumstance.Ended))

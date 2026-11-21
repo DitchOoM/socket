@@ -5,6 +5,7 @@ import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicStreamId
 import com.ditchoom.socket.quic.QuicUnreadAtClose
 import com.ditchoom.socket.quic.core.conn.HeldReads
+import com.ditchoom.socket.quic.core.life.CloseOutcome
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.stream.InHand
 import com.ditchoom.socket.quic.core.stream.Retry
@@ -25,7 +26,7 @@ class EdgeUnreadAtEndTests {
         val edge = EdgeState(BufferFactory.network().allocate(ALPN), TraceCapture.Off, TicketHome.NotKept)
         val read = Read(InHand.Yes)
         edge.handed.add(STREAM, read)
-        edge.ended(ConnEnd.ByPeer(QuicError.NoError), NOTHING_HELD)
+        edge.ended(BY_PEER, NOTHING_HELD, NOT_ASKED)
         assertEquals<QuicUnreadAtClose>(QuicUnreadAtClose.Unread(setOf(STREAM)), edge.unread.value)
         read.taken = InHand.No
         edge.returned(STREAM)
@@ -40,7 +41,7 @@ class EdgeUnreadAtEndTests {
         // The caller took its bytes and returned before the end was published, finding nothing to leave yet.
         read.taken = InHand.No
         edge.returned(STREAM)
-        edge.ended(ConnEnd.ByPeer(QuicError.NoError), NOTHING_HELD)
+        edge.ended(BY_PEER, NOTHING_HELD, NOT_ASKED)
         assertEquals<QuicUnreadAtClose>(QuicUnreadAtClose.AllRead, edge.unread.value)
     }
 
@@ -58,5 +59,7 @@ class EdgeUnreadAtEndTests {
         const val ALPN = 32
         val STREAM = QuicStreamId(1L)
         val NOTHING_HELD = HeldReads(emptyMap(), emptySet())
+        val BY_PEER = ConnEnd.ByPeer(QuicError.NoError)
+        val NOT_ASKED = CloseOutcome.EndedFirst(BY_PEER)
     }
 }

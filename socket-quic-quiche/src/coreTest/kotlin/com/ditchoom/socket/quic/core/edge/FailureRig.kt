@@ -17,6 +17,7 @@ import com.ditchoom.socket.quic.core.loop.Loop
 import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.sched.LoopPort
 import com.ditchoom.socket.quic.core.sched.LoopWork
+import com.ditchoom.socket.quic.core.stream.Streams
 import com.ditchoom.socket.quic.core.stream.WriteEnd
 import com.ditchoom.socket.quic.core.testing.coreTest
 import com.ditchoom.socket.quic.core.testing.currentThreadName
@@ -214,7 +215,7 @@ internal class SendOnACaller(
     override fun run(inside: Inside) {
         if (!onTheLoop()) {
             val address = (NativeBytes.addressOf(bytes) as ReadAddress.At).address
-            inside.streams.io.send(stream, address, bytes.remaining(), WriteEnd.More)
+            (inside.streams.state as Streams.Open).send.send(stream, address, bytes.remaining(), WriteEnd.More)
             sent = true
         }
         settled.complete(Unit)

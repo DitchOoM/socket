@@ -3,6 +3,8 @@ package com.ditchoom.socket.quic.core.edge
 import com.ditchoom.socket.quic.HandshakePacing
 import com.ditchoom.socket.quic.HandshakePolicy
 import com.ditchoom.socket.quic.LinkClass
+import com.ditchoom.socket.quic.QuicCloseLinger
+import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicheConfig
 import com.ditchoom.socket.quic.RttPrior
@@ -10,6 +12,8 @@ import com.ditchoom.socket.quic.StubQuicheApi
 import com.ditchoom.socket.quic.core.conn.HandshakeBound
 import com.ditchoom.socket.quic.core.conn.HandshakeRule
 import com.ditchoom.socket.quic.core.conn.PtoRule
+import com.ditchoom.socket.quic.core.life.CloseChoice
+import com.ditchoom.socket.quic.core.life.DrainUntil
 import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.transport.NetworkKind
 import kotlin.test.Test
@@ -101,5 +105,19 @@ class RulesTests {
         assertIs<PtoRule.Rfc9002>(rule.pto)
         assertEquals(333 * ms, rule.priorNanos())
         assertEquals(listOf(80 * ms), api.initialRtts)
+    }
+
+    @Test
+    fun aGracefulCloseIsLimitedToTenSecondsWhateverTheIdleTimeout() {
+        for (idle in listOf(5.seconds, 60.seconds)) {
+            val graceful = assertIs<CloseChoice.Graceful>(closeChoiceOf(defaults.copy(idleTimeout = idle)), "$idle")
+            assertEquals(10_000 * ms, graceful.limitNanos, "$idle")
+            assertEquals(DrainUntil.Acknowledged, graceful.waits)
+        }
+        val peerDone = assertIs<CloseChoice.Graceful>(closeChoiceOf(defaults.copy(closeLinger = QuicCloseLinger.UntilPeerDone(3.seconds))))
+        assertEquals(3_000 * ms, peerDone.limitNanos)
+        assertEquals(DrainUntil.PeerDone, peerDone.waits)
+        val now = assertIs<CloseChoice.Immediate>(closeChoiceOf(defaults.copy(closeLinger = QuicCloseLinger.Immediate)))
+        assertEquals(QuicError.NoError, now.error)
     }
 }

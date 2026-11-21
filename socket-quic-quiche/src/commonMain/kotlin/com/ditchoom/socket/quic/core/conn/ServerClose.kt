@@ -3,6 +3,7 @@
 package com.ditchoom.socket.quic.core.conn
 
 import com.ditchoom.socket.quic.core.life.ConnEnd
+import com.ditchoom.socket.quic.core.life.Life
 import com.ditchoom.socket.quic.core.observe.Published
 import kotlin.concurrent.atomics.AtomicInt
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
@@ -15,7 +16,7 @@ internal enum class ServerCloseStage {
     /** The close is queued for whoever is inside. */
     Asked,
 
-    /** The close ran inside; its CONNECTION_CLOSE is with the thread inside, not yet handed to the socket. */
+    /** The connection is over inside: its CONNECTION_CLOSE is with the thread inside, not yet handed to the socket. */
     Ran,
 
     /** Whoever ran the close collected its output, handed it to the socket and left. */
@@ -26,8 +27,9 @@ internal enum class ServerCloseStage {
 internal enum class Moved { Yes, No }
 
 /**
- * A connection's [ServerCloseStage]. The loop asks, the thread inside marks the close as run, and the first thread to
- * leave after collecting the connection's output marks it out. Each step is one compare-and-set from the stage before,
+ * A connection's [ServerCloseStage]. The loop asks, the thread inside marks the close as run once a serve left the
+ * connection over (a graceful close first delivers what was written), and the first thread to leave after collecting
+ * the connection's output marks it out. Each step is one compare-and-set from the stage before,
  * so it happens once, and since the stage never goes back, a stage seen once is never seen again.
  */
 @Published
@@ -46,6 +48,11 @@ internal class ServerCloseCell {
         stage.compareAndSet(ASKED, RAN)
     }
 
+    /** Inside, after a serve that collected the connection's output: once the connection is over, its close ran. */
+    fun collected(life: Life) {
+        if (life is Life.Over) ran()
+    }
+
     /** Whoever leaves after collecting the connection's output. */
     fun out(): Moved = if (stage.compareAndSet(RAN, OUT)) Moved.Yes else Moved.No
 
@@ -55,14 +62,11 @@ internal class ServerCloseCell {
     }
 }
 
-/** Inside, once: the server closes the connection with NO_ERROR, at once. */
+/** Inside, once: the server closes the connection with NO_ERROR, as the connection's close choice says. */
 internal class ServerCloseWork(
     private val cell: ServerCloseCell,
 ) : ConnWork() {
-    override fun run(inside: Inside) {
-        inside.closeForServer()
-        cell.ran()
-    }
+    override fun run(inside: Inside) = inside.closeForServer()
 
     override fun gone(end: ConnEnd) = cell.gone()
 }

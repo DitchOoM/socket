@@ -81,18 +81,18 @@ sealed interface QuicCloseLinger {
 
     /**
      * Hold the CONNECTION_CLOSE until the peer has acknowledged everything the connection wrote on its
-     * streams — every byte and every FIN — or until the connection ends on its own, whichever comes first,
-     * and at most the connection's [QuicOptions.idleTimeout].
+     * streams — every byte and every FIN — or until the connection ends on its own, whichever comes first.
+     * On the core engine it waits at most ten seconds, and a write after the close is refused with
+     * [QuicCloseCircumstance.Closing]; on the legacy driver, at most the connection's
+     * [QuicOptions.idleTimeout].
      *
-     * Unlike [UntilPeerDone]'s fixed bound, this waits exactly as long as delivery takes: a reply on a
-     * path slow or lossy enough to need more than a fixed wait is still delivered whole. The idle timeout
-     * bounds it because a peer that acknowledges nothing for that long would have ended the connection
-     * anyway.
+     * It returns as soon as delivery is done: the limit is a cap for a peer that stops acknowledging,
+     * not a delay.
      */
     data object UntilAcknowledged : QuicCloseLinger
 
     companion object {
-        /** The default: [UntilAcknowledged] — a reply is never cut short by a fixed wait. */
+        /** The default: [UntilAcknowledged]. */
         val Default: QuicCloseLinger = UntilAcknowledged
     }
 }
@@ -265,8 +265,10 @@ data class QuicOptions(
     /**
      * **Server-side only**: when an accepted connection may send its CONNECTION_CLOSE after the
      * [QuicScope] handler returns — see [QuicCloseLinger]. Defaults to [QuicCloseLinger.Default]
-     * (linger until the peer has acknowledged everything written, bounded by [idleTimeout]), so a reply
-     * that is slow or lost on the wire is still delivered instead of dying with the connection.
+     * (linger until the peer has acknowledged everything written, for at most ten seconds on the
+     * core engine and [idleTimeout] on the legacy driver), so a reply that is slow or lost on the wire
+     * is still delivered instead of dying with the connection. On the core engine it is also what a
+     * client's `close(QuicError.NoError)` does.
      *
      * Ignored for the client role, where the application decides when to call
      * [QuicConnection.close] and nothing closes the connection behind its back.

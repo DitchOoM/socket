@@ -15,7 +15,7 @@ internal fun ConnParts.rearm(
     slots.keepAlive.offerWake(timer.sink)
     slots.ack.offerWake(timer.sink)
     handshake.offerWake(timer.sink)
-    life.linger.offerWake(timer.sink)
+    life.offerWake(timer.sink)
     slots.paths.offerWake(timer.sink)
     if (slots.ack.deadlineLeft() == Stale.Yes) timer.disarm()
     timer.rearm(now, fire)

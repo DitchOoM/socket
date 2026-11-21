@@ -39,13 +39,13 @@ internal class Demux(
     private val port: LoopPort,
     private val clock: LoopClock,
     private val counts: ServerCounts,
+    private val life: ServerLife,
 ) {
     private val header = PacketHeader()
     private val table = RouteTable<ServerPeer>()
     private val spares = SpareRoutes(table, admission)
     private val peers = ArrayList<ServerPeer>()
     private val ended = EndedIds(ENDED_IDS)
-    private val life = ServerLife()
     private val tick = PassTick()
     private var mode = Mode.Receiving
 

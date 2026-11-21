@@ -155,6 +155,8 @@ class CoreNativeCrossingTests {
                     // At most one per turn.
                     Law.atMost("connTimeoutNanos", n("connTimeoutNanos"), turns, slack),
                     Law.atMost("connOnTimeout", n("connOnTimeout"), turns, slack),
+                    // Whether the peer's close arrived: asked once in a turn that handed quiche a datagram.
+                    Law.atMost("connIsDraining", n("connIsDraining"), minOf(turns, datagrams), slack),
                     // At most one terminating call per turn plus one per datagram sent (about one per datagram received).
                     Law.atMost("connSend", n("connSend"), turns + datagrams, slack),
                 )

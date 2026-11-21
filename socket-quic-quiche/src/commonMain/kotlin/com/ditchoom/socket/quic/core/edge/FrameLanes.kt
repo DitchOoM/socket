@@ -11,6 +11,7 @@ import com.ditchoom.socket.quic.core.stream.QUICHE_ERR_STREAM_STOPPED
 import com.ditchoom.socket.quic.core.stream.ShutdownSide
 import com.ditchoom.socket.quic.core.stream.Side
 import com.ditchoom.socket.quic.core.stream.StreamTable
+import com.ditchoom.socket.quic.core.stream.Streams
 import com.ditchoom.socket.quic.core.stream.WriteEnd
 import com.ditchoom.socket.quic.core.stream.code
 import com.ditchoom.socket.quic.core.stream.peer
@@ -93,10 +94,16 @@ internal class Outbound(
         table: StreamTable,
         stream: QuicStreamId,
     ): Moved {
+        val send =
+            when (val state = table.state) {
+                is Streams.Open -> state.send
+                is Streams.Closing -> return Moved.Refused(Raised.PastClose(state.end))
+                is Streams.Ended -> return Moved.Refused(Raised.ConnEnded(state.end))
+            }
         val length = from.length
         while (true) {
             val remaining = length - sent
-            val answer = table.io.send(stream, from.address() + sent, remaining, end)
+            val answer = send.send(stream, from.address() + sent, remaining, end)
             val taken = answer.code()
             when {
                 taken > 0 -> {

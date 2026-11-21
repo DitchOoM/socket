@@ -2,6 +2,7 @@ package com.ditchoom.socket.quic.core.edge
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.flow.writeFully
+import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicCloseReason
 import com.ditchoom.socket.quic.QuicConnectionState
@@ -23,8 +24,8 @@ import kotlin.time.Duration.Companion.seconds
 
 /**
  * Closing a core connection over a real loopback socket, on every platform: every call still waiting fails with the
- * typed close once the end is published, a write parked on the peer's flow window included, and once the connection's
- * linger is over every buffer it took from the caller's factory is back.
+ * typed close once the end is published, a write parked on the peer's flow window is refused at the close point, and
+ * once the connection's linger is over every buffer it took from the caller's factory is back.
  */
 class CoreCloseTests {
     private val loops = LoopSet(1)
@@ -71,8 +72,8 @@ class CoreCloseTests {
         }
 
     @Test
-    fun aWriteParkedOnThePeersFlowWindowFailsWithTheCloseAndTheCloseReturns() =
-        coreTest("CoreCloseTests.aWriteParkedOnThePeersFlowWindowFailsWithTheCloseAndTheCloseReturns") {
+    fun aWriteParkedOnThePeersFlowWindowIsRefusedAtTheClosePointAndTheCloseReturns() =
+        coreTest("CoreCloseTests.aWriteParkedOnThePeersFlowWindowIsRefusedAtTheClosePointAndTheCloseReturns") {
             val serverRead = CompletableDeferred<Unit>()
             withCoreServer(onConnection = { connection ->
                 // Reads once, then never again: the stream's flow window fills.
@@ -93,7 +94,7 @@ class CoreCloseTests {
                 client.connection.close(QuicError.NoError)
                 val failure = write.await()
                 assertEquals<QuicCloseReason>(QuicCloseReason.ByLocal(QuicError.NoError), failure.reason)
-                assertTrue(failure.endPublished)
+                assertEquals<QuicCloseCircumstance>(QuicCloseCircumstance.Closing, failure.circumstance, "refused at the close point")
             }
         }
 
@@ -156,10 +157,11 @@ class CoreCloseTests {
             }
         }
 
-    /** How a waiting call failed: its typed reason, and whether its connection's end was already published. */
+    /** How a waiting call failed: its typed reason and circumstance, and whether its connection's end was already published. */
     private class Failure(
         val call: String,
         val reason: QuicCloseReason,
+        val circumstance: QuicCloseCircumstance,
         val endPublished: Boolean,
     )
 
@@ -176,7 +178,7 @@ class CoreCloseTests {
             } catch (closed: QuicCloseException) {
                 closed
             }
-        return Failure(name, thrown.closeReason, connection.state.value is QuicConnectionState.Closed)
+        return Failure(name, thrown.closeReason, thrown.circumstance, connection.state.value is QuicConnectionState.Closed)
     }
 
     private companion object {

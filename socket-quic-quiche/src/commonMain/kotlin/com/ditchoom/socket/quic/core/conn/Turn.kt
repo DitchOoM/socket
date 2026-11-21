@@ -2,7 +2,7 @@ package com.ditchoom.socket.quic.core.conn
 
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicError
-import com.ditchoom.socket.quic.core.life.CloseHow
+import com.ditchoom.socket.quic.core.life.CloseChoice
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.Ending
 import com.ditchoom.socket.quic.core.life.Life
@@ -189,6 +189,7 @@ internal class Turn(
         now: Nanos,
         end: ConnEnd,
     ) {
+        val outcome = c.life.outcome(end).also { c.life.endFlush() }
         if (c.life.end(end) == Ending.Already) return
         c.timer.disarm()
         c.recordEnd(now, end)
@@ -198,7 +199,7 @@ internal class Turn(
             } catch (again: Exception) {
                 c.heldAtEnd(HoldAtEnd.LiveOnly)
             }
-        c.sink.ended(end, held)
+        c.sink.ended(end, held, outcome)
         c.inbox.shut(end) { it.gone(end) }
         c.streams.endAll(end)
         c.slots.datagrams.endAll(end)
@@ -221,16 +222,16 @@ internal class Turn(
             HandshakeStep.Handshaking, HandshakeStep.JustEstablished, HandshakeStep.Established -> Unit
             HandshakeStep.DeadlinePassed -> {
                 val end = c.handshakeEnd(now, paths)
-                c.life.close(QuicError.NoError, end, CloseHow.Now, now)
+                c.close(CloseChoice.Immediate(QuicError.NoError), end, now)
                 finish(now, end)
                 return Collected.Everything
             }
         }
         c.life.flushStep(now)
-        when (c.life.observe()) {
+        when (val quiche = c.life.observe()) {
             LifeStep.Open -> Unit
-            LifeStep.Closed -> {
-                finish(now, paths.endOf(c.network.endOf(c.life.quicheEnd())))
+            LifeStep.Draining, LifeStep.Closed -> {
+                finish(now, c.quicheEnded(now, quiche, paths))
                 return Collected.Everything
             }
         }
@@ -248,7 +249,7 @@ internal class Turn(
         c.wrote(now)
         if (c.life.linger.sending() && c.keepClose(now, out) == CloseSent.Yes) {
             when (val life = c.life.view()) {
-                is Life.Closing -> finish(now, life.end)
+                is Life.Closing -> finish(now, endOf(life))
                 is Life.Running, is Life.Over -> Unit
             }
         }
@@ -290,7 +291,7 @@ internal class Turn(
         if (c.life.view() is Life.Over) return
         val end = ConnEnd.ProcessingFailed(Thrown(failure))
         try {
-            c.life.close(QuicError.ProcessingFailed, end, CloseHow.Now, now)
+            c.close(CloseChoice.Immediate(QuicError.ProcessingFailed), end, now)
         } catch (late: Exception) {
             failure.addSuppressed(late)
         }

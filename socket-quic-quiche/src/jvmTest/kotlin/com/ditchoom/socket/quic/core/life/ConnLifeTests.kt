@@ -9,6 +9,7 @@ import com.ditchoom.socket.quic.StubQuicheApi
 import com.ditchoom.socket.quic.core.observe.ConnCounts
 import com.ditchoom.socket.quic.core.testing.nativeBytes
 import com.ditchoom.socket.quic.core.time.Nanos
+import com.ditchoom.socket.quic.core.time.WakeSink
 import com.ditchoom.socket.quic.core.udp.BatchLimits
 import com.ditchoom.socket.quic.core.udp.Room
 import com.ditchoom.socket.quic.core.udp.SendBatch
@@ -23,7 +24,7 @@ class ConnLifeTests {
     private val q = QuicheConnRef(api, QuicheConn(1L))
     private val counts = ConnCounts()
 
-    private fun lifeWith(rule: CloseRule = CloseRule.Immediate) = ConnLife(q, Linger(q, rule, BufferFactory.Default, counts))
+    private fun lifeWith(noError: CloseChoice = NOW) = ConnLife(q, Linger(BufferFactory.Default, counts), noError)
 
     private val life = lifeWith()
 
@@ -40,7 +41,7 @@ class ConnLifeTests {
 
     @Test
     fun aCloseWeIssuedEndsByLocalEvenWhenThePeersCloseArrivesBeforeQuicheReportsClosed() {
-        life.close(QuicError.NoError, ConnEnd.ByLocal(QuicError.NoError), CloseHow.Now, Nanos(0L))
+        life.close(NOW, BY_LOCAL, Nanos(0L))
         // The peer's CONNECTION_CLOSE crossed ours: quiche, closing, read it and recorded both errors.
         api.localError = QuicError.NoError
         api.peerError = QuicError.NoError
@@ -51,16 +52,17 @@ class ConnLifeTests {
     @Test
     fun aCloseAskedAfterThePeerClosedEndsByPeerAndSendsNothing() {
         api.peerError = QuicError.ProtocolViolation
-        life.close(QuicError.NoError, ConnEnd.ByLocal(QuicError.NoError), CloseHow.Now, Nanos(0L))
-        assertEquals(QuicError.ProtocolViolation, assertIs<ConnEnd.ByPeer>(assertIs<Life.Closing>(life.view()).end).error)
+        life.close(NOW, BY_LOCAL, Nanos(0L))
+        assertEquals(QuicError.ProtocolViolation, assertIs<ConnEnd.ByPeer>(endOf(assertIs<Life.Closing>(life.view()))).error)
         assertSame(Wire.Draining, life.linger.wire())
         assertEquals(emptyList(), api.closeErrors, "quiche is draining the peer's close: ours is never asked for")
+        assertIs<CloseOutcome.EndedFirst>(life.outcome(ConnEnd.ByPeer(QuicError.ProtocolViolation)))
     }
 
     @Test
     fun aCloseQuicheDeclinedEndsAsQuicheSays() {
         api.connCloseResult = QUICHE_ERR_DONE
-        life.close(QuicError.NoError, ConnEnd.ByLocal(QuicError.NoError), CloseHow.Now, Nanos(0L))
+        life.close(NOW, BY_LOCAL, Nanos(0L))
         assertSame(Wire.Draining, life.linger.wire(), "quiche declined: nothing of ours goes out")
     }
 
@@ -79,47 +81,96 @@ class ConnLifeTests {
     }
 
     @Test
-    fun aGracefulCloseWaitsForAcknowledgementThenSendsAndAnErrorCloseSendsAtOnce() {
-        val graceful = lifeWith(CloseRule.UntilAcknowledged(BOUND))
-        api.streamDataUnacknowledged = true
-        graceful.close(QuicError.NoError, ConnEnd.ByLocal(QuicError.NoError), CloseHow.Graceful, Nanos(0L))
-        assertIs<Wire.Flushing>(graceful.linger.wire())
-        graceful.flushStep(Nanos(BOUND - 1))
-        assertIs<Wire.Flushing>(graceful.linger.wire(), "data is unacknowledged and the bound has not passed")
-        api.streamDataUnacknowledged = false
-        graceful.flushStep(Nanos(BOUND - 1))
-        assertSame(Wire.Sending, graceful.linger.wire(), "acknowledged: quiche took the close")
-        assertEquals(listOf<QuicError>(QuicError.NoError), api.closeErrors)
-
-        val abort = lifeWith(CloseRule.UntilAcknowledged(BOUND))
-        api.streamDataUnacknowledged = true
-        abort.close(QuicError.ApplicationError(7), ConnEnd.ByLocal(QuicError.ApplicationError(7)), CloseHow.Now, Nanos(0L))
-        assertSame(Wire.Sending, abort.linger.wire(), "a close with an error does not wait for anything")
+    fun observeReportsTheDrainOfThePeersCloseBeforeQuicheIsClosed() {
+        api.peerError = QuicError.ApplicationError(3)
+        assertEquals(LifeStep.Open, life.observe(), "no datagram reached quiche: it is not asked")
+        life.heard()
+        assertEquals(LifeStep.Draining, life.observe(), "the peer's CONNECTION_CLOSE arrived: quiche drains")
+        life.drains(Nanos(LINGER))
+        assertEquals(Ending.First, life.end(ConnEnd.ByPeer(QuicError.ApplicationError(3))))
+        assertIs<Life.Lingering>(life.view(), "the ids stay for quiche's draining time")
+        assertEquals(Holding.Ids, life.linger.holds())
+        life.linger.late()
+        assertEquals(
+            0,
+            SendBatch(nativeBytes(1500), BatchLimits(1, 1500))
+                .also {
+                    life.linger.answer(it)
+                }.pending,
+            "a draining endpoint sends nothing",
+        )
+        assertTrue(!life.linger.due(Nanos(LINGER - 1)))
+        assertTrue(life.linger.due(Nanos(LINGER)))
     }
 
     @Test
-    fun aFlushEndsAtItsBoundAndACloseAskedNowCutsIt() {
-        val bounded = lifeWith(CloseRule.UntilAcknowledged(BOUND))
+    fun aGracefulCloseWaitsForAcknowledgementThenSendsAndAnErrorCloseSendsAtOnce() {
+        val graceful = lifeWith(GRACEFUL)
         api.streamDataUnacknowledged = true
-        bounded.close(QuicError.NoError, ConnEnd.ByLocal(QuicError.NoError), CloseHow.Graceful, Nanos(0L))
-        bounded.flushStep(Nanos(BOUND))
-        assertSame(Wire.Sending, bounded.linger.wire(), "the bound passed with data unacknowledged")
+        graceful.close(GRACEFUL, BY_LOCAL, Nanos(0L))
+        assertIs<Life.Flushing>(graceful.view(), "past the close point, flushing")
+        graceful.flushStep(Nanos(LIMIT - 1))
+        assertIs<Life.Flushing>(graceful.view(), "data is unacknowledged and the limit has not passed")
+        api.streamDataUnacknowledged = false
+        graceful.flushStep(Nanos(LIMIT - 1))
+        assertSame(Wire.Sending, graceful.linger.wire(), "acknowledged: quiche took the close")
+        assertSame(CloseOutcome.Drained, assertIs<Life.Handed>(graceful.view()).outcome)
+        assertEquals(listOf<QuicError>(QuicError.NoError), api.closeErrors)
 
-        val cut = lifeWith(CloseRule.UntilPeerDone(BOUND))
-        cut.close(QuicError.NoError, ConnEnd.ByLocal(QuicError.NoError), CloseHow.Graceful, Nanos(0L))
+        val abort = lifeWith(GRACEFUL)
+        api.streamDataUnacknowledged = true
+        abort.close(CloseChoice.Immediate(QuicError.ApplicationError(7)), ConnEnd.ByLocal(QuicError.ApplicationError(7)), Nanos(0L))
+        assertSame(Wire.Sending, abort.linger.wire(), "a close with an error does not wait for anything")
+        assertSame(CloseOutcome.Immediate, assertIs<Life.Handed>(abort.view()).outcome)
+    }
+
+    @Test
+    fun aFlushEndsAtItsLimitAndACloseAskedNowCutsIt() {
+        val limited = lifeWith(GRACEFUL)
+        api.streamDataUnacknowledged = true
+        limited.close(GRACEFUL, BY_LOCAL, Nanos(0L))
+        limited.flushStep(Nanos(LIMIT))
+        assertSame(Wire.Sending, limited.linger.wire(), "the limit passed with data unacknowledged")
+        assertSame(CloseOutcome.LimitReached, assertIs<Life.Handed>(limited.view()).outcome)
+
+        val peerDone = CloseChoice.Graceful(LIMIT, DrainUntil.PeerDone)
+        val cut = lifeWith(peerDone)
+        cut.close(peerDone, BY_LOCAL, Nanos(0L))
         cut.flushStep(Nanos(1L))
-        assertIs<Wire.Flushing>(cut.linger.wire(), "waiting for the peer")
-        cut.close(QuicError.ProcessingFailed, ConnEnd.ServerClosed, CloseHow.Now, Nanos(1L))
+        assertIs<Life.Flushing>(cut.view(), "waiting for the peer")
+        cut.close(CloseChoice.Immediate(QuicError.ProcessingFailed), ConnEnd.ServerClosed, Nanos(1L))
         assertSame(Wire.Sending, cut.linger.wire())
         assertEquals(QuicError.ProcessingFailed, api.closeErrors.last(), "the close asked now sends its own error")
-        assertIs<ConnEnd.ByLocal>(assertIs<Life.Closing>(cut.view()).end, "the end is the first close's")
+        val handed = assertIs<Life.Handed>(cut.view())
+        assertIs<ConnEnd.ByLocal>(handed.end, "the end is the first close's")
+        assertSame(CloseOutcome.Immediate, handed.outcome)
+    }
+
+    @Test
+    fun aFlushWaitingForThePeerIsDrainedByThePeersClose() {
+        val peerDone = CloseChoice.Graceful(LIMIT, DrainUntil.PeerDone)
+        val waiting = lifeWith(peerDone)
+        waiting.close(peerDone, BY_LOCAL, Nanos(0L))
+        api.peerError = QuicError.NoError
+        assertSame(CloseOutcome.Drained, waiting.outcome(BY_LOCAL))
+    }
+
+    @Test
+    fun aFlushOffersItsLimitAsTheNextWake() {
+        val graceful = lifeWith(GRACEFUL)
+        api.streamDataUnacknowledged = true
+        graceful.close(GRACEFUL, BY_LOCAL, Nanos(5L))
+        val sink = WakeSink()
+        graceful.offerWake(sink)
+        assertEquals(Nanos(5L + LIMIT), sink.earliest())
     }
 
     @Test
     fun anEndWhileFlushingHasNothingLeftOnTheWire() {
-        val flushing = lifeWith(CloseRule.UntilAcknowledged(BOUND))
+        val flushing = lifeWith(GRACEFUL)
         api.streamDataUnacknowledged = true
-        flushing.close(QuicError.NoError, ConnEnd.ByLocal(QuicError.NoError), CloseHow.Graceful, Nanos(0L))
+        flushing.close(GRACEFUL, BY_LOCAL, Nanos(0L))
+        assertIs<CloseOutcome.EndedFirst>(flushing.outcome(ConnEnd.LocalAddressGone))
         flushing.end(ConnEnd.LocalAddressGone)
         assertSame(ConnEnd.LocalAddressGone, assertIs<Life.Ended>(flushing.view()).end)
         assertSame(Wire.Done, flushing.linger.wire())
@@ -127,7 +178,7 @@ class ConnLifeTests {
 
     @Test
     fun aCloseOutLingersAnsweringLateDatagramsAtEachDoublingAndFreesItsCopyAtTheEnd() {
-        life.close(QuicError.NoError, ConnEnd.ByLocal(QuicError.NoError), CloseHow.Now, Nanos(0L))
+        life.close(NOW, BY_LOCAL, Nanos(0L))
         val out = SendBatch(nativeBytes(8 * 1500), BatchLimits(8, 1500))
         out.storage.putLong(0, CLOSE_BYTES)
         out.commit(CLOSE_LENGTH, SendTarget.ConnectedPeer)
@@ -156,10 +207,13 @@ class ConnLifeTests {
 
     private companion object {
         const val QUICHE_ERR_DONE = -1
-        const val BOUND = 1_000_000_000L
+        const val LIMIT = 1_000_000_000L
         const val LINGER = 180_000_000L
         const val CLOSE_LENGTH = 48
         const val CLOSE_BYTES = 0x0102030405060708L
         const val LATE = 10
+        val NOW = CloseChoice.Immediate(QuicError.NoError)
+        val GRACEFUL = CloseChoice.Graceful(LIMIT, DrainUntil.Acknowledged)
+        val BY_LOCAL = ConnEnd.ByLocal(QuicError.NoError)
     }
 }

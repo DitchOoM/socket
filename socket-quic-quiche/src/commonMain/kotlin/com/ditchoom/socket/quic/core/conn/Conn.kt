@@ -120,7 +120,9 @@ internal class Conn(
     /** Loop thread, once or more per pass: serves the connection at one clock reading if the loop is inside, and leaves. */
     fun turn(out: SendBatch): Collected {
         if (hold == LoopHold.Out) return Collected.Everything
-        if (turn.serve(clock.begins(), out, onTimer) == Collected.MoreWaiting) return Collected.MoreWaiting
+        val served = turn.serve(clock.begins(), out, onTimer)
+        serverClose.collected(turn.life())
+        if (served == Collected.MoreWaiting) return Collected.MoreWaiting
         return when (owner.tryLeave(loopEntrant)) {
             Leave.Left -> {
                 hold = LoopHold.Out
@@ -243,6 +245,7 @@ internal class Conn(
                 when (val held = lane) {
                     is CallerSend -> {
                         val served = turn.serveAsCaller(now, held.batch, onTimer)
+                        serverClose.collected(turn.life())
                         if (held.batch.pending > 0 && socket.sendInPlace(held) == LaneSent.Deferred) lane = LaneTake.None
                         served
                     }
