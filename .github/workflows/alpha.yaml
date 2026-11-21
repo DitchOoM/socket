@@ -1,0 +1,139 @@
+name: "Publish 5.0 alpha"
+
+# Publishes com.ditchoom:socket 5.0.0-alphaNN by hand. Manual dispatch only: there is no push, pull_request or
+# schedule trigger, and merged.yaml's label-driven version bump is untouched.
+#
+# The build, validation and signing/upload are the release path's own reusable workflows (build-linux, build-apple,
+# validate-artifacts, publish-to-central) with the same secrets; only the version differs, and it is fixed here
+# instead of coming from Maven Central. With dry_run (the default) everything runs except the upload and the tag,
+# and the coordinates that would be published are printed.
+
+on:
+  workflow_dispatch:
+    inputs:
+      alpha:
+        description: "Alpha number, two digits (07 publishes 5.0.0-alpha07)"
+        required: true
+        type: string
+      dry_run:
+        description: "Build and validate, print the coordinates, upload nothing and tag nothing"
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: "Plan"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+    steps:
+      - name: Validate inputs
+        id: plan
+        env:
+          ALPHA: ${{ inputs.alpha }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$ALPHA" =~ ^[0-9]{2}$ ]]; then
+            echo "::error::alpha must be two digits (for example 07); got '${ALPHA}'"
+            exit 1
+          fi
+          if [ "$DRY_RUN" != "true" ] && [ "$REF" != "refs/heads/integrate/5.0-alpha01" ]; then
+            echo "::error::a real publish runs only from integrate/5.0-alpha01; this run is on ${REF}. Dispatch it there, or set dry_run."
+            exit 1
+          fi
+          version="5.0.0-alpha${ALPHA}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          mode=$([ "$DRY_RUN" = "true" ] && echo "dry run, nothing uploaded" || echo "PUBLISH to Maven Central")
+          echo "### 5.0 alpha: \`${version}\` (${mode})" >> "$GITHUB_STEP_SUMMARY"
+
+  build-linux:
+    needs: plan
+    uses: ./.github/workflows/build-linux.yaml
+    with:
+      version: ${{ needs.plan.outputs.version }}
+
+  build-apple:
+    needs: plan
+    uses: ./.github/workflows/build-apple.yaml
+    with:
+      version: ${{ needs.plan.outputs.version }}
+
+  validate:
+    needs: [plan, build-linux, build-apple]
+    uses: ./.github/workflows/validate-artifacts.yaml
+    with:
+      version: ${{ needs.plan.outputs.version }}
+
+  coordinates:
+    name: "Coordinates"
+    needs: [plan, validate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download merged artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: maven-local-merged
+          path: merged
+
+      - name: Print the coordinates
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          verb=$([ "$DRY_RUN" = "true" ] && echo "would publish" || echo "will publish")
+          {
+            echo "### Coordinates this run ${verb}"
+            echo '```'
+            for dir in merged/com/ditchoom/*/"${VERSION}"; do
+              [ -d "$dir" ] && echo "com.ditchoom:$(basename "$(dirname "$dir")"):${VERSION}"
+            done
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+  publish:
+    name: "Publish"
+    needs: [plan, validate, coordinates]
+    if: inputs.dry_run == false
+    uses: ./.github/workflows/publish-to-central.yaml
+    with:
+      publishing-type: AUTOMATIC
+      version: ${{ needs.plan.outputs.version }}
+    secrets:
+      GPG_KEY_CONTENTS: ${{ secrets.GPG_KEY_CONTENTS }}
+      SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
+      MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+      MAVEN_CENTRAL_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+
+  tag:
+    name: "Tag the prerelease"
+    needs: [plan, publish]
+    if: inputs.dry_run == false && needs.publish.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Create the prerelease and its tag
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh release create "v${VERSION}" \
+            --repo="$GITHUB_REPOSITORY" \
+            --target="$GITHUB_SHA" \
+            --prerelease \
+            --title="v${VERSION}" \
+            --notes="**Maven Central:** [com.ditchoom:socket:${VERSION}](https://central.sonatype.com/artifact/com.ditchoom/socket/${VERSION})"
