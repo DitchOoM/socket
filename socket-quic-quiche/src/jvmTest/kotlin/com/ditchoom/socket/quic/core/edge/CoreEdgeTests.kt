@@ -16,6 +16,7 @@ import com.ditchoom.socket.quic.QuicStreamClosedException
 import com.ditchoom.socket.quic.QuicStreamSide
 import com.ditchoom.socket.quic.QuicTlsConfig
 import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.StandbyLink
 import com.ditchoom.socket.quic.core.conn.MismatchResponse
 import com.ditchoom.socket.quic.loadQuicheApi
 import com.ditchoom.socket.quic.read
@@ -42,7 +43,8 @@ import kotlin.time.Duration.Companion.seconds
 
 /** The public stream and connection API on the run-to-completion core, against today's server over a real socket. */
 class CoreEdgeTests {
-    private val options = QuicOptions(alpnProtocols = listOf("test"), verifyPeer = false, idleTimeout = 10.seconds)
+    private val options =
+        QuicOptions(alpnProtocols = listOf("test"), verifyPeer = false, idleTimeout = 10.seconds, standbyLink = StandbyLink.OnDemand)
 
     @Test
     fun smallAndLargeEchoesAreByteExact() =
