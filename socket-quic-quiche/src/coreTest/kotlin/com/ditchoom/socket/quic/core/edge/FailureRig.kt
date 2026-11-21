@@ -17,6 +17,7 @@ import com.ditchoom.socket.quic.core.loop.Loop
 import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.sched.LoopPort
 import com.ditchoom.socket.quic.core.sched.LoopWork
+import com.ditchoom.socket.quic.core.sched.SendRule
 import com.ditchoom.socket.quic.core.stream.WriteEnd
 import com.ditchoom.socket.quic.core.testing.coreTest
 import com.ditchoom.socket.quic.core.testing.currentThreadName
@@ -73,7 +74,8 @@ internal class FailureRig(
 
     companion object {
         suspend fun start(port: Int): FailureRig {
-            val loops = LoopSet(1)
+            // The rig drives callers inside the connection, so its sockets lend lanes whatever this host's own rule.
+            val loops = LoopSet(1, sends = SendRule.InPlace)
             val wrapped = ArrayList<RefusingIo>(1)
             val client = connectCore(port, loops = loops) { RefusingIo(it).also { io -> wrapped.add(io) } }
             return FailureRig(client.connection, client.conn, client.loop, wrapped[0], loops)
