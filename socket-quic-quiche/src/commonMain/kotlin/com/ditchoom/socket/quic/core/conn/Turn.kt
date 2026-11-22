@@ -182,6 +182,9 @@ internal class Turn(
     /** Any thread: the bytes one datagram may carry as of the connection's last turn, or 0. */
     fun datagramMaxBytes(): Int = c.slots.datagrams.maxBytes()
 
+    /** Once the loop is quiet: where the connection's close stands at [now]. */
+    fun lingerView(now: Nanos) = LingerView(now, c.life.view(), c.life.linger.wire(), c.timer.armed(now))
+
     fun dump(sink: TraceSink) = c.flight.dump(sink)
 
     /** Inside: the connection ends with [end], once ([ending], then [ended]); what quiche held for reads goes with it. */

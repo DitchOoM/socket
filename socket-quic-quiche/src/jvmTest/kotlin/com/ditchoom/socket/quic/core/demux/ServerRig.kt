@@ -77,7 +77,12 @@ internal class BoundedIo(
         if (waiting.size >= kernelBuffer) kernelDrops++ else waiting.addLast(Arrival(bytes, from))
     }
 
+    /** Runs at each send, on the sending thread: a test holds a caller inside its connection here. */
+    @Volatile
+    var onSend: () -> Unit = {}
+
     override fun send(batch: SendBatch): SendBatchResult {
+        onSend()
         for (n in 0 until batch.pending) {
             val storage = batch.storage.owner
             storage.setLimit(batch.offsetOf(n) + batch.lengthOf(n))
