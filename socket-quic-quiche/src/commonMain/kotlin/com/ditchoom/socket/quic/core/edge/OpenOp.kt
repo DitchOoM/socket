@@ -49,12 +49,12 @@ internal class OpenOp(
         }
     }
 
-    /** The cancelling thread: an open not answered yet is answered Cancelled and handed back to the connection. */
+    /**
+     * The cancelling thread: an open not answered yet is answered Cancelled and handed back to the connection,
+     * ahead of anything its caller does once it resumes.
+     */
     private fun cancelled() {
-        when (hand.answer(OpenAnswer.Cancelled)) {
-            Landed.First -> conn.submit(Withdraw(), CallerPlace.HandToLoop)
-            Landed.Late -> Unit
-        }
+        hand.answer(OpenAnswer.Cancelled) { conn.submit(Withdraw(), CallerPlace.HandToLoop) }
     }
 
     // ---- the connection's side, inside ----

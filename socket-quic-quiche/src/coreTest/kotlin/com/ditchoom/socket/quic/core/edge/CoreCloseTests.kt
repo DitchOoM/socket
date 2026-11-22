@@ -99,6 +99,55 @@ class CoreCloseTests {
         }
 
     @Test
+    fun streamDataHeldAtThePeersCloseAndNeverReadIsGivenBackOnceTheApplicationClosesTheConnection() =
+        coreTest("CoreCloseTests.streamDataHeldAtThePeersCloseAndNeverReadIsGivenBackOnceTheApplicationClosesTheConnection") {
+            heldAtThePeersClose(read = false)
+        }
+
+    @Test
+    fun streamDataHeldAtThePeersCloseAndReadIsGivenBackOnceTheApplicationClosesTheConnection() =
+        coreTest("CoreCloseTests.streamDataHeldAtThePeersCloseAndReadIsGivenBackOnceTheApplicationClosesTheConnection") {
+            heldAtThePeersClose(read = true)
+        }
+
+    /** The server writes and closes; the client's connection holds what arrived; [read] or not, every buffer comes back. */
+    private suspend fun heldAtThePeersClose(read: Boolean) {
+        val tracked = TrackedFactory()
+        withCoreServer(onConnection = { connection ->
+            connection.openStream().writeFully(
+                BufferFactory
+                    .network()
+                    .allocate(HELD)
+                    .also { it.position(HELD) }
+                    .also { it.resetForRead() },
+                10.seconds,
+            )
+            connection.close(QuicError.NoError)
+        }) { server ->
+            // The loop takes its own memory from the factory of the first connection placed on it: not the tracked one.
+            connectCore(server.port, loops = loops).connection.close(QuicError.NoError)
+            val client = connectCore(server.port, loops = loops, factory = tracked)
+            assertTrue(eventually(within = 10.seconds) { client.connection.end() is EdgeEnd.Ended }, "the server's close arrived")
+            val stream = client.connection.acceptStream()
+            if (read) {
+                var got = 0
+                try {
+                    while (stream.read(10.seconds) { got += it.remaining() } is com.ditchoom.socket.quic.ScopedRead.Data<*>) Unit
+                } catch (closed: QuicCloseException) {
+                    // The server never finished the stream: after what was held, the read meets the close.
+                }
+                assertEquals(HELD, got, "what was held was read")
+            }
+            // The application is done with the connection: what it never read goes back.
+            client.connection.close(QuicError.NoError)
+            assertTrue(
+                eventually(within = 10.seconds) { tracked.live() == 0 },
+                "${tracked.live()} buffers still live once the application closed the connection (read=$read): ${client.conn.life()::class.simpleName}",
+            )
+        }
+    }
+
+    @Test
     fun onceItsLingerIsOverAClosedConnectionHasGivenBackEveryBufferItTook() =
         coreTest("CoreCloseTests.onceItsLingerIsOverAClosedConnectionHasGivenBackEveryBufferItTook") {
             val tracked = TrackedFactory()
@@ -182,6 +231,7 @@ class CoreCloseTests {
     }
 
     private companion object {
+        const val HELD = 8 * 1024
         val PARK = 100.milliseconds
         const val BEYOND_WINDOW = 4 * 1024 * 1024
         const val ROUNDS = 8

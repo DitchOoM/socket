@@ -33,8 +33,9 @@ internal enum class LoopHold { Out, In }
 /**
  * One QUIC connection on one loop: who enters it, and leaving. Whoever holds its [OwnerWord] is inside and the only
  * thread touching its quiche handle: the loop, when a datagram, a deadline or work touches it, or a caller allowed to
- * enter ([CallerPlace.MayEnter]) that finds it free. Whoever is inside serves it through [Turn], collects its output
- * and leaves. Any thread hands it work through [submit]. [hold] is the loop's; the flags are any thread's.
+ * enter ([CallerPlace.MayEnter]) that finds it free and takes a lane of [socket]; a socket that lends none (see
+ * [com.ditchoom.socket.quic.core.sched.SendRule]) is served by the loop alone. Whoever is inside serves it through
+ * [Turn], collects its output and leaves. Any thread hands it work through [submit]. [hold] is the loop's; the flags are any thread's.
  */
 @LoopOnly
 internal class Conn(
@@ -122,8 +123,7 @@ internal class Conn(
     /** Loop thread, once or more per pass: serves the connection at one clock reading if the loop is inside, and leaves. */
     fun turn(out: SendBatch): Collected {
         if (hold == LoopHold.Out) return Collected.Everything
-        val served = turn.serve(clock.begins(), out, onTimer)
-        serverClose.collected(turn.life())
+        val served = turn.serve(clock.begins(), out, onTimer).also { serverClose.collected(turn.life()) }
         if (served == Collected.MoreWaiting) return Collected.MoreWaiting
         return when (owner.tryLeave(loopEntrant)) {
             Leave.Left -> {

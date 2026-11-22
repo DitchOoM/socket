@@ -13,6 +13,8 @@ import com.ditchoom.socket.quic.core.edge.CoreConnection
 import com.ditchoom.socket.quic.core.edge.CoreServer
 import com.ditchoom.socket.quic.core.edge.coreServe
 import com.ditchoom.socket.quic.core.edge.coreTestOptions
+import com.ditchoom.socket.quic.core.sched.SendRule
+import com.ditchoom.socket.quic.core.sched.sendRuleOfThisRuntime
 import com.ditchoom.socket.quic.core.testing.platformQuicheApi
 import com.ditchoom.socket.quic.core.testing.platformTlsConfig
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
@@ -42,6 +44,7 @@ internal suspend fun withCoreEchoServer(
     api: QuicheApi = platformQuicheApi(),
     onAccepted: (CoreConnection) -> Unit = {},
     factory: BufferFactory = BufferFactory.network(),
+    sends: SendRule = sendRuleOfThisRuntime,
     body: suspend CoroutineScope.(CoreServer) -> Unit,
 ) {
     val server =
@@ -56,6 +59,7 @@ internal suspend fun withCoreEchoServer(
             writePolicy = WritePolicy.Bounded(10.seconds),
             config = config,
             wrapIo = wrapIo,
+            sends = sends,
         )
     try {
         coroutineScope {

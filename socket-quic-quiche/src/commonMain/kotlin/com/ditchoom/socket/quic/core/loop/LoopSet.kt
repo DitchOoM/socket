@@ -19,6 +19,10 @@ import com.ditchoom.socket.quic.core.ready.PollerOpened
 import com.ditchoom.socket.quic.core.ready.jdkPoller
 import com.ditchoom.socket.quic.core.ready.netStackOfThisRuntime
 import com.ditchoom.socket.quic.core.sched.CallerSend
+import com.ditchoom.socket.quic.core.sched.SendRule
+import com.ditchoom.socket.quic.core.sched.callerLanesOf
+import com.ditchoom.socket.quic.core.sched.laneCount
+import com.ditchoom.socket.quic.core.sched.sendRuleOfThisRuntime
 import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.MonotonicClock
 import com.ditchoom.socket.quic.core.time.QuicheTime
@@ -76,6 +80,8 @@ internal class LoopSet(
     private val flightArenaBytes: Int = LoopMemory.ARENA_BYTES,
     /** The stack every loop of this set and every socket on them use. */
     val stack: NetStack = netStackOfThisRuntime,
+    /** Which threads send on this set's sockets. */
+    private val sends: SendRule = sendRuleOfThisRuntime,
 ) {
     private val slots = AtomicArray(Array<Slot>(size) { Slot.Unstarted })
 
@@ -151,7 +157,7 @@ internal class LoopSet(
         val buffers =
             List(limits.maxDatagrams) { ReceiveBuffer(it, memory.need(MAX_DATAGRAM) { return memory.freed(Placement.NotJdkMemory) }) }
         val sendBytes = memory.need(SEND_BYTES) { return memory.freed(Placement.NotJdkMemory) }
-        val laneBytes = List(LOOP_LANES) { memory.need(LANE_BYTES) { return memory.freed(Placement.NotJdkMemory) } }
+        val laneBytes = List(sends.laneCount(LOOP_LANES)) { memory.need(LANE_BYTES) { return memory.freed(Placement.NotJdkMemory) } }
         val io =
             when (stack) {
                 is NetStack.Jdk ->
@@ -163,7 +169,7 @@ internal class LoopSet(
                     LoopIo.Native(
                         stack.shim,
                         memory.need(NativeIo.RECV_RECORD * NativeIo.MAX_RECEIVE) { return memory.freed(Placement.NotJdkMemory) },
-                        List(1 + LOOP_LANES) {
+                        List(1 + laneBytes.size) {
                             val datagrams = if (it == 0) SEND_LIMITS.maxDatagrams else LANE_LIMITS.maxDatagrams
                             memory.need(NativeIo.SEND_RECORD * datagrams) { return memory.freed(Placement.NotJdkMemory) }
                         },
@@ -218,7 +224,7 @@ internal class LoopSet(
                 hold = hold,
                 waits = waitsOf(stack),
                 out = out,
-                lanes = FixedPool(LOOP_LANES) { CallerSend(it, SendBatch(laneBytes[it], LANE_LIMITS, lane = it + 1)) },
+                lanes = callerLanesOf(laneBytes.size) { CallerSend(it, SendBatch(laneBytes[it], LANE_LIMITS, lane = it + 1)) },
                 sessions = FixedPool(sessionBytes.size) { SessionScratch(it, sessionBytes[it]) },
             )
         if (!slots.compareAndSetAt(index, seen, Slot.Running(running))) {

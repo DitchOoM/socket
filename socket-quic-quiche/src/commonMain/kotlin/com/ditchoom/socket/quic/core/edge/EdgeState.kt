@@ -200,6 +200,17 @@ internal class EdgeState(
         leave(stream)
     }
 
+    /** The caller's close: once the connection has ended, the caller is done with it, and what no read took is freed. */
+    suspend fun closedByCaller(): EdgeEnd.Ended = closed.await().also { letGoAll() }
+
+    /** Any thread: the caller is done with the ended connection; what it held that no read took is freed. */
+    private fun letGoAll() {
+        when (val now = endCell.load()) {
+            is EdgeEnd.Ended -> now.held.freeAll()
+            is EdgeEnd.Open -> Unit
+        }
+    }
+
     private fun leave(stream: QuicStreamId) =
         unread.update { now -> if (now is QuicUnreadAtClose.Unread && stream in now.streams) now.without(stream) else now }
 

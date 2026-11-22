@@ -15,7 +15,7 @@ class PrimitiveCollectionsTests {
 
     @Test
     fun aLongMapAgreesWithAHashMapThroughGrowthCollisionsAndRemovals() {
-        val ours = LongObjectMap<Box>()
+        val ours = LongObjectMap(Box(-1))
         val reference = HashMap<Long, Box>()
         val random = Random(7)
         repeat(20_000) {
@@ -29,8 +29,8 @@ class PrimitiveCollectionsTests {
                 }
                 2 -> assertEquals(reference.remove(key) != null, ours.remove(key), "remove $key")
                 else -> {
-                    val made = ours.getOrPut(key) { Box(it) }
-                    assertSame(reference.getOrPut(key) { made }, made, "getOrPut $key")
+                    val absent = Box(-1)
+                    assertSame(reference[key] ?: absent, ours.getOrDefault(key, absent), "get $key")
                 }
             }
             assertEquals(reference.size, ours.size)
@@ -48,7 +48,7 @@ class PrimitiveCollectionsTests {
 
     @Test
     fun aLongMapHoldsKeyZeroAndNegativeKeys() {
-        val map = LongObjectMap<Box>()
+        val map = LongObjectMap(Box(-1))
         map[0L] = Box(0)
         map[Long.MIN_VALUE] = Box(1)
         map[-1L] = Box(2)

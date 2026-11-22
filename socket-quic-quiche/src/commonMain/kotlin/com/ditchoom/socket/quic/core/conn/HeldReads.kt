@@ -97,4 +97,7 @@ internal class HeldReads(
     fun owed(stream: QuicStreamId): Owed = held.getOrElse(stream.id) { return Owed.No }.owed()
 
     fun free(stream: QuicStreamId) = held.getOrElse(stream.id) { return }.free()
+
+    /** The connection was released: what no read took is freed; a read after this meets the close. */
+    fun freeAll() = held.values.forEach { it.free() }
 }

@@ -3,6 +3,7 @@ package com.ditchoom.socket.quic.core.demux
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.core.conn.Collected
 import com.ditchoom.socket.quic.core.conn.LingerView
+import com.ditchoom.socket.quic.core.life.CloseChoice
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.Life
 import com.ditchoom.socket.quic.core.observe.LoopOnly
@@ -40,13 +41,14 @@ internal class Demux(
     private val port: LoopPort,
     private val clock: LoopClock,
     private val counts: ServerCounts,
-    private val life: ServerLife,
+    close: CloseChoice,
 ) {
     private val header = PacketHeader()
     private val table = RouteTable<ServerPeer>()
     private val spares = SpareRoutes(table, admission)
     private val peers = ArrayList<ServerPeer>()
     private val ended = EndedIds(ENDED_IDS)
+    private val life = ServerLife(close)
     private val tick = PassTick()
     private var mode = Mode.Receiving
 
