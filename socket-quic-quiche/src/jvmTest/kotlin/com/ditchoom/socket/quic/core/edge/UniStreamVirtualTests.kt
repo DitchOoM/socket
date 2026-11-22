@@ -11,6 +11,7 @@ import com.ditchoom.socket.quic.FlowControl
 import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicConnectionState
+import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicResumption
 import com.ditchoom.socket.quic.QuicSessionStore
@@ -18,10 +19,15 @@ import com.ditchoom.socket.quic.QuicSessionTicket
 import com.ditchoom.socket.quic.QuicSessionTicketKeys
 import com.ditchoom.socket.quic.QuicSessionTicketState
 import com.ditchoom.socket.quic.QuicStreamId
+import com.ditchoom.socket.quic.QuicheApi
+import com.ditchoom.socket.quic.QuicheConn
+import com.ditchoom.socket.quic.QuicheRecvInfo
+import com.ditchoom.socket.quic.QuicheSendInfo
 import com.ditchoom.socket.quic.StreamOpenPolicy
 import com.ditchoom.socket.quic.core.life.CloseChoice
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.DrainUntil
+import com.ditchoom.socket.quic.core.stream.QUICHE_ERR_STREAM_LIMIT
 import com.ditchoom.socket.quic.core.stream.StreamKind
 import com.ditchoom.socket.quic.core.stream.kindOf
 import kotlinx.coroutines.CoroutineScope
@@ -79,7 +85,7 @@ class UniStreamVirtualTests {
         }
 
     @Test
-    fun theCoresOpenUniStreamIsNoLongerRefused() =
+    fun openUniStreamOpensASendOnlyStreamThePeerReads() =
         VirtualPair.with(options()) { pair ->
             val server = pair.accept()
             var id = QuicStreamId(0L)
@@ -189,12 +195,12 @@ class UniStreamVirtualTests {
 
     /**
      * A client resuming with a ticket from a server that allowed unidirectional streams opens one in 0-RTT; the server it
-     * reaches allows none. quiche refuses the stream as STREAM_LIMIT_ERROR in the client's first datagram, and a connection
-     * none of whose packets was processed it closes at once, with no reply: the client's connection ends at its handshake
-     * bound. The test below is the control, where the same stream is allowed.
+     * reaches allows none. The server hands quiche the datagram, and quiche refuses it with STREAM_LIMIT_ERROR as its
+     * local error; every write quiche is then asked for that connection fails with CRYPTO_FAIL, so no CONNECTION_CLOSE
+     * leaves and the client's connection ends at its handshake bound. The test below is the control.
      */
     @Test
-    fun aPeerThatOpensAUniStreamPastALimitOfZeroHasItsConnectionClosedByQuiche() {
+    fun aPeerThatOpensAUniStreamPastALimitOfZeroIsRefusedAsAStreamLimitError() {
         val tls = coreTlsConfig().copy(sessionTicketKeys = QuicSessionTicketKeys.Shared(keyMaterial()))
         val early = options().copy(enableEarlyData = true, sessionStore = QuicSessionStore.NotKept)
         var issued: QuicSessionTicket? = null
@@ -203,22 +209,63 @@ class UniStreamVirtualTests {
             issued = assertIs<QuicSessionTicketState.Issued>(pair.client.connection.sessionTicket.value).ticket
         }
         val ticket = checkNotNull(issued)
-        VirtualPair.with(early.copy(flowControl = FlowControl(initialMaxStreamsUni = 0)), tls = tls) { pair ->
+        val seen = QuicheSeen()
+        VirtualPair.with(early.copy(flowControl = FlowControl(initialMaxStreamsUni = 0)), tls = tls, serverApi = seen::around) { pair ->
             val resumption =
                 QuicResumption.ResumeWithEarlyData(ticket) {
                     val stream = openUniStream()
                     stream.writeFully(bytes(PAYLOAD), 1.hours)
                     stream.shutdownSend()
                 }
-            val options = early.copy(resumption = resumption)
             val since = pair.now()
-            val client = pair.reconnect(options)
+            seen.clear()
+            val client = pair.reconnect(early.copy(resumption = resumption))
             launch { runCatching { client.connection.runEarlyData(resumption, client.offer) { client.connection.established() } } }
             pair.runUntil(within = 15.seconds) { client.connection.end() is EdgeEnd.Ended }
-            assertTrue(pair.sentBy(End.Client, since).isNotEmpty())
-            assertEquals(0, pair.sentBy(End.Server, since).size, "the server's connection ended without a reply")
+            assertEquals(2L, pair.server.counts.accepted, "the server accepted the first client and the resuming one")
+            assertEquals(QUICHE_ERR_STREAM_LIMIT, seen.recvs.first(), "quiche refused the first datagram's stream")
+            assertEquals(QuicError.StreamLimitError, seen.localError)
+            assertTrue(seen.sends.isNotEmpty() && seen.sends.all { it == QUICHE_ERR_CRYPTO_FAIL }, "quiche wrote nothing: ${seen.sends}")
+            assertEquals(0, pair.sentBy(End.Server, since).size)
             assertIs<ConnEnd.HandshakeTimedOut>(assertIs<EdgeEnd.Ended>(client.connection.end()).end)
         }
+    }
+
+    /** What quiche answered the server for the connection that took a refused datagram. */
+    private class QuicheSeen {
+        val recvs = ArrayList<Int>()
+        val sends = ArrayList<Int>()
+        var localError: QuicError? = null
+        private val refused = HashSet<Long>()
+
+        fun clear() {
+            recvs.clear()
+            sends.clear()
+        }
+
+        fun around(real: QuicheApi): QuicheApi =
+            object : QuicheApi by real {
+                override fun connRecv(
+                    conn: QuicheConn,
+                    buf: Long,
+                    bufLen: Int,
+                    recvInfo: QuicheRecvInfo,
+                ): Int =
+                    real.connRecv(conn, buf, bufLen, recvInfo).also {
+                        if (it == QUICHE_ERR_STREAM_LIMIT) refused += conn.handle
+                        if (conn.handle in refused) {
+                            recvs += it
+                            localError = real.connLocalError(conn)
+                        }
+                    }
+
+                override fun connSend(
+                    conn: QuicheConn,
+                    buf: Long,
+                    bufLen: Int,
+                    sendInfo: QuicheSendInfo,
+                ): Int = real.connSend(conn, buf, bufLen, sendInfo).also { if (conn.handle in refused) sends += it }
+            }
     }
 
     /** The control for the test above: the same 0-RTT unidirectional stream to a server that allows one is answered. */
@@ -295,6 +342,8 @@ class UniStreamVirtualTests {
         }
 
     private companion object {
+        /** quiche's CRYPTO_FAIL. */
+        const val QUICHE_ERR_CRYPTO_FAIL = -9
         const val MS = 1_000_000L
         const val PAYLOAD = 3_000
         val BOUND: Duration = 500.milliseconds

@@ -28,16 +28,12 @@ import com.ditchoom.socket.quic.QuicStreamId
 import com.ditchoom.socket.quic.QuicUnreadAtClose
 import com.ditchoom.socket.quic.core.conn.CallerPlace
 import com.ditchoom.socket.quic.core.conn.Conn
-import com.ditchoom.socket.quic.core.conn.ConnWork
-import com.ditchoom.socket.quic.core.conn.Inside
 import com.ditchoom.socket.quic.core.conn.NetworkChange
 import com.ditchoom.socket.quic.core.conn.NetworkWork
 import com.ditchoom.socket.quic.core.life.CloseChoice
 import com.ditchoom.socket.quic.core.life.CloseOutcome
-import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.stream.StreamKind
 import com.ditchoom.socket.testkit.trace.TraceSink
-import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -46,7 +42,6 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.consumeAsFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.selects.onTimeout
@@ -54,17 +49,7 @@ import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.CoroutineContext
-import kotlin.coroutines.resume
 import kotlin.time.Duration
-
-/** What an on-demand dump of a connection's flight recording did. */
-internal enum class FlightDump {
-    /** Every record the connection still holds was written. */
-    Written,
-
-    /** The connection had ended; with `QuicOptions.trace` set its recording already went to the trace. */
-    ConnectionEnded,
-}
 
 /**
  * A [QuicConnection] on the run-to-completion core. Every call becomes work inside the connection and suspends until
@@ -148,7 +133,16 @@ internal class CoreConnection(
     internal suspend fun <T : Any> acceptTypedStream(
         codec: Codec<T>,
         config: TypedStreamConfig = TypedStreamConfig(),
-    ): TypedQuicStream<T> = typed(QuicStreamId(edge.incoming.receive().id), codec, config)
+    ): TypedQuicStream<T> =
+        typed(
+            QuicStreamId(
+                edge.incoming.bidirectional
+                    .receive()
+                    .id,
+            ),
+            codec,
+            config,
+        )
 
     private fun <T : Any> typed(
         id: QuicStreamId,
@@ -156,7 +150,7 @@ internal class CoreConnection(
         config: TypedStreamConfig,
     ): TypedQuicStream<T> = TypedQuicStream(this, conn, id, codec, config, readPolicy, writePolicy, bufferFactory)
 
-    override fun streams(): Flow<QuicByteStream> = edge.incoming.consumeAsFlow().map { halves.public(halves.incomingOf(it)) }
+    override fun streams(): Flow<QuicByteStream> = edge.incoming.all().map { halves.public(halves.incomingOf(it)) }
 
     /** The close point is this call's place in the order of work; once it returns, what no read took is freed. */
     override suspend fun close(error: QuicError) {
@@ -276,23 +270,3 @@ internal class CoreConnection(
 
 /** What every core connection requires of a caller's buffers: an address quiche reads in place. */
 private val CORE_CAPABILITIES = QuicCapabilities(requiresNativeMemoryBuffers = true)
-
-/** Lets a client's held first flight leave. */
-private class ReleaseFlight : ConnWork() {
-    override fun run(inside: Inside) = inside.releaseFirstFlight()
-
-    override fun gone(end: ConnEnd) = Unit
-}
-
-/** Writes the flight recording inside the connection. */
-private class DumpWork(
-    private val sink: TraceSink,
-    private val cont: CancellableContinuation<FlightDump>,
-) : ConnWork() {
-    override fun run(inside: Inside) {
-        inside.dump(sink)
-        cont.resume(FlightDump.Written)
-    }
-
-    override fun gone(end: ConnEnd) = cont.resume(FlightDump.ConnectionEnded)
-}

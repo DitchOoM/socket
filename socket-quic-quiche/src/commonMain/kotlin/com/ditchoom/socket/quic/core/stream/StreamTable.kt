@@ -57,7 +57,16 @@ internal class StreamTable(
         val held = entries.getOrDefault(id.id, absent)
         if (held !== absent) return held
         val shape = shapeOf(id, role)
-        return (if (spare.isEmpty()) StreamEntry(id, shape) else spare.removeAt(spare.size - 1).reuse(id, shape)).also { entries[id.id] = it }
+        return (
+            if (spare.isEmpty()) {
+                StreamEntry(
+                    id,
+                    shape,
+                )
+            } else {
+                spare.removeAt(spare.size - 1).reuse(id, shape)
+            }
+        ).also { entries[id.id] = it }
     }
 
     /** Whether [id] names a stream that is spent: one this side opened or was told of, whose entry was let go. */
@@ -86,15 +95,20 @@ internal class StreamTable(
      */
     fun stopped(id: QuicStreamId) = sendEnded(id, Side.Stopped)
 
-    /** Stops reading [id] with [code] unless the peer's side ended already: the peer is told to stop sending. */
+    /** Stops reading [id] with [code]: what arrived is dropped, and the peer, unless its side ended, is told to stop. */
     fun stopReading(
         id: QuicStreamId,
         code: QuicAppErrorCode,
     ) {
         val entry = entries.getOrDefault(id.id, absent)
         if (entry === absent || entry.received !is Side.Open) return
-        io.shutdown(id, ShutdownSide.Read, code.value)
-        entry.receiveEnded(Side.Stopped)
+        when (val side = drain.drop(id)) {
+            is Side.Ended -> entry.receiveEnded(side)
+            is Side.Open, is Side.Abandoned -> {
+                io.shutdown(id, ShutdownSide.Read, code.value)
+                entry.receiveEnded(Side.Stopped)
+            }
+        }
         collect(entry)
     }
 

@@ -27,7 +27,6 @@ import com.ditchoom.socket.quic.core.udp.NativeBytes
 import com.ditchoom.socket.quic.trace.TraceCapture
 import com.ditchoom.socket.quic.trace.record
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
 import kotlin.concurrent.atomics.AtomicReference
@@ -67,8 +66,8 @@ internal class EdgeState(
     private val endCell = AtomicReference<EdgeEnd>(EdgeEnd.Open)
     val state = MutableStateFlow<QuicConnectionState>(QuicConnectionState.Handshaking)
 
-    /** The streams the peer opened, oldest first. */
-    val incoming = Channel<PeerStream>(Channel.UNLIMITED)
+    /** The streams the peer opened, oldest first, by kind. */
+    val incoming = IncomingQueues()
     val closed = CompletableDeferred<EdgeEnd.Ended>()
 
     /** A server's: whether it accepted the client's 0-RTT before the handshake completed. */
@@ -116,7 +115,7 @@ internal class EdgeState(
         stream: QuicStreamId,
         arrival: Arrival,
     ) {
-        incoming.trySend(PeerStream(stream.id, arrival))
+        incoming.offer(PeerStream(stream.id, arrival))
     }
 
     /**

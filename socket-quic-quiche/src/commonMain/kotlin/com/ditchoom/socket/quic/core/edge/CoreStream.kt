@@ -60,8 +60,8 @@ internal class CoreStream(
 }
 
 /**
- * A send-only stream as the public [ByteStream] contract sees it, which has a read: a read is refused as one of a
- * closed side. The core's own [SendHalf] has no read.
+ * A send-only stream as the public [ByteStream] contract sees it, which has a read: a read is refused as a direction the
+ * stream does not have. The core's own [SendHalf] has no read.
  */
 internal class CoreSendOnlyStream(
     private val send: SendHalf,
@@ -72,7 +72,7 @@ internal class CoreSendOnlyStream(
     override val writePolicy: WritePolicy get() = send.writePolicy
     override val isOpen: Boolean get() = send.isOpen()
 
-    override suspend fun read(deadline: Duration): ReadResult = refused(send.id, QuicStreamSide.Read)
+    override suspend fun read(deadline: Duration): ReadResult = absent(send.id, QuicStreamSide.Read)
 
     override suspend fun write(
         buffer: ReadBuffer,
@@ -87,8 +87,8 @@ internal class CoreSendOnlyStream(
 }
 
 /**
- * A stream the peer opened to send only, as the public [ByteStream] contract sees it, which has a write: a write is
- * refused as one of a closed side. The core's own [ReceiveHalf] has no write.
+ * A stream the peer opened to send only, as the public [ByteStream] contract sees it, which has a write: a write or a
+ * [shutdownSend] is refused as a direction the stream does not have. The core's own [ReceiveHalf] has no write.
  */
 internal class CoreReceiveOnlyStream(
     private val receive: ReceiveHalf,
@@ -104,10 +104,9 @@ internal class CoreReceiveOnlyStream(
     override suspend fun write(
         buffer: ReadBuffer,
         deadline: Duration,
-    ): BytesWritten = refused(receive.id, QuicStreamSide.Write)
+    ): BytesWritten = absent(receive.id, QuicStreamSide.Write)
 
-    /** There is no sending side to end. */
-    override suspend fun shutdownSend() = Unit
+    override suspend fun shutdownSend(): Unit = absent(receive.id, QuicStreamSide.Write)
 
     override suspend fun close() = receive.close()
 
@@ -131,15 +130,25 @@ internal class StreamHalves(
 
     suspend fun openSendOnly(): SendHalf = SendHalf(connection, connection.open(StreamKind.Unidirectional), writePolicy)
 
-    suspend fun accept(): IncomingStream = incomingOf(edge.incoming.receive())
+    /** The next stream the peer opened, of either kind. */
+    suspend fun accept(): IncomingStream = incomingOf(edge.incoming.receiveAny())
 
-    fun incomingOf(peer: PeerStream): IncomingStream {
-        val id = QuicStreamId(peer.id)
-        return when (kindOf(id)) {
-            StreamKind.Bidirectional -> IncomingStream.Bidirectional(both(id), peer.arrival)
-            StreamKind.Unidirectional -> IncomingStream.ReceiveOnly(ReceiveHalf(connection, id, readPolicy), peer.arrival)
+    /** The next bidirectional stream the peer opened; a unidirectional one is left for [acceptReceiveOnly]. */
+    suspend fun acceptBidirectional(): IncomingStream.Bidirectional = bidirectional(edge.incoming.bidirectional.receive())
+
+    /** The next stream the peer opened to send only; a bidirectional one is left for [acceptBidirectional]. */
+    suspend fun acceptReceiveOnly(): IncomingStream.ReceiveOnly = receiveOnly(edge.incoming.unidirectional.receive())
+
+    fun incomingOf(peer: PeerStream): IncomingStream =
+        when (kindOf(QuicStreamId(peer.id))) {
+            StreamKind.Bidirectional -> bidirectional(peer)
+            StreamKind.Unidirectional -> receiveOnly(peer)
         }
-    }
+
+    private fun bidirectional(peer: PeerStream) = IncomingStream.Bidirectional(both(QuicStreamId(peer.id)), peer.arrival)
+
+    private fun receiveOnly(peer: PeerStream) =
+        IncomingStream.ReceiveOnly(ReceiveHalf(connection, QuicStreamId(peer.id), readPolicy), peer.arrival)
 
     fun public(stream: BidiStream): QuicByteStream = QuicByteStream(stream.id, CoreStream(stream), QuicStreamOrigin.Confirmed)
 
@@ -164,7 +173,8 @@ internal class StreamHalves(
         }
 }
 
-private fun refused(
+/** A call on the direction [side] of a unidirectional stream that has no such direction. */
+private fun absent(
     id: QuicStreamId,
     side: QuicStreamSide,
-): Nothing = raise(Raised.StreamClosed(id, side), QuicCloseCircumstance.Ended)
+): Nothing = raise(Raised.NoSuchDirection(id, side), QuicCloseCircumstance.Ended)

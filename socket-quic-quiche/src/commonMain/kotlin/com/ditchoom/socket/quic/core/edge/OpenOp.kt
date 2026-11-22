@@ -1,6 +1,8 @@
 package com.ditchoom.socket.quic.core.edge
 
+import com.ditchoom.socket.quic.QuicAppErrorCode
 import com.ditchoom.socket.quic.QuicCloseCircumstance
+import com.ditchoom.socket.quic.QuicStreamId
 import com.ditchoom.socket.quic.core.conn.CallerPlace
 import com.ditchoom.socket.quic.core.conn.Conn
 import com.ditchoom.socket.quic.core.conn.ConnWork
@@ -18,6 +20,7 @@ import com.ditchoom.socket.quic.core.stream.Waiter
 import com.ditchoom.socket.quic.core.stream.sender
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
+import kotlin.coroutines.CoroutineContext
 import kotlin.time.Duration
 
 /**
@@ -51,10 +54,16 @@ internal class OpenOp(
     suspend fun answer(): Long {
         val context = currentCoroutineContext()
         return when (val answer = hand.await(context) { cancelled() }) {
-            is OpenAnswer.Opened -> if (context.isActive) opened else raiseCancelled(context)
+            is OpenAnswer.Opened -> if (context.isActive) opened else unclaimed(context)
             is OpenAnswer.Failed -> raiseFailure(answer.failure, answer.during)
             is OpenAnswer.Cancelled -> raiseCancelled(context)
         }
+    }
+
+    /** A stream was opened for a caller cancelled meanwhile: the connection gives it back, and the caller is cancelled. */
+    private fun unclaimed(context: CoroutineContext): Nothing {
+        conn.submit(ResetWork(QuicStreamId(opened), UNCLAIMED), CallerPlace.HandToLoop)
+        raiseCancelled(context)
     }
 
     /**
@@ -94,7 +103,12 @@ internal class OpenOp(
             Opened.AtLimit -> Retry.Again
             Opened.Opened -> {
                 opened = table.lastOpened().id
-                settle(OpenAnswer.Opened)
+                lease = deadlines.disarm(lease)
+                when (hand.answer(OpenAnswer.Opened)) {
+                    Landed.First -> Unit
+                    // Cancelled first: nobody will take the stream, so it goes back now.
+                    Landed.Late -> table.resetBothWays(QuicStreamId(opened), UNCLAIMED)
+                }
                 Retry.Settled
             }
         }
@@ -122,6 +136,11 @@ internal class OpenOp(
     private fun settle(answer: OpenAnswer) {
         lease = deadlines.disarm(lease)
         hand.answer(answer)
+    }
+
+    private companion object {
+        /** The code a stream opened for nobody is given back with: it carries no application meaning. */
+        val UNCLAIMED = QuicAppErrorCode(0L)
     }
 
     private inner class Withdraw : ConnWork() {
