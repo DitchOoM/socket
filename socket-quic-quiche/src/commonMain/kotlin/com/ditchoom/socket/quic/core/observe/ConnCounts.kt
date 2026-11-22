@@ -15,6 +15,10 @@ internal class ConnCounts {
     private val overflowed = Counter()
     private val refused = Counter()
     private val mismatched = Counter()
+    private val evicted = Counter()
+    private val expiredOut = Counter()
+    private val unsendable = Counter()
+    private val expiredIn = Counter()
 
     /** Times a caller entered a free connection and served it on its own thread. */
     val enteredInPlace: Long get() = entered.value()
@@ -43,6 +47,18 @@ internal class ConnCounts {
     /** RFC 9221 datagrams the connection's send queue refused because it was full: the caller was told, nothing was queued. */
     val datagramsRefusedQueueFull: Long get() = refused.value()
 
+    /** Queued RFC 9221 datagrams dropped, oldest first, to make room for a newer send. */
+    val datagramsEvicted: Long get() = evicted.value()
+
+    /** Queued RFC 9221 datagrams dropped unsent because they waited longer than the outgoing maximum age. */
+    val datagramsExpiredOutgoing: Long get() = expiredOut.value()
+
+    /** Queued RFC 9221 datagrams quiche would not take when they reached it, the path having shrunk below their size. */
+    val datagramsDroppedUnsendable: Long get() = unsendable.value()
+
+    /** Received RFC 9221 datagrams dropped undelivered because they waited longer than the incoming maximum age. */
+    val datagramsExpiredIncoming: Long get() = expiredIn.value()
+
     /** Datagrams whose due time quiche stamped on a clock the loop does not read: each was sent at once, unpaced. */
     val pacingClockMismatches: Long get() = mismatched.value()
 
@@ -65,6 +81,14 @@ internal class ConnCounts {
     fun datagramRefusedQueueFull() = refused.increment()
 
     fun pacingClockMismatch() = mismatched.increment()
+
+    fun datagramEvicted() = evicted.increment()
+
+    fun datagramExpiredOutgoing() = expiredOut.increment()
+
+    fun datagramDroppedUnsendable() = unsendable.increment()
+
+    fun datagramExpiredIncoming() = expiredIn.increment()
 
     /** Every count, read now. */
     fun seen(): CountsSeen =
@@ -98,6 +122,10 @@ internal fun QuicStatsRead.withDatagramCounts(counts: ConnCounts): QuicStatsRead
                 stats.copy(
                     datagramsRefusedQueueFull = QuicDatagramCount.Counted(counts.datagramsRefusedQueueFull),
                     datagramsDroppedReceiveQueue = QuicDatagramCount.Counted(counts.datagramsOverflowed),
+                    datagramsEvicted = QuicDatagramCount.Counted(counts.datagramsEvicted),
+                    datagramsExpiredOutgoing = QuicDatagramCount.Counted(counts.datagramsExpiredOutgoing),
+                    datagramsDroppedUnsendable = QuicDatagramCount.Counted(counts.datagramsDroppedUnsendable),
+                    datagramsExpiredIncoming = QuicDatagramCount.Counted(counts.datagramsExpiredIncoming),
                 ),
             )
         is QuicStatsRead.Ended, is QuicStatsRead.NotReported -> this

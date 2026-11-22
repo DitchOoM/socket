@@ -2,6 +2,9 @@ package com.ditchoom.socket.quic.core.edge
 
 import com.ditchoom.socket.quic.AppleTrustSource
 import com.ditchoom.socket.quic.CongestionControl
+import com.ditchoom.socket.quic.DatagramMaxAge
+import com.ditchoom.socket.quic.DatagramOptions
+import com.ditchoom.socket.quic.DatagramOverflow
 import com.ditchoom.socket.quic.HandshakePacing
 import com.ditchoom.socket.quic.HandshakePolicy
 import com.ditchoom.socket.quic.MigrationPolicy
@@ -132,5 +135,19 @@ private fun transportVerdict(options: QuicOptions): OptionVerdict {
     when (options.appleTrustSource) {
         is AppleTrustSource.SystemTrustStore, is AppleTrustSource.BundledMozillaRoots -> Unit
     }
+    options.datagrams?.let { datagramVerdict(it) }
     return OptionVerdict.Honoured
+}
+
+/** The core's own send and receive queues honour every overflow rule and maximum age. */
+private fun datagramVerdict(options: DatagramOptions) {
+    when (options.overflow) {
+        is DatagramOverflow.RefuseNew, is DatagramOverflow.EvictOldest -> Unit
+    }
+    when (options.outgoingMaxAge) {
+        is DatagramMaxAge.Unbounded, is DatagramMaxAge.Within -> Unit
+    }
+    when (options.incomingMaxAge) {
+        is DatagramMaxAge.Unbounded, is DatagramMaxAge.Within -> Unit
+    }
 }

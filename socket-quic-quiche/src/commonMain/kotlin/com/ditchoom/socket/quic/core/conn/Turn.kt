@@ -122,7 +122,7 @@ internal class Turn(
             try {
                 c.feed(bytes, length, from)
                 c.slots.keepAlive.touched(now)
-                c.slots.datagrams.received()
+                c.slots.datagrams.received(now)
             } catch (failure: Exception) {
                 fail(now, failure)
             }
@@ -179,8 +179,8 @@ internal class Turn(
     /** Any thread: the ids this connection's peer retired, taken once. */
     fun idsRetired(): List<RetiredId> = c.slots.paths.idsRetired()
 
-    /** Any thread: the bytes one datagram may carry as of the connection's last turn, or 0. */
-    fun datagramMaxBytes(): Int = c.slots.datagrams.maxBytes()
+    /** Any thread: the connection's datagrams, for the queue a caller offers sends to. */
+    fun datagrams(): Datagrams = c.slots.datagrams
 
     fun dump(sink: TraceSink) = c.flight.dump(sink)
 
@@ -242,8 +242,8 @@ internal class Turn(
         c.ackStep(now).let { if (it != AckStep.Write) return it.collected() }
         val wrote =
             when (val pacing = c.slots.pacing) {
-                is Pacing.Unpaced -> c.egress.write(out, paths, c.flight)
-                is Pacing.ByQuiche -> c.egress.writePaced(out, paths, pacing.pacer, c.flight)
+                is Pacing.Unpaced -> c.egress.write(out, paths, c.flight, c.slots.datagrams)
+                is Pacing.ByQuiche -> c.egress.writePaced(out, paths, pacing.pacer, c.flight, c.slots.datagrams)
             }
         c.wrote(now)
         if (c.life.linger.sending() && c.keepClose(now, out) == CloseSent.Yes) {

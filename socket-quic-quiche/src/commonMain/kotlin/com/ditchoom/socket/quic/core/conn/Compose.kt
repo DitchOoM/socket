@@ -176,7 +176,17 @@ private fun composed(
             datagrams =
                 when (val r = rules.datagrams) {
                     is DatagramRule.Off -> Datagrams.Off
-                    is DatagramRule.On -> Datagrams.On(DatagramBox(q, r.bound, memory.factory, counts))
+                    is DatagramRule.On ->
+                        Datagrams.On(
+                            DatagramBox(q, r.bound, r.incoming, memory.factory, counts),
+                            DatagramSender(
+                                q,
+                                DatagramQueue(r.sendBound, r.overflow, r.outgoing, memory.factory, clock, counts),
+                                r.outgoing,
+                                memory.factory,
+                                counts,
+                            ),
+                        )
                 },
             keepAlive =
                 when (val r = rules.keepAlive) {

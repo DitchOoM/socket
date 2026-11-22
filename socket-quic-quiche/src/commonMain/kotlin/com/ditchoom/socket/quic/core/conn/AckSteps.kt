@@ -61,7 +61,7 @@ private fun ConnParts.holdGate(now: Nanos): HoldGate {
 private fun Datagrams.output(): Long =
     when (this) {
         is Datagrams.Off -> 0L
-        is Datagrams.On -> box.output
+        is Datagrams.On -> out.output
     }
 
 /** What a turn whose ACK waits leaves: a serve again in this pass, or nothing until the reply or the deadline. */

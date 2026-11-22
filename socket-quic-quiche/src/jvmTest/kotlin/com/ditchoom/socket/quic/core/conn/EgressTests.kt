@@ -28,7 +28,7 @@ class EgressTests {
         val out = SendBatch(nativeBytes(4 * 1500), BatchLimits(4, 1500))
         api.connSendQueue.addAll(listOf(100, 200))
 
-        assertEquals(Wrote.All, Egress(q, ConnCounts(), { Nanos(0) }).write(out, path, flight))
+        assertEquals(Wrote.All, Egress(q, ConnCounts(), { Nanos(0) }).write(out, path, flight, Datagrams.Off))
 
         assertEquals(2, out.pending)
         assertEquals(listOf(100, 200), List(2) { out.lengthOf(it) })
@@ -42,7 +42,7 @@ class EgressTests {
         val out = SendBatch(nativeBytes(2 * 1500), BatchLimits(2, 1500))
         api.connSendQueue.addAll(listOf(100, 100, 100))
 
-        assertEquals(Wrote.BatchFull, Egress(q, ConnCounts(), { Nanos(0) }).write(out, path, flight))
+        assertEquals(Wrote.BatchFull, Egress(q, ConnCounts(), { Nanos(0) }).write(out, path, flight, Datagrams.Off))
         assertEquals(2, out.pending)
     }
 }

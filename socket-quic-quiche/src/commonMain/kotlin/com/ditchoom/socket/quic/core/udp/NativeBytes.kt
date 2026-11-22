@@ -73,6 +73,13 @@ internal class NativeBytes private constructor(
     ) = UnsafeMemory.putLong(address + offset, value)
 
     companion object {
+        /** Copies [length] bytes from the memory at [from] to the memory at [to]. Allocates nothing. */
+        fun copy(
+            from: Long,
+            to: Long,
+            length: Int,
+        ) = UnsafeMemory.copyMemory(from, to, length.toLong())
+
         /** Reads [buffer]'s address once, here; a buffer without one is [Addressed.NotAddressable]. */
         fun of(buffer: PlatformBuffer): Addressed {
             val access = buffer.nativeMemoryAccess

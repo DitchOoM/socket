@@ -149,15 +149,22 @@ data class FlowControl(
  * Unreliable DATAGRAM frame support (RFC 9221). Present (non-null on [QuicOptions.datagrams])
  * means the endpoint advertises `max_datagram_frame_size` and maintains datagram queues.
  *
- * Both queues are bounded; when full, quiche drops the **oldest** datagram — the unreliable,
- * lossy semantics RFC 9221 and WebTransport expect. This is also the backpressure mechanism:
- * a slow receiver simply loses old datagrams rather than growing memory without bound.
+ * Both queues are bounded. A full receive queue drops its **oldest** datagram for the newest, so a
+ * slow receiver loses old datagrams rather than growing memory without bound; a full send queue does
+ * what [overflow] says. These are WebTransport's four datagram knobs, its two high-water marks and two
+ * maximum ages, beside the overflow rule.
  */
 data class DatagramOptions(
-    /** Max datagrams buffered for receive before quiche drops the oldest. */
+    /** The receive queue's high-water mark: datagrams kept for a receiver; past it the oldest is dropped and counted. */
     val recvQueueLen: Int = 1024,
-    /** Max datagrams buffered for send before quiche drops the oldest. */
+    /** The send queue's high-water mark: datagrams queued to be sent; past it [overflow] decides. */
     val sendQueueLen: Int = 1024,
+    /** What a send does when the send queue is at its high-water mark. */
+    val overflow: DatagramOverflow = DatagramOverflow.RefuseNew,
+    /** How long a datagram may wait in the send queue; one older when it reaches the head is dropped and counted. */
+    val outgoingMaxAge: DatagramMaxAge = DatagramMaxAge.Unbounded,
+    /** How long a received datagram may wait for a receiver; one older when it would be delivered is dropped and counted. */
+    val incomingMaxAge: DatagramMaxAge = DatagramMaxAge.Unbounded,
 ) {
     init {
         require(recvQueueLen > 0) { "recvQueueLen must be positive" }

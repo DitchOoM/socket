@@ -8,6 +8,7 @@ import com.ditchoom.socket.quic.core.observe.ConnCounts
 import com.ditchoom.socket.quic.core.path.Outgoing
 import com.ditchoom.socket.quic.core.path.Sorting
 import com.ditchoom.socket.quic.core.path.Window
+import com.ditchoom.socket.quic.core.stream.QUICHE_ERR_DONE
 import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.udp.Room
@@ -71,16 +72,17 @@ internal class Egress(
     /** Where the last datagram went, while [last] is [LastOut.Kept]. */
     fun lastTarget(): SendTarget = lastTarget
 
-    /** Writes quiche's output into [out] at once. */
+    /** Writes quiche's output into [out] at once; each time it runs dry, [datagrams] queued to send refill it. */
     fun write(
         out: SendBatch,
         paths: Paths,
         flight: ConnFlight,
+        datagrams: Datagrams,
     ): Wrote {
         last = LastOut.None
         val at = clock.now()
         while (out.room() == Room.Open) {
-            if (one(out, paths, flight, at) <= 0) return Wrote.All
+            if (dry(one(out, paths, flight, at), datagrams, at) == Dry.Yes) return Wrote.All
         }
         return Wrote.BatchFull
     }
@@ -95,12 +97,13 @@ internal class Egress(
         paths: Paths,
         pacer: Pacer,
         flight: ConnFlight,
+        datagrams: Datagrams,
     ): Wrote {
         last = LastOut.None
         val at = clock.now()
         if (pacer.state(at) == PaceState.Holding) return Wrote.All
         while (out.room() == Room.Open) {
-            if (one(out, paths, flight, at) <= 0) return Wrote.All
+            if (dry(one(out, paths, flight, at), datagrams, at) == Dry.Yes) return Wrote.All
             when (judged(pacer, at, flight)) {
                 is ClockVerdict.Differs ->
                     when (pacer.response()) {
@@ -144,6 +147,23 @@ internal class Egress(
         flight.pacingClockMismatch(at, verdict.offsetNanos)
         mismatchOffset = verdict.offsetNanos
     }
+
+    /**
+     * Whether quiche's output ran dry with [written]: it did when quiche wrote nothing, unless it had nothing more to
+     * write and [datagrams] queued to send moved some into quiche, which may now write them.
+     */
+    private fun dry(
+        written: Int,
+        datagrams: Datagrams,
+        at: Nanos,
+    ): Dry =
+        when {
+            written > 0 -> Dry.No
+            written == QUICHE_ERR_DONE && datagrams.refill(at) == Refill.Moved -> Dry.No
+            else -> Dry.Yes
+        }
+
+    private enum class Dry { Yes, No }
 
     private fun one(
         out: SendBatch,

@@ -1,16 +1,20 @@
 package com.ditchoom.socket.quic.core.edge
 
+import com.ditchoom.socket.quic.DatagramMaxAge
+import com.ditchoom.socket.quic.DatagramOverflow
 import com.ditchoom.socket.quic.HandshakePacing
 import com.ditchoom.socket.quic.HandshakePolicy
 import com.ditchoom.socket.quic.LinkClass
 import com.ditchoom.socket.quic.QuicCloseLinger
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.RttPrior
+import com.ditchoom.socket.quic.core.conn.AgeBound
 import com.ditchoom.socket.quic.core.conn.DatagramRule
 import com.ditchoom.socket.quic.core.conn.EarlyDataRule
 import com.ditchoom.socket.quic.core.conn.HandshakeBound
 import com.ditchoom.socket.quic.core.conn.HandshakeRule
 import com.ditchoom.socket.quic.core.conn.KeepAliveRule
+import com.ditchoom.socket.quic.core.conn.Overflow
 import com.ditchoom.socket.quic.core.conn.PtoRule
 import com.ditchoom.socket.quic.core.life.CloseRule
 import com.ditchoom.socket.transport.NetworkId
@@ -39,7 +43,51 @@ internal fun closeRuleOf(options: QuicOptions): CloseRule =
 
 /** Whether connections of an endpoint carry RFC 9221 datagrams, from [QuicOptions.datagrams]. */
 internal fun datagramRuleOf(options: QuicOptions): DatagramRule =
-    options.datagrams?.let { DatagramRule.On(it.recvQueueLen) } ?: DatagramRule.Off
+    options.datagrams?.let {
+        DatagramRule.On(
+            it.recvQueueLen,
+            ageBoundOf(it.incomingMaxAge),
+            it.sendQueueLen,
+            overflowOf(it.overflow),
+            ageBoundOf(it.outgoingMaxAge),
+        )
+    } ?: DatagramRule.Off
+
+private fun ageBoundOf(age: DatagramMaxAge): AgeBound =
+    when (age) {
+        is DatagramMaxAge.Unbounded -> AgeBound.Unbounded
+        is DatagramMaxAge.Within -> AgeBound.Within(age.age.inWholeNanoseconds)
+    }
+
+private fun overflowOf(overflow: DatagramOverflow): Overflow =
+    when (overflow) {
+        is DatagramOverflow.RefuseNew -> Overflow.RefuseNew
+        is DatagramOverflow.EvictOldest -> Overflow.EvictOldest
+    }
+
+/**
+ * The options a core endpoint configures quiche with. The core's own queues are the ones its options bound: quiche's
+ * send queue is a short hand-off of at most [QUICHE_DATAGRAM_HAND_OFF] behind the core's, and its receive queue holds
+ * every datagram one packet can carry, which the core takes out after each packet, so quiche never drops one uncounted.
+ */
+internal fun QuicOptions.forQuiche(): QuicOptions =
+    when (val d = datagrams) {
+        null -> this
+        else ->
+            copy(
+                datagrams =
+                    d.copy(
+                        sendQueueLen = minOf(d.sendQueueLen, QUICHE_DATAGRAM_HAND_OFF),
+                        recvQueueLen = QUICHE_DATAGRAMS_PER_PACKET,
+                    ),
+            )
+    }
+
+/** The datagrams quiche holds for its next packets: enough to fill one with small datagrams. */
+internal const val QUICHE_DATAGRAM_HAND_OFF = 32
+
+/** More DATAGRAM frames than one packet can carry: each empty one takes two bytes. */
+internal const val QUICHE_DATAGRAMS_PER_PACKET = 1024
 
 /** Whether idle connections of an endpoint are pinged, from [QuicOptions.keepAliveInterval]. */
 internal fun keepAliveRuleOf(options: QuicOptions): KeepAliveRule =

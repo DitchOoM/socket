@@ -109,7 +109,10 @@ internal class Conn(
     }
 
     /** Any thread: the bytes one datagram may carry as of the connection's last turn, or 0. */
-    fun datagramMaxBytes(): Int = turn.datagramMaxBytes()
+    fun datagramMaxBytes(): Int = turn.datagrams().maxBytes()
+
+    /** Any thread: the connection's datagrams, for the queue a caller offers sends to. */
+    fun datagrams(): Datagrams = turn.datagrams()
 
     /** Any thread: how many new connection ids the loop should route to this connection, taken once. */
     fun idsWanted(): Int = turn.idsWanted()

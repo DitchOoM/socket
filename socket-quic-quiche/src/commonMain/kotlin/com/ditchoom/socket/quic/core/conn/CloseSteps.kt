@@ -114,6 +114,6 @@ private fun ConnParts.sendClose(
     paths: Paths,
 ) {
     timer.expire()
-    egress.write(out, paths, flight)
+    egress.write(out, paths, flight, Datagrams.Off)
     if (keepClose(now, out) == CloseSent.No && life.observe() == LifeStep.Closed) life.linger.done()
 }

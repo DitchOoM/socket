@@ -80,11 +80,44 @@ internal value class AckDelayCap private constructor(
 internal sealed interface DatagramRule {
     data object Off : DatagramRule
 
-    /** Datagrams that arrive while no receive waits are kept, [bound] at most, the oldest dropped first. */
+    /**
+     * Datagrams that arrive while no receive waits are kept, [bound] at most, the oldest dropped first, and dropped
+     * undelivered past [incoming]. Up to [sendBound] wait to be sent; a send past it goes as [overflow] says, and one
+     * older than [outgoing] at the head of the queue is dropped.
+     */
     class On(
         val bound: Int,
+        val incoming: AgeBound,
+        val sendBound: Int,
+        val overflow: Overflow,
+        val outgoing: AgeBound,
     ) : DatagramRule
 }
+
+/** What a full datagram send queue does with one more. */
+internal enum class Overflow { RefuseNew, EvictOldest }
+
+/** How long a queued datagram stays worth delivering. */
+internal sealed interface AgeBound {
+    data object Unbounded : AgeBound
+
+    /** One queued longer than [nanos] is dropped when it reaches the head of its queue. */
+    class Within(
+        val nanos: Long,
+    ) : AgeBound
+}
+
+/** Whether a datagram queued at [queuedAt] is past [bound] at [now]. */
+internal fun AgeBound.expired(
+    queuedAt: Long,
+    now: Long,
+): Expiry =
+    when (this) {
+        is AgeBound.Unbounded -> Expiry.Fresh
+        is AgeBound.Within -> if (now - queuedAt > nanos) Expiry.Expired else Expiry.Fresh
+    }
+
+internal enum class Expiry { Fresh, Expired }
 
 /** Whether an idle connection is pinged. */
 internal sealed interface KeepAliveRule {
