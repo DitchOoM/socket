@@ -4,7 +4,9 @@ import com.ditchoom.socket.transport.NetworkKind
 import kotlin.time.Duration
 
 /** Why a [MigrationPolicy.Pinned] connect was refused before any socket opened. */
-sealed interface PinnedRadioRefusal {
+sealed interface PinnedRadioRefusal : QuicOptionRefusal {
+    override val option: QuicOptionName get() = QuicOptionName.Migration
+
     /** This engine cannot pin a socket to the radio on this platform — see [EngineCapabilities.pinnableRadios]. */
     data object EngineCannotPin : PinnedRadioRefusal
 
@@ -19,7 +21,9 @@ sealed interface PinnedRadioRefusal {
 class PinnedRadioRefusedException(
     val radio: NetworkKind.Radio,
     val refusal: PinnedRadioRefusal,
-) : UnsupportedOperationException("a connection cannot be pinned to $radio here: $refusal")
+) : QuicOptionRefusedException("a connection cannot be pinned to $radio here: $refusal") {
+    override val refused: QuicOptionRefusal get() = refusal
+}
 
 /** Why a [MigrationPolicy.Pinned] connection could not open its path on its radio. */
 sealed interface PinnedRadioUnavailable {

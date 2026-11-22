@@ -7,11 +7,14 @@ import com.ditchoom.socket.ServerCertificateRejectedException
 import com.ditchoom.socket.ServerCertificateRejection
 import com.ditchoom.socket.quic.NativeSocketRefusal
 import com.ditchoom.socket.quic.NetworkRefusal
+import com.ditchoom.socket.quic.PinnedRadioRefusedException
+import com.ditchoom.socket.quic.QuicAccessDenial
 import com.ditchoom.socket.quic.QuicAppErrorCode
 import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicCloseException
-import com.ditchoom.socket.quic.QuicCloseReason
+import com.ditchoom.socket.quic.QuicConnectionEnd
 import com.ditchoom.socket.quic.QuicNativeMemoryRequiredException
+import com.ditchoom.socket.quic.QuicOptionNotHonouredException
 import com.ditchoom.socket.quic.QuicStreamAbort
 import com.ditchoom.socket.quic.QuicStreamClosedException
 import com.ditchoom.socket.quic.QuicStreamException
@@ -22,12 +25,10 @@ import com.ditchoom.socket.quic.QuicStreamSide
 import com.ditchoom.socket.quic.QuicWriteTarget
 import com.ditchoom.socket.quic.RouteProbeFailure
 import com.ditchoom.socket.quic.UnresolvedRouteSourceException
-import com.ditchoom.socket.quic.closeReason
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.stream.QUICHE_ERR_INVALID_STREAM_STATE
 import com.ditchoom.socket.quic.core.stream.QUICHE_ERR_STREAM_RESET
 import com.ditchoom.socket.quic.core.stream.QUICHE_ERR_STREAM_STOPPED
-import com.ditchoom.socket.quic.core.stream.SendRefusal
 import com.ditchoom.socket.quic.core.udp.SpecLayoutMismatch
 import com.ditchoom.socket.quic.quicheCapabilities
 import kotlinx.coroutines.CancellableContinuation
@@ -132,18 +133,16 @@ internal sealed interface Raised : OpFailure {
         val refusal: NetworkRefusal,
     ) : Raised
 
+    /** The system refused the client's socket the network access it needs, before its connection was built. */
+    class AccessDenied(
+        val denial: QuicAccessDenial,
+    ) : Raised
+
     /** The server's chain was not kept whole for its check, which therefore fails as [rejection]. */
     class ChainRefused(
         val rejection: ServerCertificateRejection,
     ) : Raised
 }
-
-/** The failure a refused stream send is: past the close point, or after the end. */
-internal fun SendRefusal.raised(): Raised =
-    when (this) {
-        is SendRefusal.PastClose -> Raised.PastClose(end)
-        is SendRefusal.Ended -> Raised.ConnEnded(end)
-    }
 
 /** The one place the edge hands a caller a failure: [failure] resumes this continuation as an exception. */
 internal fun <T> CancellableContinuation<T>.fail(
@@ -167,6 +166,15 @@ internal fun raiseFailure(
         is Raised -> raise(failure, during)
     }
 
+/** Raises an option refusal on the caller's thread, before anything is opened; a honoured verdict raises nothing. */
+internal fun OptionVerdict.orRefuse() {
+    when (this) {
+        is OptionVerdict.Honoured -> Unit
+        is OptionVerdict.Refused -> throw QuicOptionNotHonouredException(refusal)
+        is OptionVerdict.PinRefused -> throw PinnedRadioRefusedException(radio, refusal)
+    }
+}
+
 /** Raises, on the caller's thread, the cancellation of the job in [context], which a caller that was cancelled has. */
 @OptIn(InternalCoroutinesApi::class)
 internal fun raiseCancelled(context: CoroutineContext): Nothing = throw context.job.getCancellationException()
@@ -189,9 +197,6 @@ internal fun endedWith(
     end: ConnEnd,
     during: QuicCloseCircumstance,
 ): Throwable = closeOf(end, during)
-
-/** How [end] reads in the public close reason: the reason of its [publicEndOf]. */
-internal fun closeReasonOf(end: ConnEnd): QuicCloseReason = publicEndOf(end).closeReason
 
 private fun exceptionOf(
     failure: Raised,
@@ -233,6 +238,11 @@ private fun exceptionOf(
         is Raised.SocketRefused -> failure.refusal
         is Raised.SpecLayoutRefused -> CoreSpecLayoutMismatch(failure.mismatch)
         is Raised.NetworkRefused -> failure.refusal
+        is Raised.AccessDenied ->
+            QuicCloseException(
+                end = QuicConnectionEnd.AccessDenied(failure.denial),
+                circumstance = QuicCloseCircumstance.HandshakeFailed,
+            )
     }
 
 /** The close exception for [end]: its public end and the circumstance it names. */
@@ -248,7 +258,7 @@ private fun ConnEnd.circumstance(during: QuicCloseCircumstance): QuicCloseCircum
         is ConnEnd.CallerFailed -> QuicCloseCircumstance.CallerThreadFailed
         is ConnEnd.Released -> QuicCloseCircumstance.Released
         is ConnEnd.ByPeer, is ConnEnd.ByLocal, is ConnEnd.IdleTimeout, is ConnEnd.HandshakeTimedOut,
-        is ConnEnd.HandshakeSendRefused,
+        is ConnEnd.HandshakeSendRefused, is ConnEnd.AccessDenied,
         is ConnEnd.SocketFailed, is ConnEnd.LoopStopped, is ConnEnd.ServerClosed, is ConnEnd.NoErrorRecorded,
         is ConnEnd.NetworkLost, is ConnEnd.LocalAddressGone, is ConnEnd.ServerClosedUnsettled, is ConnEnd.NoUsablePath,
         -> during

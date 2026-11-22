@@ -339,6 +339,38 @@ report_proc() { # <report file name> -> the process name (text before the _/- da
 
 PREDICATE='(process CONTAINS "test.kexe") OR (process == "java") OR (process IN {"trustd","nsurlsessiond","mDNSResponder","networkd","nehelper","symptomsd","ReportCrash"}) OR (subsystem BEGINSWITH "com.apple.network")'
 
+# What a step's test progress looked like when the budget ended. A job that pipes its test command
+# through `gradle-test-progress.py stamp` leaves $TEST_PROGRESS_LOG; for those the verdict separates
+# tests still finishing from one that never ended. Jobs without a stamped log (K/N) keep the plain
+# message. No grep here: the composite step runs under errexit/pipefail, where a grep that matches
+# nothing fails the step.
+TEST_PROGRESS_LOG="${CAPTURE_TEST_PROGRESS_LOG:-}"
+budget_message() { # <hang dir> <capture dir>
+  local hang="$1" dir="$2" log line state age last unfinished
+  log="${TEST_PROGRESS_LOG:-$(dirname "$dir")/gradle-test-step.log}"
+  line=""
+  if [ -s "$log" ] && command -v python3 >/dev/null 2>&1; then
+    line=$(python3 -I "$(cd "$(dirname "$0")" && pwd)/gradle-test-progress.py" last "$log" 2>/dev/null) || line=""
+  fi
+  case "$line" in
+    state=*)
+      state="${line#state=}"; state="${state%% age=*}"
+      age="${line#*age=}"; age="${age%% last=*}"
+      last="${line#*last=}"; last="${last%% unfinished=*}"
+      unfinished="${line#*unfinished=}"
+      case "$state" in
+        progressing)
+          echo "::error title=Out of time, tests progressing::the step budget ended while tests were still running normally: the last test event was ${age} s before this check (${last}); unfinished test: ${unfinished}. This is the budget, not a hang. Stacks taken at the watchdog are in $hang (sample-*.txt, jvm-threads-*.txt)" ;;
+        silent)
+          echo "::error title=Hang watchdog::a test process was still running at the budget and no test started or finished for ${age} s (last event: ${last}); unfinished test: ${unfinished}. Its stacks are in $hang (sample-*.txt, jvm-threads-*.txt)" ;;
+        *)
+          echo "::error title=Hang watchdog::a test process was still running at the budget and the step's output holds no test event; its stacks are in $hang (sample-*.txt, jvm-threads-*.txt)" ;;
+      esac ;;
+    *)
+      echo "::error title=Hang watchdog::a test process was still running at the budget; its stacks are in $hang (sample-*.txt, jvm-threads-*.txt)" ;;
+  esac
+}
+
 collect() { # <dir> <out> [udid]
   local dir="$1" out="$2" udid="${3:-}" since reports f base waited=0 found n
   mkdir -p "$out/crash-reports" "$out/hang" "$out/logs"
@@ -358,7 +390,7 @@ collect() { # <dir> <out> [udid]
   if [ -d "$dir/hang" ]; then cp -R "$dir/hang/." "$out/hang/" 2>/dev/null; fi
   [ -f "$dir/watchdog.log" ] && cp "$dir/watchdog.log" "$out/hang/watchdog.log"
   if [ -e "$dir/watchdog-fired" ]; then
-    echo "::error title=Hang watchdog::a test process was still running at the budget; its stacks are in $out/hang (sample-*.txt, jvm-threads-*.txt)"
+    budget_message "$out/hang" "$dir"
   fi
   # Anything still alive now (the step failed but left a process behind) is worth a look too.
   if pgrep -x "$NATIVE_NAME" >/dev/null 2>&1 || pgrep -f "$JVM_PATTERN" >/dev/null 2>&1; then

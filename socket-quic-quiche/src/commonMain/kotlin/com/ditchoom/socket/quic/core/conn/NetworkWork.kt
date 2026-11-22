@@ -52,3 +52,10 @@ internal class IssueIdsWork(
 
     override fun gone(end: ConnEnd) = Unit
 }
+
+/** Inside: the network refused the first datagram of the connection it was handed; a handshake judges what that means. */
+internal class SendsRefusedWork : ConnWork() {
+    override fun run(inside: Inside) = inside.sendsRefused()
+
+    override fun gone(end: ConnEnd) = Unit
+}

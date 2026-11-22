@@ -92,7 +92,7 @@ class AppleTestCertsMaterializeTests {
             AppleTestCerts.materialize(path, text)
             AppleTestCerts.materialize(path, text)
             val dir = path.substringBeforeLast('/')
-            val leftovers = NativeTestFiles.filesIn(dir).keys.filter { it.startsWith(path.substringAfterLast('/') + ".") }
+            val leftovers = NativeTestFiles.namesIn(dir).filter { it.startsWith(path.substringAfterLast('/') + ".") }
             assertEquals(emptyList(), leftovers)
         } finally {
             unlink(path)

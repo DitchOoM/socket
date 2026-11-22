@@ -1,11 +1,13 @@
 package com.ditchoom.socket.quic.core.edge
 
+import com.ditchoom.socket.quic.QuicCloseReason
 import com.ditchoom.socket.quic.QuicConnectionEnd
 import com.ditchoom.socket.quic.QuicHandshakeProgress
 import com.ditchoom.socket.quic.QuicHandshakeReached
 import com.ditchoom.socket.quic.QuicRttSample
 import com.ditchoom.socket.quic.QuicSendRefusal
 import com.ditchoom.socket.quic.QuicSocketFault
+import com.ditchoom.socket.quic.closeReason
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.HandshakeProgress
 import com.ditchoom.socket.quic.core.life.HandshakeReached
@@ -54,6 +56,9 @@ internal fun publicRefusalOf(refusal: SendRefusal): QuicSendRefusal =
         is SendRefusal.Unnamed -> QuicSendRefusal.Unnamed(refusal.thrown.throwable)
     }
 
+/** How [end] reads in the public close reason: the reason of its [publicEndOf]. */
+internal fun closeReasonOf(end: ConnEnd): QuicCloseReason = publicEndOf(end).closeReason
+
 /** The one mapping from how a connection ended to what callers are told: each [ConnEnd] to its [QuicConnectionEnd]. */
 internal fun publicEndOf(end: ConnEnd): QuicConnectionEnd =
     when (end) {
@@ -63,6 +68,7 @@ internal fun publicEndOf(end: ConnEnd): QuicConnectionEnd =
         is ConnEnd.HandshakeTimedOut -> QuicConnectionEnd.HandshakeTimedOut(publicProgressOf(end.progress))
         is ConnEnd.HandshakeSendRefused ->
             QuicConnectionEnd.HandshakeSendRefused(publicProgressOf(end.progress), publicRefusalOf(end.refusal))
+        is ConnEnd.AccessDenied -> QuicConnectionEnd.AccessDenied(end.denial)
         is ConnEnd.SocketFailed -> QuicConnectionEnd.SocketFailed(publicFaultOf(end.fault))
         is ConnEnd.ProcessingFailed -> QuicConnectionEnd.ProcessingFailed(end.thrown.throwable)
         is ConnEnd.CallerFailed -> QuicConnectionEnd.CallerFailed(end.thrown.throwable)

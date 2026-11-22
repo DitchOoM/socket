@@ -7,6 +7,7 @@ import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.flow.WritePolicy
+import com.ditchoom.socket.quic.EnvironmentSetting
 import com.ditchoom.socket.quic.HandlerStart
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicConnectionIdentity
@@ -18,6 +19,7 @@ import com.ditchoom.socket.quic.core.demux.ConnBuild
 import com.ditchoom.socket.quic.core.demux.Encoding
 import com.ditchoom.socket.quic.core.demux.Opened
 import com.ditchoom.socket.quic.core.demux.ServerHooks
+import com.ditchoom.socket.quic.core.observe.ServerCounts
 import com.ditchoom.socket.quic.encodeToNative
 import com.ditchoom.socket.quic.toSocketAddress
 import com.ditchoom.socket.quic.traceRecorderFor
@@ -42,6 +44,9 @@ internal class ServerEdge(
     private val readPolicy: ReadPolicy,
     private val writePolicy: WritePolicy,
     private val accepted: SendChannel<CoreConnection>,
+    /** The key log directory the environment names, read once when the server is set up. */
+    private val keyLogDirectory: EnvironmentSetting,
+    private val counts: ServerCounts,
 ) {
     val hooks = ServerHooks(::encode, ::open)
 
@@ -57,7 +62,10 @@ internal class ServerEdge(
     ): Opened {
         val capture = traceRecorderFor(options)
         val id = hex(peer.scid0) + hex(peer.scid1)
+        // A trace that declared nothing is judged as its connections are accepted: a budgeted target is not written, and counted.
+        if (qlogVerdictOf(capture) is OptionVerdict.Refused) counts.qlogRefusedAtAccept()
         build.nameQlog(capture, QuicSessionId(id))
+        build.nameTrafficSecretsLog(capture, keyLogDirectory, QuicSessionId(id))
         val edge = EdgeState(build.alpn, capture, TicketHome.NotKept, ChainHome.NotKept)
         val conn = build.build(edge, capture)
         val scope = CoroutineScope(SupervisorJob())
