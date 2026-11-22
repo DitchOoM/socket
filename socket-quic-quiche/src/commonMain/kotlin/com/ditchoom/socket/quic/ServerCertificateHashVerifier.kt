@@ -17,7 +17,7 @@ private const val SHA256_DIGEST_BYTES = 32
 // W3C serverCertificateHashes pins the leaf certificate, which is small; start modest and only grow if
 // quiche reports a larger DER. The cap guards against a pathological/hostile size (a real leaf is < 4 KiB).
 private const val INITIAL_PEER_CERT_CAPACITY = 2048
-private const val MAX_PEER_CERT_CAPACITY = 1 shl 16 // 64 KiB
+private const val MAX_PEER_CERT_CAPACITY = MAX_CERT_CAPACITY
 
 /**
  * Enforce W3C `serverCertificateHashes` leaf-certificate pinning post-handshake (Option 1), shared by
