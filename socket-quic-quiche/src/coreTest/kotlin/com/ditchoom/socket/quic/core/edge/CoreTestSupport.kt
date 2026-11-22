@@ -25,8 +25,7 @@ import kotlinx.coroutines.withContext
 import kotlin.time.Duration.Companion.seconds
 
 /** The options every core test connects with. */
-internal val coreTestOptions =
-    QuicOptions(alpnProtocols = listOf("test"), verifyPeer = false, idleTimeout = 10.seconds)
+internal val coreTestOptions = QuicOptions(alpnProtocols = listOf("test"), verifyPeer = false, idleTimeout = 10.seconds)
 
 /** The prefix of the loop threads' names, as [coreConnect] starts them. */
 internal const val LOOP_THREAD = "quic-core-client"

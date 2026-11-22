@@ -68,6 +68,7 @@ import com.ditchoom.socket.quic.core.udp.SocketPeer
 import com.ditchoom.socket.quic.core.udp.SocketReport
 import com.ditchoom.socket.quic.encodeAlpnList
 import com.ditchoom.socket.quic.encodeToNative
+import com.ditchoom.socket.quic.keyLogDirectory
 import com.ditchoom.socket.quic.newConnectionIdRandom
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Runnable
@@ -205,7 +206,7 @@ internal class ServerSetup(
         val sendPort = SendPort(io, loop.port, CallerLanes.Of(lanes), SocketDiedNotice(), loop.counts, loop.callerCounts)
         val counts = ServerCounts()
         val accepted = Channel<CoreConnection>(Channel.UNLIMITED)
-        val edge = ServerEdge(options, factory, readPolicy, writePolicy, accepted)
+        val edge = ServerEdge(options, factory, readPolicy, writePolicy, accepted, keyLogDirectory())
         val parts =
             ServerParts(
                 SlotRules.forWaits(

@@ -14,8 +14,8 @@ sealed interface QuicOptionRefusal {
     /** The option the refused value was set on. */
     val option: QuicOptionName
 
-    /** [StandbyLink.KeepCellularReady] on a platform with a standby radio this engine does not hold; use [StandbyLink.OnDemand]. */
-    data object StandbyRadioNotHeld : QuicOptionRefusal {
+    /** [StandbyLink.KeepCellularReady]: this engine holds no standby link; use [StandbyLink.OnDemand]. */
+    data object StandbyLinkNotHeld : QuicOptionRefusal {
         override val option: QuicOptionName get() = QuicOptionName.StandbyLink
     }
 
@@ -34,11 +34,15 @@ sealed interface QuicOptionRefusal {
     }
 }
 
-/** A connect or serve whose options carry a value its engine cannot honour, for [refusal]; raised before any socket opens. */
-open class QuicOptionRefusedException(
-    refusal: QuicOptionRefusal,
-    message: String = "${refusal.option} cannot be honoured here: $refusal",
+/** A connect or serve whose options carry a value its engine cannot honour; raised before any socket opens. */
+sealed class QuicOptionRefusedException(
+    message: String,
 ) : UnsupportedOperationException(message) {
     /** What was refused. */
-    open val refusal: QuicOptionRefusal = refusal
+    abstract val refused: QuicOptionRefusal
 }
+
+/** An option value refused for [refused]. */
+class QuicOptionNotHonouredException(
+    override val refused: QuicOptionRefusal,
+) : QuicOptionRefusedException("${refused.option} cannot be honoured here: $refused")

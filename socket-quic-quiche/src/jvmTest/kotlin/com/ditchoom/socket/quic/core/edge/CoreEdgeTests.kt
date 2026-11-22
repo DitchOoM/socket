@@ -42,8 +42,7 @@ import kotlin.time.Duration.Companion.seconds
 
 /** The public stream and connection API on the run-to-completion core, against today's server over a real socket. */
 class CoreEdgeTests {
-    private val options =
-        QuicOptions(alpnProtocols = listOf("test"), verifyPeer = false, idleTimeout = 10.seconds)
+    private val options = QuicOptions(alpnProtocols = listOf("test"), verifyPeer = false, idleTimeout = 10.seconds)
 
     @Test
     fun smallAndLargeEchoesAreByteExact() =

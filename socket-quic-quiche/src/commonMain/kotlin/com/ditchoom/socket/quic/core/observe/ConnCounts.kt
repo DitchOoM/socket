@@ -1,5 +1,6 @@
 package com.ditchoom.socket.quic.core.observe
 
+import com.ditchoom.socket.quic.QuicDatagramCount
 import com.ditchoom.socket.quic.QuicStatsRead
 
 /** What a connection did with the threads and datagrams that reached it: any thread counts, tests read. */
@@ -95,8 +96,8 @@ internal fun QuicStatsRead.withDatagramCounts(counts: ConnCounts): QuicStatsRead
         is QuicStatsRead.Read ->
             QuicStatsRead.Read(
                 stats.copy(
-                    datagramsRefusedQueueFull = counts.datagramsRefusedQueueFull,
-                    datagramsDroppedReceiveQueue = counts.datagramsOverflowed,
+                    datagramsRefusedQueueFull = QuicDatagramCount.Counted(counts.datagramsRefusedQueueFull),
+                    datagramsDroppedReceiveQueue = QuicDatagramCount.Counted(counts.datagramsOverflowed),
                 ),
             )
         is QuicStatsRead.Ended, is QuicStatsRead.NotReported -> this

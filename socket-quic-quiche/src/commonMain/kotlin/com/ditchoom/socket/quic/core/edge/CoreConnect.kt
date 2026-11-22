@@ -37,11 +37,11 @@ import com.ditchoom.socket.quic.encodeToNative
 import com.ditchoom.socket.quic.generateScid
 import com.ditchoom.socket.quic.hostLiteral
 import com.ditchoom.socket.quic.hostSockAddrLayout
+import com.ditchoom.socket.quic.keyLogDirectory
 import com.ditchoom.socket.quic.nameQlog
 import com.ditchoom.socket.quic.nameTrafficSecretsLog
 import com.ditchoom.socket.quic.resolveNetworkMonitor
 import com.ditchoom.socket.quic.toPathKey
-import com.ditchoom.socket.quic.trace.TraceCapture
 import com.ditchoom.socket.quic.traceRecorderFor
 import com.ditchoom.socket.quic.wireClientConnectivityTap
 import com.ditchoom.socket.udp.SocketAddressCodec
@@ -81,11 +81,9 @@ internal suspend fun coreConnect(
     datagramSize: DatagramSize = DatagramSize.Probed,
     tokens: ClientTokens = ClientTokens.NotKept,
     mismatch: MismatchResponse = MismatchResponse.Unpaced,
-    standby: StandbyRadio = standbyRadioOfThisPlatform,
 ): CoreClient {
-    val capture = traceRecorderFor(options)
-    // Before the setup lane, a socket or a file: a connect that cannot be honoured opens nothing.
-    verdictOn(options, QuicRole.Client, capture, standby).orRefuse()
+    // Before the setup lane, a socket or a file: a connect whose option values cannot be honoured opens nothing.
+    verdictOn(options).orRefuse()
     val began = TimeSource.Monotonic.markNow()
     val peerHost = peerHostFor(host)
     val unstarted = ClientSetup.Unstarted(EdgeMemory(factory))
@@ -101,7 +99,6 @@ internal suspend fun coreConnect(
                     port,
                     serverName,
                     sized,
-                    capture,
                     unstarted.memory,
                     factory,
                     api,
@@ -135,7 +132,6 @@ private suspend fun OnSetupLane.connectOnLane(
     port: Int,
     serverName: String,
     options: QuicOptions,
-    capture: TraceCapture,
     memory: EdgeMemory,
     factory: BufferFactory,
     api: QuicheApi,
@@ -154,6 +150,10 @@ private suspend fun OnSetupLane.connectOnLane(
     /** Told each time what the setup made passes to a new releaser; last, right before the connection starts. */
     moved: (ClientSetup) -> Unit,
 ): StartedClient {
+    // The application's trace factory runs here, on the setup lane and not on the caller's thread, and before anything opens.
+    val capture = traceRecorderFor(options)
+    qlogVerdictOf(capture).orRefuse()
+    val keyLogDirectory = keyLogDirectory()
     val peer = UdpSocket.resolve(peerHost, port)
     val peerKey = peer.toPathKey()
     val codec = SocketAddressCodec(hostSockAddrLayout)
@@ -255,7 +255,7 @@ private suspend fun OnSetupLane.connectOnLane(
     val connection = built.connection(factory, peer, QuicConnectionIdentity(QuicSessionId(scidHex), QuicWireConnectionId.Known(scidHex)))
     wireClientConnectivityTap(options, built.capture, connection, monitor)
     api.nameQlog(handle, built.capture, QuicRole.Client, QuicSessionId(scidHex))
-    api.nameTrafficSecretsLog(handle, built.capture, QuicRole.Client) { QuicSessionId(scidHex) }
+    api.nameTrafficSecretsLog(handle, built.capture, QuicRole.Client, keyLogDirectory) { QuicSessionId(scidHex) }
     val started = StartedClient(CoreClient(connection, built.conn, running.loop, SocketReport(socket.granted(), local.port)), offer)
     // Placing the endpoint hands the memory to the loop, whose release of the connection frees it, whatever happens next.
     moved(ClientSetup.Started(started))

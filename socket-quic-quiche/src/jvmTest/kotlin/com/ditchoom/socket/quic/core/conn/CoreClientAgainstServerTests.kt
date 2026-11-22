@@ -39,8 +39,7 @@ import kotlin.time.Duration.Companion.seconds
  * written as fast as flow control allows, the same bytes echoed back, the connection closed and seen closed.
  */
 class CoreClientAgainstServerTests {
-    private val options =
-        QuicOptions(alpnProtocols = listOf("test"), verifyPeer = false, idleTimeout = 10.seconds)
+    private val options = QuicOptions(alpnProtocols = listOf("test"), verifyPeer = false, idleTimeout = 10.seconds)
 
     /**
      * The server keeps each connection open after its handler returns until the client closes it. With the default

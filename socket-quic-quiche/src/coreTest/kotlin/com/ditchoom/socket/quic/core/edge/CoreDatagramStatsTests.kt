@@ -10,6 +10,7 @@ import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.quic.DatagramOptions
 import com.ditchoom.socket.quic.DatagramRefusal
 import com.ditchoom.socket.quic.QuicConnectionStats
+import com.ditchoom.socket.quic.QuicDatagramCount
 import com.ditchoom.socket.quic.QuicDatagramRefused
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicStatsRead
@@ -28,6 +29,7 @@ import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.milliseconds
@@ -61,36 +63,30 @@ class CoreDatagramStatsTests {
             }
     }
 
-    private class Drained(
-        val delivered: Long,
-        val stats: QuicConnectionStats,
-    )
-
     @Test
     fun aSenderThatOverrunsItsQueueAndASlowReceiverAreCountedInTheirStats() =
         coreTest("CoreDatagramStatsTests.aSenderThatOverrunsItsQueueAndASlowReceiverAreCountedInTheirStats") {
             val options = coreTestOptions.copy(datagrams = DatagramOptions(recvQueueLen = RECV_QUEUE, sendQueueLen = SEND_QUEUE))
             val acks = AtomicReference<Acks>(Acks.Flowing)
-            val sentAll = CompletableDeferred<Unit>()
-            val drained = CompletableDeferred<Drained>()
+            val serverSide = CompletableDeferred<CoreConnection>()
+            val everythingArrived = CompletableDeferred<Unit>()
+            val delivered = CompletableDeferred<Long>()
             withCoreServer(options = options, wrapIo = { WithholdingAcks(it, acks) }, onConnection = { connection ->
-                // The receiver reads nothing until everything the sender will send has arrived: it is as slow as a receiver gets.
-                sentAll.await()
-                val channel = connection.datagramChannel()
-                var delivered = 0L
+                serverSide.complete(connection)
+                // The receiver reads nothing until everything the sender sent has reached its connection: as slow as a receiver gets.
+                everythingArrived.await()
                 try {
-                    while (true) {
-                        withTimeout(QUIET) {
-                            val result = channel.receive()
-                            if (result is DatagramReadResult.Received) {
-                                result.datagram.payload.freeIfNeeded()
-                                delivered++
-                            }
-                        }
+                    val channel = connection.datagramChannel()
+                    val read = assertIs<QuicStatsRead.Read>(connection.stats()).stats
+                    val kept = read.datagramsReceived - (read.datagramsDroppedReceiveQueue as QuicDatagramCount.Counted).datagrams
+                    repeat(kept.toInt()) {
+                        withTimeout(WAIT) { assertIs<DatagramReadResult.Received>(channel.receive()).datagram.payload.freeIfNeeded() }
                     }
-                } catch (quiet: TimeoutCancellationException) {
-                    val read = assertIs<QuicStatsRead.Read>(connection.stats())
-                    drained.complete(Drained(delivered, read.stats))
+                    // Nothing more is waiting: what the queue kept is what was received less what it dropped.
+                    assertFailsWith<TimeoutCancellationException> { withTimeout(QUIET) { channel.receive() } }
+                    delivered.complete(kept)
+                } catch (failed: Throwable) {
+                    delivered.completeExceptionally(failed)
                 }
             }) { server ->
                 val client = connectCore(server.port, loops = loops, options = options)
@@ -113,21 +109,28 @@ class CoreDatagramStatsTests {
                     assertTrue(accepted > RECV_QUEUE, "the receiver must be sent more than its queue holds: $accepted accepted")
                     acks.store(Acks.Flowing)
 
-                    val sent = withTimeout(WAIT) { readStatsUntil(client.connection) { it.datagramsSent == accepted } }
-                    assertEquals(accepted, sent.datagramsSent, "sent = accepted")
-                    assertEquals(refused, sent.datagramsRefusedQueueFull, "refused at the sender, by the queue")
-                    assertEquals(ATTEMPTS.toLong(), sent.datagramsSent + sent.datagramsRefusedQueueFull, "accepted + refused = attempts")
-
-                    delay(ARRIVE)
-                    sentAll.complete(Unit)
-                    val taken = withTimeout(WAIT) { drained.await() }
-                    assertEquals(accepted, taken.stats.datagramsReceived, "the receiver took every datagram the sender sent")
-                    assertTrue(taken.stats.datagramsDroppedReceiveQueue > 0, "a slow receiver drops: delivered ${taken.delivered}")
+                    val receiving = withTimeout(WAIT) { serverSide.await() }
+                    val arrived = withTimeout(WAIT) { readStatsUntil(receiving) { it.datagramsReceived == accepted } }
                     assertEquals(
-                        taken.stats.datagramsReceived,
-                        taken.delivered + taken.stats.datagramsDroppedReceiveQueue,
-                        "received = delivered + dropped",
+                        accepted,
+                        arrived.datagramsReceived,
+                        "the receiver's own count of arrivals is what the sender's sends were accepted",
                     )
+
+                    val sent = withTimeout(WAIT) { readStatsUntil(client.connection) { it.datagramsSent == accepted } }
+                    assertEquals(QuicDatagramCount.Counted(refused), sent.datagramsRefusedQueueFull, "refused at the sender, by the queue")
+                    assertEquals(
+                        ATTEMPTS.toLong(),
+                        sent.datagramsSent + (sent.datagramsRefusedQueueFull as QuicDatagramCount.Counted).datagrams,
+                        "the connection's own sent + refused = attempts",
+                    )
+
+                    everythingArrived.complete(Unit)
+                    val kept = withTimeout(WAIT) { delivered.await() }
+                    val taken = assertIs<QuicStatsRead.Read>(receiving.stats()).stats
+                    val dropped = (taken.datagramsDroppedReceiveQueue as QuicDatagramCount.Counted).datagrams
+                    assertTrue(dropped > 0, "a slow receiver drops: delivered $kept")
+                    assertEquals(taken.datagramsReceived, kept + dropped, "received = delivered + dropped")
                 } finally {
                     client.connection.close(QuicError.NoError)
                 }
@@ -162,7 +165,6 @@ class CoreDatagramStatsTests {
         const val SEND_QUEUE = 8
         const val RECV_QUEUE = 3
         val QUIET = 500.milliseconds
-        val ARRIVE = 300.milliseconds
         val WAIT = 20.seconds
         val SETTLE = 20.milliseconds
     }

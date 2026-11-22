@@ -7,6 +7,7 @@ import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.flow.WritePolicy
+import com.ditchoom.socket.quic.EnvironmentSetting
 import com.ditchoom.socket.quic.HandlerStart
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicConnectionIdentity
@@ -42,6 +43,8 @@ internal class ServerEdge(
     private val readPolicy: ReadPolicy,
     private val writePolicy: WritePolicy,
     private val accepted: SendChannel<CoreConnection>,
+    /** The key log directory the environment names, read once when the server is set up. */
+    private val keyLogDirectory: EnvironmentSetting,
 ) {
     val hooks = ServerHooks(::encode, ::open)
 
@@ -58,7 +61,7 @@ internal class ServerEdge(
         val capture = traceRecorderFor(options)
         val id = hex(peer.scid0) + hex(peer.scid1)
         build.nameQlog(capture, QuicSessionId(id))
-        build.nameTrafficSecretsLog(capture, QuicSessionId(id))
+        build.nameTrafficSecretsLog(capture, keyLogDirectory, QuicSessionId(id))
         val edge = EdgeState(build.alpn, capture, TicketHome.NotKept)
         val conn = build.build(edge, capture)
         val scope = CoroutineScope(SupervisorJob())

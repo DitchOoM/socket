@@ -12,7 +12,6 @@ import com.ditchoom.socket.quic.QuicCloseLinger
 import com.ditchoom.socket.quic.QuicOptionRefusal
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicResumption
-import com.ditchoom.socket.quic.QuicRole
 import com.ditchoom.socket.quic.QuicSessionStore
 import com.ditchoom.socket.quic.StandbyLink
 import com.ditchoom.socket.quic.StreamOpenPolicy
@@ -20,12 +19,6 @@ import com.ditchoom.socket.quic.UdpBatching
 import com.ditchoom.socket.quic.trace.QlogTarget
 import com.ditchoom.socket.quic.trace.TraceCapture
 import com.ditchoom.socket.transport.NetworkKind
-
-/** Whether the platform has a standby radio that [StandbyLink.KeepCellularReady] asks an engine to hold. */
-internal enum class StandbyRadio { Present, Absent }
-
-/** This platform's [StandbyRadio]: Android has a cellular radio to hold beside Wi-Fi; no other platform does. */
-internal expect val standbyRadioOfThisPlatform: StandbyRadio
 
 /** What the core does with a connect's or serve's options: honours all of them, or refuses the first it cannot honour. */
 internal sealed interface OptionVerdict {
@@ -44,22 +37,16 @@ internal sealed interface OptionVerdict {
 }
 
 /**
- * The core's verdict on [options] for a [role], with the connection's [capture] and the platform's [standby] radio.
+ * The core's verdict on the values of [options]: pure, so it runs on the caller's thread before anything is made or opened.
  *
  * Every option with a closed set of values is decided by an exhaustive `when`, so a value added to one cannot compile
  * until it is decided here: honoured, or refused with a [QuicOptionRefusal] that names the option.
  */
-internal fun verdictOn(
-    options: QuicOptions,
-    role: QuicRole,
-    capture: TraceCapture,
-    standby: StandbyRadio,
-): OptionVerdict =
+internal fun verdictOn(options: QuicOptions): OptionVerdict =
     firstRefused(
         migrationVerdict(options.migration),
         streamOpenVerdict(options.streamOpenPolicy),
-        standbyVerdict(options.standbyLink, options.migration, role, standby),
-        qlogVerdict(capture),
+        standbyVerdict(options.standbyLink),
         transportVerdict(options),
     )
 
@@ -83,39 +70,25 @@ private fun streamOpenVerdict(policy: StreamOpenPolicy): OptionVerdict =
         is StreamOpenPolicy.Bounded -> refused(QuicOptionRefusal.StreamOpenNotBounded(policy.deadline))
     }
 
-/** The core holds no standby link; the option is read only by a client under automatic migration. */
-private fun standbyVerdict(
-    link: StandbyLink,
-    migration: MigrationPolicy,
-    role: QuicRole,
-    standby: StandbyRadio,
-): OptionVerdict =
+/** The core holds no standby link on any platform. */
+private fun standbyVerdict(link: StandbyLink): OptionVerdict =
     when (link) {
         is StandbyLink.OnDemand -> OptionVerdict.Honoured
-        is StandbyLink.KeepCellularReady ->
-            when (role) {
-                is QuicRole.Server -> OptionVerdict.Honoured
-                is QuicRole.Client ->
-                    when (migration) {
-                        is MigrationPolicy.Automatic ->
-                            when (standby) {
-                                StandbyRadio.Present -> refused(QuicOptionRefusal.StandbyRadioNotHeld)
-                                StandbyRadio.Absent -> OptionVerdict.Honoured
-                            }
-                        is MigrationPolicy.Forbidden, is MigrationPolicy.Manual, is MigrationPolicy.Pinned -> OptionVerdict.Honoured
-                    }
-            }
+        is StandbyLink.KeepCellularReady -> refused(QuicOptionRefusal.StandbyLinkNotHeld)
     }
 
 /** The core writes a qlog to a file or to the environment's directory; it keeps no budgeted directory of segments. */
-private fun qlogVerdict(capture: TraceCapture): OptionVerdict =
+internal fun qlogVerdict(target: QlogTarget): OptionVerdict =
+    when (target) {
+        is QlogTarget.Off, is QlogTarget.File -> OptionVerdict.Honoured
+        is QlogTarget.Budgeted -> refused(QuicOptionRefusal.QlogNotBudgeted(target))
+    }
+
+/** The qlog verdict of a connection's [capture]. */
+internal fun qlogVerdictOf(capture: TraceCapture): OptionVerdict =
     when (capture) {
         is TraceCapture.Off -> OptionVerdict.Honoured
-        is TraceCapture.On ->
-            when (val qlog = capture.qlog) {
-                is QlogTarget.Off, is QlogTarget.File -> OptionVerdict.Honoured
-                is QlogTarget.Budgeted -> refused(QuicOptionRefusal.QlogNotBudgeted(qlog))
-            }
+        is TraceCapture.On -> qlogVerdict(capture.qlog)
     }
 
 /** The options whose every value the core honours, each decided on its own so that a new value is decided too. */

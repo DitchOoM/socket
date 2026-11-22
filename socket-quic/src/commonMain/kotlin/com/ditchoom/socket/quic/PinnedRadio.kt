@@ -20,8 +20,10 @@ sealed interface PinnedRadioRefusal : QuicOptionRefusal {
  */
 class PinnedRadioRefusedException(
     val radio: NetworkKind.Radio,
-    override val refusal: PinnedRadioRefusal,
-) : QuicOptionRefusedException(refusal, "a connection cannot be pinned to $radio here: $refusal")
+    val refusal: PinnedRadioRefusal,
+) : QuicOptionRefusedException("a connection cannot be pinned to $radio here: $refusal") {
+    override val refused: QuicOptionRefusal get() = refusal
+}
 
 /** Why a [MigrationPolicy.Pinned] connection could not open its path on its radio. */
 sealed interface PinnedRadioUnavailable {

@@ -12,7 +12,7 @@ import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicCloseReason
 import com.ditchoom.socket.quic.QuicConnectionEnd
 import com.ditchoom.socket.quic.QuicNativeMemoryRequiredException
-import com.ditchoom.socket.quic.QuicOptionRefusedException
+import com.ditchoom.socket.quic.QuicOptionNotHonouredException
 import com.ditchoom.socket.quic.QuicStreamAbort
 import com.ditchoom.socket.quic.QuicStreamClosedException
 import com.ditchoom.socket.quic.QuicStreamException
@@ -145,7 +145,7 @@ internal fun raiseFailure(
 internal fun OptionVerdict.orRefuse() {
     when (this) {
         is OptionVerdict.Honoured -> Unit
-        is OptionVerdict.Refused -> throw QuicOptionRefusedException(refusal)
+        is OptionVerdict.Refused -> throw QuicOptionNotHonouredException(refusal)
         is OptionVerdict.PinRefused -> throw PinnedRadioRefusedException(radio, refusal)
     }
 }

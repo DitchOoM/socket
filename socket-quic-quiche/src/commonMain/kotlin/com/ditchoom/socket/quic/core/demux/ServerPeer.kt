@@ -3,6 +3,7 @@ package com.ditchoom.socket.quic.core.demux
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.socket.quic.EncodedSockAddr
+import com.ditchoom.socket.quic.EnvironmentSetting
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicRole
 import com.ditchoom.socket.quic.QuicSessionId
@@ -105,8 +106,9 @@ internal class ConnBuild(
     /** Names the connection's TLS key log before quiche reads its first datagram. */
     fun nameTrafficSecretsLog(
         capture: TraceCapture,
+        directory: EnvironmentSetting,
         session: QuicSessionId,
-    ) = q.api.nameTrafficSecretsLog(q.handle, capture, QuicRole.Server) { session }
+    ) = q.api.nameTrafficSecretsLog(q.handle, capture, QuicRole.Server, directory) { session }
 
     fun build(
         sink: ConnSink,

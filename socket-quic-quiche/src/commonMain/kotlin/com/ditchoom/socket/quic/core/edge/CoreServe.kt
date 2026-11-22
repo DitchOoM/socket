@@ -7,7 +7,6 @@ import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicOptions
-import com.ditchoom.socket.quic.QuicRole
 import com.ditchoom.socket.quic.QuicTlsConfig
 import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.UdpBatching
@@ -27,7 +26,6 @@ import com.ditchoom.socket.quic.core.time.MonotonicClock
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 import com.ditchoom.socket.quic.core.udp.SocketBuffers
 import com.ditchoom.socket.quic.core.udp.SocketReport
-import com.ditchoom.socket.quic.trace.TraceCapture
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
@@ -127,11 +125,13 @@ internal suspend fun coreServe(
     batching: UdpBatching = options.udpBatching,
     datagramSize: DatagramSize = DatagramSize.Probed,
     mismatch: MismatchResponse = MismatchResponse.Unpaced,
-    standby: StandbyRadio = standbyRadioOfThisPlatform,
 ): CoreServer {
-    // A connection's capture is made as the server accepts it, so only the options are judged here; before the setup lane.
-    verdictOn(options, QuicRole.Server, TraceCapture.Off, standby).orRefuse()
+    // Before the setup lane, a socket or a file: a serve whose option values cannot be honoured opens nothing.
+    verdictOn(options).orRefuse()
     return withContext(setupLane) {
+        // A server's captures are made per connection, as it accepts them; the trace factory is asked once, here and not on
+        // the caller's thread, which qlog target it names, and the capture it returns is dropped.
+        options.trace?.let { qlogVerdict(it.captureFor().qlog).orRefuse() }
         ServerSetup(
             bind,
             tls,
