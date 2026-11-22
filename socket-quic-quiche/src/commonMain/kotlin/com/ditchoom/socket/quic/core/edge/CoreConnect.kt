@@ -281,17 +281,6 @@ private suspend fun OnSetupLane.connectOnLane(
     return started
 }
 
-private fun hex(buffer: com.ditchoom.buffer.PlatformBuffer): String {
-    val out = StringBuilder(buffer.remaining() * 2)
-    for (i in buffer.position() until buffer.limit()) {
-        val b = buffer.get(i).toInt() and 0xFF
-        out.append(HEX[b ushr 4]).append(HEX[b and 0xF])
-    }
-    return out.toString()
-}
-
-private const val HEX = "0123456789abcdef"
-
 /** The wildcard of [peer]'s family: an IPv6 peer needs an IPv6 socket on the native stack. */
 private fun anyHostFor(peer: SocketAddress): String = if (peer.family == AddressFamily.IPv6) "::" else "0.0.0.0"
 
