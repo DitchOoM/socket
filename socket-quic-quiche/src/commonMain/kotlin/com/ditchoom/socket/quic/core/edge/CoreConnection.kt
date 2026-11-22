@@ -2,7 +2,6 @@ package com.ditchoom.socket.quic.core.edge
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.codec.Codec
-import com.ditchoom.buffer.flow.BytesWritten
 import com.ditchoom.buffer.flow.ConnectedDatagramChannel
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.ReadPolicy
@@ -177,6 +176,9 @@ internal class CoreConnection(
     /** Tells the connection the network monitor's news. */
     fun network(change: NetworkChange) = conn.submit(NetworkWork(change), CallerPlace.HandToLoop)
 
+    /** Hands quiche [stream]'s FIN alone, from inside the connection, for a stream closed while a write ending it gave up. */
+    internal fun finishAlone(stream: QuicStreamId) = conn.submit(FinWork(stream), CallerPlace.HandToLoop)
+
     /** The caller closed [stream] without reading it to the end: what still arrives is dropped. */
     internal fun abandon(stream: QuicStreamId) {
         edge.letGo(stream)
@@ -236,15 +238,14 @@ internal class CoreConnection(
         return op.answer()
     }
 
-    internal suspend fun write(
+    /** A write handed to the connection; its caller takes the answer. */
+    internal suspend fun submitted(
         stream: QuicStreamId,
         source: WriteSource,
         deadline: Duration,
-    ): BytesWritten {
+    ): WriteOp {
         val caller = currentCoroutineContext()
-        val op = WriteOp(stream, source, deadline, deadlines, conn, caller)
-        conn.submit(op, placeOf(caller))
-        return op.answer()
+        return WriteOp(stream, source, deadline, deadlines, conn, caller).also { conn.submit(it, placeOf(caller)) }
     }
 
     /** Lets a client's first flight, held for 0-RTT, leave. */

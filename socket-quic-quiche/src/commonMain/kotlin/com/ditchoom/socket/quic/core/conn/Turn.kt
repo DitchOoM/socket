@@ -252,8 +252,8 @@ internal class Turn(
                 is Life.Running, is Life.Over -> Unit
             }
         }
-        // Our own failure: the peer is told with INTERNAL_ERROR, as for any processing failure.
-        c.egress.failure(wrote).let { if (it is WriteFailure.Ends) fail(now, it.failure) }
+        // A clock mismatch or a refused datagram is our own failure: the peer is told with INTERNAL_ERROR, as for any processing failure.
+        wrote.ends(c.egress, ours = { fail(now, it) }, refused = { finish(now, c.closeRefused(now)) })
         return wrote.collected()
     }
 

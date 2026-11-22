@@ -18,7 +18,6 @@ import com.ditchoom.socket.quic.core.stream.WriteEnd
 import kotlin.concurrent.atomics.AtomicReference
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.coroutines.coroutineContext
-import kotlin.time.Duration
 
 /** What a caller may still do with a typed stream. */
 private sealed interface TypedUse {
@@ -65,7 +64,7 @@ internal class TypedQuicStream<T : Any>(
     private val accumulator = FrameAccumulator(factory, bound)
     private val scratch = FrameScratch(factory, bound)
     private val reader = StreamTransfer(id, deadlineOf(readPolicy), connection.deadlines, conn, Inbound(accumulator))
-    private val outbound = Outbound(scratch, config.malformedFrameCode)
+    private val outbound = Outbound(scratch, config.malformedFrameCode, ::sideBack)
     private val writer = StreamTransfer(id, deadlineOf(writePolicy), connection.deadlines, conn, outbound)
 
     /** The one message a step decoded and nobody has taken; a list made once, so keeping and taking allocate nothing. */
@@ -89,7 +88,29 @@ internal class TypedQuicStream<T : Any>(
 
     private suspend fun sendHeld(value: T) {
         encode(value)
-        outbound.begin(WriteEnd.More)
+        sendEncoded(WriteEnd.More)
+    }
+
+    /**
+     * Encodes [value] and sends its frame with our FIN, in one send when quiche takes it all: a request or a response
+     * that fits a datagram is one datagram. Returns once quiche has taken every byte and the FIN; reads continue. A
+     * failure after quiche took part of the frame resets the stream; one before it took any leaves our side open, so a
+     * later [close] sends the FIN.
+     */
+    suspend fun sendAndFinish(value: T) {
+        if (use.load() !is TypedUse.Open) raise(Raised.StreamClosed(id, QuicStreamSide.Write), QuicCloseCircumstance.Ended)
+        while (writer.acquire() == Acquired.Settling) writer.awaitSettled()
+        encode(value)
+        if (!use.compareAndSet(TypedUse.Open, TypedUse.SendFinished)) {
+            writer.leave()
+            raise(Raised.StreamClosed(id, QuicStreamSide.Write), QuicCloseCircumstance.Ended)
+        }
+        sendEncoded(WriteEnd.Finish)
+    }
+
+    /** Sends the frame in the scratch, ending our side after it when [ending] says so. */
+    private suspend fun sendEncoded(ending: WriteEnd) {
+        outbound.begin(ending)
         writer.arm(connection.placeOf(coroutineContext))
         return if (writer.isDone()) completeSend() else awaitSend()
     }
@@ -235,6 +256,10 @@ internal class TypedQuicStream<T : Any>(
         raise(Raised.Typed(id, failure), QuicCloseCircumstance.Ended)
     }
 
+    /** Inside: an abandoned send that was to end our side took nothing, so our side is the caller's again, unless it closed. */
+    private fun sideBack(): SideBack =
+        if (use.compareAndSet(TypedUse.SendFinished, TypedUse.Open)) SideBack.Reopened else SideBack.ClosedMeanwhile
+
     /** Ends our side of the stream; reads continue. */
     suspend fun finish() {
         if (use.compareAndSet(TypedUse.Open, TypedUse.SendFinished)) sendFin()
@@ -266,15 +291,3 @@ internal class TypedQuicStream<T : Any>(
 }
 
 private enum class ResetStream { Yes, No }
-
-private fun deadlineOf(policy: ReadPolicy): Duration =
-    when (policy) {
-        is ReadPolicy.Bounded -> policy.deadline
-        is ReadPolicy.UntilClosed -> Duration.INFINITE
-    }
-
-private fun deadlineOf(policy: WritePolicy): Duration =
-    when (policy) {
-        is WritePolicy.Bounded -> policy.deadline
-        is WritePolicy.UntilClosed -> Duration.INFINITE
-    }

@@ -46,17 +46,19 @@ internal class Egress(
     private var first = FirstOut.NotYet
     private var mismatchOffset = 0L
     private val feed = EgressFeed()
+    private var refusedCode = 0
 
     /** When quiche wants the last datagram it wrote on the wire, on the loop's clock. */
     private var lastDueNanos = 0L
 
-    /** How a write that ended as [wrote] ends the connection: with the failure the write met. */
-    fun failure(wrote: Wrote): WriteFailure =
-        when (wrote) {
-            Wrote.All, Wrote.BatchFull -> WriteFailure.None
-            Wrote.ClockMismatch -> WriteFailure.Ends(PacingClockMismatch(mismatchOffset))
-            Wrote.DatagramRefused -> WriteFailure.Ends(DatagramRefusedByQuiche(feed.refusedCode))
-        }
+    /** Why a write ended as [Wrote.ClockMismatch]: libquiche paces on another clock, [mismatchOffset] apart. */
+    fun mismatch(): PacingClockMismatch = PacingClockMismatch(mismatchOffset)
+
+    /** What quiche refused a queued datagram with, once a write ended as [Wrote.DatagramRefused]. */
+    fun datagramRefusal(): DatagramRefusedByQuiche = DatagramRefusedByQuiche(feed.refusedCode)
+
+    /** What quiche refused the last write with, once it ended as [Wrote.Refused]. */
+    fun refusal(): QuicheSendRefused = QuicheSendRefused(refusedCode)
 
     /** Whether quiche has written any datagram of this connection, kept or dropped. */
     fun firstOut(): FirstOut = first
@@ -99,13 +101,24 @@ internal class Egress(
         val at = clock.now()
         if (feed.fed(datagrams, at) == Dry.Refused) return Wrote.DatagramRefused
         while (out.room() == Room.Open) {
-            when (feed.dry(one(out, paths, flight, at), datagrams, at)) {
-                Dry.No -> Unit
-                Dry.Yes -> return Wrote.All
-                Dry.Refused -> return Wrote.DatagramRefused
-            }
+            one(out, paths, flight, at).fold(
+                done = {
+                    when (feed.fed(datagrams, at)) {
+                        Dry.No -> Unit
+                        Dry.Yes -> return Wrote.All
+                        Dry.Refused -> return Wrote.DatagramRefused
+                    }
+                },
+                wrote = { datagrams.quicheWrote() },
+                refused = { return refused(it) },
+            )
         }
         return Wrote.BatchFull
+    }
+
+    private fun refused(code: Int): Wrote {
+        refusedCode = code
+        return Wrote.Refused
     }
 
     /**
@@ -126,11 +139,17 @@ internal class Egress(
         if (feed.fed(datagrams, at) == Dry.Refused) return Wrote.DatagramRefused
         if (pacer.state(at) == PaceState.Holding) return Wrote.All
         while (out.room() == Room.Open) {
-            when (feed.dry(one(out, paths, flight, at), datagrams, at)) {
-                Dry.No -> Unit
-                Dry.Yes -> return Wrote.All
-                Dry.Refused -> return Wrote.DatagramRefused
-            }
+            one(out, paths, flight, at).fold(
+                done = {
+                    when (feed.fed(datagrams, at)) {
+                        Dry.No -> Unit
+                        Dry.Yes -> return Wrote.All
+                        Dry.Refused -> return Wrote.DatagramRefused
+                    }
+                },
+                wrote = { datagrams.quicheWrote() },
+                refused = { return refused(it) },
+            )
             when (judged(pacer, at, flight)) {
                 is ClockVerdict.Differs ->
                     when (pacer.response()) {
@@ -180,12 +199,12 @@ internal class Egress(
         paths: Paths,
         flight: ConnFlight,
         at: Nanos,
-    ): Int {
+    ): DatagramStep {
         val offset = out.nextOffset()
         val info = paths.sendInfo()
         val window = paths.window(Window(out.limits.maxDatagramSize))
-        val written = q.api.connSend(q.handle, out.storage.address + offset, window.bytes, info)
-        if (written <= 0) return written
+        val step = DatagramStep(q.api.connSend(q.handle, out.storage.address + offset, window.bytes, info))
+        val written = step.fold(done = { return step }, wrote = { it }, refused = { return step })
         first = FirstOut.Written
         before = last
         beforeOffset = lastOffset
@@ -210,7 +229,7 @@ internal class Egress(
                 }
             }
         }
-        return written
+        return step
     }
 
     /**
