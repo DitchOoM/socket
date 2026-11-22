@@ -209,6 +209,7 @@ private fun ConnParts.sendClose(
     paths: Paths,
 ) {
     timer.expire()
+    // The connection has ended already: a refused write leaves no close to keep, which is all a refusal changes here.
     egress.write(out, paths, flight)
     if (keepClose(now, out) == CloseSent.No && life.quicheClosed()) life.linger.done()
 }

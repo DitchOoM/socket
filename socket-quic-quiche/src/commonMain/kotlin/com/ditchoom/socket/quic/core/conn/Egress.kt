@@ -13,13 +13,16 @@ import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.udp.Room
 import com.ditchoom.socket.quic.core.udp.SendBatch
 
-/** Whether a write collected everything quiche had, the batch filled first, or the first datagram found another clock and the response is to end. */
-internal enum class Wrote { All, BatchFull, ClockMismatch }
+/**
+ * Whether a write collected everything quiche had, the batch filled first, the first datagram found another clock and
+ * the response is to end, or quiche refused to write ([Egress.refusal]).
+ */
+internal enum class Wrote { All, BatchFull, ClockMismatch, Refused }
 
 /** What a serve left after a write that ended as [this]. */
 internal fun Wrote.collected(): Collected =
     when (this) {
-        Wrote.All, Wrote.ClockMismatch -> Collected.Everything
+        Wrote.All, Wrote.ClockMismatch, Wrote.Refused -> Collected.Everything
         Wrote.BatchFull -> Collected.MoreWaiting
     }
 
@@ -55,12 +58,16 @@ internal class Egress(
     private var beforeTarget: SendTarget = SendTarget.ConnectedPeer
     private var first = FirstOut.NotYet
     private var mismatchOffset = 0L
+    private var refusedCode = 0
 
     /** When quiche wants the last datagram it wrote on the wire, on the loop's clock. */
     private var lastDueNanos = 0L
 
     /** Why a write ended as [Wrote.ClockMismatch]: libquiche paces on another clock, [mismatchOffset] apart. */
     fun mismatch(): PacingClockMismatch = PacingClockMismatch(mismatchOffset)
+
+    /** What quiche refused the last write with, once it ended as [Wrote.Refused]. */
+    fun refusal(): QuicheSendRefused = QuicheSendRefused(refusedCode)
 
     /** Whether quiche has written any datagram of this connection, kept or dropped. */
     fun firstOut(): FirstOut = first
@@ -101,9 +108,14 @@ internal class Egress(
         before = LastOut.None
         val at = clock.now()
         while (out.room() == Room.Open) {
-            if (one(out, paths, flight, at) <= 0) return Wrote.All
+            one(out, paths, flight, at).fold(done = { return Wrote.All }, wrote = { Unit }, refused = { return refused(it) })
         }
         return Wrote.BatchFull
+    }
+
+    private fun refused(code: Int): Wrote {
+        refusedCode = code
+        return Wrote.Refused
     }
 
     /**
@@ -122,7 +134,7 @@ internal class Egress(
         val at = clock.now()
         if (pacer.state(at) == PaceState.Holding) return Wrote.All
         while (out.room() == Room.Open) {
-            if (one(out, paths, flight, at) <= 0) return Wrote.All
+            one(out, paths, flight, at).fold(done = { return Wrote.All }, wrote = { Unit }, refused = { return refused(it) })
             when (judged(pacer, at, flight)) {
                 is ClockVerdict.Differs ->
                     when (pacer.response()) {
@@ -172,12 +184,12 @@ internal class Egress(
         paths: Paths,
         flight: ConnFlight,
         at: Nanos,
-    ): Int {
+    ): DatagramStep {
         val offset = out.nextOffset()
         val info = paths.sendInfo()
         val window = paths.window(Window(out.limits.maxDatagramSize))
-        val written = q.api.connSend(q.handle, out.storage.address + offset, window.bytes, info)
-        if (written <= 0) return written
+        val step = DatagramStep(q.api.connSend(q.handle, out.storage.address + offset, window.bytes, info))
+        val written = step.fold(done = { return step }, wrote = { it }, refused = { return step })
         first = FirstOut.Written
         before = last
         beforeOffset = lastOffset
@@ -202,7 +214,7 @@ internal class Egress(
                 }
             }
         }
-        return written
+        return step
     }
 
     /**
