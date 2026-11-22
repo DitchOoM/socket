@@ -16,8 +16,8 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /**
- * quiche's pacer as it paces an application-limited connection, modelled by the api: each datagram is due its
- * predecessor's size at a low rate after the predecessor's time, or now once that has passed. A quiet connection's
+ * quiche's pacer as it paces an application-limited connection, modelled by the api: each datagram is stamped with when
+ * the next may leave, its own size at a low rate after the later of now and the previous stamp. A quiet connection's
  * short burst leaves at once, on a client and on a server; past the burst, and on a connection that keeps sending,
  * datagrams leave on quiche's times exactly as they did without one.
  */
@@ -158,14 +158,19 @@ class PacingBurstTests {
         override fun gone(end: ConnEnd) = Unit
     }
 
-    /** quiche's pacer on an application-limited connection: due the last datagram's size at [nanosPerByte] after its time, or now. */
+    /**
+     * quiche's BBR2 pacer on an application-limited connection whose burst tokens are spent. quiche stamps a datagram
+     * after its own `on_packet_sent`, so the time it gives is when the NEXT datagram may leave: this one's size at
+     * [nanosPerByte] after the later of now and the previous such time. The connection's first datagram is stamped now,
+     * as quiche's pacer releases at once before it has sent anything.
+     */
     private class AppLimitedQuiche(
         val stub: StubQuicheApi,
         private val nanosPerByte: Long,
     ) : QuicheApi by stub {
         var clock: () -> Long = { 0L }
         private var due = 0L
-        private var size = 0
+        private var sent = 0
 
         override fun connSend(
             conn: QuicheConn,
@@ -175,8 +180,7 @@ class PacingBurstTests {
         ): Int =
             stub.connSend(conn, buf, bufLen, sendInfo).also { written ->
                 if (written > 0) {
-                    due = maxOf(clock(), due + size * nanosPerByte)
-                    size = written
+                    due = if (sent++ == 0) clock() else maxOf(clock(), due) + written * nanosPerByte
                 }
             }
 
