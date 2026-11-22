@@ -54,7 +54,7 @@ internal sealed interface QuicheSendStop {
         fun decode(raw: Int): QuicheSendStop {
             require(raw <= 0) { "a positive return ($raw) is a datagram length, not a stop" }
             return when (raw) {
-                0, QuicheDriver.QUICHE_ERR_DONE -> NothingToSend
+                0, QUICHE_ERR_DONE -> NothingToSend
                 QUICHE_ERR_BUFFER_TOO_SHORT -> BufferTooShort
                 else -> Rejected(raw)
             }

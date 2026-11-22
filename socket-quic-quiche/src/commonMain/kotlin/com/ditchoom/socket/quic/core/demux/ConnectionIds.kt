@@ -127,7 +127,7 @@ internal class Route<T>(
  */
 @LoopOnly
 internal class RouteTable<T> {
-    private val table = LongObjectMap<RouteLink<T>>()
+    private val table = LongObjectMap<RouteLink<T>>(RouteLink.End)
 
     val size: Int get() = table.size
 

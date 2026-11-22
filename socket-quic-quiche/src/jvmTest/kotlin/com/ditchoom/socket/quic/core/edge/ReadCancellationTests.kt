@@ -20,6 +20,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.launch
@@ -29,6 +30,7 @@ import java.util.Collections
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
+import kotlin.concurrent.thread
 import kotlin.coroutines.CoroutineContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -91,6 +93,32 @@ class ReadCancellationTests {
             val outcome = runCatching { withTimeout(100.milliseconds) { stream.read(Duration.INFINITE) } }
             assertIs<TimeoutCancellationException>(outcome.exceptionOrNull(), "a read cancelled by withTimeout: $outcome")
             assertEquals(Nobody, readerOf(client, stream.streamId), "the cancelled read still waits on its stream")
+            assertEchoes(stream)
+            closeAndAssertEveryReadBufferFreed(client, factory)
+        }
+
+    /**
+     * A cancelled read has left its stream by the time its caller resumes. The caller runs unconfined and is cancelled
+     * from a thread with no event loop, so it resumes inside the cancellation itself; what it asks the connection next
+     * reaches the connection after the read was handed back, as a read it starts next would.
+     */
+    @Test
+    fun aCancelledReadHasLeftItsStreamWhenItsCallerResumes() =
+        withTrackedClient { client, factory ->
+            val stream = client.connection.openStream()
+            val seenOnResume = CompletableFuture<Any>()
+            val reader =
+                CoroutineScope(Dispatchers.Unconfined + Job()).launch {
+                    try {
+                        stream.read(Duration.INFINITE)
+                    } catch (cancelled: CancellationException) {
+                        seenOnResume.complete(readerOf(client, stream.streamId))
+                        throw cancelled
+                    }
+                }
+            assertTrue(eventually(10.seconds) { readerOf(client, stream.streamId) !== Nobody }, "the read never parked")
+            thread { reader.cancel() }.join()
+            assertEquals(Nobody, seenOnResume.get(10, TimeUnit.SECONDS), "the resumed caller found its cancelled read still on the stream")
             assertEchoes(stream)
             closeAndAssertEveryReadBufferFreed(client, factory)
         }

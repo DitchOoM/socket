@@ -145,7 +145,7 @@ internal class StreamTransfer(
         guarded(::failed) {
             when (val state = inside.streams.state) {
                 is Streams.Ended -> return connectionEnded(state.end)
-                is Streams.Open -> Unit
+                is Streams.Live -> Unit
             }
             // The caller left before the operation ran: the withdraw takes it back.
             if (phase.load() !is Phase.Armed) return

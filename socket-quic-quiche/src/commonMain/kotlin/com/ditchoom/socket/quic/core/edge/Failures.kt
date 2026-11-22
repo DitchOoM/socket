@@ -21,7 +21,6 @@ import com.ditchoom.socket.quic.QuicStreamReadError
 import com.ditchoom.socket.quic.QuicStreamReadException
 import com.ditchoom.socket.quic.QuicStreamSide
 import com.ditchoom.socket.quic.QuicWriteTarget
-import com.ditchoom.socket.quic.QuicheDriver
 import com.ditchoom.socket.quic.RouteProbeFailure
 import com.ditchoom.socket.quic.UnresolvedRouteSourceException
 import com.ditchoom.socket.quic.closeReason
@@ -29,7 +28,9 @@ import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.stream.QUICHE_ERR_INVALID_STREAM_STATE
 import com.ditchoom.socket.quic.core.stream.QUICHE_ERR_STREAM_RESET
 import com.ditchoom.socket.quic.core.stream.QUICHE_ERR_STREAM_STOPPED
+import com.ditchoom.socket.quic.core.stream.SendRefusal
 import com.ditchoom.socket.quic.core.udp.SpecLayoutMismatch
+import com.ditchoom.socket.quic.quicheCapabilities
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.InternalCoroutinesApi
 import kotlinx.coroutines.awaitCancellation
@@ -52,6 +53,14 @@ internal sealed interface OpFailure {
 /** A failure that is an exception, raised on the caller's thread or resumed into its continuation. */
 internal sealed interface Raised : OpFailure {
     class ConnEnded(
+        val end: ConnEnd,
+    ) : Raised
+
+    /**
+     * A write, an open or a datagram came after the close point of a close that ends with [end]: nothing more of it was
+     * accepted. A typed frame cut short there resets its stream.
+     */
+    class PastClose(
         val end: ConnEnd,
     ) : Raised
 
@@ -118,6 +127,13 @@ internal sealed interface Raised : OpFailure {
         val refusal: NetworkRefusal,
     ) : Raised
 }
+
+/** The failure a refused stream send is: past the close point, or after the end. */
+internal fun SendRefusal.raised(): Raised =
+    when (this) {
+        is SendRefusal.PastClose -> Raised.PastClose(end)
+        is SendRefusal.Ended -> Raised.ConnEnded(end)
+    }
 
 /** The one place the edge hands a caller a failure: [failure] resumes this continuation as an exception. */
 internal fun <T> CancellableContinuation<T>.fail(
@@ -205,6 +221,7 @@ private fun exceptionOf(
 ): Exception =
     when (failure) {
         is Raised.ConnEnded -> closeOf(failure.end, during)
+        is Raised.PastClose -> QuicCloseException(end = publicEndOf(failure.end), circumstance = QuicCloseCircumstance.Closing)
         is Raised.WriteRefused ->
             when (failure.code) {
                 QUICHE_ERR_STREAM_STOPPED -> QuicStreamException(failure.stream.id, QuicStreamAbort.StopSending(failure.peer))
@@ -227,10 +244,10 @@ private fun exceptionOf(
             QuicNativeMemoryRequiredException.forBuffer(
                 QuicWriteTarget.Stream(failure.stream.id),
                 failure.buffer,
-                QuicheDriver.capabilities,
+                quicheCapabilities,
             )
         is Raised.FactoryNotNative ->
-            QuicNativeMemoryRequiredException.forBuffer(QuicWriteTarget.Datagram, failure.buffer, QuicheDriver.capabilities)
+            QuicNativeMemoryRequiredException.forBuffer(QuicWriteTarget.Datagram, failure.buffer, quicheCapabilities)
         is Raised.RouteUnresolved -> UnresolvedRouteSourceException(failure.reason)
         is Raised.LoopsClosed -> CoreLoopsClosed()
         is Raised.SocketRefused -> failure.refusal

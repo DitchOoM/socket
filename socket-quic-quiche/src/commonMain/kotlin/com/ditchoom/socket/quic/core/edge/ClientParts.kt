@@ -22,9 +22,9 @@ import com.ditchoom.socket.quic.core.loop.SharedBatch
 import com.ditchoom.socket.quic.core.loop.SocketDiedNotice
 import com.ditchoom.socket.quic.core.observe.ConnCounts
 import com.ditchoom.socket.quic.core.pool.Hold
-import com.ditchoom.socket.quic.core.sched.CallerLanes
 import com.ditchoom.socket.quic.core.sched.Entrant
 import com.ditchoom.socket.quic.core.sched.SendPort
+import com.ditchoom.socket.quic.core.sched.storages
 import com.ditchoom.socket.quic.core.time.RttPrior
 import com.ditchoom.socket.quic.core.udp.MAX_CACHED_TARGETS
 import com.ditchoom.socket.quic.core.udp.PeerKeys
@@ -54,14 +54,14 @@ internal class ClientParts(
     private val lanes = w.running.lanes
     private val socketIo =
         w.socket.ioOf(
-            listOf(w.running.out.first.storage) + List(lanes.size) { lanes[it].batch.storage },
+            listOf(w.running.out.first.storage) + lanes.storages(),
             MAX_CACHED_TARGETS,
             PeerKeys.CLIENT_SETS,
             w.running.loop.port::poke,
         )
     private val io = w.wrapIo(socketIo.io)
     private val loop = w.running.loop
-    private val socket = SendPort(io, loop.port, CallerLanes.Of(lanes), SocketDiedNotice(), loop.counts, loop.callerCounts)
+    private val socket = SendPort(io, loop.port, lanes, SocketDiedNotice(), loop.counts, loop.callerCounts)
     private val alpn = w.memory.native(MAX_ALPN)
     val capture: TraceCapture = w.capture
     private val edge = EdgeState(alpn.owner, capture, w.tickets)
@@ -71,7 +71,7 @@ internal class ClientParts(
                 SlotRules.forWaits(
                     w.running.waits,
                     w.handshake,
-                    closeRuleOf(w.options),
+                    closeChoiceOf(w.options),
                     datagramRuleOf(w.options),
                     keepAliveRuleOf(w.options),
                     mismatch = w.mismatch,

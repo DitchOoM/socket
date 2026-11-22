@@ -1419,6 +1419,12 @@ sealed interface com.ditchoom.socket.quic/QuicCloseCircumstance { // com.ditchoo
         final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicCloseCircumstance.CallerThreadFailed.toString|toString(){}[0]
     }
 
+    final object Closing : com.ditchoom.socket.quic/QuicCloseCircumstance { // com.ditchoom.socket.quic/QuicCloseCircumstance.Closing|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicCloseCircumstance.Closing.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicCloseCircumstance.Closing.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicCloseCircumstance.Closing.toString|toString(){}[0]
+    }
+
     final object Ended : com.ditchoom.socket.quic/QuicCloseCircumstance { // com.ditchoom.socket.quic/QuicCloseCircumstance.Ended|null[0]
         final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicCloseCircumstance.Ended.equals|equals(kotlin.Any?){}[0]
         final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicCloseCircumstance.Ended.hashCode|hashCode(){}[0]

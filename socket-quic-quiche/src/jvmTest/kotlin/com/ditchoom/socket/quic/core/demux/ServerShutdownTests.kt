@@ -15,6 +15,7 @@ import com.ditchoom.socket.quic.core.demux.ServerRig.Companion.initial
 import com.ditchoom.socket.quic.core.demux.ServerRig.Companion.peer
 import com.ditchoom.socket.quic.core.edge.closeReasonOf
 import com.ditchoom.socket.quic.core.edge.endedWith
+import com.ditchoom.socket.quic.core.life.CloseChoice
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.sched.SleepPlan
 import java.util.concurrent.CountDownLatch
@@ -196,7 +197,8 @@ class ServerShutdownTests {
     }
 
     private companion object {
-        const val DRAIN_BOUND = 1_000_000_000L
+        /** The drain bound: a graceful close's default limit, and a second for a stalled thread inside. */
+        const val DRAIN_BOUND = CloseChoice.DEFAULT_LIMIT_NANOS + 1_000_000_000L
         const val LANE_BOUND = 1_000_000_000L
     }
 }

@@ -106,7 +106,7 @@ class CoreServerAdmissionTests {
                     delay(100.milliseconds)
                     waited++
                 }
-                assertEquals(0, server.parts.connections, "connections still routed after every peer left")
+                assertEquals(0, server.parts.connections, "connections still routed after every peer left: ${routedEvidence(server.parts)}")
             }
         }
 

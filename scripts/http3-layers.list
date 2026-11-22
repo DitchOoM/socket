@@ -1,0 +1,48 @@
+# Layer of every main-source file of :socket-http3, read by scripts/Http3CodecIsolationCheck.java: <layer><TAB><file name>.
+# codec   = sans-IO HTTP/3 and QPACK (frames, QPACK, varints, failure vocabulary): may name no com.ditchoom.socket.quic type.
+# binding = HTTP/3 bound to QUIC connections and streams: may use QUIC types.
+# A new file must be listed here, and a listed file must exist.
+codec	CriticalStreamGuard.kt
+codec	Http3ErrorCode.kt
+codec	Http3Frame.kt
+codec	Http3LengthCodec.kt
+codec	Http3ReplaySafety.kt
+codec	Http3Request.kt
+codec	Http3ServerRequest.kt
+codec	Http3StreamId.kt
+codec	Http3StreamReader.kt
+codec	Http3Violation.kt
+codec	Qpack.kt
+codec	QpackDecoder.kt
+codec	QpackDecoderStream.kt
+codec	QpackDynamicTable.kt
+codec	QpackEncoder.kt
+codec	QpackFieldSectionCodec.kt
+codec	QpackFieldSectionPrefix.kt
+codec	QpackHuffman.kt
+codec	QpackInsertCount.kt
+codec	QpackInstructionReader.kt
+codec	QpackInstructions.kt
+codec	QpackPrefixedInteger.kt
+codec	QpackStaticTable.kt
+codec	QpackStringLiteral.kt
+codec	ReadBufferViewCodec.kt
+codec	VarIntCodec.kt
+codec	WebTransportFailure.kt
+codec	WebTransportWire.kt
+binding	Http3Connection.kt
+binding	Http3Response.kt
+binding	Http3ServerConnection.kt
+binding	Http3ServerResponse.kt
+binding	Http3StreamWriter.kt
+binding	QuicStreamIdConversion.kt
+binding	StalledPeerStream.kt
+binding	WebTransportMux.kt
+binding	WebTransportOptions.kt
+binding	WebTransportSession.kt
+binding	WebTransportStreams.kt
+binding	WithHttp3Connection.kt
+binding	WithHttp3Server.kt
+binding	Http3ServerPush.kt
+binding	Http3Filters.kt
+binding	WebTransportServerExchange.kt

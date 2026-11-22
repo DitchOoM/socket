@@ -21,6 +21,8 @@ import com.ditchoom.socket.quic.core.ready.NetStack
 import com.ditchoom.socket.quic.core.ready.netStackOfThisRuntime
 import com.ditchoom.socket.quic.core.sched.LoopPort
 import com.ditchoom.socket.quic.core.sched.LoopWork
+import com.ditchoom.socket.quic.core.sched.SendRule
+import com.ditchoom.socket.quic.core.sched.sendRuleOfThisRuntime
 import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.MonotonicClock
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
@@ -125,6 +127,7 @@ internal suspend fun coreServe(
     batching: UdpBatching = options.udpBatching,
     datagramSize: DatagramSize = DatagramSize.Probed,
     mismatch: MismatchResponse = MismatchResponse.Unpaced,
+    sends: SendRule = sendRuleOfThisRuntime,
 ): CoreServer {
     // Before the setup lane, a socket or a file: a serve whose option values cannot be honoured opens nothing.
     verdictOn(options).orRefuse()
@@ -145,6 +148,7 @@ internal suspend fun coreServe(
             stack,
             batching,
             mismatch,
+            sends,
         ).start()
     }
 }

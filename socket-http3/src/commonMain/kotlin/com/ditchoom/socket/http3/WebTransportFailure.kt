@@ -6,7 +6,7 @@ package com.ditchoom.socket.http3
  * structured context (the CONNECT reject [ConnectRejected.status], the target authority/path, …) rather
  * than a hand-written message string; [describe] renders the human-readable diagnostic from the typed
  * fields (and IS the exception message, so the wire-visible text is unchanged). Errors stay typed, never
- * stringly — mirroring the [Http3Violation] / `QuicError` sealed convention so a consumer reasons about
+ * stringly — mirroring the [Http3Violation] / transport layer's sealed error convention so a consumer reasons about
  * the failure by **exhaustive `when`**, not by matching the message text. The `when` being `else`-free is
  * the regression guard: a new variant added here won't compile at the consumers until its case is chosen.
  */

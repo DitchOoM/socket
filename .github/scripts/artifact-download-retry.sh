@@ -29,13 +29,25 @@ transient='403|429|500|502|503|504|Forbidden|Too Many Requests|timed out|timeout
 log="$(mktemp "${RUNNER_TEMP:-/tmp}/artifact-download.XXXXXX.log")"
 trap 'rm -f "$log"' EXIT
 
+# Not Found is an answer about the artifact, unless this run's listing names it: then the service is lagging its own
+# listing, as it did 3.5 s after an upload finalized (run 44967402750).
+listed() {
+  local count
+  count="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/artifacts?name=${name}" --jq '.total_count' 2>/dev/null)"
+  [ "${count:-0}" -gt 0 ] 2>/dev/null
+}
+
+retryable() {
+  grep -qiE "$transient" "$log" || { grep -qiE '404|Not Found' "$log" && listed; }
+}
+
 for i in $(seq 1 "$attempts"); do
   if gh run download "$run_id" --name "$name" --dir "$dest" >"$log" 2>&1; then
     cat "$log"
     exit 0
   fi
   cat "$log"
-  if ! grep -qiE "$transient" "$log"; then
+  if ! retryable; then
     echo "::error::Downloading '$name' failed for a non-transient reason — not retrying."
     exit 1
   fi

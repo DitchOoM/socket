@@ -99,12 +99,12 @@ internal class ReadOp(
     /** Any thread: whether the caller still has to take bytes this read handed it. */
     override fun inHand(): InHand = if (hand.current() is ReadAnswer.Data) InHand.Yes else InHand.No
 
-    /** The cancelling thread: a read not answered yet is answered Cancelled and handed back to the connection. */
+    /**
+     * The cancelling thread: a read not answered yet is answered Cancelled and handed back to the connection,
+     * ahead of anything its caller does once it resumes.
+     */
     private fun cancelled() {
-        when (hand.answer(ReadAnswer.Cancelled)) {
-            Landed.First -> conn.submit(Withdraw(), CallerPlace.HandToLoop)
-            Landed.Late -> Unit
-        }
+        hand.answer(ReadAnswer.Cancelled) { conn.submit(Withdraw(), CallerPlace.HandToLoop) }
     }
 
     // ---- the connection's side, inside ----
@@ -113,7 +113,7 @@ internal class ReadOp(
         guarded(::failed) {
             when (val state = inside.streams.state) {
                 is Streams.Ended -> return connectionEnded(state.end)
-                is Streams.Open -> Unit
+                is Streams.Live -> Unit
             }
             if (hand.landed(ReadAnswer.Cancelled)) return release()
             if (inside.streams.isSpent(stream)) {

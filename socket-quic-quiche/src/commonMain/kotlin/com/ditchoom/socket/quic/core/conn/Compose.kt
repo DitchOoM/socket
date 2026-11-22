@@ -187,7 +187,7 @@ private fun composed(
     val parts =
         ConnParts(
             role = side.role(),
-            life = ConnLife(q, Linger(q, rules.close, memory.factory, counts)),
+            life = ConnLife(q, Linger(memory.factory, counts), rules.close),
             handshake = Handshake(q, rules.handshake, clock.now().value, memory.alpn),
             streams = StreamTable(q, StreamIo(q), side.role(), memory.shared.drains),
             timer = ConnTimer(q, port, WakeSink()),
