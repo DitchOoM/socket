@@ -524,6 +524,23 @@ public final class com/ditchoom/socket/http3/Http3StreamException : java/lang/Ex
 	public final fun getViolation ()Lcom/ditchoom/socket/http3/Http3Violation;
 }
 
+public final class com/ditchoom/socket/http3/Http3StreamId : java/lang/Comparable {
+	public static final synthetic fun box-impl (J)Lcom/ditchoom/socket/http3/Http3StreamId;
+	public synthetic fun compareTo (Ljava/lang/Object;)I
+	public fun compareTo-y2pWHEs (J)I
+	public static fun compareTo-y2pWHEs (JJ)I
+	public fun equals (Ljava/lang/Object;)Z
+	public static fun equals-impl (JLjava/lang/Object;)Z
+	public static final fun equals-impl0 (JJ)Z
+	public final fun getId ()J
+	public fun hashCode ()I
+	public static fun hashCode-impl (J)I
+	public static final fun isUnidirectional-impl (J)Z
+	public fun toString ()Ljava/lang/String;
+	public static fun toString-impl (J)Ljava/lang/String;
+	public final synthetic fun unbox-impl ()J
+}
+
 public final class com/ditchoom/socket/http3/Http3StreamReader {
 	public static final field Companion Lcom/ditchoom/socket/http3/Http3StreamReader$Companion;
 	public fun <init> (Lcom/ditchoom/buffer/flow/ByteStream;Lcom/ditchoom/buffer/stream/StreamProcessor;)V
@@ -719,17 +736,17 @@ public final class com/ditchoom/socket/http3/Http3Violation$MissingPseudoHeader 
 public final class com/ditchoom/socket/http3/Http3Violation$PeerStreamDeadlineExpired : com/ditchoom/socket/http3/Http3Violation {
 	public synthetic fun <init> (JJLjava/lang/Throwable;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public synthetic fun <init> (JJLjava/lang/Throwable;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
-	public final fun component1-2h5TKLY ()J
+	public final fun component1-DrI9JaY ()J
 	public final fun component2-UwyO8pc ()J
 	public final fun component3 ()Ljava/lang/Throwable;
-	public final fun copy-piSvPNk (JJLjava/lang/Throwable;)Lcom/ditchoom/socket/http3/Http3Violation$PeerStreamDeadlineExpired;
-	public static synthetic fun copy-piSvPNk$default (Lcom/ditchoom/socket/http3/Http3Violation$PeerStreamDeadlineExpired;JJLjava/lang/Throwable;ILjava/lang/Object;)Lcom/ditchoom/socket/http3/Http3Violation$PeerStreamDeadlineExpired;
+	public final fun copy-ycNJpno (JJLjava/lang/Throwable;)Lcom/ditchoom/socket/http3/Http3Violation$PeerStreamDeadlineExpired;
+	public static synthetic fun copy-ycNJpno$default (Lcom/ditchoom/socket/http3/Http3Violation$PeerStreamDeadlineExpired;JJLjava/lang/Throwable;ILjava/lang/Object;)Lcom/ditchoom/socket/http3/Http3Violation$PeerStreamDeadlineExpired;
 	public fun describe ()Ljava/lang/String;
 	public fun equals (Ljava/lang/Object;)Z
 	public final fun getCause ()Ljava/lang/Throwable;
 	public final fun getDeadline-UwyO8pc ()J
 	public fun getErrorCode ()J
-	public final fun getStreamId-2h5TKLY ()J
+	public final fun getStreamId-DrI9JaY ()J
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
 }
@@ -895,13 +912,13 @@ public final class com/ditchoom/socket/http3/Http3Violation$QpackPumpDeadlineExp
 
 public final class com/ditchoom/socket/http3/Http3Violation$QpackSectionAckWithoutOutstanding : com/ditchoom/socket/http3/Http3Violation {
 	public synthetic fun <init> (JLkotlin/jvm/internal/DefaultConstructorMarker;)V
-	public final fun component1-2h5TKLY ()J
-	public final fun copy-K_xu_kM (J)Lcom/ditchoom/socket/http3/Http3Violation$QpackSectionAckWithoutOutstanding;
-	public static synthetic fun copy-K_xu_kM$default (Lcom/ditchoom/socket/http3/Http3Violation$QpackSectionAckWithoutOutstanding;JILjava/lang/Object;)Lcom/ditchoom/socket/http3/Http3Violation$QpackSectionAckWithoutOutstanding;
+	public final fun component1-DrI9JaY ()J
+	public final fun copy-y2pWHEs (J)Lcom/ditchoom/socket/http3/Http3Violation$QpackSectionAckWithoutOutstanding;
+	public static synthetic fun copy-y2pWHEs$default (Lcom/ditchoom/socket/http3/Http3Violation$QpackSectionAckWithoutOutstanding;JILjava/lang/Object;)Lcom/ditchoom/socket/http3/Http3Violation$QpackSectionAckWithoutOutstanding;
 	public fun describe ()Ljava/lang/String;
 	public fun equals (Ljava/lang/Object;)Z
 	public fun getErrorCode ()J
-	public final fun getStreamId-2h5TKLY ()J
+	public final fun getStreamId-DrI9JaY ()J
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
 }
@@ -1118,8 +1135,8 @@ public final class com/ditchoom/socket/http3/InsertCountDelta$Companion {
 public final class com/ditchoom/socket/http3/QpackDecoder {
 	public fun <init> (JLcom/ditchoom/socket/http3/QpackDecoderStream;)V
 	public final fun applyEncoderInstruction (Lcom/ditchoom/socket/http3/QpackEncoderInstruction;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
-	public final fun cancelStream-pr_NtLM (JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
-	public final fun decodeSection-p19wJLg (Lcom/ditchoom/buffer/ReadBuffer;JLcom/ditchoom/buffer/pool/BufferPool;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun cancelStream-fUQEcjw (JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun decodeSection-gdexkfI (Lcom/ditchoom/buffer/ReadBuffer;JLcom/ditchoom/buffer/pool/BufferPool;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public final fun getInsertCountValue-nqBbYAs ()J
 }
 
@@ -1139,22 +1156,22 @@ public final class com/ditchoom/socket/http3/QpackDecoderInstruction$InsertCount
 
 public final class com/ditchoom/socket/http3/QpackDecoderInstruction$SectionAck : com/ditchoom/socket/http3/QpackDecoderInstruction {
 	public synthetic fun <init> (JLkotlin/jvm/internal/DefaultConstructorMarker;)V
-	public final fun component1-2h5TKLY ()J
-	public final fun copy-K_xu_kM (J)Lcom/ditchoom/socket/http3/QpackDecoderInstruction$SectionAck;
-	public static synthetic fun copy-K_xu_kM$default (Lcom/ditchoom/socket/http3/QpackDecoderInstruction$SectionAck;JILjava/lang/Object;)Lcom/ditchoom/socket/http3/QpackDecoderInstruction$SectionAck;
+	public final fun component1-DrI9JaY ()J
+	public final fun copy-y2pWHEs (J)Lcom/ditchoom/socket/http3/QpackDecoderInstruction$SectionAck;
+	public static synthetic fun copy-y2pWHEs$default (Lcom/ditchoom/socket/http3/QpackDecoderInstruction$SectionAck;JILjava/lang/Object;)Lcom/ditchoom/socket/http3/QpackDecoderInstruction$SectionAck;
 	public fun equals (Ljava/lang/Object;)Z
-	public final fun getStreamId-2h5TKLY ()J
+	public final fun getStreamId-DrI9JaY ()J
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
 }
 
 public final class com/ditchoom/socket/http3/QpackDecoderInstruction$StreamCancellation : com/ditchoom/socket/http3/QpackDecoderInstruction {
 	public synthetic fun <init> (JLkotlin/jvm/internal/DefaultConstructorMarker;)V
-	public final fun component1-2h5TKLY ()J
-	public final fun copy-K_xu_kM (J)Lcom/ditchoom/socket/http3/QpackDecoderInstruction$StreamCancellation;
-	public static synthetic fun copy-K_xu_kM$default (Lcom/ditchoom/socket/http3/QpackDecoderInstruction$StreamCancellation;JILjava/lang/Object;)Lcom/ditchoom/socket/http3/QpackDecoderInstruction$StreamCancellation;
+	public final fun component1-DrI9JaY ()J
+	public final fun copy-y2pWHEs (J)Lcom/ditchoom/socket/http3/QpackDecoderInstruction$StreamCancellation;
+	public static synthetic fun copy-y2pWHEs$default (Lcom/ditchoom/socket/http3/QpackDecoderInstruction$StreamCancellation;JILjava/lang/Object;)Lcom/ditchoom/socket/http3/QpackDecoderInstruction$StreamCancellation;
 	public fun equals (Ljava/lang/Object;)Z
-	public final fun getStreamId-2h5TKLY ()J
+	public final fun getStreamId-DrI9JaY ()J
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
 }
@@ -1168,8 +1185,8 @@ public final class com/ditchoom/socket/http3/QpackDecoderInstructionCodec {
 
 public abstract class com/ditchoom/socket/http3/QpackDecoderStream {
 	public fun <init> ()V
-	public final fun acknowledgeSection-ItB0RqY (JJLkotlin/coroutines/Continuation;)Ljava/lang/Object;
-	public final fun cancelStream-pr_NtLM (JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun acknowledgeSection-DRU2-Uk (JJLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun cancelStream-fUQEcjw (JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public final fun reportInsertsUpTo-_SaS9hY (JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	protected abstract fun write (Lcom/ditchoom/socket/http3/QpackDecoderInstruction;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 }
@@ -1216,7 +1233,7 @@ public final class com/ditchoom/socket/http3/QpackDynamicTable$Entry {
 public final class com/ditchoom/socket/http3/QpackEncoder {
 	public fun <init> (JJLkotlin/jvm/functions/Function2;)V
 	public synthetic fun <init> (JJLkotlin/jvm/functions/Function2;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
-	public final fun encodeSection-p19wJLg (Ljava/util/List;JLcom/ditchoom/buffer/pool/BufferPool;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun encodeSection-gdexkfI (Ljava/util/List;JLcom/ditchoom/buffer/pool/BufferPool;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public final fun getInsertCountValue-nqBbYAs ()J
 	public final fun processDecoderInstruction (Lcom/ditchoom/socket/http3/QpackDecoderInstruction;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public final fun setCapacity (JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
