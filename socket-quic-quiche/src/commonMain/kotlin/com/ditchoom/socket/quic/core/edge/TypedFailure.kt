@@ -63,9 +63,3 @@ internal sealed interface TypedFailure {
         val side: QuicStreamSide,
     ) : TypedFailure
 }
-
-/** What a typed stream throws: [failure] says which rule the frame or the call broke. */
-internal class QuicTypedStreamException(
-    val streamId: Long,
-    val failure: TypedFailure,
-) : Exception()

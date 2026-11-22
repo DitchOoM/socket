@@ -295,3 +295,9 @@ internal class QuicStreamWriteFailed(
     val streamId: Long,
     val quicheCode: Int,
 ) : Exception()
+
+/** What a typed stream throws: [failure] says which rule the frame or the call broke. */
+internal class QuicTypedStreamException(
+    val streamId: Long,
+    val failure: TypedFailure,
+) : Exception()
