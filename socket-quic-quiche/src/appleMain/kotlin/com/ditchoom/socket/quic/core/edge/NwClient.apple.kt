@@ -49,8 +49,8 @@ internal actual suspend fun NwConnector.connect(
     val life = NwLife()
     val verdict =
         suspendCancellableCoroutine { waiting ->
-            connection.start { state, domain, code, path, unsatisfied ->
-                when (val settled = life.changed(state, domain, code, path, unsatisfied)) {
+            connection.start { change ->
+                when (val settled = life.changed(change)) {
                     is NwSettled.First -> waiting.resume(settled.verdict)
                     is NwSettled.Not -> Unit
                 }

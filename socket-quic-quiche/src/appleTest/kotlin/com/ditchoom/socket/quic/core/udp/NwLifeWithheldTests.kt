@@ -1,6 +1,7 @@
 package com.ditchoom.socket.quic.core.udp
 
 import com.ditchoom.socket.NetworkAccess
+import com.ditchoom.socket.quic.NwChange
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -11,7 +12,7 @@ class NwLifeWithheldTests {
         pathStatus: Int,
         unsatisfied: Int,
     ): NwVerdict.Refused {
-        val settled = assertIs<NwSettled.First>(NwLife().changed(WAITING, 0, 0, pathStatus, unsatisfied))
+        val settled = assertIs<NwSettled.First>(NwLife().changed(NwChange(WAITING, 0, 0, pathStatus, unsatisfied)))
         return assertIs<NwVerdict.Refused>(settled.verdict)
     }
 
@@ -35,7 +36,7 @@ class NwLifeWithheldTests {
 
     @Test
     fun aWaitingConnectionWhosePathCanStillBeSatisfiedKeepsWaiting() {
-        assertIs<NwSettled.Not>(NwLife().changed(WAITING, 0, 0, SATISFIABLE, LOCAL_NETWORK_DENIED))
+        assertIs<NwSettled.Not>(NwLife().changed(NwChange(WAITING, 0, 0, SATISFIABLE, LOCAL_NETWORK_DENIED)))
     }
 
     private companion object {

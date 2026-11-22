@@ -5,6 +5,7 @@ package com.ditchoom.socket.quic.core.udp
 import com.ditchoom.socket.NetworkAccess
 import com.ditchoom.socket.quic.NetworkErrorDomain
 import com.ditchoom.socket.quic.NetworkRefusal
+import com.ditchoom.socket.quic.NwChange
 import com.ditchoom.socket.quic.core.observe.Published
 import kotlin.concurrent.atomics.AtomicReference
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
@@ -60,21 +61,15 @@ internal class NwLife {
 
     fun view(): NwState = state.load()
 
-    /** Records one state change (`nw_connection_state_t`, NW's error domain and code, the path's status and unsatisfied reason). */
-    fun changed(
-        nwState: Int,
-        domain: Int,
-        code: Int,
-        pathStatus: Int,
-        unsatisfied: Int,
-    ): NwSettled {
+    /** Records one state change. */
+    fun changed(change: NwChange): NwSettled {
+        val refusal = NetworkRefusal(domainOf(change.domain), change.code)
         val next =
-            when (nwState) {
+            when (change.state) {
                 NW_READY -> NwState.Ready
-                NW_FAILED, NW_CANCELLED -> NwState.Ended(NetworkRefusal(domainOf(domain), code))
+                NW_FAILED, NW_CANCELLED -> NwState.Ended(refusal)
                 // Waiting on a path that cannot be satisfied (no route of the peer's family): it would wait for ever.
-                NW_WAITING ->
-                    if (pathStatus == PATH_UNSATISFIED) NwState.Ended(NetworkRefusal(domainOf(domain), code)) else return NwSettled.Not
+                NW_WAITING -> if (change.pathStatus == PATH_UNSATISFIED) NwState.Ended(refusal) else return NwSettled.Not
                 else -> return NwSettled.Not
             }
         while (true) {
@@ -89,7 +84,7 @@ internal class NwLife {
                 is NwState.Starting ->
                     if (state.compareAndSet(seen, next)) {
                         return when (next) {
-                            is NwState.Ended -> NwSettled.First(NwVerdict.Refused(next.refusal, withheld(pathStatus, unsatisfied)))
+                            is NwState.Ended -> NwSettled.First(NwVerdict.Refused(next.refusal, withheld(change)))
                             is NwState.Ready, is NwState.Starting -> NwSettled.First(NwVerdict.Ready)
                         }
                     }
@@ -103,12 +98,9 @@ internal class NwLife {
     }
 
     /** The user's settings, read off an unsatisfied path: a denied app also has no route, but retrying cannot help it. */
-    private fun withheld(
-        pathStatus: Int,
-        unsatisfied: Int,
-    ): NwWithheld {
-        if (pathStatus != PATH_UNSATISFIED) return NwWithheld.None
-        return when (unsatisfied) {
+    private fun withheld(change: NwChange): NwWithheld {
+        if (change.pathStatus != PATH_UNSATISFIED) return NwWithheld.None
+        return when (change.unsatisfied) {
             UNSATISFIED_CELLULAR_DENIED -> NwWithheld.Access(NetworkAccess.CellularData)
             UNSATISFIED_WIFI_DENIED -> NwWithheld.Access(NetworkAccess.WifiData)
             UNSATISFIED_LOCAL_NETWORK_DENIED -> NwWithheld.Access(NetworkAccess.LocalNetwork)
