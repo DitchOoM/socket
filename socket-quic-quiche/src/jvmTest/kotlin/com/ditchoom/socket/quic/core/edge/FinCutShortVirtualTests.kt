@@ -40,9 +40,12 @@ class FinCutShortVirtualTests {
     fun aDeadlineAfterQuicheTookPartOfAFinishingWriteResetsTheStream() =
         VirtualPair.with(options) { pair ->
             val serverSide = pair.accept()
-            val stream = pair.client.connection.openCoreStream()
+            val bidi =
+                pair.client.connection.halves
+                    .openBidirectional()
+            val stream = CoreStream(bidi)
             var result: Finished = Finished.All(-1)
-            launch { result = stream.writeAndFinish(bytes(2 * WINDOW), 1.seconds) }
+            launch { result = bidi.send.writeAndFinish(bytes(2 * WINDOW), 1.seconds) }
             pair.runFor(2.seconds)
 
             val cut = assertIs<Finished.Cut>(result, "the deadline passed with part of the write taken")
@@ -55,10 +58,13 @@ class FinCutShortVirtualTests {
     fun aDeadlineBeforeQuicheTookAnyOfAFinishingWriteLeavesOurSideOpenForTheCloseToFinish() =
         VirtualPair.with(options) { pair ->
             val serverSide = pair.accept()
-            val stream = pair.client.connection.openCoreStream()
+            val bidi =
+                pair.client.connection.halves
+                    .openBidirectional()
+            val stream = CoreStream(bidi)
             filled(pair, stream)
             var failed: Throwable? = null
-            launch { failed = runCatching { stream.writeAndFinish(bytes(REQUEST), 1.seconds) }.exceptionOrNull() }
+            launch { failed = runCatching { bidi.send.writeAndFinish(bytes(REQUEST), 1.seconds) }.exceptionOrNull() }
             pair.runFor(2.seconds)
             assertIs<CancellationException>(failed, "nothing was taken: the deadline raises, as a write's does")
 
@@ -70,9 +76,12 @@ class FinCutShortVirtualTests {
     fun aCancellationAfterQuicheTookPartOfAFinishingWriteResetsTheStream() =
         VirtualPair.with(options) { pair ->
             val serverSide = pair.accept()
-            val stream = pair.client.connection.openCoreStream()
+            val bidi =
+                pair.client.connection.halves
+                    .openBidirectional()
+            val stream = CoreStream(bidi)
             val caller = Held()
-            val writer = caller.launch { stream.writeAndFinish(bytes(2 * WINDOW), 1.hours) }
+            val writer = caller.launch { bidi.send.writeAndFinish(bytes(2 * WINDOW), 1.hours) }
             caller.runAll()
             pair.runFor(200.milliseconds)
             writer.cancel()
@@ -88,10 +97,13 @@ class FinCutShortVirtualTests {
     fun aCancellationBeforeQuicheTookAnyOfAFinishingWriteLeavesOurSideOpenForTheCloseToFinish() =
         VirtualPair.with(options) { pair ->
             val serverSide = pair.accept()
-            val stream = pair.client.connection.openCoreStream()
+            val bidi =
+                pair.client.connection.halves
+                    .openBidirectional()
+            val stream = CoreStream(bidi)
             filled(pair, stream)
             val caller = Held()
-            val writer = caller.launch { stream.writeAndFinish(bytes(REQUEST), 1.hours) }
+            val writer = caller.launch { bidi.send.writeAndFinish(bytes(REQUEST), 1.hours) }
             caller.runAll()
             pair.runFor(10.milliseconds)
             writer.cancel()
@@ -111,10 +123,13 @@ class FinCutShortVirtualTests {
     fun aCancellationAfterQuicheTookTheFinLeavesOurSideFinished() =
         VirtualPair.with(options) { pair ->
             val serverSide = pair.accept()
-            val stream = pair.client.connection.openCoreStream()
+            val bidi =
+                pair.client.connection.halves
+                    .openBidirectional()
+            val stream = CoreStream(bidi)
             filled(pair, stream)
             val caller = Held()
-            val writer = caller.launch { stream.writeAndFinish(bytes(REQUEST), 1.hours) }
+            val writer = caller.launch { bidi.send.writeAndFinish(bytes(REQUEST), 1.hours) }
             caller.runAll()
             pair.runFor(10.milliseconds)
             // The server reads: the window opens, quiche takes the request and its FIN, and the answer waits for the caller.

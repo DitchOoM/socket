@@ -265,13 +265,16 @@ internal class TypedQuicStream<T : Any>(
         if (use.compareAndSet(TypedUse.Open, TypedUse.SendFinished)) sendFin()
     }
 
-    /** Ends both sides: our FIN when it has not gone, and the stream's buffers are freed once nothing can touch them. */
+    /**
+     * Ends both sides: a parked read fails before our FIN leaves, so the peer's answer to it cannot end that read
+     * instead; then our FIN when it has not gone; the stream's buffers are freed once nothing can touch them.
+     */
     suspend fun close() {
         val before = use.exchange(TypedUse.Closed)
+        conn.submit(reader.closing(), CallerPlace.HandToLoop)
         try {
             if (before is TypedUse.Open) sendFin()
         } finally {
-            conn.submit(reader.closing(), CallerPlace.HandToLoop)
             conn.submit(writer.closing(), CallerPlace.HandToLoop)
             connection.abandon(id)
         }

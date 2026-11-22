@@ -34,15 +34,19 @@ internal sealed interface Side {
      * peer's writes go on and its credit comes back, until the peer's FIN or reset ends this direction.
      */
     data object Abandoned : Side
+
+    /** A direction of a unidirectional stream this side takes no part in: over from the start. */
+    data object NotPart : Ended
 }
 
 /**
- * One stream: its parked reader and writer, and how far each side got. Reused for a later stream once
- * this one is spent, so a new stream allocates no entry.
+ * One stream, of [shape]: its parked reader and writer, and how far each side got; a direction the shape takes no part
+ * in is over from the start. Reused for a later stream once this one is spent, so a new stream allocates no entry.
  */
 @Confined
 internal class StreamEntry(
     id: QuicStreamId,
+    shape: StreamShape,
 ) {
     var id: QuicStreamId = id
         private set
@@ -50,18 +54,21 @@ internal class StreamEntry(
         private set
     var writer: Waiter = Nobody
         private set
-    var received: Side = Side.Open
+    var received: Side = shape.receiving()
         private set
-    var sent: Side = Side.Open
+    var sent: Side = shape.sending()
         private set
 
-    /** The entry, at rest, becomes [stream]'s. */
-    fun reuse(stream: QuicStreamId): StreamEntry {
+    /** The entry, at rest, becomes [stream]'s, of [shape]. */
+    fun reuse(
+        stream: QuicStreamId,
+        shape: StreamShape,
+    ): StreamEntry {
         id = stream
         reader = Nobody
         writer = Nobody
-        received = Side.Open
-        sent = Side.Open
+        received = shape.receiving()
+        sent = shape.sending()
         return this
     }
 

@@ -37,6 +37,14 @@ sealed interface QuicConnectionEnd {
         val refusal: QuicSendRefusal,
     ) : QuicConnectionEnd
 
+    /**
+     * The handshake ended before its bound because the operating system withholds network access from this app:
+     * [denial] says which access, how that is known, and its remedy.
+     */
+    data class AccessDenied(
+        val denial: QuicAccessDenial,
+    ) : QuicConnectionEnd
+
     /** The connection's UDP socket failed as [fault] says. */
     class SocketFailed(
         val fault: QuicSocketFault,
@@ -101,6 +109,7 @@ val QuicConnectionEnd.closeReason: QuicCloseReason
             is QuicConnectionEnd.ServerClosedUnsettled -> QuicCloseReason.ByLocal(QuicError.ServerStoppedBeforeCloseSent)
             is QuicConnectionEnd.NoUsablePath -> QuicCloseReason.ByLocal(QuicError.NoViablePath)
             is QuicConnectionEnd.ReasonOnly -> reason
+            is QuicConnectionEnd.AccessDenied,
             is QuicConnectionEnd.SocketFailed, is QuicConnectionEnd.CallerFailed, is QuicConnectionEnd.LoopFailed,
             is QuicConnectionEnd.LoopStopped, is QuicConnectionEnd.NoErrorRecorded, is QuicConnectionEnd.Released,
             is QuicConnectionEnd.NetworkLost, is QuicConnectionEnd.LocalAddressGone,

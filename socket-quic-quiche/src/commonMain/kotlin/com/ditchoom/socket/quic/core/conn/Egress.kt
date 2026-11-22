@@ -1,7 +1,7 @@
 package com.ditchoom.socket.quic.core.conn
 
 import com.ditchoom.socket.quic.SendTarget
-import com.ditchoom.socket.quic.core.life.ConnEnd
+import com.ditchoom.socket.quic.core.life.CloseDatagram
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.observe.Confined
 import com.ditchoom.socket.quic.core.observe.ConnCounts
@@ -12,7 +12,6 @@ import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.udp.Room
 import com.ditchoom.socket.quic.core.udp.SendBatch
-import com.ditchoom.socket.quic.core.udp.Thrown
 
 /**
  * Whether a write collected everything quiche had, the batch filled first, the first datagram found another clock and
@@ -51,6 +50,12 @@ internal class Egress(
     private var lastOffset = 0
     private var lastLength = 0
     private var lastTarget: SendTarget = SendTarget.ConnectedPeer
+
+    /** The datagram the write kept before its last, which a close before confirmation writes its Handshake packet in. */
+    private var before = LastOut.None
+    private var beforeOffset = 0
+    private var beforeLength = 0
+    private var beforeTarget: SendTarget = SendTarget.ConnectedPeer
     private var first = FirstOut.NotYet
     private var mismatchOffset = 0L
     private var refusedCode = 0
@@ -58,8 +63,8 @@ internal class Egress(
     /** When quiche wants the last datagram it wrote on the wire, on the loop's clock. */
     private var lastDueNanos = 0L
 
-    /** The end of a connection whose write ended as [Wrote.ClockMismatch]: processing failed with a [PacingClockMismatch]. */
-    fun mismatchEnd(): ConnEnd = ConnEnd.ProcessingFailed(Thrown(PacingClockMismatch(mismatchOffset)))
+    /** Why a write ended as [Wrote.ClockMismatch]: libquiche paces on another clock, [mismatchOffset] apart. */
+    fun mismatch(): PacingClockMismatch = PacingClockMismatch(mismatchOffset)
 
     /** What quiche refused the last write with, once it ended as [Wrote.Refused]. */
     fun refusal(): QuicheSendRefused = QuicheSendRefused(refusedCode)
@@ -70,13 +75,28 @@ internal class Egress(
     /** What became of the last datagram quiche wrote in the last write. */
     fun last(): LastOut = last
 
-    /** Where in its batch the last write wrote its last datagram, kept or not; meaningful unless [last] is [LastOut.None]. */
-    fun lastOffset(): Int = lastOffset
+    /**
+     * The datagrams of the close the last write ended with, while [last] is [LastOut.Kept]: its last, and before the
+     * handshake is [confirmation], the long-header datagram before a 1-RTT last, which carries the Handshake packet's copy.
+     */
+    fun closeDatagrams(
+        out: SendBatch,
+        confirmation: Confirmation,
+    ): List<CloseDatagram> {
+        val final = CloseDatagram(lastOffset, lastLength, lastTarget)
+        val split =
+            when (confirmation) {
+                Confirmation.Pending ->
+                    before == LastOut.Kept && longHeader(out, beforeOffset) && !longHeader(out, lastOffset)
+                Confirmation.Confirmed -> false
+            }
+        return if (split) listOf(CloseDatagram(beforeOffset, beforeLength, beforeTarget), final) else listOf(final)
+    }
 
-    fun lastLength(): Int = lastLength
-
-    /** Where the last datagram went, while [last] is [LastOut.Kept]. */
-    fun lastTarget(): SendTarget = lastTarget
+    private fun longHeader(
+        out: SendBatch,
+        offset: Int,
+    ): Boolean = out.storage.byteAt(offset) and LONG_HEADER != 0
 
     /** Writes quiche's output into [out] at once. */
     fun write(
@@ -85,6 +105,7 @@ internal class Egress(
         flight: ConnFlight,
     ): Wrote {
         last = LastOut.None
+        before = LastOut.None
         val at = clock.now()
         while (out.room() == Room.Open) {
             one(out, paths, flight, at).fold(done = { return Wrote.All }, wrote = { Unit }, refused = { return refused(it) })
@@ -109,6 +130,7 @@ internal class Egress(
         flight: ConnFlight,
     ): Wrote {
         last = LastOut.None
+        before = LastOut.None
         val at = clock.now()
         if (pacer.state(at) == PaceState.Holding) return Wrote.All
         while (out.room() == Room.Open) {
@@ -169,6 +191,10 @@ internal class Egress(
         val step = DatagramStep(q.api.connSend(q.handle, out.storage.address + offset, window.bytes, info))
         val written = step.fold(done = { return step }, wrote = { it }, refused = { return step })
         first = FirstOut.Written
+        before = last
+        beforeOffset = lastOffset
+        beforeLength = lastLength
+        beforeTarget = lastTarget
         lastOffset = offset
         lastLength = written
         lastDueNanos = q.api.sendInfoAtNanos(info)
@@ -253,3 +279,6 @@ private const val UNREAD_AHEAD = 250_000L
 
 /** `AF_INET`'s family as the sockaddr readers report it. */
 private const val V4 = 4
+
+/** The header form bit of a QUIC packet's first byte: set in a long header (RFC 9000 §17.2). */
+private const val LONG_HEADER = 0x80

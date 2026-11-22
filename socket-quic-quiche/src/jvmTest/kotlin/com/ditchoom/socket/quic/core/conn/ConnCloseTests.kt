@@ -7,6 +7,7 @@ import com.ditchoom.socket.quic.core.demux.BoundedIo
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.Life
 import com.ditchoom.socket.quic.core.stream.Retry
+import com.ditchoom.socket.quic.core.stream.StreamKind
 import com.ditchoom.socket.quic.core.stream.StreamTable
 import com.ditchoom.socket.quic.core.stream.Waiter
 import com.ditchoom.socket.quic.core.testing.ConnRig
@@ -22,6 +23,7 @@ import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertSame
+import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.nanoseconds
 
 /**
@@ -46,7 +48,7 @@ class ConnCloseTests {
         rig.conn.submit(
             object : ConnWork() {
                 override fun run(inside: Inside) =
-                    inside.streams.waitToOpen(
+                    inside.streams.opens.lane(StreamKind.Bidirectional).wait(
                         object : Waiter {
                             override fun retry(table: StreamTable): Retry = Retry.Again
 
@@ -134,13 +136,21 @@ class ConnCloseTests {
         // quiche's idle timer cannot end a connection that is draining; were it to report one, the end stays the close's.
         api.timedOut = true
         api.closed = true
+        // The repeats fall due one and two probe timeouts after the close: a third of quiche's draining time each.
+        rig.pass(AT + DRAIN / 3)
+        rig.pass(AT + 2 * DRAIN / 3)
         rig.pass(AT + DRAIN - 1)
         assertIs<Life.Lingering>(rig.conn.life())
-        assertEquals(listOf(BoundedIo.SENT), io.events.toList(), "the socket stays open while the connection lingers")
+        val lingered = io.events.toList()
+        assertEquals(
+            listOf(BoundedIo.SENT, BoundedIo.SENT, BoundedIo.SENT),
+            lingered,
+            "the socket stays open while the connection lingers, sending its close and its two repeats",
+        )
         rig.pass(AT + DRAIN)
         assertIs<Life.Ended>(rig.conn.life())
         assertSame(ConnEnd.ByLocal::class, rig.sink.ended.single()::class, "the end was recorded once, as the close's")
-        assertEquals(listOf(BoundedIo.SENT, BoundedIo.CLOSED), io.events.toList(), "the socket closed once the linger was over")
+        assertEquals(lingered + BoundedIo.CLOSED, io.events.toList(), "the socket closed once the linger was over, sending nothing more")
     }
 
     @Test

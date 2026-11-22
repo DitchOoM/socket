@@ -116,7 +116,7 @@ internal class Turn(
     ) {
         if (c.life.view() is Life.Over) {
             c.flight.datagramIn(now, bytes, 0, length)
-            return c.life.linger.late()
+            return c.life.linger.late(length)
         }
         traced(TraceSection.ConnReceive) {
             try {
@@ -218,11 +218,11 @@ internal class Turn(
         now: Nanos,
         out: SendBatch,
     ): Collected {
-        when (c.handshakeStep(now, paths)) {
-            HandshakeStep.Handshaking, HandshakeStep.JustEstablished, HandshakeStep.Established -> Unit
-            HandshakeStep.DeadlinePassed -> {
-                val end = c.handshakeEnd(now, paths)
-                c.close(CloseChoice.Immediate(QuicError.NoError), end, now)
+        when (val served = c.handshakeStep(now, paths)) {
+            is HandshakeServe.Open -> Unit
+            is HandshakeServe.Over -> {
+                val end = c.handshakeEnd(served, now, paths)
+                c.closeHandshake(end, now)
                 finish(now, end)
                 return Collected.Everything
             }
@@ -252,7 +252,8 @@ internal class Turn(
                 is Life.Running, is Life.Over -> Unit
             }
         }
-        wrote.ends(mismatch = { finish(now, c.egress.mismatchEnd()) }, refused = { finish(now, c.closeRefused(now)) })
+        // A clock mismatch is our own failure: the peer is told with INTERNAL_ERROR, as for any processing failure.
+        wrote.ends(mismatch = { fail(now, c.egress.mismatch()) }, refused = { finish(now, c.closeRefused(now)) })
         return wrote.collected()
     }
 

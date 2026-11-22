@@ -6,6 +6,7 @@ import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 import com.ditchoom.socket.quic.core.udp.SendBatch
 import com.ditchoom.socket.quic.core.udp.SendBatchResult
 import com.ditchoom.socket.quic.core.udp.SendFault
+import com.ditchoom.socket.quic.core.udp.SendRefusal
 import com.ditchoom.socket.quic.core.udp.SocketErrors
 import com.ditchoom.socket.quic.core.udp.SocketFault
 import com.ditchoom.socket.quic.core.udp.SocketProbe
@@ -177,7 +178,7 @@ internal class SendPort(
                     when (val fault = errors.classify(result.why, probeOf(result.why))) {
                         is SendFault.Full -> return Flushed.Full
                         is SendFault.Datagram -> {
-                            ledger.refused(fault.refusal)
+                            refused(who, fault.refusal)
                             batch.took(1)
                         }
                         is SendFault.Socket -> {
@@ -202,6 +203,21 @@ internal class SendPort(
         when (who) {
             Who.Loop -> loopCounts.sent(count)
             Who.Caller -> callerCounts.sent(count)
+        }
+    }
+
+    /** A caller's send that drew the socket's first refusal wakes the loop, which hands the news on in its next serve. */
+    private fun refused(
+        who: Who,
+        why: SendRefusal,
+    ) {
+        when (ledger.refused(why)) {
+            FirstRefusal.First ->
+                when (who) {
+                    Who.Caller -> port.poke()
+                    Who.Loop -> Unit
+                }
+            FirstRefusal.Again -> Unit
         }
     }
 

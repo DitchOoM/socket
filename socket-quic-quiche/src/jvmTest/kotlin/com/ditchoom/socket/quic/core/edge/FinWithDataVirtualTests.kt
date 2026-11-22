@@ -31,12 +31,15 @@ class FinWithDataVirtualTests {
     fun aRequestThatFitsADatagramLeavesAsOneDatagramCarryingItsFin() =
         VirtualPair.with(options) { pair ->
             val serverSide = pair.accept()
-            val stream = pair.client.connection.openCoreStream()
+            val send =
+                pair.client.connection.halves
+                    .openBidirectional()
+                    .send
             val got = Received(pair)
             launch { got.readAll(serverSide.acceptStream()) }
             val from = pair.now()
             var wrote = -1
-            launch { wrote = assertIs<Finished.All>(stream.writeAndFinish(bytes(REQUEST), 1.hours)).bytes }
+            launch { wrote = assertIs<Finished.All>(send.writeAndFinish(bytes(REQUEST), 1.hours)).bytes }
             pair.runUntil { got.endedAt >= 0 }
 
             assertEquals(REQUEST, wrote)
@@ -84,9 +87,12 @@ class FinWithDataVirtualTests {
             var serverSide: CoreConnection? = null
             launch { serverSide = pair.accept() }
             pair.runUntil { established && serverSide != null }
-            val stream = client.connection.openCoreStream()
+            val send =
+                client.connection.halves
+                    .openBidirectional()
+                    .send
             var wrote = -1
-            launch { wrote = assertIs<Finished.All>(stream.writeAndFinish(bytes(LARGE), 1.hours)).bytes }
+            launch { wrote = assertIs<Finished.All>(send.writeAndFinish(bytes(LARGE), 1.hours)).bytes }
             pair.runFor(1.seconds)
             assertEquals(-1, wrote, "nobody reads yet: the write waits with bytes quiche has not taken")
 

@@ -1,5 +1,3 @@
-@file:OptIn(ExperimentalAtomicApi::class)
-
 package com.ditchoom.socket.quic.core.edge
 
 import com.ditchoom.buffer.ReadBuffer
@@ -11,140 +9,172 @@ import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.Resettable
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.socket.quic.QuicAppErrorCode
+import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicCloseCircumstance
+import com.ditchoom.socket.quic.QuicEngineSpi
 import com.ditchoom.socket.quic.QuicStreamId
+import com.ditchoom.socket.quic.QuicStreamOrigin
 import com.ditchoom.socket.quic.QuicStreamSide
-import com.ditchoom.socket.quic.core.observe.Published
-import com.ditchoom.socket.quic.core.stream.WriteEnd
-import com.ditchoom.socket.quic.core.udp.NativeBytes
-import com.ditchoom.socket.quic.core.udp.ReadAddress
-import kotlin.concurrent.atomics.AtomicReference
-import kotlin.concurrent.atomics.ExperimentalAtomicApi
+import com.ditchoom.socket.quic.core.conn.Arrival
+import com.ditchoom.socket.quic.core.stream.StreamKind
+import com.ditchoom.socket.quic.core.stream.kindOf
 import kotlin.time.Duration
 
-/** What a caller may still do with a stream. */
-private enum class Use {
-    Open,
-
-    /** A write that ends our side is out: whether it ended it is known once it answers. */
-    Finishing,
-
-    /** Our FIN is sent, or our side was reset; reads continue. */
-    SendFinished,
-
-    Closed,
-}
-
-/** One stream of a [CoreConnection], as the public [ByteStream] contract sees it. */
-@Published
+/** A bidirectional stream of a [CoreConnection] as the public [ByteStream] contract sees it: both of its halves. */
 internal class CoreStream(
-    private val connection: CoreConnection,
-    val id: QuicStreamId,
-    override val readPolicy: ReadPolicy,
-    override val writePolicy: WritePolicy,
+    private val stream: BidiStream,
 ) : ByteStream,
     HalfCloseable,
     Resettable {
-    private val use = AtomicReference(Use.Open)
-    private val streamReads = StreamReads()
+    override val readPolicy: ReadPolicy get() = stream.receive.readPolicy
+    override val writePolicy: WritePolicy get() = stream.send.writePolicy
 
-    override val isOpen: Boolean get() = use.load() != Use.Closed
+    /** Open until the caller closes or resets it; our FIN alone leaves it open for reads. */
+    override val isOpen: Boolean get() = stream.receive.isOpen()
 
-    override suspend fun read(deadline: Duration): ReadResult {
-        if (use.load() == Use.Closed) raise(Raised.StreamClosed(id, QuicStreamSide.Read), QuicCloseCircumstance.Ended)
-        return connection.read(id, deadline, streamReads)
-    }
+    override suspend fun read(deadline: Duration): ReadResult = stream.receive.read(deadline)
 
     override suspend fun write(
         buffer: ReadBuffer,
         deadline: Duration,
-    ): BytesWritten {
-        if (use.load() != Use.Open) raise(Raised.StreamClosed(id, QuicStreamSide.Write), QuicCloseCircumstance.Ended)
-        val address = addressOf(buffer)
-        if (buffer.remaining() == 0) return BytesWritten(0)
-        return connection.submitted(id, WriteSource.Bytes(buffer, address, WriteEnd.More), deadline).answer()
-    }
+    ): BytesWritten = stream.send.write(buffer, deadline)
 
-    /**
-     * Writes every byte of [buffer] and ends our side with the last of them, in one send when quiche takes them all:
-     * a request that fits a datagram is one datagram. Reads continue; a write after it fails as after [shutdownSend].
-     * A failure after quiche took part of the bytes resets our side and answers [Finished.Cut]; one before quiche took
-     * any byte raises, and leaves our side open, so a later [close] sends the FIN.
-     */
-    suspend fun writeAndFinish(
-        buffer: ReadBuffer,
-        deadline: Duration,
-    ): Finished {
-        val address = addressOf(buffer)
-        if (!use.compareAndSet(Use.Open, Use.Finishing)) raise(Raised.StreamClosed(id, QuicStreamSide.Write), QuicCloseCircumstance.Ended)
-        return finishing(
-            if (buffer.remaining() ==
-                0
-            ) {
-                WriteSource.FinOnly
-            } else {
-                WriteSource.Bytes(buffer, address, WriteEnd.Finish)
-            },
-            deadline,
-        )
-    }
-
-    /** Sends [source], ending our side, while [use] is [Use.Finishing]; our side then stands where quiche left it. */
-    private suspend fun finishing(
-        source: WriteSource,
-        deadline: Duration,
-    ): Finished {
-        val op = connection.submitted(id, source, deadline)
-        try {
-            return op.finishAnswer()
-        } finally {
-            settled(op.fin())
-        }
-    }
-
-    /** Our side after a finishing write answered; a [close] that came meanwhile left the FIN to it, which goes now. */
-    private fun settled(fin: Fin) {
-        val after =
-            when (fin) {
-                Fin.Taken, Fin.Cut -> Use.SendFinished
-                Fin.Open -> Use.Open
-            }
-        if (use.compareAndSet(Use.Finishing, after)) return
-        when (fin) {
-            Fin.Open -> connection.finishAlone(id)
-            Fin.Taken, Fin.Cut -> Unit
-        }
-    }
-
-    private fun addressOf(buffer: ReadBuffer): Long =
-        when (val at = NativeBytes.addressOf(buffer)) {
-            is ReadAddress.At -> at.address
-            is ReadAddress.NotAddressable -> raise(Raised.NotNative(id, buffer), QuicCloseCircumstance.Ended)
-        }
-
-    override suspend fun shutdownSend() {
-        if (use.compareAndSet(Use.Open, Use.Finishing)) finishing(WriteSource.FinOnly, deadlineOf(writePolicy))
-    }
+    override suspend fun shutdownSend() = stream.send.finish()
 
     override suspend fun close() {
-        when (use.exchange(Use.Closed)) {
-            Use.Open ->
-                try {
-                    finish()
-                } finally {
-                    connection.abandon(id)
-                }
-            Use.Finishing, Use.SendFinished -> connection.abandon(id)
-            Use.Closed -> Unit
+        try {
+            stream.send.finish()
+        } finally {
+            stream.receive.close()
         }
     }
 
-    /** Resets both directions with [errorCode]: RESET_STREAM for ours, STOP_SENDING for the peer's. */
+    /** Resets both directions with [errorCode]: STOP_SENDING for the peer's, RESET_STREAM for ours; once only. */
     override suspend fun reset(errorCode: Long) {
-        if (use.exchange(Use.Closed) != Use.Closed) connection.resetStream(id, QuicAppErrorCode(errorCode))
-    }
-
-    private suspend fun finish() {
-        connection.submitted(id, WriteSource.FinOnly, deadlineOf(writePolicy)).answer()
+        val code = QuicAppErrorCode(errorCode)
+        when (stream.receive.stop(code)) {
+            Stopping.Now -> stream.send.reset(code)
+            Stopping.Already -> Unit
+        }
     }
 }
+
+/**
+ * A send-only stream as the public [ByteStream] contract sees it, which has a read: a read is refused as a direction the
+ * stream does not have. The core's own [SendHalf] has no read.
+ */
+internal class CoreSendOnlyStream(
+    private val send: SendHalf,
+    override val readPolicy: ReadPolicy,
+) : ByteStream,
+    HalfCloseable,
+    Resettable {
+    override val writePolicy: WritePolicy get() = send.writePolicy
+    override val isOpen: Boolean get() = send.isOpen()
+
+    override suspend fun read(deadline: Duration): ReadResult = absent(send.id, QuicStreamSide.Read)
+
+    override suspend fun write(
+        buffer: ReadBuffer,
+        deadline: Duration,
+    ): BytesWritten = send.write(buffer, deadline)
+
+    override suspend fun shutdownSend() = send.finish()
+
+    override suspend fun close() = send.finish()
+
+    override suspend fun reset(errorCode: Long) = send.reset(QuicAppErrorCode(errorCode))
+}
+
+/**
+ * A stream the peer opened to send only, as the public [ByteStream] contract sees it, which has a write: a write or a
+ * [shutdownSend] is refused as a direction the stream does not have. The core's own [ReceiveHalf] has no write.
+ */
+internal class CoreReceiveOnlyStream(
+    private val receive: ReceiveHalf,
+    override val writePolicy: WritePolicy,
+) : ByteStream,
+    HalfCloseable,
+    Resettable {
+    override val readPolicy: ReadPolicy get() = receive.readPolicy
+    override val isOpen: Boolean get() = receive.isOpen()
+
+    override suspend fun read(deadline: Duration): ReadResult = receive.read(deadline)
+
+    override suspend fun write(
+        buffer: ReadBuffer,
+        deadline: Duration,
+    ): BytesWritten = absent(receive.id, QuicStreamSide.Write)
+
+    override suspend fun shutdownSend(): Unit = absent(receive.id, QuicStreamSide.Write)
+
+    override suspend fun close() = receive.close()
+
+    override suspend fun reset(errorCode: Long) {
+        receive.stop(QuicAppErrorCode(errorCode))
+    }
+}
+
+/**
+ * A connection's streams in the core's own shapes: an open of a bidirectional stream gives both halves, an open of a
+ * unidirectional one only a [SendHalf], and a stream the peer opened is [IncomingStream] by its kind. [public] wraps
+ * each for the public [QuicByteStream] surface.
+ */
+internal class StreamHalves(
+    private val connection: CoreConnection,
+    private val edge: EdgeState,
+    private val readPolicy: ReadPolicy,
+    private val writePolicy: WritePolicy,
+) {
+    suspend fun openBidirectional(): BidiStream = both(connection.open(StreamKind.Bidirectional))
+
+    suspend fun openSendOnly(): SendHalf = SendHalf(connection, connection.open(StreamKind.Unidirectional), writePolicy)
+
+    /** The next stream the peer opened, of either kind. */
+    suspend fun accept(): IncomingStream = incomingOf(edge.incoming.receiveAny())
+
+    /** The next bidirectional stream the peer opened; a unidirectional one is left for [acceptReceiveOnly]. */
+    suspend fun acceptBidirectional(): IncomingStream.Bidirectional = bidirectional(edge.incoming.bidirectional.receive())
+
+    /** The next stream the peer opened to send only; a bidirectional one is left for [acceptBidirectional]. */
+    suspend fun acceptReceiveOnly(): IncomingStream.ReceiveOnly = receiveOnly(edge.incoming.unidirectional.receive())
+
+    fun incomingOf(peer: PeerStream): IncomingStream =
+        when (kindOf(QuicStreamId(peer.id))) {
+            StreamKind.Bidirectional -> bidirectional(peer)
+            StreamKind.Unidirectional -> receiveOnly(peer)
+        }
+
+    private fun bidirectional(peer: PeerStream) = IncomingStream.Bidirectional(both(QuicStreamId(peer.id)), peer.arrival)
+
+    private fun receiveOnly(peer: PeerStream) =
+        IncomingStream.ReceiveOnly(ReceiveHalf(connection, QuicStreamId(peer.id), readPolicy), peer.arrival)
+
+    fun public(stream: BidiStream): QuicByteStream = QuicByteStream(stream.id, CoreStream(stream), QuicStreamOrigin.Confirmed)
+
+    fun public(send: SendHalf): QuicByteStream = QuicByteStream(send.id, CoreSendOnlyStream(send, readPolicy), QuicStreamOrigin.Confirmed)
+
+    /** A stream that arrived in 0-RTT is read only once the handshake completes, unless it is marked replay-safe. */
+    fun public(incoming: IncomingStream): QuicByteStream =
+        when (incoming) {
+            is IncomingStream.Bidirectional ->
+                QuicByteStream(incoming.stream.id, CoreStream(incoming.stream), originOf(incoming.arrival))
+            is IncomingStream.ReceiveOnly ->
+                QuicByteStream(incoming.receive.id, CoreReceiveOnlyStream(incoming.receive, writePolicy), originOf(incoming.arrival))
+        }
+
+    private fun both(id: QuicStreamId) = BidiStream(SendHalf(connection, id, writePolicy), ReceiveHalf(connection, id, readPolicy))
+
+    @OptIn(QuicEngineSpi::class)
+    private fun originOf(arrival: Arrival): QuicStreamOrigin =
+        when (arrival) {
+            Arrival.Confirmed -> QuicStreamOrigin.Confirmed
+            Arrival.Early -> QuicStreamOrigin.Early(connection::established)
+        }
+}
+
+/** A call on the direction [side] of a unidirectional stream that has no such direction. */
+private fun absent(
+    id: QuicStreamId,
+    side: QuicStreamSide,
+): Nothing = raise(Raised.NoSuchDirection(id, side), QuicCloseCircumstance.Ended)
