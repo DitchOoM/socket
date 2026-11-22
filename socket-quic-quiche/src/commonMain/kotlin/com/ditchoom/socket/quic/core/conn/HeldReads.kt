@@ -4,13 +4,22 @@ package com.ditchoom.socket.quic.core.conn
 
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.socket.quic.QuicAppErrorCode
 import com.ditchoom.socket.quic.QuicStreamId
 import com.ditchoom.socket.quic.core.observe.Published
 import kotlin.concurrent.atomics.AtomicInt
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 
-/** How the peer's side of a held stream stood at the end: still open, finished by its FIN, or reset. */
-internal enum class HeldEnd { Open, Finished, Reset }
+/** How the peer's side of a held stream stood at the end: still open, finished by its FIN, or reset with a code. */
+internal sealed interface HeldEnd {
+    data object Open : HeldEnd
+
+    data object Finished : HeldEnd
+
+    class Reset(
+        val code: QuicAppErrorCode,
+    ) : HeldEnd
+}
 
 /** What a read after the end takes for its stream. */
 internal sealed interface HeldTake {
@@ -22,7 +31,10 @@ internal sealed interface HeldTake {
     /** The peer's FIN, or a stream that was already spent at the end. */
     data object Finished : HeldTake
 
-    data object Reset : HeldTake
+    /** The peer reset the stream with [code]. */
+    class Reset(
+        val code: QuicAppErrorCode,
+    ) : HeldTake
 
     /** Nothing more: the stream was open at the end and its peer had not finished it, so the read meets the close. */
     data object Closed : HeldTake
@@ -53,9 +65,9 @@ internal class HeldStream(
             }
             if (at == chunks.size) next.compareAndSet(at, at + 1)
             return when (end) {
-                HeldEnd.Open -> HeldTake.Closed
-                HeldEnd.Finished -> HeldTake.Finished
-                HeldEnd.Reset -> HeldTake.Reset
+                is HeldEnd.Open -> HeldTake.Closed
+                is HeldEnd.Finished -> HeldTake.Finished
+                is HeldEnd.Reset -> HeldTake.Reset(end.code)
             }
         }
     }
@@ -65,7 +77,7 @@ internal class HeldStream(
         val at = next.load()
         return when {
             at < chunks.size -> Owed.Yes
-            at > chunks.size || end == HeldEnd.Open -> Owed.No
+            at > chunks.size || end is HeldEnd.Open -> Owed.No
             else -> Owed.Yes
         }
     }

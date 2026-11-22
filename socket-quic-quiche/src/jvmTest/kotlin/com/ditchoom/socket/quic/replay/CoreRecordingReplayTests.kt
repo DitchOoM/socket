@@ -674,6 +674,24 @@ class CoreRecordingReplayTests {
             }
         }
 
+    /**
+     * A kept recording whose client read the server's datagram and sent its acknowledgement in one turn, both stamped
+     * with that turn's one clock reading. The acknowledgement follows the datagram it acknowledges in the schedule, so
+     * the replay sends it (CI: "captured acknowledgements not sent: our datagrams [3]", then "our datagram 4 [OneRtt],
+     * captured at 62.54 ms, was not sent").
+     */
+    @Test
+    fun anAnswerSentInTheTurnThatReadItsDatagramIsReplayedAfterThatDatagram() =
+        replayTest("anAnswerSentInTheTurnThatReadItsDatagramIsReplayedAfterThatDatagram") {
+            val client = keptRecording("same-turn-answer.client.trace")
+            val read = client.filterIsInstance<TraceEvent.DgramIn>()
+            assertTrue(
+                client.filterIsInstance<TraceEvent.DgramOut>().any { out -> read.any { it.at == out.at } },
+                "the recording holds a datagram read and one sent at the same instant",
+            )
+            assertFollowedWholeTwice(scheduleOf(Recorded(client, keptRecording("same-turn-answer.server.trace"), 1)))
+        }
+
     private fun keptRecording(name: String): List<TraceEvent> =
         TraceEvent.parseAll(
             assertNotNull(this::class.java.classLoader.getResource("replay-recordings/$name"), "no kept recording $name").readText(),

@@ -13,11 +13,34 @@ import com.ditchoom.buffer.pool.ThreadingMode
 import com.ditchoom.buffer.stream.StreamProcessor
 import com.ditchoom.buffer.utf8Size
 import com.ditchoom.socket.TransportConfig
+import com.ditchoom.socket.http3.codec.DecoderStreamWrite
+import com.ditchoom.socket.http3.codec.HandwrittenHttp3FrameCodec
+import com.ditchoom.socket.http3.codec.Http3Frame
+import com.ditchoom.socket.http3.codec.Http3FrameContext
+import com.ditchoom.socket.http3.codec.Http3Setting
+import com.ditchoom.socket.http3.codec.Http3SettingId
+import com.ditchoom.socket.http3.codec.Http3StreamException
+import com.ditchoom.socket.http3.codec.Http3StreamId
+import com.ditchoom.socket.http3.codec.Http3StreamReader
+import com.ditchoom.socket.http3.codec.Http3StreamType
+import com.ditchoom.socket.http3.codec.Http3Violation
+import com.ditchoom.socket.http3.codec.QpackDecoder
+import com.ditchoom.socket.http3.codec.QpackDecoderInstruction
+import com.ditchoom.socket.http3.codec.QpackDecoderInstructionCodec
+import com.ditchoom.socket.http3.codec.QpackDecoderStream
+import com.ditchoom.socket.http3.codec.QpackEncoder
+import com.ditchoom.socket.http3.codec.QpackEncoderInstruction
+import com.ditchoom.socket.http3.codec.QpackEncoderInstructionCodec
+import com.ditchoom.socket.http3.codec.QpackFieldSectionCodec
+import com.ditchoom.socket.http3.codec.QpackHeaderField
+import com.ditchoom.socket.http3.codec.QpackInstructionReader
+import com.ditchoom.socket.http3.codec.QpackScratchPoolKey
+import com.ditchoom.socket.http3.codec.VarIntCodec
+import com.ditchoom.socket.http3.codec.wireType
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicScope
 import com.ditchoom.socket.quic.QuicStreamException
-import com.ditchoom.socket.quic.QuicStreamId
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.launch
@@ -252,7 +275,7 @@ internal class Http3LoopbackServer(
             val decoder = serverDecoder
             val fields =
                 if (decoder != null) {
-                    decoder.decodeSection(first.encodedFieldSection, QuicStreamId(stream.streamId.id), pool)
+                    decoder.decodeSection(first.encodedFieldSection, Http3StreamId(stream.streamId.id), pool)
                 } else {
                     QpackFieldSectionCodec.decode(
                         first.encodedFieldSection,
@@ -384,7 +407,7 @@ internal class Http3LoopbackServer(
         val encoder = serverEncoder
         val sectionBuffer =
             if (encoder != null) {
-                encoder.encodeSection(fields, QuicStreamId(stream.streamId.id), pool)
+                encoder.encodeSection(fields, Http3StreamId(stream.streamId.id), pool)
             } else {
                 val sectionSize = (QpackFieldSectionCodec.wireSize(fields, EncodeContext.Empty) as WireSize.Exact).bytes
                 pool.allocate(sectionSize).also {

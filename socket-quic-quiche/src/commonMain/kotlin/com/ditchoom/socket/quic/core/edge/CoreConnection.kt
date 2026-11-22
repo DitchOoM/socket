@@ -1,7 +1,6 @@
 package com.ditchoom.socket.quic.core.edge
 
 import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.codec.Codec
 import com.ditchoom.buffer.flow.BytesWritten
 import com.ditchoom.buffer.flow.ConnectedDatagramChannel
@@ -11,7 +10,6 @@ import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.socket.quic.HandshakeRecord
-import com.ditchoom.socket.quic.PeerCertPosition
 import com.ditchoom.socket.quic.QuicAppErrorCode
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicCapabilities
@@ -28,6 +26,7 @@ import com.ditchoom.socket.quic.QuicStreamId
 import com.ditchoom.socket.quic.QuicUnreadAtClose
 import com.ditchoom.socket.quic.core.conn.CallerPlace
 import com.ditchoom.socket.quic.core.conn.Conn
+import com.ditchoom.socket.quic.core.conn.HandshakeFate
 import com.ditchoom.socket.quic.core.conn.NetworkChange
 import com.ditchoom.socket.quic.core.conn.NetworkWork
 import com.ditchoom.socket.quic.core.life.CloseChoice
@@ -37,7 +36,6 @@ import com.ditchoom.socket.testkit.trace.TraceSink
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -47,7 +45,6 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.selects.onTimeout
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.withContext
 import kotlin.coroutines.CoroutineContext
 import kotlin.time.Duration
 
@@ -105,12 +102,19 @@ internal class CoreConnection(
     /** How the connection stands: open, or ended and how. */
     fun end(): EdgeEnd = edge.end()
 
-    /** Suspends until the handshake completes; raises the close if the connection ends first. */
+    /**
+     * Suspends until the handshake completes, and returns once it did, whatever ended the connection since: what comes
+     * next reports that end. Raises the end of a connection whose handshake never completed.
+     */
     suspend fun established() {
         state.first { it is QuicConnectionState.Established || it is QuicConnectionState.Closed }
         when (val end = edge.end()) {
             is EdgeEnd.Open -> Unit
-            is EdgeEnd.Ended -> raise(Raised.ConnEnded(end.end), QuicCloseCircumstance.HandshakeFailed)
+            is EdgeEnd.Ended ->
+                when (end.handshake) {
+                    is HandshakeFate.Completed -> Unit
+                    is HandshakeFate.NotCompleted -> raise(Raised.ConnEnded(end.end), QuicCloseCircumstance.HandshakeFailed)
+                }
         }
     }
 
@@ -224,9 +228,9 @@ internal class CoreConnection(
     internal suspend fun read(
         stream: QuicStreamId,
         deadline: Duration,
-        sizing: ReadSizing,
+        streamReads: StreamReads,
     ): ReadResult {
-        val op = ReadOp(stream, deadline, deadlines, conn, edge, bufferFactory, sizing)
+        val op = ReadOp(stream, deadline, deadlines, conn, edge, bufferFactory, streamReads)
         conn.submit(op, placeOf(currentCoroutineContext()))
         return op.answer()
     }
@@ -240,25 +244,6 @@ internal class CoreConnection(
         val op = WriteOp(stream, source, deadline, deadlines, conn, caller)
         conn.submit(op, placeOf(caller))
         return op.answer()
-    }
-
-    /**
-     * Copies the peer's certificate at [position] into [der] inside the connection, with quiche's snprintf contract
-     * (see [com.ditchoom.socket.quic.QuicheApi.connPeerCert]). Returns only once the connection is done with [der]'s
-     * memory, cancelled or not, so the caller may free it at once.
-     */
-    internal suspend fun peerCertificate(
-        position: PeerCertPosition,
-        der: PlatformBuffer,
-        capacity: Int,
-    ): Int {
-        val answer = CompletableDeferred<Int>()
-        conn.submit(PeerCertWork(position, addressOf(der), capacity, answer), placeOf(currentCoroutineContext()))
-        try {
-            return answer.await()
-        } finally {
-            withContext(NonCancellable) { answer.join() }
-        }
     }
 
     /** Lets a client's first flight, held for 0-RTT, leave. */

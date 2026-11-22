@@ -3,6 +3,8 @@ package com.ditchoom.socket.http3
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.socket.http3.codec.WebTransportCloseInfo
+import com.ditchoom.socket.http3.codec.WebTransportFailure
 import com.ditchoom.socket.quic.QuicByteStream
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -12,12 +14,6 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlin.concurrent.Volatile
-
-/** Why a WebTransport session ended: the application error [code] and human-readable [reason]. */
-data class WebTransportCloseInfo(
-    val code: Int = 0,
-    val reason: String = "",
-)
 
 /**
  * A WebTransport-over-HTTP/3 failure (RFC 9220 + draft-ietf-webtrans-http3) that isn't a plain H3 error.

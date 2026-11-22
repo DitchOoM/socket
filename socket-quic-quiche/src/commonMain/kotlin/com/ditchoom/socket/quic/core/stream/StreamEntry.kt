@@ -1,5 +1,6 @@
 package com.ditchoom.socket.quic.core.stream
 
+import com.ditchoom.socket.quic.QuicAppErrorCode
 import com.ditchoom.socket.quic.QuicStreamId
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.observe.Confined
@@ -17,8 +18,10 @@ internal sealed interface Side {
     /** Receiving: every byte up to the peer's FIN was read. Sending: our FIN went to quiche. */
     data object Finished : Ended
 
-    /** Receiving: the peer reset its side. Sending: we reset ours. */
-    data object Reset : Ended
+    /** Receiving: the peer reset its side with [code]. Sending: we reset ours with [code]. */
+    class Reset(
+        val code: QuicAppErrorCode,
+    ) : Ended
 
     /** Receiving: we told the peer to stop sending. Sending: the peer told us to. */
     data object Stopped : Ended

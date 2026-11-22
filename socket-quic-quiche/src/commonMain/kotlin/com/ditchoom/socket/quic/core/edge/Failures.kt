@@ -3,6 +3,8 @@
 package com.ditchoom.socket.quic.core.edge
 
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.socket.ServerCertificateRejectedException
+import com.ditchoom.socket.ServerCertificateRejection
 import com.ditchoom.socket.quic.NativeSocketRefusal
 import com.ditchoom.socket.quic.NetworkRefusal
 import com.ditchoom.socket.quic.QuicAppErrorCode
@@ -129,6 +131,11 @@ internal sealed interface Raised : OpFailure {
     class NetworkRefused(
         val refusal: NetworkRefusal,
     ) : Raised
+
+    /** The server's chain was not kept whole for its check, which therefore fails as [rejection]. */
+    class ChainRefused(
+        val rejection: ServerCertificateRejection,
+    ) : Raised
 }
 
 /** The failure a refused stream send is: past the close point, or after the end. */
@@ -221,6 +228,7 @@ private fun exceptionOf(
         is Raised.FactoryNotNative ->
             QuicNativeMemoryRequiredException.forBuffer(QuicWriteTarget.Datagram, failure.buffer, quicheCapabilities)
         is Raised.RouteUnresolved -> UnresolvedRouteSourceException(failure.reason)
+        is Raised.ChainRefused -> ServerCertificateRejectedException(failure.rejection)
         is Raised.LoopsClosed -> CoreLoopsClosed()
         is Raised.SocketRefused -> failure.refusal
         is Raised.SpecLayoutRefused -> CoreSpecLayoutMismatch(failure.mismatch)

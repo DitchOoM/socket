@@ -86,13 +86,13 @@ internal class ReceiveHalf(
     val readPolicy: ReadPolicy,
 ) {
     private val use = AtomicReference(Receiving.Open)
-    private val sizing = ReadSizing()
+    private val streamReads = StreamReads()
 
     fun isOpen(): Boolean = use.load() == Receiving.Open
 
     suspend fun read(deadline: Duration): ReadResult {
         if (use.load() == Receiving.Closed) raise(Raised.StreamClosed(id, QuicStreamSide.Read), QuicCloseCircumstance.Ended)
-        return connection.read(id, deadline, sizing)
+        return connection.read(id, deadline, streamReads)
     }
 
     /** Reads no more: what still arrives is dropped, and the peer is not told to stop. */

@@ -4,8 +4,10 @@ import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.socket.TransportConfig
+import com.ditchoom.socket.http3.codec.Http3Frame
+import com.ditchoom.socket.http3.codec.Http3ServerRequest
+import com.ditchoom.socket.http3.codec.QpackHeaderField
 import com.ditchoom.socket.quic.QuicByteStream
-import com.ditchoom.socket.quic.QuicStreamId
 
 /**
  * The response side of a server [Http3ServerExchange] (RFC 9114 §4.1). Write a response either in one
@@ -17,9 +19,8 @@ class Http3ServerResponse internal constructor(
     private val stream: QuicByteStream,
     private val pool: BufferPool,
     private val config: TransportConfig,
-    private val streamId: QuicStreamId,
     // Encodes a field section through the server's QPACK (dynamic when capacity > 0, else static).
-    private val encodeSection: suspend (List<QpackHeaderField>, QuicStreamId) -> ReadBuffer,
+    private val encodeSection: suspend (List<QpackHeaderField>) -> ReadBuffer,
 ) {
     private val streamWriter = Http3StreamWriter(pool, config)
 
@@ -44,7 +45,7 @@ class Http3ServerResponse internal constructor(
                 add(QpackHeaderField(":status", status.toString()))
                 addAll(headers)
             }
-        val section = encodeSection(fields, streamId)
+        val section = encodeSection(fields)
         try {
             when (after) {
                 AfterHeaders.BodyFollows -> writeFrame(Http3Frame.Headers(section))
@@ -67,7 +68,7 @@ class Http3ServerResponse internal constructor(
     suspend fun sendTrailers(trailers: List<QpackHeaderField>) {
         check(headersSent) { "call sendHeaders before sendTrailers" }
         check(!finished) { "response already finished" }
-        val section = encodeSection(trailers, streamId)
+        val section = encodeSection(trailers)
         try {
             writeFrame(Http3Frame.Headers(section))
         } finally {
