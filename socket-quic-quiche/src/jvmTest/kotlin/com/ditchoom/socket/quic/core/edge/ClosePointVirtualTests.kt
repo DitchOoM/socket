@@ -22,6 +22,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.yield
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
@@ -81,6 +82,27 @@ class ClosePointVirtualTests {
                 assertEquals(listOf<QuicCloseCircumstance>(QuicCloseCircumstance.Closing, QuicCloseCircumstance.Closing), writer.refusals)
                 assertEquals(writer.refusedAt, writer.refusedAgainAt, "a write after the point is refused without waiting")
             }
+        }
+
+    @Test
+    fun aWriteIssuedAfterTheConnectionEndedIsRefusedWithTheEndNotTheClose() =
+        VirtualPair.with(options) { pair ->
+            pair.accept()
+            val stream = pair.client.connection.openStream()
+            written(pair, stream, 1)
+            var returned = false
+            launch {
+                pair.client.connection.close(CloseChoice.Graceful(LIMIT.inWholeNanoseconds, DrainUntil.Acknowledged))
+                returned = true
+            }
+            pair.runUntil { returned }
+            assertIs<EdgeEnd.Ended>(pair.client.connection.end(), "close returned: the connection has ended")
+            val after = assertFailsWith<QuicCloseException> { stream.write(bytes(1), 1.hours) }
+            assertEquals<QuicCloseCircumstance>(
+                QuicCloseCircumstance.Ended,
+                after.circumstance,
+                "issued after the end, not at the close point",
+            )
         }
 
     @Test
