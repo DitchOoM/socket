@@ -73,9 +73,11 @@ internal class FailureRig(
     fun stop() = loops.close()
 
     companion object {
-        suspend fun start(port: Int): FailureRig {
-            // The rig drives callers inside the connection, so its sockets lend lanes whatever this host's own rule.
-            val loops = LoopSet(1, sends = SendRule.InPlace)
+        suspend fun start(
+            port: Int,
+            sends: SendRule,
+        ): FailureRig {
+            val loops = LoopSet(1, sends = sends)
             val wrapped = ArrayList<RefusingIo>(1)
             val client = connectCore(port, loops = loops) { RefusingIo(it).also { io -> wrapped.add(io) } }
             return FailureRig(client.connection, client.conn, client.loop, wrapped[0], loops)
@@ -83,18 +85,27 @@ internal class FailureRig(
     }
 }
 
-/** Runs the core test [test] (`Class.method`) against a fresh rig and core echo server, bounded by 30 seconds. */
+/** The rules every failure case runs under, unless it needs a caller inside the connection. */
+private val EVERY_RULE = listOf(SendRule.ByLoop, SendRule.InPlace)
+
+/**
+ * Runs the core test [test] (`Class.method`) against a fresh rig and core echo server for each rule of [sends], bounded by
+ * 30 seconds each. A case that needs a caller inside the connection passes [SendRule.InPlace] alone: only that rule lends lanes.
+ */
 internal fun withFailureRig(
     test: String,
+    sends: List<SendRule> = EVERY_RULE,
     body: suspend CoroutineScope.(FailureRig) -> Unit,
 ) = coreTest(test) {
-    withCoreEchoServer { server ->
-        withContext(Dispatchers.IO) {
-            val rig = FailureRig.start(server.port)
-            try {
-                withTimeout(30.seconds) { body(rig) }
-            } finally {
-                rig.stop()
+    for (rule in sends) {
+        withCoreEchoServer(sends = rule) { server ->
+            withContext(Dispatchers.IO) {
+                val rig = FailureRig.start(server.port, rule)
+                try {
+                    withTimeout(30.seconds) { body(rig) }
+                } finally {
+                    rig.stop()
+                }
             }
         }
     }

@@ -37,16 +37,6 @@ internal class LongObjectMap<V : Any>(
         default: V,
     ): V = find(key, { it }, { default })
 
-    /** The value of [key], made by [make] and stored when it has none; [make] takes the key boxed. */
-    fun getOrPut(
-        key: Long,
-        make: (Long) -> V,
-    ): V =
-        when (val slot = slotOf(key)) {
-            is MapSlot.Filled -> slot.value
-            is MapSlot.Vacant -> make(key).also { set(key, it) }
-        }
-
     /** The slot holding [key], or [MapSlot.Vacant]. */
     private fun slotOf(key: Long): MapSlot<V> {
         var at = home(key)

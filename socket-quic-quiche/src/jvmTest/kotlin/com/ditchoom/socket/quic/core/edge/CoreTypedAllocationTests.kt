@@ -11,6 +11,7 @@ import com.ditchoom.buffer.codec.WireSize
 import com.ditchoom.buffer.stream.StreamProcessor
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.sched.SendRule
 import com.ditchoom.socket.quic.core.sched.sendRuleOfThisRuntime
 import com.ditchoom.socket.quic.core.testing.allocationSamples
@@ -81,11 +82,16 @@ private object TickCodec : Codec<Tick> {
  */
 class CoreTypedAllocationTests {
     @Test
-    fun aPingPongEchoAllocatesTheCodecsAndTheWaitsContinuations() = measure("ping-pong", batch = 1, callerGate = PING_PONG_GATE)
+    fun aPingPongEchoAllocatesTheCodecsAndTheWaitsContinuations() =
+        measure("ping-pong", batch = 1, callerGate = PING_PONG_GATE, sends = sendRuleOfThisRuntime)
 
     @Test
-    fun anEchoOfFramesAlreadyBufferedAllocatesLittleBeyondTheCodec() =
-        measure("pipelined", batch = BATCH, callerGate = pipelinedGateOf(sendRuleOfThisRuntime))
+    fun anEchoOfFramesAlreadyBufferedAllocatesLittleBeyondTheCodecWhereCallersSendInPlace() =
+        measure("pipelined in place", batch = BATCH, callerGate = pipelinedGateOf(SendRule.InPlace), sends = SendRule.InPlace)
+
+    @Test
+    fun anEchoOfFramesAlreadyBufferedAllocatesLittleBeyondTheCodecWhereTheLoopSendsEverything() =
+        measure("pipelined by loop", batch = BATCH, callerGate = pipelinedGateOf(SendRule.ByLoop), sends = SendRule.ByLoop)
 
     private fun pipelinedGateOf(rule: SendRule): Int =
         when (rule) {
@@ -97,10 +103,11 @@ class CoreTypedAllocationTests {
         name: String,
         batch: Int,
         callerGate: Int,
+        sends: SendRule,
     ) = runBlocking {
         withDescriptorsAbove127 {
             skipOnMissingNativeLib(CoreTypedAllocationTests::class) {
-                withCoreServer(onConnection = { connection ->
+                withCoreServer(sends = sends, onConnection = { connection ->
                     val stream = connection.acceptTypedStream(TickCodec)
                     while (true) {
                         when (val read = stream.receive()) {
@@ -110,7 +117,8 @@ class CoreTypedAllocationTests {
                     }
                     stream.close()
                 }) { server ->
-                    val client = connectCore(server.port, factory = BufferFactory.network())
+                    val loops = LoopSet(1, sends = sends)
+                    val client = connectCore(server.port, loops = loops, factory = BufferFactory.network())
                     val dispatcher = TypedCallerDispatcher(CALLER_THREAD)
                     val done = CompletableFuture<kotlin.Result<Report>>()
                     suspend { run(client, batch) }.startCoroutine(Continuation(dispatcher + Job()) { done.complete(it) })
@@ -121,6 +129,7 @@ class CoreTypedAllocationTests {
                     )
                     client.connection.close(QuicError.NoError)
                     dispatcher.close()
+                    loops.close()
                     val loopGate = loopGateOfThisStack(LOOP_GATE, JDK_LOOP_GATE)
                     assertTrue(
                         report.loop <= loopGate && report.caller <= callerGate,

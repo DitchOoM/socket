@@ -29,8 +29,8 @@ class PrimitiveCollectionsTests {
                 }
                 2 -> assertEquals(reference.remove(key) != null, ours.remove(key), "remove $key")
                 else -> {
-                    val made = ours.getOrPut(key) { Box(it) }
-                    assertSame(reference.getOrPut(key) { made }, made, "getOrPut $key")
+                    val absent = Box(-1)
+                    assertSame(reference[key] ?: absent, ours.getOrDefault(key, absent), "get $key")
                 }
             }
             assertEquals(reference.size, ours.size)

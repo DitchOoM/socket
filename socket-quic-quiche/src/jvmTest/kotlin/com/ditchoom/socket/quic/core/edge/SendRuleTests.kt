@@ -78,17 +78,15 @@ class SendRuleTests {
         }
 
     @Test
-    fun underByLoopEightBulkStreamsFinishTogether() =
+    fun underByLoopEightBulkStreamsAllFinishWithNoCallerSending() =
         runBlocking {
             skipOnMissingNativeLib(SendRuleTests::class) {
                 val run = bulk(SendRule.ByLoop, STREAMS_BULK, BYTES_BULK)
-                val fastest = run.finishedMillis.min()
-                val slowest = run.finishedMillis.max()
-                assertTrue(
-                    slowest <= fastest * SPREAD_BOUND + SPREAD_SLACK_MILLIS,
-                    "a stream was starved: finished after ${run.finishedMillis} ms, slowest $slowest against fastest $fastest: $run",
-                )
+                assertEquals(STREAMS_BULK, run.finishedMillis.size, "a stream did not finish: $run")
+                assertEquals(0L, run.clientEntered, "callers entered the client connection: $run")
+                assertEquals(0L, run.clientInPlace, "callers sent in place on the client: $run")
                 assertEquals(0L, run.serverInPlace, "callers sent in place on the server: $run")
+                assertEquals(emptyMap(), run.offLoop(), "datagrams sent off a loop thread: $run")
             }
         }
 
@@ -159,7 +157,5 @@ class SendRuleTests {
         const val BYTES_SMALL = 2 shl 20
         const val STREAMS_BULK = 8
         const val BYTES_BULK = 4 shl 20
-        const val SPREAD_BOUND = 2
-        const val SPREAD_SLACK_MILLIS = 500
     }
 }

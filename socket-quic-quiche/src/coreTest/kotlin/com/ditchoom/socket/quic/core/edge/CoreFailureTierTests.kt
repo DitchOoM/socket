@@ -10,6 +10,7 @@ import com.ditchoom.socket.quic.QuicStreamId
 import com.ditchoom.socket.quic.ScopedRead
 import com.ditchoom.socket.quic.core.conn.CallerPlace
 import com.ditchoom.socket.quic.core.life.ConnEnd
+import com.ditchoom.socket.quic.core.sched.SendRule
 import com.ditchoom.socket.quic.network
 import com.ditchoom.socket.quic.read
 import com.ditchoom.socket.quic.trace.TraceCapture
@@ -135,7 +136,10 @@ class CoreFailureTierTests {
 
     @Test
     fun aConnectionWorkThatThrowsInsideACallerEndsThatConnectionAndTheCallerLeaves() =
-        withFailureRig("CoreFailureTierTests.aConnectionWorkThatThrowsInsideACallerEndsThatConnectionAndTheCallerLeaves") { rig ->
+        withFailureRig(
+            "CoreFailureTierTests.aConnectionWorkThatThrowsInsideACallerEndsThatConnectionAndTheCallerLeaves",
+            sends = listOf(SendRule.InPlace),
+        ) { rig ->
             val planted = IllegalStateException("planted in connection work, run by a caller")
             runOnACaller(rig) { OnACaller(planted) }
 
@@ -150,7 +154,10 @@ class CoreFailureTierTests {
 
     @Test
     fun aFullSocketHandsTheCallersDatagramsToTheLoopWhichSendsThem() =
-        withFailureRig("CoreFailureTierTests.aFullSocketHandsTheCallersDatagramsToTheLoopWhichSendsThem") { rig ->
+        withFailureRig(
+            "CoreFailureTierTests.aFullSocketHandsTheCallersDatagramsToTheLoopWhichSendsThem",
+            sends = listOf(SendRule.InPlace),
+        ) { rig ->
             val stream = rig.connection.openStream()
             val payload = Random(9).nextBytes(20_000)
             val head = BufferFactory.network().allocate(HEAD_BYTES)
