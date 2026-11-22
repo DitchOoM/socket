@@ -10,14 +10,6 @@ class Version(
     val patch: UInt,
     val snapshot: Boolean,
 ) {
-    constructor(string: String, snapshot: Boolean) :
-        this(
-            string.split('.')[0].toUInt(),
-            string.split('.')[1].toUInt(),
-            string.split('.')[2].toUInt(),
-            snapshot,
-        )
-
     fun incrementMajor() = Version(major + 1u, 0u, 0u, snapshot)
 
     fun incrementMinor() = Version(major, minor + 1u, 0u, snapshot)
@@ -36,18 +28,25 @@ class Version(
         }
 }
 
-private var latestVersion: Version? = Version(0u, 0u, 0u, true)
+// A prerelease (5.0.0-alpha01) is not a release: the next release is counted from the last release.
+private val release = Regex("""(\d+)\.(\d+)\.(\d+)""")
+
+private var latestVersion = Version(0u, 0u, 0u, true)
 
 @Suppress("UNCHECKED_CAST")
 fun getLatestVersion(): Version {
     val cached = latestVersion
-    if (cached != null && !cached.isVersionZero()) {
+    if (!cached.isVersionZero()) {
         return cached
     }
     val xml = URI("https://repo1.maven.org/maven2/com/ditchoom/${rootProject.name}/maven-metadata.xml").toURL().readText()
     val versioning = XmlParser().parseText(xml)["versioning"] as List<Node>
-    val latestStringList = versioning.first()["latest"] as List<Node>
-    val result = Version((latestStringList.first().value() as List<*>).first().toString(), false)
+    val published = (versioning.first()["versions"] as List<Node>).first()["version"] as List<Node>
+    val result =
+        published
+            .mapNotNull { release.matchEntire(it.text()) }
+            .map { it.destructured.let { (major, minor, patch) -> Version(major.toUInt(), minor.toUInt(), patch.toUInt(), false) } }
+            .maxWith(compareBy({ it.major }, { it.minor }, { it.patch }))
     latestVersion = result
     return result
 }
