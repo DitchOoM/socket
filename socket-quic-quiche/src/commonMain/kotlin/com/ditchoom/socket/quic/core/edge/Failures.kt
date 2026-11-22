@@ -7,12 +7,12 @@ import com.ditchoom.socket.ServerCertificateRejectedException
 import com.ditchoom.socket.ServerCertificateRejection
 import com.ditchoom.socket.quic.NativeSocketRefusal
 import com.ditchoom.socket.quic.NetworkRefusal
+import com.ditchoom.socket.quic.PinnedRadioRefusedException
 import com.ditchoom.socket.quic.QuicAppErrorCode
 import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicCloseException
-import com.ditchoom.socket.quic.QuicCloseReason
-import com.ditchoom.socket.quic.QuicConnectionEnd
 import com.ditchoom.socket.quic.QuicNativeMemoryRequiredException
+import com.ditchoom.socket.quic.QuicOptionNotHonouredException
 import com.ditchoom.socket.quic.QuicStreamAbort
 import com.ditchoom.socket.quic.QuicStreamClosedException
 import com.ditchoom.socket.quic.QuicStreamException
@@ -23,12 +23,10 @@ import com.ditchoom.socket.quic.QuicStreamSide
 import com.ditchoom.socket.quic.QuicWriteTarget
 import com.ditchoom.socket.quic.RouteProbeFailure
 import com.ditchoom.socket.quic.UnresolvedRouteSourceException
-import com.ditchoom.socket.quic.closeReason
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.stream.QUICHE_ERR_INVALID_STREAM_STATE
 import com.ditchoom.socket.quic.core.stream.QUICHE_ERR_STREAM_RESET
 import com.ditchoom.socket.quic.core.stream.QUICHE_ERR_STREAM_STOPPED
-import com.ditchoom.socket.quic.core.stream.SendRefusal
 import com.ditchoom.socket.quic.core.udp.SpecLayoutMismatch
 import com.ditchoom.socket.quic.quicheCapabilities
 import kotlinx.coroutines.CancellableContinuation
@@ -133,13 +131,6 @@ internal sealed interface Raised : OpFailure {
     ) : Raised
 }
 
-/** The failure a refused stream send is: past the close point, or after the end. */
-internal fun SendRefusal.raised(): Raised =
-    when (this) {
-        is SendRefusal.PastClose -> Raised.PastClose(end)
-        is SendRefusal.Ended -> Raised.ConnEnded(end)
-    }
-
 /** The one place the edge hands a caller a failure: [failure] resumes this continuation as an exception. */
 internal fun <T> CancellableContinuation<T>.fail(
     failure: OpFailure,
@@ -161,6 +152,15 @@ internal fun raiseFailure(
         is OpFailure.DeadlinePassed -> throw deadlineException(failure.bound)
         is Raised -> raise(failure, during)
     }
+
+/** Raises an option refusal on the caller's thread, before anything is opened; a honoured verdict raises nothing. */
+internal fun OptionVerdict.orRefuse() {
+    when (this) {
+        is OptionVerdict.Honoured -> Unit
+        is OptionVerdict.Refused -> throw QuicOptionNotHonouredException(refusal)
+        is OptionVerdict.PinRefused -> throw PinnedRadioRefusedException(radio, refusal)
+    }
+}
 
 /** Raises, on the caller's thread, the cancellation of the job in [context], which a caller that was cancelled has. */
 @OptIn(InternalCoroutinesApi::class)
@@ -184,32 +184,6 @@ internal fun endedWith(
     end: ConnEnd,
     during: QuicCloseCircumstance,
 ): Throwable = closeOf(end, during)
-
-/** How [end] reads in the public close reason: the reason of its [publicEndOf]. */
-internal fun closeReasonOf(end: ConnEnd): QuicCloseReason = publicEndOf(end).closeReason
-
-/** The one mapping from how a connection ended to what callers are told: each [ConnEnd] to its [QuicConnectionEnd]. */
-internal fun publicEndOf(end: ConnEnd): QuicConnectionEnd =
-    when (end) {
-        is ConnEnd.ByPeer -> QuicConnectionEnd.ByPeer(end.error)
-        is ConnEnd.ByLocal -> QuicConnectionEnd.ByLocal(end.error)
-        is ConnEnd.IdleTimeout -> QuicConnectionEnd.IdleTimeout
-        is ConnEnd.HandshakeTimedOut -> QuicConnectionEnd.HandshakeTimedOut(publicProgressOf(end.progress))
-        is ConnEnd.HandshakeSendRefused ->
-            QuicConnectionEnd.HandshakeSendRefused(publicProgressOf(end.progress), publicRefusalOf(end.refusal))
-        is ConnEnd.SocketFailed -> QuicConnectionEnd.SocketFailed(publicFaultOf(end.fault))
-        is ConnEnd.ProcessingFailed -> QuicConnectionEnd.ProcessingFailed(end.thrown.throwable)
-        is ConnEnd.CallerFailed -> QuicConnectionEnd.CallerFailed(end.thrown.throwable)
-        is ConnEnd.LoopFailed -> QuicConnectionEnd.LoopFailed(end.thrown.throwable)
-        is ConnEnd.LoopStopped -> QuicConnectionEnd.LoopStopped
-        is ConnEnd.ServerClosed -> QuicConnectionEnd.ServerClosed
-        is ConnEnd.ServerClosedUnsettled -> QuicConnectionEnd.ServerClosedUnsettled
-        is ConnEnd.NoErrorRecorded -> QuicConnectionEnd.NoErrorRecorded
-        is ConnEnd.Released -> QuicConnectionEnd.Released
-        is ConnEnd.NetworkLost -> QuicConnectionEnd.NetworkLost
-        is ConnEnd.LocalAddressGone -> QuicConnectionEnd.LocalAddressGone
-        is ConnEnd.NoUsablePath -> QuicConnectionEnd.NoUsablePath
-    }
 
 private fun exceptionOf(
     failure: Raised,

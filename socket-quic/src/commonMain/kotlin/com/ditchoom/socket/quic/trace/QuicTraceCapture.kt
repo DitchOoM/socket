@@ -1,5 +1,6 @@
 package com.ditchoom.socket.quic.trace
 
+import kotlin.jvm.JvmOverloads
 import com.ditchoom.socket.testkit.trace.TraceSink as NeutralTraceSink
 
 // `as NeutralTraceSink`: the bare `TraceSink` in this package is the deprecated compat typealias
@@ -59,30 +60,55 @@ import com.ditchoom.socket.testkit.trace.TraceSink as NeutralTraceSink
  *   client network path to observe. Liveness (LIVENESS) is captured separately via
  *   `QuicTraceRecorder.wrap`, wired at the transport seam that drives probes
  *   ([com.ditchoom.socket.transport.Liveness]) — that seam lives above the engine.
+ * @property qlog whether [captureFor] names a [QlogTarget.Budgeted] target, declared up front so an engine
+ *   that does not write one can refuse before it asks the factory for anything; see [QlogDeclaration].
  */
-class QuicTraceCapture(
-    val captureFor: () -> QuicConnectionCapture,
-    val recordNetworkObservations: Boolean = false,
-) {
-    /**
-     * Convenience for the single-connection case: every captured connection records onto the one
-     * [sink] supplied here (log-sink semantics). Correct for a single connection or for aggregate
-     * server diagnostics; for per-connection replay across concurrent connections use the
-     * [captureFor] factory and return a fresh capture each call.
-     */
-    constructor(sink: NeutralTraceSink, recordNetworkObservations: Boolean = false) :
-        this({ QuicConnectionCapture(sink) }, recordNetworkObservations)
-
-    companion object {
+class QuicTraceCapture
+    @JvmOverloads
+    constructor(
+        val captureFor: () -> QuicConnectionCapture,
+        val recordNetworkObservations: Boolean = false,
+        val qlog: QlogDeclaration = QlogDeclaration.Undeclared,
+    ) {
         /**
-         * The trace-only factory form: [sinkFor] mints a fresh sink per connection and no qlog is
-         * named ([QlogTarget.Off]). A companion factory rather than a third constructor because a
-         * `() -> TraceSink` and a `() -> QuicConnectionCapture` parameter erase to the same JVM
-         * signature.
+         * Convenience for the single-connection case: every captured connection records onto the one
+         * [sink] supplied here (log-sink semantics). Correct for a single connection or for aggregate
+         * server diagnostics; for per-connection replay across concurrent connections use the
+         * [captureFor] factory and return a fresh capture each call.
          */
-        operator fun invoke(
-            sinkFor: () -> NeutralTraceSink,
-            recordNetworkObservations: Boolean = false,
-        ): QuicTraceCapture = QuicTraceCapture({ QuicConnectionCapture(sinkFor()) }, recordNetworkObservations)
+        constructor(sink: NeutralTraceSink, recordNetworkObservations: Boolean = false) :
+            this({ QuicConnectionCapture(sink) }, recordNetworkObservations, QlogDeclaration.NotBudgeted)
+
+        companion object {
+            /**
+             * The trace-only factory form: [sinkFor] mints a fresh sink per connection and no qlog is
+             * named ([QlogTarget.Off]). A companion factory rather than a third constructor because a
+             * `() -> TraceSink` and a `() -> QuicConnectionCapture` parameter erase to the same JVM
+             * signature.
+             */
+            operator fun invoke(
+                sinkFor: () -> NeutralTraceSink,
+                recordNetworkObservations: Boolean = false,
+            ): QuicTraceCapture =
+                QuicTraceCapture({ QuicConnectionCapture(sinkFor()) }, recordNetworkObservations, QlogDeclaration.NotBudgeted)
+        }
     }
+
+/**
+ * Whether a [QuicTraceCapture]'s factory names a [QlogTarget.Budgeted] target, so an engine that cannot write one refuses
+ * the connect or serve before it asks the factory for anything.
+ */
+sealed interface QlogDeclaration {
+    /** No capture the factory returns names a [QlogTarget.Budgeted] target. */
+    data object NotBudgeted : QlogDeclaration
+
+    /** The factory names a [QlogTarget.Budgeted] target; an engine that cannot write one refuses at once. */
+    data object Budgeted : QlogDeclaration
+
+    /**
+     * The factory says nothing, which is the default. A client judges the target of the capture it mints, before it
+     * opens a socket. A server asks the factory only as it accepts a connection: a budgeted target is then not written,
+     * the connection runs without a qlog, its trace records the refusal and the server counts it.
+     */
+    data object Undeclared : QlogDeclaration
 }

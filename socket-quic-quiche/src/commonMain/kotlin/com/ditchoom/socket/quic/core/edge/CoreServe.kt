@@ -128,8 +128,10 @@ internal suspend fun coreServe(
     datagramSize: DatagramSize = DatagramSize.Probed,
     mismatch: MismatchResponse = MismatchResponse.Unpaced,
     sends: SendRule = sendRuleOfThisRuntime,
-): CoreServer =
-    withContext(setupLane) {
+): CoreServer {
+    // Before the setup lane, a socket or a file: a serve whose option values cannot be honoured opens nothing.
+    verdictOn(options).orRefuse()
+    return withContext(setupLane) {
         ServerSetup(
             bind,
             tls,
@@ -149,6 +151,7 @@ internal suspend fun coreServe(
             sends,
         ).start()
     }
+}
 
 /** The name of the server loop's thread. */
 internal const val SERVER_THREAD = "quic-core-server"

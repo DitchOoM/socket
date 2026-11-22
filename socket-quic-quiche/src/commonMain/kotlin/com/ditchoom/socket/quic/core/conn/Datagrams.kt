@@ -125,7 +125,7 @@ internal class DatagramBox(
                 output++
                 DatagramSend.Sent
             }
-            sent == QUICHE_ERR_DONE -> DatagramSend.QueueFull
+            sent == QUICHE_ERR_DONE -> DatagramSend.QueueFull.also { counts.datagramRefusedQueueFull() }
             sent == QUICHE_ERR_INVALID_STATE -> DatagramSend.NotNegotiated
             sent == QuicheSendStop.QUICHE_ERR_BUFFER_TOO_SHORT -> DatagramSend.TooLarge(max)
             else -> DatagramSend.Refused(sent)
