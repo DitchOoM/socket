@@ -9,7 +9,9 @@ import com.ditchoom.socket.quic.core.conn.Conn
 import com.ditchoom.socket.quic.core.conn.ConnSink
 import com.ditchoom.socket.quic.core.conn.ConnectReport
 import com.ditchoom.socket.quic.core.conn.EarlyReport
+import com.ditchoom.socket.quic.core.conn.HandshakeFate
 import com.ditchoom.socket.quic.core.conn.HeldReads
+import com.ditchoom.socket.quic.core.life.CloseOutcome
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.observe.Confined
 import com.ditchoom.socket.quic.core.observe.Counter
@@ -81,9 +83,11 @@ internal class HandshakeSink(
     override fun ended(
         end: ConnEnd,
         held: HeldReads,
+        outcome: CloseOutcome,
+        handshake: HandshakeFate,
     ) {
         finish()
-        inner.ended(end, held)
+        inner.ended(end, held, outcome, handshake)
     }
 
     private fun finish() {

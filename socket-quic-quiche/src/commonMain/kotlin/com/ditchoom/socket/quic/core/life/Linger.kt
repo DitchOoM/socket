@@ -12,27 +12,39 @@ import com.ditchoom.socket.quic.core.udp.NativeBytes
 import com.ditchoom.socket.quic.core.udp.Room
 import com.ditchoom.socket.quic.core.udp.SendBatch
 
-/** When a graceful close sends its CONNECTION_CLOSE. */
-internal sealed interface CloseRule {
-    /** At once. */
-    data object Immediate : CloseRule
+/** What a close asks for: a graceful close, which first delivers what was written before it, or an immediate one. */
+internal sealed interface CloseChoice {
+    /**
+     * Delivers everything written before the close point, as [waits] says, then closes with NO_ERROR: as soon as it is
+     * delivered, and [limitNanos] after the close at the latest.
+     */
+    class Graceful(
+        val limitNanos: Long,
+        val waits: DrainUntil,
+    ) : CloseChoice
 
-    /** Once the peer acknowledged every byte and FIN written on the streams, at most [boundNanos] after the close. */
-    class UntilAcknowledged(
-        val boundNanos: Long,
-    ) : CloseRule
+    /** Sends its CONNECTION_CLOSE with [error] at once; what was not delivered is abandoned. */
+    class Immediate(
+        val error: QuicError,
+    ) : CloseChoice
 
-    /** Once the connection ends on its own (the peer's close, an idle timeout), at most [boundNanos] after the close. */
-    class UntilPeerDone(
-        val boundNanos: Long,
-    ) : CloseRule
+    companion object {
+        /** A graceful close's limit unless the caller chose one. */
+        const val DEFAULT_LIMIT_NANOS = 10_000_000_000L
+    }
 }
 
-/** Whether a close follows the [CloseRule] or sends its CONNECTION_CLOSE at once. */
-internal enum class CloseHow { Graceful, Now }
+/** What a graceful close waits for before its CONNECTION_CLOSE. */
+internal enum class DrainUntil {
+    /** The peer acknowledged every byte and FIN written on the streams. */
+    Acknowledged,
 
-/** What a close that just began does first. */
-internal enum class Begun { Flushing, SendNow }
+    /** The connection ends on its own: the peer's close, or an idle timeout. */
+    PeerDone,
+}
+
+/** Whether a datagram reached quiche since the connection last asked whether quiche drains. */
+internal enum class Heard { Nothing, Datagram }
 
 /** Whether a connection that just ended keeps its ids for a linger. */
 internal enum class AfterEnd { Lingers, Released }
@@ -42,14 +54,8 @@ internal enum class Holding { Quiche, Ids, Nothing }
 
 /** Where a connection's close stands on the wire. Each phase only follows the ones above it. */
 internal sealed interface Wire {
-    /** No close was asked. */
+    /** No CONNECTION_CLOSE was handed to quiche. */
     data object Quiet : Wire
-
-    /** A graceful close holds its CONNECTION_CLOSE, with [error], until what was written is delivered or [until]. */
-    class Flushing(
-        val error: QuicError,
-        val until: Nanos,
-    ) : Wire
 
     /** quiche took the close: the write after which it drains ends with the CONNECTION_CLOSE. */
     data object Sending : Wire
@@ -65,7 +71,7 @@ internal sealed interface Wire {
         val until: Nanos,
     ) : Wire
 
-    /** The close is out with no copy kept: late packets are dropped until [until]. */
+    /** Nothing of ours goes out: late packets are dropped until [until]. */
     class Silent(
         val until: Nanos,
     ) : Wire
@@ -75,53 +81,30 @@ internal sealed interface Wire {
 }
 
 /**
- * A connection's close on the wire: the flush a graceful close waits for, the CONNECTION_CLOSE quiche sends, and the
- * linger after it, in which the connection keeps its ids and answers late packets with a copy of that datagram, at
- * most once per doubling of their count (RFC 9000 §10.2.1). A sub-part of [ConnLife]; inside the connection only.
+ * A connection's close on the wire: the CONNECTION_CLOSE quiche sends, and the linger after it, in which the connection
+ * keeps its ids and answers late packets with a copy of that datagram, at most once per doubling of their count
+ * (RFC 9000 §10.2.1); after the peer's close, it keeps its ids and drops them (§10.2.2). A sub-part of [ConnLife];
+ * inside the connection only.
  */
 @Confined
 internal class Linger(
-    private val q: QuicheConnRef,
-    private val rule: CloseRule,
     private val factory: BufferFactory,
     private val counts: ConnCounts,
 ) {
     private var wire: Wire = Wire.Quiet
     private var late = 0
     private var owed = 0
+    private var heard = Heard.Nothing
 
     fun wire(): Wire = wire
 
-    /** A close asked at [now] with [error]: a graceful one waits as the rule says, any other sends at once. */
-    fun begin(
-        error: QuicError,
-        how: CloseHow,
-        now: Nanos,
-    ): Begun {
-        val bound =
-            when (how) {
-                CloseHow.Now -> return Begun.SendNow
-                CloseHow.Graceful ->
-                    when (val r = rule) {
-                        is CloseRule.Immediate -> return Begun.SendNow
-                        is CloseRule.UntilAcknowledged -> r.boundNanos
-                        is CloseRule.UntilPeerDone -> r.boundNanos
-                    }
-            }
-        wire = Wire.Flushing(error, now + bound)
-        return Begun.Flushing
+    /** A datagram reached quiche. */
+    fun heard() {
+        heard = Heard.Datagram
     }
 
-    /** Whether [flushing] is over at [now]: its bound passed, or everything written was acknowledged when the rule waits for that. */
-    fun flushOver(
-        flushing: Wire.Flushing,
-        now: Nanos,
-    ): Boolean =
-        now >= flushing.until ||
-            when (rule) {
-                is CloseRule.UntilAcknowledged -> !q.api.connStreamDataUnacknowledged(q.handle)
-                is CloseRule.Immediate, is CloseRule.UntilPeerDone -> false
-            }
+    /** Whether a datagram reached quiche since the last call. */
+    fun takeHeard(): Heard = heard.also { heard = Heard.Nothing }
 
     /** quiche took the close. */
     fun handedToQuiche() {
@@ -136,7 +119,7 @@ internal class Linger(
         when (wire) {
             is Wire.Sending -> Holding.Quiche
             is Wire.Answering, is Wire.Silent -> Holding.Ids
-            is Wire.Quiet, is Wire.Flushing, is Wire.Draining, is Wire.Done -> Holding.Nothing
+            is Wire.Quiet, is Wire.Draining, is Wire.Done -> Holding.Nothing
         }
 
     fun draining() {
@@ -170,7 +153,7 @@ internal class Linger(
             }
     }
 
-    /** The close went out in a datagram no socket of ours kept: late packets are dropped until [until]. */
+    /** The close went out in a datagram no socket of ours kept, or the peer's close arrived: late packets are dropped until [until]. */
     fun silent(until: Nanos) {
         wire = Wire.Silent(until)
     }
@@ -183,7 +166,7 @@ internal class Linger(
                 late++
                 if (late and (late - 1) == 0) owed++
             }
-            is Wire.Quiet, is Wire.Flushing, is Wire.Sending, is Wire.Draining, is Wire.Silent, is Wire.Done -> Unit
+            is Wire.Quiet, is Wire.Sending, is Wire.Draining, is Wire.Silent, is Wire.Done -> Unit
         }
     }
 
@@ -192,7 +175,7 @@ internal class Linger(
         val answering =
             when (val w = wire) {
                 is Wire.Answering -> w
-                is Wire.Quiet, is Wire.Flushing, is Wire.Sending, is Wire.Draining, is Wire.Silent, is Wire.Done -> return Room.Open
+                is Wire.Quiet, is Wire.Sending, is Wire.Draining, is Wire.Silent, is Wire.Done -> return Room.Open
             }
         while (owed > 0) {
             if (out.room() == Room.Full) return Room.Full
@@ -209,13 +192,12 @@ internal class Linger(
         when (val w = wire) {
             is Wire.Answering -> now >= w.until
             is Wire.Silent -> now >= w.until
-            is Wire.Quiet, is Wire.Flushing, is Wire.Sending, is Wire.Draining, is Wire.Done -> false
+            is Wire.Quiet, is Wire.Sending, is Wire.Draining, is Wire.Done -> false
         }
 
-    /** Offers the time the close next needs the connection served: a flush's bound, or the linger's end. */
+    /** Offers the time the linger ends. */
     fun offerWake(sink: WakeSink) {
         when (val w = wire) {
-            is Wire.Flushing -> sink.offer(w.until)
             is Wire.Answering -> sink.offer(w.until)
             is Wire.Silent -> sink.offer(w.until)
             is Wire.Quiet, is Wire.Sending, is Wire.Draining, is Wire.Done -> Unit
@@ -223,13 +205,13 @@ internal class Linger(
     }
 
     /**
-     * The connection ended: a close still to send, or sent, lingers; a flush or a drain the end cut short, or no close
-     * at all, has nothing left on the wire.
+     * The connection ended: a close still to send or sent lingers, and so does a connection the peer closed; a close
+     * quiche declined, or no close at all, has nothing left on the wire.
      */
     fun afterEnd(): AfterEnd =
         when (wire) {
             is Wire.Sending, is Wire.Answering, is Wire.Silent -> AfterEnd.Lingers
-            is Wire.Quiet, is Wire.Flushing, is Wire.Draining, is Wire.Done -> {
+            is Wire.Quiet, is Wire.Draining, is Wire.Done -> {
                 done()
                 AfterEnd.Released
             }
@@ -239,7 +221,7 @@ internal class Linger(
     fun done() {
         when (val w = wire) {
             is Wire.Answering -> w.copy.free()
-            is Wire.Quiet, is Wire.Flushing, is Wire.Sending, is Wire.Draining, is Wire.Silent, is Wire.Done -> Unit
+            is Wire.Quiet, is Wire.Sending, is Wire.Draining, is Wire.Silent, is Wire.Done -> Unit
         }
         wire = Wire.Done
     }

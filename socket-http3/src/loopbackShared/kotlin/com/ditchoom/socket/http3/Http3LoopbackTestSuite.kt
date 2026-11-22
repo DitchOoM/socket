@@ -7,6 +7,12 @@ import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.TransportConfig
+import com.ditchoom.socket.http3.codec.Http3ErrorCode
+import com.ditchoom.socket.http3.codec.Http3Request
+import com.ditchoom.socket.http3.codec.Http3StreamException
+import com.ditchoom.socket.http3.codec.QpackHeaderField
+import com.ditchoom.socket.http3.codec.WebTransportCloseInfo
+import com.ditchoom.socket.http3.codec.WebTransportFailure
 import com.ditchoom.socket.quic.DatagramOptions
 import com.ditchoom.socket.quic.FlowControl
 import com.ditchoom.socket.quic.QuicOptions

@@ -120,7 +120,7 @@ internal class TypedQuicStream<T : Any>(
 
     /**
      * The next value: [ScopedRead.Data] with it, [ScopedRead.End] once the peer finished the stream, [ScopedRead.Reset]
-     * when it reset the stream. A malformed frame throws a [QuicTypedStreamException].
+     * when it reset the stream, whose code [peerReset] then holds. A malformed frame throws a [QuicTypedStreamException].
      */
     suspend fun receive(): ScopedRead<T> {
         if (use.load() is TypedUse.Closed) raise(Raised.StreamClosed(id, QuicStreamSide.Read), QuicCloseCircumstance.Ended)
@@ -129,6 +129,13 @@ internal class TypedQuicStream<T : Any>(
             Acquired.Settling -> settleThenReceive()
         }
     }
+
+    /** The caller, after a [receive]: the peer's reset and its code once one returned [ScopedRead.Reset]. */
+    fun peerReset(): PeerReset =
+        when (val ending = accumulator.ending()) {
+            is Ending.Reset -> PeerReset.Reset(ending.code)
+            is Ending.Open, is Ending.Finished, is Ending.Broken -> PeerReset.NotMet
+        }
 
     private suspend fun settleThenReceive(): ScopedRead<T> {
         reader.awaitSettled()

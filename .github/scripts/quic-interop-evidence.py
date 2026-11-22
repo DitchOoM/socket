@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """What one interop run shows about each test, for the gate to check failure signatures against.
 
-Usage: quic-interop-evidence.py <runner logs dir> <direction> <peer> <out.json>
+Usage: quic-interop-evidence.py <runner logs dir> <direction> <peer> <out.json> [<retry logs dir>]
 
 The runner writes <logs>/<server>_<client>/<test>/ with the two endpoints' logs and its own output.txt. Two
 sources are read, both written by something this repository controls or the runner itself:
@@ -32,7 +32,9 @@ peer report tied to the tuple (the stock quiche client names its local port befo
 "peer_gave_up_requests".
 
 The output maps test -> {"connections": [...], "exits": {"client": n, "server": n}, "migrations": [...]}. A
-connection, exit or summary the logs do not show is absent, never written as a placeholder.
+connection, exit or summary the logs do not show is absent, never written as a placeholder. A test the cell's job
+ran again (the runner's retry logs, the optional fifth argument) carries the retry attempt's own record of the same
+shape under "retry"; the top-level fields are always the first attempt's.
 """
 import collections
 import json
@@ -53,6 +55,8 @@ PEER_ADDRESS = {"client": OUR_ADDRESS["server"], "server": OUR_ADDRESS["client"]
 MIGRATION_SUMMARY = re.compile(r"MIGRATION-SUMMARY attempted=(\d+) succeeded=(\d+)(?:.*?firstUnmoved=move \d+: (\w+))?")
 PEER_IDLE_TIMEOUT = re.compile(r"connection timed out after [\d.]+s and only completed (\d+)/(\d+) requests")
 PEER_IDLE_REQUEST_FAILED = re.compile(r"Request \S+ failed: .*IdleTimerExpired")
+PEER_FAILED_REQUEST_PATH = re.compile(r"Request (/\S+) failed: .*IdleTimerExpired")
+OUR_SERVER_REQUEST = re.compile(r"\bREQUEST session=([0-9a-f]+) path=(/\S+)")
 TRANSPORT_SPACE = "transport"
 
 
@@ -97,6 +101,8 @@ def connection_facts(path, side):
         "qlog": os.path.basename(path),
         "local_initial_max_streams_bidi": 0,
         "remote_disable_active_migration": False,
+        "remote_active_connection_id_limit": 0,
+        "peer_unasked_retirements": 0,
         "peer_source_cid_lengths": [],
         "max_streams_bidi_sent": 0,
         "peer_bidi_streams_opened": 0,
@@ -124,6 +130,7 @@ def connection_facts(path, side):
     stream_packets = set()
     last_tx = -1.0
     closing = False
+    retire_prior_to_sent = 0
     for record in qlog_records(path):
         name = record.get("name", "")
         data = record.get("data") or {}
@@ -204,10 +211,14 @@ def connection_facts(path, side):
                 facts["local_initial_max_streams_bidi"] = int(data["initial_max_streams_bidi"])
             if data.get("initiator") == "remote" and "disable_active_migration" in data:
                 facts["remote_disable_active_migration"] = bool(data["disable_active_migration"])
+            if data.get("initiator") == "remote" and "active_connection_id_limit" in data:
+                facts["remote_active_connection_id_limit"] = int(data["active_connection_id_limit"])
         elif name.endswith("packet_sent"):
             for frame in data.get("frames") or []:
                 kind = frame.get("frame_type")
-                if kind == "max_streams" and frame.get("stream_type") == "bidirectional":
+                if kind == "new_connection_id":
+                    retire_prior_to_sent = max(retire_prior_to_sent, int(frame.get("retire_prior_to", 0)))
+                elif kind == "max_streams" and frame.get("stream_type") == "bidirectional":
                     facts["max_streams_bidi_sent"] = max(facts["max_streams_bidi_sent"], int(frame.get("maximum", 0)))
                 elif kind == "connection_close":
                     facts["local_closes"].append(
@@ -222,6 +233,9 @@ def connection_facts(path, side):
             if header.get("packet_type") == "initial" and "scil" in header and int(header["scil"]) not in facts["peer_source_cid_lengths"]:
                 facts["peer_source_cid_lengths"].append(int(header["scil"]))
             for frame in data.get("frames") or []:
+                # A retirement of an id of ours that no Retire Prior To we had sent asked for (RFC 9000 §19.16).
+                if frame.get("frame_type") == "retire_connection_id" and int(frame.get("sequence_number", 0)) >= retire_prior_to_sent:
+                    facts["peer_unasked_retirements"] += 1
                 if frame.get("frame_type") == "stream":
                     stream_id = int(frame.get("stream_id", 0))
                     if stream_id % 4 == remainder:
@@ -370,6 +384,21 @@ def our_connection_ids(records):
     return scid, ids
 
 
+def peer_connection_ids(records):
+    """Every id our endpoint may address the peer by on this connection: the destination ids of our long-header packets
+    and those the peer issued in NEW_CONNECTION_ID."""
+    ids = set()
+    for r in records:
+        data = r.get("data") or {}
+        name = r.get("name", "")
+        if name.endswith("packet_sent") and (data.get("header") or {}).get("dcid"):
+            ids.add(bytes.fromhex(data["header"]["dcid"]))
+        elif name.endswith("packet_received"):
+            ids.update(bytes.fromhex(f["connection_id"]) for f in data.get("frames") or []
+                       if f.get("frame_type") == "new_connection_id" and f.get("connection_id"))
+    return ids
+
+
 def wire_facts(records, side, facts, captures):
     """The connection's record on the wire, or None when the captures do not show it: its datagrams are those on
     its UDP 4-tuple addressed to a connection id of ours (a peer may reuse a port across connections)."""
@@ -394,6 +423,22 @@ def wire_facts(records, side, facts, captures):
     for d in our_capture:
         if from_peer(d):
             arrived[d[5]].append(d[0] - offset)
+    theirs_ids = peer_connection_ids(records)
+    lengths = {len(i) for i in theirs_ids}
+
+    def to_peer(d):
+        return d[1] == ours and d[2] == our_port and d[4] == peer_port and any(
+            (packets := wire_packets(d[5], n)) and packets[0][1] in theirs_ids for n in lengths
+        )
+
+    reached_peer = collections.Counter(d[5] for d in peer_capture if to_peer(d))
+    ours_sent_after = ours_delivered_after = 0
+    for d in our_capture:
+        if to_peer(d) and facts.get("last_rx_ms", float("-inf")) < d[0] - offset <= facts.get("end_ms", float("inf")):
+            ours_sent_after += 1
+            if reached_peer[d[5]]:
+                reached_peer[d[5]] -= 1
+                ours_delivered_after += 1
     delivered = []  # (arrival in qlog ms, payload) of each datagram of the peer's that reached us unchanged
     sent_after = 0
     last_rx, end = facts.get("last_rx_ms", float("-inf")), facts.get("end_ms", float("inf"))
@@ -410,6 +455,8 @@ def wire_facts(records, side, facts, captures):
             for space, _, _ in wire_packets(payload, len(scid)) if readable(windows, space, t)
         ),
         "peer_packets_unread": unread_packets(records, side, sorted(delivered), len(scid)),
+        "ours_sent_after_last_rx": ours_sent_after,
+        "ours_delivered_after_last_rx": ours_delivered_after,
     }
 
 
@@ -642,6 +689,30 @@ def peer_idle_timeouts(log_txt, output_txt):
     return unanswered
 
 
+def gave_up_by_session(output_txt):
+    """{our server's session id: requests the peer reports giving up on}: the s2n-quic client names each failed request's
+    path, and our server names each request's path with its connection's session id."""
+    session_of, failed = {}, []
+    if os.path.exists(output_txt):
+        with open(output_txt, errors="replace") as f:
+            for line in f:
+                m = OUR_SERVER_REQUEST.search(line)
+                if m:
+                    session_of[m.group(2)] = m.group(1)
+                m = PEER_FAILED_REQUEST_PATH.search(line)
+                if m:
+                    failed.append(m.group(1))
+    return collections.Counter(session_of[path] for path in failed if path in session_of)
+
+
+def attribute_by_request_path(connections, by_session):
+    """A connection whose session the peer's report names gave up on that many requests."""
+    for c in connections:
+        for session, count in by_session.items():
+            if session in c["qlog"]:
+                c["peer_gave_up_requests"] = c.get("peer_gave_up_requests", 0) + count
+
+
 def runner_output(output_txt, side):
     """(container exits, our client's migration summaries, runner verdicts, simulator deliveries to us, to the
     peer and from the peer, the peer's datagrams a drop list dropped)."""
@@ -731,7 +802,10 @@ def evidence(logs, direction, peer):
         unanswered = peer_idle_timeouts(
             os.path.join(test_dir, "client" if side == "server" else "server", "log.txt"), os.path.join(test_dir, "output.txt")
         )
-        attribute_by_elimination(connections, side, gave_up, unanswered)
+        if side == "server":
+            attribute_by_request_path(connections, gave_up_by_session(os.path.join(test_dir, "output.txt")))
+        if not any(c.get("peer_gave_up_requests") for c in connections):
+            attribute_by_elimination(connections, side, gave_up, unanswered)
         tests[test] = {
             "connections": connections,
             "exits": exits,
@@ -747,12 +821,17 @@ def evidence(logs, direction, peer):
 
 
 def main(argv):
-    if len(argv) != 5:
+    if len(argv) not in (5, 6):
         print(__doc__, file=sys.stderr)
         return 2
-    logs, direction, peer, out = argv[1:]
+    logs, direction, peer, out = argv[1:5]
+    tests = evidence(logs, direction, peer)
+    if len(argv) == 6:
+        for test, retry in evidence(argv[5], direction, peer).items():
+            if test in tests:
+                tests[test]["retry"] = retry
     with open(out, "w") as f:
-        json.dump({"direction": direction, "peer": peer, "tests": evidence(logs, direction, peer)}, f, indent=1, sort_keys=True)
+        json.dump({"direction": direction, "peer": peer, "tests": tests}, f, indent=1, sort_keys=True)
         f.write("\n")
     return 0
 

@@ -5,7 +5,7 @@ import com.ditchoom.socket.quic.core.observe.Confined
 /** A set of primitive longs for one thread, over a [LongObjectMap]: no key is boxed. */
 @Confined
 internal class LongSet {
-    private val map = LongObjectMap<Present>()
+    private val map = LongObjectMap(Present)
 
     fun add(key: Long) {
         map[key] = Present
@@ -17,6 +17,8 @@ internal class LongSet {
     operator fun contains(key: Long): Boolean = map.containsKey(key)
 
     fun isNotEmpty(): Boolean = map.size > 0
+
+    fun clear() = map.clear()
 
     private object Present
 }

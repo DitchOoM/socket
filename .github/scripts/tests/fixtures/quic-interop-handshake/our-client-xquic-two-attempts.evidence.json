@@ -1,0 +1,354 @@
+{
+ "direction": "our-client",
+ "peer": "xquic",
+ "tests": {
+  "handshakecorruption": {
+   "connections": [
+    {
+     "bytes_in_flight_at_end": 0,
+     "bytes_in_flight_before_close": 0,
+     "end_ms": 41415.646,
+     "fin_sent_streams": 1,
+     "first_stream_ack_ms": 5540.901,
+     "first_stream_tx_ms": 5388.464,
+     "handshake_done_rx_ms": 5515.151,
+     "last_rx_ms": 11412.909,
+     "late_probes": 0,
+     "local_closes": [],
+     "local_initial_max_streams_bidi": 100,
+     "longest_wait_in_flight_ms": 785.352,
+     "max_stream_copies": 2,
+     "max_streams_bidi_sent": 0,
+     "our_streams_unfinished": 1,
+     "peer_bidi_streams_opened": 0,
+     "peer_closes": [],
+     "peer_gave_up_requests": 0,
+     "peer_resets": [],
+     "peer_source_cid_lengths": [
+      12
+     ],
+     "peer_unasked_retirements": 0,
+     "peer_unfinished_streams": 0,
+     "probes_missing_a_space": 0,
+     "pto_expiries_after_last_tx": 0,
+     "qlog": "quiche-client-b3343f80e8af00001784df4e5e4c4627.sqlog",
+     "remote_active_connection_id_limit": 8,
+     "remote_disable_active_migration": false,
+     "rx_handshake_acks": 1,
+     "rx_handshake_crypto": 4,
+     "rx_initial_acks": 0,
+     "rx_initial_crypto": 1,
+     "rx_initial_crypto_end": 90,
+     "rx_initial_unlogged": 0,
+     "rx_packets": 14,
+     "tx_after_last_rx": 1,
+     "tx_crypto": 3,
+     "wire": {
+      "ours_delivered_after_last_rx": 0,
+      "ours_sent_after_last_rx": 1,
+      "peer_delivered_after_last_rx": 0,
+      "peer_packets_unread": 0,
+      "peer_sent_after_last_rx": 2,
+      "port": 50943
+     }
+    }
+   ],
+   "exits": {
+    "client": 1
+   },
+   "migrations": [],
+   "peer_unanswered_requests": 0,
+   "retry": {
+    "connections": [
+     {
+      "bytes_in_flight_at_end": 1496,
+      "bytes_in_flight_before_close": 1496,
+      "end_ms": 31148.658,
+      "fin_sent_streams": 1,
+      "first_stream_tx_ms": 146.187,
+      "last_rx_ms": 285.669,
+      "late_probes": 0,
+      "local_closes": [],
+      "local_initial_max_streams_bidi": 100,
+      "longest_wait_in_flight_ms": 8000.775,
+      "max_stream_copies": 5,
+      "max_streams_bidi_sent": 0,
+      "our_streams_unfinished": 1,
+      "peer_bidi_streams_opened": 0,
+      "peer_closes": [],
+      "peer_gave_up_requests": 0,
+      "peer_resets": [],
+      "peer_source_cid_lengths": [
+       12
+      ],
+      "peer_unasked_retirements": 0,
+      "peer_unfinished_streams": 0,
+      "probes_missing_a_space": 0,
+      "pto_expiries_after_last_tx": 0,
+      "qlog": "quiche-client-7893e318b57de01a3a725eaba6620052.sqlog",
+      "remote_active_connection_id_limit": 8,
+      "remote_disable_active_migration": false,
+      "rx_handshake_acks": 0,
+      "rx_handshake_crypto": 5,
+      "rx_initial_acks": 0,
+      "rx_initial_crypto": 1,
+      "rx_initial_crypto_end": 90,
+      "rx_initial_unlogged": 0,
+      "rx_packets": 6,
+      "tx_after_last_rx": 12,
+      "tx_crypto": 9,
+      "wire": {
+       "ours_delivered_after_last_rx": 5,
+       "ours_sent_after_last_rx": 12,
+       "peer_delivered_after_last_rx": 0,
+       "peer_packets_unread": 0,
+       "peer_sent_after_last_rx": 0,
+       "port": 53815
+      }
+     }
+    ],
+    "exits": {
+     "client": 1
+    },
+    "migrations": [],
+    "peer_unanswered_requests": 0,
+    "runner": {},
+    "sim_droplist_from_peer": 0,
+    "sim_from_peer": [
+     {
+      "datagrams": 203,
+      "delivered": 138,
+      "port": 443
+     }
+    ],
+    "sim_to_peer": [
+     {
+      "datagrams": 165,
+      "delivered": 111,
+      "port": 443
+     }
+    ],
+    "sim_to_us": [
+     {
+      "datagrams": 17,
+      "delivered": 14,
+      "port": 33378
+     },
+     {
+      "datagrams": 22,
+      "delivered": 14,
+      "port": 35877
+     },
+     {
+      "datagrams": 27,
+      "delivered": 20,
+      "port": 37859
+     },
+     {
+      "datagrams": 27,
+      "delivered": 20,
+      "port": 41686
+     },
+     {
+      "datagrams": 29,
+      "delivered": 17,
+      "port": 47209
+     },
+     {
+      "datagrams": 11,
+      "delivered": 7,
+      "port": 53815
+     },
+     {
+      "datagrams": 32,
+      "delivered": 23,
+      "port": 54750
+     },
+     {
+      "datagrams": 38,
+      "delivered": 23,
+      "port": 56283
+     }
+    ]
+   },
+   "runner": {},
+   "sim_droplist_from_peer": 0,
+   "sim_from_peer": [
+    {
+     "datagrams": 915,
+     "delivered": 630,
+     "port": 443
+    }
+   ],
+   "sim_to_peer": [
+    {
+     "datagrams": 747,
+     "delivered": 491,
+     "port": 443
+    }
+   ],
+   "sim_to_us": [
+    {
+     "datagrams": 22,
+     "delivered": 15,
+     "port": 33597
+    },
+    {
+     "datagrams": 39,
+     "delivered": 24,
+     "port": 34077
+    },
+    {
+     "datagrams": 26,
+     "delivered": 18,
+     "port": 34724
+    },
+    {
+     "datagrams": 20,
+     "delivered": 17,
+     "port": 35936
+    },
+    {
+     "datagrams": 35,
+     "delivered": 22,
+     "port": 36688
+    },
+    {
+     "datagrams": 35,
+     "delivered": 25,
+     "port": 37246
+    },
+    {
+     "datagrams": 37,
+     "delivered": 22,
+     "port": 37432
+    },
+    {
+     "datagrams": 16,
+     "delivered": 15,
+     "port": 38273
+    },
+    {
+     "datagrams": 24,
+     "delivered": 12,
+     "port": 38377
+    },
+    {
+     "datagrams": 23,
+     "delivered": 16,
+     "port": 38551
+    },
+    {
+     "datagrams": 23,
+     "delivered": 16,
+     "port": 41907
+    },
+    {
+     "datagrams": 18,
+     "delivered": 13,
+     "port": 42976
+    },
+    {
+     "datagrams": 33,
+     "delivered": 22,
+     "port": 43019
+    },
+    {
+     "datagrams": 24,
+     "delivered": 15,
+     "port": 43993
+    },
+    {
+     "datagrams": 19,
+     "delivered": 15,
+     "port": 47617
+    },
+    {
+     "datagrams": 21,
+     "delivered": 20,
+     "port": 48176
+    },
+    {
+     "datagrams": 37,
+     "delivered": 25,
+     "port": 48405
+    },
+    {
+     "datagrams": 22,
+     "delivered": 14,
+     "port": 49424
+    },
+    {
+     "datagrams": 28,
+     "delivered": 17,
+     "port": 49959
+    },
+    {
+     "datagrams": 36,
+     "delivered": 28,
+     "port": 49975
+    },
+    {
+     "datagrams": 52,
+     "delivered": 38,
+     "port": 50523
+    },
+    {
+     "datagrams": 39,
+     "delivered": 26,
+     "port": 50636
+    },
+    {
+     "datagrams": 27,
+     "delivered": 16,
+     "port": 50943
+    },
+    {
+     "datagrams": 30,
+     "delivered": 21,
+     "port": 52501
+    },
+    {
+     "datagrams": 27,
+     "delivered": 18,
+     "port": 54475
+    },
+    {
+     "datagrams": 28,
+     "delivered": 18,
+     "port": 55042
+    },
+    {
+     "datagrams": 31,
+     "delivered": 20,
+     "port": 55946
+    },
+    {
+     "datagrams": 41,
+     "delivered": 30,
+     "port": 56856
+    },
+    {
+     "datagrams": 28,
+     "delivered": 19,
+     "port": 57537
+    },
+    {
+     "datagrams": 21,
+     "delivered": 13,
+     "port": 58036
+    },
+    {
+     "datagrams": 20,
+     "delivered": 15,
+     "port": 58990
+    },
+    {
+     "datagrams": 33,
+     "delivered": 25,
+     "port": 59246
+    }
+   ]
+  }
+ }
+}

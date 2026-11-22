@@ -53,6 +53,11 @@ import com.ditchoom.socket.quic.core.sched.CallerLanes
 import com.ditchoom.socket.quic.core.sched.CallerSend
 import com.ditchoom.socket.quic.core.sched.Entrant
 import com.ditchoom.socket.quic.core.sched.SendPort
+import com.ditchoom.socket.quic.core.sched.SendRule
+import com.ditchoom.socket.quic.core.sched.callerLanesOf
+import com.ditchoom.socket.quic.core.sched.laneCount
+import com.ditchoom.socket.quic.core.sched.size
+import com.ditchoom.socket.quic.core.sched.storages
 import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.QuicheTime
 import com.ditchoom.socket.quic.core.udp.Addressed
@@ -90,6 +95,7 @@ internal class ServerSetup(
     private val stack: NetStack,
     private val batching: UdpBatching,
     private val mismatch: MismatchResponse,
+    private val sends: SendRule,
 ) {
     /** The memory this server holds from [factory]: freed by the setup's [SetupOwner] until the loop is built, then by the loop. */
     private val memory = EdgeMemory(factory)
@@ -109,7 +115,7 @@ internal class ServerSetup(
         val callerLimits = BatchLimits(maxDatagrams = CALLER_BATCH, maxDatagramSize = MAX_DATAGRAM)
         val send = SendBatch(memory.native(limits.maxDatagrams * limits.maxDatagramSize), limits)
         val lanes =
-            FixedPool(CALLER_LANES) { i ->
+            callerLanesOf(sends.laneCount(CALLER_LANES)) { i ->
                 CallerSend(i, SendBatch(memory.native(callerLimits.maxDatagrams * MAX_DATAGRAM), callerLimits, lane = i + 1))
             }
         val receiveBuffers = List(limits.maxDatagrams) { ReceiveBuffer(it, memory.native(MAX_DATAGRAM)) }
@@ -133,7 +139,7 @@ internal class ServerSetup(
                     LoopIo.Native(
                         stack.shim,
                         memory.native(NativeIo.RECV_RECORD * NativeIo.MAX_RECEIVE),
-                        List(1 + CALLER_LANES) { memory.native(NativeIo.SEND_RECORD * if (it == 0) MAX_BATCH else CALLER_BATCH) },
+                        List(1 + lanes.size) { memory.native(NativeIo.SEND_RECORD * if (it == 0) MAX_BATCH else CALLER_BATCH) },
                     )
             }
         val poller =
@@ -151,8 +157,7 @@ internal class ServerSetup(
         moved(SetupOwner.Configured(memory, poller, quicheConfig))
         configure(quicheConfig)
         val socket = openStackSocket(loopIo, memory, bind, SocketPeer.Unconnected, buffers, batching, limits.maxDatagrams)
-        val sends = listOf(send.storage) + List(CALLER_LANES) { lanes[it].batch.storage }
-        val socketIo = socket.ioOf(sends, MAX_PEERS_CACHED, PeerKeys.SERVER_SETS) { }
+        val socketIo = socket.ioOf(listOf(send.storage) + lanes.storages(), MAX_PEERS_CACHED, PeerKeys.SERVER_SETS) { }
         moved(SetupOwner.Opened(memory, poller, quicheConfig, socketIo.io))
         return serve(socket, socketIo, poller, quicheConfig, limits, send, lanes, receiveBuffers, backlog, scratch, moved)
     }
@@ -164,7 +169,7 @@ internal class ServerSetup(
         quicheConfig: QuicheConfig,
         limits: BatchLimits,
         send: SendBatch,
-        lanes: FixedPool<CallerSend>,
+        lanes: CallerLanes,
         receiveBuffers: List<ReceiveBuffer>,
         backlog: InitialBacklog,
         scratch: DemuxScratch,
@@ -202,7 +207,7 @@ internal class ServerSetup(
                 time = QuicheTime.of(api, clock),
             )
         moved(SetupOwner.Built(loop, socketIo.io))
-        val sendPort = SendPort(io, loop.port, CallerLanes.Of(lanes), SocketDiedNotice(), loop.counts, loop.callerCounts)
+        val sendPort = SendPort(io, loop.port, lanes, SocketDiedNotice(), loop.counts, loop.callerCounts)
         val counts = ServerCounts()
         val accepted = Channel<CoreConnection>(Channel.UNLIMITED)
         val edge = ServerEdge(options, factory, readPolicy, writePolicy, accepted)
@@ -211,7 +216,7 @@ internal class ServerSetup(
                 SlotRules.forWaits(
                     waitsOf(stack),
                     handshake,
-                    closeRuleOf(options),
+                    closeChoiceOf(options),
                     datagramRuleOf(options),
                     keepAliveRuleOf(options),
                     earlyDataRuleOf(options),
@@ -235,7 +240,7 @@ internal class ServerSetup(
                 localKey,
             )
         val admission = Admission(api, config.admission, backlog, parts, edge.hooks, hold, ids, counts)
-        val demux = Demux(admission, Stateless(api, tokens, ids, localKey, counts), scratch, loop.port, clock, counts)
+        val demux = Demux(admission, Stateless(api, tokens, ids, localKey, counts), scratch, loop.port, clock, counts, parts.rules.close)
         val stopped = CompletableDeferred<Unit>()
         val finished =
             Runnable {

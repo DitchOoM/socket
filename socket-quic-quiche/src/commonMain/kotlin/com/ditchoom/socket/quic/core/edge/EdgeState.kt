@@ -8,7 +8,6 @@ import com.ditchoom.socket.quic.EarlyDataAcceptance
 import com.ditchoom.socket.quic.HandlerStart
 import com.ditchoom.socket.quic.HandshakeRecord
 import com.ditchoom.socket.quic.QuicCloseCircumstance
-import com.ditchoom.socket.quic.QuicCloseReason
 import com.ditchoom.socket.quic.QuicConnectionState
 import com.ditchoom.socket.quic.QuicSessionTicket
 import com.ditchoom.socket.quic.QuicSessionTicketState
@@ -18,9 +17,13 @@ import com.ditchoom.socket.quic.core.conn.Arrival
 import com.ditchoom.socket.quic.core.conn.ConnSink
 import com.ditchoom.socket.quic.core.conn.ConnectReport
 import com.ditchoom.socket.quic.core.conn.EarlyReport
+import com.ditchoom.socket.quic.core.conn.HandshakeFacts
+import com.ditchoom.socket.quic.core.conn.HandshakeFate
 import com.ditchoom.socket.quic.core.conn.HeldReads
 import com.ditchoom.socket.quic.core.conn.HeldTake
 import com.ditchoom.socket.quic.core.conn.Owed
+import com.ditchoom.socket.quic.core.conn.free
+import com.ditchoom.socket.quic.core.life.CloseOutcome
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.observe.Published
 import com.ditchoom.socket.quic.core.udp.NativeBytes
@@ -37,10 +40,15 @@ import kotlin.concurrent.atomics.ExperimentalAtomicApi
 internal sealed interface EdgeEnd {
     data object Open : EdgeEnd
 
-    /** Ended with [end]; [held] is what it had received that no read returned. */
+    /**
+     * Ended with [end]; [held] is what it had received that no read returned, [outcome] how a close asked of it went,
+     * and [handshake] whether its handshake had completed, with what it settled.
+     */
     class Ended(
         val end: ConnEnd,
         val held: HeldReads,
+        val outcome: CloseOutcome,
+        val handshake: HandshakeFate,
     ) : EdgeEnd
 }
 
@@ -62,13 +70,15 @@ internal class EdgeState(
     private val capture: TraceCapture,
     /** Where a client's ticket is kept for its next connection to the same server. */
     private val tickets: TicketHome,
+    /** Where a client's server certificates are kept for its check. */
+    private val chain: ChainHome,
 ) : ConnSink {
     private val endCell = AtomicReference<EdgeEnd>(EdgeEnd.Open)
     val state = MutableStateFlow<QuicConnectionState>(QuicConnectionState.Handshaking)
 
     /** The streams the peer opened, oldest first. */
     val incoming = Channel<PeerStream>(Channel.UNLIMITED)
-    val closed = CompletableDeferred<QuicCloseReason>()
+    val closed = CompletableDeferred<EdgeEnd.Ended>()
 
     /** A server's: whether it accepted the client's 0-RTT before the handshake completed. */
     val earlyData = MutableStateFlow<EarlyDataAcceptance>(EarlyDataAcceptance.None)
@@ -98,9 +108,13 @@ internal class EdgeState(
     fun end(): EdgeEnd = endCell.load()
 
     override fun established(report: ConnectReport) {
-        val alpn = alpnOf(report.alpnLength)
-        handshake.value = HandshakeRecord.Settled(alpn, report.resumption)
-        publish(QuicConnectionState.Established(alpn, report.resumption))
+        val facts = report.facts
+        when (val home = chain) {
+            is ChainHome.NotKept -> report.chain.free()
+            is ChainHome.Kept -> home.chain.keep(report.chain)
+        }
+        settled(facts)
+        publish(QuicConnectionState.Established(facts.alpn, facts.resumption))
         start.value = HandlerStart.Now
     }
 
@@ -156,8 +170,15 @@ internal class EdgeState(
     override fun ended(
         end: ConnEnd,
         held: HeldReads,
+        outcome: CloseOutcome,
+        handshake: HandshakeFate,
     ) {
-        endCell.store(EdgeEnd.Ended(end, held))
+        val ended = EdgeEnd.Ended(end, held, outcome, handshake)
+        when (handshake) {
+            is HandshakeFate.Completed -> settled(handshake.facts)
+            is HandshakeFate.NotCompleted -> Unit
+        }
+        endCell.store(ended)
         reads.close()
         val inHand = handed.atEnd()
         val owing = held.owing() + inHand.streams()
@@ -166,17 +187,14 @@ internal class EdgeState(
         inHand.forEachTaken(::returned)
         val reason = closeReasonOf(end)
         publish(QuicConnectionState.Closed(reason))
-        start.compareAndSet(HandlerStart.NotYet, HandlerStart.Never)
-        wake(end, reason)
+        start.compareAndSet(HandlerStart.NotYet, startAtEnd(handshake))
+        wake(ended)
     }
 
     /** Fails a parked accept and every later one, and returns every waiting `close()`; only after the end is published. */
-    private fun wake(
-        end: ConnEnd,
-        reason: QuicCloseReason,
-    ) {
-        incoming.close(endedWith(end, QuicCloseCircumstance.Ended))
-        closed.complete(reason)
+    private fun wake(ended: EdgeEnd.Ended) {
+        incoming.close(endedWith(ended.end, QuicCloseCircumstance.Ended))
+        closed.complete(ended)
     }
 
     /** Any thread, after the end: what a read of [stream] gets next. */
@@ -200,8 +218,31 @@ internal class EdgeState(
         leave(stream)
     }
 
+    /** The caller's close: once the connection has ended, the caller is done with it, and what no read took is freed. */
+    suspend fun closedByCaller(): EdgeEnd.Ended = closed.await().also { letGoAll() }
+
+    /** Any thread: the caller is done with the ended connection; what it held that no read took is freed. */
+    private fun letGoAll() {
+        when (val now = endCell.load()) {
+            is EdgeEnd.Ended -> now.held.freeAll()
+            is EdgeEnd.Open -> Unit
+        }
+    }
+
     private fun leave(stream: QuicStreamId) =
         unread.update { now -> if (now is QuicUnreadAtClose.Unread && stream in now.streams) now.without(stream) else now }
+
+    /** What the handshake settled is kept: the same facts, from the report or from the end. */
+    private fun settled(facts: HandshakeFacts) {
+        handshake.value = HandshakeRecord.Settled(facts.alpn, facts.resumption)
+    }
+
+    /** A handler starts for a connection whose handshake completed, whatever ended it after. */
+    private fun startAtEnd(handshake: HandshakeFate): HandlerStart =
+        when (handshake) {
+            is HandshakeFate.Completed -> HandlerStart.Now
+            is HandshakeFate.NotCompleted -> HandlerStart.Never
+        }
 
     private fun publish(now: QuicConnectionState) {
         state.value = now

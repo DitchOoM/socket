@@ -3,7 +3,7 @@ package com.ditchoom.socket.webtransport
 /**
  * A typed WebTransport (RFC 9220 + draft-ietf-webtrans-http3) failure surfaced through the **neutral**
  * cross-platform API — the reason a [WebTransportException] is raised. This is the platform-neutral twin
- * of `com.ditchoom.socket.http3.WebTransportFailure`: the native backing maps the http3 failure onto one
+ * of `com.ditchoom.socket.http3.codec.WebTransportFailure`: the native backing maps the http3 failure onto one
  * of these by TYPE (never by parsing a message), and the browser backing maps the platform
  * `WebTransportError` onto one too, so common code reasons about a failure by **exhaustive `when`**.
  *

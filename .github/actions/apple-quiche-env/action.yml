@@ -156,6 +156,8 @@ runs:
     # The five Apple libquiche.a / dylib / JNI shim sets built once by `natives`. Restored to the
     # exact paths the Gradle build and the K/N `-force_load` link expect.
     - name: Download prebuilt Apple quiche natives
+      id: natives-download
+      continue-on-error: true
       uses: actions/download-artifact@v8
       with:
         name: quiche-apple-natives
@@ -163,6 +165,18 @@ runs:
         # Both empty in the default same-run case, which is what the action does without them.
         run-id: ${{ inputs.natives-run-id }}
         github-token: ${{ inputs.github-token }}
+
+    # The action gives up at once on an edge 403, and on a Not Found the artifact service can answer for an
+    # artifact it listed seconds after the upload finalized (run 44967402750). Retried here.
+    - name: Retry the natives download
+      if: steps.natives-download.outcome == 'failure'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token || github.token }}
+        ARTIFACT_RUN_ID: ${{ inputs.natives-run-id }}
+      run: |
+        "$GITHUB_WORKSPACE/.github/scripts/artifact-download-retry.sh" \
+          quiche-apple-natives socket-quic-quiche/libs/quiche
 
     # ⚠️ Load-bearing, and the reason this whole fan-out works at all.
     #

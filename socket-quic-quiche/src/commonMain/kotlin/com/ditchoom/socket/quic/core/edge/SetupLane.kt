@@ -1,9 +1,9 @@
 package com.ditchoom.socket.quic.core.edge
 
 import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.socket.quic.HandshakeBudget
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicOptions
-import com.ditchoom.socket.quic.QuicResumption
 import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.QuicheConfig
 import com.ditchoom.socket.quic.core.conn.HandshakeRule
@@ -12,7 +12,6 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeout
 import kotlin.coroutines.CoroutineContext
 import kotlin.time.Duration
 
@@ -84,20 +83,26 @@ internal class OnSetupLane private constructor() {
 internal class StartedClient(
     val client: CoreClient,
     private val offer: Offer,
+    private val check: ServerCheck,
 ) {
     /**
-     * On the caller's own context, so its early data never runs on the lane: parks until the handshake completes,
-     * running the [resumption]'s early-data block where the offer says.
+     * On the caller's own context, so neither its early data nor a verifier runs on the lane: parks until the handshake
+     * completes and the server passed its check, running the [options]' early-data block where [ServerCheck.connected]
+     * says.
      */
     suspend fun established(
-        resumption: QuicResumption,
+        serverName: String,
+        options: QuicOptions,
         timeout: Duration,
+        budget: HandshakeBudget,
     ): CoreClient {
-        val connection = client.connection
-        connection.runEarlyData(resumption, offer) { withTimeout(timeout) { connection.established() } }
+        check.connected(options.resumption, offer, serverName, options, timeout, budget)
         return client
     }
 
-    /** Ends a connection whose connect failed or was cancelled after it started. */
-    fun abandon() = client.connection.closeNow(QuicError.NoError)
+    /** Ends a connection whose connect failed or was cancelled after it started; the server's chain is let go. */
+    fun abandon() {
+        check.letGo()
+        client.connection.closeNow(QuicError.NoError)
+    }
 }

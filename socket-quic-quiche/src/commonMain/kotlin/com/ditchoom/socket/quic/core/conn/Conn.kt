@@ -33,8 +33,9 @@ internal enum class LoopHold { Out, In }
 /**
  * One QUIC connection on one loop: who enters it, and leaving. Whoever holds its [OwnerWord] is inside and the only
  * thread touching its quiche handle: the loop, when a datagram, a deadline or work touches it, or a caller allowed to
- * enter ([CallerPlace.MayEnter]) that finds it free. Whoever is inside serves it through [Turn], collects its output
- * and leaves. Any thread hands it work through [submit]. [hold] is the loop's; the flags are any thread's.
+ * enter ([CallerPlace.MayEnter]) that finds it free and takes a lane of [socket]; a socket that lends none (see
+ * [com.ditchoom.socket.quic.core.sched.SendRule]) is served by the loop alone. Whoever is inside serves it through
+ * [Turn], collects its output and leaves. Any thread hands it work through [submit]. [hold] is the loop's; the flags are any thread's.
  */
 @LoopOnly
 internal class Conn(
@@ -111,6 +112,8 @@ internal class Conn(
     /** Any thread: the bytes one datagram may carry as of the connection's last turn, or 0. */
     fun datagramMaxBytes(): Int = turn.datagramMaxBytes()
 
+    fun lingerView(): LingerView = turn.lingerView(clock.live())
+
     /** Any thread: how many new connection ids the loop should route to this connection, taken once. */
     fun idsWanted(): Int = turn.idsWanted()
 
@@ -120,7 +123,8 @@ internal class Conn(
     /** Loop thread, once or more per pass: serves the connection at one clock reading if the loop is inside, and leaves. */
     fun turn(out: SendBatch): Collected {
         if (hold == LoopHold.Out) return Collected.Everything
-        if (turn.serve(clock.begins(), out, onTimer) == Collected.MoreWaiting) return Collected.MoreWaiting
+        val served = turn.serve(clock.begins(), out, onTimer).also { serverClose.collected(turn.life()) }
+        if (served == Collected.MoreWaiting) return Collected.MoreWaiting
         return when (owner.tryLeave(loopEntrant)) {
             Leave.Left -> {
                 hold = LoopHold.Out
@@ -180,8 +184,8 @@ internal class Conn(
         turn.expire(clock.now())
     }
 
-    /** Loop thread: the deadline of a connection that ended fell due: the loop serves it, which steps its linger. */
-    internal fun timerFiredAfterEnd() = timerQueued.store(IDLE).also { scheduleServe() }
+    /** Loop thread: an ended connection's deadline fell due: whoever is inside serves its linger again, else the loop. */
+    internal fun timerFiredAfterEnd() = timerQueued.store(IDLE).also { if (owner.leaveWork() == WorkLeft.NobodyInside) scheduleServe() }
 
     private fun touch(): LoopHold {
         if (hold == LoopHold.In) return hold
@@ -243,6 +247,7 @@ internal class Conn(
                 when (val held = lane) {
                     is CallerSend -> {
                         val served = turn.serveAsCaller(now, held.batch, onTimer)
+                        serverClose.collected(turn.life())
                         if (held.batch.pending > 0 && socket.sendInPlace(held) == LaneSent.Deferred) lane = LaneTake.None
                         served
                     }

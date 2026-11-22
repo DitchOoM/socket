@@ -6,9 +6,16 @@ import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.pool.ThreadingMode
-import com.ditchoom.socket.http3.Http3FuzzGenerators.SeededEntropy
-import com.ditchoom.socket.http3.Http3FuzzGenerators.headerFields
-import com.ditchoom.socket.quic.QuicStreamId
+import com.ditchoom.socket.http3.codec.Http3FuzzGenerators
+import com.ditchoom.socket.http3.codec.Http3FuzzGenerators.SeededEntropy
+import com.ditchoom.socket.http3.codec.Http3FuzzGenerators.headerFields
+import com.ditchoom.socket.http3.codec.Http3StreamId
+import com.ditchoom.socket.http3.codec.QpackDecoder
+import com.ditchoom.socket.http3.codec.QpackEncoder
+import com.ditchoom.socket.http3.codec.QpackEncoderInstruction
+import com.ditchoom.socket.http3.codec.QpackEncoderInstructionCodec
+import com.ditchoom.socket.http3.codec.QpackHeaderField
+import com.ditchoom.socket.http3.codec.RecordingQpackDecoderStream
 import kotlinx.coroutines.runBlocking
 import java.io.IOException
 import java.net.URI
@@ -149,7 +156,7 @@ class QpackDifferentialInteropTests {
         val instructions = mutableListOf<QpackEncoderInstruction>()
         val encoder = QpackEncoder(capacity, blocked) { instructions += it }
         if (capacity > 0) encoder.setCapacity(capacity)
-        val section = encoder.encodeSection(fields, QuicStreamId(streamId), pool())
+        val section = encoder.encodeSection(fields, Http3StreamId(streamId), pool())
 
         // Serialize the encoder-stream instructions (Set Capacity + inserts) into ls-qpack's wire format.
         val encStream = BufferFactory.Default.allocate(65_536)
@@ -202,7 +209,7 @@ class QpackDifferentialInteropTests {
                 val buf = bufferOf(encStream)
                 while (buf.hasRemaining()) decoder.applyEncoderInstruction(QpackEncoderInstructionCodec.decode(buf, scratchPool = null))
             }
-            val decoded = decoder.decodeSection(bufferOf(frame), QuicStreamId(streamId), scratchPool = null)
+            val decoded = decoder.decodeSection(bufferOf(frame), Http3StreamId(streamId), scratchPool = null)
             assertEquals(fields, decoded, "ref-encode -> ours-decode (cap=$capacity)")
         }
     }

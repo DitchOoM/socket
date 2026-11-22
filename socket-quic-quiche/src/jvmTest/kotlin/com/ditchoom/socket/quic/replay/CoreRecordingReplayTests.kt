@@ -57,6 +57,7 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
@@ -600,6 +601,101 @@ class CoreRecordingReplayTests {
             recordings = Recorded(emptyList(), emptyList(), 1)
             assertFollowedWholeTwice(schedule)
         }
+
+    /**
+     * The server took 1.32 ms to answer the client's handshake datagram, and said so in its acknowledgement's delay. The
+     * client read that answer 60 ms late, so its round trip was long enough for quiche to take the delay off it, and its
+     * probe fell due 1.49 ms before a round trip with no delay in it would have had it. The replay's modelled peer
+     * answered on arrival, reporting no delay: its client's probe fell due past the recorded firing and was never sent
+     * (CI Linux JDK 25 FFM: "our datagram 4 [OneRtt], captured at 98.58 ms, was not sent" at 110.26 ms).
+     */
+    @Test
+    fun aPeerThatAnsweredLateIsReplayedWithTheAcknowledgementDelayItReported() =
+        replayTest("aPeerThatAnsweredLateIsReplayedWithTheAcknowledgementDelayItReported") {
+            fun at(nanos: Long) = nanos.nanoseconds
+            val oneRtt = listOf(PacketKind.OneRtt)
+            val schedule =
+                CaptureSchedule(
+                    name = "core client stalled 60 ms after its payload was lost, its server 1.32 ms to answer",
+                    ours = QuicRole.Client,
+                    alpn = coreTestOptions.alpnProtocols.single(),
+                    ourTransport = TransportSetup(idleTimeout = coreTestOptions.idleTimeout),
+                    peerTransport = TransportSetup(idleTimeout = coreTestOptions.idleTimeout),
+                    peerPackets = PeerPackets.AsQuiche,
+                    peerApp = PeerApp.Echoes,
+                    ourApp = OurApp.Reads,
+                    steps =
+                        listOf(
+                            Step.OursSent(at(0), listOf(PacketKind.Initial), Fate.Delivered(at(562_347))),
+                            Step.PeerSent(at(1_465_642), listOf(PacketKind.Initial, PacketKind.Handshake), Fate.Delivered(at(1_661_641))),
+                            Step.PeerSent(at(1_465_642), listOf(PacketKind.Handshake), Fate.Delivered(at(1_661_641))),
+                            Step.OursSent(
+                                at(2_729_985),
+                                listOf(PacketKind.Initial, PacketKind.Handshake, PacketKind.OneRtt),
+                                Fate.Delivered(at(2_889_303)),
+                            ),
+                            Step.OursDid(at(3_004_991), OurAction.Write(stream = 0, bytes = PAYLOAD, end = StreamEnd.Open)),
+                            Step.OursSent(at(3_004_991), oneRtt, Fate.Lost),
+                            Step.PeerSent(at(4_212_632), oneRtt, Fate.Delivered(at(64_660_759))),
+                            Step.PeerSent(at(4_423_921), oneRtt, Fate.Delivered(at(64_913_196))),
+                            Step.PeerSent(at(33_084_924), oneRtt, Fate.Delivered(at(64_913_196))),
+                            Step.OursSent(at(64_996_883), oneRtt, Fate.Delivered(at(65_164_943)), Carries.AcksOnly),
+                            Step.OursSent(at(98_579_641), oneRtt, Fate.Delivered(at(98_803_767))),
+                            Step.PeerSent(at(98_952_612), oneRtt, Fate.Delivered(at(99_148_822))),
+                            Step.PeerSent(at(99_657_220), oneRtt, Fate.Delivered(at(99_850_332))),
+                            Step.OursSent(at(99_891_134), oneRtt, Fate.Delivered(at(99_891_134)), Carries.AcksOnly),
+                            Step.OursDid(at(600_207_275), OurAction.Close),
+                            Step.OursSent(at(600_207_275), oneRtt, Fate.Delivered(at(600_771_323)), Carries.AcksOnly),
+                        ),
+                    established = Moment.At(at(2_729_985)),
+                    end = ConnectionEnd.ClosedByUs(at(600_207_275)),
+                    runsFor = at(600_207_275),
+                    tolerance = SendTimeTolerance(),
+                    idsAtEstablishment = SPARE_IDS,
+                    ourTimers = OurTimers.AsRecorded(listOf(at(98_579_641))),
+                )
+            recordings = Recorded(emptyList(), emptyList(), 1)
+            assertFollowedWholeTwice(schedule)
+        }
+
+    /**
+     * Kept recordings of clients that never ran quiche's timeout: each read the server's next datagrams late, and what
+     * it read made the probe it was owed unnecessary. A replay runs no timer its recording does not hold, so it sends
+     * what was recorded and nothing more (CI: "our datagram 4 [OneRtt] is one more than the capture holds" at 38.61 ms,
+     * and "our datagram 3 [Handshake]" at 9.43 ms).
+     */
+    @Test
+    fun aClientThatRanNoTimerIsReplayedRunningNone() =
+        replayTest("aClientThatRanNoTimerIsReplayedRunningNone") {
+            for (kept in listOf("no-timer-run-one-rtt", "no-timer-run-handshake")) {
+                val client = keptRecording("$kept.client.trace")
+                assertTrue(client.none { it is TraceEvent.TimerFired }, "$kept: the recorded client ran no timer")
+                assertFollowedWholeTwice(scheduleOf(Recorded(client, keptRecording("$kept.server.trace"), 1)))
+            }
+        }
+
+    /**
+     * A kept recording whose client read the server's datagram and sent its acknowledgement in one turn, both stamped
+     * with that turn's one clock reading. The acknowledgement follows the datagram it acknowledges in the schedule, so
+     * the replay sends it (CI: "captured acknowledgements not sent: our datagrams [3]", then "our datagram 4 [OneRtt],
+     * captured at 62.54 ms, was not sent").
+     */
+    @Test
+    fun anAnswerSentInTheTurnThatReadItsDatagramIsReplayedAfterThatDatagram() =
+        replayTest("anAnswerSentInTheTurnThatReadItsDatagramIsReplayedAfterThatDatagram") {
+            val client = keptRecording("same-turn-answer.client.trace")
+            val read = client.filterIsInstance<TraceEvent.DgramIn>()
+            assertTrue(
+                client.filterIsInstance<TraceEvent.DgramOut>().any { out -> read.any { it.at == out.at } },
+                "the recording holds a datagram read and one sent at the same instant",
+            )
+            assertFollowedWholeTwice(scheduleOf(Recorded(client, keptRecording("same-turn-answer.server.trace"), 1)))
+        }
+
+    private fun keptRecording(name: String): List<TraceEvent> =
+        TraceEvent.parseAll(
+            assertNotNull(this::class.java.classLoader.getResource("replay-recordings/$name"), "no kept recording $name").readText(),
+        )
 
     /** Whether a call has reached quiche yet. */
     private enum class Calls { Cold, Warm }

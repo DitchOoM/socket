@@ -1,7 +1,8 @@
 package com.ditchoom.socket.quic.core.conn
 
 import com.ditchoom.socket.quic.LinkClass
-import com.ditchoom.socket.quic.core.life.CloseRule
+import com.ditchoom.socket.quic.core.life.CloseChoice
+import com.ditchoom.socket.quic.core.life.DrainUntil
 import com.ditchoom.socket.quic.core.time.WaitResolution
 import kotlin.jvm.JvmInline
 
@@ -101,7 +102,8 @@ internal class SlotRules(
     val pacing: PacingRule,
     val ack: AckRule,
     val handshake: HandshakeRule,
-    val close: CloseRule,
+    /** What a close with NO_ERROR asks for, the server's close of each connection included. */
+    val close: CloseChoice,
     val datagrams: DatagramRule = DatagramRule.Off,
     val keepAlive: KeepAliveRule = KeepAliveRule.Off,
     val earlyData: EarlyDataRule = EarlyDataRule.Refused,
@@ -109,14 +111,14 @@ internal class SlotRules(
     companion object {
         /**
          * A loop whose waits wake within a millisecond, quiche's own RFC 9002 handshake with no deadline, a graceful
-         * close that waits for what was written to be acknowledged, at most the default idle timeout, and an ACK that
-         * waits until the end of its pass for a reply queued in it.
+         * close that waits for what was written to be acknowledged, at most the default limit, and an ACK that waits
+         * until the end of its pass for a reply queued in it.
          */
         val Default =
             forWaits(
                 WaitResolution(1_000_000L),
                 HandshakeRule(PtoRule.Rfc9002, HandshakeBound.UntilClosed, LinkClass.Unknown),
-                CloseRule.UntilAcknowledged(DEFAULT_IDLE_NANOS),
+                CloseChoice.Graceful(CloseChoice.DEFAULT_LIMIT_NANOS, DrainUntil.Acknowledged),
             )
 
         /**
@@ -127,7 +129,7 @@ internal class SlotRules(
         fun forWaits(
             waits: WaitResolution,
             handshake: HandshakeRule,
-            close: CloseRule,
+            close: CloseChoice,
             datagrams: DatagramRule = DatagramRule.Off,
             keepAlive: KeepAliveRule = KeepAliveRule.Off,
             earlyData: EarlyDataRule = EarlyDataRule.Refused,
@@ -142,7 +144,5 @@ internal class SlotRules(
             keepAlive,
             earlyData,
         )
-
-        private const val DEFAULT_IDLE_NANOS = 30_000_000_000L
     }
 }

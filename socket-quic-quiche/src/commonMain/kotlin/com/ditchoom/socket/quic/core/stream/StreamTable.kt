@@ -12,18 +12,6 @@ import com.ditchoom.socket.quic.core.pool.LongObjectMap
 import com.ditchoom.socket.quic.core.pool.LongQueue
 import com.ditchoom.socket.quic.core.pool.LongSet
 
-/** Whether the table's connection has ended, and how: an operation that starts after the end fails with it. */
-internal sealed interface Streams {
-    data object Open : Streams
-
-    class Ended(
-        val end: ConnEnd,
-    ) : Streams
-}
-
-/** What [StreamTable.tryOpen] did. */
-internal enum class Opened { Opened, AtLimit }
-
 /**
  * A connection's streams: entries by id, operations waiting to write, opens waiting for the peer's stream credit, and
  * the streams the peer opened that nobody has been told of yet. Inside the connection only.
@@ -42,18 +30,14 @@ internal class StreamTable(
 ) {
     private val drain = StreamDrain(io, drains)
 
-    private val entries = LongObjectMap<StreamEntry>()
-
-    /** Entries of spent streams, kept for the next streams. */
-    private val spare = ArrayList<StreamEntry>()
-
     /** What [unpark] finds for a stream that has no entry: nothing waits on it. */
     private val absent = StreamEntry(QuicStreamId(0L))
 
-    /** Made once, so a lookup of a stream that exists allocates nothing, and a new stream reuses a spent one's entry. */
-    private val newEntry: (Long) -> StreamEntry = { id ->
-        if (spare.isEmpty()) StreamEntry(QuicStreamId(id)) else spare.removeAt(spare.size - 1).reuse(QuicStreamId(id))
-    }
+    private val entries = LongObjectMap(absent)
+
+    /** Entries of spent streams, which [entry] gives the next streams: a lookup allocates nothing and boxes no id. */
+    private val spare = ArrayList<StreamEntry>()
+
     private val writeWaiters = LongSet()
     private val opens = ArrayDeque<Waiter>()
     private val incoming = LongQueue()
@@ -62,14 +46,18 @@ internal class StreamTable(
     private var nextBidi: Long = if (role == QuicRole.Client) 0L else 1L
     private var opened: Long = 0L
 
-    var state: Streams = Streams.Open
+    var state: Streams = Streams.Open(StreamSend(q, io))
         private set
 
     /** Monotonic: received data handed to a parked reader, and streams the peer opened, counted as they are found. */
     var handedUp = 0L
         private set
 
-    fun entry(id: QuicStreamId): StreamEntry = entries.getOrPut(id.id, newEntry)
+    fun entry(id: QuicStreamId): StreamEntry {
+        val held = entries.getOrDefault(id.id, absent)
+        if (held !== absent) return held
+        return (if (spare.isEmpty()) StreamEntry(id) else spare.removeAt(spare.size - 1).reuse(id)).also { entries[id.id] = it }
+    }
 
     /** Whether [id] names a stream that is spent: one this side opened or was told of, whose entry was let go. */
     fun isSpent(id: QuicStreamId): Boolean = !entries.containsKey(id.id) && (initiatedByPeer(id) || id.id < nextBidi)
@@ -185,9 +173,9 @@ internal class StreamTable(
      * not created answers INVALID_STREAM_STATE), which is also where the peer's limit shows. At the limit the id is
      * not spent.
      */
-    fun tryOpen(): Opened {
+    fun tryOpen(send: StreamSend): Opened {
         val id = QuicStreamId(nextBidi)
-        if (io.send(id, 0L, 0, WriteEnd.More).code() == QUICHE_ERR_STREAM_LIMIT) return Opened.AtLimit
+        if (send.send(id, 0L, 0, WriteEnd.More).code() == QUICHE_ERR_STREAM_LIMIT) return Opened.AtLimit
         nextBidi += STREAM_ID_STEP
         entry(id)
         opened = id.id
@@ -221,6 +209,17 @@ internal class StreamTable(
 
     @PublishedApi
     internal fun incomingIds(): LongQueue = incoming
+
+    /** The close point of a close ending with [end]: no stream accepts data from here; a parked write or open is refused. */
+    fun closePoint(end: ConnEnd) {
+        if (state !is Streams.Open) return
+        state = Streams.Closing(end)
+        writeWaiters.clear()
+        val writing = ArrayList<StreamEntry>()
+        entries.forEachValue { if (it.writer !== Nobody) writing.add(it) }
+        for (entry in writing) entry.wakeWriter(this)
+        repeat(opens.size) { opens.removeFirst().let { if (it.retry(this) == Retry.Again) opens.addLast(it) } }
+    }
 
     /** The connection ended with [end]: every waiting operation fails with it, and so does every later one. */
     fun endAll(end: ConnEnd) {

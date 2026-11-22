@@ -3,14 +3,17 @@ package com.ditchoom.socket.quic.core.conn
 import com.ditchoom.socket.quic.LinkClass
 import com.ditchoom.socket.quic.QuicResumptionOutcome
 import com.ditchoom.socket.quic.QuicStreamId
+import com.ditchoom.socket.quic.core.life.CloseOutcome
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.RttSample
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 
-/** What an established connection reports once: how its handshake went, and the length of the negotiated ALPN. */
+/** What an established connection reports once: how its handshake went, and what it settled. */
 internal class ConnectReport(
     val handshakeNanos: Long,
-    val alpnLength: Int,
+    val facts: HandshakeFacts,
+    /** The peer's certificates, the receiver's to free. */
+    val chain: PeerChain,
     val firstSample: RttSample,
     /** The RTT assumed before the first sample. */
     val priorNanos: Long,
@@ -18,8 +21,6 @@ internal class ConnectReport(
     /** quiche's PTO expiries during the handshake. */
     val probes: Int,
     val pace: ConnectPace,
-    /** How the handshake used a session ticket. */
-    val resumption: QuicResumptionOutcome,
 )
 
 /** A server accepted the client's 0-RTT before its handshake completed, which had settled the ALPN and the resumption. */
@@ -66,9 +67,14 @@ internal interface ConnSink {
         length: Int,
     )
 
-    /** The connection ended with [end]; [held] is what it received that no read returned, for the reads after it. */
+    /**
+     * The connection ended with [end]; [held] is what it received that no read returned, for the reads after it,
+     * [outcome] how a close asked of it went, and [handshake] whether its handshake had completed (then reported).
+     */
     fun ended(
         end: ConnEnd,
         held: HeldReads,
+        outcome: CloseOutcome,
+        handshake: HandshakeFate,
     )
 }

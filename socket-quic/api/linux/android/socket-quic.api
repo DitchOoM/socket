@@ -1108,6 +1108,13 @@ public final class com/ditchoom/socket/quic/QuicCloseCircumstance$CallerThreadFa
 	public fun toString ()Ljava/lang/String;
 }
 
+public final class com/ditchoom/socket/quic/QuicCloseCircumstance$Closing : com/ditchoom/socket/quic/QuicCloseCircumstance {
+	public static final field INSTANCE Lcom/ditchoom/socket/quic/QuicCloseCircumstance$Closing;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
 public final class com/ditchoom/socket/quic/QuicCloseCircumstance$Ended : com/ditchoom/socket/quic/QuicCloseCircumstance {
 	public static final field INSTANCE Lcom/ditchoom/socket/quic/QuicCloseCircumstance$Ended;
 	public fun equals (Ljava/lang/Object;)Z

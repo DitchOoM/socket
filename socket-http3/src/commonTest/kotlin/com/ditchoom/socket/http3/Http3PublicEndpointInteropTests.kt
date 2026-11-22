@@ -4,6 +4,7 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.TransportConfig
+import com.ditchoom.socket.http3.codec.Http3Request
 import com.ditchoom.socket.quic.QuicOptions
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.runTest
