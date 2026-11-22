@@ -8,6 +8,7 @@ import com.ditchoom.socket.quic.core.life.Flushed
 import com.ditchoom.socket.quic.core.life.Holding
 import com.ditchoom.socket.quic.core.life.Life
 import com.ditchoom.socket.quic.core.life.LifeStep
+import com.ditchoom.socket.quic.core.life.PeerAddress
 import com.ditchoom.socket.quic.core.life.errorCode
 import com.ditchoom.socket.quic.core.life.flightCode
 import com.ditchoom.socket.quic.core.path.Outgoing
@@ -153,15 +154,25 @@ internal fun ConnParts.keepClose(
         }
     }
     when (egress.last()) {
-        LastOut.Kept -> life.linger.closeOut(out, egress.lastOffset(), egress.lastLength(), egress.lastTarget(), until)
+        LastOut.Kept -> {
+            val confirmation = handshake.confirmation()
+            val address =
+                when (confirmation) {
+                    // Before confirmation the peer's address may not be validated (RFC 9000 §8.1): no unprompted sends.
+                    Confirmation.Pending -> PeerAddress.Unvalidated
+                    Confirmation.Confirmed -> slots.paths.address()
+                }
+            life.linger.closeOut(out, egress.closeDatagrams(out, confirmation), now, until, address)
+        }
         LastOut.Dropped, LastOut.None -> life.linger.silent(until)
     }
     return CloseSent.Yes
 }
 
 /**
- * Serves a connection that has ended: sends the close it still owes, answers late datagrams with it, and lets go
- * once its linger is over. Only its own deadline brings it back; quiche's timers no longer drive it.
+ * Serves a connection that has ended: sends the close it still owes, answers late datagrams with it, repeats it as its
+ * linger says, and lets go once the linger is over. Only its own deadline brings it back; quiche's timers no longer
+ * drive it.
  */
 internal fun ConnParts.over(
     now: Nanos,
@@ -172,6 +183,7 @@ internal fun ConnParts.over(
     val linger = life.linger
     if (linger.sending()) sendClose(now, out, paths)
     val before = out.pending
+    linger.repeatDue(now)
     val room = linger.answer(out)
     for (n in before until out.pending) flight.datagramOut(now, out.storage, out.offsetOf(n), out.lengthOf(n))
     if (linger.due(now)) life.settle()

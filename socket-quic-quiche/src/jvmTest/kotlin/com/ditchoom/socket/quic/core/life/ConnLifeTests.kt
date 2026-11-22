@@ -99,7 +99,7 @@ class ConnLifeTests {
         assertIs<Ending.First>(life.end(ConnEnd.ByPeer(QuicError.ApplicationError(3))))
         assertIs<Life.Lingering>(life.view(), "the ids stay for quiche's draining time")
         assertEquals(Holding.Ids, life.linger.holds())
-        life.linger.late()
+        life.linger.late(CLOSE_LENGTH)
         assertEquals(
             0,
             SendBatch(nativeBytes(1500), BatchLimits(1, 1500))
@@ -220,12 +220,18 @@ class ConnLifeTests {
         val out = SendBatch(nativeBytes(8 * 1500), BatchLimits(8, 1500))
         out.storage.putLong(0, CLOSE_BYTES)
         out.commit(CLOSE_LENGTH, SendTarget.ConnectedPeer)
-        life.linger.closeOut(out, 0, CLOSE_LENGTH, SendTarget.ConnectedPeer, Nanos(LINGER))
+        life.linger.closeOut(
+            out,
+            listOf(CloseDatagram(0, CLOSE_LENGTH, SendTarget.ConnectedPeer)),
+            Nanos(0L),
+            Nanos(LINGER),
+            PeerAddress.Validated,
+        )
         assertIs<Ending.First>(life.end(ConnEnd.ByLocal(QuicError.NoError)))
         assertIs<Life.Lingering>(life.view(), "the close is out: the connection lingers with its ids")
         out.took(out.pending)
 
-        repeat(LATE) { life.linger.late() }
+        repeat(LATE) { life.linger.late(CLOSE_LENGTH) }
         assertEquals(Room.Open, life.linger.answer(out))
         // Answers at the 1st, 2nd, 4th and 8th of 10 late datagrams.
         assertEquals(4, out.pending)
@@ -243,7 +249,60 @@ class ConnLifeTests {
         assertSame(Wire.Done, life.linger.wire())
     }
 
+    @Test
+    fun aLingeringCloseIsRepeatedOneAndTwoProbeTimeoutsAfterItThenNeverAgain() {
+        val out = closeOutLingering()
+        val sink = WakeSink()
+        life.linger.offerWake(sink)
+        assertEquals(Nanos(PTO), sink.earliest(), "the first repeat is the next wake")
+        val repeats = (0L..LINGER step MS).sumOf { at -> repeatsAt(out, Nanos(at)) }
+        assertEquals(2, repeats, "one probe timeout after the close and two, then none")
+        assertEquals(2L, counts.closesResent)
+        assertTrue(life.linger.due(Nanos(LINGER)), "and none after the linger's end")
+    }
+
+    @Test
+    fun aLateDatagramEndsTheRepeatsItsAnswerIsTheOnlyCloseSent() {
+        val out = closeOutLingering()
+        life.linger.late(CLOSE_LENGTH)
+        assertEquals(1, repeatsAt(out, Nanos(1L)), "the late datagram is answered")
+        val repeats = (2L..LINGER step MS).sumOf { at -> repeatsAt(out, Nanos(at)) }
+        assertEquals(0, repeats, "the peer still sends: nothing is repeated unprompted")
+    }
+
+    /** A close sent at 0 whose linger is quiche's three probe timeouts; the batch it went out in is emptied. */
+    private fun closeOutLingering(): SendBatch {
+        life.close(NOW, BY_LOCAL, Nanos(0L))
+        val out = SendBatch(nativeBytes(8 * 1500), BatchLimits(8, 1500))
+        out.storage.putLong(0, CLOSE_BYTES)
+        out.commit(CLOSE_LENGTH, SendTarget.ConnectedPeer)
+        life.linger.closeOut(
+            out,
+            listOf(CloseDatagram(0, CLOSE_LENGTH, SendTarget.ConnectedPeer)),
+            Nanos(0L),
+            Nanos(LINGER),
+            PeerAddress.Validated,
+        )
+        life.end(BY_LOCAL)
+        out.took(out.pending)
+        return out
+    }
+
+    /** The datagrams the linger writes when served at [at]. */
+    private fun repeatsAt(
+        out: SendBatch,
+        at: Nanos,
+    ): Int {
+        life.linger.repeatDue(at)
+        life.linger.answer(out)
+        val sent = out.pending
+        out.took(sent)
+        return sent
+    }
+
     private companion object {
+        const val MS = 1_000_000L
+        const val PTO = 60_000_000L
         const val QUICHE_ERR_DONE = -1
         const val LIMIT = 1_000_000_000L
         const val LINGER = 180_000_000L

@@ -19,6 +19,8 @@ import com.ditchoom.socket.quic.core.loop.RunningLoop
 import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.MonotonicClock
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
+import com.ditchoom.socket.quic.trace.TraceCapture
+import com.ditchoom.socket.quic.traceRecorderFor
 import kotlinx.coroutines.CoroutineScope
 import kotlin.random.Random
 
@@ -58,4 +60,6 @@ internal class ClientWiring(
     val tokens: TokenHome = TokenHome.NotKept,
     /** What the connection does with a send time on a clock the loop does not read. */
     val mismatch: MismatchResponse = MismatchResponse.Unpaced,
+    /** The connection's trace: the connect makes it once, to judge its options before any socket opens. */
+    val capture: TraceCapture = traceRecorderFor(options),
 )

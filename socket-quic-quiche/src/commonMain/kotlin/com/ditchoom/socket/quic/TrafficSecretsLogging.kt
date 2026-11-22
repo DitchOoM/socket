@@ -11,15 +11,17 @@ import com.ditchoom.socket.quic.trace.record
 internal fun keyLogDirectory(): EnvironmentSetting = environmentSetting("quic.keylog.dir", "QUIC_KEYLOG_DIR")
 
 /**
- * Name [conn]'s TLS key log: the capture's own [TrafficSecretsLog] when it named one, else the
- * `QUIC_KEYLOG_DIR` door (`quiche-<role>-<session>.keys`), else none. Opt-in only, because the file
- * decrypts the connection. Must run before the connection's first packet in either direction, or the
- * handshake's secrets are never written. A file quiche cannot open is recorded in the trace, never fatal.
+ * Name [conn]'s TLS key log: the capture's own [TrafficSecretsLog] when it named one, else a file in [directory]
+ * (`quiche-<role>-<session>.keys`), else none. Opt-in only, because the file decrypts the connection. Must run before
+ * the connection's first packet in either direction, or the handshake's secrets are never written. quiche opens the file
+ * in this call, on the calling thread, and writes and flushes each line from inside the connection's own processing, as
+ * the TLS secrets are derived. A file quiche cannot open is recorded in the trace, never fatal.
  */
 internal fun QuicheApi.nameTrafficSecretsLog(
     conn: QuicheConn,
     capture: TraceCapture,
     role: QuicRole,
+    directory: EnvironmentSetting = keyLogDirectory(),
     session: () -> QuicSessionId,
 ) {
     val named =
@@ -31,9 +33,12 @@ internal fun QuicheApi.nameTrafficSecretsLog(
         when (named) {
             is TrafficSecretsLog.File -> named
             TrafficSecretsLog.Off ->
-                when (val dir = keyLogDirectory()) {
+                when (directory) {
                     EnvironmentSetting.Unset -> TrafficSecretsLog.Off
-                    is EnvironmentSetting.Value -> TrafficSecretsLog.File("${dir.text.trimEnd('/')}/quiche-${role.label}-${session()}.keys")
+                    is EnvironmentSetting.Value ->
+                        TrafficSecretsLog.File(
+                            "${directory.text.trimEnd('/')}/quiche-${role.label}-${session()}.keys",
+                        )
                 }
         }
     when (target) {

@@ -7,12 +7,14 @@ import com.ditchoom.socket.ServerCertificateRejectedException
 import com.ditchoom.socket.ServerCertificateRejection
 import com.ditchoom.socket.quic.NativeSocketRefusal
 import com.ditchoom.socket.quic.NetworkRefusal
+import com.ditchoom.socket.quic.PinnedRadioRefusedException
 import com.ditchoom.socket.quic.QuicAccessDenial
 import com.ditchoom.socket.quic.QuicAppErrorCode
 import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicConnectionEnd
 import com.ditchoom.socket.quic.QuicNativeMemoryRequiredException
+import com.ditchoom.socket.quic.QuicOptionNotHonouredException
 import com.ditchoom.socket.quic.QuicStreamAbort
 import com.ditchoom.socket.quic.QuicStreamClosedException
 import com.ditchoom.socket.quic.QuicStreamException
@@ -27,7 +29,6 @@ import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.stream.QUICHE_ERR_INVALID_STREAM_STATE
 import com.ditchoom.socket.quic.core.stream.QUICHE_ERR_STREAM_RESET
 import com.ditchoom.socket.quic.core.stream.QUICHE_ERR_STREAM_STOPPED
-import com.ditchoom.socket.quic.core.stream.SendRefusal
 import com.ditchoom.socket.quic.core.udp.SpecLayoutMismatch
 import com.ditchoom.socket.quic.quicheCapabilities
 import kotlinx.coroutines.CancellableContinuation
@@ -137,13 +138,6 @@ internal sealed interface Raised : OpFailure {
     ) : Raised
 }
 
-/** The failure a refused stream send is: past the close point, or after the end. */
-internal fun SendRefusal.raised(): Raised =
-    when (this) {
-        is SendRefusal.PastClose -> Raised.PastClose(end)
-        is SendRefusal.Ended -> Raised.ConnEnded(end)
-    }
-
 /** The one place the edge hands a caller a failure: [failure] resumes this continuation as an exception. */
 internal fun <T> CancellableContinuation<T>.fail(
     failure: OpFailure,
@@ -165,6 +159,15 @@ internal fun raiseFailure(
         is OpFailure.DeadlinePassed -> throw deadlineException(failure.bound)
         is Raised -> raise(failure, during)
     }
+
+/** Raises an option refusal on the caller's thread, before anything is opened; a honoured verdict raises nothing. */
+internal fun OptionVerdict.orRefuse() {
+    when (this) {
+        is OptionVerdict.Honoured -> Unit
+        is OptionVerdict.Refused -> throw QuicOptionNotHonouredException(refusal)
+        is OptionVerdict.PinRefused -> throw PinnedRadioRefusedException(radio, refusal)
+    }
+}
 
 /** Raises, on the caller's thread, the cancellation of the job in [context], which a caller that was cancelled has. */
 @OptIn(InternalCoroutinesApi::class)
