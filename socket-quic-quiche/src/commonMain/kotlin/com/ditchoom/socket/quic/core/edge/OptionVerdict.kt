@@ -69,11 +69,10 @@ private fun migrationVerdict(policy: MigrationPolicy): OptionVerdict =
             OptionVerdict.PinRefused(policy.radio, PinnedRadioRefusal.EngineCannotPin)
     }
 
-/** A stream open parks until the peer grants a stream or the connection ends; the caller's own cancellation bounds it. */
+/** A stream open waits for the peer's stream credit until the connection ends, or until the policy's bound passes. */
 private fun streamOpenVerdict(policy: StreamOpenPolicy): OptionVerdict =
     when (policy) {
-        is StreamOpenPolicy.UntilClosed -> OptionVerdict.Honoured
-        is StreamOpenPolicy.Bounded -> refused(QuicOptionRefusal.StreamOpenNotBounded(policy.deadline))
+        is StreamOpenPolicy.UntilClosed, is StreamOpenPolicy.Bounded -> OptionVerdict.Honoured
     }
 
 /** The core holds no standby link on any platform. */

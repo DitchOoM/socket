@@ -93,6 +93,12 @@ internal sealed interface Raised : OpFailure {
         val side: QuicStreamSide,
     ) : Raised
 
+    /** A call on a direction a unidirectional stream does not have: a read of a send-only one, a write of a receive-only one. */
+    class NoSuchDirection(
+        val stream: QuicStreamId,
+        val side: QuicStreamSide,
+    ) : Raised
+
     /** A write was handed memory quiche cannot read in place. */
     class NotNative(
         val stream: QuicStreamId,
@@ -192,12 +198,6 @@ internal fun raiseEnded(
     during: QuicCloseCircumstance,
 ): Nothing = throw QuicCloseException(end = end, circumstance = during)
 
-/** The exception that reports [end] to a caller who was [during] something, for channels that are closed with one. */
-internal fun endedWith(
-    end: ConnEnd,
-    during: QuicCloseCircumstance,
-): Throwable = closeOf(end, during)
-
 private fun exceptionOf(
     failure: Raised,
     during: QuicCloseCircumstance,
@@ -222,6 +222,7 @@ private fun exceptionOf(
             )
         is Raised.Thrown -> failure.exception
         is Raised.StreamClosed -> QuicStreamClosedException(failure.stream.id, failure.side)
+        is Raised.NoSuchDirection -> QuicStreamDirectionAbsent(failure.stream.id, failure.side)
         is Raised.Typed -> QuicTypedStreamException(failure.stream.id, failure.failure)
         is Raised.NotNative ->
             QuicNativeMemoryRequiredException.forBuffer(
@@ -245,7 +246,7 @@ private fun exceptionOf(
     }
 
 /** The close exception for [end]: its public end and the circumstance it names. */
-private fun closeOf(
+internal fun closeOf(
     end: ConnEnd,
     during: QuicCloseCircumstance,
 ): QuicCloseException = QuicCloseException(end = publicEndOf(end), circumstance = end.circumstance(during))
@@ -278,6 +279,12 @@ internal class CoreLoopsClosed : IllegalStateException()
 internal class CoreSpecLayoutMismatch(
     val mismatch: SpecLayoutMismatch,
 ) : IllegalStateException()
+
+/** A call on the [side] of a unidirectional stream that it does not have; distinct from a side the caller closed. */
+internal class QuicStreamDirectionAbsent(
+    val streamId: Long,
+    val side: QuicStreamSide,
+) : UnsupportedOperationException()
 
 /** A write quiche refused for a reason of its own, by quiche's code. */
 internal class QuicStreamWriteFailed(

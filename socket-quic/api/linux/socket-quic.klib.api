@@ -113,7 +113,6 @@ final enum class com.ditchoom.socket.quic/QuicOptionName : kotlin/Enum<com.ditch
     enum entry Datagrams // com.ditchoom.socket.quic/QuicOptionName.Datagrams|null[0]
     enum entry Migration // com.ditchoom.socket.quic/QuicOptionName.Migration|null[0]
     enum entry StandbyLink // com.ditchoom.socket.quic/QuicOptionName.StandbyLink|null[0]
-    enum entry StreamOpenPolicy // com.ditchoom.socket.quic/QuicOptionName.StreamOpenPolicy|null[0]
     enum entry Trace // com.ditchoom.socket.quic/QuicOptionName.Trace|null[0]
 
     final val entries // com.ditchoom.socket.quic/QuicOptionName.entries|#static{}entries[0]
@@ -2386,21 +2385,6 @@ sealed interface com.ditchoom.socket.quic/QuicOptionRefusal { // com.ditchoom.so
         final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicOptionRefusal.DatagramSendQueueTooShort.equals|equals(kotlin.Any?){}[0]
         final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicOptionRefusal.DatagramSendQueueTooShort.hashCode|hashCode(){}[0]
         final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicOptionRefusal.DatagramSendQueueTooShort.toString|toString(){}[0]
-    }
-
-    final class StreamOpenNotBounded : com.ditchoom.socket.quic/QuicOptionRefusal { // com.ditchoom.socket.quic/QuicOptionRefusal.StreamOpenNotBounded|null[0]
-        constructor <init>(kotlin.time/Duration) // com.ditchoom.socket.quic/QuicOptionRefusal.StreamOpenNotBounded.<init>|<init>(kotlin.time.Duration){}[0]
-
-        final val deadline // com.ditchoom.socket.quic/QuicOptionRefusal.StreamOpenNotBounded.deadline|{}deadline[0]
-            final fun <get-deadline>(): kotlin.time/Duration // com.ditchoom.socket.quic/QuicOptionRefusal.StreamOpenNotBounded.deadline.<get-deadline>|<get-deadline>(){}[0]
-        final val option // com.ditchoom.socket.quic/QuicOptionRefusal.StreamOpenNotBounded.option|{}option[0]
-            final fun <get-option>(): com.ditchoom.socket.quic/QuicOptionName // com.ditchoom.socket.quic/QuicOptionRefusal.StreamOpenNotBounded.option.<get-option>|<get-option>(){}[0]
-
-        final fun component1(): kotlin.time/Duration // com.ditchoom.socket.quic/QuicOptionRefusal.StreamOpenNotBounded.component1|component1(){}[0]
-        final fun copy(kotlin.time/Duration = ...): com.ditchoom.socket.quic/QuicOptionRefusal.StreamOpenNotBounded // com.ditchoom.socket.quic/QuicOptionRefusal.StreamOpenNotBounded.copy|copy(kotlin.time.Duration){}[0]
-        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicOptionRefusal.StreamOpenNotBounded.equals|equals(kotlin.Any?){}[0]
-        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicOptionRefusal.StreamOpenNotBounded.hashCode|hashCode(){}[0]
-        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicOptionRefusal.StreamOpenNotBounded.toString|toString(){}[0]
     }
 
     final object QlogNotBudgeted : com.ditchoom.socket.quic/QuicOptionRefusal { // com.ditchoom.socket.quic/QuicOptionRefusal.QlogNotBudgeted|null[0]

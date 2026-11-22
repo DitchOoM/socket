@@ -7,6 +7,7 @@ import com.ditchoom.socket.quic.core.demux.BoundedIo
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.Life
 import com.ditchoom.socket.quic.core.stream.Retry
+import com.ditchoom.socket.quic.core.stream.StreamKind
 import com.ditchoom.socket.quic.core.stream.StreamTable
 import com.ditchoom.socket.quic.core.stream.Waiter
 import com.ditchoom.socket.quic.core.testing.ConnRig
@@ -47,7 +48,7 @@ class ConnCloseTests {
         rig.conn.submit(
             object : ConnWork() {
                 override fun run(inside: Inside) =
-                    inside.streams.waitToOpen(
+                    inside.streams.opens.lane(StreamKind.Bidirectional).wait(
                         object : Waiter {
                             override fun retry(table: StreamTable): Retry = Retry.Again
 

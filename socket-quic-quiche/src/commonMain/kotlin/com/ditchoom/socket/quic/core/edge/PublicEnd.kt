@@ -1,5 +1,6 @@
 package com.ditchoom.socket.quic.core.edge
 
+import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicCloseReason
 import com.ditchoom.socket.quic.QuicConnectionEnd
 import com.ditchoom.socket.quic.QuicHandshakeProgress
@@ -82,3 +83,9 @@ internal fun publicEndOf(end: ConnEnd): QuicConnectionEnd =
         is ConnEnd.LocalAddressGone -> QuicConnectionEnd.LocalAddressGone
         is ConnEnd.NoUsablePath -> QuicConnectionEnd.NoUsablePath
     }
+
+/** The exception that reports [end] to a caller who was [during] something, for channels that are closed with one. */
+internal fun endedWith(
+    end: ConnEnd,
+    during: QuicCloseCircumstance,
+): Throwable = closeOf(end, during)
