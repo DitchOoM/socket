@@ -8,7 +8,6 @@ import com.ditchoom.socket.quic.EarlyDataAcceptance
 import com.ditchoom.socket.quic.HandlerStart
 import com.ditchoom.socket.quic.HandshakeRecord
 import com.ditchoom.socket.quic.QuicCloseCircumstance
-import com.ditchoom.socket.quic.QuicCloseReason
 import com.ditchoom.socket.quic.QuicConnectionState
 import com.ditchoom.socket.quic.QuicSessionTicket
 import com.ditchoom.socket.quic.QuicSessionTicketState
@@ -21,6 +20,7 @@ import com.ditchoom.socket.quic.core.conn.EarlyReport
 import com.ditchoom.socket.quic.core.conn.HeldReads
 import com.ditchoom.socket.quic.core.conn.HeldTake
 import com.ditchoom.socket.quic.core.conn.Owed
+import com.ditchoom.socket.quic.core.life.CloseOutcome
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.observe.Published
 import com.ditchoom.socket.quic.core.udp.NativeBytes
@@ -37,10 +37,11 @@ import kotlin.concurrent.atomics.ExperimentalAtomicApi
 internal sealed interface EdgeEnd {
     data object Open : EdgeEnd
 
-    /** Ended with [end]; [held] is what it had received that no read returned. */
+    /** Ended with [end]; [held] is what it had received that no read returned, and [outcome] how a close asked of it went. */
     class Ended(
         val end: ConnEnd,
         val held: HeldReads,
+        val outcome: CloseOutcome,
     ) : EdgeEnd
 }
 
@@ -68,7 +69,7 @@ internal class EdgeState(
 
     /** The streams the peer opened, oldest first. */
     val incoming = Channel<PeerStream>(Channel.UNLIMITED)
-    val closed = CompletableDeferred<QuicCloseReason>()
+    val closed = CompletableDeferred<EdgeEnd.Ended>()
 
     /** A server's: whether it accepted the client's 0-RTT before the handshake completed. */
     val earlyData = MutableStateFlow<EarlyDataAcceptance>(EarlyDataAcceptance.None)
@@ -156,8 +157,10 @@ internal class EdgeState(
     override fun ended(
         end: ConnEnd,
         held: HeldReads,
+        outcome: CloseOutcome,
     ) {
-        endCell.store(EdgeEnd.Ended(end, held))
+        val ended = EdgeEnd.Ended(end, held, outcome)
+        endCell.store(ended)
         reads.close()
         val inHand = handed.atEnd()
         val owing = held.owing() + inHand.streams()
@@ -167,16 +170,13 @@ internal class EdgeState(
         val reason = closeReasonOf(end)
         publish(QuicConnectionState.Closed(reason))
         start.compareAndSet(HandlerStart.NotYet, HandlerStart.Never)
-        wake(end, reason)
+        wake(ended)
     }
 
     /** Fails a parked accept and every later one, and returns every waiting `close()`; only after the end is published. */
-    private fun wake(
-        end: ConnEnd,
-        reason: QuicCloseReason,
-    ) {
-        incoming.close(endedWith(end, QuicCloseCircumstance.Ended))
-        closed.complete(reason)
+    private fun wake(ended: EdgeEnd.Ended) {
+        incoming.close(endedWith(ended.end, QuicCloseCircumstance.Ended))
+        closed.complete(ended)
     }
 
     /** Any thread, after the end: what a read of [stream] gets next. */
@@ -198,6 +198,17 @@ internal class EdgeState(
         if (now !is EdgeEnd.Ended) return
         now.held.free(stream)
         leave(stream)
+    }
+
+    /** The caller's close: once the connection has ended, the caller is done with it, and what no read took is freed. */
+    suspend fun closedByCaller(): EdgeEnd.Ended = closed.await().also { letGoAll() }
+
+    /** Any thread: the caller is done with the ended connection; what it held that no read took is freed. */
+    private fun letGoAll() {
+        when (val now = endCell.load()) {
+            is EdgeEnd.Ended -> now.held.freeAll()
+            is EdgeEnd.Open -> Unit
+        }
     }
 
     private fun leave(stream: QuicStreamId) =

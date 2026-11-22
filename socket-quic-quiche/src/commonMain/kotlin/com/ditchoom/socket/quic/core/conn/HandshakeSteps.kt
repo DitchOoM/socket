@@ -41,6 +41,15 @@ internal fun ConnParts.served(
     collected: Collected,
     fire: Runnable,
 ) {
+    announce(now, paths)
+    if (collected == Collected.Everything) rearm(now, fire)
+}
+
+/** A handshake that completed and was not reported yet is reported now: at the end of its serve, or before the end. */
+internal fun ConnParts.announce(
+    now: Nanos,
+    paths: Paths,
+) {
     when (handshake.announcement()) {
         Announcement.Due -> {
             slots.datagrams.wake()
@@ -48,7 +57,6 @@ internal fun ConnParts.served(
         }
         Announcement.None -> Unit
     }
-    if (collected == Collected.Everything) rearm(now, fire)
 }
 
 /** The end of a handshake that passed its deadline: sent to and never answered, or never sent for the network refused each datagram. */

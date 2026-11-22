@@ -13,6 +13,7 @@ import com.ditchoom.socket.quic.core.observe.Confined
 import com.ditchoom.socket.quic.core.stream.QUICHE_ERR_DONE
 import com.ditchoom.socket.quic.core.stream.QUICHE_ERR_STREAM_STOPPED
 import com.ditchoom.socket.quic.core.stream.Retry
+import com.ditchoom.socket.quic.core.stream.Sender
 import com.ditchoom.socket.quic.core.stream.Side
 import com.ditchoom.socket.quic.core.stream.StreamTable
 import com.ditchoom.socket.quic.core.stream.Streams
@@ -20,6 +21,7 @@ import com.ditchoom.socket.quic.core.stream.Waiter
 import com.ditchoom.socket.quic.core.stream.WriteEnd
 import com.ditchoom.socket.quic.core.stream.code
 import com.ditchoom.socket.quic.core.stream.peer
+import com.ditchoom.socket.quic.core.stream.sender
 import kotlinx.coroutines.isActive
 import kotlin.coroutines.CoroutineContext
 import kotlin.time.Duration
@@ -95,7 +97,7 @@ internal class WriteOp(
         guarded(::failed) {
             when (val state = inside.streams.state) {
                 is Streams.Ended -> return connectionEnded(state.end)
-                is Streams.Open -> Unit
+                is Streams.Live -> Unit
             }
             if (!caller.isActive) return settle(WriteAnswer.Cancelled)
             if (attempt(inside.streams) == Retry.Again) {
@@ -125,16 +127,25 @@ internal class WriteOp(
     override fun gone(end: ConnEnd) = connectionEnded(end)
 
     private fun attempt(table: StreamTable): Retry {
+        val send =
+            when (val sender = table.sender()) {
+                is Streams.Open -> sender.send
+                is Sender.Refused -> {
+                    lease = deadlines.disarm(lease)
+                    settle(WriteAnswer.Failed(sender.why.raised(), QuicCloseCircumstance.Ended))
+                    return Retry.Settled
+                }
+            }
         val answer =
             when (source) {
                 is WriteSource.Bytes -> {
                     val at = source.buffer.position()
                     val length = source.buffer.remaining()
-                    table.io.send(stream, source.address + at, length, WriteEnd.More).also {
+                    send.send(stream, source.address + at, length, WriteEnd.More).also {
                         if (it.code() > 0) source.buffer.position(at + it.code())
                     }
                 }
-                is WriteSource.FinOnly -> table.io.send(stream, 0L, 0, WriteEnd.Finish)
+                is WriteSource.FinOnly -> send.send(stream, 0L, 0, WriteEnd.Finish)
             }
         val taken = answer.code()
         return when {

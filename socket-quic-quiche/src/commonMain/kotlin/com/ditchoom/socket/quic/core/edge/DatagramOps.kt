@@ -15,6 +15,8 @@ import com.ditchoom.socket.quic.core.conn.Inside
 import com.ditchoom.socket.quic.core.conn.Interest
 import com.ditchoom.socket.quic.core.conn.Receipt
 import com.ditchoom.socket.quic.core.life.ConnEnd
+import com.ditchoom.socket.quic.core.life.Life
+import com.ditchoom.socket.quic.core.life.endOf
 import com.ditchoom.socket.quic.core.observe.Confined
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
@@ -75,6 +77,14 @@ internal class DatagramSendOp(
 
     override fun run(inside: Inside) =
         guarded(::failed) {
+            // Past the close point nothing more is sent, datagrams included.
+            when (val life = inside.life()) {
+                is Life.Closing -> {
+                    hand.answer(SendAnswer.Failed(Raised.PastClose(endOf(life)), QuicCloseCircumstance.Closing))
+                    return
+                }
+                is Life.Running, is Life.Over -> Unit
+            }
             when (val datagrams = inside.datagrams) {
                 is Datagrams.Off -> hand.answer(SendAnswer.NotNegotiated)
                 is Datagrams.On ->

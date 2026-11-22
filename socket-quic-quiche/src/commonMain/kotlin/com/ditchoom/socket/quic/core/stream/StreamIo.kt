@@ -13,7 +13,10 @@ internal enum class WriteEnd { More, Finish }
 /** Which half a shutdown stops: the peer's sending (STOP_SENDING) or ours (RESET_STREAM). */
 internal enum class ShutdownSide { Read, Write }
 
-/** A stream's bytes: the only file that sends, receives or shuts down stream data in quiche. */
+/**
+ * A stream's bytes: with [StreamSend], the only file that sends, receives or shuts down stream data in quiche. Handing
+ * quiche stream data is [StreamSend]'s alone, which only a [StreamTable] that is [Streams.Open] holds.
+ */
 @Confined
 internal class StreamIo(
     private val q: QuicheConnRef,
@@ -22,31 +25,9 @@ internal class StreamIo(
     var output = 0L
         private set
 
-    /**
-     * Sends on [stream], allocating nothing. quiche answers Done both when it can take nothing now and when it already
-     * let the stream go: a stream our side has not ended is let go only once the peer stopped it, so that answer is
-     * [STOPPED].
-     */
-    fun send(
-        stream: QuicStreamId,
-        address: Long,
-        length: Int,
-        end: WriteEnd,
-    ): StreamSendStep {
-        val sent = q.api.connStreamSendStep(q.handle, stream, address, length, end == WriteEnd.Finish)
-        return sent.fold(
-            took = { took ->
-                if (took > 0 || end == WriteEnd.Finish) output++
-                sent
-            },
-            full = {
-                when (capacity(stream)) {
-                    QUICHE_ERR_STREAM_STOPPED.toLong(), QUICHE_ERR_INVALID_STREAM_STATE.toLong() -> STOPPED
-                    else -> sent
-                }
-            },
-            refused = { _, _ -> sent },
-        )
+    /** A send gave quiche bytes or a FIN. */
+    fun counted() {
+        output++
     }
 
     /**
@@ -75,6 +56,40 @@ internal class StreamIo(
                 ShutdownSide.Write -> 1
             },
             code,
+        )
+    }
+}
+
+/** Hands quiche stream data: what accepting it is. Held only by a [StreamTable] before its connection's close point. */
+@Confined
+internal class StreamSend(
+    private val q: QuicheConnRef,
+    private val io: StreamIo,
+) {
+    /**
+     * Sends on [stream], allocating nothing. quiche answers Done both when it can take nothing now and when it already
+     * let the stream go: a stream our side has not ended is let go only once the peer stopped it, so that answer is
+     * [STOPPED].
+     */
+    fun send(
+        stream: QuicStreamId,
+        address: Long,
+        length: Int,
+        end: WriteEnd,
+    ): StreamSendStep {
+        val sent = q.api.connStreamSendStep(q.handle, stream, address, length, end == WriteEnd.Finish)
+        return sent.fold(
+            took = { took ->
+                if (took > 0 || end == WriteEnd.Finish) io.counted()
+                sent
+            },
+            full = {
+                when (io.capacity(stream)) {
+                    QUICHE_ERR_STREAM_STOPPED.toLong(), QUICHE_ERR_INVALID_STREAM_STATE.toLong() -> STOPPED
+                    else -> sent
+                }
+            },
+            refused = { _, _ -> sent },
         )
     }
 

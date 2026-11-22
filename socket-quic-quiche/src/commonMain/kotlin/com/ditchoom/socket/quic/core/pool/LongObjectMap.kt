@@ -95,6 +95,12 @@ internal class LongObjectMap<V : Any>(
         return true
     }
 
+    /** Removes every key, keeping the table's capacity. */
+    fun clear() {
+        slots.fill(MapSlot.Vacant)
+        count = 0
+    }
+
     fun forEachValue(each: (V) -> Unit) {
         for (slot in slots) {
             when (slot) {
