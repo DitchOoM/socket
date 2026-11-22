@@ -15,7 +15,8 @@ Expectations (test-harness/quic-interop/expectations.json) map direction -> peer
   "pass"                         must succeed
   "unsupported"                  one side does not implement it
   {"known-failure": <reason>}    fails today, for the stated reason
-  {"flaky": <reason>}            passes, or fails for the stated reason
+  {"flaky": <reason>}            passes, or fails for the stated reason; a proven flaky reason may add
+                                 "pass-signature": {"kind": ...}, and then a pass must match it too
 where <reason> is {"why": "<why>", "signature": {"kind": ..., ...}} (proven: a failure must match the
 signature in the cell's evidence, written by quic-interop-evidence.py; a failure that does not is a REGRESSION;
 SIGNATURES lists the kinds and what each checks) or "<why>" (unproven: any failure is accepted). Unproven is a
@@ -124,6 +125,47 @@ class MigrationRefusedPeerForbids:
         refused = [m for m in test_evidence.get("migrations", []) if m["succeeded"] == 0 and m.get("first_unmoved") == "PeerForbids"]
         if forbidden and refused:
             return Matched("peer sets disable_active_migration; our first move: PeerForbids")
+        return NotMatched()
+
+
+class MigrationOutOfIdsPeerRetiredNothing:
+    """Our client made one move fewer than the peer's active_connection_id_limit, then answered its next move with
+    NoSpareConnectionId: the peer never retired an id of ours unasked, so the client counts every path it left as
+    still held by the peer (the original one too) and the limit as reached."""
+
+    kind = "migration-out-of-ids-peer-retired-nothing"
+
+    def __init__(self, fields):
+        no_fields(self.kind, fields)
+
+    def match(self, test_evidence, peer_role):
+        connections = test_evidence.get("connections", [])
+        if not connections or any(c["peer_unasked_retirements"] for c in connections):
+            return NotMatched()
+        limits = {c["remote_active_connection_id_limit"] for c in connections}
+        for m in test_evidence.get("migrations", []):
+            if m.get("first_unmoved") == "NoSpareConnectionId" and {m["succeeded"] + 1} == limits:
+                return Matched(
+                    f"no unasked RETIRE_CONNECTION_ID from the peer; {m['succeeded']} moves, then NoSpareConnectionId "
+                    f"at its active_connection_id_limit {m['succeeded'] + 1}"
+                )
+        return NotMatched()
+
+
+class MigrationPeerRetiredUnasked:
+    """A pass signature: every move succeeded on a connection whose peer retired an id of ours that no Retire Prior
+    To of ours asked for, which tells our client the peer frees the paths it leaves."""
+
+    kind = "migration-peer-retired-unasked"
+
+    def __init__(self, fields):
+        no_fields(self.kind, fields)
+
+    def match(self, test_evidence, peer_role):
+        retired = sum(c["peer_unasked_retirements"] for c in test_evidence.get("connections", []))
+        moved = [m for m in test_evidence.get("migrations", []) if m["attempted"] > 0 and m["succeeded"] == m["attempted"]]
+        if retired and moved:
+            return Matched(f"the peer retired {retired} id(s) of ours unasked; {moved[0]['succeeded']} of {moved[0]['attempted']} moves")
         return NotMatched()
 
 
@@ -798,6 +840,8 @@ SIGNATURES = {
         PeerExceededStreamLimit,
         PeerProcessDied,
         MigrationRefusedPeerForbids,
+        MigrationOutOfIdsPeerRetiredNothing,
+        MigrationPeerRetiredUnasked,
         FrameEncodingErrorFromZeroLengthCidPeer,
         PeerSilentUntilOurTimeout,
         PeerNeverResentServerHello,
@@ -830,20 +874,28 @@ SIGNATURES = {
 }
 
 
+def signature_of(raw):
+    fields = dict(raw)
+    kind = fields.pop("kind", "")
+    if kind not in SIGNATURES:
+        raise ExpectationError(f"unknown signature kind {kind!r}; known: {sorted(SIGNATURES)}")
+    return SIGNATURES[kind](fields)
+
+
 class Reason:
-    """Why a cell is a known failure or flaky; proven when it carries a signature."""
+    """Why a cell is a known failure or flaky; proven when it carries a signature. A flaky reason may also carry a
+    pass signature: then a pass is accepted only when the evidence shows it."""
 
     def __init__(self, raw):
+        self.pass_signature = None
         if isinstance(raw, str):
             self.why, self.signature = raw, None
             return
-        if not isinstance(raw, dict) or set(raw) != {"why", "signature"}:
-            raise ExpectationError(f"a reason is a string or {{why, signature}}, got {raw!r}")
-        fields = dict(raw["signature"])
-        kind = fields.pop("kind", "")
-        if kind not in SIGNATURES:
-            raise ExpectationError(f"unknown signature kind {kind!r}; known: {sorted(SIGNATURES)}")
-        self.why, self.signature = raw["why"], SIGNATURES[kind](fields)
+        if not isinstance(raw, dict) or set(raw) - {"pass-signature"} != {"why", "signature"}:
+            raise ExpectationError(f"a reason is a string or {{why, signature[, pass-signature]}}, got {raw!r}")
+        self.why, self.signature = raw["why"], signature_of(raw["signature"])
+        if "pass-signature" in raw:
+            self.pass_signature = signature_of(raw["pass-signature"])
 
 
 def runner_results(path):
@@ -885,7 +937,10 @@ def expectation(exp, direction, peer, test):
     if isinstance(value, str):
         return value, Reason("")
     (kind, raw), = value.items()
-    return kind, Reason(raw)
+    reason = Reason(raw)
+    if reason.pass_signature is not None and kind != "flaky":
+        raise ExpectationError(f"{direction} {peer} {test}: only a flaky cell takes a pass-signature")
+    return kind, reason
 
 
 def peer_role(direction):
@@ -948,6 +1003,16 @@ def judge_failure(kind, reason, test_evidence, role):
     return "REGRESSION", False, f"failed, but not as {reason.signature.kind}: {reason.why}"
 
 
+def judge_pass(reason, test_evidence, role):
+    """(verdict, accepted, note) for a passed flaky cell whose reason carries a pass signature."""
+    if test_evidence is None:
+        return "REGRESSION", False, f"no evidence to check the {reason.pass_signature.kind} pass signature against"
+    result = reason.pass_signature.match(test_evidence, role)
+    if isinstance(result, Matched):
+        return "flaky (pass signature)", True, result.shown
+    return "REGRESSION", False, f"passed, but not as {reason.pass_signature.kind}: {reason.why}"
+
+
 def judge_cell(kind, result):
     """(verdict, accepted) for one cell's expectation kind and actual result."""
     if kind == "absent":
@@ -1004,10 +1069,13 @@ def cmd_judge(args):
     for (direction, peer, test), (result, detail) in sorted(cells.items()):
         kind, reason = expectation(exp, direction, peer, test)
         note = reason.why or detail
+        # The active-migration pseudo-test is judged on the transfer it ran in.
+        ran = "transfer" if test == MIGRATION_TEST else test
+        test_evidence = evidence.get((direction, peer), {}).get(ran)
         if kind in ("known-failure", "flaky") and result == "failed":
-            # The active-migration pseudo-test is judged on the transfer it ran in.
-            ran = "transfer" if test == MIGRATION_TEST else test
-            verdict, accepted, note = judge_failure(kind, reason, evidence.get((direction, peer), {}).get(ran), peer_role(direction))
+            verdict, accepted, note = judge_failure(kind, reason, test_evidence, peer_role(direction))
+        elif kind == "flaky" and reason.pass_signature is not None and result in ("succeeded", "retried"):
+            verdict, accepted, note = judge_pass(reason, test_evidence, peer_role(direction))
         else:
             verdict, accepted = judge_cell(kind, result)
         if verdict == "STALE" and stale == "warn":

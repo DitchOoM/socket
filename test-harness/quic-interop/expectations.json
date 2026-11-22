@@ -749,7 +749,11 @@
     },
     "mvfst": {
       "active-migration": {
-        "known-failure": "unclassified: four moves, then NoSpareConnectionId at mvfst limit 5 from the #904 prediction (mvfst retires nothing unasked); whether mvfst could hold a fifth path is untested"
+        "flaky": {
+          "why": "peer: mvfst decides it by whether it retires an id of ours unasked. When it retires none, our client counts mvfst's limit of 5 paths as full after four moves and answers NoSpareConnectionId (run 44963314572: no RETIRE_CONNECTION_ID from mvfst); when it retires one, our client knows mvfst frees the paths it leaves and every move succeeds (run 44963103718: mvfst retired our id 1 at 2.97 s, before any Retire Prior To of ours, and six of six moves succeeded)",
+          "signature": {"kind": "migration-out-of-ids-peer-retired-nothing"},
+          "pass-signature": {"kind": "migration-peer-retired-unasked"}
+        }
       },
       "transfer": "pass"
     },
