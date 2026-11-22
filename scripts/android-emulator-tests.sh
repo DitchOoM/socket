@@ -71,6 +71,20 @@ LOGCAT_FILE="emulator-diagnostics/logcat-api${API_LEVEL}.txt"
 adb logcat -v threadtime > "$LOGCAT_FILE" &
 LOGCAT_PID=$!
 
+# THE HEAP THE TESTS GET
+# ----------------------
+# The test APK asks for largeHeap, yet an API 29 run's test process was clamped at a 16 MB growth limit and ran out of
+# memory in the many-connection suites (run 44967892040), on an emulator booted with dalvik.vm.heapsize=512m. A
+# low-RAM device ignores largeHeap, so the properties that decide the limit are kept for every run: in the job log, to
+# compare a red run with a green one, and beside the logcat.
+HEAP_FILE="emulator-diagnostics/heap-api${API_LEVEL}.txt"
+{
+  adb shell getprop 2>/dev/null | grep -E 'dalvik\.vm\.heap|ro\.config\.low_ram|ro\.product\.ram|qemu\.dalvik' || echo "(no heap properties reported)"
+  adb shell head -n 3 /proc/meminfo 2>/dev/null || true
+} > "$HEAP_FILE"
+echo "heap properties (API ${API_LEVEL}):"
+sed 's/^/  /' "$HEAP_FILE"
+
 # NO TEST RUNS ON AN EMULATOR WITHOUT A NETWORK
 # ---------------------------------------------
 # Every suite here needs the device's network, and one of them asserts on it directly. An emulator
