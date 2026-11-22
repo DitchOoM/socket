@@ -163,11 +163,43 @@ internal class ResetWork(
     private val stream: QuicStreamId,
     private val code: QuicAppErrorCode,
 ) : ConnWork() {
+    override fun run(inside: Inside) = inside.streams.resetBothWays(stream, code)
+
+    override fun gone(end: ConnEnd) = Unit
+}
+
+/**
+ * Inside: resets [stream], which has our sending side, with [code]: RESET_STREAM for ours and STOP_SENDING for the
+ * peer's, unless the stream has none.
+ */
+internal fun StreamTable.resetBothWays(
+    stream: QuicStreamId,
+    code: QuicAppErrorCode,
+) {
+    stopReading(stream, code)
+    io.shutdown(stream, ShutdownSide.Write, code.value)
+    sendEnded(stream, Side.Reset(code))
+}
+
+/** Resets our sending direction of a stream with [code] (RESET_STREAM), inside the connection. */
+internal class ResetSendWork(
+    private val stream: QuicStreamId,
+    private val code: QuicAppErrorCode,
+) : ConnWork() {
     override fun run(inside: Inside) {
-        inside.streams.stopReading(stream, code)
         inside.streams.io.shutdown(stream, ShutdownSide.Write, code.value)
         inside.streams.sendEnded(stream, Side.Reset(code))
     }
+
+    override fun gone(end: ConnEnd) = Unit
+}
+
+/** Stops the peer's sending direction of a stream with [code] (STOP_SENDING), inside the connection. */
+internal class StopWork(
+    private val stream: QuicStreamId,
+    private val code: QuicAppErrorCode,
+) : ConnWork() {
+    override fun run(inside: Inside) = inside.streams.stopReading(stream, code)
 
     override fun gone(end: ConnEnd) = Unit
 }

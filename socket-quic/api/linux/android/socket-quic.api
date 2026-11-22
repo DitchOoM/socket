@@ -2112,7 +2112,6 @@ public final class com/ditchoom/socket/quic/QuicNativeMemoryRequiredException$Co
 public final class com/ditchoom/socket/quic/QuicOptionName : java/lang/Enum {
 	public static final field Migration Lcom/ditchoom/socket/quic/QuicOptionName;
 	public static final field StandbyLink Lcom/ditchoom/socket/quic/QuicOptionName;
-	public static final field StreamOpenPolicy Lcom/ditchoom/socket/quic/QuicOptionName;
 	public static final field Trace Lcom/ditchoom/socket/quic/QuicOptionName;
 	public static fun getEntries ()Lkotlin/enums/EnumEntries;
 	public static fun valueOf (Ljava/lang/String;)Lcom/ditchoom/socket/quic/QuicOptionName;
@@ -2139,18 +2138,6 @@ public final class com/ditchoom/socket/quic/QuicOptionRefusal$QlogNotBudgeted : 
 public final class com/ditchoom/socket/quic/QuicOptionRefusal$StandbyLinkNotHeld : com/ditchoom/socket/quic/QuicOptionRefusal {
 	public static final field INSTANCE Lcom/ditchoom/socket/quic/QuicOptionRefusal$StandbyLinkNotHeld;
 	public fun equals (Ljava/lang/Object;)Z
-	public fun getOption ()Lcom/ditchoom/socket/quic/QuicOptionName;
-	public fun hashCode ()I
-	public fun toString ()Ljava/lang/String;
-}
-
-public final class com/ditchoom/socket/quic/QuicOptionRefusal$StreamOpenNotBounded : com/ditchoom/socket/quic/QuicOptionRefusal {
-	public synthetic fun <init> (JLkotlin/jvm/internal/DefaultConstructorMarker;)V
-	public final fun component1-UwyO8pc ()J
-	public final fun copy-LRDsOJo (J)Lcom/ditchoom/socket/quic/QuicOptionRefusal$StreamOpenNotBounded;
-	public static synthetic fun copy-LRDsOJo$default (Lcom/ditchoom/socket/quic/QuicOptionRefusal$StreamOpenNotBounded;JILjava/lang/Object;)Lcom/ditchoom/socket/quic/QuicOptionRefusal$StreamOpenNotBounded;
-	public fun equals (Ljava/lang/Object;)Z
-	public final fun getDeadline-UwyO8pc ()J
 	public fun getOption ()Lcom/ditchoom/socket/quic/QuicOptionName;
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;

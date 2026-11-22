@@ -93,6 +93,12 @@ internal sealed interface Raised : OpFailure {
         val side: QuicStreamSide,
     ) : Raised
 
+    /** A call on a direction a unidirectional stream does not have: a read of a send-only one, a write of a receive-only one. */
+    class NoSuchDirection(
+        val stream: QuicStreamId,
+        val side: QuicStreamSide,
+    ) : Raised
+
     /** A write was handed memory quiche cannot read in place. */
     class NotNative(
         val stream: QuicStreamId,
@@ -216,6 +222,7 @@ private fun exceptionOf(
             )
         is Raised.Thrown -> failure.exception
         is Raised.StreamClosed -> QuicStreamClosedException(failure.stream.id, failure.side)
+        is Raised.NoSuchDirection -> QuicStreamDirectionAbsent(failure.stream.id, failure.side)
         is Raised.Typed -> QuicTypedStreamException(failure.stream.id, failure.failure)
         is Raised.NotNative ->
             QuicNativeMemoryRequiredException.forBuffer(
@@ -272,6 +279,12 @@ internal class CoreLoopsClosed : IllegalStateException()
 internal class CoreSpecLayoutMismatch(
     val mismatch: SpecLayoutMismatch,
 ) : IllegalStateException()
+
+/** A call on the [side] of a unidirectional stream that it does not have; distinct from a side the caller closed. */
+internal class QuicStreamDirectionAbsent(
+    val streamId: Long,
+    val side: QuicStreamSide,
+) : UnsupportedOperationException()
 
 /** A write quiche refused for a reason of its own, by quiche's code. */
 internal class QuicStreamWriteFailed(

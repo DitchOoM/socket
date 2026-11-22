@@ -12,7 +12,6 @@ import com.ditchoom.socket.quic.QuicOptionRefusal
 import com.ditchoom.socket.quic.QuicOptionRefusedException
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.StandbyLink
-import com.ditchoom.socket.quic.StreamOpenPolicy
 import com.ditchoom.socket.quic.core.conn.MismatchResponse
 import com.ditchoom.socket.quic.core.demux.loopbackV4
 import com.ditchoom.socket.quic.core.demux.withCoreEchoServer
@@ -109,13 +108,6 @@ class CoreOptionRefusalTests {
     fun aConnectPinnedToARadioIsRefusedBecauseTheCoreCannotPinASocket() {
         val e = refusedConnect<PinnedRadioRefusedException>(traced.copy(migration = MigrationPolicy.Pinned(NetworkKind.Cellular)))
         assertEquals(PinnedRadioRefusal.EngineCannotPin, e.refusal)
-        assertTrue(factoryThreads.isEmpty(), "a refused connect never asks the application's trace factory")
-    }
-
-    @Test
-    fun aBoundedStreamOpenIsRefusedBecauseTheCoreWaitsUntilTheCallerCancels() {
-        val e = refusedConnect<QuicOptionNotHonouredException>(traced.copy(streamOpenPolicy = StreamOpenPolicy.Bounded(3.seconds)))
-        assertEquals(QuicOptionRefusal.StreamOpenNotBounded(3.seconds), e.refused)
         assertTrue(factoryThreads.isEmpty(), "a refused connect never asks the application's trace factory")
     }
 

@@ -78,6 +78,7 @@ internal class ServerEdge(
                 QuicConnectionIdentity(QuicSessionId(id), QuicWireConnectionId.Known(id)),
                 readPolicy,
                 writePolicy,
+                options.streamOpenPolicy.toDeadline(),
                 scope,
             )
         // Offered once established, or once its 0-RTT is accepted; a connection that ends first is never offered. The offer

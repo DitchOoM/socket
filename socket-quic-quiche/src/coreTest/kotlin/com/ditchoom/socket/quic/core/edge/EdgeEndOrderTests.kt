@@ -37,7 +37,7 @@ class EdgeEndOrderTests {
             val accept =
                 async(Dispatchers.Unconfined, CoroutineStart.UNDISPATCHED) {
                     try {
-                        edge.incoming.receive()
+                        edge.incoming.receiveAny()
                         Seen.Returned
                     } catch (closed: QuicCloseException) {
                         Seen.Failed(closed.closeReason, edge.state.value)

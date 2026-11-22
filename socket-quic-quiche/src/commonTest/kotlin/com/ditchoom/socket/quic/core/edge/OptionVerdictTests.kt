@@ -60,11 +60,7 @@ class OptionVerdictTests {
         for (policy in listOf(StreamOpenPolicy.UntilClosed, StreamOpenPolicy.Bounded(5.seconds))) {
             val verdict = verdictOn(base.copy(streamOpenPolicy = policy))
             when (policy) {
-                StreamOpenPolicy.UntilClosed -> assertHonoured(verdict)
-                is StreamOpenPolicy.Bounded -> {
-                    assertEquals(QuicOptionRefusal.StreamOpenNotBounded(5.seconds), refusalOf(verdict))
-                    assertEquals(QuicOptionName.StreamOpenPolicy, refusalOf(verdict).option)
-                }
+                StreamOpenPolicy.UntilClosed, is StreamOpenPolicy.Bounded -> assertHonoured(verdict)
             }
         }
     }
