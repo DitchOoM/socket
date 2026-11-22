@@ -672,7 +672,16 @@
       "blackhole": "pass",
       "goodput": "pass",
       "handshake": "pass",
-      "handshakecorruption": "pass",
+      "handshakecorruption": {
+        "flaky": {
+          "why": "peer and simulator: our request is delivered and acknowledged, the xquic server sends its response three times on its inflated PTO (5.5 s, 11.4 s, 23.2 s after the request) and the simulator loses all three; our client, every packet of its own acknowledged and HANDSHAKE_DONE received (RFC 9002 6.2.2.1 leaves the next move to the server), hears nothing more and idles out 30 s after its last receipt",
+          "signature": {
+            "kind": "peer-move-never-reached-us",
+            "ended_by": "our-idle-timeout",
+            "idle_s": 30
+          }
+        }
+      },
       "handshakeloss": {
         "flaky": {
           "why": "peer and simulator: one lost ACK of ours made the xquic server take its first RTT sample from our probe 3 s later, so its next probe timeouts were 10 s and 20 s; its one re-send of the Handshake flight inside our 30 s handshake limit was lost, and our client, every packet of its own acknowledged and nothing in flight (RFC 9002 6.2.2.1 leaves the next move to the server), heard nothing from 4.4 s until its timeout at 34.4 s (run 44433727770, both attempts; server log: PTO 10.2 s then 20.4 s, re-sends at 14.3 s and 34.7 s)",

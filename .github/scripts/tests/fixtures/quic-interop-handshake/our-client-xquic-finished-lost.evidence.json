@@ -1,0 +1,119 @@
+{
+ "direction": "our-client",
+ "peer": "xquic",
+ "tests": {
+  "handshakecorruption": {
+   "connections": [
+    {
+     "bytes_in_flight_at_end": 1496,
+     "bytes_in_flight_before_close": 1496,
+     "end_ms": 31148.658,
+     "fin_sent_streams": 1,
+     "first_stream_tx_ms": 146.187,
+     "last_rx_ms": 285.669,
+     "late_probes": 0,
+     "local_closes": [],
+     "local_initial_max_streams_bidi": 100,
+     "longest_wait_in_flight_ms": 8000.775,
+     "max_stream_copies": 5,
+     "max_streams_bidi_sent": 0,
+     "our_streams_unfinished": 1,
+     "peer_bidi_streams_opened": 0,
+     "peer_closes": [],
+     "peer_gave_up_requests": 0,
+     "peer_resets": [],
+     "peer_source_cid_lengths": [
+      12
+     ],
+     "peer_unasked_retirements": 0,
+     "peer_unfinished_streams": 0,
+     "probes_missing_a_space": 0,
+     "pto_expiries_after_last_tx": 0,
+     "qlog": "quiche-client-7893e318b57de01a3a725eaba6620052.sqlog",
+     "remote_active_connection_id_limit": 8,
+     "remote_disable_active_migration": false,
+     "rx_handshake_acks": 0,
+     "rx_handshake_crypto": 5,
+     "rx_initial_acks": 0,
+     "rx_initial_crypto": 1,
+     "rx_initial_crypto_end": 90,
+     "rx_initial_unlogged": 0,
+     "rx_packets": 6,
+     "tx_after_last_rx": 12,
+     "tx_crypto": 9,
+     "wire": {
+      "ours_delivered_after_last_rx": 5,
+      "ours_sent_after_last_rx": 12,
+      "peer_delivered_after_last_rx": 0,
+      "peer_packets_unread": 0,
+      "peer_sent_after_last_rx": 0,
+      "port": 53815
+     }
+    }
+   ],
+   "exits": {
+    "client": 1
+   },
+   "migrations": [],
+   "peer_unanswered_requests": 0,
+   "runner": {},
+   "sim_droplist_from_peer": 0,
+   "sim_from_peer": [
+    {
+     "datagrams": 203,
+     "delivered": 138,
+     "port": 443
+    }
+   ],
+   "sim_to_peer": [
+    {
+     "datagrams": 165,
+     "delivered": 111,
+     "port": 443
+    }
+   ],
+   "sim_to_us": [
+    {
+     "datagrams": 17,
+     "delivered": 14,
+     "port": 33378
+    },
+    {
+     "datagrams": 22,
+     "delivered": 14,
+     "port": 35877
+    },
+    {
+     "datagrams": 27,
+     "delivered": 20,
+     "port": 37859
+    },
+    {
+     "datagrams": 27,
+     "delivered": 20,
+     "port": 41686
+    },
+    {
+     "datagrams": 29,
+     "delivered": 17,
+     "port": 47209
+    },
+    {
+     "datagrams": 11,
+     "delivered": 7,
+     "port": 53815
+    },
+    {
+     "datagrams": 32,
+     "delivered": 23,
+     "port": 54750
+    },
+    {
+     "datagrams": 38,
+     "delivered": 23,
+     "port": 56283
+    }
+   ]
+  }
+ }
+}
