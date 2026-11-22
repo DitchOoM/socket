@@ -13,19 +13,6 @@ import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.udp.Room
 import com.ditchoom.socket.quic.core.udp.SendBatch
 
-/**
- * Whether a write collected everything quiche had, the batch filled first, the first datagram found another clock and
- * the response is to end, or quiche refused to write ([Egress.refusal]).
- */
-internal enum class Wrote { All, BatchFull, ClockMismatch, Refused }
-
-/** What a serve left after a write that ended as [this]. */
-internal fun Wrote.collected(): Collected =
-    when (this) {
-        Wrote.All, Wrote.ClockMismatch, Wrote.Refused -> Collected.Everything
-        Wrote.BatchFull -> Collected.MoreWaiting
-    }
-
 /** What became of the last datagram quiche wrote: none was written, it is in the batch, or no socket of ours took it. */
 internal enum class LastOut { None, Kept, Dropped }
 
@@ -58,6 +45,7 @@ internal class Egress(
     private var beforeTarget: SendTarget = SendTarget.ConnectedPeer
     private var first = FirstOut.NotYet
     private var mismatchOffset = 0L
+    private val feed = EgressFeed()
     private var refusedCode = 0
 
     /** When quiche wants the last datagram it wrote on the wire, on the loop's clock. */
@@ -65,6 +53,9 @@ internal class Egress(
 
     /** Why a write ended as [Wrote.ClockMismatch]: libquiche paces on another clock, [mismatchOffset] apart. */
     fun mismatch(): PacingClockMismatch = PacingClockMismatch(mismatchOffset)
+
+    /** What quiche refused a queued datagram with, once a write ended as [Wrote.DatagramRefused]. */
+    fun datagramRefusal(): DatagramRefusedByQuiche = DatagramRefusedByQuiche(feed.refusedCode)
 
     /** What quiche refused the last write with, once it ended as [Wrote.Refused]. */
     fun refusal(): QuicheSendRefused = QuicheSendRefused(refusedCode)
@@ -98,17 +89,29 @@ internal class Egress(
         offset: Int,
     ): Boolean = out.storage.byteAt(offset) and LONG_HEADER != 0
 
-    /** Writes quiche's output into [out] at once. */
+    /** Writes quiche's output into [out] at once; each time it runs dry, [datagrams] queued to send refill it. */
     fun write(
         out: SendBatch,
         paths: Paths,
         flight: ConnFlight,
+        datagrams: Datagrams,
     ): Wrote {
         last = LastOut.None
         before = LastOut.None
         val at = clock.now()
+        if (feed.fed(datagrams, at) == Dry.Refused) return Wrote.DatagramRefused
         while (out.room() == Room.Open) {
-            one(out, paths, flight, at).fold(done = { return Wrote.All }, wrote = { Unit }, refused = { return refused(it) })
+            one(out, paths, flight, at).fold(
+                done = {
+                    when (feed.fed(datagrams, at)) {
+                        Dry.No -> Unit
+                        Dry.Yes -> return Wrote.All
+                        Dry.Refused -> return Wrote.DatagramRefused
+                    }
+                },
+                wrote = { datagrams.quicheWrote() },
+                refused = { return refused(it) },
+            )
         }
         return Wrote.BatchFull
     }
@@ -128,13 +131,25 @@ internal class Egress(
         paths: Paths,
         pacer: Pacer,
         flight: ConnFlight,
+        datagrams: Datagrams,
     ): Wrote {
         last = LastOut.None
         before = LastOut.None
         val at = clock.now()
+        if (feed.fed(datagrams, at) == Dry.Refused) return Wrote.DatagramRefused
         if (pacer.state(at) == PaceState.Holding) return Wrote.All
         while (out.room() == Room.Open) {
-            one(out, paths, flight, at).fold(done = { return Wrote.All }, wrote = { Unit }, refused = { return refused(it) })
+            one(out, paths, flight, at).fold(
+                done = {
+                    when (feed.fed(datagrams, at)) {
+                        Dry.No -> Unit
+                        Dry.Yes -> return Wrote.All
+                        Dry.Refused -> return Wrote.DatagramRefused
+                    }
+                },
+                wrote = { datagrams.quicheWrote() },
+                refused = { return refused(it) },
+            )
             when (judged(pacer, at, flight)) {
                 is ClockVerdict.Differs ->
                     when (pacer.response()) {

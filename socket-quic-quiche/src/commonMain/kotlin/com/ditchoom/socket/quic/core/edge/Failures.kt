@@ -192,11 +192,11 @@ internal fun raise(
     during: QuicCloseCircumstance,
 ): Nothing = throw exceptionOf(failure, during)
 
-/** The exception that reports [end] to a caller who was [during] something, for channels that are closed with one. */
-internal fun endedWith(
-    end: ConnEnd,
+/** Raises the close of a connection that ended with the public [end], to a caller who was [during] something. */
+internal fun raiseEnded(
+    end: QuicConnectionEnd,
     during: QuicCloseCircumstance,
-): Throwable = closeOf(end, during)
+): Nothing = throw QuicCloseException(end = end, circumstance = during)
 
 private fun exceptionOf(
     failure: Raised,
@@ -246,7 +246,7 @@ private fun exceptionOf(
     }
 
 /** The close exception for [end]: its public end and the circumstance it names. */
-private fun closeOf(
+internal fun closeOf(
     end: ConnEnd,
     during: QuicCloseCircumstance,
 ): QuicCloseException = QuicCloseException(end = publicEndOf(end), circumstance = end.circumstance(during))

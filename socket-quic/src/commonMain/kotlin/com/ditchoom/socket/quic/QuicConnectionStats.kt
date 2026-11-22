@@ -46,6 +46,22 @@ data class QuicConnectionStats
         val datagramsRefusedQueueFull: QuicDatagramCount = QuicDatagramCount.NotCounted,
         /** Received datagrams dropped, oldest first, because the receive queue was full; [datagramsReceived] counts them. */
         val datagramsDroppedReceiveQueue: QuicDatagramCount = QuicDatagramCount.NotCounted,
+        /** Queued datagrams dropped, oldest first, to make room for a newer send under [DatagramOverflow.EvictOldest]. */
+        val datagramsEvicted: QuicDatagramCount = QuicDatagramCount.NotCounted,
+        /** Queued datagrams dropped unsent because they were older than [DatagramOptions.outgoingMaxAge]. */
+        val datagramsExpiredOutgoing: QuicDatagramCount = QuicDatagramCount.NotCounted,
+        /**
+         * Queued datagrams the engine would not take when they reached the head: the path had shrunk below their size,
+         * or the engine refused them with an error that ends the connection.
+         */
+        val datagramsDroppedUnsendable: QuicDatagramCount = QuicDatagramCount.NotCounted,
+        /** Received datagrams dropped undelivered because they were older than [DatagramOptions.incomingMaxAge]. */
+        val datagramsExpiredIncoming: QuicDatagramCount = QuicDatagramCount.NotCounted,
+        /**
+         * Datagrams a send accepted that were dropped unsent because the connection reached its close point first,
+         * those already handed to the QUIC stack included.
+         */
+        val datagramsDroppedAtClose: QuicDatagramCount = QuicDatagramCount.NotCounted,
     )
 
 /** A count of datagrams the engine may not keep: a zero is a measurement only when it is [Counted]. */

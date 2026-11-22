@@ -122,7 +122,7 @@ internal class Turn(
             try {
                 c.feed(bytes, length, from)
                 c.slots.keepAlive.touched(now)
-                c.slots.datagrams.received()
+                c.slots.datagrams.received(now)
             } catch (failure: Exception) {
                 fail(now, failure)
             }
@@ -179,8 +179,8 @@ internal class Turn(
     /** Any thread: the ids this connection's peer retired, taken once. */
     fun idsRetired(): List<RetiredId> = c.slots.paths.idsRetired()
 
-    /** Any thread: the bytes one datagram may carry as of the connection's last turn, or 0. */
-    fun datagramMaxBytes(): Int = c.slots.datagrams.maxBytes()
+    /** Any thread: the connection's datagrams, for the queue a caller offers sends to. */
+    fun datagrams(): Datagrams = c.slots.datagrams
 
     /** Once the loop is quiet: where the connection's close stands at [now]. */
     fun lingerView(now: Nanos) = LingerView(now, c.life.view(), c.life.linger.wire(), c.timer.armed(now))
@@ -252,8 +252,8 @@ internal class Turn(
                 is Life.Running, is Life.Over -> Unit
             }
         }
-        // A clock mismatch is our own failure: the peer is told with INTERNAL_ERROR, as for any processing failure.
-        wrote.ends(mismatch = { fail(now, c.egress.mismatch()) }, refused = { finish(now, c.closeRefused(now)) })
+        // A clock mismatch or a refused datagram is our own failure: the peer is told with INTERNAL_ERROR, as for any processing failure.
+        wrote.ends(c.egress, ours = { fail(now, it) }, refused = { finish(now, c.closeRefused(now)) })
         return wrote.collected()
     }
 

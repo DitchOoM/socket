@@ -110,6 +110,7 @@ final enum class com.ditchoom.socket.quic/QuicHandshakeReached : kotlin/Enum<com
 }
 
 final enum class com.ditchoom.socket.quic/QuicOptionName : kotlin/Enum<com.ditchoom.socket.quic/QuicOptionName> { // com.ditchoom.socket.quic/QuicOptionName|null[0]
+    enum entry Datagrams // com.ditchoom.socket.quic/QuicOptionName.Datagrams|null[0]
     enum entry Migration // com.ditchoom.socket.quic/QuicOptionName.Migration|null[0]
     enum entry StandbyLink // com.ditchoom.socket.quic/QuicOptionName.StandbyLink|null[0]
     enum entry Trace // com.ditchoom.socket.quic/QuicOptionName.Trace|null[0]
@@ -132,6 +133,10 @@ final enum class com.ditchoom.socket.quic/UdpBatching : kotlin/Enum<com.ditchoom
 
     final fun valueOf(kotlin/String): com.ditchoom.socket.quic/UdpBatching // com.ditchoom.socket.quic/UdpBatching.valueOf|valueOf#static(kotlin.String){}[0]
     final fun values(): kotlin/Array<com.ditchoom.socket.quic/UdpBatching> // com.ditchoom.socket.quic/UdpBatching.values|values#static(){}[0]
+}
+
+abstract fun interface com.ditchoom.socket.quic/DatagramRoomWait { // com.ditchoom.socket.quic/DatagramRoomWait|null[0]
+    abstract suspend fun awaitRoom() // com.ditchoom.socket.quic/DatagramRoomWait.awaitRoom|awaitRoom(){}[0]
 }
 
 abstract fun interface com.ditchoom.socket.quic/ServerCertVerifier { // com.ditchoom.socket.quic/ServerCertVerifier|null[0]
@@ -743,6 +748,41 @@ sealed interface com.ditchoom.socket.quic/CongestionControl { // com.ditchoom.so
     }
 }
 
+sealed interface com.ditchoom.socket.quic/DatagramMaxAge { // com.ditchoom.socket.quic/DatagramMaxAge|null[0]
+    final class Within : com.ditchoom.socket.quic/DatagramMaxAge { // com.ditchoom.socket.quic/DatagramMaxAge.Within|null[0]
+        constructor <init>(kotlin.time/Duration) // com.ditchoom.socket.quic/DatagramMaxAge.Within.<init>|<init>(kotlin.time.Duration){}[0]
+
+        final val age // com.ditchoom.socket.quic/DatagramMaxAge.Within.age|{}age[0]
+            final fun <get-age>(): kotlin.time/Duration // com.ditchoom.socket.quic/DatagramMaxAge.Within.age.<get-age>|<get-age>(){}[0]
+
+        final fun component1(): kotlin.time/Duration // com.ditchoom.socket.quic/DatagramMaxAge.Within.component1|component1(){}[0]
+        final fun copy(kotlin.time/Duration = ...): com.ditchoom.socket.quic/DatagramMaxAge.Within // com.ditchoom.socket.quic/DatagramMaxAge.Within.copy|copy(kotlin.time.Duration){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/DatagramMaxAge.Within.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/DatagramMaxAge.Within.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/DatagramMaxAge.Within.toString|toString(){}[0]
+    }
+
+    final object Unbounded : com.ditchoom.socket.quic/DatagramMaxAge { // com.ditchoom.socket.quic/DatagramMaxAge.Unbounded|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/DatagramMaxAge.Unbounded.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/DatagramMaxAge.Unbounded.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/DatagramMaxAge.Unbounded.toString|toString(){}[0]
+    }
+}
+
+sealed interface com.ditchoom.socket.quic/DatagramOverflow { // com.ditchoom.socket.quic/DatagramOverflow|null[0]
+    final object EvictOldest : com.ditchoom.socket.quic/DatagramOverflow { // com.ditchoom.socket.quic/DatagramOverflow.EvictOldest|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/DatagramOverflow.EvictOldest.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/DatagramOverflow.EvictOldest.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/DatagramOverflow.EvictOldest.toString|toString(){}[0]
+    }
+
+    final object RefuseNew : com.ditchoom.socket.quic/DatagramOverflow { // com.ditchoom.socket.quic/DatagramOverflow.RefuseNew|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/DatagramOverflow.RefuseNew.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/DatagramOverflow.RefuseNew.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/DatagramOverflow.RefuseNew.toString|toString(){}[0]
+    }
+}
+
 sealed interface com.ditchoom.socket.quic/DatagramReceiveResult { // com.ditchoom.socket.quic/DatagramReceiveResult|null[0]
     final value class ConnectionClosed : com.ditchoom.socket.quic/DatagramReceiveResult { // com.ditchoom.socket.quic/DatagramReceiveResult.ConnectionClosed|null[0]
         constructor <init>(com.ditchoom.socket.quic/QuicError) // com.ditchoom.socket.quic/DatagramReceiveResult.ConnectionClosed.<init>|<init>(com.ditchoom.socket.quic.QuicError){}[0]
@@ -764,6 +804,58 @@ sealed interface com.ditchoom.socket.quic/DatagramReceiveResult { // com.ditchoo
         final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/DatagramReceiveResult.Received.equals|equals(kotlin.Any?){}[0]
         final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/DatagramReceiveResult.Received.hashCode|hashCode(){}[0]
         final fun toString(): kotlin/String // com.ditchoom.socket.quic/DatagramReceiveResult.Received.toString|toString(){}[0]
+    }
+}
+
+sealed interface com.ditchoom.socket.quic/DatagramSend { // com.ditchoom.socket.quic/DatagramSend|null[0]
+    sealed interface NotSent : com.ditchoom.socket.quic/DatagramSend { // com.ditchoom.socket.quic/DatagramSend.NotSent|null[0]
+        sealed interface Unavailable : com.ditchoom.socket.quic/DatagramSend.NotSent { // com.ditchoom.socket.quic/DatagramSend.NotSent.Unavailable|null[0]
+            final class ConnectionEnded : com.ditchoom.socket.quic/DatagramSend.NotSent.Unavailable { // com.ditchoom.socket.quic/DatagramSend.NotSent.Unavailable.ConnectionEnded|null[0]
+                constructor <init>(com.ditchoom.socket.quic/QuicConnectionEnd) // com.ditchoom.socket.quic/DatagramSend.NotSent.Unavailable.ConnectionEnded.<init>|<init>(com.ditchoom.socket.quic.QuicConnectionEnd){}[0]
+
+                final val end // com.ditchoom.socket.quic/DatagramSend.NotSent.Unavailable.ConnectionEnded.end|{}end[0]
+                    final fun <get-end>(): com.ditchoom.socket.quic/QuicConnectionEnd // com.ditchoom.socket.quic/DatagramSend.NotSent.Unavailable.ConnectionEnded.end.<get-end>|<get-end>(){}[0]
+
+                final fun component1(): com.ditchoom.socket.quic/QuicConnectionEnd // com.ditchoom.socket.quic/DatagramSend.NotSent.Unavailable.ConnectionEnded.component1|component1(){}[0]
+                final fun copy(com.ditchoom.socket.quic/QuicConnectionEnd = ...): com.ditchoom.socket.quic/DatagramSend.NotSent.Unavailable.ConnectionEnded // com.ditchoom.socket.quic/DatagramSend.NotSent.Unavailable.ConnectionEnded.copy|copy(com.ditchoom.socket.quic.QuicConnectionEnd){}[0]
+                final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/DatagramSend.NotSent.Unavailable.ConnectionEnded.equals|equals(kotlin.Any?){}[0]
+                final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/DatagramSend.NotSent.Unavailable.ConnectionEnded.hashCode|hashCode(){}[0]
+                final fun toString(): kotlin/String // com.ditchoom.socket.quic/DatagramSend.NotSent.Unavailable.ConnectionEnded.toString|toString(){}[0]
+            }
+
+            final object NotNegotiated : com.ditchoom.socket.quic/DatagramSend.NotSent.Unavailable { // com.ditchoom.socket.quic/DatagramSend.NotSent.Unavailable.NotNegotiated|null[0]
+                final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/DatagramSend.NotSent.Unavailable.NotNegotiated.equals|equals(kotlin.Any?){}[0]
+                final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/DatagramSend.NotSent.Unavailable.NotNegotiated.hashCode|hashCode(){}[0]
+                final fun toString(): kotlin/String // com.ditchoom.socket.quic/DatagramSend.NotSent.Unavailable.NotNegotiated.toString|toString(){}[0]
+            }
+        }
+
+        final class QueueFull : com.ditchoom.socket.quic/DatagramSend.NotSent { // com.ditchoom.socket.quic/DatagramSend.NotSent.QueueFull|null[0]
+            final suspend fun awaitRoom() // com.ditchoom.socket.quic/DatagramSend.NotSent.QueueFull.awaitRoom|awaitRoom(){}[0]
+
+            final object Companion { // com.ditchoom.socket.quic/DatagramSend.NotSent.QueueFull.Companion|null[0]
+                final fun of(com.ditchoom.socket.quic/DatagramRoomWait): com.ditchoom.socket.quic/DatagramSend.NotSent.QueueFull // com.ditchoom.socket.quic/DatagramSend.NotSent.QueueFull.Companion.of|of(com.ditchoom.socket.quic.DatagramRoomWait){}[0]
+            }
+        }
+
+        final class TooLarge : com.ditchoom.socket.quic/DatagramSend.NotSent { // com.ditchoom.socket.quic/DatagramSend.NotSent.TooLarge|null[0]
+            constructor <init>(kotlin/Int) // com.ditchoom.socket.quic/DatagramSend.NotSent.TooLarge.<init>|<init>(kotlin.Int){}[0]
+
+            final val maxBytes // com.ditchoom.socket.quic/DatagramSend.NotSent.TooLarge.maxBytes|{}maxBytes[0]
+                final fun <get-maxBytes>(): kotlin/Int // com.ditchoom.socket.quic/DatagramSend.NotSent.TooLarge.maxBytes.<get-maxBytes>|<get-maxBytes>(){}[0]
+
+            final fun component1(): kotlin/Int // com.ditchoom.socket.quic/DatagramSend.NotSent.TooLarge.component1|component1(){}[0]
+            final fun copy(kotlin/Int = ...): com.ditchoom.socket.quic/DatagramSend.NotSent.TooLarge // com.ditchoom.socket.quic/DatagramSend.NotSent.TooLarge.copy|copy(kotlin.Int){}[0]
+            final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/DatagramSend.NotSent.TooLarge.equals|equals(kotlin.Any?){}[0]
+            final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/DatagramSend.NotSent.TooLarge.hashCode|hashCode(){}[0]
+            final fun toString(): kotlin/String // com.ditchoom.socket.quic/DatagramSend.NotSent.TooLarge.toString|toString(){}[0]
+        }
+    }
+
+    final object Sent : com.ditchoom.socket.quic/DatagramSend { // com.ditchoom.socket.quic/DatagramSend.Sent|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/DatagramSend.Sent.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/DatagramSend.Sent.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/DatagramSend.Sent.toString|toString(){}[0]
     }
 }
 
@@ -2262,6 +2354,39 @@ sealed interface com.ditchoom.socket.quic/QuicOptionRefusal { // com.ditchoom.so
     abstract val option // com.ditchoom.socket.quic/QuicOptionRefusal.option|{}option[0]
         abstract fun <get-option>(): com.ditchoom.socket.quic/QuicOptionName // com.ditchoom.socket.quic/QuicOptionRefusal.option.<get-option>|<get-option>(){}[0]
 
+    final class DatagramMaxAgeNotPositive : com.ditchoom.socket.quic/QuicOptionRefusal { // com.ditchoom.socket.quic/QuicOptionRefusal.DatagramMaxAgeNotPositive|null[0]
+        constructor <init>(kotlin.time/Duration) // com.ditchoom.socket.quic/QuicOptionRefusal.DatagramMaxAgeNotPositive.<init>|<init>(kotlin.time.Duration){}[0]
+
+        final val age // com.ditchoom.socket.quic/QuicOptionRefusal.DatagramMaxAgeNotPositive.age|{}age[0]
+            final fun <get-age>(): kotlin.time/Duration // com.ditchoom.socket.quic/QuicOptionRefusal.DatagramMaxAgeNotPositive.age.<get-age>|<get-age>(){}[0]
+        final val option // com.ditchoom.socket.quic/QuicOptionRefusal.DatagramMaxAgeNotPositive.option|{}option[0]
+            final fun <get-option>(): com.ditchoom.socket.quic/QuicOptionName // com.ditchoom.socket.quic/QuicOptionRefusal.DatagramMaxAgeNotPositive.option.<get-option>|<get-option>(){}[0]
+
+        final fun component1(): kotlin.time/Duration // com.ditchoom.socket.quic/QuicOptionRefusal.DatagramMaxAgeNotPositive.component1|component1(){}[0]
+        final fun copy(kotlin.time/Duration = ...): com.ditchoom.socket.quic/QuicOptionRefusal.DatagramMaxAgeNotPositive // com.ditchoom.socket.quic/QuicOptionRefusal.DatagramMaxAgeNotPositive.copy|copy(kotlin.time.Duration){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicOptionRefusal.DatagramMaxAgeNotPositive.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicOptionRefusal.DatagramMaxAgeNotPositive.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicOptionRefusal.DatagramMaxAgeNotPositive.toString|toString(){}[0]
+    }
+
+    final class DatagramSendQueueTooShort : com.ditchoom.socket.quic/QuicOptionRefusal { // com.ditchoom.socket.quic/QuicOptionRefusal.DatagramSendQueueTooShort|null[0]
+        constructor <init>(kotlin/Int, kotlin/Int) // com.ditchoom.socket.quic/QuicOptionRefusal.DatagramSendQueueTooShort.<init>|<init>(kotlin.Int;kotlin.Int){}[0]
+
+        final val minimum // com.ditchoom.socket.quic/QuicOptionRefusal.DatagramSendQueueTooShort.minimum|{}minimum[0]
+            final fun <get-minimum>(): kotlin/Int // com.ditchoom.socket.quic/QuicOptionRefusal.DatagramSendQueueTooShort.minimum.<get-minimum>|<get-minimum>(){}[0]
+        final val option // com.ditchoom.socket.quic/QuicOptionRefusal.DatagramSendQueueTooShort.option|{}option[0]
+            final fun <get-option>(): com.ditchoom.socket.quic/QuicOptionName // com.ditchoom.socket.quic/QuicOptionRefusal.DatagramSendQueueTooShort.option.<get-option>|<get-option>(){}[0]
+        final val sendQueueLen // com.ditchoom.socket.quic/QuicOptionRefusal.DatagramSendQueueTooShort.sendQueueLen|{}sendQueueLen[0]
+            final fun <get-sendQueueLen>(): kotlin/Int // com.ditchoom.socket.quic/QuicOptionRefusal.DatagramSendQueueTooShort.sendQueueLen.<get-sendQueueLen>|<get-sendQueueLen>(){}[0]
+
+        final fun component1(): kotlin/Int // com.ditchoom.socket.quic/QuicOptionRefusal.DatagramSendQueueTooShort.component1|component1(){}[0]
+        final fun component2(): kotlin/Int // com.ditchoom.socket.quic/QuicOptionRefusal.DatagramSendQueueTooShort.component2|component2(){}[0]
+        final fun copy(kotlin/Int = ..., kotlin/Int = ...): com.ditchoom.socket.quic/QuicOptionRefusal.DatagramSendQueueTooShort // com.ditchoom.socket.quic/QuicOptionRefusal.DatagramSendQueueTooShort.copy|copy(kotlin.Int;kotlin.Int){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicOptionRefusal.DatagramSendQueueTooShort.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicOptionRefusal.DatagramSendQueueTooShort.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicOptionRefusal.DatagramSendQueueTooShort.toString|toString(){}[0]
+    }
+
     final object QlogNotBudgeted : com.ditchoom.socket.quic/QuicOptionRefusal { // com.ditchoom.socket.quic/QuicOptionRefusal.QlogNotBudgeted|null[0]
         final val option // com.ditchoom.socket.quic/QuicOptionRefusal.QlogNotBudgeted.option|{}option[0]
             final fun <get-option>(): com.ditchoom.socket.quic/QuicOptionName // com.ditchoom.socket.quic/QuicOptionRefusal.QlogNotBudgeted.option.<get-option>|<get-option>(){}[0]
@@ -3117,8 +3242,14 @@ final class com.ditchoom.socket.quic/CertificateHash { // com.ditchoom.socket.qu
 }
 
 final class com.ditchoom.socket.quic/DatagramOptions { // com.ditchoom.socket.quic/DatagramOptions|null[0]
-    constructor <init>(kotlin/Int = ..., kotlin/Int = ...) // com.ditchoom.socket.quic/DatagramOptions.<init>|<init>(kotlin.Int;kotlin.Int){}[0]
+    constructor <init>(kotlin/Int = ..., kotlin/Int = ..., com.ditchoom.socket.quic/DatagramOverflow = ..., com.ditchoom.socket.quic/DatagramMaxAge = ..., com.ditchoom.socket.quic/DatagramMaxAge = ...) // com.ditchoom.socket.quic/DatagramOptions.<init>|<init>(kotlin.Int;kotlin.Int;com.ditchoom.socket.quic.DatagramOverflow;com.ditchoom.socket.quic.DatagramMaxAge;com.ditchoom.socket.quic.DatagramMaxAge){}[0]
 
+    final val incomingMaxAge // com.ditchoom.socket.quic/DatagramOptions.incomingMaxAge|{}incomingMaxAge[0]
+        final fun <get-incomingMaxAge>(): com.ditchoom.socket.quic/DatagramMaxAge // com.ditchoom.socket.quic/DatagramOptions.incomingMaxAge.<get-incomingMaxAge>|<get-incomingMaxAge>(){}[0]
+    final val outgoingMaxAge // com.ditchoom.socket.quic/DatagramOptions.outgoingMaxAge|{}outgoingMaxAge[0]
+        final fun <get-outgoingMaxAge>(): com.ditchoom.socket.quic/DatagramMaxAge // com.ditchoom.socket.quic/DatagramOptions.outgoingMaxAge.<get-outgoingMaxAge>|<get-outgoingMaxAge>(){}[0]
+    final val overflow // com.ditchoom.socket.quic/DatagramOptions.overflow|{}overflow[0]
+        final fun <get-overflow>(): com.ditchoom.socket.quic/DatagramOverflow // com.ditchoom.socket.quic/DatagramOptions.overflow.<get-overflow>|<get-overflow>(){}[0]
     final val recvQueueLen // com.ditchoom.socket.quic/DatagramOptions.recvQueueLen|{}recvQueueLen[0]
         final fun <get-recvQueueLen>(): kotlin/Int // com.ditchoom.socket.quic/DatagramOptions.recvQueueLen.<get-recvQueueLen>|<get-recvQueueLen>(){}[0]
     final val sendQueueLen // com.ditchoom.socket.quic/DatagramOptions.sendQueueLen|{}sendQueueLen[0]
@@ -3126,7 +3257,10 @@ final class com.ditchoom.socket.quic/DatagramOptions { // com.ditchoom.socket.qu
 
     final fun component1(): kotlin/Int // com.ditchoom.socket.quic/DatagramOptions.component1|component1(){}[0]
     final fun component2(): kotlin/Int // com.ditchoom.socket.quic/DatagramOptions.component2|component2(){}[0]
-    final fun copy(kotlin/Int = ..., kotlin/Int = ...): com.ditchoom.socket.quic/DatagramOptions // com.ditchoom.socket.quic/DatagramOptions.copy|copy(kotlin.Int;kotlin.Int){}[0]
+    final fun component3(): com.ditchoom.socket.quic/DatagramOverflow // com.ditchoom.socket.quic/DatagramOptions.component3|component3(){}[0]
+    final fun component4(): com.ditchoom.socket.quic/DatagramMaxAge // com.ditchoom.socket.quic/DatagramOptions.component4|component4(){}[0]
+    final fun component5(): com.ditchoom.socket.quic/DatagramMaxAge // com.ditchoom.socket.quic/DatagramOptions.component5|component5(){}[0]
+    final fun copy(kotlin/Int = ..., kotlin/Int = ..., com.ditchoom.socket.quic/DatagramOverflow = ..., com.ditchoom.socket.quic/DatagramMaxAge = ..., com.ditchoom.socket.quic/DatagramMaxAge = ...): com.ditchoom.socket.quic/DatagramOptions // com.ditchoom.socket.quic/DatagramOptions.copy|copy(kotlin.Int;kotlin.Int;com.ditchoom.socket.quic.DatagramOverflow;com.ditchoom.socket.quic.DatagramMaxAge;com.ditchoom.socket.quic.DatagramMaxAge){}[0]
     final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/DatagramOptions.equals|equals(kotlin.Any?){}[0]
     final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/DatagramOptions.hashCode|hashCode(){}[0]
     final fun toString(): kotlin/String // com.ditchoom.socket.quic/DatagramOptions.toString|toString(){}[0]
@@ -3424,7 +3558,7 @@ final class com.ditchoom.socket.quic/QuicConnectionIdentity { // com.ditchoom.so
 }
 
 final class com.ditchoom.socket.quic/QuicConnectionStats { // com.ditchoom.socket.quic/QuicConnectionStats|null[0]
-    constructor <init>(kotlin/Long, kotlin/Long, kotlin/Long, kotlin/Long, kotlin/Long, kotlin/Long, kotlin/Long, kotlin/Long, kotlin/Long, kotlin/Long, kotlin/Long, kotlin/Long, kotlin/Int, com.ditchoom.socket.quic/QuicActivePathStats, com.ditchoom.socket.quic/QuicDatagramCount = ..., com.ditchoom.socket.quic/QuicDatagramCount = ...) // com.ditchoom.socket.quic/QuicConnectionStats.<init>|<init>(kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Int;com.ditchoom.socket.quic.QuicActivePathStats;com.ditchoom.socket.quic.QuicDatagramCount;com.ditchoom.socket.quic.QuicDatagramCount){}[0]
+    constructor <init>(kotlin/Long, kotlin/Long, kotlin/Long, kotlin/Long, kotlin/Long, kotlin/Long, kotlin/Long, kotlin/Long, kotlin/Long, kotlin/Long, kotlin/Long, kotlin/Long, kotlin/Int, com.ditchoom.socket.quic/QuicActivePathStats, com.ditchoom.socket.quic/QuicDatagramCount = ..., com.ditchoom.socket.quic/QuicDatagramCount = ..., com.ditchoom.socket.quic/QuicDatagramCount = ..., com.ditchoom.socket.quic/QuicDatagramCount = ..., com.ditchoom.socket.quic/QuicDatagramCount = ..., com.ditchoom.socket.quic/QuicDatagramCount = ..., com.ditchoom.socket.quic/QuicDatagramCount = ...) // com.ditchoom.socket.quic/QuicConnectionStats.<init>|<init>(kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Int;com.ditchoom.socket.quic.QuicActivePathStats;com.ditchoom.socket.quic.QuicDatagramCount;com.ditchoom.socket.quic.QuicDatagramCount;com.ditchoom.socket.quic.QuicDatagramCount;com.ditchoom.socket.quic.QuicDatagramCount;com.ditchoom.socket.quic.QuicDatagramCount;com.ditchoom.socket.quic.QuicDatagramCount;com.ditchoom.socket.quic.QuicDatagramCount){}[0]
 
     final val activePath // com.ditchoom.socket.quic/QuicConnectionStats.activePath|{}activePath[0]
         final fun <get-activePath>(): com.ditchoom.socket.quic/QuicActivePathStats // com.ditchoom.socket.quic/QuicConnectionStats.activePath.<get-activePath>|<get-activePath>(){}[0]
@@ -3436,8 +3570,18 @@ final class com.ditchoom.socket.quic/QuicConnectionStats { // com.ditchoom.socke
         final fun <get-bytesReceived>(): kotlin/Long // com.ditchoom.socket.quic/QuicConnectionStats.bytesReceived.<get-bytesReceived>|<get-bytesReceived>(){}[0]
     final val bytesSent // com.ditchoom.socket.quic/QuicConnectionStats.bytesSent|{}bytesSent[0]
         final fun <get-bytesSent>(): kotlin/Long // com.ditchoom.socket.quic/QuicConnectionStats.bytesSent.<get-bytesSent>|<get-bytesSent>(){}[0]
+    final val datagramsDroppedAtClose // com.ditchoom.socket.quic/QuicConnectionStats.datagramsDroppedAtClose|{}datagramsDroppedAtClose[0]
+        final fun <get-datagramsDroppedAtClose>(): com.ditchoom.socket.quic/QuicDatagramCount // com.ditchoom.socket.quic/QuicConnectionStats.datagramsDroppedAtClose.<get-datagramsDroppedAtClose>|<get-datagramsDroppedAtClose>(){}[0]
     final val datagramsDroppedReceiveQueue // com.ditchoom.socket.quic/QuicConnectionStats.datagramsDroppedReceiveQueue|{}datagramsDroppedReceiveQueue[0]
         final fun <get-datagramsDroppedReceiveQueue>(): com.ditchoom.socket.quic/QuicDatagramCount // com.ditchoom.socket.quic/QuicConnectionStats.datagramsDroppedReceiveQueue.<get-datagramsDroppedReceiveQueue>|<get-datagramsDroppedReceiveQueue>(){}[0]
+    final val datagramsDroppedUnsendable // com.ditchoom.socket.quic/QuicConnectionStats.datagramsDroppedUnsendable|{}datagramsDroppedUnsendable[0]
+        final fun <get-datagramsDroppedUnsendable>(): com.ditchoom.socket.quic/QuicDatagramCount // com.ditchoom.socket.quic/QuicConnectionStats.datagramsDroppedUnsendable.<get-datagramsDroppedUnsendable>|<get-datagramsDroppedUnsendable>(){}[0]
+    final val datagramsEvicted // com.ditchoom.socket.quic/QuicConnectionStats.datagramsEvicted|{}datagramsEvicted[0]
+        final fun <get-datagramsEvicted>(): com.ditchoom.socket.quic/QuicDatagramCount // com.ditchoom.socket.quic/QuicConnectionStats.datagramsEvicted.<get-datagramsEvicted>|<get-datagramsEvicted>(){}[0]
+    final val datagramsExpiredIncoming // com.ditchoom.socket.quic/QuicConnectionStats.datagramsExpiredIncoming|{}datagramsExpiredIncoming[0]
+        final fun <get-datagramsExpiredIncoming>(): com.ditchoom.socket.quic/QuicDatagramCount // com.ditchoom.socket.quic/QuicConnectionStats.datagramsExpiredIncoming.<get-datagramsExpiredIncoming>|<get-datagramsExpiredIncoming>(){}[0]
+    final val datagramsExpiredOutgoing // com.ditchoom.socket.quic/QuicConnectionStats.datagramsExpiredOutgoing|{}datagramsExpiredOutgoing[0]
+        final fun <get-datagramsExpiredOutgoing>(): com.ditchoom.socket.quic/QuicDatagramCount // com.ditchoom.socket.quic/QuicConnectionStats.datagramsExpiredOutgoing.<get-datagramsExpiredOutgoing>|<get-datagramsExpiredOutgoing>(){}[0]
     final val datagramsReceived // com.ditchoom.socket.quic/QuicConnectionStats.datagramsReceived|{}datagramsReceived[0]
         final fun <get-datagramsReceived>(): kotlin/Long // com.ditchoom.socket.quic/QuicConnectionStats.datagramsReceived.<get-datagramsReceived>|<get-datagramsReceived>(){}[0]
     final val datagramsRefusedQueueFull // com.ditchoom.socket.quic/QuicConnectionStats.datagramsRefusedQueueFull|{}datagramsRefusedQueueFull[0]
@@ -3467,7 +3611,12 @@ final class com.ditchoom.socket.quic/QuicConnectionStats { // com.ditchoom.socke
     final fun component14(): com.ditchoom.socket.quic/QuicActivePathStats // com.ditchoom.socket.quic/QuicConnectionStats.component14|component14(){}[0]
     final fun component15(): com.ditchoom.socket.quic/QuicDatagramCount // com.ditchoom.socket.quic/QuicConnectionStats.component15|component15(){}[0]
     final fun component16(): com.ditchoom.socket.quic/QuicDatagramCount // com.ditchoom.socket.quic/QuicConnectionStats.component16|component16(){}[0]
+    final fun component17(): com.ditchoom.socket.quic/QuicDatagramCount // com.ditchoom.socket.quic/QuicConnectionStats.component17|component17(){}[0]
+    final fun component18(): com.ditchoom.socket.quic/QuicDatagramCount // com.ditchoom.socket.quic/QuicConnectionStats.component18|component18(){}[0]
+    final fun component19(): com.ditchoom.socket.quic/QuicDatagramCount // com.ditchoom.socket.quic/QuicConnectionStats.component19|component19(){}[0]
     final fun component2(): kotlin/Long // com.ditchoom.socket.quic/QuicConnectionStats.component2|component2(){}[0]
+    final fun component20(): com.ditchoom.socket.quic/QuicDatagramCount // com.ditchoom.socket.quic/QuicConnectionStats.component20|component20(){}[0]
+    final fun component21(): com.ditchoom.socket.quic/QuicDatagramCount // com.ditchoom.socket.quic/QuicConnectionStats.component21|component21(){}[0]
     final fun component3(): kotlin/Long // com.ditchoom.socket.quic/QuicConnectionStats.component3|component3(){}[0]
     final fun component4(): kotlin/Long // com.ditchoom.socket.quic/QuicConnectionStats.component4|component4(){}[0]
     final fun component5(): kotlin/Long // com.ditchoom.socket.quic/QuicConnectionStats.component5|component5(){}[0]
@@ -3475,7 +3624,7 @@ final class com.ditchoom.socket.quic/QuicConnectionStats { // com.ditchoom.socke
     final fun component7(): kotlin/Long // com.ditchoom.socket.quic/QuicConnectionStats.component7|component7(){}[0]
     final fun component8(): kotlin/Long // com.ditchoom.socket.quic/QuicConnectionStats.component8|component8(){}[0]
     final fun component9(): kotlin/Long // com.ditchoom.socket.quic/QuicConnectionStats.component9|component9(){}[0]
-    final fun copy(kotlin/Long = ..., kotlin/Long = ..., kotlin/Long = ..., kotlin/Long = ..., kotlin/Long = ..., kotlin/Long = ..., kotlin/Long = ..., kotlin/Long = ..., kotlin/Long = ..., kotlin/Long = ..., kotlin/Long = ..., kotlin/Long = ..., kotlin/Int = ..., com.ditchoom.socket.quic/QuicActivePathStats = ..., com.ditchoom.socket.quic/QuicDatagramCount = ..., com.ditchoom.socket.quic/QuicDatagramCount = ...): com.ditchoom.socket.quic/QuicConnectionStats // com.ditchoom.socket.quic/QuicConnectionStats.copy|copy(kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Int;com.ditchoom.socket.quic.QuicActivePathStats;com.ditchoom.socket.quic.QuicDatagramCount;com.ditchoom.socket.quic.QuicDatagramCount){}[0]
+    final fun copy(kotlin/Long = ..., kotlin/Long = ..., kotlin/Long = ..., kotlin/Long = ..., kotlin/Long = ..., kotlin/Long = ..., kotlin/Long = ..., kotlin/Long = ..., kotlin/Long = ..., kotlin/Long = ..., kotlin/Long = ..., kotlin/Long = ..., kotlin/Int = ..., com.ditchoom.socket.quic/QuicActivePathStats = ..., com.ditchoom.socket.quic/QuicDatagramCount = ..., com.ditchoom.socket.quic/QuicDatagramCount = ..., com.ditchoom.socket.quic/QuicDatagramCount = ..., com.ditchoom.socket.quic/QuicDatagramCount = ..., com.ditchoom.socket.quic/QuicDatagramCount = ..., com.ditchoom.socket.quic/QuicDatagramCount = ..., com.ditchoom.socket.quic/QuicDatagramCount = ...): com.ditchoom.socket.quic/QuicConnectionStats // com.ditchoom.socket.quic/QuicConnectionStats.copy|copy(kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Int;com.ditchoom.socket.quic.QuicActivePathStats;com.ditchoom.socket.quic.QuicDatagramCount;com.ditchoom.socket.quic.QuicDatagramCount;com.ditchoom.socket.quic.QuicDatagramCount;com.ditchoom.socket.quic.QuicDatagramCount;com.ditchoom.socket.quic.QuicDatagramCount;com.ditchoom.socket.quic.QuicDatagramCount;com.ditchoom.socket.quic.QuicDatagramCount){}[0]
     final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicConnectionStats.equals|equals(kotlin.Any?){}[0]
     final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicConnectionStats.hashCode|hashCode(){}[0]
     final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicConnectionStats.toString|toString(){}[0]

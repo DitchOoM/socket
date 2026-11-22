@@ -2,6 +2,7 @@
 
 package com.ditchoom.socket.quic
 
+import java.lang.foreign.Arena
 import java.lang.foreign.FunctionDescriptor
 import java.lang.foreign.Linker
 import java.lang.foreign.SymbolLookup
@@ -27,6 +28,15 @@ internal object FfmLibrary {
         name: String,
         desc: FunctionDescriptor,
     ): MethodHandle = linker.downcallHandle(quiche.find(name).orElseThrow { UnsatisfiedLinkError("quiche: $name") }, desc)
+
+    /**
+     * The address of a C function that calls [target] as [desc] says, made once for the life of the process.
+     * `upcallStub` and `Arena.global` are spelled identically on JDK 21's preview FFM and on JDK 22+.
+     */
+    fun upcall(
+        target: MethodHandle,
+        desc: FunctionDescriptor,
+    ): Long = linker.upcallStub(target, desc, Arena.global()).address()
 
     /**
      * The downcall handle for the C-runtime function [name], which the linker's default lookup finds on every

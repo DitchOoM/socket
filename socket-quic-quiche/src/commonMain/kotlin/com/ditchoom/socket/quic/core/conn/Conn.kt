@@ -109,8 +109,8 @@ internal class Conn(
         }
     }
 
-    /** Any thread: the bytes one datagram may carry as of the connection's last turn, or 0. */
-    fun datagramMaxBytes(): Int = turn.datagramMaxBytes()
+    /** Any thread: the connection's datagrams, for the queue a caller offers sends to and the room one may carry. */
+    fun datagrams(): Datagrams = turn.datagrams()
 
     fun lingerView(): LingerView = turn.lingerView(clock.live())
 

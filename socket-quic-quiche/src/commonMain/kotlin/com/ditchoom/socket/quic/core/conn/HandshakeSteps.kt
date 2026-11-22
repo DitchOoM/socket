@@ -90,7 +90,7 @@ internal fun ConnParts.announce(
 ) {
     when (handshake.announcement()) {
         Announcement.Due -> {
-            slots.datagrams.wake()
+            slots.datagrams.wake(now)
             val report = handshake.report(now, paths.read(), outcome())
             sink.established(report)
             handshake.reported(report.facts)
@@ -185,7 +185,7 @@ private fun ConnParts.early() =
 
 private fun ConnParts.established(now: Nanos) {
     wakeStreams(Arrival.Confirmed)
-    slots.datagrams.wake()
+    slots.datagrams.wake(now)
     slots.keepAlive.step(now)
     when (val r = slots.resumption) {
         is Resumption.Server -> Unit

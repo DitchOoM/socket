@@ -4,15 +4,20 @@ import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.udp.SendBatch
 import kotlinx.coroutines.Runnable
 
-/** The serve's write into [out]: as quiche paces it, unless the connection is not paced. */
+/**
+ * The serve's write into [out]: as quiche paces it, unless the connection is not paced. Datagrams queued to send go
+ * only while the connection runs.
+ */
 internal fun ConnParts.writeOut(
     out: SendBatch,
     paths: Paths,
-): Wrote =
-    when (val pacing = slots.pacing) {
-        is Pacing.Unpaced -> egress.write(out, paths, flight)
-        is Pacing.ByQuiche -> egress.writePaced(out, paths, pacing.pacer, flight)
+): Wrote {
+    val datagrams = datagramsToWrite()
+    return when (val pacing = slots.pacing) {
+        is Pacing.Unpaced -> egress.write(out, paths, flight, datagrams)
+        is Pacing.ByQuiche -> egress.writePaced(out, paths, pacing.pacer, flight, datagrams)
     }
+}
 
 /** Offers every component's next wake to the connection's timer, then arms it for the earliest. */
 internal fun ConnParts.rearm(

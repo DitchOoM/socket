@@ -30,6 +30,7 @@ import com.ditchoom.socket.quic.core.conn.NetworkChange
 import com.ditchoom.socket.quic.core.conn.NetworkWork
 import com.ditchoom.socket.quic.core.life.CloseChoice
 import com.ditchoom.socket.quic.core.life.CloseOutcome
+import com.ditchoom.socket.quic.core.observe.ConnCounts
 import com.ditchoom.socket.quic.core.observe.withDatagramCounts
 import com.ditchoom.socket.quic.core.stream.StreamKind
 import com.ditchoom.socket.testkit.trace.TraceSink
@@ -91,13 +92,14 @@ internal class CoreConnection(
     /** The deadlines of this connection's operations that park with a bound, lent from inside. */
     internal val deadlines = OpDeadlines(conn)
 
-    private val datagrams = CoreDatagramChannel(this, conn, edge, bufferFactory, remoteAddress)
+    /** The connection's datagrams as the core's own channel, whose send answers a [com.ditchoom.socket.quic.DatagramSend]. */
+    internal val coreDatagrams = CoreDatagramChannel(this, conn, edge, bufferFactory, remoteAddress)
 
     @OptIn(ExperimentalDatagramApi::class)
-    override fun datagramChannel(): ConnectedDatagramChannel = datagrams
+    override fun datagramChannel(): ConnectedDatagramChannel = coreDatagrams
 
-    /** Received datagrams dropped because the receive queue was full and nobody was receiving; any thread. */
-    fun datagramsOverflowed(): Long = conn.counts.datagramsOverflowed
+    /** What the connection counted, any thread: the datagrams it dropped or refused among them. */
+    internal val counts: ConnCounts get() = conn.counts
 
     /** How the connection stands: open, or ended and how. */
     fun end(): EdgeEnd = edge.end()

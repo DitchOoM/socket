@@ -1,45 +1,17 @@
-@file:OptIn(ExperimentalAtomicApi::class)
-
 package com.ditchoom.socket.quic.core.conn
 
 import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.socket.quic.NO_DATAGRAM_ROOM
-import com.ditchoom.socket.quic.QUICHE_ERR_INVALID_STATE
-import com.ditchoom.socket.quic.QuicheSendStop
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.observe.Confined
 import com.ditchoom.socket.quic.core.observe.ConnCounts
-import com.ditchoom.socket.quic.core.observe.Published
-import com.ditchoom.socket.quic.core.stream.QUICHE_ERR_DONE
+import com.ditchoom.socket.quic.core.stream.Backlog
+import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.udp.Addressed
 import com.ditchoom.socket.quic.core.udp.NativeBytes
-import kotlin.concurrent.atomics.AtomicInt
-import kotlin.concurrent.atomics.ExperimentalAtomicApi
 
 /** The room a received datagram is read into: more than any datagram the endpoint's sockets receive. */
 internal const val DATAGRAM_ROOM = 1350
-
-/** What one datagram send came to. The answers that carry nothing are made once. */
-internal sealed interface DatagramSend {
-    data object Sent : DatagramSend
-
-    /** Datagrams are off here, or the peer never advertised support for them. */
-    data object NotNegotiated : DatagramSend
-
-    /** quiche's send queue is full; nothing was queued. */
-    data object QueueFull : DatagramSend
-
-    /** The datagram does not fit the path as it stands: [maxBytes] is what fits. */
-    class TooLarge(
-        val maxBytes: Int,
-    ) : DatagramSend
-
-    /** quiche refused the datagram with [code]. */
-    class Refused(
-        val code: Int,
-    ) : DatagramSend
-}
 
 /** Whether a parked receive still wants a datagram. */
 internal enum class Interest { Wanted, Withdrawn }
@@ -77,22 +49,30 @@ private class Queued(
 ) {
     var length = 0
         private set
+    var arrivedAt = Nanos(0L)
+        private set
 
-    fun filled(length: Int) {
+    fun filled(
+        length: Int,
+        at: Nanos,
+    ) {
         this.length = length
+        arrivedAt = at
     }
 }
 
 /**
- * A connection's RFC 9221 datagrams, inside it only: the only file that sends or receives them in quiche. Receives
- * park here, one answered per arriving datagram, written straight into the receive's own memory. A datagram that finds
- * none parked is kept in a queue of at most [bound] slots, made as they are needed and reused after; when it is full the
- * oldest is dropped for the newest and counted, so a receiver that stops reading holds a bounded amount of memory.
+ * A connection's received RFC 9221 datagrams, inside it only. Receives park here, one answered per arriving datagram,
+ * written straight into the receive's own memory. A datagram that finds none parked is kept in a queue of at most
+ * [bound] slots, made as they are needed and reused after; when it is full the oldest is dropped for the newest and
+ * counted, so a receiver that stops reading holds a bounded amount of memory. One kept past [incoming] is dropped,
+ * counted, when it would be delivered.
  */
 @Confined
 internal class DatagramBox(
     private val q: QuicheConnRef,
     private val bound: Int,
+    private val incoming: AgeBound,
     private val factory: BufferFactory,
     private val counts: ConnCounts,
 ) {
@@ -100,46 +80,23 @@ internal class DatagramBox(
     private val spare = ArrayDeque<Queued>()
     private val waiting = ArrayDeque<DatagramWaiter>()
     private var made = 0
-    private val room = AtomicInt(NO_DATAGRAM_ROOM)
 
-    /** Monotonic: datagrams quiche took to send. */
-    var output = 0L
-        private set
-
-    /** Any thread: the bytes one datagram may carry, as of the connection's last turn; 0 when none can be sent. */
-    @Published
-    fun maxBytes(): Int = maxOf(room.load(), 0)
-
-    /** Sends the [length] bytes at [address] as one datagram: whole, or refused with nothing queued. */
-    fun send(
-        address: Long,
-        length: Int,
-    ): DatagramSend {
-        val max = q.api.connDgramMaxWritableBytes(q.handle)
-        room.store(max)
-        if (max == NO_DATAGRAM_ROOM) return DatagramSend.NotNegotiated
-        if (length > max) return DatagramSend.TooLarge(max)
-        val sent = q.api.connDgramSend(q.handle, if (length > 0) address else 0L, length)
-        return when {
-            sent >= 0 -> {
-                output++
-                DatagramSend.Sent
-            }
-            sent == QUICHE_ERR_DONE -> DatagramSend.QueueFull.also { counts.datagramRefusedQueueFull() }
-            sent == QUICHE_ERR_INVALID_STATE -> DatagramSend.NotNegotiated
-            sent == QuicheSendStop.QUICHE_ERR_BUFFER_TOO_SHORT -> DatagramSend.TooLarge(max)
-            else -> DatagramSend.Refused(sent)
-        }
-    }
-
-    /** Answers [waiter] with the oldest datagram held or quiche's next, else parks it until one arrives. */
-    fun receive(waiter: DatagramWaiter): Receipt {
-        if (queued.isNotEmpty()) {
+    /** Answers [waiter] with the oldest datagram held that is still fresh at [now] or quiche's next, else parks it until one arrives. */
+    fun receive(
+        waiter: DatagramWaiter,
+        now: Nanos,
+    ): Receipt {
+        while (queued.isNotEmpty()) {
             val next = queued.removeFirst()
-            next.bytes.copyOut(waiter.address, next.length)
-            waiter.arrived(next.length)
             spare.addLast(next)
-            return Receipt.Delivered
+            when (incoming.expired(next.arrivedAt, now)) {
+                Expiry.Expired -> counts.datagramExpiredIncoming()
+                Expiry.Fresh -> {
+                    next.bytes.copyOut(waiter.address, next.length)
+                    waiter.arrived(next.length)
+                    return Receipt.Delivered
+                }
+            }
         }
         return when (pull(waiter)) {
             Pulled.Got -> Receipt.Delivered
@@ -154,17 +111,12 @@ internal class DatagramBox(
         waiting.remove(waiter)
     }
 
-    /** Reads the room a datagram has now, and moves what quiche holds on. */
-    fun wake() {
-        room.store(q.api.connDgramMaxWritableBytes(q.handle))
-        drain()
-    }
-
     /**
      * Moves what quiche holds to the receives parked, else into the queue. Run after every datagram quiche reads, so
-     * quiche's own queue never holds more than that one and this queue's bound is the only one that drops.
+     * quiche's own queue never holds more than that one and this queue's bound is the only one that drops. What is
+     * kept is stamped with [now], when it arrived.
      */
-    fun drain() {
+    fun drain(now: Nanos) {
         while (waiting.isNotEmpty()) {
             val first = waiting.first()
             when (first.interest()) {
@@ -179,7 +131,7 @@ internal class DatagramBox(
                     }
             }
         }
-        while (keep() == Kept.One) Unit
+        while (keep(now) == Kept.One) Unit
     }
 
     /** The connection ended: every parked receive is told, and the queue's memory goes. */
@@ -211,7 +163,7 @@ internal class DatagramBox(
         )
 
     /** Reads one datagram quiche holds into the queue, over the oldest when the queue is full. */
-    private fun keep(): Kept {
+    private fun keep(now: Nanos): Kept {
         val slot =
             when {
                 spare.isNotEmpty() -> spare.first()
@@ -231,7 +183,7 @@ internal class DatagramBox(
                 reset = { return Kept.None },
                 error = { return Kept.None },
             )
-        slot.filled(got)
+        slot.filled(got, now)
         if (spare.isNotEmpty()) {
             spare.removeFirst()
         } else {
@@ -270,30 +222,67 @@ internal class DatagramBox(
     private enum class Kept { One, None }
 }
 
-/** Inside: the datagram work of an established connection, for each variant of its slot. */
-internal fun Datagrams.wake() =
+/** Inside, at [now]: the datagram work of an established connection, served each turn: the room is read, what quiche received moves on, and idle send memory is let go. */
+internal fun Datagrams.wake(now: Nanos) =
     when (this) {
         is Datagrams.Off -> Unit
-        is Datagrams.On -> box.wake()
+        is Datagrams.On -> {
+            out.readRoom()
+            box.drain(now)
+            out.trim(now)
+        }
     }
 
-/** Inside: quiche has read a datagram. */
-internal fun Datagrams.received() =
+/** Inside: quiche has read a datagram, at [now]. */
+internal fun Datagrams.received(now: Nanos) =
     when (this) {
         is Datagrams.Off -> Unit
-        is Datagrams.On -> box.drain()
+        is Datagrams.On -> box.drain(now)
     }
+
+/** Inside, as a write begins or its output runs dry at [now]: queued sends go to quiche, which may then have more to write. */
+internal fun Datagrams.refill(now: Nanos): Refill =
+    when (this) {
+        is Datagrams.Off -> Refill.Nothing
+        is Datagrams.On -> out.feed(now)
+    }
+
+/** Inside: quiche wrote a packet, which may have taken datagrams out of its queue. */
+internal fun Datagrams.quicheWrote() =
+    when (this) {
+        is Datagrams.Off -> Unit
+        is Datagrams.On -> out.quicheWrote()
+    }
+
+/** Whether datagrams wait to be sent. */
+internal fun Datagrams.backlog(): Backlog =
+    when (this) {
+        is Datagrams.Off -> Backlog.None
+        is Datagrams.On -> out.backlog()
+    }
+
+/** Inside: the connection's close point, with [end]: nothing more is sent; none are left to write. */
+internal fun Datagrams.closed(end: ConnEnd): Datagrams {
+    when (this) {
+        is Datagrams.Off -> Unit
+        is Datagrams.On -> out.close(end)
+    }
+    return Datagrams.Off
+}
 
 /** Inside: the connection ended with [end]. */
 internal fun Datagrams.endAll(end: ConnEnd) =
     when (this) {
         is Datagrams.Off -> Unit
-        is Datagrams.On -> box.endAll(end)
+        is Datagrams.On -> {
+            out.close(end)
+            box.endAll(end)
+        }
     }
 
 /** Any thread: the bytes one datagram may carry as of the connection's last turn, or 0. */
 internal fun Datagrams.maxBytes(): Int =
     when (this) {
         is Datagrams.Off -> 0
-        is Datagrams.On -> box.maxBytes()
+        is Datagrams.On -> out.room().maxBytes()
     }

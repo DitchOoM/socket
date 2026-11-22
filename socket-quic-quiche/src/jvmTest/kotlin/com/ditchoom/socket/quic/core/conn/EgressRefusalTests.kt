@@ -34,7 +34,7 @@ class EgressRefusalTests {
         api.connSendQueue.addAll(listOf(100, BUFFER_TOO_SHORT))
         val egress = Egress(q, ConnCounts(), { Nanos(0) })
 
-        assertEquals(Wrote.Refused, egress.write(out, stubClientPaths(q), flight))
+        assertEquals(Wrote.Refused, egress.write(out, stubClientPaths(q), flight, Datagrams.Off))
 
         assertEquals(1, out.pending, "the datagram before the refusal is in the batch")
         assertEquals(BUFFER_TOO_SHORT, egress.refusal().code)

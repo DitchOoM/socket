@@ -689,6 +689,12 @@ class FfmQuicheApi private constructor(
         return if (raw < 0) NO_DATAGRAM_ROOM else raw.toInt()
     }
 
+    override fun connDgramPurgeOutgoing(conn: QuicheConn): Int {
+        val held = ConnCalls.hConnDgramSendQueueLen.invokeExact(conn.handle) as Long
+        ConnCalls.hConnDgramPurgeOutgoing.invokeExact(conn.handle, ConnCalls.purgeEveryDgram)
+        return held.toInt()
+    }
+
     override fun hasReadableDgram(conn: QuicheConn): Boolean = (HotCalls.hConnDgramRecvFrontLen.invokeExact(conn.handle) as Long) >= 0
 
     override fun connDgramMaxWritableLen(conn: QuicheConn): MaxDatagramSize {

@@ -37,13 +37,18 @@ internal class QuicheSendRefused(
     val code: Int,
 ) : Throwable()
 
-/** Runs the end a write that ended as [this] calls for: [mismatch] for another clock, [refused] for quiche's refusal. */
+/**
+ * Runs the end a write that ended as [this] calls for: [ours] with the failure [egress] met, for another clock or a
+ * refused queued datagram; [refused] for quiche's refusal to write.
+ */
 internal inline fun Wrote.ends(
-    mismatch: () -> Unit,
+    egress: Egress,
+    ours: (Throwable) -> Unit,
     refused: () -> Unit,
 ) = when (this) {
     Wrote.All, Wrote.BatchFull -> Unit
-    Wrote.ClockMismatch -> mismatch()
+    Wrote.ClockMismatch -> ours(egress.mismatch())
+    Wrote.DatagramRefused -> ours(egress.datagramRefusal())
     Wrote.Refused -> refused()
 }
 

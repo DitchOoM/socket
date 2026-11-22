@@ -2,6 +2,9 @@ package com.ditchoom.socket.quic.core.edge
 
 import com.ditchoom.socket.quic.AppleTrustSource
 import com.ditchoom.socket.quic.CongestionControl
+import com.ditchoom.socket.quic.DatagramMaxAge
+import com.ditchoom.socket.quic.DatagramOptions
+import com.ditchoom.socket.quic.DatagramOverflow
 import com.ditchoom.socket.quic.HandshakePacing
 import com.ditchoom.socket.quic.HandshakePolicy
 import com.ditchoom.socket.quic.MigrationPolicy
@@ -16,6 +19,7 @@ import com.ditchoom.socket.quic.QuicSessionStore
 import com.ditchoom.socket.quic.StandbyLink
 import com.ditchoom.socket.quic.StreamOpenPolicy
 import com.ditchoom.socket.quic.UdpBatching
+import com.ditchoom.socket.quic.core.conn.MIN_SEND_DEPTH
 import com.ditchoom.socket.quic.trace.QlogDeclaration
 import com.ditchoom.socket.quic.trace.QlogTarget
 import com.ditchoom.socket.quic.trace.TraceCapture
@@ -131,5 +135,29 @@ private fun transportVerdict(options: QuicOptions): OptionVerdict {
     when (options.appleTrustSource) {
         is AppleTrustSource.SystemTrustStore, is AppleTrustSource.BundledMozillaRoots -> Unit
     }
-    return OptionVerdict.Honoured
+    return options.datagrams?.let { datagramVerdict(it) } ?: OptionVerdict.Honoured
 }
+
+/**
+ * The core's own send and receive queues honour every overflow rule, every maximum age that is positive, and every send
+ * depth that holds its hand-off, its door and one queued datagram.
+ */
+private fun datagramVerdict(options: DatagramOptions): OptionVerdict {
+    when (options.overflow) {
+        is DatagramOverflow.RefuseNew, is DatagramOverflow.EvictOldest -> Unit
+    }
+    val depth =
+        if (options.sendQueueLen >= MIN_SEND_DEPTH) {
+            OptionVerdict.Honoured
+        } else {
+            refused(QuicOptionRefusal.DatagramSendQueueTooShort(options.sendQueueLen, MIN_SEND_DEPTH))
+        }
+    return firstRefused(depth, ageVerdict(options.outgoingMaxAge), ageVerdict(options.incomingMaxAge))
+}
+
+private fun ageVerdict(age: DatagramMaxAge): OptionVerdict =
+    when (age) {
+        is DatagramMaxAge.Unbounded -> OptionVerdict.Honoured
+        is DatagramMaxAge.Within ->
+            if (age.age.isPositive()) OptionVerdict.Honoured else refused(QuicOptionRefusal.DatagramMaxAgeNotPositive(age.age))
+    }
