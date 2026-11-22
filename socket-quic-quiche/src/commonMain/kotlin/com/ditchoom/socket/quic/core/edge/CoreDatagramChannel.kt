@@ -22,12 +22,12 @@ import com.ditchoom.socket.quic.QuicDatagramTooLarge
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicNativeMemoryRequiredException
 import com.ditchoom.socket.quic.QuicWriteTarget
-import com.ditchoom.socket.quic.QuicheDriver
 import com.ditchoom.socket.quic.core.conn.Conn
 import com.ditchoom.socket.quic.core.conn.DATAGRAM_ROOM
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 import com.ditchoom.socket.quic.core.udp.ReadAddress
+import com.ditchoom.socket.quic.quicheCapabilities
 import kotlinx.coroutines.currentCoroutineContext
 
 /**
@@ -48,7 +48,7 @@ internal class CoreDatagramChannel(
     override val localAddress: LocalAddress = LocalAddress.Unknown
 
     override val capabilities: DatagramCapabilities =
-        DatagramCapabilities(requiresNativeMemoryBuffers = QuicheDriver.capabilities.requiresNativeMemoryBuffers)
+        DatagramCapabilities(requiresNativeMemoryBuffers = quicheCapabilities.requiresNativeMemoryBuffers)
 
     override val maxWritableSize: Int get() = conn.datagramMaxBytes()
 
@@ -69,7 +69,7 @@ internal class CoreDatagramChannel(
                             QuicNativeMemoryRequiredException.forBuffer(
                                 QuicWriteTarget.Datagram,
                                 payload,
-                                QuicheDriver.capabilities,
+                                quicheCapabilities,
                             )
                         raise(Raised.Thrown(refused), QuicCloseCircumstance.Ended)
                     }
