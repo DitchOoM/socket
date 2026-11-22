@@ -130,7 +130,7 @@ internal sealed interface MigrationReadiness {
     /** The peer set `disable_active_migration`. Permanent, and known as soon as its parameters are read. */
     data object PeerForbids : MigrationReadiness
 
-    /** Not confirmed yet. Resolves on its own as HANDSHAKE_DONE arrives, so a migration waits for it. */
+    /** Not confirmed yet. Resolves on its own as HANDSHAKE_DONE or a 1-RTT acknowledgement arrives, so a migration waits for it. */
     data object AwaitingConfirmation : MigrationReadiness
 }
 
