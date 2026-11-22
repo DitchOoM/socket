@@ -135,12 +135,16 @@ class ConnCloseTests {
         // quiche's idle timer cannot end a connection that is draining; were it to report one, the end stays the close's.
         api.timedOut = true
         api.closed = true
+        // The repeats fall due one and two probe timeouts after the close: a third of quiche's draining time each.
+        rig.pass(AT + DRAIN / 3)
+        rig.pass(AT + 2 * DRAIN / 3)
         rig.pass(AT + DRAIN - 1)
         assertIs<Life.Lingering>(rig.conn.life())
         val lingered = io.events.toList()
-        assertTrue(
-            lingered.all { it == BoundedIo.SENT },
-            "the socket stays open while the connection lingers, sending its close and its repeats",
+        assertEquals(
+            listOf(BoundedIo.SENT, BoundedIo.SENT, BoundedIo.SENT),
+            lingered,
+            "the socket stays open while the connection lingers, sending its close and its two repeats",
         )
         rig.pass(AT + DRAIN)
         assertIs<Life.Ended>(rig.conn.life())

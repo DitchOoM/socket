@@ -99,7 +99,7 @@ class ConnLifeTests {
         assertIs<Ending.First>(life.end(ConnEnd.ByPeer(QuicError.ApplicationError(3))))
         assertIs<Life.Lingering>(life.view(), "the ids stay for quiche's draining time")
         assertEquals(Holding.Ids, life.linger.holds())
-        life.linger.late()
+        life.linger.late(CLOSE_LENGTH)
         assertEquals(
             0,
             SendBatch(nativeBytes(1500), BatchLimits(1, 1500))
@@ -220,12 +220,18 @@ class ConnLifeTests {
         val out = SendBatch(nativeBytes(8 * 1500), BatchLimits(8, 1500))
         out.storage.putLong(0, CLOSE_BYTES)
         out.commit(CLOSE_LENGTH, SendTarget.ConnectedPeer)
-        life.linger.closeOut(out, 0, CLOSE_LENGTH, SendTarget.ConnectedPeer, Nanos(0L), Nanos(LINGER))
+        life.linger.closeOut(
+            out,
+            listOf(CloseDatagram(0, CLOSE_LENGTH, SendTarget.ConnectedPeer)),
+            Nanos(0L),
+            Nanos(LINGER),
+            PeerAddress.Validated,
+        )
         assertIs<Ending.First>(life.end(ConnEnd.ByLocal(QuicError.NoError)))
         assertIs<Life.Lingering>(life.view(), "the close is out: the connection lingers with its ids")
         out.took(out.pending)
 
-        repeat(LATE) { life.linger.late() }
+        repeat(LATE) { life.linger.late(CLOSE_LENGTH) }
         assertEquals(Room.Open, life.linger.answer(out))
         // Answers at the 1st, 2nd, 4th and 8th of 10 late datagrams.
         assertEquals(4, out.pending)
@@ -258,7 +264,7 @@ class ConnLifeTests {
     @Test
     fun aLateDatagramEndsTheRepeatsItsAnswerIsTheOnlyCloseSent() {
         val out = closeOutLingering()
-        life.linger.late()
+        life.linger.late(CLOSE_LENGTH)
         assertEquals(1, repeatsAt(out, Nanos(1L)), "the late datagram is answered")
         val repeats = (2L..LINGER step MS).sumOf { at -> repeatsAt(out, Nanos(at)) }
         assertEquals(0, repeats, "the peer still sends: nothing is repeated unprompted")
@@ -270,7 +276,13 @@ class ConnLifeTests {
         val out = SendBatch(nativeBytes(8 * 1500), BatchLimits(8, 1500))
         out.storage.putLong(0, CLOSE_BYTES)
         out.commit(CLOSE_LENGTH, SendTarget.ConnectedPeer)
-        life.linger.closeOut(out, 0, CLOSE_LENGTH, SendTarget.ConnectedPeer, Nanos(0L), Nanos(LINGER))
+        life.linger.closeOut(
+            out,
+            listOf(CloseDatagram(0, CLOSE_LENGTH, SendTarget.ConnectedPeer)),
+            Nanos(0L),
+            Nanos(LINGER),
+            PeerAddress.Validated,
+        )
         life.end(BY_LOCAL)
         out.took(out.pending)
         return out

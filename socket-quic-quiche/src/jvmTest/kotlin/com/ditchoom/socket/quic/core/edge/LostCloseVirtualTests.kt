@@ -5,15 +5,20 @@ import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicOptions
+import com.ditchoom.socket.quic.core.life.CloseChoice
+import com.ditchoom.socket.quic.core.life.CloseOutcome
 import com.ditchoom.socket.quic.core.life.ConnEnd
+import com.ditchoom.socket.quic.core.life.DrainUntil
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.hours
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -104,6 +109,28 @@ class LostCloseVirtualTests {
             }
         }
 
+    @Test
+    fun aGracefulCloseWhoseLimitFallsDueWithNobodyInsideStillTellsThePeer() =
+        VirtualPair.with(options) { pair ->
+            val serverSide = pair.accept()
+            val stream = pair.client.connection.openStream()
+            launch { stream.writeFully(bytes(PAYLOAD), 1.hours) }
+            // The server's acknowledgements never arrive: the drain cannot finish, and the limit falls due on the loop.
+            pair.lose(End.Server, Int.MAX_VALUE)
+            val asked = pair.now()
+            var outcome: CloseOutcome = CloseOutcome.Immediate
+            var returned = false
+            launch {
+                outcome = pair.client.connection.close(CloseChoice.Graceful(LIMIT.inWholeNanoseconds, DrainUntil.Acknowledged))
+                returned = true
+            }
+            pair.runUntil(within = LIMIT * 3) { returned && serverSide.end() is EdgeEnd.Ended }
+            assertSame(CloseOutcome.LimitReached, outcome, "the limit ended the close")
+            val end = assertIs<EdgeEnd.Ended>(serverSide.end()).end
+            assertEquals(QuicError.NoError, assertIs<ConnEnd.ByPeer>(end).error, "the peer was told: the close at the limit reached it")
+            assertTrue(pair.now() - asked >= LIMIT.inWholeNanoseconds, "told at the limit, not before")
+        }
+
     private fun bytes(size: Int) =
         BufferFactory.Default.allocate(size).apply {
             repeat(size) { writeByte(it.toByte()) }
@@ -115,5 +142,6 @@ class LostCloseVirtualTests {
         const val APP_CODE = 4L
         const val PAYLOAD = 600
         val IDLE = 30.seconds
+        val LIMIT = 500.milliseconds
     }
 }

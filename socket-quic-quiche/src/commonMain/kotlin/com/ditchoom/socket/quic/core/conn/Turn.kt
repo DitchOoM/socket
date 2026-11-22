@@ -116,7 +116,7 @@ internal class Turn(
     ) {
         if (c.life.view() is Life.Over) {
             c.flight.datagramIn(now, bytes, 0, length)
-            return c.life.linger.late()
+            return c.life.linger.late(length)
         }
         traced(TraceSection.ConnReceive) {
             try {

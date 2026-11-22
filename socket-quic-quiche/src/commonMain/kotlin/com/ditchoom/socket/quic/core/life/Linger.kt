@@ -2,7 +2,6 @@ package com.ditchoom.socket.quic.core.life
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.socket.quic.QuicError
-import com.ditchoom.socket.quic.SendTarget
 import com.ditchoom.socket.quic.core.observe.Confined
 import com.ditchoom.socket.quic.core.observe.ConnCounts
 import com.ditchoom.socket.quic.core.time.Nanos
@@ -46,19 +45,6 @@ internal enum class DrainUntil {
 /** Whether a datagram reached quiche since the connection last asked whether quiche drains. */
 internal enum class Heard { Nothing, Datagram }
 
-/**
- * The repeat of a lingering close that is owed next, unprompted, for a peer whose copy of the close was lost and that
- * has nothing in flight to draw an answer: one probe timeout after the close, then two, then none. [ptos] is how many
- * probe timeouts after the close it is due.
- */
-internal enum class Repeat(
-    val ptos: Int,
-) {
-    First(1),
-    Second(2),
-    None(0),
-}
-
 /** Whether a connection that just ended keeps its ids for a linger. */
 internal enum class AfterEnd { Lingers, Released }
 
@@ -77,16 +63,15 @@ internal sealed interface Wire {
     data object Draining : Wire
 
     /**
-     * RFC 9000 §10.2.1 closing state: the close went out at [sent]; late packets are answered with [copy] until
-     * [until], and the close is repeated unprompted as [Repeat] says, one probe timeout ([ptoNanos]) apart.
+     * RFC 9000 §10.2.1 closing state: the close is out; late packets are answered with its [datagrams], kept in [copy],
+     * until [until], within what [address] allows, and the close is repeated unprompted as [repeats] says.
      */
     class Answering(
         val copy: NativeBytes,
-        val length: Int,
-        val target: SendTarget,
-        val sent: Nanos,
-        val ptoNanos: Long,
+        val datagrams: List<CloseDatagram>,
         val until: Nanos,
+        val repeats: Repeats,
+        val address: PeerAddress,
     ) : Wire
 
     /** Nothing of ours goes out: late packets are dropped until [until]. */
@@ -113,7 +98,12 @@ internal class Linger(
     private var late = 0
     private var owed = 0
     private var heard = Heard.Nothing
-    private var repeat = Repeat.None
+
+    /** Which of the close's datagrams the answer being written sends next. */
+    private var piece = 0
+
+    /** What answers toward an unvalidated address may still send: three times the bytes that arrived since the close. */
+    private var credit = 0L
 
     fun wire(): Wire = wire
 
@@ -146,26 +136,32 @@ internal class Linger(
     }
 
     /**
-     * The close's datagram went into [out] at [offset], [length] bytes to [target], at [now]: a copy answers late
-     * packets, and is repeated, until [until], quiche's own draining time of three probe timeouts.
+     * The close's [datagrams] went into [out] at [now]: a copy answers late packets until [until], quiche's own draining
+     * time of three probe timeouts, within what [address] allows, and is repeated unprompted only to a validated one.
      */
     fun closeOut(
         out: SendBatch,
-        offset: Int,
-        length: Int,
-        target: SendTarget,
+        datagrams: List<CloseDatagram>,
         now: Nanos,
         until: Nanos,
+        address: PeerAddress,
     ) {
-        val buffer = factory.allocate(length)
+        val buffer = factory.allocate(datagrams.sumOf { it.length })
         late = 0
         owed = 0
-        repeat = Repeat.First
+        piece = 0
+        credit = 0L
         wire =
             when (val made = NativeBytes.of(buffer)) {
                 is Addressed.Native -> {
-                    made.bytes.copyFrom(out.storage, offset, 0, length)
-                    Wire.Answering(made.bytes, length, target, now, (until - now) / DRAIN_PTOS, until)
+                    var at = 0
+                    val kept =
+                        datagrams.map { d ->
+                            made.bytes.copyFrom(out.storage, d.offset, at, d.length)
+                            CloseDatagram(at, d.length, d.target).also { at += d.length }
+                        }
+                    val repeats = Repeats(now, (until - now) / DRAIN_PTOS, until, address)
+                    Wire.Answering(made.bytes, kept, until, repeats, address)
                 }
                 is Addressed.NotAddressable -> {
                     buffer.freeNativeMemory()
@@ -179,13 +175,13 @@ internal class Linger(
         wire = Wire.Silent(until)
     }
 
-    /** A datagram for the connection arrived after its end; it is never handed to quiche. */
-    fun late() {
+    /** A datagram of [length] bytes for the connection arrived after its end; it is never handed to quiche. */
+    fun late(length: Int) {
         counts.lateDatagram()
-        when (wire) {
+        when (val w = wire) {
             is Wire.Answering -> {
-                // The peer still sends: its packets draw the answers, and a repeat would only add to them.
-                repeat = Repeat.None
+                w.repeats.stop()
+                credit += AMPLIFICATION * length
                 late++
                 if (late and (late - 1) == 0) owed++
             }
@@ -193,33 +189,18 @@ internal class Linger(
         }
     }
 
-    /**
-     * At [now]: one repeat is owed when any fell due, however many a late serve passed, and only before the linger's
-     * end; the next is scheduled after those.
-     */
+    /** At [now]: a repeat that fell due is owed. */
     fun repeatDue(now: Nanos) {
-        val answering =
-            when (val w = wire) {
-                is Wire.Answering -> w
-                is Wire.Quiet, is Wire.Sending, is Wire.Draining, is Wire.Silent, is Wire.Done -> return
-            }
-        val before = repeat
-        while (repeat != Repeat.None && now >= dueOf(answering, repeat)) {
-            repeat =
-                when (repeat) {
-                    Repeat.First -> Repeat.Second
-                    Repeat.Second, Repeat.None -> Repeat.None
-                }
+        when (val w = wire) {
+            is Wire.Answering -> if (w.repeats.owed(now) == Repeats.Owed.Yes) owed++
+            is Wire.Quiet, is Wire.Sending, is Wire.Draining, is Wire.Silent, is Wire.Done -> Unit
         }
-        if (repeat != before && now < answering.until) owed++
     }
 
-    private fun dueOf(
-        answering: Wire.Answering,
-        next: Repeat,
-    ): Nanos = answering.sent + next.ptos * answering.ptoNanos
-
-    /** Writes the answers owed into [out] while it has room; [Room.Full] when some are still owed. */
+    /**
+     * Writes the answers owed into [out] while it has room, each the close's every datagram; [Room.Full] when some are
+     * still owed. An answer its allowance does not cover is not sent.
+     */
     fun answer(out: SendBatch): Room {
         val answering =
             when (val w = wire) {
@@ -227,14 +208,33 @@ internal class Linger(
                 is Wire.Quiet, is Wire.Sending, is Wire.Draining, is Wire.Silent, is Wire.Done -> return Room.Open
             }
         while (owed > 0) {
-            if (out.room() == Room.Full) return Room.Full
-            out.storage.copyFrom(answering.copy, 0, out.nextOffset(), answering.length)
-            out.commit(answering.length, answering.target)
+            if (piece == 0 && !covered(answering)) {
+                owed = 0
+                return Room.Open
+            }
+            while (piece < answering.datagrams.size) {
+                if (out.room() == Room.Full) return Room.Full
+                val d = answering.datagrams[piece]
+                out.storage.copyFrom(answering.copy, d.offset, out.nextOffset(), d.length)
+                out.commit(d.length, d.target)
+                piece++
+            }
+            piece = 0
             owed--
             counts.closeResent()
         }
         return Room.Open
     }
+
+    /** Whether the answer about to go is within what its address allows: an unvalidated one's spends the credit. */
+    private fun covered(answering: Wire.Answering): Boolean =
+        when (answering.address) {
+            PeerAddress.Validated -> true
+            PeerAddress.Unvalidated -> {
+                val bytes = answering.datagrams.sumOf { it.length }.toLong()
+                (credit >= bytes).also { if (it) credit -= bytes }
+            }
+        }
 
     /** Whether the linger's time is up at [now]. */
     fun due(now: Nanos): Boolean =
@@ -249,7 +249,7 @@ internal class Linger(
         when (val w = wire) {
             is Wire.Answering -> {
                 sink.offer(w.until)
-                if (repeat != Repeat.None) sink.offer(dueOf(w, repeat))
+                w.repeats.offerWake(sink)
             }
             is Wire.Silent -> sink.offer(w.until)
             is Wire.Quiet, is Wire.Sending, is Wire.Draining, is Wire.Done -> Unit
@@ -276,9 +276,11 @@ internal class Linger(
             is Wire.Quiet, is Wire.Sending, is Wire.Draining, is Wire.Silent, is Wire.Done -> Unit
         }
         wire = Wire.Done
-        repeat = Repeat.None
     }
 }
 
 /** quiche's draining time, in probe timeouts (RFC 9000 §10.2: three). */
 private const val DRAIN_PTOS = 3
+
+/** What a server may send an unvalidated address per byte it received from it (RFC 9000 §8.1). */
+private const val AMPLIFICATION = 3

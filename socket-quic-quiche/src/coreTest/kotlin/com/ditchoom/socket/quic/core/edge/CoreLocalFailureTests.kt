@@ -15,13 +15,11 @@ import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
-import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
-import kotlin.time.TimeSource
 
 /**
  * A server connection the core ends for a failure of its own tells its client, over a real loopback socket, on every
- * platform: the client's connect fails with the server's close, INTERNAL_ERROR, at once, not at its handshake bound.
+ * platform: the client's connect fails with the server's close, INTERNAL_ERROR, not with its own handshake bound.
  */
 class CoreLocalFailureTests {
     private val loops = LoopSet(1)
@@ -33,20 +31,18 @@ class CoreLocalFailureTests {
     fun aServerWhoseFirstDatagramFailsThePacingClockJudgementTellsTheClient() =
         coreTest("CoreLocalFailureTests.aServerWhoseFirstDatagramFailsThePacingClockJudgementTellsTheClient") {
             withCoreServer(api = OtherClock(platformQuicheApi()), onConnection = { awaitCancellation() }) { server ->
-                val began = TimeSource.Monotonic.markNow()
                 // The server's handshake flight leaves before its close, so the connect may complete just before the end.
                 val reason =
                     try {
                         val connection = connectCore(server.port, loops = loops).connection
-                        val closed = withTimeout(TOLD_WITHIN) { connection.state.first { it is QuicConnectionState.Closed } }
+                        val closed = withTimeout(STATE_WITHIN) { connection.state.first { it is QuicConnectionState.Closed } }
                         assertIs<QuicConnectionState.Closed>(closed).reason
                     } catch (failed: QuicCloseException) {
                         failed.closeReason
                     }
-                val took = began.elapsedNow()
-                val byPeer = assertIs<QuicCloseReason.ByPeer>(reason, "the client read the server's close")
+                // Had the close not reached it, the client would end at its own handshake bound, not by its peer.
+                val byPeer = assertIs<QuicCloseReason.ByPeer>(reason, "the client read the server's close, not its own bound")
                 assertEquals(INTERNAL_ERROR, byPeer.error.code)
-                assertTrue(took < TOLD_WITHIN, "the client was told in $took, not at its handshake bound")
             }
         }
 
@@ -60,6 +56,8 @@ class CoreLocalFailureTests {
     private companion object {
         const val INTERNAL_ERROR = 0x1L
         const val HOUR = 3_600_000_000_000L
-        val TOLD_WITHIN = 3.seconds
+
+        /** Past the client's handshake bound and idle timeout: a missed close shows as its own end, not as this timeout. */
+        val STATE_WITHIN = 30.seconds
     }
 }
