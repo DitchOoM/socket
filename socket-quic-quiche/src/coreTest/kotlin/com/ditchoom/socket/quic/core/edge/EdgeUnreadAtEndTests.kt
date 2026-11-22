@@ -4,6 +4,7 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicStreamId
 import com.ditchoom.socket.quic.QuicUnreadAtClose
+import com.ditchoom.socket.quic.core.conn.HandshakeFate
 import com.ditchoom.socket.quic.core.conn.HeldReads
 import com.ditchoom.socket.quic.core.life.CloseOutcome
 import com.ditchoom.socket.quic.core.life.ConnEnd
@@ -23,10 +24,10 @@ import kotlin.test.assertEquals
 class EdgeUnreadAtEndTests {
     @Test
     fun aStreamWhoseBytesAReadStillHoldsStaysUnreadUntilTheReadReturns() {
-        val edge = EdgeState(BufferFactory.network().allocate(ALPN), TraceCapture.Off, TicketHome.NotKept)
+        val edge = EdgeState(BufferFactory.network().allocate(ALPN), TraceCapture.Off, TicketHome.NotKept, ChainHome.NotKept)
         val read = Read(InHand.Yes)
         edge.handed.add(STREAM, read)
-        edge.ended(BY_PEER, NOTHING_HELD, NOT_ASKED)
+        edge.ended(BY_PEER, NOTHING_HELD, NOT_ASKED, HandshakeFate.NotCompleted)
         assertEquals<QuicUnreadAtClose>(QuicUnreadAtClose.Unread(setOf(STREAM)), edge.unread.value)
         read.taken = InHand.No
         edge.returned(STREAM)
@@ -35,13 +36,13 @@ class EdgeUnreadAtEndTests {
 
     @Test
     fun aReadWhoseCallerTookItsBytesBeforeTheEndWasPublishedLeavesNothingUnread() {
-        val edge = EdgeState(BufferFactory.network().allocate(ALPN), TraceCapture.Off, TicketHome.NotKept)
+        val edge = EdgeState(BufferFactory.network().allocate(ALPN), TraceCapture.Off, TicketHome.NotKept, ChainHome.NotKept)
         val read = Read(InHand.Yes)
         edge.handed.add(STREAM, read)
         // The caller took its bytes and returned before the end was published, finding nothing to leave yet.
         read.taken = InHand.No
         edge.returned(STREAM)
-        edge.ended(BY_PEER, NOTHING_HELD, NOT_ASKED)
+        edge.ended(BY_PEER, NOTHING_HELD, NOT_ASKED, HandshakeFate.NotCompleted)
         assertEquals<QuicUnreadAtClose>(QuicUnreadAtClose.AllRead, edge.unread.value)
     }
 

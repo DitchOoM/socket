@@ -21,6 +21,7 @@ internal fun ConnParts.handshakeStep(
         HandshakeStep.Handshaking -> early()
         HandshakeStep.JustEstablished -> {
             paths.established()
+            checkOnCompletion()
             established(now)
         }
         HandshakeStep.Established -> established(now)
@@ -53,7 +54,9 @@ internal fun ConnParts.announce(
     when (handshake.announcement()) {
         Announcement.Due -> {
             slots.datagrams.wake()
-            sink.established(handshake.report(now, paths.read(), outcome()))
+            val report = handshake.report(now, paths.read(), outcome())
+            sink.established(report)
+            handshake.reported(report.facts)
         }
         Announcement.None -> Unit
     }
@@ -72,20 +75,34 @@ internal fun ConnParts.handshakeEnd(
 }
 
 /**
- * Whether a client's first flight may leave. A flight held for 0-RTT is released once an operation inside waits on the
- * peer, or the connection is closing: neither can go on without the network.
+ * Whether a client's output may leave. A flight held for 0-RTT is released once an operation inside waits on the peer,
+ * or the connection is closing: neither can go on without the network. Output held for the server's check
+ * ([ClientSession.checkGate]) leaves once the check passed, or with the close.
  */
 internal fun ConnParts.firstFlight(): FlightGate =
     when (val r = slots.resumption) {
         is Resumption.Server -> FlightGate.Open
         is Resumption.Client ->
             when (r.session.gate()) {
-                FlightGate.Open -> FlightGate.Open
+                FlightGate.Open -> r.session.checkGate(life.view())
                 FlightGate.Held -> {
                     if (streams.waitsOnPeer() || life.view() !is Life.Running) r.session.release()
                     r.session.gate()
                 }
             }
+    }
+
+/** A client's server passed its check: output held for it leaves. */
+internal fun ConnParts.serverChecked() =
+    when (val r = slots.resumption) {
+        is Resumption.Server -> Unit
+        is Resumption.Client -> r.session.checked()
+    }
+
+private fun ConnParts.checkOnCompletion() =
+    when (val r = slots.resumption) {
+        is Resumption.Server -> Unit
+        is Resumption.Client -> r.session.completed()
     }
 
 internal fun ConnParts.releaseFirstFlight() =

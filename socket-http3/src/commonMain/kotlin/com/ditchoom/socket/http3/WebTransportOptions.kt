@@ -1,5 +1,8 @@
 package com.ditchoom.socket.http3
 
+import com.ditchoom.socket.http3.codec.Http3Setting
+import com.ditchoom.socket.http3.codec.Http3SettingId
+
 /** The `:protocol` pseudo-header value identifying a WebTransport Extended CONNECT (RFC 9220). */
 internal const val WEBTRANSPORT_PROTOCOL: String = "webtransport"
 

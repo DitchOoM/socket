@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """What one interop run shows about each test, for the gate to check failure signatures against.
 
-Usage: quic-interop-evidence.py <runner logs dir> <direction> <peer> <out.json>
+Usage: quic-interop-evidence.py <runner logs dir> <direction> <peer> <out.json> [<retry logs dir>]
 
 The runner writes <logs>/<server>_<client>/<test>/ with the two endpoints' logs and its own output.txt. Two
 sources are read, both written by something this repository controls or the runner itself:
@@ -32,7 +32,9 @@ peer report tied to the tuple (the stock quiche client names its local port befo
 "peer_gave_up_requests".
 
 The output maps test -> {"connections": [...], "exits": {"client": n, "server": n}, "migrations": [...]}. A
-connection, exit or summary the logs do not show is absent, never written as a placeholder.
+connection, exit or summary the logs do not show is absent, never written as a placeholder. A test the cell's job
+ran again (the runner's retry logs, the optional fifth argument) carries the retry attempt's own record of the same
+shape under "retry"; the top-level fields are always the first attempt's.
 """
 import collections
 import json
@@ -819,12 +821,17 @@ def evidence(logs, direction, peer):
 
 
 def main(argv):
-    if len(argv) != 5:
+    if len(argv) not in (5, 6):
         print(__doc__, file=sys.stderr)
         return 2
-    logs, direction, peer, out = argv[1:]
+    logs, direction, peer, out = argv[1:5]
+    tests = evidence(logs, direction, peer)
+    if len(argv) == 6:
+        for test, retry in evidence(argv[5], direction, peer).items():
+            if test in tests:
+                tests[test]["retry"] = retry
     with open(out, "w") as f:
-        json.dump({"direction": direction, "peer": peer, "tests": evidence(logs, direction, peer)}, f, indent=1, sort_keys=True)
+        json.dump({"direction": direction, "peer": peer, "tests": tests}, f, indent=1, sort_keys=True)
         f.write("\n")
     return 0
 
