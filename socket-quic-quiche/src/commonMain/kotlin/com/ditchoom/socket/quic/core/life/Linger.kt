@@ -193,21 +193,25 @@ internal class Linger(
         }
     }
 
-    /** At [now]: a repeat that fell due before the linger's end is owed, and the next one is scheduled. */
+    /**
+     * At [now]: one repeat is owed when any fell due, however many a late serve passed, and only before the linger's
+     * end; the next is scheduled after those.
+     */
     fun repeatDue(now: Nanos) {
         val answering =
             when (val w = wire) {
                 is Wire.Answering -> w
                 is Wire.Quiet, is Wire.Sending, is Wire.Draining, is Wire.Silent, is Wire.Done -> return
             }
-        val due = dueOf(answering, repeat)
-        if (repeat == Repeat.None || now < due) return
-        if (due < answering.until) owed++
-        repeat =
-            when (repeat) {
-                Repeat.First -> Repeat.Second
-                Repeat.Second, Repeat.None -> Repeat.None
-            }
+        val before = repeat
+        while (repeat != Repeat.None && now >= dueOf(answering, repeat)) {
+            repeat =
+                when (repeat) {
+                    Repeat.First -> Repeat.Second
+                    Repeat.Second, Repeat.None -> Repeat.None
+                }
+        }
+        if (repeat != before && now < answering.until) owed++
     }
 
     private fun dueOf(

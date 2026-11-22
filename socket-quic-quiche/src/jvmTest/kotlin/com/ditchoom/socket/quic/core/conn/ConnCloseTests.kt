@@ -22,6 +22,7 @@ import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertSame
+import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.nanoseconds
 
 /**
@@ -136,11 +137,15 @@ class ConnCloseTests {
         api.closed = true
         rig.pass(AT + DRAIN - 1)
         assertIs<Life.Lingering>(rig.conn.life())
-        assertEquals(listOf(BoundedIo.SENT), io.events.toList(), "the socket stays open while the connection lingers")
+        val lingered = io.events.toList()
+        assertTrue(
+            lingered.all { it == BoundedIo.SENT },
+            "the socket stays open while the connection lingers, sending its close and its repeats",
+        )
         rig.pass(AT + DRAIN)
         assertIs<Life.Ended>(rig.conn.life())
         assertSame(ConnEnd.ByLocal::class, rig.sink.ended.single()::class, "the end was recorded once, as the close's")
-        assertEquals(listOf(BoundedIo.SENT, BoundedIo.CLOSED), io.events.toList(), "the socket closed once the linger was over")
+        assertEquals(lingered + BoundedIo.CLOSED, io.events.toList(), "the socket closed once the linger was over, sending nothing more")
     }
 
     @Test

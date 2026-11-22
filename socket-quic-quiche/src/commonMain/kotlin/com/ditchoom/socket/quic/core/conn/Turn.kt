@@ -249,7 +249,8 @@ internal class Turn(
                 is Life.Running, is Life.Over -> Unit
             }
         }
-        if (wrote == Wrote.ClockMismatch) finish(now, c.egress.mismatchEnd())
+        // Our own failure: the peer is told with INTERNAL_ERROR, as for any processing failure.
+        if (wrote == Wrote.ClockMismatch) fail(now, c.egress.mismatch())
         return wrote.collected()
     }
 

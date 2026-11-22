@@ -98,9 +98,9 @@ class LostCloseVirtualTests {
             }
             pair.runUntil { returned == 2 }
             pair.runUntil(within = 5.seconds) { !pair.client.scope.isActive }
-            val arrived = asked + pair.oneWay.inWholeNanoseconds
+            val arrivals = pair.sentBy(End.Server, asked).map { it.at + pair.oneWay.inWholeNanoseconds }.toSet()
             for (datagram in pair.sentBy(End.Client, asked).drop(1)) {
-                assertEquals(arrived, datagram.at, "the client sent only its close and its answer to the server's")
+                assertTrue(datagram.at in arrivals, "every later datagram of the client answers one of the server's, none is unprompted")
             }
         }
 

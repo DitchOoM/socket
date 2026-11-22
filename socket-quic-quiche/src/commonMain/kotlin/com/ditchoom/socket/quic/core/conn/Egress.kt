@@ -1,7 +1,6 @@
 package com.ditchoom.socket.quic.core.conn
 
 import com.ditchoom.socket.quic.SendTarget
-import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.observe.Confined
 import com.ditchoom.socket.quic.core.observe.ConnCounts
@@ -12,7 +11,6 @@ import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.udp.Room
 import com.ditchoom.socket.quic.core.udp.SendBatch
-import com.ditchoom.socket.quic.core.udp.Thrown
 
 /** Whether a write collected everything quiche had, the batch filled first, or the first datagram found another clock and the response is to end. */
 internal enum class Wrote { All, BatchFull, ClockMismatch }
@@ -54,8 +52,8 @@ internal class Egress(
     /** When quiche wants the last datagram it wrote on the wire, on the loop's clock. */
     private var lastDueNanos = 0L
 
-    /** The end of a connection whose write ended as [Wrote.ClockMismatch]: processing failed with a [PacingClockMismatch]. */
-    fun mismatchEnd(): ConnEnd = ConnEnd.ProcessingFailed(Thrown(PacingClockMismatch(mismatchOffset)))
+    /** Why a write ended as [Wrote.ClockMismatch]: libquiche paces on another clock, [mismatchOffset] apart. */
+    fun mismatch(): PacingClockMismatch = PacingClockMismatch(mismatchOffset)
 
     /** Whether quiche has written any datagram of this connection, kept or dropped. */
     fun firstOut(): FirstOut = first
