@@ -32,25 +32,14 @@ internal class StreamDrain(
         slot: DrainSlot,
     ): Side {
         while (true) {
-            val read =
-                io.recv(id, slot.address, slot.capacity).fold(
-                    more = { bytes -> if (bytes == 0) Step.Waiting else Step.More },
-                    last = { Step.Finished },
-                    nothingYet = { Step.Waiting },
-                    gone = { Step.Waiting },
-                    reset = { Step.Reset },
-                    error = { Step.Refused },
-                )
-            when (read) {
-                Step.More -> Unit
-                Step.Waiting -> return Side.Open
-                Step.Finished -> return Side.Finished
-                Step.Reset -> return Side.Reset
-                Step.Refused -> return Side.Refused
-            }
+            io.recv(id, slot.address, slot.capacity).fold(
+                more = { bytes -> if (bytes == 0) return Side.Open },
+                last = { return Side.Finished },
+                nothingYet = { return Side.Open },
+                gone = { return Side.Open },
+                reset = { code -> return Side.Reset(code) },
+                error = { return Side.Refused },
+            )
         }
     }
-
-    /** One read's outcome: more may be read now, quiche holds nothing more for now, or the peer's side ended. */
-    private enum class Step { More, Waiting, Finished, Reset, Refused }
 }

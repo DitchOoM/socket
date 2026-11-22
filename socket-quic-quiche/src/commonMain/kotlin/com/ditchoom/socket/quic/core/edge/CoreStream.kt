@@ -46,13 +46,13 @@ internal class CoreStream(
     HalfCloseable,
     Resettable {
     private val use = AtomicReference(Use.Open)
-    private val sizing = ReadSizing()
+    private val streamReads = StreamReads()
 
     override val isOpen: Boolean get() = use.load() != Use.Closed
 
     override suspend fun read(deadline: Duration): ReadResult {
         if (use.load() == Use.Closed) raise(Raised.StreamClosed(id, QuicStreamSide.Read), QuicCloseCircumstance.Ended)
-        return connection.read(id, deadline, sizing)
+        return connection.read(id, deadline, streamReads)
     }
 
     override suspend fun write(
@@ -123,7 +123,7 @@ internal class CoreStream(
         }
 
     override suspend fun shutdownSend() {
-        if (use.compareAndSet(Use.Open, Use.Finishing)) finishing(WriteSource.FinOnly, policyDeadline())
+        if (use.compareAndSet(Use.Open, Use.Finishing)) finishing(WriteSource.FinOnly, deadlineOf(writePolicy))
     }
 
     override suspend fun close() {
@@ -145,12 +145,6 @@ internal class CoreStream(
     }
 
     private suspend fun finish() {
-        connection.submitted(id, WriteSource.FinOnly, policyDeadline()).answer()
+        connection.submitted(id, WriteSource.FinOnly, deadlineOf(writePolicy)).answer()
     }
-
-    private fun policyDeadline(): Duration =
-        when (val policy = writePolicy) {
-            is WritePolicy.Bounded -> policy.deadline
-            is WritePolicy.UntilClosed -> Duration.INFINITE
-        }
 }

@@ -103,7 +103,7 @@ class StreamTableTests {
         assertEquals(listOf(QuicStreamId(5L), QuicStreamId(1L)), incoming, "the peer's streams, out of order, each once")
         for (id in listOf(1L, 5L)) {
             table.receiveEnded(QuicStreamId(id), Side.Stopped)
-            table.sendEnded(QuicStreamId(id), Side.Reset)
+            table.sendEnded(QuicStreamId(id), Side.Reset(QuicAppErrorCode(0L)))
         }
         assertEquals(0, table.liveStreams())
         api.readableStreams.clear()

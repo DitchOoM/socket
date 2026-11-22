@@ -43,7 +43,7 @@ class HandshakeTests {
     private fun handshake(
         rule: HandshakeRule = wifi,
         startedNanos: Long = 0L,
-    ) = Handshake(q, rule, startedNanos, nativeBytes(255))
+    ) = Handshake(q, rule, startedNanos, nativeBytes(255), ChainSource.NotAsked)
 
     /** Each ceiling quiche was given, as (first, growth, max) nanoseconds. */
     private fun ceilings(): List<Triple<Long, Int, Long>> =

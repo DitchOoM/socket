@@ -968,6 +968,12 @@ def cmd_retry(args):
     return 0
 
 
+def retry_results(results_dir, direction, peer):
+    """{test: result} of the one retry the cell's job ran, empty when it ran none."""
+    path = os.path.join(results_dir, f"{direction}__{peer}.retry")
+    return runner_results(path) if os.path.exists(path) else {}
+
+
 def load_cells(results_dir):
     """{(direction, peer, test): (result, detail)} with a passing retry turning a failure into 'retried'."""
     cells = {}
@@ -977,8 +983,7 @@ def load_cells(results_dir):
             continue
         direction, peer = m.groups()
         first = runner_results(os.path.join(results_dir, name))
-        retry_path = os.path.join(results_dir, f"{direction}__{peer}.retry")
-        retried = runner_results(retry_path) if os.path.exists(retry_path) else {}
+        retried = retry_results(results_dir, direction, peer)
         for test, result in first.items():
             if result == "failed" and retried.get(test) == "succeeded":
                 cells[(direction, peer, test)] = ("retried", "failed once, passed on retry")
@@ -991,16 +996,33 @@ def load_cells(results_dir):
     return cells
 
 
-def judge_failure(kind, reason, test_evidence, role):
-    """(verdict, accepted, note) for a failed cell expected to fail (known-failure) or allowed to (flaky)."""
+def failed_attempts(test_evidence, retry_result):
+    """[(label, evidence)] for every attempt of a failed cell that failed: the first, and the retry when it failed too
+    (its evidence is test_evidence["retry"], absent when the extractor was not given the retry's logs)."""
+    attempts = [("attempt 1", test_evidence)]
+    if retry_result == "failed":
+        attempts.append(("attempt 2", (test_evidence or {}).get("retry")))
+    return attempts
+
+
+def judge_failure(kind, reason, attempts, role):
+    """(verdict, accepted, note) for a failed cell expected to fail (known-failure) or allowed to (flaky). Every
+    failed attempt must show the signature: one that does not is a regression, however the others look."""
     if reason.signature is None:
         return f"{kind} (unproven)", True, reason.why
-    if test_evidence is None:
-        return "REGRESSION", False, f"no evidence to check the {reason.signature.kind} signature against"
-    result = reason.signature.match(test_evidence, role)
-    if isinstance(result, Matched):
-        return f"{kind} (signature)", True, result.shown
-    return "REGRESSION", False, f"failed, but not as {reason.signature.kind}: {reason.why}"
+    shown = []
+    for label, evidence in attempts:
+        if evidence is None:
+            what = f"evidence of {label}" if len(attempts) > 1 else "evidence"
+            return "REGRESSION", False, f"no {what} to check the {reason.signature.kind} signature against"
+        result = reason.signature.match(evidence, role)
+        if not isinstance(result, Matched):
+            which = f" in {label}" if len(attempts) > 1 else ""
+            return "REGRESSION", False, f"failed{which}, but not as {reason.signature.kind}: {reason.why}"
+        shown.append(result.shown)
+    if len(attempts) == 1:
+        return f"{kind} (signature)", True, shown[0]
+    return f"{kind} (signature)", True, "; ".join(f"{label}: {text}" for (label, _), text in zip(attempts, shown))
 
 
 def judge_pass(reason, test_evidence, role):
@@ -1073,7 +1095,8 @@ def cmd_judge(args):
         ran = "transfer" if test == MIGRATION_TEST else test
         test_evidence = evidence.get((direction, peer), {}).get(ran)
         if kind in ("known-failure", "flaky") and result == "failed":
-            verdict, accepted, note = judge_failure(kind, reason, test_evidence, peer_role(direction))
+            attempts = failed_attempts(test_evidence, retry_results(results_dir, direction, peer).get(test))
+            verdict, accepted, note = judge_failure(kind, reason, attempts, peer_role(direction))
         elif kind == "flaky" and reason.pass_signature is not None and result in ("succeeded", "retried"):
             verdict, accepted, note = judge_pass(reason, test_evidence, peer_role(direction))
         else:

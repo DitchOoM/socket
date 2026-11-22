@@ -18,7 +18,6 @@ import com.ditchoom.socket.quic.core.stream.WriteEnd
 import kotlin.concurrent.atomics.AtomicReference
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.coroutines.coroutineContext
-import kotlin.time.Duration
 
 /** What a caller may still do with a typed stream. */
 private sealed interface TypedUse {
@@ -142,7 +141,7 @@ internal class TypedQuicStream<T : Any>(
 
     /**
      * The next value: [ScopedRead.Data] with it, [ScopedRead.End] once the peer finished the stream, [ScopedRead.Reset]
-     * when it reset the stream. A malformed frame throws a [QuicTypedStreamException].
+     * when it reset the stream, whose code [peerReset] then holds. A malformed frame throws a [QuicTypedStreamException].
      */
     suspend fun receive(): ScopedRead<T> {
         if (use.load() is TypedUse.Closed) raise(Raised.StreamClosed(id, QuicStreamSide.Read), QuicCloseCircumstance.Ended)
@@ -151,6 +150,13 @@ internal class TypedQuicStream<T : Any>(
             Acquired.Settling -> settleThenReceive()
         }
     }
+
+    /** The caller, after a [receive]: the peer's reset and its code once one returned [ScopedRead.Reset]. */
+    fun peerReset(): PeerReset =
+        when (val ending = accumulator.ending()) {
+            is Ending.Reset -> PeerReset.Reset(ending.code)
+            is Ending.Open, is Ending.Finished, is Ending.Broken -> PeerReset.NotMet
+        }
 
     private suspend fun settleThenReceive(): ScopedRead<T> {
         reader.awaitSettled()
@@ -282,15 +288,3 @@ internal class TypedQuicStream<T : Any>(
 }
 
 private enum class ResetStream { Yes, No }
-
-private fun deadlineOf(policy: ReadPolicy): Duration =
-    when (policy) {
-        is ReadPolicy.Bounded -> policy.deadline
-        is ReadPolicy.UntilClosed -> Duration.INFINITE
-    }
-
-private fun deadlineOf(policy: WritePolicy): Duration =
-    when (policy) {
-        is WritePolicy.Bounded -> policy.deadline
-        is WritePolicy.UntilClosed -> Duration.INFINITE
-    }

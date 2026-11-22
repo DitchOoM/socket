@@ -15,7 +15,20 @@ import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.pool.ThreadingMode
 import com.ditchoom.buffer.stream.StreamProcessor
-import com.ditchoom.socket.quic.QuicStreamId
+import com.ditchoom.socket.http3.codec.Http3ErrorCode
+import com.ditchoom.socket.http3.codec.Http3Frame
+import com.ditchoom.socket.http3.codec.Http3FrameCodec
+import com.ditchoom.socket.http3.codec.Http3FrameType
+import com.ditchoom.socket.http3.codec.Http3Setting
+import com.ditchoom.socket.http3.codec.Http3SettingId
+import com.ditchoom.socket.http3.codec.Http3StreamException
+import com.ditchoom.socket.http3.codec.Http3StreamId
+import com.ditchoom.socket.http3.codec.Http3StreamReader
+import com.ditchoom.socket.http3.codec.QpackDecoder
+import com.ditchoom.socket.http3.codec.QpackHeaderField
+import com.ditchoom.socket.http3.codec.QpackInstructionReader
+import com.ditchoom.socket.http3.codec.RecordingQpackDecoderStream
+import com.ditchoom.socket.http3.codec.rejectIfReservedHttp2Frame
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -212,7 +225,7 @@ class Http3ConformanceCorpusTests {
                 val decoder = QpackDecoder(maxCapacity = 4096, RecordingQpackDecoderStream()) // RIC=0 sections produce no output
                 val e =
                     assertFailsWith<Http3StreamException>("expected decode failure for: ${case.label}") {
-                        decoder.decodeSection(bufferOf(*case.bytes.toIntArray()), streamId = QuicStreamId(0L), scratchPool = null)
+                        decoder.decodeSection(bufferOf(*case.bytes.toIntArray()), streamId = Http3StreamId(0L), scratchPool = null)
                     }
                 assertEquals(Http3ErrorCode.QPACK_DECOMPRESSION_FAILED, e.errorCode, case.label)
             }
@@ -223,7 +236,7 @@ class Http3ConformanceCorpusTests {
         runTest {
             // Positive control: RIC=0,Base=0 then an Indexed Field Line, static index 17 = (:method, GET).
             val decoder = QpackDecoder(maxCapacity = 4096, RecordingQpackDecoderStream())
-            val fields = decoder.decodeSection(bufferOf(0x00, 0x00, 0xD1), streamId = QuicStreamId(0L), scratchPool = null)
+            val fields = decoder.decodeSection(bufferOf(0x00, 0x00, 0xD1), streamId = Http3StreamId(0L), scratchPool = null)
             assertEquals(listOf(QpackHeaderField(":method", "GET")), fields)
         }
 

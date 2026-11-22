@@ -50,7 +50,9 @@ private fun offered(
 /**
  * Runs the caller's [QuicResumption.ResumeWithEarlyData] block once, where [offer] says it belongs: before the first
  * flight when quiche took the ticket, so its writes go as 0-RTT, and after [awaitEstablished] otherwise, as ordinary
- * data. [awaitEstablished] runs exactly once either way.
+ * data, so never before the server passed its check. [awaitEstablished] runs exactly once either way. Run after it, the
+ * block meeting the connection's end does not fail the connect: the next operation reports the end, as it would had
+ * the end come after the block.
  */
 internal suspend fun CoreConnection.runEarlyData(
     resumption: QuicResumption,
@@ -75,7 +77,7 @@ internal suspend fun CoreConnection.runEarlyData(
         // quiche refused the ticket, so there is no 0-RTT: the block's bytes are ordinary data.
         FirstFlight.Immediate -> {
             awaitEstablished()
-            scope.block()
+            outlivingTheEnd({ end() is EdgeEnd.Ended }) { scope.block() }
         }
     }
 }

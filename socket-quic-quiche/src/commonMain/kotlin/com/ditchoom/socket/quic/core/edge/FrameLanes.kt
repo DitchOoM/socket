@@ -58,9 +58,9 @@ internal class Inbound(
             },
             nothingYet = { Moved.Again },
             gone = { Moved.Refused(Raised.ConnEnded(ConnEnd.Released)) },
-            reset = {
-                entry.receiveEnded(Side.Reset)
-                into.peerReset()
+            reset = { code ->
+                entry.receiveEnded(Side.Reset(code))
+                into.peerReset(code)
                 Moved.Done
             },
             error = { code -> Moved.Refused(Raised.ReadRefused(stream, code)) },
@@ -167,7 +167,7 @@ internal class Outbound(
     ) {
         if (sent > 0 && sent < from.length) {
             table.io.shutdown(stream, ShutdownSide.Write, abandonedCode.value)
-            table.sendEnded(stream, Side.Reset)
+            table.sendEnded(stream, Side.Reset(abandonedCode))
             sent = 0
             fin = Fin.Cut
         }
@@ -185,7 +185,7 @@ internal class ResetWork(
     override fun run(inside: Inside) {
         inside.streams.stopReading(stream, code)
         inside.streams.io.shutdown(stream, ShutdownSide.Write, code.value)
-        inside.streams.sendEnded(stream, Side.Reset)
+        inside.streams.sendEnded(stream, Side.Reset(code))
     }
 
     override fun gone(end: ConnEnd) = Unit

@@ -12,6 +12,8 @@ name: QUIC interop gate
 #
 # Every cell job also writes <direction>__<peer>.evidence.json (quic-interop-evidence.py: facts from our
 # endpoint's qlog and the runner's output), which the gate checks each known failure's signature against.
+# A test that failed twice carries the retry's own record under "retry", and the gate requires each failed
+# attempt to show the signature.
 #
 # A cell expected to pass that fails twice (one retry) fails the gate, so does a peer that produced no
 # result and a cell with no expectation. A known failure that starts passing is STALE and fails the gate, so
@@ -247,7 +249,7 @@ jobs:
             fi
           fi
           evidence="$GITHUB_WORKSPACE/.github/scripts/quic-interop-evidence.py"
-          python3 -I "$evidence" /tmp/interop/logs "$DIRECTION" "$PEER" "$results/${DIRECTION}__${PEER}.evidence.json"
+          python3 -I "$evidence" /tmp/interop/logs "$DIRECTION" "$PEER" "$results/${DIRECTION}__${PEER}.evidence.json" /tmp/interop/logs-retry
           if [ "$DIRECTION" = our-server ] && [ -z "$TESTS" ]; then
             # The runner's compose file hands the server container SERVER_PARAMS from this environment.
             export SERVER_PARAMS=streams=raised
@@ -260,7 +262,7 @@ jobs:
               fi
             fi
             unset SERVER_PARAMS
-            python3 -I "$evidence" /tmp/interop/logs-raised-streams "$raised" "$PEER" "$results/${raised}__${PEER}.evidence.json"
+            python3 -I "$evidence" /tmp/interop/logs-raised-streams "$raised" "$PEER" "$results/${raised}__${PEER}.evidence.json" /tmp/interop/logs-raised-streams-retry
           fi
           if [ "$DIRECTION" = our-client ] && [ -z "$TESTS" ]; then
             # The runner's compose file hands the client container CLIENT_PARAMS from this environment.

@@ -1,10 +1,12 @@
 package com.ditchoom.socket.quic.core.conn
 
+import com.ditchoom.socket.quic.QuicEarlyDataOutcome
 import com.ditchoom.socket.quic.QuicEarlyDataReason
 import com.ditchoom.socket.quic.QuicFullHandshakeReason
 import com.ditchoom.socket.quic.QuicResumptionOutcome
 import com.ditchoom.socket.quic.QuicRole
 import com.ditchoom.socket.quic.SessionOffer
+import com.ditchoom.socket.quic.core.life.Life
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.observe.Confined
 import com.ditchoom.socket.quic.core.pool.FixedPool
@@ -75,6 +77,12 @@ internal sealed interface KeptTicket {
     data object Returned : KeptTicket
 }
 
+/**
+ * Whether a client holds its output until its server is checked: from the completion of a handshake that did not accept
+ * the 0-RTT it sent, which quiche sends again in 1-RTT to a server whose certificate is still to be checked.
+ */
+private enum class CheckHold { None, UntilChecked }
+
 /** Whether a client's first session ticket (or NEW_TOKEN token) was taken, or was too large for its scratch. */
 private enum class TicketSeen { NotYet, Taken }
 
@@ -91,7 +99,8 @@ internal class SessionScratch(
  * A client connection's resumption: what it offered, whether its first flight is held for 0-RTT, and the first session
  * ticket its server issues after the handshake, copied into a [scratch] slot and handed up once; likewise the first
  * NEW_TOKEN token, kept in [tokens]. A session larger than [ClientSession.TICKET_BYTES] is not kept. With every slot
- * lent at once, the copy waits for the next serve.
+ * lent at once, the copy waits for the next serve. A client whose server is checked after the handshake ([chain]) holds
+ * its output from the completion until the check passed, when the handshake did not accept its 0-RTT.
  */
 @Confined
 internal class ClientSession(
@@ -100,7 +109,10 @@ internal class ClientSession(
     private val scratch: FixedPool<SessionScratch>,
     private var kept: KeptTicket,
     private val tokens: TokenHome,
+    private val chain: ChainSource,
 ) {
+    private var hold = CheckHold.None
+
     private var gate =
         when (offer) {
             is Offer.Offered ->
@@ -136,6 +148,34 @@ internal class ClientSession(
                     is Offer.Offered -> QuicFullHandshakeReason.TicketNotResumed
                 },
             )
+        }
+
+    /** Once, when the handshake completed: whether output waits for the server's check, as [ClientSession] says. */
+    fun completed() {
+        val unaccepted = outcome() != QuicResumptionOutcome.Resumed(QuicEarlyDataOutcome.Accepted)
+        hold =
+            when (chain) {
+                is ChainSource.NotAsked -> CheckHold.None
+                is ChainSource.Copied -> if (sentEarlyData() && unaccepted) CheckHold.UntilChecked else CheckHold.None
+            }
+    }
+
+    /** Whether output may leave now: held until the check passed, unless the connection is closing. */
+    fun checkGate(life: Life): FlightGate =
+        when (hold) {
+            CheckHold.None -> FlightGate.Open
+            CheckHold.UntilChecked -> if (life is Life.Running) FlightGate.Held else FlightGate.Open
+        }
+
+    /** The server passed its check. */
+    fun checked() {
+        hold = CheckHold.None
+    }
+
+    private fun sentEarlyData(): Boolean =
+        when (offer) {
+            is Offer.Offered -> offer.flight == FirstFlight.HeldForEarlyData
+            is Offer.NoTicket, is Offer.Unusable -> false
         }
 
     /** The connection ended having written [out]: a kept ticket no datagram carried goes back to its store. */
