@@ -31,7 +31,13 @@ internal object NativeTestFiles {
         }
 
     /** Every regular file directly in [dir], by name, with its text. */
-    fun filesIn(dir: String): Map<String, String> {
+    fun filesIn(dir: String): Map<String, String> = namesIn(dir).associateWith { readText("$dir/$it") }
+
+    /**
+     * The name of every regular file directly in [dir], none opened: in a directory other processes share
+     * (`TMPDIR`), a file listed can be gone before it is read.
+     */
+    fun namesIn(dir: String): List<String> {
         val stream = opendir(dir) ?: throw AssertionError("cannot open directory $dir")
         val names = mutableListOf<String>()
         try {
@@ -42,7 +48,7 @@ internal object NativeTestFiles {
         } finally {
             closedir(stream)
         }
-        return names.associateWith { readText("$dir/$it") }
+        return names
     }
 
     private fun readText(path: String): String =
