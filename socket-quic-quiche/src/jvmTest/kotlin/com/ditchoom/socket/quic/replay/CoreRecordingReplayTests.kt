@@ -35,6 +35,7 @@ import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.ReceiveBatchResult
 import com.ditchoom.socket.quic.core.udp.SendBatch
 import com.ditchoom.socket.quic.core.udp.SendBatchResult
+import com.ditchoom.socket.quic.core.udp.SocketClosed
 import com.ditchoom.socket.quic.core.udp.toPathKey
 import com.ditchoom.socket.quic.jvmMigrationSimEnv
 import com.ditchoom.socket.quic.loadQuicheApi
@@ -87,6 +88,12 @@ class CoreRecordingReplayTests {
 
         /** How many datagrams each receive call returned, in order. */
         val received = CopyOnWriteArrayList<Int>()
+
+        /** Whether the client's socket is still open: it closes once the connection's linger is over. */
+        @Volatile var socket = Socket.Open
+            private set
+
+        override fun close(): SocketClosed = real.close().also { socket = Socket.Closed }
 
         /** Where a stalling host's two stalls stand. */
         @Volatile private var stall = Stall.Ahead
@@ -246,6 +253,8 @@ class CoreRecordingReplayTests {
 
     private enum class Stall { Ahead, ReadLate, Over }
 
+    private enum class Socket { Open, Closed }
+
     /** How the client's host treats it. */
     private enum class ClientHost {
         Fast,
@@ -338,8 +347,11 @@ class CoreRecordingReplayTests {
             // Recordings reach their sinks off the loop: give them a moment to arrive.
             delay(500.milliseconds)
             client.connection.close(QuicError.NoError)
-            // close() returns once the CONNECTION_CLOSE is sent; its record reaches the sink off the loop after that.
+            // close() returns once the CONNECTION_CLOSE is sent, but the client lingers (RFC 9000 §10.2.1) and repeats
+            // its close unprompted until the linger is over and its socket closes: only then has it sent its last
+            // datagram. Each record reaches the sink off the loop after that.
             withTimeoutOrNull(5.seconds) {
+                while (link[0]!!.socket == Socket.Open) delay(10.milliseconds)
                 while (clientRecording.count { it is TraceEvent.DgramOut } < link[0]!!.sent) delay(10.milliseconds)
             }
             // The server closing first would never read the client's close, and the conversion would have it lost: the
@@ -358,6 +370,7 @@ class CoreRecordingReplayTests {
         recordings = Recorded(clientRecording.toList(), serverRecording.toList(), link[0]!!.dropped.size)
         val snapshotNanos = System.nanoTime()
         assertEquals(1, link[0]!!.dropped.size, "the link lost the client's data datagram")
+        assertEquals(Socket.Closed, link[0]!!.socket, "the client's linger ended and closed its socket")
         assertEquals(
             link[0]!!.sent,
             clientRecording.count { it is TraceEvent.DgramOut },

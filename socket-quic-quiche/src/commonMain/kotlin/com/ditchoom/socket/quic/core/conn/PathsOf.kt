@@ -4,6 +4,7 @@ import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicStatsRead
 import com.ditchoom.socket.quic.QuicheSendInfo
 import com.ditchoom.socket.quic.core.life.ConnEnd
+import com.ditchoom.socket.quic.core.life.PeerAddress
 import com.ditchoom.socket.quic.core.life.RetiredId
 import com.ditchoom.socket.quic.core.life.SpareId
 import com.ditchoom.socket.quic.core.path.MoveAnswer
@@ -49,6 +50,13 @@ internal fun Paths.closeRedirect(): Outgoing =
     when (this) {
         is Paths.Client -> paths.fromSocket()
         is Paths.Server -> Outgoing.Dropped
+    }
+
+/** Whether the path's far end is validated: a client's socket not mid-move, a server's peer not on a new address. */
+internal fun Paths.address(): PeerAddress =
+    when (this) {
+        is Paths.Client -> if (paths.unsettled()) PeerAddress.Unvalidated else PeerAddress.Validated
+        is Paths.Server -> paths.address()
     }
 
 /** Where a datagram quiche wrote for the path [address] names goes: a client's own address, a server's peer's. */

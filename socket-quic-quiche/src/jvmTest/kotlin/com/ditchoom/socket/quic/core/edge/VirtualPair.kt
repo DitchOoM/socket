@@ -313,13 +313,15 @@ internal class VirtualPair private constructor(
             delivery: Delivery = Delivery.ToEnd,
             start: PairStart = PairStart.Established,
             clientApi: (QuicheApi) -> QuicheApi = { it },
+            serverApi: (QuicheApi) -> QuicheApi = { it },
             body: suspend CoroutineScope.(VirtualPair) -> Unit,
         ) = runBlocking {
             val api = loadQuicheApi()
             val pair = VirtualPair(oneWay, api, delivery)
             api.setThreadVirtualTimeNanos(ORIGIN)
             try {
-                pair.server = replayServer(api, options, BufferFactory.Default, pair.Socket(End.Server), pair.clock, tls, serverConfig)
+                pair.server =
+                    replayServer(serverApi(api), options, BufferFactory.Default, pair.Socket(End.Server), pair.clock, tls, serverConfig)
                 pair.serverKey = InetSocketAddress(LOCALHOST, pair.server.port).toPathKey()
                 pair.client =
                     replayClient(
