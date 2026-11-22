@@ -13,11 +13,11 @@ import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.pool.ThreadingMode
 import com.ditchoom.buffer.stream.StreamProcessor
-import com.ditchoom.socket.http3.Http3StreamException
-import com.ditchoom.socket.http3.Http3StreamId
-import com.ditchoom.socket.http3.Http3StreamReader
-import com.ditchoom.socket.http3.QpackDecoder
-import com.ditchoom.socket.http3.QpackInstructionReader
+import com.ditchoom.socket.http3.codec.Http3StreamException
+import com.ditchoom.socket.http3.codec.Http3StreamId
+import com.ditchoom.socket.http3.codec.Http3StreamReader
+import com.ditchoom.socket.http3.codec.QpackDecoder
+import com.ditchoom.socket.http3.codec.QpackInstructionReader
 import kotlinx.coroutines.runBlocking
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds

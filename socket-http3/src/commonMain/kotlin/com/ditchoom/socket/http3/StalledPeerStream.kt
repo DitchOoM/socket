@@ -1,5 +1,8 @@
 package com.ditchoom.socket.http3
 
+import com.ditchoom.socket.http3.codec.Http3StreamException
+import com.ditchoom.socket.http3.codec.Http3Violation
+
 import com.ditchoom.socket.quic.QuicByteStream
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException

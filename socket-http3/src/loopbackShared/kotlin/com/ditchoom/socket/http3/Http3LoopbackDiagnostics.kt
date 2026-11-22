@@ -1,5 +1,7 @@
 package com.ditchoom.socket.http3
 
+import com.ditchoom.socket.http3.codec.Http3StreamException
+
 import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.describe
 import com.ditchoom.socket.testkit.trace.TraceEvent

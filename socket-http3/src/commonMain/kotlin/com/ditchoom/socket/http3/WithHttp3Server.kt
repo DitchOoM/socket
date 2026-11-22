@@ -1,5 +1,7 @@
 package com.ditchoom.socket.http3
 
+import com.ditchoom.socket.http3.codec.Http3ReplaySafety
+
 import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.quic.PeerCertificate
 import com.ditchoom.socket.quic.QuicOptions

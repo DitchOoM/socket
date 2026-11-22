@@ -1,5 +1,12 @@
 package com.ditchoom.socket.http3
 
+import com.ditchoom.socket.http3.codec.Http3StreamId
+import com.ditchoom.socket.http3.codec.QpackDecoder
+import com.ditchoom.socket.http3.codec.QpackEncoder
+import com.ditchoom.socket.http3.codec.QpackEncoderInstruction
+import com.ditchoom.socket.http3.codec.QpackEncoderInstructionCodec
+import com.ditchoom.socket.http3.codec.QpackHeaderField
+
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.PlatformBuffer

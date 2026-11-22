@@ -1,5 +1,12 @@
 package com.ditchoom.socket.http3
 
+import com.ditchoom.socket.http3.codec.Http3ErrorCode
+import com.ditchoom.socket.http3.codec.Http3Request
+import com.ditchoom.socket.http3.codec.Http3StreamException
+import com.ditchoom.socket.http3.codec.QpackHeaderField
+import com.ditchoom.socket.http3.codec.WebTransportCloseInfo
+import com.ditchoom.socket.http3.codec.WebTransportFailure
+
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.PlatformBuffer

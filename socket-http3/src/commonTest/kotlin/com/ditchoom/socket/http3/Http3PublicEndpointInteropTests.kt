@@ -1,5 +1,7 @@
 package com.ditchoom.socket.http3
 
+import com.ditchoom.socket.http3.codec.Http3Request
+
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.freeIfNeeded
