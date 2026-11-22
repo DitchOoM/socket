@@ -26,10 +26,8 @@ sealed interface QuicOptionRefusal {
         override val option: QuicOptionName get() = QuicOptionName.StreamOpenPolicy
     }
 
-    /** A [QlogTarget.Budgeted] qlog: use [QlogTarget.File], or the `QUIC_QLOG_DIR` environment. */
-    data class QlogNotBudgeted(
-        val target: QlogTarget.Budgeted,
-    ) : QuicOptionRefusal {
+    /** A [QlogTarget.Budgeted] qlog, declared or named by a capture: use [QlogTarget.File], or the `QUIC_QLOG_DIR` environment. */
+    data object QlogNotBudgeted : QuicOptionRefusal {
         override val option: QuicOptionName get() = QuicOptionName.Trace
     }
 }

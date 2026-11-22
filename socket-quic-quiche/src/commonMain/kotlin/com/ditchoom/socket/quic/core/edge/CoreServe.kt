@@ -129,9 +129,6 @@ internal suspend fun coreServe(
     // Before the setup lane, a socket or a file: a serve whose option values cannot be honoured opens nothing.
     verdictOn(options).orRefuse()
     return withContext(setupLane) {
-        // A server's captures are made per connection, as it accepts them; the trace factory is asked once, here and not on
-        // the caller's thread, which qlog target it names, and the capture it returns is dropped.
-        options.trace?.let { qlogVerdict(it.captureFor().qlog).orRefuse() }
         ServerSetup(
             bind,
             tls,

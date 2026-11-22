@@ -317,6 +317,26 @@ sealed interface com.ditchoom.socket.quic.trace/QlogBudgetOrigin { // com.ditcho
     }
 }
 
+sealed interface com.ditchoom.socket.quic.trace/QlogDeclaration { // com.ditchoom.socket.quic.trace/QlogDeclaration|null[0]
+    final object Budgeted : com.ditchoom.socket.quic.trace/QlogDeclaration { // com.ditchoom.socket.quic.trace/QlogDeclaration.Budgeted|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic.trace/QlogDeclaration.Budgeted.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic.trace/QlogDeclaration.Budgeted.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic.trace/QlogDeclaration.Budgeted.toString|toString(){}[0]
+    }
+
+    final object NotBudgeted : com.ditchoom.socket.quic.trace/QlogDeclaration { // com.ditchoom.socket.quic.trace/QlogDeclaration.NotBudgeted|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic.trace/QlogDeclaration.NotBudgeted.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic.trace/QlogDeclaration.NotBudgeted.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic.trace/QlogDeclaration.NotBudgeted.toString|toString(){}[0]
+    }
+
+    final object Undeclared : com.ditchoom.socket.quic.trace/QlogDeclaration { // com.ditchoom.socket.quic.trace/QlogDeclaration.Undeclared|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic.trace/QlogDeclaration.Undeclared.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic.trace/QlogDeclaration.Undeclared.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic.trace/QlogDeclaration.Undeclared.toString|toString(){}[0]
+    }
+}
+
 sealed interface com.ditchoom.socket.quic.trace/QlogEvent { // com.ditchoom.socket.quic.trace/QlogEvent|null[0]
     abstract val line // com.ditchoom.socket.quic.trace/QlogEvent.line|{}line[0]
         abstract fun <get-line>(): kotlin/String // com.ditchoom.socket.quic.trace/QlogEvent.line.<get-line>|<get-line>(){}[0]
@@ -2151,21 +2171,6 @@ sealed interface com.ditchoom.socket.quic/QuicOptionRefusal { // com.ditchoom.so
     abstract val option // com.ditchoom.socket.quic/QuicOptionRefusal.option|{}option[0]
         abstract fun <get-option>(): com.ditchoom.socket.quic/QuicOptionName // com.ditchoom.socket.quic/QuicOptionRefusal.option.<get-option>|<get-option>(){}[0]
 
-    final class QlogNotBudgeted : com.ditchoom.socket.quic/QuicOptionRefusal { // com.ditchoom.socket.quic/QuicOptionRefusal.QlogNotBudgeted|null[0]
-        constructor <init>(com.ditchoom.socket.quic.trace/QlogTarget.Budgeted) // com.ditchoom.socket.quic/QuicOptionRefusal.QlogNotBudgeted.<init>|<init>(com.ditchoom.socket.quic.trace.QlogTarget.Budgeted){}[0]
-
-        final val option // com.ditchoom.socket.quic/QuicOptionRefusal.QlogNotBudgeted.option|{}option[0]
-            final fun <get-option>(): com.ditchoom.socket.quic/QuicOptionName // com.ditchoom.socket.quic/QuicOptionRefusal.QlogNotBudgeted.option.<get-option>|<get-option>(){}[0]
-        final val target // com.ditchoom.socket.quic/QuicOptionRefusal.QlogNotBudgeted.target|{}target[0]
-            final fun <get-target>(): com.ditchoom.socket.quic.trace/QlogTarget.Budgeted // com.ditchoom.socket.quic/QuicOptionRefusal.QlogNotBudgeted.target.<get-target>|<get-target>(){}[0]
-
-        final fun component1(): com.ditchoom.socket.quic.trace/QlogTarget.Budgeted // com.ditchoom.socket.quic/QuicOptionRefusal.QlogNotBudgeted.component1|component1(){}[0]
-        final fun copy(com.ditchoom.socket.quic.trace/QlogTarget.Budgeted = ...): com.ditchoom.socket.quic/QuicOptionRefusal.QlogNotBudgeted // com.ditchoom.socket.quic/QuicOptionRefusal.QlogNotBudgeted.copy|copy(com.ditchoom.socket.quic.trace.QlogTarget.Budgeted){}[0]
-        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicOptionRefusal.QlogNotBudgeted.equals|equals(kotlin.Any?){}[0]
-        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicOptionRefusal.QlogNotBudgeted.hashCode|hashCode(){}[0]
-        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicOptionRefusal.QlogNotBudgeted.toString|toString(){}[0]
-    }
-
     final class StreamOpenNotBounded : com.ditchoom.socket.quic/QuicOptionRefusal { // com.ditchoom.socket.quic/QuicOptionRefusal.StreamOpenNotBounded|null[0]
         constructor <init>(kotlin.time/Duration) // com.ditchoom.socket.quic/QuicOptionRefusal.StreamOpenNotBounded.<init>|<init>(kotlin.time.Duration){}[0]
 
@@ -2179,6 +2184,15 @@ sealed interface com.ditchoom.socket.quic/QuicOptionRefusal { // com.ditchoom.so
         final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicOptionRefusal.StreamOpenNotBounded.equals|equals(kotlin.Any?){}[0]
         final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicOptionRefusal.StreamOpenNotBounded.hashCode|hashCode(){}[0]
         final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicOptionRefusal.StreamOpenNotBounded.toString|toString(){}[0]
+    }
+
+    final object QlogNotBudgeted : com.ditchoom.socket.quic/QuicOptionRefusal { // com.ditchoom.socket.quic/QuicOptionRefusal.QlogNotBudgeted|null[0]
+        final val option // com.ditchoom.socket.quic/QuicOptionRefusal.QlogNotBudgeted.option|{}option[0]
+            final fun <get-option>(): com.ditchoom.socket.quic/QuicOptionName // com.ditchoom.socket.quic/QuicOptionRefusal.QlogNotBudgeted.option.<get-option>|<get-option>(){}[0]
+
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicOptionRefusal.QlogNotBudgeted.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicOptionRefusal.QlogNotBudgeted.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicOptionRefusal.QlogNotBudgeted.toString|toString(){}[0]
     }
 
     final object StandbyLinkNotHeld : com.ditchoom.socket.quic/QuicOptionRefusal { // com.ditchoom.socket.quic/QuicOptionRefusal.StandbyLinkNotHeld|null[0]
@@ -2986,10 +3000,12 @@ final class com.ditchoom.socket.quic.trace/QuicConnectionCapture { // com.ditcho
 
 final class com.ditchoom.socket.quic.trace/QuicTraceCapture { // com.ditchoom.socket.quic.trace/QuicTraceCapture|null[0]
     constructor <init>(com.ditchoom.socket.testkit.trace/TraceSink, kotlin/Boolean = ...) // com.ditchoom.socket.quic.trace/QuicTraceCapture.<init>|<init>(com.ditchoom.socket.testkit.trace.TraceSink;kotlin.Boolean){}[0]
-    constructor <init>(kotlin/Function0<com.ditchoom.socket.quic.trace/QuicConnectionCapture>, kotlin/Boolean = ...) // com.ditchoom.socket.quic.trace/QuicTraceCapture.<init>|<init>(kotlin.Function0<com.ditchoom.socket.quic.trace.QuicConnectionCapture>;kotlin.Boolean){}[0]
+    constructor <init>(kotlin/Function0<com.ditchoom.socket.quic.trace/QuicConnectionCapture>, kotlin/Boolean = ..., com.ditchoom.socket.quic.trace/QlogDeclaration = ...) // com.ditchoom.socket.quic.trace/QuicTraceCapture.<init>|<init>(kotlin.Function0<com.ditchoom.socket.quic.trace.QuicConnectionCapture>;kotlin.Boolean;com.ditchoom.socket.quic.trace.QlogDeclaration){}[0]
 
     final val captureFor // com.ditchoom.socket.quic.trace/QuicTraceCapture.captureFor|{}captureFor[0]
         final fun <get-captureFor>(): kotlin/Function0<com.ditchoom.socket.quic.trace/QuicConnectionCapture> // com.ditchoom.socket.quic.trace/QuicTraceCapture.captureFor.<get-captureFor>|<get-captureFor>(){}[0]
+    final val qlog // com.ditchoom.socket.quic.trace/QuicTraceCapture.qlog|{}qlog[0]
+        final fun <get-qlog>(): com.ditchoom.socket.quic.trace/QlogDeclaration // com.ditchoom.socket.quic.trace/QuicTraceCapture.qlog.<get-qlog>|<get-qlog>(){}[0]
     final val recordNetworkObservations // com.ditchoom.socket.quic.trace/QuicTraceCapture.recordNetworkObservations|{}recordNetworkObservations[0]
         final fun <get-recordNetworkObservations>(): kotlin/Boolean // com.ditchoom.socket.quic.trace/QuicTraceCapture.recordNetworkObservations.<get-recordNetworkObservations>|<get-recordNetworkObservations>(){}[0]
 

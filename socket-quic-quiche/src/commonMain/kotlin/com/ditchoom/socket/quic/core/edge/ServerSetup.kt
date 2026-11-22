@@ -206,7 +206,7 @@ internal class ServerSetup(
         val sendPort = SendPort(io, loop.port, CallerLanes.Of(lanes), SocketDiedNotice(), loop.counts, loop.callerCounts)
         val counts = ServerCounts()
         val accepted = Channel<CoreConnection>(Channel.UNLIMITED)
-        val edge = ServerEdge(options, factory, readPolicy, writePolicy, accepted, keyLogDirectory())
+        val edge = ServerEdge(options, factory, readPolicy, writePolicy, accepted, keyLogDirectory(), counts)
         val parts =
             ServerParts(
                 SlotRules.forWaits(

@@ -2050,13 +2050,9 @@ public abstract interface class com/ditchoom/socket/quic/QuicOptionRefusal {
 }
 
 public final class com/ditchoom/socket/quic/QuicOptionRefusal$QlogNotBudgeted : com/ditchoom/socket/quic/QuicOptionRefusal {
-	public fun <init> (Lcom/ditchoom/socket/quic/trace/QlogTarget$Budgeted;)V
-	public final fun component1 ()Lcom/ditchoom/socket/quic/trace/QlogTarget$Budgeted;
-	public final fun copy (Lcom/ditchoom/socket/quic/trace/QlogTarget$Budgeted;)Lcom/ditchoom/socket/quic/QuicOptionRefusal$QlogNotBudgeted;
-	public static synthetic fun copy$default (Lcom/ditchoom/socket/quic/QuicOptionRefusal$QlogNotBudgeted;Lcom/ditchoom/socket/quic/trace/QlogTarget$Budgeted;ILjava/lang/Object;)Lcom/ditchoom/socket/quic/QuicOptionRefusal$QlogNotBudgeted;
+	public static final field INSTANCE Lcom/ditchoom/socket/quic/QuicOptionRefusal$QlogNotBudgeted;
 	public fun equals (Ljava/lang/Object;)Z
 	public fun getOption ()Lcom/ditchoom/socket/quic/QuicOptionName;
-	public final fun getTarget ()Lcom/ditchoom/socket/quic/trace/QlogTarget$Budgeted;
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
 }
@@ -3152,6 +3148,30 @@ public final class com/ditchoom/socket/quic/trace/QlogClosed : java/lang/Enum {
 	public static fun values ()[Lcom/ditchoom/socket/quic/trace/QlogClosed;
 }
 
+public abstract interface class com/ditchoom/socket/quic/trace/QlogDeclaration {
+}
+
+public final class com/ditchoom/socket/quic/trace/QlogDeclaration$Budgeted : com/ditchoom/socket/quic/trace/QlogDeclaration {
+	public static final field INSTANCE Lcom/ditchoom/socket/quic/trace/QlogDeclaration$Budgeted;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/quic/trace/QlogDeclaration$NotBudgeted : com/ditchoom/socket/quic/trace/QlogDeclaration {
+	public static final field INSTANCE Lcom/ditchoom/socket/quic/trace/QlogDeclaration$NotBudgeted;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/quic/trace/QlogDeclaration$Undeclared : com/ditchoom/socket/quic/trace/QlogDeclaration {
+	public static final field INSTANCE Lcom/ditchoom/socket/quic/trace/QlogDeclaration$Undeclared;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
 public final class com/ditchoom/socket/quic/trace/QlogDirectory {
 	public fun <init> (Ljava/lang/String;Lcom/ditchoom/socket/quic/trace/QlogBudget;Lkotlin/jvm/functions/Function1;)V
 	public final fun adopt (Ljava/util/List;)V
@@ -3511,9 +3531,12 @@ public final class com/ditchoom/socket/quic/trace/QuicTraceCapture {
 	public static final field Companion Lcom/ditchoom/socket/quic/trace/QuicTraceCapture$Companion;
 	public fun <init> (Lcom/ditchoom/socket/testkit/trace/TraceSink;Z)V
 	public synthetic fun <init> (Lcom/ditchoom/socket/testkit/trace/TraceSink;ZILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun <init> (Lkotlin/jvm/functions/Function0;)V
 	public fun <init> (Lkotlin/jvm/functions/Function0;Z)V
-	public synthetic fun <init> (Lkotlin/jvm/functions/Function0;ZILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun <init> (Lkotlin/jvm/functions/Function0;ZLcom/ditchoom/socket/quic/trace/QlogDeclaration;)V
+	public synthetic fun <init> (Lkotlin/jvm/functions/Function0;ZLcom/ditchoom/socket/quic/trace/QlogDeclaration;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun getCaptureFor ()Lkotlin/jvm/functions/Function0;
+	public final fun getQlog ()Lcom/ditchoom/socket/quic/trace/QlogDeclaration;
 	public final fun getRecordNetworkObservations ()Z
 }
 

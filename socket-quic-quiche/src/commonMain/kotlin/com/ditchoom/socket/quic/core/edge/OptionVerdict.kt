@@ -16,6 +16,7 @@ import com.ditchoom.socket.quic.QuicSessionStore
 import com.ditchoom.socket.quic.StandbyLink
 import com.ditchoom.socket.quic.StreamOpenPolicy
 import com.ditchoom.socket.quic.UdpBatching
+import com.ditchoom.socket.quic.trace.QlogDeclaration
 import com.ditchoom.socket.quic.trace.QlogTarget
 import com.ditchoom.socket.quic.trace.TraceCapture
 import com.ditchoom.socket.transport.NetworkKind
@@ -47,6 +48,7 @@ internal fun verdictOn(options: QuicOptions): OptionVerdict =
         migrationVerdict(options.migration),
         streamOpenVerdict(options.streamOpenPolicy),
         standbyVerdict(options.standbyLink),
+        options.trace.let { trace -> if (trace == null) OptionVerdict.Honoured else declaredQlogVerdict(trace.qlog) },
         transportVerdict(options),
     )
 
@@ -81,7 +83,14 @@ private fun standbyVerdict(link: StandbyLink): OptionVerdict =
 internal fun qlogVerdict(target: QlogTarget): OptionVerdict =
     when (target) {
         is QlogTarget.Off, is QlogTarget.File -> OptionVerdict.Honoured
-        is QlogTarget.Budgeted -> refused(QuicOptionRefusal.QlogNotBudgeted(target))
+        is QlogTarget.Budgeted -> refused(QuicOptionRefusal.QlogNotBudgeted)
+    }
+
+/** What a trace's factory declares of its qlog targets, judged without asking the factory for anything. */
+private fun declaredQlogVerdict(declaration: QlogDeclaration): OptionVerdict =
+    when (declaration) {
+        is QlogDeclaration.NotBudgeted, is QlogDeclaration.Undeclared -> OptionVerdict.Honoured
+        is QlogDeclaration.Budgeted -> refused(QuicOptionRefusal.QlogNotBudgeted)
     }
 
 /** The qlog verdict of a connection's [capture]. */
