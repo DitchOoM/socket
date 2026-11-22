@@ -1515,8 +1515,6 @@ final value class com.ditchoom.socket.http3/Http3FrameType { // com.ditchoom.soc
 }
 
 final value class com.ditchoom.socket.http3/Http3StreamId : kotlin/Comparable<com.ditchoom.socket.http3/Http3StreamId> { // com.ditchoom.socket.http3/Http3StreamId|null[0]
-    constructor <init>(kotlin/Long) // com.ditchoom.socket.http3/Http3StreamId.<init>|<init>(kotlin.Long){}[0]
-
     final val id // com.ditchoom.socket.http3/Http3StreamId.id|{}id[0]
         final fun <get-id>(): kotlin/Long // com.ditchoom.socket.http3/Http3StreamId.id.<get-id>|<get-id>(){}[0]
     final val isUnidirectional // com.ditchoom.socket.http3/Http3StreamId.isUnidirectional|{}isUnidirectional[0]

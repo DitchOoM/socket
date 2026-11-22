@@ -56,7 +56,7 @@ abstract class QpackDecoderStream {
      *
      * Returns what happened, because the accounting depends on it and a `Unit` return cannot tell
      * "wrote" from "silently did not". Both subclasses have a path that writes nothing and raises
-     * nothing: the client swallows a the transport's close exception (the ack is moot
+     * nothing: the client swallows the transport's close exception (the ack is moot
      * once the connection is gone) and the server returns early when its decoder stream is not open
      * yet. Under a `Unit` contract both of those advance [acknowledgedInsertCount] past instructions
      * the peer never received, and every later increment is short by that much — silently, since a

@@ -19,7 +19,9 @@ import java.util.stream.Stream;
  *
  * Every main-source file of :socket-http3 is listed in scripts/http3-layers.list as `codec` or `binding`. A codec
  * file may not mention package `com.ditchoom.socket.quic` (an import or a qualified name), nor any public top-level
- * type declared under that package in :socket-quic or :socket-quic-quiche. A binding file is not checked.
+ * type declared under that package in :socket-quic or :socket-quic-quiche, nor any non-private top-level type declared
+ * in a binding file: a codec that needs a binding type would drag the transport in with it. A binding file is not
+ * checked.
  * The check also fails on a main-source file missing from the list and on a listed file that does not exist, so a
  * new file has to pick its layer. Finding no codec file at all is a failure: an empty scan must not look clean.
  */
@@ -58,17 +60,26 @@ public class Http3CodecIsolationCheck {
         List<String> failures = new ArrayList<>();
         Map<String, String> layers = readLayers(root.resolve(LAYERS), failures);
 
-        Set<String> quicTypes = new TreeSet<>();
+        Map<String, String> quicTypes = new TreeMap<>();
         for (String module : QUIC_MODULES) {
             for (Path file : mainSources(root, module)) {
                 if (!file.toString().replace('\\', '/').contains(QUIC_DIR)) continue;
                 for (String line : stripped(file).split("\n", -1)) {
                     Matcher m = TOP_LEVEL_TYPE.matcher(line);
-                    if (m.find() && !m.group(1).contains("internal") && !m.group(1).contains("private")) quicTypes.add(m.group(2));
+                    if (m.find() && !m.group(1).contains("internal") && !m.group(1).contains("private")) quicTypes.putIfAbsent(m.group(2), rel(root, file));
                 }
             }
         }
         if (quicTypes.isEmpty()) failures.add("no QUIC type found under " + QUIC_MODULES + "; refusing to pass an empty scan");
+
+        Map<String, String> bindingTypes = new TreeMap<>();
+        for (Path file : mainSources(root, MODULE)) {
+            if (!"binding".equals(layers.get(file.getFileName().toString()))) continue;
+            for (String line : stripped(file).split("\n", -1)) {
+                Matcher m = TOP_LEVEL_TYPE.matcher(line);
+                if (m.find() && !m.group(1).contains("private")) bindingTypes.putIfAbsent(m.group(2), rel(root, file));
+            }
+        }
 
         Set<String> present = new TreeSet<>();
         int codec = 0;
@@ -90,8 +101,17 @@ public class Http3CodecIsolationCheck {
             if (QUIC_PACKAGE.matcher(text).find()) failures.add(rel(root, file) + ": codec file mentions package com.ditchoom.socket.quic");
             Set<String> names = new TreeSet<>();
             Matcher id = IDENTIFIER.matcher(text);
-            while (id.find()) if (quicTypes.contains(id.group())) names.add(id.group());
-            for (String n : names) failures.add(rel(root, file) + ": codec file names QUIC type " + n);
+            while (id.find()) names.add(id.group());
+            for (String n : names) {
+                if (quicTypes.containsKey(n)) {
+                    failures.add(rel(root, file) + ": codec file names " + n + ", the QUIC type declared in " + quicTypes.get(n)
+                        + " (if this is your own type that merely shares the name, rename it)");
+                }
+                if (bindingTypes.containsKey(n)) {
+                    failures.add(rel(root, file) + ": codec file names " + n + ", declared in binding file " + bindingTypes.get(n)
+                        + " (move the type into a codec file, or list this file as binding)");
+                }
+            }
         }
         for (String name : layers.keySet()) {
             if (!present.contains(name)) failures.add(LAYERS + ": stale entry, no such file in " + MODULE + ": " + name);
@@ -190,7 +210,7 @@ public class Http3CodecIsolationCheck {
             "package com.ditchoom.socket.quic\nvalue class QuicStreamId(val id: Long)\ninternal class HiddenQuic\n");
         write(root, LAYERS, "codec\tFrame.kt\nbinding\tConn.kt\n");
         write(root, H3 + "Frame.kt", "package p\n// QuicStreamId in a comment\nval s = \"QuicStreamId\"\nclass Mine { val h = HiddenQuic }\n");
-        write(root, H3 + "Conn.kt", "package p\nimport com.ditchoom.socket.quic.QuicStreamId\nval x = QuicStreamId(1)\n");
+        write(root, H3 + "Conn.kt", "package p\nimport com.ditchoom.socket.quic.QuicStreamId\nval x = QuicStreamId(1)\nclass Connection\n");
         expect(root, 0, "clean codec file and a binding file using QUIC pass");
 
         write(root, H3 + "Frame.kt", "package p\nimport com.ditchoom.socket.quic.QuicStreamId\n");
@@ -199,6 +219,15 @@ public class Http3CodecIsolationCheck {
         expect(root, 1, "codec use of a QUIC type name fails");
         write(root, H3 + "Frame.kt", "package p\nval id = com.ditchoom.socket.quic.Other\n");
         expect(root, 1, "codec qualified QUIC name fails");
+        write(root, H3 + "Frame.kt", "package p\nimport com.ditchoom.socket.quic.QuicStreamId as Q\nval id = Q(1)\n");
+        expect(root, 2, "codec import alias of a QUIC type fails (package and name)");
+        write(root, H3 + "Frame.kt", "package p\nval id = com.ditchoom.socket.quic.QuicStreamId(1)\n");
+        expect(root, 2, "codec fully qualified QUIC type fails (package and name)");
+        write(root, H3 + "Frame.kt", "package p\nval c = Connection()\n");
+        expect(root, 1, "codec use of a type declared in a binding file fails");
+        write(root, H3 + "Conn.kt", "package p\nprivate class Hidden\ninternal class Connection\n");
+        write(root, H3 + "Frame.kt", "package p\nval c = Hidden()\n");
+        expect(root, 0, "a private binding type is not a binding type");
         write(root, H3 + "Frame.kt", "package p\n");
 
         write(root, H3 + "New.kt", "package p\n");

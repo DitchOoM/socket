@@ -4,12 +4,10 @@
 # A new file must be listed here, and a listed file must exist.
 codec	CriticalStreamGuard.kt
 codec	Http3ErrorCode.kt
-codec	Http3Filters.kt
 codec	Http3Frame.kt
 codec	Http3LengthCodec.kt
 codec	Http3ReplaySafety.kt
 codec	Http3Request.kt
-codec	Http3ServerPush.kt
 codec	Http3ServerRequest.kt
 codec	Http3StreamId.kt
 codec	Http3StreamReader.kt
@@ -31,7 +29,6 @@ codec	QpackStringLiteral.kt
 codec	ReadBufferViewCodec.kt
 codec	VarIntCodec.kt
 codec	WebTransportFailure.kt
-codec	WebTransportServerExchange.kt
 codec	WebTransportWire.kt
 binding	Http3Connection.kt
 binding	Http3Response.kt
@@ -46,3 +43,6 @@ binding	WebTransportSession.kt
 binding	WebTransportStreams.kt
 binding	WithHttp3Connection.kt
 binding	WithHttp3Server.kt
+binding	Http3ServerPush.kt
+binding	Http3Filters.kt
+binding	WebTransportServerExchange.kt

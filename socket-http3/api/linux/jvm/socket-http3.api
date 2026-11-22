@@ -529,7 +529,6 @@ public final class com/ditchoom/socket/http3/Http3StreamId : java/lang/Comparabl
 	public synthetic fun compareTo (Ljava/lang/Object;)I
 	public fun compareTo-y2pWHEs (J)I
 	public static fun compareTo-y2pWHEs (JJ)I
-	public static fun constructor-impl (J)J
 	public fun equals (Ljava/lang/Object;)Z
 	public static fun equals-impl (JLjava/lang/Object;)Z
 	public static final fun equals-impl0 (JJ)Z

@@ -270,7 +270,7 @@ sealed interface Http3Violation {
      * stream and says nothing must not be waited on forever — so the deadline is right; what must not
      * happen is for its expiry to look like cancellation.
      *
-     * a transport driver may implement a deadline as `withTimeout`, whose `TimeoutCancellationException` is a
+     * A transport driver may implement a deadline as `withTimeout`, whose `TimeoutCancellationException` is a
      * `CancellationException`; a `launch` child completing with one is *cancelled, not failed*, so
      * `route()`'s per-stream catch arms would never see it and the child would vanish with a bare
      * `close()` — indistinguishable from a genuinely cancelled router, and on QUIC a send-side FIN only,
