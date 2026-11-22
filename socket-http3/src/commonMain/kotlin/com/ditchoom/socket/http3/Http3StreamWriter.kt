@@ -1,6 +1,7 @@
 package com.ditchoom.socket.http3
 
 import com.ditchoom.socket.http3.codec.Http3Frame
+import com.ditchoom.socket.http3.codec.Http3FrameCodec
 import com.ditchoom.socket.http3.codec.QpackDecoderInstruction
 import com.ditchoom.socket.http3.codec.QpackDecoderInstructionCodec
 import com.ditchoom.socket.http3.codec.QpackDecoderStream
