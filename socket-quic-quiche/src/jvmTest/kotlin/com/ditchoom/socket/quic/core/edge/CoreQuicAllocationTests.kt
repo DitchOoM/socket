@@ -252,11 +252,17 @@ class CoreQuicAllocationTests {
             }
         java.nio.file.Files
             .delete(dump)
+
+        // The loop's few bytes per echo are listed on their own: the caller's sites crowd them out of the overall top.
+        fun top(
+            of: Map<String, Long>,
+            count: Int,
+        ) = of.entries
+            .sortedByDescending { it.value }
+            .take(count)
+            .joinToString("\n") { "  ${it.value / MEASURED} B/echo (${it.value} B) ${it.key}" }
         val where =
-            sites.entries
-                .sortedByDescending { it.value }
-                .take(30)
-                .joinToString("\n") { "  ${it.value / MEASURED} B/echo ${it.key}" }
+            top(sites, 30) + "\n  on the loop:\n" + top(sites.filterKeys { it.startsWith("[$LOOP_THREAD") }, 15)
         return Report(loop, caller, callerCore.toDouble() / MEASURED, where)
     }
 
