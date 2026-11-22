@@ -44,11 +44,11 @@ import com.ditchoom.socket.quic.quiche.quiche_conn_application_proto
 import com.ditchoom.socket.quic.quiche.quiche_conn_available_dcids
 import com.ditchoom.socket.quic.quiche.quiche_conn_close
 import com.ditchoom.socket.quic.quiche.quiche_conn_dgram_max_writable_len
-import com.ditchoom.socket.quic.quiche.quiche_conn_dgram_recv
 import com.ditchoom.socket.quic.quiche.quiche_conn_dgram_purge_outgoing
+import com.ditchoom.socket.quic.quiche.quiche_conn_dgram_recv
 import com.ditchoom.socket.quic.quiche.quiche_conn_dgram_recv_front_len
-import com.ditchoom.socket.quic.quiche.quiche_conn_dgram_send_queue_len
 import com.ditchoom.socket.quic.quiche.quiche_conn_dgram_send
+import com.ditchoom.socket.quic.quiche.quiche_conn_dgram_send_queue_len
 import com.ditchoom.socket.quic.quiche.quiche_conn_early_data_reason
 import com.ditchoom.socket.quic.quiche.quiche_conn_free
 import com.ditchoom.socket.quic.quiche.quiche_conn_handshake_pto_ceiling_held
@@ -139,7 +139,6 @@ import kotlinx.cinterop.UByteVar
 import kotlinx.cinterop.UIntVar
 import kotlinx.cinterop.ULongVar
 import kotlinx.cinterop.alloc
-import kotlinx.cinterop.staticCFunction
 import kotlinx.cinterop.allocArray
 import kotlinx.cinterop.convert
 import kotlinx.cinterop.get
@@ -150,6 +149,7 @@ import kotlinx.cinterop.ptr
 import kotlinx.cinterop.rawValue
 import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.sizeOf
+import kotlinx.cinterop.staticCFunction
 import kotlinx.cinterop.toCPointer
 import kotlinx.cinterop.toKString
 import kotlinx.cinterop.value

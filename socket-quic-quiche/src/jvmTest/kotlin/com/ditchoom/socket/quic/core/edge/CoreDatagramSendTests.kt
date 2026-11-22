@@ -291,8 +291,8 @@ class CoreDatagramSendTests {
     private companion object {
         const val DEPTH = 64
 
-        /** What the core's queue admits of [DEPTH]: the rest is quiche's hand-off of 32, half the depth at most. */
-        const val QUEUED = DEPTH - 32
+        /** What the core's queue admits of [DEPTH]: the rest is quiche's hand-off of 32, half the depth at most, and the door. */
+        const val QUEUED = DEPTH - 33
         const val RECEIVE_DEPTH = 8
         const val SMALL = 64
         const val WARM_ROUNDS = 3

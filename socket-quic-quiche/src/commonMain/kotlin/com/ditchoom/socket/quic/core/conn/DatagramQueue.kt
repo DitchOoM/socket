@@ -218,10 +218,7 @@ internal class DatagramQueue(
      * last offer out may be freeing.
      */
     fun trim(keep: Int) {
-        when (life.load()) {
-            is QueueLife.Closed -> return
-            is QueueLife.Open -> Unit
-        }
+        if (life.load() is QueueLife.Closed) return
         when (val now = parts.load()) {
             is QueueParts.Unmade -> Unit
             is QueueParts.Made -> now.slots.trim(keep)

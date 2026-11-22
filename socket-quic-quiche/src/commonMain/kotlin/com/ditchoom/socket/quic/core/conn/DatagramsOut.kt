@@ -70,9 +70,6 @@ internal class DatagramRefusedByQuiche(
     val code: Int,
 ) : Throwable()
 
-/** The connection's factory made datagram memory without an address, which the connect had checked it would not. */
-internal class DatagramMemoryNotAddressable : Throwable()
-
 /**
  * A connection's RFC 9221 sends, inside it. The [queue] any thread offers to is bounded so that it, the door and quiche's
  * short hand-off behind them together hold at most the options' depth; it is fed into quiche from the head each time
@@ -89,7 +86,7 @@ internal class DatagramSender(
     private val counts: ConnCounts,
 ) {
     private val room = AtomicInt(NO_DATAGRAM_ROOM)
-    private val waiting = ArrayDeque<RoomWaiter>()
+    private val waiting = ArrayDeque<RoomWait>()
     private var door: Head = Head.Empty
     private var quiche = QuicheQueue.MayHaveRoom
     private var peak = 0
@@ -170,11 +167,11 @@ internal class DatagramSender(
     }
 
     /** [wait] is answered once the queue is at its low-water mark: now, or when a feed finds it there. */
-    fun awaitRoom(wait: RoomWaiter) {
+    fun awaitRoom(wait: RoomWait) {
         if (queue.size() <= queue.lowWater || queue.life() is QueueLife.Closed) wait.room() else waiting.addLast(wait)
     }
 
-    fun withdraw(wait: RoomWaiter) {
+    fun withdraw(wait: RoomWait) {
         waiting.remove(wait)
     }
 
@@ -250,20 +247,13 @@ internal fun ConnParts.datagramsToWrite(): Datagrams =
         is Life.Over -> Datagrams.Off
     }
 
-/** A caller parked inside the connection until its send queue is at its low-water mark or closed. Answered once. */
-internal interface RoomWaiter {
-    /** The caller goes on. */
-    fun room()
-}
-
 /**
  * A caller waiting in [DatagramSend.NotSent.QueueFull.awaitRoom][com.ditchoom.socket.quic.DatagramSend.NotSent.QueueFull.awaitRoom],
  * parked inside the connection until its send queue is at its low-water mark or closed. Answered once.
  */
 internal class RoomWait(
     private val caller: CancellableContinuation<Unit>,
-) : ConnWork(),
-    RoomWaiter {
+) : ConnWork() {
     override fun run(inside: Inside) =
         when (val datagrams = inside.datagrams) {
             is Datagrams.Off -> room()
@@ -273,7 +263,7 @@ internal class RoomWait(
     override fun gone(end: ConnEnd) = room()
 
     /** The caller goes on; one cancelled meanwhile is not resumed. */
-    override fun room() = caller.resume(Unit)
+    fun room() = caller.resume(Unit)
 }
 
 /** Takes back a [RoomWait] whose caller was cancelled. */

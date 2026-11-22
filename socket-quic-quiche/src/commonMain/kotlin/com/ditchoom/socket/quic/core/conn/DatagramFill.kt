@@ -1,11 +1,11 @@
 package com.ditchoom.socket.quic.core.conn
 
 import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.socket.quic.core.time.LoopClock
-import com.ditchoom.socket.quic.core.udp.Addressed
+import com.ditchoom.socket.quic.core.udp.MadeMemory
 import com.ditchoom.socket.quic.core.udp.NativeBytes
+import com.ditchoom.socket.quic.core.udp.nativeBytes
 
 /** The memory a slot holds for a datagram, which is its own answer, or how the connection's factory failed to make it. */
 internal sealed interface Readied {
@@ -25,48 +25,14 @@ internal fun DatagramSlot.ready(
 ): Readied {
     val held = memory
     if (held is SlotMemory.Made && held.bytes.capacity >= needed) return held
-    val buffer =
-        try {
-            factory.allocate(maxOf(needed, DATAGRAM_ROOM))
-        } catch (failure: Throwable) {
-            return Readied.Failed(failure)
+    return when (val made = factory.nativeBytes(maxOf(needed, DATAGRAM_ROOM))) {
+        is MadeMemory.Failed -> Readied.Failed(made.failure)
+        is MadeMemory.Made -> {
+            if (held is SlotMemory.Made) held.bytes.free()
+            SlotMemory.Made(made.bytes).also { holds(it) }
         }
-    return when (val made = addressOf(buffer)) {
-        is Addressing.Failed -> {
-            buffer.freeNativeMemory()
-            Readied.Failed(made.failure)
-        }
-        is Addressing.Done ->
-            when (val at = made.addressed) {
-                is Addressed.NotAddressable -> {
-                    buffer.freeNativeMemory()
-                    Readied.Failed(DatagramMemoryNotAddressable())
-                }
-                is Addressed.Native -> {
-                    if (held is SlotMemory.Made) held.bytes.free()
-                    SlotMemory.Made(at.bytes).also { holds(it) }
-                }
-            }
     }
 }
-
-/** [NativeBytes.of] for [buffer], or what it threw. */
-private sealed interface Addressing {
-    class Done(
-        val addressed: Addressed,
-    ) : Addressing
-
-    class Failed(
-        val failure: Throwable,
-    ) : Addressing
-}
-
-private fun addressOf(buffer: PlatformBuffer): Addressing =
-    try {
-        Addressing.Done(NativeBytes.of(buffer))
-    } catch (failure: Throwable) {
-        Addressing.Failed(failure)
-    }
 
 /**
  * The holder of this slot copies the [prefixLength] remaining bytes of [prefix] and then the [length] remaining bytes of

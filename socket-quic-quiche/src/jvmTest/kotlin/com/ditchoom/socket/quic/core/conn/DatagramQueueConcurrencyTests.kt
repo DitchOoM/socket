@@ -31,12 +31,42 @@ class DatagramQueueConcurrencyTests {
     fun evictingOffersFromManyThreadsAreEachTakenOnceOrEvictedAndAllButNeverRefused() = run(Overflow.EvictOldest)
 
     @Test
+    fun refusingOffersFromManyThreadsWithNoTakerQueueExactlyTheBound() {
+        val counts = ConnCounts()
+        val queue = queue(Overflow.RefuseNew, counts)
+        val queued = AtomicLong()
+        val full = AtomicLong()
+        val start = CountDownLatch(1)
+        val senders =
+            List(SENDERS) {
+                thread {
+                    val buffer = datagram()
+                    start.await()
+                    repeat(OFFERS / 10) {
+                        when (queue.offer(buffer, 0, buffer, SIZE)) {
+                            is Offered.Queued -> queued.incrementAndGet()
+                            is Offered.Full -> full.incrementAndGet()
+                            is Offered.Contended, is Offered.NoMemory, is QueueLife.Closed -> error("nothing contends without a taker")
+                        }
+                    }
+                }
+            }
+        start.countDown()
+        senders.forEach { it.join() }
+        assertEquals(DEPTH.toLong(), queued.get(), "the bound is filled exactly: no place lost, none given twice")
+        assertEquals(DEPTH, queue.size())
+        assertEquals((SENDERS * OFFERS / 10).toLong() - DEPTH, full.get())
+        queue.close(ConnEnd.Released)
+    }
+
+    @Test
     fun anEvictingOfferWhileTheConnectionHoldsTheOldestEvictsOneAndReturnsOnAnotherThread() {
         val counts = ConnCounts()
         val queue = queue(Overflow.EvictOldest, counts)
         val buffer = datagram()
         repeat(DEPTH) { assertEquals(Offered.Queued, queue.offer(buffer, 0, buffer, SIZE)) }
         val held = assertIs<DatagramSlot>(queue.take())
+        assertEquals(Offered.Queued, queue.offer(buffer, 0, buffer, SIZE), "the held one is outside the bound: the queue is full again")
         val answer = AtomicReference<Offered>()
         val done = CountDownLatch(1)
         thread {
@@ -63,8 +93,8 @@ class DatagramQueueConcurrencyTests {
                     repeat(OFFERS) {
                         when (queue.offer(buffer, 0, buffer, SIZE)) {
                             is Offered.Queued -> queued.incrementAndGet()
-                            is Offered.Full, is QueueLife.Closed -> Unit
-                            is Offered.Unaddressable -> error("network memory has an address")
+                            is Offered.Full, is Offered.Contended, is QueueLife.Closed -> Unit
+                            is Offered.NoMemory -> error("network memory is made")
                         }
                     }
                 }
@@ -92,6 +122,7 @@ class DatagramQueueConcurrencyTests {
         val queue = queue(overflow, counts)
         val queued = AtomicLong()
         val full = AtomicLong()
+        val contended = AtomicLong()
         val start = CountDownLatch(1)
         val senders =
             List(SENDERS) { sender ->
@@ -104,7 +135,8 @@ class DatagramQueueConcurrencyTests {
                         when (queue.offer(buffer, 0, buffer, SIZE)) {
                             is Offered.Queued -> queued.incrementAndGet()
                             is Offered.Full -> full.incrementAndGet()
-                            is QueueLife.Closed, is Offered.Unaddressable -> error("the queue is open and its memory native")
+                            is Offered.Contended -> contended.incrementAndGet()
+                            is QueueLife.Closed, is Offered.NoMemory -> error("the queue is open and its memory made")
                         }
                     }
                 }
@@ -135,12 +167,12 @@ class DatagramQueueConcurrencyTests {
         while (senders.any { it.isAlive }) takeAll()
         senders.forEach { it.join() }
         takeAll()
-        assertEquals((SENDERS * OFFERS).toLong(), queued.get() + full.get(), "attempts = queued + refused")
+        assertEquals((SENDERS * OFFERS).toLong(), queued.get() + full.get() + contended.get(), "attempts = queued + refused")
         assertEquals(queued.get(), taken + counts.datagramsEvicted, "queued = taken + evicted")
         assertTrue(counts.datagramsEvicted <= queued.get(), "never more evictions than datagrams")
         when (overflow) {
             Overflow.RefuseNew -> assertEquals(0L, counts.datagramsEvicted)
-            Overflow.EvictOldest -> assertTrue(full.get() * 100 <= queued.get(), "an evicting queue all but never refuses: ${full.get()}")
+            Overflow.EvictOldest -> assertEquals(0L, full.get(), "an evicting queue is never at its bound for a send")
         }
         queue.close(ConnEnd.Released)
     }
@@ -148,7 +180,7 @@ class DatagramQueueConcurrencyTests {
     private fun queue(
         overflow: Overflow,
         counts: ConnCounts,
-    ) = DatagramQueue(DEPTH, overflow, AgeBound.Unbounded, BufferFactory.network(), VirtualClock(), counts)
+    ) = DatagramQueue(DEPTH, overflow, BufferFactory.network(), VirtualClock(), counts)
 
     private fun datagram(): PlatformBuffer =
         BufferFactory.network().allocate(SIZE).apply {

@@ -17,8 +17,8 @@ import com.ditchoom.socket.quic.core.conn.KeepAliveRule
 import com.ditchoom.socket.quic.core.conn.Overflow
 import com.ditchoom.socket.quic.core.conn.PtoRule
 import com.ditchoom.socket.quic.core.conn.quicheHandOff
-import com.ditchoom.socket.quic.core.time.Span
 import com.ditchoom.socket.quic.core.life.CloseRule
+import com.ditchoom.socket.quic.core.time.Span
 import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.transport.NetworkKind
 
