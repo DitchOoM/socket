@@ -1,5 +1,7 @@
 package com.ditchoom.socket.http3
 
+import com.ditchoom.socket.http3.codec.QpackHeaderField
+
 /**
  * A pending server-side WebTransport session request (an Extended CONNECT, RFC 9220), handed to the
  * `onWebTransport` handler. Inspect [authority]/[path]/[headers], then either [accept] the session

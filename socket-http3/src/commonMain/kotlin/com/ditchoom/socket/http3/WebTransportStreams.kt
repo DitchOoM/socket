@@ -11,6 +11,8 @@ import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.Resettable
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.socket.http3.codec.Http3ErrorCode
+import com.ditchoom.socket.http3.codec.WebTransportWire
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicStreamException
 import kotlin.time.Duration

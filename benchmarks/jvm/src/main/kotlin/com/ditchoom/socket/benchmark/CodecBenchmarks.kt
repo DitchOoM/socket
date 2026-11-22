@@ -5,9 +5,9 @@ import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.codec.DecodeContext
 import com.ditchoom.buffer.codec.EncodeContext
 import com.ditchoom.buffer.deterministic
-import com.ditchoom.socket.http3.QpackFieldSectionCodec
-import com.ditchoom.socket.http3.QpackHeaderField
-import com.ditchoom.socket.http3.VarIntCodec
+import com.ditchoom.socket.http3.codec.QpackFieldSectionCodec
+import com.ditchoom.socket.http3.codec.QpackHeaderField
+import com.ditchoom.socket.http3.codec.VarIntCodec
 import org.openjdk.jmh.annotations.Benchmark
 import org.openjdk.jmh.annotations.BenchmarkMode
 import org.openjdk.jmh.annotations.Level

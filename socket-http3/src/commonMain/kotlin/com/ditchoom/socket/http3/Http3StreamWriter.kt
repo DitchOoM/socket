@@ -10,6 +10,14 @@ import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.utf8Size
 import com.ditchoom.socket.SocketWriteStalledException
 import com.ditchoom.socket.TransportConfig
+import com.ditchoom.socket.http3.codec.Http3Frame
+import com.ditchoom.socket.http3.codec.Http3FrameCodec
+import com.ditchoom.socket.http3.codec.QpackDecoderInstruction
+import com.ditchoom.socket.http3.codec.QpackDecoderInstructionCodec
+import com.ditchoom.socket.http3.codec.QpackDecoderStream
+import com.ditchoom.socket.http3.codec.QpackEncoderInstruction
+import com.ditchoom.socket.http3.codec.QpackEncoderInstructionCodec
+import com.ditchoom.socket.http3.codec.VarIntCodec
 import com.ditchoom.socket.quic.QuicByteStream
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock

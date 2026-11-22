@@ -3,6 +3,8 @@ package com.ditchoom.socket.http3
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.socket.http3.codec.WebTransportCloseInfo
+import com.ditchoom.socket.http3.codec.WebTransportFailure
 import com.ditchoom.socket.quic.QuicByteStream
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
