@@ -1,6 +1,7 @@
 package com.ditchoom.socket.quic.core.edge
 
 import com.ditchoom.buffer.BufferOverflowException
+import com.ditchoom.socket.quic.core.stream.SendRefusal
 
 /**
  * The operation-tier containment site: what one operation's attempt throws (an `Exception`) fails that operation's
@@ -40,4 +41,11 @@ internal inline fun <R> overflowing(
     } catch (full: IllegalArgumentException) {
         // A position seek past the limit is signalled differently per platform; the same answer.
         overflow()
+    }
+
+/** The failure a refused stream send is: past the close point, or after the end. */
+internal fun SendRefusal.raised(): Raised =
+    when (this) {
+        is SendRefusal.PastClose -> Raised.PastClose(end)
+        is SendRefusal.Ended -> Raised.ConnEnded(end)
     }
