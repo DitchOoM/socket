@@ -7,6 +7,7 @@ import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicCloseException
+import com.ditchoom.socket.quic.QuicConnectionState
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.ScopedRead
@@ -228,6 +229,46 @@ class ClosePointVirtualTests {
             pair.runUntil { pair.client.connection.end() is EdgeEnd.Ended }
             assertSame(CloseOutcome.Drained, outcome)
             assertEquals(BULK.toLong(), got[0])
+        }
+
+    @Test
+    fun aServerConnectionWhoseHandshakeCompletesInTheBatchThatClosesItIsOfferedThenEndsByPeer() =
+        VirtualPair.with(options, start = PairStart.Started) { pair ->
+            pair.runUntil { pair.sentBy(End.Client).isNotEmpty() }
+            // The client's Finished and its CONNECTION_CLOSE reach the server together.
+            pair.hold(End.Client)
+            pair.runUntil { pair.client.connection.state.value is QuicConnectionState.Established }
+            var closed = false
+            launch {
+                pair.client.connection.close(QuicError.ApplicationError(APP_CODE))
+                closed = true
+            }
+            pair.runUntil { closed }
+            assertTrue(pair.heldFrom(End.Client) >= 2, "the client's Finished and its close are held")
+            pair.release(End.Client)
+            var offered: CoreConnection? = null
+            launch { offered = pair.accept() }
+            pair.runUntil { offered != null }
+            val serverSide = checkNotNull(offered)
+            pair.runUntil { serverSide.end() is EdgeEnd.Ended }
+            val end = assertIs<EdgeEnd.Ended>(serverSide.end()).end
+            assertEquals(QuicError.ApplicationError(APP_CODE), assertIs<ConnEnd.ByPeer>(end).error)
+            assertEquals("test", serverSide.negotiatedAlpn, "the completed handshake was reported")
+        }
+
+    @Test
+    fun aClientWhoseHandshakeCompletesInTheBatchThatClosesItIsReportedEstablishedThenEndsByPeer() =
+        VirtualPair.with(options, start = PairStart.Started) { pair ->
+            // The server's flight that completes the client's handshake and the server's close reach the client together.
+            pair.hold(End.Server)
+            pair.runUntil { pair.heldFrom(End.Server) > 0 }
+            val flight = pair.heldFrom(End.Server)
+            pair.server.parts.beginShutdown()
+            pair.runUntil { pair.heldFrom(End.Server) > flight }
+            pair.release(End.Server)
+            pair.runUntil { pair.client.connection.end() is EdgeEnd.Ended }
+            assertIs<ConnEnd.ByPeer>(assertIs<EdgeEnd.Ended>(pair.client.connection.end()).end)
+            assertEquals("test", pair.client.connection.negotiatedAlpn, "the completed handshake was reported")
         }
 
     /** Writes one stream in a loop until a write is refused, then writes once more. */

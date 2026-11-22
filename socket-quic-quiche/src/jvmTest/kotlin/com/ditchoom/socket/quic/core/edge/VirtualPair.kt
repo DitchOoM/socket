@@ -59,6 +59,9 @@ internal enum class Delivery {
     ToAddress,
 }
 
+/** When a [VirtualPair]'s body runs: once both ends established, or as soon as the client started its handshake. */
+internal enum class PairStart { Established, Started }
+
 /** One datagram an end handed its socket, at virtual [at] nanoseconds from the pair's start. */
 internal class Sent(
     val from: End,
@@ -92,6 +95,25 @@ internal class VirtualPair private constructor(
     ) {
         dropping[end] = count
     }
+
+    private val held = mapOf(End.Client to ArrayList<InFlight>(), End.Server to ArrayList())
+    private val holding = HashSet<End>()
+
+    /** The link holds what [end] sends from now on until [release]. */
+    fun hold(end: End) {
+        holding += end
+    }
+
+    /** What [end] sent while held leaves now, in order, and arrives together: one receive batch at the other end. */
+    fun release(end: End) {
+        holding -= end
+        val arrives = clock.at.value + oneWay.inWholeNanoseconds
+        for (datagram in held.getValue(end)) inFlight.add(InFlight(arrives, order++, datagram.to, datagram.bytes, datagram.port))
+        held.getValue(end).clear()
+    }
+
+    /** How many datagrams the link holds from [end]. */
+    fun heldFrom(end: End): Int = held.getValue(end).size
 
     /** Datagrams the client's quiche was handed, counted at the client's api. */
     var clientRecvs = 0
@@ -221,7 +243,8 @@ internal class VirtualPair private constructor(
                         is SendTarget.ServerReply -> target.to.port
                         is SendTarget.ConnectedPeer -> if (end == End.Client) serverKey.port else clientKey.port
                     }
-                inFlight.add(InFlight(clock.at.value + oneWay.inWholeNanoseconds, order++, to, bytes, port))
+                val datagram = InFlight(clock.at.value + oneWay.inWholeNanoseconds, order++, to, bytes, port)
+                if (end in holding) held.getValue(end).add(datagram) else inFlight.add(datagram)
             }
             return SendBatchResult.AllTaken
         }
@@ -288,6 +311,7 @@ internal class VirtualPair private constructor(
             tls: QuicTlsConfig = coreTlsConfig(),
             serverConfig: ServerConfig = ServerConfig(),
             delivery: Delivery = Delivery.ToEnd,
+            start: PairStart = PairStart.Established,
             body: suspend CoroutineScope.(VirtualPair) -> Unit,
         ) = runBlocking {
             val api = loadQuicheApi()
@@ -309,6 +333,7 @@ internal class VirtualPair private constructor(
                     )
                 pair.clientKey = pair.client.local
                 pair.client.parts.start()
+                if (start == PairStart.Started) return@runBlocking body(pair)
                 pair.runUntil {
                     pair.client.connection.end() is EdgeEnd.Open &&
                         pair.client.connection.state.value

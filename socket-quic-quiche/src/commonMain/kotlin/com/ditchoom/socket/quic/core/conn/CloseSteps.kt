@@ -75,11 +75,16 @@ internal fun ConnParts.heldAtEnd(how: HoldAtEnd): HeldReads {
     return HeldReads(held, live)
 }
 
-/** At the end: a client's unused ticket goes back, and the end goes into the flight recording. */
+/**
+ * At the end: a handshake that completed in the serve that ends the connection is reported first, so an established
+ * connection is always reported as such before its end; a client's unused ticket goes back, and the end goes into the
+ * flight recording.
+ */
 internal fun ConnParts.recordEnd(
     now: Nanos,
     end: ConnEnd,
 ) {
+    announce(now, slots.paths)
     ticketAtEnd()
     flight.ended(now, end.flightCode(), end.errorCode())
     flight.keepEnded(role, end)
