@@ -5,9 +5,7 @@ import com.ditchoom.socket.quic.core.conn.SendsRefusedWork
 import com.ditchoom.socket.quic.core.demux.ServerPhase
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.Life
-import com.ditchoom.socket.quic.core.sched.SendPort
-import com.ditchoom.socket.quic.core.sched.SendRecord
-import com.ditchoom.socket.quic.core.udp.SendBatch
+import com.ditchoom.socket.quic.core.sched.RefusalNews
 
 /** A place in a loop's socket table: an endpoint, or empty. */
 internal sealed interface LoopSlot {
@@ -57,19 +55,19 @@ internal fun Route.endWith(end: ConnEnd) =
         is Route.Demux -> demux.endAll(end)
     }
 
-/** Sends [send] through [socket]; the network refusing the first datagram it was handed is news a client's connection judges. */
-internal fun Route.flush(
-    socket: SendPort,
-    send: SendBatch,
-) {
-    val before = socket.ledger.view()
-    socket.flush(send)
-    if (before !is SendRecord.Quiet || socket.ledger.view() !is SendRecord.Refused) return
-    when (this) {
-        is Route.Fixed -> conn.submitFromLoop(SendsRefusedWork())
-        is Route.Demux -> Unit
+/**
+ * Loop thread, at each look at a live socket: the news that the network refused the first datagram it was handed, by
+ * the loop's flush, a lane it flushed or a caller's own send, goes to a client's connection to judge.
+ */
+internal fun Route.refused(news: RefusalNews) =
+    when (news) {
+        RefusalNews.None -> Unit
+        RefusalNews.Due ->
+            when (this) {
+                is Route.Fixed -> conn.submitFromLoop(SendsRefusedWork())
+                is Route.Demux -> Unit
+            }
     }
-}
 
 /** Whether an endpoint is still on its loop after a serve. */
 internal enum class Stay { Stays, Left }
