@@ -252,7 +252,7 @@ internal class Turn(
                 is Life.Running, is Life.Over -> Unit
             }
         }
-        if (wrote == Wrote.ClockMismatch) finish(now, c.egress.mismatchEnd())
+        wrote.ends(mismatch = { finish(now, c.egress.mismatchEnd()) }, refused = { finish(now, c.closeRefused(now)) })
         return wrote.collected()
     }
 
