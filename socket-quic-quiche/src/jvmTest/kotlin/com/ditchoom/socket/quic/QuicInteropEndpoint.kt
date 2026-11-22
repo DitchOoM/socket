@@ -293,6 +293,8 @@ private suspend fun QuicScope.serveRequest(
                 .removePrefix("GET")
                 .trim()
                 .trimStart('/')
+        // Ties a request the peer reports giving up on, which it names by path, to the connection that served it.
+        println("REQUEST session=${identity.session.hex} path=/$path")
         val file = www.resolve(path).canonicalFile
         if (!file.path.startsWith(www.canonicalPath) || !file.isFile) {
             stream.reset(0x10C) // H3_REQUEST_REJECTED's value; hq-interop has no status line to send
