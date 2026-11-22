@@ -145,8 +145,9 @@ internal class ServerRig(
     val tokens: Tokens = Tokens.None,
     /** Lanes for threads other than the loop: with none, no caller ever enters a connection. */
     lanes: Int = 0,
+    /** A clock of its own by default, so nothing is paced; one standing in for libquiche's paces by the api's send times. */
+    val clock: VirtualClock = VirtualClock(),
 ) {
-    val clock = VirtualClock()
     val io = BoundedIo(kernelBuffer)
     val poller = FakePoller()
     val loop = loopOver(poller, clock)

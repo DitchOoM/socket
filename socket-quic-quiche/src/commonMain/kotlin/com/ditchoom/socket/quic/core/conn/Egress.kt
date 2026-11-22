@@ -112,7 +112,7 @@ internal class Egress(
         val at = clock.now()
         if (pacer.state(at) == PaceState.Holding) return Wrote.All
         while (out.room() == Room.Open) {
-            one(out, paths, flight, at).fold(done = { return Wrote.All }, wrote = { Unit }, refused = { return refused(it) })
+            one(out, paths, flight, at).fold(done = { return drained(pacer) }, wrote = { Unit }, refused = { return refused(it) })
             when (judged(pacer, at, flight)) {
                 is ClockVerdict.Differs ->
                     when (pacer.response()) {
@@ -121,12 +121,17 @@ internal class Egress(
                     }
                 is ClockVerdict.Unjudged, is ClockVerdict.Pinned, is ClockVerdict.Agrees ->
                     when (pacer.sent(lastDueNanos, at)) {
-                        is Due.Now -> Unit
+                        is Due.Now, is Due.Early -> Unit
                         is Due.Hold -> return Wrote.All
                     }
             }
         }
         return Wrote.BatchFull
+    }
+
+    private fun drained(pacer: Pacer): Wrote {
+        pacer.drained()
+        return Wrote.All
     }
 
     /**
