@@ -579,7 +579,10 @@ jobs:
     needs: natives
     if: ${{ !inputs.natives-only }}
     runs-on: macos-26
-    timeout-minutes: 30
+    # 40: the sum of the separately limited parts (setup, compile 12, tests 20) plus the capture and
+    # upload steps that follow them; a job limit at or below that sum would fire before the step
+    # limits and take the capture with it.
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
@@ -647,9 +650,10 @@ jobs:
               s.close()
           PY
 
-      # The step compiles every JVM module from cold (each backend lane is its own job), then runs
-      # the suite. The limit fires faster than the job timeout and names the step; a genuine hang is
-      # bounded by timeout-minutes: 30 at job level.
+      # Everything the tests need that is not test execution: every JVM module's main and test
+      # classes (each backend lane is its own job, so this compiles from cold) and the staged quiche
+      # natives. It has its own limit, so a slow runner's compile time cannot spend the test step's
+      # budget below. The test step reruns the same tasks and finds them up to date.
       #
       # -PappleTargets=false: this lane builds and runs JVM code only, so no module declares the
       # Apple K/N targets. With them declared, :socket-http3's KSP codec generation (which runs on
@@ -658,6 +662,12 @@ jobs:
       # source sets, so the graph grew by every Apple cinterop, commonizeCInterop,
       # commonizeNativeDistribution and a K/N toolchain download (this job restores no ~/.konan),
       # all ahead of the first test. The K/N, link and publish jobs leave the property unset.
+      - name: Compile the JVM tests and stage the natives (${{ matrix.backend.name }})
+        timeout-minutes: 12
+        run: >-
+          .github/scripts/gradle-retry.sh :socket-quic-quiche:jvmTestClasses :socket-quic-quiche:stageQuicheNativeResources
+          ${{ matrix.backend.args }} -PappleTargets=false --no-configuration-cache ${{ inputs.gradle-args }}
+
       # Marker for the capture window, and a watchdog that jcmd-dumps the Gradle test worker at 15
       # minutes. It does NOT kill: this step's own 20-minute timeout ends it and leaves the job its
       # last 10 minutes for the capture, so the stacks are taken before that kill.
@@ -674,15 +684,20 @@ jobs:
           mode: start
           enabled: ${{ matrix.backend.jfr }}
 
+      # Only executes tests. Its output also goes through gradle-test-progress.py, which keeps a
+      # time-stamped copy so a run that reaches the limit is reported as still progressing (last test
+      # event seconds old) or silent (a test that never ended); see apple-failure-capture.sh.
       - name: Run socket-quic-quiche JVM tests (${{ matrix.backend.name }})
         timeout-minutes: 20
         env:
           # This lane builds its own natives, so nothing in SkipReason can legitimately fire here —
           # and its first inventory confirmed zero. A skip now means the artifact plumbing broke.
           SOCKET_REQUIRE_ALL_TESTS: "1"
-        run: >-
-          .github/scripts/gradle-retry.sh :socket-quic-quiche:jvmTest ${{ matrix.backend.args }} -PappleTargets=false --continue
-          --no-configuration-cache ${{ inputs.gradle-args }}
+        run: |
+          set -o pipefail
+          .github/scripts/gradle-retry.sh :socket-quic-quiche:jvmTest ${{ matrix.backend.args }} -PappleTargets=false --continue \
+            --no-configuration-cache ${{ inputs.gradle-args }} 2>&1 |
+            python3 -I .github/scripts/gradle-test-progress.py stamp "$RUNNER_TEMP/gradle-test-step.log"
 
       # This lane builds its own natives, so a `native-library-unavailable` skip here means the
       # artifact plumbing broke — the case that used to erase ~38 test classes from a green run.

@@ -1506,6 +1506,18 @@ jobs:
               -keystore "$JAVA_HOME/lib/security/cacerts" \
               -storepass changeit -noprompt
 
+      # Everything the tests need that is not test execution: every JVM module's main and test classes
+      # and the staged quiche natives. Its own limit keeps a slow runner's compile time out of the test
+      # step's budget; the test step reruns the same tasks and finds them up to date. The core-dump leg
+      # compiles in a --no-daemon build like its test step, so no daemon with another core ulimit exists.
+      - name: Compile the JVM tests and stage the natives (${{ matrix.leg.name }})
+        timeout-minutes: 12
+        run: |
+          nodaemon=""
+          if [ "${{ matrix.leg.core-dump }}" = "true" ]; then nodaemon="--no-daemon"; fi
+          .github/scripts/gradle-retry.sh :socket-quic-quiche:jvmTestClasses :socket-quic-quiche:stageQuicheNativeResources \
+            ${{ matrix.leg.args }} -PlinuxTargets=false $nodaemon --no-configuration-cache ${{ inputs.gradle-args }}
+
       # Flight Recorder ring on the test worker (`jfr` matrix flag): the FFM leg is traced, the JNI,
       # JDK 17 and JDK 25 legs are not, so the recorder is never the only configuration this lane has run. JNI is
       # traced in checks-tests (above) and FFM here, which is what covers both backends.
@@ -2645,6 +2657,14 @@ jobs:
       # linux-quiche-env, NOT setup-linux-fuzz: this lane is a heap-corruption guard, so it has to
       # run against the SHIPPED libquiche_jni.so/libquiche.so, not a locally rebuilt one (#338).
       - uses: ./.github/actions/linux-quiche-env
+
+      # Everything the tests need that is not test execution (see the same step in quiche-jvm): its own
+      # limit, so compile time is not spent from the test step's budget. --no-daemon like the test step.
+      - name: Compile the JVM tests and stage the natives
+        timeout-minutes: 12
+        run: |
+          .github/scripts/gradle-retry.sh :socket-quic-quiche:jvmTestClasses :socket-quic-quiche:stageQuicheNativeResources \
+            -PquicMallocCheck --no-daemon --no-configuration-cache ${{ inputs.gradle-args }}
 
       # ⚠️ 24, not 8: this is the most deadline-heavy lane in the workflow (QuicConcurrencySoakTests
       # + StaleConnectionDiagnosticTests) and QUIC_TEST_TIME_SCALE=3 triples every `.scaled` budget
