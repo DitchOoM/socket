@@ -8,6 +8,12 @@ import com.ditchoom.buffer.codec.DecodeContext
 import com.ditchoom.buffer.codec.EncodeContext
 import com.ditchoom.buffer.stream.StreamProcessor
 
+/** Why a WebTransport session ended: the application error [code] and human-readable [reason]. */
+data class WebTransportCloseInfo(
+    val code: Int = 0,
+    val reason: String = "",
+)
+
 /**
  * The outcome of parsing one RFC 9297 capsule off the CONNECT/Capsule byte-stream — the pure,
  * side-effect-free result [WebTransportWire.nextCapsule] returns so the framing is unit-testable and

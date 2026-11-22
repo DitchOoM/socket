@@ -1,6 +1,5 @@
 package com.ditchoom.socket.http3
 
-import com.ditchoom.socket.quic.QuicStreamId
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -17,7 +16,7 @@ import kotlin.test.assertFailsWith
  * well: it proves the two ends agree, which this cannot.
  */
 class QpackDecoderStreamTests {
-    private val streamId = QuicStreamId(0)
+    private val streamId = Http3StreamId(0)
 
     @Test
     fun anAcknowledgmentImplicitlyCoversItsInsertionsSoNoIncrementFollows() =
@@ -62,13 +61,13 @@ class QpackDecoderStreamTests {
             // Sections are acknowledged in decode order, not Required-Insert-Count order, so a later
             // ack can carry a SMALLER count. Taking it would re-report insertions the peer already
             // knows about on the next increment.
-            stream.acknowledgeSection(QuicStreamId(4), InsertCount(2))
+            stream.acknowledgeSection(Http3StreamId(4), InsertCount(2))
             stream.reportInsertsUpTo(InsertCount(5))
 
             assertEquals(
                 listOf<QpackDecoderInstruction>(
                     QpackDecoderInstruction.SectionAck(streamId),
-                    QpackDecoderInstruction.SectionAck(QuicStreamId(4)),
+                    QpackDecoderInstruction.SectionAck(Http3StreamId(4)),
                 ),
                 stream.written,
             )

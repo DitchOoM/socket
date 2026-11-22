@@ -13,7 +13,6 @@ import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.pool.ThreadingMode
 import com.ditchoom.buffer.stream.StreamProcessor
-import com.ditchoom.socket.quic.QuicStreamId
 import kotlinx.coroutines.test.runTest
 import kotlin.random.Random
 import kotlin.test.Test
@@ -135,7 +134,7 @@ class Http3DecoderInvariantFuzzTests {
                     QpackDecoder(
                         maxCapacity = 0,
                         RecordingQpackDecoderStream(),
-                    ).decodeSection(bufferOf(wire), streamId = QuicStreamId(0L), scratchPool = null)
+                    ).decodeSection(bufferOf(wire), streamId = Http3StreamId(0L), scratchPool = null)
                 }
             }
         }

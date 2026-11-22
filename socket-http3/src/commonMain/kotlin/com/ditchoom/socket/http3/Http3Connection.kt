@@ -16,7 +16,6 @@ import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicScope
 import com.ditchoom.socket.quic.QuicStreamException
-import com.ditchoom.socket.quic.QuicStreamId
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
@@ -412,7 +411,7 @@ class Http3Connection private constructor(
                         Http3Violation.StreamEndedBeforeHeaders(Http3FrameContext.BEFORE_CONNECT_RESPONSE_HEADERS),
                     )
                 is Http3Frame.Headers ->
-                    return parseStatus(decoder.decodeSection(frame.encodedFieldSection, stream.streamId, pool))
+                    return parseStatus(decoder.decodeSection(frame.encodedFieldSection, stream.streamId.toHttp3StreamId(), pool))
                 // GREASE/unknown frames are ignored (RFC 9114 §9); a reserved HTTP/2 type is
                 // FRAME_UNEXPECTED. Anything else before HEADERS is an invalid sequence.
                 is Http3Frame.Unknown -> frame.rejectIfReservedHttp2Frame()
@@ -433,7 +432,7 @@ class Http3Connection private constructor(
         val activeEncoder = encoder
         val sectionBuffer =
             if (activeEncoder != null) {
-                activeEncoder.encodeSection(fields, stream.streamId, pool)
+                activeEncoder.encodeSection(fields, stream.streamId.toHttp3StreamId(), pool)
             } else {
                 val sectionSize = (QpackFieldSectionCodec.wireSize(fields, EncodeContext.Empty) as WireSize.Exact).bytes
                 pool.allocate(sectionSize).also {
@@ -478,7 +477,7 @@ class Http3Connection private constructor(
     private suspend fun readResponse(stream: QuicByteStream): Http3Response {
         val reader = Http3StreamReader.create(stream, pool)
         // PUSH_PROMISE on a request stream is decoded against this stream's id (RFC 9204 stream context).
-        val onPushPromise: suspend (Http3Frame.PushPromise) -> Unit = { onPushPromiseFrame(it, stream.streamId) }
+        val onPushPromise: suspend (Http3Frame.PushPromise) -> Unit = { onPushPromiseFrame(it, stream.streamId.toHttp3StreamId()) }
         try {
             return readResponseHead(stream, reader, onPushPromise)
         } catch (t: Throwable) {
@@ -507,7 +506,7 @@ class Http3Connection private constructor(
                         Http3Violation.StreamEndedBeforeHeaders(Http3FrameContext.BEFORE_RESPONSE_HEADERS),
                     )
                 is Http3Frame.Headers -> {
-                    val streamId = stream.streamId
+                    val streamId = stream.streamId.toHttp3StreamId()
                     val decoded = decoder.decodeSection(frame.encodedFieldSection, streamId, pool)
                     val status = parseStatus(decoded)
                     val headers = decoded.filterNot { it.name.startsWith(":") }
@@ -1138,7 +1137,7 @@ class Http3Connection private constructor(
      */
     private suspend fun onPushPromiseFrame(
         frame: Http3Frame.PushPromise,
-        requestStreamId: QuicStreamId,
+        requestStreamId: Http3StreamId,
     ) {
         validatePushId(frame.pushId)
         maybeExtendMaxPushId(frame.pushId)
@@ -1155,7 +1154,7 @@ class Http3Connection private constructor(
     /** Decode a PUSH_PROMISE field section into the promised request's pseudo-headers + headers. */
     private suspend fun decodePromisedRequest(
         section: ReadBuffer,
-        streamId: QuicStreamId,
+        streamId: Http3StreamId,
     ): Http3PromisedRequest {
         val fields = decoder.decodeSection(section, streamId, pool)
 

@@ -633,7 +633,11 @@ class Http3ServerConnectionTests {
             val clientEncoder = QpackEncoder(peerMaxCapacity = 4096, peerMaxBlockedStreams = 100) { clientInstructions += it }
             clientEncoder.setCapacity(4096)
             val section =
-                clientEncoder.encodeSection(getPseudoFields + QpackHeaderField("x-after-silence", "applied"), QuicStreamId(0), BufferPool())
+                clientEncoder.encodeSection(
+                    getPseudoFields + QpackHeaderField("x-after-silence", "applied"),
+                    Http3StreamId(0),
+                    BufferPool(),
+                )
             val setCapacity = clientInstructions.first()
             val inserts = clientInstructions.drop(1)
             assertTrue(setCapacity is QpackEncoderInstruction.SetCapacity, "sanity: the encoder announces its capacity first")
@@ -659,7 +663,7 @@ class Http3ServerConnectionTests {
                     silence = 20.seconds,
                     // The client abandoning a section's references (§4.4.2) — nothing for the server to act on
                     // (it has no encoder: the client advertised capacity 0), but the pump must still be reading.
-                    afterSilence = decoderBytes(QpackDecoderInstruction.StreamCancellation(QuicStreamId(0))),
+                    afterSilence = decoderBytes(QpackDecoderInstruction.StreamCancellation(Http3StreamId(0))),
                     stayOpenFor = 1.hours,
                     endsWith = StreamEnding.ConnectionGone(),
                 )
@@ -1046,7 +1050,7 @@ class Http3ServerConnectionTests {
                     clientQpackStream(
                         id = 10,
                         type = Http3StreamType.QPACK_DECODER,
-                        instruction = decoderBytes(QpackDecoderInstruction.SectionAck(QuicStreamId(0))),
+                        instruction = decoderBytes(QpackDecoderInstruction.SectionAck(Http3StreamId(0))),
                     ),
                 )
             },
@@ -1088,7 +1092,7 @@ class Http3ServerConnectionTests {
             val clientEncoder = QpackEncoder(peerMaxCapacity = 4096, peerMaxBlockedStreams = 100) { clientInstructions += it }
             clientEncoder.setCapacity(4096)
             val section =
-                clientEncoder.encodeSection(getPseudoFields + QpackHeaderField("x-dynamic", "referenced"), QuicStreamId(0), BufferPool())
+                clientEncoder.encodeSection(getPseudoFields + QpackHeaderField("x-dynamic", "referenced"), Http3StreamId(0), BufferPool())
             assertTrue(
                 clientInstructions.drop(1).isNotEmpty(),
                 "sanity: the section must reference dynamic-table inserts, or its decode would not block",
@@ -1174,7 +1178,7 @@ class Http3ServerConnectionTests {
             SilentThenSpeakingStream(
                 first = listOf(Http3StreamType.QPACK_DECODER.toInt()),
                 silence = 20.seconds,
-                afterSilence = decoderBytes(QpackDecoderInstruction.StreamCancellation(QuicStreamId(0))),
+                afterSilence = decoderBytes(QpackDecoderInstruction.StreamCancellation(Http3StreamId(0))),
                 endsWith = StreamEnding.ConnectionGone(),
             )
         return runServer(
@@ -1306,7 +1310,7 @@ class Http3ServerConnectionTests {
                 clientQpackStream(
                     id = 10,
                     type = Http3StreamType.QPACK_DECODER,
-                    instruction = decoderBytes(QpackDecoderInstruction.StreamCancellation(QuicStreamId(0))),
+                    instruction = decoderBytes(QpackDecoderInstruction.StreamCancellation(Http3StreamId(0))),
                 ),
             ),
             qpackCapacity = 4096,

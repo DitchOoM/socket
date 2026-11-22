@@ -459,7 +459,7 @@ class Http3ConnectionTests {
                     failure.violation,
                     "the push must fail by the deadline's name, not ${failure.violation}",
                 )
-            assertEquals(QuicStreamId(11), violation.streamId, "the violation must name the stalled push stream")
+            assertEquals(Http3StreamId(11), violation.streamId, "the violation must name the stalled push stream")
             assertEquals(15.seconds, violation.deadline, "the violation must carry the deadline that expired")
             assertEquals(Http3ErrorCode.REQUEST_CANCELLED, failure.errorCode)
             assertEquals(
@@ -838,7 +838,7 @@ class Http3ConnectionTests {
                                 id = 11,
                                 prefix =
                                     listOf(Http3StreamType.QPACK_DECODER.toInt()) +
-                                        decoderBytes(QpackDecoderInstruction.StreamCancellation(QuicStreamId(0))),
+                                        decoderBytes(QpackDecoderInstruction.StreamCancellation(Http3StreamId(0))),
                             ),
                         ),
                     )

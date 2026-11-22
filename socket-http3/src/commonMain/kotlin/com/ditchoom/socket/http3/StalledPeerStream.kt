@@ -37,7 +37,7 @@ internal suspend fun abandonStalledStream(
     cause: TimeoutCancellationException,
 ): Http3StreamException {
     currentCoroutineContext().ensureActive()
-    val failure = Http3StreamException(Http3Violation.PeerStreamDeadlineExpired(stream.streamId, deadline, cause))
+    val failure = Http3StreamException(Http3Violation.PeerStreamDeadlineExpired(stream.streamId.toHttp3StreamId(), deadline, cause))
     stream.resetQuietly(failure.errorCode)
     return failure
 }

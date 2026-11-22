@@ -46,8 +46,8 @@ internal class CriticalStreamGuard {
      * The violation for the reader of this connection's [type] stream having seen end-of-stream.
      *
      * End-of-stream is the peer's FIN and nothing else: a read on a stream whose connection ends without
-     * one — our close, the peer's CONNECTION_CLOSE, an idle timeout — throws the connection's
-     * [com.ditchoom.socket.quic.QuicCloseException] instead, and the routers treat that as the connection
+     * one — our close, the peer's CONNECTION_CLOSE, an idle timeout — throws the transport's close
+     * exception instead, and the routers treat that as the connection
      * ending. So the verdict comes from what the read returned, never from when it returned: RFC 9114
      * §6.2.1 and RFC 9204 §4.2 make closing a critical stream a connection error "at any point".
      *
