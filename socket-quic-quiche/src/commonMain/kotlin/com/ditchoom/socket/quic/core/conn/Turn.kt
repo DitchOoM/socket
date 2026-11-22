@@ -218,11 +218,11 @@ internal class Turn(
         now: Nanos,
         out: SendBatch,
     ): Collected {
-        when (c.handshakeStep(now, paths)) {
-            HandshakeStep.Handshaking, HandshakeStep.JustEstablished, HandshakeStep.Established -> Unit
-            HandshakeStep.DeadlinePassed -> {
-                val end = c.handshakeEnd(now, paths)
-                c.close(CloseChoice.Immediate(QuicError.NoError), end, now)
+        when (val served = c.handshakeStep(now, paths)) {
+            is HandshakeServe.Open -> Unit
+            is HandshakeServe.Over -> {
+                val end = c.handshakeEnd(served, now, paths)
+                c.closeHandshake(end, now)
                 finish(now, end)
                 return Collected.Everything
             }

@@ -88,6 +88,7 @@ internal class ClientParts(
                     w.kept,
                     w.tokens,
                     { bind, prior -> loop.move(endpoint, bind, prior) },
+                    w.access,
                     chainSourceOf(w.options, w.memory.factory()),
                 ),
             address =
