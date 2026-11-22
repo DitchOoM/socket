@@ -76,20 +76,25 @@ internal class Inbound(
 /**
  * Sends a typed stream's encoded frame from its [FrameScratch], straight from the scratch's memory: every byte of it, or
  * its FIN alone, parking while quiche's flow window is full. A frame the caller abandons after quiche took part of it
- * would leave the peer a half frame, so the stream is reset instead.
+ * would leave the peer a half frame, so the stream is reset instead. A send that was to end our side and is abandoned
+ * before quiche took any of it leaves our side open: [reopen] gives the stream's caller its side back, and when the
+ * caller closed meanwhile, which left the FIN to this send, the FIN goes alone.
  */
 @Confined
 internal class Outbound(
     val from: FrameScratch,
     private val abandonedCode: QuicAppErrorCode,
+    private val reopen: () -> SideBack,
 ) : Lane {
     private var end = WriteEnd.More
     private var sent = 0
+    private var fin = Fin.Open
 
     /** Starts the next send: the scratch's frame, ending our side after it when [ending] says so. */
     fun begin(ending: WriteEnd) {
         end = ending
         sent = 0
+        fin = Fin.Open
     }
 
     fun attempt(
@@ -134,7 +139,10 @@ internal class Outbound(
         stream: QuicStreamId,
     ): Moved {
         when (end) {
-            WriteEnd.Finish -> table.sendEnded(stream, Side.Finished)
+            WriteEnd.Finish -> {
+                table.sendEnded(stream, Side.Finished)
+                fin = Fin.Taken
+            }
             WriteEnd.More -> Unit
         }
         return Moved.Done
@@ -144,7 +152,14 @@ internal class Outbound(
     fun abandoned(
         inside: Inside,
         stream: QuicStreamId,
-    ) = cutShort(inside.streams, stream)
+    ) {
+        cutShort(inside.streams, stream)
+        if (end == WriteEnd.More || fin != Fin.Open || sent > 0) return
+        when (reopen()) {
+            SideBack.Reopened -> Unit
+            SideBack.ClosedMeanwhile -> inside.streams.finAlone(stream)
+        }
+    }
 
     private fun cutShort(
         table: StreamTable,
@@ -154,9 +169,13 @@ internal class Outbound(
             table.io.shutdown(stream, ShutdownSide.Write, abandonedCode.value)
             table.sendEnded(stream, Side.Reset)
             sent = 0
+            fin = Fin.Cut
         }
     }
 }
+
+/** Whether a stream's caller got its side back, or had closed the stream meanwhile. */
+internal enum class SideBack { Reopened, ClosedMeanwhile }
 
 /** Resets a stream both ways with [code], inside the connection: the peer stops sending and its sends are refused. */
 internal class ResetWork(
