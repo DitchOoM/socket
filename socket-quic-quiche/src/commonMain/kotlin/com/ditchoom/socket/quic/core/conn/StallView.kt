@@ -1,7 +1,10 @@
 package com.ditchoom.socket.quic.core.conn
 
 import com.ditchoom.socket.quic.QuicStatsRead
+import com.ditchoom.socket.quic.core.life.Life
+import com.ditchoom.socket.quic.core.life.Wire
 import com.ditchoom.socket.quic.core.observe.FlightKind
+import com.ditchoom.socket.quic.core.time.Nanos
 import kotlin.time.Duration
 
 /**
@@ -27,6 +30,17 @@ internal sealed interface QuicheWait {
         val after: Duration,
     ) : QuicheWait
 }
+
+/**
+ * Where a connection's close stands, read off the loop once it is quiet: its [life], the [wire] of its linger, and
+ * the deadline it holds, at [now]. Evidence for a connection that stays routed; never read on a live loop.
+ */
+internal class LingerView(
+    val now: Nanos,
+    val life: Life,
+    val wire: Wire,
+    val deadline: ArmedDeadline,
+)
 
 internal sealed interface ArmedDeadline {
     /** The connection holds no deadline on its loop: nothing will serve it unless a datagram or work arrives. */

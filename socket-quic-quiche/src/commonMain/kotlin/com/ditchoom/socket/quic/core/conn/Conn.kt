@@ -111,6 +111,8 @@ internal class Conn(
     /** Any thread: the bytes one datagram may carry as of the connection's last turn, or 0. */
     fun datagramMaxBytes(): Int = turn.datagramMaxBytes()
 
+    fun lingerView(): LingerView = turn.lingerView(clock.live())
+
     /** Any thread: how many new connection ids the loop should route to this connection, taken once. */
     fun idsWanted(): Int = turn.idsWanted()
 
@@ -182,8 +184,8 @@ internal class Conn(
         turn.expire(clock.now())
     }
 
-    /** Loop thread: the deadline of a connection that ended fell due: the loop serves it, which steps its linger. */
-    internal fun timerFiredAfterEnd() = timerQueued.store(IDLE).also { scheduleServe() }
+    /** Loop thread: an ended connection's deadline fell due: whoever is inside serves its linger again, else the loop. */
+    internal fun timerFiredAfterEnd() = timerQueued.store(IDLE).also { if (owner.leaveWork() == WorkLeft.NobodyInside) scheduleServe() }
 
     private fun touch(): LoopHold {
         if (hold == LoopHold.In) return hold

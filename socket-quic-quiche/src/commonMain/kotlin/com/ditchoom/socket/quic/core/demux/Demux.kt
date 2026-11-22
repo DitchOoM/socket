@@ -2,6 +2,7 @@ package com.ditchoom.socket.quic.core.demux
 
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.core.conn.Collected
+import com.ditchoom.socket.quic.core.conn.LingerView
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.Life
 import com.ditchoom.socket.quic.core.observe.LoopOnly
@@ -54,6 +55,9 @@ internal class Demux(
 
     /** The connection ids routed, spare ids included: read it on the loop, or once the server is quiet. */
     val routes: Int get() = table.size
+
+    /** Once the server is quiet: where each connection still routed stands, for evidence when one stays. */
+    fun routedViews(): List<LingerView> = peers.map { it.conn.lingerView() }
 
     fun phase(): ServerPhase = life.view()
 
