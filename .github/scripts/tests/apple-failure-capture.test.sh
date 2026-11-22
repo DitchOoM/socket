@@ -232,6 +232,49 @@ else
   echo "skip: the ring half needs macOS and a C compiler"
 fi
 
+# ── 13. the budget message: tests still progressing vs a test that never ended ────────────────────
+progress="$here/../gradle-test-progress.py"
+if command -v python3 >/dev/null 2>&1; then
+  mk() { # <file> <epoch-of-last-line> <lines...>: stamps each line 1 s apart, the last at <epoch>
+    local f="$1" end="$2" n i; shift 2; n=$#; i=0; : >"$f"
+    for l in "$@"; do
+      printf '%s %s\n' "$(date -u -r $((end - n + 1 + i)) '+%Y-%m-%dT%H:%M:%S.000Z' 2>/dev/null || date -u -d "@$((end - n + 1 + i))" '+%Y-%m-%dT%H:%M:%S.000Z')" "$l" >>"$f"
+      i=$((i + 1))
+    done
+  }
+  now="$(date +%s)"
+  mk "$work/prog-run.log" $((now - 21)) "TEST SUCCESS a.A.one (5ms)" "TEST START a.A.two" "TEST SUCCESS a.A.two (7ms)" "TEST START a.A.three"
+  mk "$work/prog-stuck.log" $((now - 600)) "TEST SUCCESS a.A.one (5ms)" "TEST START a.A.two" "TEST START a.A.three" "TEST SUCCESS a.A.three (9ms)"
+  out="$(python3 -I "$progress" last "$work/prog-run.log" --now "$now")"
+  expect "progress: a test started 21 s ago is progressing, naming it" "state=progressing age=21 last=START a.A.three unfinished=a.A.three" "$out"
+  out="$(python3 -I "$progress" last "$work/prog-stuck.log" --now "$now")"
+  expect "progress: 600 s of silence is silent, naming the test that never ended" "state=silent age=600 last=SUCCESS a.A.three unfinished=a.A.two" "$out"
+  printf 'no events here\n2026-11-22T16:00:00.000Z Starting a Gradle Daemon\n' >"$work/prog-none.log"
+  out="$(python3 -I "$progress" last "$work/prog-none.log")"
+  expect "progress: no test line is reported as none (no match is not an error)" "state=none" "$out"
+  out="$(printf 'TEST START x.Y.z\nTEST SUCCESS x.Y.z (1ms)\n' | python3 -I "$progress" stamp "$work/stamped.log")"
+  expect "progress/stamp: stdin reaches stdout unchanged" "TEST START x.Y.z" "$out"
+  out="$(python3 -I "$progress" last "$work/stamped.log")"
+  expect "progress/stamp: the stamped copy is readable by last" "state=progressing" "$out"
+
+  # through collect: a fired watchdog is worded by what the stamped log says
+  for kind in run stuck; do
+    mkdir -p "$work/cap13$kind"
+    : >"$work/cap13$kind/marker"; date +%s >"$work/cap13$kind/start.epoch"; : >"$work/cap13$kind/watchdog-fired"
+    out="$(CAPTURE_TEST_PROGRESS_LOG="$work/prog-$kind.log" "$script" collect "$work/cap13$kind" "$work/out13$kind" 2>&1)"
+    case "$kind" in
+      run) expect "budget message: progressing says it is the budget, not a hang" "::error title=Out of time, tests progressing::" "$out" ;;
+      stuck) expect "budget message: silence keeps the hang title with the age and the stuck test" "no test started or finished for 6" "$out"
+             expect "budget message: the stuck test is named" "unfinished test: a.A.two" "$out" ;;
+    esac
+  done
+  mkdir -p "$work/cap13plain"; : >"$work/cap13plain/marker"; date +%s >"$work/cap13plain/start.epoch"; : >"$work/cap13plain/watchdog-fired"
+  out="$(CAPTURE_TEST_PROGRESS_LOG="$work/does-not-exist.log" "$script" collect "$work/cap13plain" "$work/out13plain" 2>&1)"
+  expect "budget message: a job with no stamped log keeps the plain hang message" "::error title=Hang watchdog::a test process was still running at the budget; its stacks are in" "$out"
+else
+  echo "skip: the budget-message half needs python3"
+fi
+
 echo "---"
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]
