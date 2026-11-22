@@ -15,6 +15,7 @@ import com.ditchoom.socket.quic.core.demux.ServerRig.Companion.initial
 import com.ditchoom.socket.quic.core.demux.ServerRig.Companion.peer
 import com.ditchoom.socket.quic.core.edge.closeReasonOf
 import com.ditchoom.socket.quic.core.edge.endedWith
+import com.ditchoom.socket.quic.core.life.CloseChoice
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.sched.SleepPlan
 import java.util.concurrent.CountDownLatch
@@ -152,6 +153,28 @@ class ServerShutdownTests {
     }
 
     @Test
+    fun withNobodyInsideAConnectionWhoseDrainNeverEndsIsToldAtTheCloseLimitBeforeTheDrainBound() {
+        val api =
+            StubQuicheApi().apply {
+                emitOneDatagramOnClose = true
+                streamDataUnacknowledged = true
+            }
+        val rig = ServerRig(api, lanes = 2)
+        rig.io.arrive(initial(Random(12).nextBytes(8)), peer(1))
+        rig.pass(0)
+        rig.demux.beginShutdown()
+        rig.pass(0)
+        rig.pass(CloseChoice.DEFAULT_LIMIT_NANOS - 1)
+        assertEquals(emptyList(), rig.io.events, "the peer has not acknowledged: the graceful close still waits")
+        // Each pass is the loop's own: no caller is inside, and the loop serves the limit when it falls due.
+        rig.pass(CloseChoice.DEFAULT_LIMIT_NANOS)
+        assertEquals(listOf(SENT, CLOSED), rig.io.events.toList(), "the CONNECTION_CLOSE went at the close limit, then the socket closed")
+        assertEquals(ServerPhase.Stopped, rig.demux.phase(), "the server stopped a second before its drain bound")
+        assertEquals(0L, rig.counts.closesUnsettled, "no close was left unsent")
+        assertEquals<List<ConnEnd>>(listOf(ConnEnd.ServerClosed), rig.sinks.single().ended)
+    }
+
+    @Test
     fun aServerWithNoConnectionsStopsInThePassItWasClosedIn() {
         val rig = ServerRig(lanes = 2)
         rig.demux.beginShutdown()
@@ -196,7 +219,8 @@ class ServerShutdownTests {
     }
 
     private companion object {
-        const val DRAIN_BOUND = 1_000_000_000L
+        /** The drain bound: a graceful close's default limit, and a second for a stalled thread inside. */
+        const val DRAIN_BOUND = CloseChoice.DEFAULT_LIMIT_NANOS + 1_000_000_000L
         const val LANE_BOUND = 1_000_000_000L
     }
 }

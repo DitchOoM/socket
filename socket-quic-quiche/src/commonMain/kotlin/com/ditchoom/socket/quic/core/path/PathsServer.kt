@@ -9,6 +9,7 @@ import com.ditchoom.socket.quic.QuichePathEventType
 import com.ditchoom.socket.quic.QuicheRecvInfo
 import com.ditchoom.socket.quic.ReplySource
 import com.ditchoom.socket.quic.SendTarget
+import com.ditchoom.socket.quic.core.life.PeerAddress
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.life.RetiredId
 import com.ditchoom.socket.quic.core.life.SpareId
@@ -206,6 +207,9 @@ internal class ServerPaths(
         }
         return false
     }
+
+    /** Whether the peer's address is validated: not while a new address of its is (RFC 9000 §8.1, §9.3). */
+    fun address(): PeerAddress = if (validating()) PeerAddress.Unvalidated else PeerAddress.Validated
 
     private fun validating(): Boolean {
         for (i in peers.indices) if (peers[i].check == PeerCheck.Validating) return true

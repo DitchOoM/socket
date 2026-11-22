@@ -15,6 +15,27 @@ import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.pool.ThreadingMode
 import com.ditchoom.socket.TransportConfig
+import com.ditchoom.socket.http3.codec.CriticalStreamType
+import com.ditchoom.socket.http3.codec.HandwrittenHttp3FrameCodec
+import com.ditchoom.socket.http3.codec.Http3ErrorCode
+import com.ditchoom.socket.http3.codec.Http3Frame
+import com.ditchoom.socket.http3.codec.Http3Request
+import com.ditchoom.socket.http3.codec.Http3Setting
+import com.ditchoom.socket.http3.codec.Http3SettingId
+import com.ditchoom.socket.http3.codec.Http3StreamException
+import com.ditchoom.socket.http3.codec.Http3StreamId
+import com.ditchoom.socket.http3.codec.Http3StreamType
+import com.ditchoom.socket.http3.codec.Http3Violation
+import com.ditchoom.socket.http3.codec.QpackDecoder
+import com.ditchoom.socket.http3.codec.QpackDecoderInstruction
+import com.ditchoom.socket.http3.codec.QpackDecoderInstructionCodec
+import com.ditchoom.socket.http3.codec.QpackEncoderInstruction
+import com.ditchoom.socket.http3.codec.QpackEncoderInstructionCodec
+import com.ditchoom.socket.http3.codec.QpackFieldSectionCodec
+import com.ditchoom.socket.http3.codec.QpackHeaderField
+import com.ditchoom.socket.http3.codec.VarIntCodec
+import com.ditchoom.socket.http3.codec.WebTransportFailure
+import com.ditchoom.socket.http3.codec.WebTransportWire
 import com.ditchoom.socket.quic.QuicAppErrorCode
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicCloseException
@@ -459,7 +480,7 @@ class Http3ConnectionTests {
                     failure.violation,
                     "the push must fail by the deadline's name, not ${failure.violation}",
                 )
-            assertEquals(QuicStreamId(11), violation.streamId, "the violation must name the stalled push stream")
+            assertEquals(Http3StreamId(11), violation.streamId, "the violation must name the stalled push stream")
             assertEquals(15.seconds, violation.deadline, "the violation must carry the deadline that expired")
             assertEquals(Http3ErrorCode.REQUEST_CANCELLED, failure.errorCode)
             assertEquals(
@@ -838,7 +859,7 @@ class Http3ConnectionTests {
                                 id = 11,
                                 prefix =
                                     listOf(Http3StreamType.QPACK_DECODER.toInt()) +
-                                        decoderBytes(QpackDecoderInstruction.StreamCancellation(QuicStreamId(0))),
+                                        decoderBytes(QpackDecoderInstruction.StreamCancellation(Http3StreamId(0))),
                             ),
                         ),
                     )

@@ -1,19 +1,17 @@
 package com.ditchoom.socket.quic.core.conn
 
 import com.ditchoom.socket.quic.SendTarget
-import com.ditchoom.socket.quic.core.life.ConnEnd
+import com.ditchoom.socket.quic.core.life.CloseDatagram
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.observe.Confined
 import com.ditchoom.socket.quic.core.observe.ConnCounts
 import com.ditchoom.socket.quic.core.path.Outgoing
 import com.ditchoom.socket.quic.core.path.Sorting
 import com.ditchoom.socket.quic.core.path.Window
-import com.ditchoom.socket.quic.core.stream.QUICHE_ERR_DONE
 import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.udp.Room
 import com.ditchoom.socket.quic.core.udp.SendBatch
-import com.ditchoom.socket.quic.core.udp.Thrown
 
 /** What became of the last datagram quiche wrote: none was written, it is in the batch, or no socket of ours took it. */
 internal enum class LastOut { None, Kept, Dropped }
@@ -39,19 +37,25 @@ internal class Egress(
     private var lastOffset = 0
     private var lastLength = 0
     private var lastTarget: SendTarget = SendTarget.ConnectedPeer
+
+    /** The datagram the write kept before its last, which a close before confirmation writes its Handshake packet in. */
+    private var before = LastOut.None
+    private var beforeOffset = 0
+    private var beforeLength = 0
+    private var beforeTarget: SendTarget = SendTarget.ConnectedPeer
     private var first = FirstOut.NotYet
     private var mismatchOffset = 0L
-    private var refusedCode = 0
+    private val feed = EgressFeed()
 
     /** When quiche wants the last datagram it wrote on the wire, on the loop's clock. */
     private var lastDueNanos = 0L
 
-    /** How a write that ended as [wrote] ends the connection: processing failed with what the write met. */
+    /** How a write that ended as [wrote] ends the connection: with the failure the write met. */
     fun failure(wrote: Wrote): WriteFailure =
         when (wrote) {
             Wrote.All, Wrote.BatchFull -> WriteFailure.None
-            Wrote.ClockMismatch -> WriteFailure.Ends(ConnEnd.ProcessingFailed(Thrown(PacingClockMismatch(mismatchOffset))))
-            Wrote.DatagramRefused -> WriteFailure.Ends(ConnEnd.ProcessingFailed(Thrown(DatagramRefusedByQuiche(refusedCode))))
+            Wrote.ClockMismatch -> WriteFailure.Ends(PacingClockMismatch(mismatchOffset))
+            Wrote.DatagramRefused -> WriteFailure.Ends(DatagramRefusedByQuiche(feed.refusedCode))
         }
 
     /** Whether quiche has written any datagram of this connection, kept or dropped. */
@@ -60,13 +64,28 @@ internal class Egress(
     /** What became of the last datagram quiche wrote in the last write. */
     fun last(): LastOut = last
 
-    /** Where in its batch the last write wrote its last datagram, kept or not; meaningful unless [last] is [LastOut.None]. */
-    fun lastOffset(): Int = lastOffset
+    /**
+     * The datagrams of the close the last write ended with, while [last] is [LastOut.Kept]: its last, and before the
+     * handshake is [confirmation], the long-header datagram before a 1-RTT last, which carries the Handshake packet's copy.
+     */
+    fun closeDatagrams(
+        out: SendBatch,
+        confirmation: Confirmation,
+    ): List<CloseDatagram> {
+        val final = CloseDatagram(lastOffset, lastLength, lastTarget)
+        val split =
+            when (confirmation) {
+                Confirmation.Pending ->
+                    before == LastOut.Kept && longHeader(out, beforeOffset) && !longHeader(out, lastOffset)
+                Confirmation.Confirmed -> false
+            }
+        return if (split) listOf(CloseDatagram(beforeOffset, beforeLength, beforeTarget), final) else listOf(final)
+    }
 
-    fun lastLength(): Int = lastLength
-
-    /** Where the last datagram went, while [last] is [LastOut.Kept]. */
-    fun lastTarget(): SendTarget = lastTarget
+    private fun longHeader(
+        out: SendBatch,
+        offset: Int,
+    ): Boolean = out.storage.byteAt(offset) and LONG_HEADER != 0
 
     /** Writes quiche's output into [out] at once; each time it runs dry, [datagrams] queued to send refill it. */
     fun write(
@@ -76,10 +95,11 @@ internal class Egress(
         datagrams: Datagrams,
     ): Wrote {
         last = LastOut.None
+        before = LastOut.None
         val at = clock.now()
-        if (fed(datagrams, at) == Dry.Refused) return Wrote.DatagramRefused
+        if (feed.fed(datagrams, at) == Dry.Refused) return Wrote.DatagramRefused
         while (out.room() == Room.Open) {
-            when (dry(one(out, paths, flight, at), datagrams, at)) {
+            when (feed.dry(one(out, paths, flight, at), datagrams, at)) {
                 Dry.No -> Unit
                 Dry.Yes -> return Wrote.All
                 Dry.Refused -> return Wrote.DatagramRefused
@@ -101,11 +121,12 @@ internal class Egress(
         datagrams: Datagrams,
     ): Wrote {
         last = LastOut.None
+        before = LastOut.None
         val at = clock.now()
-        if (fed(datagrams, at) == Dry.Refused) return Wrote.DatagramRefused
+        if (feed.fed(datagrams, at) == Dry.Refused) return Wrote.DatagramRefused
         if (pacer.state(at) == PaceState.Holding) return Wrote.All
         while (out.room() == Room.Open) {
-            when (dry(one(out, paths, flight, at), datagrams, at)) {
+            when (feed.dry(one(out, paths, flight, at), datagrams, at)) {
                 Dry.No -> Unit
                 Dry.Yes -> return Wrote.All
                 Dry.Refused -> return Wrote.DatagramRefused
@@ -154,37 +175,6 @@ internal class Egress(
         mismatchOffset = verdict.offsetNanos
     }
 
-    /**
-     * Whether quiche's output ran dry with [written]: it did when quiche wrote nothing, unless it had nothing more to
-     * write and [datagrams] queued to send moved some into quiche, which may now write them.
-     */
-    private fun dry(
-        written: Int,
-        datagrams: Datagrams,
-        at: Nanos,
-    ): Dry =
-        when {
-            written > 0 -> Dry.No.also { datagrams.quicheWrote() }
-            written == QUICHE_ERR_DONE -> fed(datagrams, at)
-            else -> Dry.Yes
-        }
-
-    /** Feeds [datagrams] queued to send into quiche: [Dry.No] when some went, so quiche may have more to write. */
-    private fun fed(
-        datagrams: Datagrams,
-        at: Nanos,
-    ): Dry =
-        when (val refill = datagrams.refill(at)) {
-            is Refill.Moved -> Dry.No
-            is Refill.Nothing -> Dry.Yes
-            is Refill.Refused -> {
-                refusedCode = refill.code
-                Dry.Refused
-            }
-        }
-
-    private enum class Dry { Yes, No, Refused }
-
     private fun one(
         out: SendBatch,
         paths: Paths,
@@ -197,6 +187,10 @@ internal class Egress(
         val written = q.api.connSend(q.handle, out.storage.address + offset, window.bytes, info)
         if (written <= 0) return written
         first = FirstOut.Written
+        before = last
+        beforeOffset = lastOffset
+        beforeLength = lastLength
+        beforeTarget = lastTarget
         lastOffset = offset
         lastLength = written
         lastDueNanos = q.api.sendInfoAtNanos(info)
@@ -281,3 +275,6 @@ private const val UNREAD_AHEAD = 250_000L
 
 /** `AF_INET`'s family as the sockaddr readers report it. */
 private const val V4 = 4
+
+/** The header form bit of a QUIC packet's first byte: set in a long header (RFC 9000 §17.2). */
+private const val LONG_HEADER = 0x80

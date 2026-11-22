@@ -1157,6 +1157,13 @@ public final class com/ditchoom/socket/quic/QuicCloseCircumstance$CallerThreadFa
 	public fun toString ()Ljava/lang/String;
 }
 
+public final class com/ditchoom/socket/quic/QuicCloseCircumstance$Closing : com/ditchoom/socket/quic/QuicCloseCircumstance {
+	public static final field INSTANCE Lcom/ditchoom/socket/quic/QuicCloseCircumstance$Closing;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
 public final class com/ditchoom/socket/quic/QuicCloseCircumstance$Ended : com/ditchoom/socket/quic/QuicCloseCircumstance {
 	public static final field INSTANCE Lcom/ditchoom/socket/quic/QuicCloseCircumstance$Ended;
 	public fun equals (Ljava/lang/Object;)Z
@@ -2175,6 +2182,20 @@ public final class com/ditchoom/socket/quic/QuicOptionRefusal$DatagramMaxAgeNotP
 	public fun equals (Ljava/lang/Object;)Z
 	public final fun getAge-UwyO8pc ()J
 	public fun getOption ()Lcom/ditchoom/socket/quic/QuicOptionName;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/quic/QuicOptionRefusal$DatagramSendQueueTooShort : com/ditchoom/socket/quic/QuicOptionRefusal {
+	public fun <init> (II)V
+	public final fun component1 ()I
+	public final fun component2 ()I
+	public final fun copy (II)Lcom/ditchoom/socket/quic/QuicOptionRefusal$DatagramSendQueueTooShort;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/quic/QuicOptionRefusal$DatagramSendQueueTooShort;IIILjava/lang/Object;)Lcom/ditchoom/socket/quic/QuicOptionRefusal$DatagramSendQueueTooShort;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getMinimum ()I
+	public fun getOption ()Lcom/ditchoom/socket/quic/QuicOptionName;
+	public final fun getSendQueueLen ()I
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
 }

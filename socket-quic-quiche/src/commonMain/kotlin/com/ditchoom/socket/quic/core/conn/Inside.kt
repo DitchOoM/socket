@@ -2,11 +2,10 @@ package com.ditchoom.socket.quic.core.conn
 
 import com.ditchoom.socket.quic.DeadlineFired
 import com.ditchoom.socket.quic.PathKey
-import com.ditchoom.socket.quic.PeerCertPosition
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicStatsRead
 import com.ditchoom.socket.quic.Rearmable
-import com.ditchoom.socket.quic.core.life.CloseHow
+import com.ditchoom.socket.quic.core.life.CloseChoice
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.ConnLife
 import com.ditchoom.socket.quic.core.life.Life
@@ -34,12 +33,15 @@ internal class Inside(
 
     fun life(): Life = life.view()
 
-    /** Starts the connection's close with [error]; with no error it flushes first, as the connection's close rule says. */
+    /** The close point of a close with [error]: with no error it is the connection's [ConnLife.noError] choice, else immediate. */
     fun close(error: QuicError) =
-        life.close(error, ConnEnd.ByLocal(error), if (error is QuicError.NoError) CloseHow.Graceful else CloseHow.Now, clock.now())
+        c.close(if (error is QuicError.NoError) life.noError else CloseChoice.Immediate(error), ConnEnd.ByLocal(error), clock.now())
 
-    /** Starts the close its server asks for, with no error and no flush. */
-    fun closeForServer() = life.close(QuicError.NoError, ConnEnd.ServerClosed, CloseHow.Now, clock.now())
+    /** The close point of a close that asks for [choice]. */
+    fun close(choice: CloseChoice) = c.close(choice, ConnEnd.ByLocal(errorOf(choice)), clock.now())
+
+    /** The close point of the close its server asks for, as the connection's [ConnLife.noError] choice says. */
+    fun closeForServer() = c.close(life.noError, ConnEnd.ServerClosed, clock.now())
 
     /** A deadline on the connection's loop that runs [action] when an arming falls due; made once, re-armed in place. */
     fun rearmable(action: DeadlineFired): Rearmable = port.rearmable(action)
@@ -81,12 +83,8 @@ internal class Inside(
     /** Writes the connection's flight recording into [sink], in the trace grammar. */
     fun dump(sink: TraceSink) = turn.dump(sink)
 
-    /** Copies the peer's certificate at [position] into [address]; see [Handshake.peerCertificate]. */
-    fun peerCertificate(
-        position: PeerCertPosition,
-        address: Long,
-        capacity: Int,
-    ): Int = c.handshake.peerCertificate(position, address, capacity)
+    /** A client's server passed its check after the handshake: output held for it leaves. */
+    fun serverChecked() = c.serverChecked()
 
     /** The connection's statistics, read now. */
     fun stats(): QuicStatsRead = c.slots.paths.stats()
@@ -104,3 +102,10 @@ internal class Inside(
         )
     }
 }
+
+/** The error the CONNECTION_CLOSE of [choice] carries. */
+private fun errorOf(choice: CloseChoice): QuicError =
+    when (choice) {
+        is CloseChoice.Graceful -> QuicError.NoError
+        is CloseChoice.Immediate -> choice.error
+    }

@@ -267,11 +267,19 @@
       "multiplexing": "pass",
       "rebind-addr": {
         "flaky": {
-          "why": "peer and simulator: at the address rebind msquic sends its one PATH_CHALLENGE to the new address 0.1 ms after the simulator creates the binding, and it is not delivered; msquic only retries challenges to the old address, which the simulator drops as an unknown binding, so the new address is never validated and msquic's anti-amplification limit stops the transfer (run 43553738743, both attempts; captures on both sides)",
+          "why": "peer and simulator: at the address rebind msquic sends its one PATH_CHALLENGE to the new address 0.1 ms after the simulator creates the binding, and it is not delivered; msquic only retries challenges to the old address, which the simulator drops as an unknown binding, so the new address is never validated and msquic's anti-amplification limit stops the transfer (run 43553738743, both attempts; captures on both sides); or the transfer completes, our client exits 0 having closed with NO_ERROR, and the runner fails the test because msquic's first packets on the new paths carried no PATH_CHALLENGE, a check of the server's own packets (run 44974848777: 2 such paths, every download whole)",
           "signature": {
-            "kind": "peer-silent-until-our-timeout",
-            "silence_s": 25,
-            "our_wait_s": 8
+            "kind": "any-of",
+            "signatures": [
+              {
+                "kind": "peer-silent-until-our-timeout",
+                "silence_s": 25,
+                "our_wait_s": 8
+              },
+              {
+                "kind": "peer-server-did-not-challenge-new-path-first"
+              }
+            ]
           }
         }
       },
@@ -664,7 +672,16 @@
       "blackhole": "pass",
       "goodput": "pass",
       "handshake": "pass",
-      "handshakecorruption": "pass",
+      "handshakecorruption": {
+        "flaky": {
+          "why": "peer and simulator: our request is delivered and acknowledged, the xquic server sends its response three times on its inflated PTO (5.5 s, 11.4 s, 23.2 s after the request) and the simulator loses all three; our client, every packet of its own acknowledged and HANDSHAKE_DONE received (RFC 9002 6.2.2.1 leaves the next move to the server), hears nothing more and idles out 30 s after its last receipt",
+          "signature": {
+            "kind": "peer-move-never-reached-us",
+            "ended_by": "our-idle-timeout",
+            "idle_s": 30
+          }
+        }
+      },
       "handshakeloss": {
         "flaky": {
           "why": "peer and simulator: one lost ACK of ours made the xquic server take its first RTT sample from our probe 3 s later, so its next probe timeouts were 10 s and 20 s; its one re-send of the Handshake flight inside our 30 s handshake limit was lost, and our client, every packet of its own acknowledged and nothing in flight (RFC 9002 6.2.2.1 leaves the next move to the server), heard nothing from 4.4 s until its timeout at 34.4 s (run 44433727770, both attempts; server log: PTO 10.2 s then 20.4 s, re-sends at 14.3 s and 34.7 s)",
@@ -749,7 +766,11 @@
     },
     "mvfst": {
       "active-migration": {
-        "known-failure": "unclassified: four moves, then NoSpareConnectionId at mvfst limit 5 from the #904 prediction (mvfst retires nothing unasked); whether mvfst could hold a fifth path is untested"
+        "flaky": {
+          "why": "peer: mvfst decides it by whether it retires an id of ours unasked. When it retires none, our client counts mvfst's limit of 5 paths as full after four moves and answers NoSpareConnectionId (run 44963314572: no RETIRE_CONNECTION_ID from mvfst); when it retires one, our client knows mvfst frees the paths it leaves and every move succeeds (run 44963103718: mvfst retired our id 1 at 2.97 s, before any Retire Prior To of ours, and six of six moves succeeded)",
+          "signature": {"kind": "migration-out-of-ids-peer-retired-nothing"},
+          "pass-signature": {"kind": "migration-peer-retired-unasked"}
+        }
       },
       "transfer": "pass"
     },

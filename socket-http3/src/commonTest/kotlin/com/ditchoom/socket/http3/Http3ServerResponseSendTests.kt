@@ -12,6 +12,7 @@ import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.socket.TransportConfig
+import com.ditchoom.socket.http3.codec.QpackFieldSectionCodec
 import com.ditchoom.socket.quic.FinishingWrite
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicStreamId
@@ -78,8 +79,7 @@ class Http3ServerResponseSendTests {
             QuicByteStream(id, stream),
             BufferPool(factory = BufferFactory.Default),
             TransportConfig(),
-            id,
-        ) { fields, _ ->
+        ) { fields ->
             val size = (QpackFieldSectionCodec.wireSize(fields, EncodeContext.Empty) as WireSize.Exact).bytes
             BufferFactory.Default.allocate(size).also {
                 QpackFieldSectionCodec.encode(it, fields, EncodeContext.Empty)

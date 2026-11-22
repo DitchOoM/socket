@@ -9,9 +9,12 @@ import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.observe.Confined
 import com.ditchoom.socket.quic.core.stream.Opened
 import com.ditchoom.socket.quic.core.stream.Retry
+import com.ditchoom.socket.quic.core.stream.SendRefusal
+import com.ditchoom.socket.quic.core.stream.Sender
 import com.ditchoom.socket.quic.core.stream.StreamTable
 import com.ditchoom.socket.quic.core.stream.Streams
 import com.ditchoom.socket.quic.core.stream.Waiter
+import com.ditchoom.socket.quic.core.stream.sender
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
 
@@ -46,20 +49,20 @@ internal class OpenOp(
         }
     }
 
-    /** The cancelling thread: an open not answered yet is answered Cancelled and handed back to the connection. */
+    /**
+     * The cancelling thread: an open not answered yet is answered Cancelled and handed back to the connection,
+     * ahead of anything its caller does once it resumes.
+     */
     private fun cancelled() {
-        when (hand.answer(OpenAnswer.Cancelled)) {
-            Landed.First -> conn.submit(Withdraw(), CallerPlace.HandToLoop)
-            Landed.Late -> Unit
-        }
+        hand.answer(OpenAnswer.Cancelled) { conn.submit(Withdraw(), CallerPlace.HandToLoop) }
     }
 
     // ---- the connection's side, inside ----
 
     override fun run(inside: Inside) =
         guarded(::failed) {
-            when (val state = inside.streams.state) {
-                is Streams.Ended -> return connectionEnded(state.end)
+            when (val sender = inside.streams.sender()) {
+                is Sender.Refused -> return refused(sender.why)
                 is Streams.Open -> Unit
             }
             if (inside.streams.opensWaiting() > 0 || retry(inside.streams) == Retry.Again) inside.streams.waitToOpen(this)
@@ -67,7 +70,15 @@ internal class OpenOp(
 
     override fun retry(table: StreamTable): Retry {
         if (hand.landed(OpenAnswer.Cancelled)) return Retry.Settled
-        return when (table.tryOpen()) {
+        val send =
+            when (val sender = table.sender()) {
+                is Streams.Open -> sender.send
+                is Sender.Refused -> {
+                    refused(sender.why)
+                    return Retry.Settled
+                }
+            }
+        return when (table.tryOpen(send)) {
             Opened.AtLimit -> Retry.Again
             Opened.Opened -> {
                 opened = table.lastOpened().id
@@ -82,6 +93,11 @@ internal class OpenOp(
     }
 
     override fun gone(end: ConnEnd) = connectionEnded(end)
+
+    /** The open came after the close point, or after the end: [why]. */
+    private fun refused(why: SendRefusal) {
+        hand.answer(OpenAnswer.Failed(why.raised(), QuicCloseCircumstance.Ended))
+    }
 
     private fun failed(failure: Exception) {
         hand.answer(OpenAnswer.Failed(Raised.Thrown(failure), QuicCloseCircumstance.Ended))

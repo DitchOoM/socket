@@ -56,7 +56,9 @@ import com.ditchoom.socket.quic.core.loop.jdkViewsOf
 import com.ditchoom.socket.quic.core.pool.FixedPool
 import com.ditchoom.socket.quic.core.pool.MemoryHold
 import com.ditchoom.socket.quic.core.ready.jdkStackOfThisRuntime
+import com.ditchoom.socket.quic.core.sched.CallerLanes
 import com.ditchoom.socket.quic.core.sched.CallerSend
+import com.ditchoom.socket.quic.core.sched.SendRule
 import com.ditchoom.socket.quic.core.testing.FakePoller
 import com.ditchoom.socket.quic.core.testing.VirtualClock
 import com.ditchoom.socket.quic.core.time.WaitResolution
@@ -127,6 +129,8 @@ internal suspend fun replayServer(
         config = config,
         // Like the replay's client, no discovery: its probe on a moved path delays the first echo past the walks' bounds.
         datagramSize = DatagramSize.Configured,
+        // Callers send in place on every host, as on the replay's client and its one lane: a replay runs the same anywhere.
+        sends = SendRule.InPlace,
     )
 
 /**
@@ -209,9 +213,16 @@ internal fun replayClient(
                 MemoryHold(Runnable { }),
                 WaitResolution(1_000_000L),
                 LoopSend(replayBatch(memory)) { SpareMade.Made(replayBatch(memory)) },
-                FixedPool(
-                    1,
-                ) { CallerSend(it, SendBatch(memory.native(DATAGRAM * LANE_DATAGRAMS), BatchLimits(LANE_DATAGRAMS, DATAGRAM), lane = 1)) },
+                CallerLanes.Of(
+                    FixedPool(
+                        1,
+                    ) {
+                        CallerSend(
+                            it,
+                            SendBatch(memory.native(DATAGRAM * LANE_DATAGRAMS), BatchLimits(LANE_DATAGRAMS, DATAGRAM), lane = 1),
+                        )
+                    },
+                ),
                 FixedPool(1) { SessionScratch(it, memory.native(ClientSession.TICKET_BYTES)) },
             ),
             StackSocket.Jdk(JdkSocket(channel), loopIo, SocketBound(local.toPathKey(), GrantedBuffers(SocketBuffers.Default, 0, 0))),

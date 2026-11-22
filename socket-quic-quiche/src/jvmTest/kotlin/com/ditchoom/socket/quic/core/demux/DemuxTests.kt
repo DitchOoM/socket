@@ -129,7 +129,8 @@ class DemuxTests {
 
     @Test
     fun aClosingServerTellsEveryConnectionToCloseThenEndsThemAndStops() {
-        val api = StubQuicheApi()
+        // A close is out once quiche wrote its CONNECTION_CLOSE, as quiche always does.
+        val api = StubQuicheApi().apply { emitOneDatagramOnClose = true }
         val rig = ServerRig(api)
         rig.io.arrive(initial(Random(7).nextBytes(8)), peer(1))
         rig.pass(0)

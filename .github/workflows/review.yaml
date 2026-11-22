@@ -46,6 +46,11 @@ jobs:
           set -euo pipefail
           java scripts/EntryPointIsolationCheck.java --selftest
           java scripts/EntryPointIsolationCheck.java .
+      - name: HTTP3 codec layer names no QUIC type
+        run: |
+          set -euo pipefail
+          java scripts/Http3CodecIsolationCheck.java --selftest
+          java scripts/Http3CodecIsolationCheck.java .
 
   build-linux:
     needs: version
@@ -336,7 +341,9 @@ jobs:
       # and its AGP version comes from gradle/libs.versions.toml (see its settings.gradle.kts).
       - name: Assemble the minSdk 28 consumer app
         run: |
-          ./gradlew -p .ci/android-minsdk-consumer assembleDebug \
+          # Its own build resolves a plugin classpath the main build's warmed cache does not hold, so it fetches
+          # from Central: a 429 there is retried (run 44965408142), anything else fails at once.
+          .github/scripts/gradle-retry.sh -p .ci/android-minsdk-consumer assembleDebug \
             -PsocketVersion="${RESOLVED_VERSION}" \
             -PmavenRepoPath=/tmp/maven-local-merged \
             --no-daemon

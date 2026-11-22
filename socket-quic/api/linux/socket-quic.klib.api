@@ -1511,6 +1511,12 @@ sealed interface com.ditchoom.socket.quic/QuicCloseCircumstance { // com.ditchoo
         final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicCloseCircumstance.CallerThreadFailed.toString|toString(){}[0]
     }
 
+    final object Closing : com.ditchoom.socket.quic/QuicCloseCircumstance { // com.ditchoom.socket.quic/QuicCloseCircumstance.Closing|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicCloseCircumstance.Closing.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicCloseCircumstance.Closing.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicCloseCircumstance.Closing.toString|toString(){}[0]
+    }
+
     final object Ended : com.ditchoom.socket.quic/QuicCloseCircumstance { // com.ditchoom.socket.quic/QuicCloseCircumstance.Ended|null[0]
         final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicCloseCircumstance.Ended.equals|equals(kotlin.Any?){}[0]
         final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicCloseCircumstance.Ended.hashCode|hashCode(){}[0]
@@ -2276,6 +2282,24 @@ sealed interface com.ditchoom.socket.quic/QuicOptionRefusal { // com.ditchoom.so
         final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicOptionRefusal.DatagramMaxAgeNotPositive.equals|equals(kotlin.Any?){}[0]
         final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicOptionRefusal.DatagramMaxAgeNotPositive.hashCode|hashCode(){}[0]
         final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicOptionRefusal.DatagramMaxAgeNotPositive.toString|toString(){}[0]
+    }
+
+    final class DatagramSendQueueTooShort : com.ditchoom.socket.quic/QuicOptionRefusal { // com.ditchoom.socket.quic/QuicOptionRefusal.DatagramSendQueueTooShort|null[0]
+        constructor <init>(kotlin/Int, kotlin/Int) // com.ditchoom.socket.quic/QuicOptionRefusal.DatagramSendQueueTooShort.<init>|<init>(kotlin.Int;kotlin.Int){}[0]
+
+        final val minimum // com.ditchoom.socket.quic/QuicOptionRefusal.DatagramSendQueueTooShort.minimum|{}minimum[0]
+            final fun <get-minimum>(): kotlin/Int // com.ditchoom.socket.quic/QuicOptionRefusal.DatagramSendQueueTooShort.minimum.<get-minimum>|<get-minimum>(){}[0]
+        final val option // com.ditchoom.socket.quic/QuicOptionRefusal.DatagramSendQueueTooShort.option|{}option[0]
+            final fun <get-option>(): com.ditchoom.socket.quic/QuicOptionName // com.ditchoom.socket.quic/QuicOptionRefusal.DatagramSendQueueTooShort.option.<get-option>|<get-option>(){}[0]
+        final val sendQueueLen // com.ditchoom.socket.quic/QuicOptionRefusal.DatagramSendQueueTooShort.sendQueueLen|{}sendQueueLen[0]
+            final fun <get-sendQueueLen>(): kotlin/Int // com.ditchoom.socket.quic/QuicOptionRefusal.DatagramSendQueueTooShort.sendQueueLen.<get-sendQueueLen>|<get-sendQueueLen>(){}[0]
+
+        final fun component1(): kotlin/Int // com.ditchoom.socket.quic/QuicOptionRefusal.DatagramSendQueueTooShort.component1|component1(){}[0]
+        final fun component2(): kotlin/Int // com.ditchoom.socket.quic/QuicOptionRefusal.DatagramSendQueueTooShort.component2|component2(){}[0]
+        final fun copy(kotlin/Int = ..., kotlin/Int = ...): com.ditchoom.socket.quic/QuicOptionRefusal.DatagramSendQueueTooShort // com.ditchoom.socket.quic/QuicOptionRefusal.DatagramSendQueueTooShort.copy|copy(kotlin.Int;kotlin.Int){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicOptionRefusal.DatagramSendQueueTooShort.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicOptionRefusal.DatagramSendQueueTooShort.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicOptionRefusal.DatagramSendQueueTooShort.toString|toString(){}[0]
     }
 
     final class StreamOpenNotBounded : com.ditchoom.socket.quic/QuicOptionRefusal { // com.ditchoom.socket.quic/QuicOptionRefusal.StreamOpenNotBounded|null[0]

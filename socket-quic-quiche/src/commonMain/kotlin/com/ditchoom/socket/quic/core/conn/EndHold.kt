@@ -9,7 +9,7 @@ import com.ditchoom.socket.quic.core.udp.NativeBytes
 import com.ditchoom.socket.quic.core.udp.ReadAddress
 
 /**
- * Reads out everything quiche holds for one stream at the end, up to the peer's FIN or reset, into buffers of the
+ * Reads out everything quiche holds for one stream at the end, up to the peer's FIN or reset (with its code), into buffers of the
  * connection's injected factory. Inside, at the end only; allocates.
  */
 internal class EndHold(
@@ -37,24 +37,14 @@ internal class EndHold(
             } else {
                 chunk.freeNativeMemory()
             }
-            val next =
-                step.fold(
-                    more = { if (it == 0) HoldStep.Open else HoldStep.More },
-                    last = { HoldStep.Finished },
-                    nothingYet = { HoldStep.Open },
-                    gone = { HoldStep.Open },
-                    reset = { HoldStep.Reset },
-                    error = { HoldStep.Open },
-                )
-            when (next) {
-                HoldStep.More -> Unit
-                HoldStep.Open -> return HeldStream(chunks, HeldEnd.Open)
-                HoldStep.Finished -> return HeldStream(chunks, HeldEnd.Finished)
-                HoldStep.Reset -> return HeldStream(chunks, HeldEnd.Reset)
-            }
+            step.fold(
+                more = { if (it == 0) return HeldStream(chunks, HeldEnd.Open) },
+                last = { return HeldStream(chunks, HeldEnd.Finished) },
+                nothingYet = { return HeldStream(chunks, HeldEnd.Open) },
+                gone = { return HeldStream(chunks, HeldEnd.Open) },
+                reset = { code -> return HeldStream(chunks, HeldEnd.Reset(code)) },
+                error = { return HeldStream(chunks, HeldEnd.Open) },
+            )
         }
     }
-
-    /** Where holding a stream stands after one read: more to read, or the peer's side as it stood. */
-    private enum class HoldStep { More, Open, Finished, Reset }
 }

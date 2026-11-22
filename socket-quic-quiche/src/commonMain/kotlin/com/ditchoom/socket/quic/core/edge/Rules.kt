@@ -6,6 +6,7 @@ import com.ditchoom.socket.quic.HandshakePacing
 import com.ditchoom.socket.quic.HandshakePolicy
 import com.ditchoom.socket.quic.LinkClass
 import com.ditchoom.socket.quic.QuicCloseLinger
+import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.RttPrior
 import com.ditchoom.socket.quic.core.conn.AgeBound
@@ -17,7 +18,8 @@ import com.ditchoom.socket.quic.core.conn.KeepAliveRule
 import com.ditchoom.socket.quic.core.conn.Overflow
 import com.ditchoom.socket.quic.core.conn.PtoRule
 import com.ditchoom.socket.quic.core.conn.quicheHandOff
-import com.ditchoom.socket.quic.core.life.CloseRule
+import com.ditchoom.socket.quic.core.life.CloseChoice
+import com.ditchoom.socket.quic.core.life.DrainUntil
 import com.ditchoom.socket.quic.core.time.Span
 import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.transport.NetworkKind
@@ -33,14 +35,14 @@ internal fun serverHandshakeRule(options: QuicOptions): HandshakeRule =
     handshakeRule(options, LinkClass.Unknown, HandshakeRule.RFC9002_PRIOR_NANOS)
 
 /**
- * When a graceful close sends its CONNECTION_CLOSE, from [QuicOptions.closeLinger]: waiting for acknowledgement is
- * bounded by the idle timeout, as a peer that acknowledges nothing for that long would have ended the connection.
+ * What a close with NO_ERROR asks for, from [QuicOptions.closeLinger]: waiting for acknowledgement is limited to
+ * [CloseChoice.DEFAULT_LIMIT_NANOS], waiting for the peer to its bound.
  */
-internal fun closeRuleOf(options: QuicOptions): CloseRule =
+internal fun closeChoiceOf(options: QuicOptions): CloseChoice =
     when (val linger = options.closeLinger) {
-        is QuicCloseLinger.Immediate -> CloseRule.Immediate
-        is QuicCloseLinger.UntilAcknowledged -> CloseRule.UntilAcknowledged(options.idleTimeout.inWholeNanoseconds)
-        is QuicCloseLinger.UntilPeerDone -> CloseRule.UntilPeerDone(linger.bound.inWholeNanoseconds)
+        is QuicCloseLinger.Immediate -> CloseChoice.Immediate(QuicError.NoError)
+        is QuicCloseLinger.UntilAcknowledged -> CloseChoice.Graceful(CloseChoice.DEFAULT_LIMIT_NANOS, DrainUntil.Acknowledged)
+        is QuicCloseLinger.UntilPeerDone -> CloseChoice.Graceful(linger.bound.inWholeNanoseconds, DrainUntil.PeerDone)
     }
 
 /** Whether connections of an endpoint carry RFC 9221 datagrams, from [QuicOptions.datagrams]. */

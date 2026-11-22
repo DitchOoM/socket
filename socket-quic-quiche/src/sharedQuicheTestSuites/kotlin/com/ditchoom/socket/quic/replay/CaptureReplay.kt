@@ -239,7 +239,9 @@ internal class ReplayReport(
  * The peer is modelled: a quiche endpoint that receives what the captured peer received, when it did,
  * and transmits only when the capture shows the peer transmitting. Its packets stand in for the
  * captured peer's in order within each packet number space, so a peer that coalesces differently from
- * quiche is still followed. A captured peer datagram with nothing waiting to stand in for it is a
+ * quiche is still followed. It answers what reached it when the captured peer next sent, not on arrival: the
+ * acknowledgement delay it reports, which our endpoint takes off its round trip, is then the captured peer's.
+ * A captured peer datagram with nothing waiting to stand in for it is a
  * retransmission, and the modelled peer's loss timer is brought forward to produce one. What the
  * captured peer stopped doing, the modelled peer stops doing: its own timers never fire.
  *
@@ -294,6 +296,9 @@ private class CaptureReplay(
     private enum class Side { Ours, Peer }
 
     private enum class PeerState { Answering, Gone }
+
+    /** Whether the modelled peer has answered everything that reached it, or holds input until the captured peer next sends. */
+    private enum class PeerInput { Answered, Held }
 
     /** Whether our endpoint's timers run and its output is taken, or it is still working on what it was handed. */
     private enum class OurEndpoint { Free, Busy }
@@ -374,6 +379,7 @@ private class CaptureReplay(
     private var end: ConnectionEnd = ConnectionEnd.Open
     private var peerHeardFirst: Moment = Moment.Never
     private var peerState = PeerState.Answering
+    private var peerInput = PeerInput.Answered
     private var phase: Phase = Phase.OnCapture
     private var events = 0
     private var ourWork = OurEndpoint.Free
@@ -618,6 +624,8 @@ private class CaptureReplay(
                 is ConnectionEnd.ClosedByUs -> captured.at + schedule.tolerance.after(captured.at - anchor)
                 is ConnectionEnd.ClosedByPeer -> captured.at + schedule.tolerance.after(captured.at - anchor)
             }
+        // The captured peer sent nothing more: what reached the modelled peer since, it reads now.
+        answerHeld()
         free()
         background(until)
         if (phase != Phase.OnCapture || !nothingUncaptured()) return
@@ -688,6 +696,7 @@ private class CaptureReplay(
     private fun runHealthy(healthy: Beyond.HealthyPath) {
         // What the modelled peer was never asked for was never sent; a live peer retransmits by itself.
         standIns.values.forEach { it.clear() }
+        answerHeld()
         while (written.isNotEmpty()) sendHealthy(written.removeFirst().bytes, Side.Peer)
         val remaining = ArrayDeque(schedule.steps.drop(stepNext).filterIsInstance<Step.OursDid>())
         val until = now + healthy.runFor
@@ -793,12 +802,27 @@ private class CaptureReplay(
                 if (peerState == PeerState.Answering) {
                     if (peerHeardFirst == Moment.Never) peerHeardFirst = Moment.At(now)
                     pair.deliver(listOf(datagram), peer)
-                    collectPeer()
-                    readAtPeer()
-                    collectPeer()
+                    when (phase) {
+                        Phase.OnCapture -> peerInput = PeerInput.Held
+                        is Phase.Beyond -> answerAtPeer()
+                    }
                 }
         }
     }
+
+    /** The modelled peer writes what it has to say to what reached it, then reads it, then writes again. */
+    private fun answerAtPeer() {
+        peerInput = PeerInput.Answered
+        collectPeer()
+        readAtPeer()
+        collectPeer()
+    }
+
+    private fun answerHeld() =
+        when (peerInput) {
+            PeerInput.Held -> answerAtPeer()
+            PeerInput.Answered -> Unit
+        }
 
     private fun noteOurState() {
         if (established == Moment.Never && pair.established(ours)) {
@@ -920,6 +944,7 @@ private class CaptureReplay(
         step: Step.PeerSent,
         ordinal: Int,
     ) {
+        answerHeld()
         if (step.fate != Fate.Lost) retransmitFor(step.shape)
         val flights =
             step.shape.map { kind ->
@@ -989,8 +1014,8 @@ private class CaptureReplay(
         const val PRIMARY_ENDPOINT = 0
 
         /**
-         * How far the replay's deadlines may stand from the capture's: its modelled peer's acknowledgement delays and
-         * quiche's own clock reads differ from the capture's by microseconds; a host's stall lasts milliseconds.
+         * How far the replay's deadlines may stand from the capture's: quiche's own clock reads differ from the
+         * capture's by microseconds; a host's stall lasts milliseconds.
          */
         val TIMER_PRECISION = 1.milliseconds
 

@@ -117,8 +117,7 @@ internal suspend fun coreConnect(
                     moved = { setup = it },
                 )
             }
-        val client = started.established(sized.resumption, timeout)
-        client.connection.verifyServer(serverName, sized, HandshakeBudget(timeout, began))
+        val client = started.established(serverName, sized, timeout, HandshakeBudget(timeout, began))
         return client.also { setup = ClientSetup.Established }
     } finally {
         setup.endFailed()
@@ -256,7 +255,12 @@ private suspend fun OnSetupLane.connectOnLane(
     wireClientConnectivityTap(options, built.capture, connection, monitor)
     api.nameQlog(handle, built.capture, QuicRole.Client, QuicSessionId(scidHex))
     api.nameTrafficSecretsLog(handle, built.capture, QuicRole.Client, keyLogDirectory) { QuicSessionId(scidHex) }
-    val started = StartedClient(CoreClient(connection, built.conn, running.loop, SocketReport(socket.granted(), local.port)), offer)
+    val started =
+        StartedClient(
+            CoreClient(connection, built.conn, running.loop, SocketReport(socket.granted(), local.port)),
+            offer,
+            ServerCheck(connection, built.conn, built.chain),
+        )
     // Placing the endpoint hands the memory to the loop, whose release of the connection frees it, whatever happens next.
     moved(ClientSetup.Started(started))
     built.start()

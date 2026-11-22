@@ -42,13 +42,13 @@ internal class CoreStream(
     HalfCloseable,
     Resettable {
     private val use = AtomicReference(Use.Open)
-    private val sizing = ReadSizing()
+    private val streamReads = StreamReads()
 
     override val isOpen: Boolean get() = use.load() != Use.Closed
 
     override suspend fun read(deadline: Duration): ReadResult {
         if (use.load() == Use.Closed) raise(Raised.StreamClosed(id, QuicStreamSide.Read), QuicCloseCircumstance.Ended)
-        return connection.read(id, deadline, sizing)
+        return connection.read(id, deadline, streamReads)
     }
 
     override suspend fun write(

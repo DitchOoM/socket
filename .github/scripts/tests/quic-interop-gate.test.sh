@@ -195,6 +195,48 @@ sed 's/"signal": "SIGSEGV"/"signal": "SIGWHAT"/' "$tmp/sig-exp.json" >"$tmp/bad-
 python3 "$script" judge "$tmp/bad-exp.json" "$tmp/sig" >/dev/null 2>"$tmp/bad.err"
 expect_rc "an unknown signal stops the gate" $? 1
 
+# A flaky cell with a pass signature accepts each of its two outcomes only with the cause the evidence shows: out of
+# ids at the peer's limit when the peer retired nothing unasked, every move when it retired one unasked.
+cat >"$tmp/moves-exp.json" <<'EOF2'
+{"our-client-migrating": {"m": {"transfer": "pass",
+  "active-migration": {"flaky": {"why": "peer: retires unasked or not",
+    "signature": {"kind": "migration-out-of-ids-peer-retired-nothing"},
+    "pass-signature": {"kind": "migration-peer-retired-unasked"}}}}}}
+EOF2
+moves_conn() { # <peer unasked retirements>
+  printf '{"qlog":"q.sqlog","remote_active_connection_id_limit":5,"peer_unasked_retirements":%s}' "$1"
+}
+moves_case() { # <name> <summary> <migrations json> <retirements> <expected rc> <line>
+  rm -rf "$tmp/moves" && mkdir "$tmp/moves"
+  runner "$tmp/moves/our-client-migrating__m.json" transfer:succeeded
+  echo "$2" >"$tmp/moves/our-client-migrating__m.summary"
+  evidence "$tmp/moves/our-client-migrating__m.evidence.json" our-client-migrating m transfer \
+    "{\"connections\":[$(moves_conn "$4")],\"exits\":{},\"migrations\":[$3]}"
+  out="$(python3 "$script" judge "$tmp/moves-exp.json" "$tmp/moves" --stale=fail)"
+  expect_rc "$1" $? "$5"
+  expect "$1 (shown)" "$out" "$6"
+}
+four='MIGRATION-SUMMARY attempted=6 succeeded=4 consecutive=4 firstUnmoved=move 5: NoSpareConnectionId attempts=5'
+four_json='{"attempted":6,"succeeded":4,"first_unmoved":"NoSpareConnectionId"}'
+six='MIGRATION-SUMMARY attempted=6 succeeded=6 consecutive=6 firstUnmoved=none'
+six_json='{"attempted":6,"succeeded":6}'
+moves_case "four moves with no retirement is the failure fingerprint" "$four" "$four_json" 0 0 \
+  "| flaky (signature) | our-client-migrating | m | active-migration | failed | flaky | no unasked RETIRE_CONNECTION_ID from the peer; 4 moves, then NoSpareConnectionId at its active_connection_id_limit 5 |"
+moves_case "four moves after an unasked retirement is a regression" "$four" "$four_json" 1 1 \
+  "| REGRESSION | our-client-migrating | m | active-migration | failed | flaky | failed, but not as migration-out-of-ids-peer-retired-nothing"
+moves_case "every move after an unasked retirement is the pass fingerprint" "$six" "$six_json" 1 0 \
+  "| flaky (pass signature) | our-client-migrating | m | active-migration | succeeded | flaky | the peer retired 1 id(s) of ours unasked; 6 of 6 moves |"
+moves_case "every move with no retirement is a regression" "$six" "$six_json" 0 1 \
+  "| REGRESSION | our-client-migrating | m | active-migration | succeeded | flaky | passed, but not as migration-peer-retired-unasked"
+moves_case "a third outcome is a regression" \
+  'MIGRATION-SUMMARY attempted=6 succeeded=2 consecutive=2 firstUnmoved=move 3: PathNotValidated attempts=1' \
+  '{"attempted":6,"succeeded":2,"first_unmoved":"PathNotValidated"}' 0 1 \
+  "| REGRESSION | our-client-migrating | m | active-migration | failed | flaky | failed, but not as migration-out-of-ids-peer-retired-nothing"
+sed 's/"flaky": {"why"/"known-failure": {"why"/' "$tmp/moves-exp.json" >"$tmp/bad-exp.json"
+python3 "$script" judge "$tmp/bad-exp.json" "$tmp/moves" >/dev/null 2>"$tmp/bad.err"
+expect_rc "a pass signature on a known failure stops the gate" $? 1
+expect "the misplaced pass signature is named" "$(cat "$tmp/bad.err")" "only a flaky cell takes a pass-signature"
+
 # A FRAME_ENCODING_ERROR close counts only against a peer whose source connection id is zero-length.
 cat >"$tmp/cid-exp.json" <<'EOF2'
 {"our-server": {"k": {"handshake": {"known-failure": {"why": "peer: sends NEW_CONNECTION_ID with a zero-length id", "signature": {"kind": "frame-encoding-error-from-zero-length-cid-peer"}}}}}}
@@ -575,6 +617,98 @@ probing="$(hconn a '"tx_after_last_rx":15,"wire":{"port":39352,"peer_sent_after_
 check_kind "our probes lost on the probing connection's port (run 43947308066)" "$idled" our-server "{\"connections\":[$probing],\"peer_unanswered_requests\":1,\"sim_to_peer\":[{\"port\":39352,\"datagrams\":9,\"delivered\":2}]}" Matched
 check_kind "datagrams lost on another connection's port are not the signature" "$idled" our-server "{\"connections\":[$probing],\"peer_unanswered_requests\":1,\"sim_to_peer\":[{\"port\":40001,\"datagrams\":9,\"delivered\":2}]}" NotMatched
 check_kind "a probing connection the captures do not tie to a port is not the signature" "$idled" our-server "{\"connections\":[$(hconn a '"tx_after_last_rx":15')],\"peer_unanswered_requests\":1,\"sim_to_peer\":[{\"port\":39352,\"datagrams\":9,\"delivered\":2}]}" NotMatched
+# xquic's response, sent three times on its inflated PTO and lost each time: our request was acknowledged and our
+# client holds HANDSHAKE_DONE, so the next move is the peer's (two real connections, trimmed to the failing one).
+xa="$fx/our-client-xquic-response-lost-a.evidence.json"
+xb="$fx/our-client-xquic-response-lost-b.evidence.json"
+xf="$fx/our-client-xquic-finished-lost.evidence.json"
+xt="$fx/our-client-xquic-two-attempts.evidence.json"
+check_conn "xquic's response lost on all three of its PTO sends, our request acknowledged (run 45038591312)" "$xa" "$move" 'assert c["bytes_in_flight_before_close"] == 0 and "handshake_done_rx_ms" in c and c["our_streams_unfinished"] == 1 and c["wire"]["peer_delivered_after_last_rx"] == 0 and c["wire"]["peer_packets_unread"] == 0' Matched Matched
+check_conn "xquic's response lost again on a connection of the same shape (run 45037712761)" "$xb" "$move" 'assert c["bytes_in_flight_before_close"] == 0 and "handshake_done_rx_ms" in c' Matched Matched
+check_conn "the same connection with data of ours still in flight before our close" "$xa" "$move" 'c["bytes_in_flight_at_end"] = c["bytes_in_flight_before_close"] = 1200' NotMatched NotMatched
+check_conn "the same connection with a datagram of the peer's that reached us after our last receipt" "$xa" "$move" 'c["wire"]["peer_delivered_after_last_rx"] = 1' NotMatched Matched
+check_conn "the same connection with a packet of the peer's that reached us and was never read" "$xb" "$move" 'c["wire"]["peer_packets_unread"] = 1' NotMatched Matched
+check_conn "the same connection before HANDSHAKE_DONE and any Handshake ACK reached us" "$xa" "$move" 'del c["handshake_done_rx_ms"]; c["rx_handshake_acks"] = 0' NotMatched Matched
+check_conn "the same connection closed by us instead of idling out" "$xa" "$move" 'c["local_closes"] = [{"space": "transport", "code": 0}]' NotMatched Matched
+check_conn "the same connection ended before our idle timeout" "$xa" "$move" 'c["end_ms"] = c["last_rx_ms"] + 29000' NotMatched NotMatched
+check_conn "the same connection whose response arrived whole" "$xa" "$move" 'c["our_streams_unfinished"] = 0' NotMatched Matched
+# Its second attempt: all eight copies of our Finished lost while our 1-RTT datagrams arrived, our probes on time.
+check_conn "the Finished of ours lost on every copy while our probes ran on time (run 45038591312, attempt 2)" "$xf" "$probed" 'assert c["bytes_in_flight_before_close"] > 0 and c["probes_missing_a_space"] == 0 and c["late_probes"] == 0' Matched Matched
+check_conn "that connection is not one where the peer's move was missing: our data was in flight" "$xf" "$move" '' NotMatched NotMatched
+check_conn "that connection with a probe that left a space out" "$xf" "$probed" 'c["probes_missing_a_space"] = 1' NotMatched Matched
+
+# A failed cell is judged on every attempt that failed: a first attempt that shows the signature does not excuse a
+# retry that does not.
+both='{"kind":"any-of","signatures":[{"kind":"peer-move-never-reached-us","ended_by":"our-idle-timeout","idle_s":30},{"kind":"peer-packets-lost-while-we-probed-on-time","ended_by":"our-idle-timeout","idle_s":30}]}'
+attempts_case() { # <name> <signature json> <evidence file> <retry result or none> <python on e and t, or empty> <row text> <exit>
+  rm -rf "$tmp/att" && mkdir "$tmp/att"
+  printf '{"our-client":{"xq":{"handshakecorruption":{"flaky":{"why":"peer and simulator: lost","signature":%s}}}}}' "$2" >"$tmp/att-exp.json"
+  runner "$tmp/att/our-client__xq.json" handshakecorruption:failed
+  [ "$4" = none ] || runner "$tmp/att/our-client__xq.retry" "handshakecorruption:$4"
+  python3 - "$3" "$5" "$tmp/att/our-client__xq.evidence.json" <<'PY'
+import json, sys
+e = json.load(open(sys.argv[1]))
+e["peer"] = "xq"
+t = e["tests"]["handshakecorruption"]
+exec(sys.argv[2])
+json.dump(e, open(sys.argv[3], "w"))
+PY
+  local out rc
+  out="$(python3 "$script" judge "$tmp/att-exp.json" "$tmp/att")"
+  rc=$?
+  expect_rc "$1: exit" "$rc" "$7"
+  expect "$1" "$out" "$6"
+}
+move_only='{"kind":"peer-move-never-reached-us","ended_by":"our-idle-timeout","idle_s":30}'
+attempts_case "one failed attempt that shows the signature is accepted" "$move_only" "$xa" none '' \
+  "| flaky (signature) | our-client | xq | handshakecorruption | failed | flaky | quiche-client-b3343f80e8af00001784df4e5e4c4627.sqlog: everything of ours acknowledged" 0
+attempts_case "one failed attempt that does not show the signature is a regression" "$move_only" "$xa" none 't["connections"][0]["wire"]["peer_delivered_after_last_rx"] = 1' \
+  "| REGRESSION | our-client | xq | handshakecorruption | failed | flaky | failed, but not as peer-move-never-reached-us" 1
+attempts_case "two failed attempts that each show a listed signature are accepted" "$both" "$xt" failed '' \
+  "attempt 1: peer-move-never-reached-us: quiche-client-b3343f80e8af00001784df4e5e4c4627.sqlog" 0
+attempts_case "each attempt's own signature is named" "$both" "$xt" failed '' \
+  "attempt 2: peer-packets-lost-while-we-probed-on-time: quiche-client-7893e318b57de01a3a725eaba6620052.sqlog" 0
+attempts_case "a second attempt the signature does not show is a regression though the first shows it" "$move_only" "$xt" failed '' \
+  "| REGRESSION | our-client | xq | handshakecorruption | failed | flaky | failed in attempt 2, but not as peer-move-never-reached-us" 1
+attempts_case "a first attempt the signature does not show is a regression though the second shows it" "$move_only" "$xt" failed \
+  'e["tests"]["handshakecorruption"] = dict(t["retry"], retry=t)' \
+  "| REGRESSION | our-client | xq | handshakecorruption | failed | flaky | failed in attempt 1, but not as peer-move-never-reached-us" 1
+attempts_case "a failed retry with no evidence of it is a regression" "$both" "$xa" failed '' \
+  "| REGRESSION | our-client | xq | handshakecorruption | failed | flaky | no evidence of attempt 2 to check the any-of signature against" 1
+attempts_case "a retry that passed leaves the first attempt's failure as flaky" "$move_only" "$xt" succeeded '' \
+  "| flaky | our-client | xq | handshakecorruption | retried | flaky |" 0
+# The checked-in expectation for xquic's handshakecorruption accepts the two real response-lost connections and
+# nothing that is not the peer's move.
+real_cell() { # <name> <evidence file> <python on e and t> <row text>
+  rm -rf "$tmp/real" && mkdir "$tmp/real"
+  runner "$tmp/real/our-client__xquic.json" handshakecorruption:failed
+  python3 - "$2" "$3" "$tmp/real/our-client__xquic.evidence.json" <<'PY'
+import json, sys
+e = json.load(open(sys.argv[1]))
+t = e["tests"]["handshakecorruption"]
+exec(sys.argv[2])
+json.dump(e, open(sys.argv[3], "w"))
+PY
+  expect "$1" "$(python3 "$script" judge "$here/../../../test-harness/quic-interop/expectations.json" "$tmp/real")" "$4"
+}
+row="| flaky (signature) | our-client | xquic | handshakecorruption | failed | flaky |"
+reg="| REGRESSION | our-client | xquic | handshakecorruption | failed | flaky |"
+real_cell "the expectation accepts the first real connection" "$xa" '' "$row"
+real_cell "the expectation accepts the second real connection" "$xb" '' "$row"
+real_cell "the expectation rejects data of ours in flight" "$xa" 't["connections"][0]["bytes_in_flight_before_close"] = 1200' "$reg"
+real_cell "the expectation rejects a peer datagram that arrived after our last receipt" "$xb" 't["connections"][0]["wire"]["peer_delivered_after_last_rx"] = 1' "$reg"
+real_cell "the expectation rejects a client that never held HANDSHAKE_DONE nor a Handshake ACK" "$xa" 'c = t["connections"][0]; del c["handshake_done_rx_ms"]; c["rx_handshake_acks"] = 0' "$reg"
+real_cell "the expectation rejects the Finished-lost connection of the second attempt" "$xf" '' "$reg"
+
+# The extractor keeps the retry's own record beside the first attempt's, and nothing when there was none.
+python3 -I "$extract" "$tmp/logs2" our-client p "$tmp/ev-retry.json" "$tmp/logs2"
+expect_rc "the extractor reads a retry's logs" $? 0
+expect "the retry's record has the shape of the first attempt's" "$(python3 -c 'import json,sys; t=json.load(open(sys.argv[1]))["tests"]["handshake"]; r=t["retry"]; print(sorted(set(t)-{"retry"}) == sorted(r), len(r["connections"]) == len(t["connections"]), "retry" in r)' "$tmp/ev-retry.json")" "True True False"
+python3 -I "$extract" "$tmp/logs2" our-client p "$tmp/ev-noretry.json" "$tmp/no-such-retry-logs"
+expect "a test with no retry has no retry record" "$(python3 -c 'import json,sys; print(any("retry" in t for t in json.load(open(sys.argv[1]))["tests"].values()))' "$tmp/ev-noretry.json")" "False"
+python3 -I "$extract" "$tmp/logs2" our-client p "$tmp/ev-plain.json"
+expect "the four-argument form is unchanged" "$(python3 -c 'import json,sys; print(any("retry" in t for t in json.load(open(sys.argv[1]))["tests"].values()))' "$tmp/ev-plain.json")" "False"
+
 bad="$(python3 "$script" judge <(echo '{"our-client":{"p":{"handshakeloss":{"flaky":{"why":"x","signature":{"kind":"peer-packets-lost-while-we-probed-on-time","ended_by":"peer-gave-up","idle_s":30}}}}}}') "$tmp/ok" 2>&1 >/dev/null)"
 expect "peer-gave-up takes no idle_s" "$bad" "takes exactly ['ended_by']"
 bad="$(python3 "$script" judge <(echo '{"our-client":{"p":{"handshakeloss":{"flaky":{"why":"x","signature":{"kind":"peer-packets-lost-while-we-probed-on-time","ended_by":"whenever"}}}}}}') "$tmp/ok" 2>&1 >/dev/null)"

@@ -2,7 +2,7 @@ package com.ditchoom.socket.quic.core.conn
 
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicError
-import com.ditchoom.socket.quic.core.life.CloseHow
+import com.ditchoom.socket.quic.core.life.CloseChoice
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.Ending
 import com.ditchoom.socket.quic.core.life.Life
@@ -116,7 +116,7 @@ internal class Turn(
     ) {
         if (c.life.view() is Life.Over) {
             c.flight.datagramIn(now, bytes, 0, length)
-            return c.life.linger.late()
+            return c.life.linger.late(length)
         }
         traced(TraceSection.ConnReceive) {
             try {
@@ -182,27 +182,28 @@ internal class Turn(
     /** Any thread: the connection's datagrams, for the queue a caller offers sends to. */
     fun datagrams(): Datagrams = c.slots.datagrams
 
+    /** Once the loop is quiet: where the connection's close stands at [now]. */
+    fun lingerView(now: Nanos) = LingerView(now, c.life.view(), c.life.linger.wire(), c.timer.armed(now))
+
     fun dump(sink: TraceSink) = c.flight.dump(sink)
 
-    /** Inside: the connection ends with [end], once. The sink publishes the end first, so a resumed caller can read it; then work fails. */
+    /** Inside: the connection ends with [end], once ([ending], then [ended]); what quiche held for reads goes with it. */
     fun finish(
         now: Nanos,
         end: ConnEnd,
     ) {
-        if (c.life.end(end) == Ending.Already) return
-        c.timer.disarm()
-        c.recordEnd(now, end)
+        val first =
+            when (val ending = c.ending(now, end)) {
+                is Ending.First -> ending
+                is Ending.Already -> return
+            }
         val held =
             try {
                 c.heldAtEnd(HoldAtEnd.ReadOut)
             } catch (again: Exception) {
                 c.heldAtEnd(HoldAtEnd.LiveOnly)
             }
-        c.sink.ended(end, held)
-        c.inbox.shut(end) { it.gone(end) }
-        c.streams.endAll(end)
-        c.slots.datagrams.endAll(end)
-        c.flight.toTrace()
+        c.ended(end, held, first.outcome)
     }
 
     /** Inside for good, nobody else can enter: a linger still running is cut, and quiche's memory is freed. */
@@ -221,16 +222,15 @@ internal class Turn(
             HandshakeStep.Handshaking, HandshakeStep.JustEstablished, HandshakeStep.Established -> Unit
             HandshakeStep.DeadlinePassed -> {
                 val end = c.handshakeEnd(now, paths)
-                c.life.close(QuicError.NoError, end, CloseHow.Now, now)
+                c.close(CloseChoice.Immediate(QuicError.NoError), end, now)
                 finish(now, end)
                 return Collected.Everything
             }
         }
-        c.life.flushStep(now)
-        when (c.life.observe()) {
+        when (val quiche = c.life.observe()) {
             LifeStep.Open -> Unit
-            LifeStep.Closed -> {
-                finish(now, paths.endOf(c.network.endOf(c.life.quicheEnd())))
+            LifeStep.Draining, LifeStep.Closed -> {
+                finish(now, c.quicheEnded(now, quiche, paths))
                 return Collected.Everything
             }
         }
@@ -242,13 +242,18 @@ internal class Turn(
         c.ackStep(now).let { if (it != AckStep.Write) return it.collected() }
         val wrote = c.writeOut(out, paths)
         c.wrote(now)
+        if (c.flushStep(now, out, paths) == LifeStep.Closed) {
+            finish(now, c.quicheEnded(now, LifeStep.Closed, paths))
+            return Collected.Everything
+        }
         if (c.life.linger.sending() && c.keepClose(now, out) == CloseSent.Yes) {
             when (val life = c.life.view()) {
-                is Life.Closing -> finish(now, life.end)
+                is Life.Closing -> finish(now, endOf(life))
                 is Life.Running, is Life.Over -> Unit
             }
         }
-        c.egress.failure(wrote).let { if (it is WriteFailure.Ends) finish(now, it.end) }
+        // Our own failure: the peer is told with INTERNAL_ERROR, as for any processing failure.
+        c.egress.failure(wrote).let { if (it is WriteFailure.Ends) fail(now, it.failure) }
         return wrote.collected()
     }
 
@@ -286,7 +291,7 @@ internal class Turn(
         if (c.life.view() is Life.Over) return
         val end = ConnEnd.ProcessingFailed(Thrown(failure))
         try {
-            c.life.close(QuicError.ProcessingFailed, end, CloseHow.Now, now)
+            c.close(CloseChoice.Immediate(QuicError.ProcessingFailed), end, now)
         } catch (late: Exception) {
             failure.addSuppressed(late)
         }

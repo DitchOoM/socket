@@ -78,12 +78,12 @@ internal class DatagramReceiveOp(
         }
     }
 
-    /** The cancelling thread: a receive not answered yet is answered Cancelled and handed back to the connection. */
+    /**
+     * The cancelling thread: a receive not answered yet is answered Cancelled and handed back to the connection,
+     * ahead of anything its caller does once it resumes.
+     */
     private fun cancelled() {
-        when (hand.answer(ReceiveAnswer.Cancelled)) {
-            Landed.First -> conn.submit(Withdraw(), CallerPlace.HandToLoop)
-            Landed.Late -> Unit
-        }
+        hand.answer(ReceiveAnswer.Cancelled) { conn.submit(Withdraw(), CallerPlace.HandToLoop) }
     }
 
     override fun run(inside: Inside) =

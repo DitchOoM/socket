@@ -423,8 +423,11 @@ internal class StubQuicheApi(
 
     override fun connIsClosed(conn: QuicheConn) = closed || (closesOnLocalClose && closeInitiated)
 
-    /** Draining once the close datagram of [emitOneDatagramOnClose] went out, as quiche drains once it sent its close. */
-    override fun connIsDraining(conn: QuicheConn) = closeDatagramEmitted
+    /**
+     * Draining once the close datagram of [emitOneDatagramOnClose] went out, as quiche drains once it sent its close, or
+     * once [peerError] is set, as quiche drains once the peer's close arrived.
+     */
+    override fun connIsDraining(conn: QuicheConn) = closeDatagramEmitted || peerError != null
 
     /** When true, [connIsTimedOut] reports a timeout — drives the IdleTimeout close-reason fallback. */
     @Volatile var timedOut = false

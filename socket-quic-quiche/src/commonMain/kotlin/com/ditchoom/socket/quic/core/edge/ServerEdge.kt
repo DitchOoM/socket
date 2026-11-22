@@ -66,7 +66,7 @@ internal class ServerEdge(
         if (qlogVerdictOf(capture) is OptionVerdict.Refused) counts.qlogRefusedAtAccept()
         build.nameQlog(capture, QuicSessionId(id))
         build.nameTrafficSecretsLog(capture, keyLogDirectory, QuicSessionId(id))
-        val edge = EdgeState(build.alpn, capture, TicketHome.NotKept)
+        val edge = EdgeState(build.alpn, capture, TicketHome.NotKept, ChainHome.NotKept)
         val conn = build.build(edge, capture)
         val scope = CoroutineScope(SupervisorJob())
         val connection =

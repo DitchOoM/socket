@@ -18,8 +18,8 @@ import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import com.ditchoom.socket.http3.WebTransportException as Http3WebTransportException
-import com.ditchoom.socket.http3.WebTransportFailure as Http3WebTransportFailure
 import com.ditchoom.socket.http3.WebTransportOptions as Http3WebTransportOptions
+import com.ditchoom.socket.http3.codec.WebTransportFailure as Http3WebTransportFailure
 
 /**
  * The jvm/android/native WebTransport provider: a [WebTransportSupport.Multiplexed] backed by

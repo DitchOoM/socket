@@ -18,6 +18,7 @@ class StreamTableTests {
     private val api = StubQuicheApi()
     private val q = QuicheConnRef(api, QuicheConn(1L))
     private val table = StreamTable(q, StreamIo(q), QuicRole.Client, testLoopMemory().drains)
+    private val send = (table.state as Streams.Open).send
 
     private class Counting(
         private val answer: Retry,
@@ -37,18 +38,18 @@ class StreamTableTests {
 
     @Test
     fun opensMaterialiseTheNextClientBidiStreamWithAZeroLengthSend() {
-        assertEquals(Opened.Opened, table.tryOpen())
+        assertEquals(Opened.Opened, table.tryOpen(send))
         assertEquals(QuicStreamId(0L), table.lastOpened())
-        assertEquals(Opened.Opened, table.tryOpen())
+        assertEquals(Opened.Opened, table.tryOpen(send))
         assertEquals(QuicStreamId(4L), table.lastOpened())
     }
 
     @Test
     fun anOpenAtThePeersLimitDoesNotSpendTheId() {
         api.connStreamSendResult = QUICHE_ERR_STREAM_LIMIT
-        assertEquals(Opened.AtLimit, table.tryOpen())
+        assertEquals(Opened.AtLimit, table.tryOpen(send))
         api.connStreamSendResult = null
-        table.tryOpen()
+        table.tryOpen(send)
         assertEquals(QuicStreamId(0L), table.lastOpened())
     }
 
@@ -102,7 +103,7 @@ class StreamTableTests {
         assertEquals(listOf(QuicStreamId(5L), QuicStreamId(1L)), incoming, "the peer's streams, out of order, each once")
         for (id in listOf(1L, 5L)) {
             table.receiveEnded(QuicStreamId(id), Side.Stopped)
-            table.sendEnded(QuicStreamId(id), Side.Reset)
+            table.sendEnded(QuicStreamId(id), Side.Reset(QuicAppErrorCode(0L)))
         }
         assertEquals(0, table.liveStreams())
         api.readableStreams.clear()

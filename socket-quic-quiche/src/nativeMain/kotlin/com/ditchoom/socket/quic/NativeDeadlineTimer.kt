@@ -257,14 +257,6 @@ internal fun waitStepFor(remainingMicros: Long): WaitStep =
         WaitStep.Park(minOf(remainingMicros / 2, PARK_FOREVER_MICROS))
     }
 
-internal actual fun reportOnThisThread(failure: Throwable) {
-    try {
-        failure.printStackTrace()
-    } catch (_: Throwable) {
-        // Nothing left to tell: the timer thread must survive a failure to report.
-    }
-}
-
 /** Dispatches through [delegate]; every timer armed in it fires on [timer]. */
 @OptIn(InternalCoroutinesApi::class)
 private class TimedDispatcher(

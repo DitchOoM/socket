@@ -25,7 +25,6 @@ import com.ditchoom.socket.quic.QuicDatagramRefused
 import com.ditchoom.socket.quic.QuicDatagramTooLarge
 import com.ditchoom.socket.quic.QuicEngineSpi
 import com.ditchoom.socket.quic.QuicError
-import com.ditchoom.socket.quic.QuicheDriver
 import com.ditchoom.socket.quic.closeReason
 import com.ditchoom.socket.quic.core.conn.CallerPlace
 import com.ditchoom.socket.quic.core.conn.Conn
@@ -38,6 +37,7 @@ import com.ditchoom.socket.quic.core.conn.Offered
 import com.ditchoom.socket.quic.core.conn.QueueLife
 import com.ditchoom.socket.quic.core.conn.RoomWait
 import com.ditchoom.socket.quic.core.conn.RoomWithdraw
+import com.ditchoom.socket.quic.core.conn.maxBytes
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.Life
 import com.ditchoom.socket.quic.core.life.endOf
@@ -45,6 +45,7 @@ import com.ditchoom.socket.quic.core.observe.Published
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 import com.ditchoom.socket.quic.core.udp.ReadAddress
 import com.ditchoom.socket.quic.core.udp.Thrown
+import com.ditchoom.socket.quic.quicheCapabilities
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.concurrent.atomics.AtomicInt
@@ -96,9 +97,9 @@ internal class CoreDatagramChannel(
     override val localAddress: LocalAddress = LocalAddress.Unknown
 
     override val capabilities: DatagramCapabilities =
-        DatagramCapabilities(requiresNativeMemoryBuffers = QuicheDriver.capabilities.requiresNativeMemoryBuffers)
+        DatagramCapabilities(requiresNativeMemoryBuffers = quicheCapabilities.requiresNativeMemoryBuffers)
 
-    override val maxWritableSize: Int get() = conn.datagramMaxBytes()
+    override val maxWritableSize: Int get() = conn.datagrams().maxBytes()
 
     /** Queues [payload]'s remaining bytes as one datagram; [payload] is the caller's again, unmoved, when this returns. */
     fun send(payload: ReadBuffer): DatagramSend = queue(payload, 0, payload)
@@ -124,7 +125,7 @@ internal class CoreDatagramChannel(
             }
         when (val life = conn.life()) {
             is Life.Running -> Unit
-            is Life.Closing -> return ended(life.end)
+            is Life.Closing -> return ended(endOf(life))
             is Life.Over -> return ended(endOf(life))
         }
         val room = out.room()
@@ -186,7 +187,12 @@ internal class CoreDatagramChannel(
             is DatagramSend.NotSent.QueueFull -> refused(QuicDatagramRefused(DatagramRefusal.QueueFull))
             is DatagramSend.NotSent.TooLarge -> refused(QuicDatagramTooLarge(payload.remaining(), sent.maxBytes))
             is DatagramSend.NotSent.Unavailable.NotNegotiated -> refused(QuicDatagramRefused(DatagramRefusal.NotNegotiated))
-            is DatagramSend.NotSent.Unavailable.ConnectionEnded -> raiseEnded(sent.end, QuicCloseCircumstance.Ended)
+            is DatagramSend.NotSent.Unavailable.ConnectionEnded ->
+                when (val life = conn.life()) {
+                    // Past the close point nothing more is sent, datagrams included.
+                    is Life.Closing -> raise(Raised.PastClose(endOf(life)), QuicCloseCircumstance.Closing)
+                    is Life.Running, is Life.Over -> raiseEnded(sent.end, QuicCloseCircumstance.Ended)
+                }
         }
     }
 

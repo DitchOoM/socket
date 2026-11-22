@@ -10,6 +10,7 @@ import com.ditchoom.socket.quic.QuicheConn
 import com.ditchoom.socket.quic.SendTarget
 import com.ditchoom.socket.quic.StubQuicheApi
 import com.ditchoom.socket.quic.core.conn.Arrival
+import com.ditchoom.socket.quic.core.conn.ChainSource
 import com.ditchoom.socket.quic.core.conn.ClientSession
 import com.ditchoom.socket.quic.core.conn.Conn
 import com.ditchoom.socket.quic.core.conn.ConnAddress
@@ -20,6 +21,7 @@ import com.ditchoom.socket.quic.core.conn.ConnectReport
 import com.ditchoom.socket.quic.core.conn.EarlyReport
 import com.ditchoom.socket.quic.core.conn.FlightArena
 import com.ditchoom.socket.quic.core.conn.FlightSize
+import com.ditchoom.socket.quic.core.conn.HandshakeFate
 import com.ditchoom.socket.quic.core.conn.HeldReads
 import com.ditchoom.socket.quic.core.conn.KeptTicket
 import com.ditchoom.socket.quic.core.conn.LoopMemory
@@ -31,6 +33,7 @@ import com.ditchoom.socket.quic.core.conn.SlotRules
 import com.ditchoom.socket.quic.core.conn.TokenHome
 import com.ditchoom.socket.quic.core.conn.buildConn
 import com.ditchoom.socket.quic.core.conn.freeInfo
+import com.ditchoom.socket.quic.core.life.CloseOutcome
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.loop.Endpoint
@@ -69,6 +72,7 @@ internal class RecordingSink : ConnSink {
     val established = ArrayList<ConnectReport>()
     val incoming = ArrayList<Long>()
     val ended = ArrayList<ConnEnd>()
+    val outcomes = ArrayList<CloseOutcome>()
 
     override fun established(report: ConnectReport) {
         established += report
@@ -91,8 +95,11 @@ internal class RecordingSink : ConnSink {
     override fun ended(
         end: ConnEnd,
         held: HeldReads,
+        outcome: CloseOutcome,
+        handshake: HandshakeFate,
     ) {
         ended += end
+        outcomes += outcome
     }
 }
 
@@ -153,6 +160,7 @@ internal fun testConn(
                 KeptTicket.None,
                 TokenHome.NotKept,
                 NO_MOVES,
+                ChainSource.NotAsked,
             ),
         address =
             ConnAddress(

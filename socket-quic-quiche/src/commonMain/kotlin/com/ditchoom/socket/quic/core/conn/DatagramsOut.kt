@@ -8,6 +8,7 @@ import com.ditchoom.socket.quic.QuicheSendStop
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.Life
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
+import com.ditchoom.socket.quic.core.life.endOf
 import com.ditchoom.socket.quic.core.observe.Confined
 import com.ditchoom.socket.quic.core.observe.ConnCounts
 import com.ditchoom.socket.quic.core.observe.Published
@@ -243,7 +244,7 @@ internal class DatagramSender(
 internal fun ConnParts.datagramsToWrite(): Datagrams =
     when (val now = life.view()) {
         is Life.Running -> slots.datagrams
-        is Life.Closing -> slots.datagrams.closed(now.end)
+        is Life.Closing -> slots.datagrams.closed(endOf(now))
         is Life.Over -> Datagrams.Off
     }
 
