@@ -61,6 +61,40 @@ class ServerLingerTests {
         assertEquals(0, rig.demux.connections, "the ended connection left its routes")
     }
 
+    @Test
+    fun aRepeatThatFallsDueWhileACallerIsInsideIsSentByThatCaller() {
+        val api =
+            StubQuicheApi().apply {
+                emitOneDatagramOnClose = true
+                connTimeout = DRAIN.nanoseconds
+            }
+        val rig = ServerRig(api, lanes = 2)
+        rig.io.arrive(initial(Random(6).nextBytes(8)), peer(1))
+        rig.pass(0)
+        val conn = rig.conns.single()
+        val inside = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        rig.io.onSend = {
+            if (Thread.currentThread().name == CALLER && inside.count > 0) {
+                inside.countDown()
+                release.await()
+            }
+        }
+        val caller = Thread { conn.submit(Closes(), CallerPlace.MayEnter) }
+        caller.name = CALLER
+        caller.start()
+        assertTrue(inside.await(5, TimeUnit.SECONDS), "the caller closed the connection and is sending its close")
+
+        // The first repeat, one probe timeout after the close, falls due while the caller is still inside.
+        rig.pass(PTO)
+        rig.pass(PTO)
+        release.countDown()
+        caller.join(5_000)
+        assertEquals(2, rig.io.sent.size, "the close and its first repeat, the repeat sent by the caller that held the connection")
+        rig.pass(DRAIN + 1)
+        assertIs<Life.Ended>(conn.life(), "the linger ended: ${routedEvidence(rig.demux)}")
+    }
+
     /** Inside: closes the connection at once. */
     private class Closes : ConnWork() {
         override fun run(inside: Inside) = inside.close(QuicError.ApplicationError(1))
@@ -71,5 +105,8 @@ class ServerLingerTests {
     private companion object {
         const val CALLER = "test-caller"
         const val DRAIN = 180_000_000L
+
+        /** A third of the drain: quiche's draining time is three probe timeouts. */
+        const val PTO = DRAIN / 3
     }
 }
