@@ -220,9 +220,9 @@ internal class CoreConnection(
     internal suspend fun read(
         stream: QuicStreamId,
         deadline: Duration,
-        sizing: ReadSizing,
+        streamReads: StreamReads,
     ): ReadResult {
-        val op = ReadOp(stream, deadline, deadlines, conn, edge, bufferFactory, sizing)
+        val op = ReadOp(stream, deadline, deadlines, conn, edge, bufferFactory, streamReads)
         conn.submit(op, placeOf(currentCoroutineContext()))
         return op.answer()
     }

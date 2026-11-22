@@ -5,6 +5,7 @@ package com.ditchoom.socket.quic.core.edge
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.socket.quic.QuicAppErrorCode
 import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.core.observe.Published
 import kotlinx.coroutines.InternalCoroutinesApi
@@ -165,7 +166,10 @@ internal sealed interface ReadAnswer : HandAnswer {
 
     data object End : ReadAnswer
 
-    data object Reset : ReadAnswer
+    /** The peer reset its side of the stream with [code]. */
+    class Reset(
+        val code: QuicAppErrorCode,
+    ) : ReadAnswer
 
     class Failed(
         val failure: OpFailure,

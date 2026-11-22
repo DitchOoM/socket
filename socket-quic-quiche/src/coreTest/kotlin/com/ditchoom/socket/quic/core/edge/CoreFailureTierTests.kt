@@ -62,7 +62,7 @@ class CoreFailureTierTests {
                                 ChainHome.NotKept,
                             ),
                             ThrowingFactory(planted),
-                            ReadSizing(),
+                            StreamReads(),
                         )
                     rig.conn.submit(op)
                     op.answer()

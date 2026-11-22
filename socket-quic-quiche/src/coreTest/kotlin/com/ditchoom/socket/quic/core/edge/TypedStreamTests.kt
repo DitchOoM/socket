@@ -4,6 +4,7 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.flow.HalfCloseable
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.writeFully
+import com.ditchoom.socket.quic.QuicAppErrorCode
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.ScopedRead
 import com.ditchoom.socket.quic.core.loop.LoopSet
@@ -171,6 +172,25 @@ class TypedStreamTests {
                 assertIs<TypedFailure.Oversized>(assertFailsWith<QuicTypedStreamException> { stream.receive() }.failure)
                 assertEquals(ReadResult.Reset, withTimeout(10.seconds) { sawReset.await() })
                 stream.close()
+                client.connection.close(QuicError.NoError)
+            }
+        }
+
+    @Test
+    fun aTypedStreamThePeerResetReadsAsResetWithThePeersCode() =
+        coreTest("TypedStreamTests.aTypedStreamThePeerResetReadsAsResetWithThePeersCode") {
+            withCoreServer(onConnection = { connection ->
+                val stream = connection.acceptStream()
+                stream.read(10.seconds)
+                stream.reset(PEER_RESET_CODE)
+            }) { server ->
+                val client = connectCore(server.port, loops = loops)
+                val stream = client.connection.openTypedStream(NoteCodec)
+                assertIs<PeerReset.NotMet>(stream.peerReset())
+                stream.send(Note(0, "go"))
+                assertEquals<ScopedRead<Note>>(ScopedRead.Reset, withTimeout(10.seconds) { stream.receive() })
+                assertEquals(QuicAppErrorCode(PEER_RESET_CODE), assertIs<PeerReset.Reset>(stream.peerReset()).code)
+                // The peer stopped our side too, so the stream is not finished: the connection's close ends it.
                 client.connection.close(QuicError.NoError)
             }
         }
@@ -350,6 +370,7 @@ class TypedStreamTests {
 
     private companion object {
         const val FRAMES = 24
+        const val PEER_RESET_CODE = 0x10cL
         const val WARM_UP_ID = 1_000
     }
 }
