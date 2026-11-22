@@ -157,16 +157,16 @@ internal class CoreConnection(
 
     override fun streams(): Flow<QuicByteStream> = edge.incoming.consumeAsFlow().map { peerStream(it) }
 
-    /** The close point is this call's place in the connection's order of work; with [QuicError.NoError], graceful. */
+    /** The close point is this call's place in the order of work; once it returns, what no read took is freed. */
     override suspend fun close(error: QuicError) {
         if (!edge.closed.isCompleted) conn.submit(CloseWork(error), CallerPlace.HandToLoop)
-        edge.closed.await()
+        edge.closedByCaller()
     }
 
     /** Closes as [choice] says, returning once the connection ended, with how the close went. */
     internal suspend fun close(choice: CloseChoice): CloseOutcome {
         if (!edge.closed.isCompleted) conn.submit(ChosenCloseWork(choice), CallerPlace.HandToLoop)
-        return edge.closed.await().outcome
+        return edge.closedByCaller().outcome
     }
 
     /** Closes without waiting; for a caller that has already given up on the connection. */

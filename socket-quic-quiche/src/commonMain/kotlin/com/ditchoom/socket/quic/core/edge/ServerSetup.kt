@@ -26,7 +26,6 @@ import com.ditchoom.socket.quic.core.demux.Demux
 import com.ditchoom.socket.quic.core.demux.DemuxScratch
 import com.ditchoom.socket.quic.core.demux.InitialBacklog
 import com.ditchoom.socket.quic.core.demux.ServerConfig
-import com.ditchoom.socket.quic.core.demux.ServerLife
 import com.ditchoom.socket.quic.core.demux.ServerParts
 import com.ditchoom.socket.quic.core.demux.Stateless
 import com.ditchoom.socket.quic.core.demux.Tokens
@@ -241,16 +240,7 @@ internal class ServerSetup(
                 localKey,
             )
         val admission = Admission(api, config.admission, backlog, parts, edge.hooks, hold, ids, counts)
-        val demux =
-            Demux(
-                admission,
-                Stateless(api, tokens, ids, localKey, counts),
-                scratch,
-                loop.port,
-                clock,
-                counts,
-                ServerLife(closeChoiceOf(options)),
-            )
+        val demux = Demux(admission, Stateless(api, tokens, ids, localKey, counts), scratch, loop.port, clock, counts, parts.rules.close)
         val stopped = CompletableDeferred<Unit>()
         val finished =
             Runnable {
