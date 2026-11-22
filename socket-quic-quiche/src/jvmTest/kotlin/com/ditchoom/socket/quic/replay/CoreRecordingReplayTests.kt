@@ -122,7 +122,13 @@ class CoreRecordingReplayTests {
                 }
             for (n in 0 until batch.pending) {
                 val this0 = ordinal++
-                handed += Handed(this0, System.nanoTime(), Thread.currentThread().name, hexOf(batch.storage, batch.offsetOf(n), batch.lengthOf(n)))
+                handed +=
+                    Handed(
+                        this0,
+                        System.nanoTime(),
+                        Thread.currentThread().name,
+                        hexOf(batch.storage, batch.offsetOf(n), batch.lengthOf(n)),
+                    )
                 if (dropped.isEmpty() && this0 >= HANDSHAKE_DATAGRAMS && batch.lengthOf(n) >= DATA) {
                     dropped += this0
                     continue
@@ -215,7 +221,12 @@ class CoreRecordingReplayTests {
         recording: List<TraceEvent>,
         snapshotNanos: Long,
     ): String {
-        val held = recording.filterIsInstance<TraceEvent.DgramOut>().groupingBy { it.payloadHex }.eachCount().toMutableMap()
+        val held =
+            recording
+                .filterIsInstance<TraceEvent.DgramOut>()
+                .groupingBy { it.payloadHex }
+                .eachCount()
+                .toMutableMap()
         val missing =
             link.handed.filter { sent ->
                 val left = held[sent.hex] ?: 0
