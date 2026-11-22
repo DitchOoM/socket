@@ -81,18 +81,18 @@ sealed interface QuicCloseLinger {
 
     /**
      * Hold the CONNECTION_CLOSE until the peer has acknowledged everything the connection wrote on its
-     * streams — every byte and every FIN — or until the connection ends on its own, whichever comes first,
-     * and at most the connection's [QuicOptions.idleTimeout].
+     * streams — every byte and every FIN — or until the connection ends on its own, whichever comes first.
+     * On the core engine it waits at most ten seconds, and a write after the close is refused with
+     * [QuicCloseCircumstance.Closing]; on the legacy driver, at most the connection's
+     * [QuicOptions.idleTimeout].
      *
-     * Unlike [UntilPeerDone]'s fixed bound, this waits exactly as long as delivery takes: a reply on a
-     * path slow or lossy enough to need more than a fixed wait is still delivered whole. The idle timeout
-     * bounds it because a peer that acknowledges nothing for that long would have ended the connection
-     * anyway.
+     * It returns as soon as delivery is done: the limit is a cap for a peer that stops acknowledging,
+     * not a delay.
      */
     data object UntilAcknowledged : QuicCloseLinger
 
     companion object {
-        /** The default: [UntilAcknowledged] — a reply is never cut short by a fixed wait. */
+        /** The default: [UntilAcknowledged]. */
         val Default: QuicCloseLinger = UntilAcknowledged
     }
 }
@@ -263,13 +263,15 @@ data class QuicOptions(
      */
     val streamOpenPolicy: StreamOpenPolicy = StreamOpenPolicy.UntilClosed,
     /**
-     * **Server-side only**: when an accepted connection may send its CONNECTION_CLOSE after the
-     * [QuicScope] handler returns — see [QuicCloseLinger]. Defaults to [QuicCloseLinger.Default]
-     * (linger until the peer has acknowledged everything written, bounded by [idleTimeout]), so a reply
-     * that is slow or lost on the wire is still delivered instead of dying with the connection.
+     * When a connection may send its CONNECTION_CLOSE after a close with [QuicError.NoError] — see
+     * [QuicCloseLinger]. Defaults to [QuicCloseLinger.Default] (linger until the peer has acknowledged
+     * everything written), so a reply that is slow or lost on the wire is still delivered instead of
+     * dying with the connection.
      *
-     * Ignored for the client role, where the application decides when to call
-     * [QuicConnection.close] and nothing closes the connection behind its back.
+     * On the core engine it applies to every such close, a client's and a server's, the close of each
+     * connection at server shutdown included, and waits at most ten seconds (or the
+     * [QuicCloseLinger.UntilPeerDone] bound); server shutdown waits that long plus one second. On the
+     * legacy driver it applies only when a server's handler returns, bounded by [idleTimeout].
      */
     val closeLinger: QuicCloseLinger = QuicCloseLinger.Default,
     /** Maximum UDP payload size (bytes). Must be >= 1200 per RFC 9000. */

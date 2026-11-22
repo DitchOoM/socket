@@ -31,6 +31,7 @@ import com.ditchoom.socket.quic.core.conn.SlotRules
 import com.ditchoom.socket.quic.core.conn.TokenHome
 import com.ditchoom.socket.quic.core.conn.buildConn
 import com.ditchoom.socket.quic.core.conn.freeInfo
+import com.ditchoom.socket.quic.core.life.CloseOutcome
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.loop.Endpoint
@@ -69,6 +70,7 @@ internal class RecordingSink : ConnSink {
     val established = ArrayList<ConnectReport>()
     val incoming = ArrayList<Long>()
     val ended = ArrayList<ConnEnd>()
+    val outcomes = ArrayList<CloseOutcome>()
 
     override fun established(report: ConnectReport) {
         established += report
@@ -91,8 +93,10 @@ internal class RecordingSink : ConnSink {
     override fun ended(
         end: ConnEnd,
         held: HeldReads,
+        outcome: CloseOutcome,
     ) {
         ended += end
+        outcomes += outcome
     }
 }
 

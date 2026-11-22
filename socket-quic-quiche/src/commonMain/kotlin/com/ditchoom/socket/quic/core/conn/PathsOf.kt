@@ -35,6 +35,7 @@ internal fun ConnParts.feed(
 ) = when (val info = slots.paths.recvFrom(from)) {
     is RecvFrom.Info -> {
         slots.ack.received()
+        life.heard()
         ingress.direct(bytes, length, info.recvInfo, flight)
     }
     is RecvFrom.TooManyAddresses -> ingress.refused(length, from, flight)

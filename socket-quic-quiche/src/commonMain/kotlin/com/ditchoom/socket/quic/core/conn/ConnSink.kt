@@ -3,6 +3,7 @@ package com.ditchoom.socket.quic.core.conn
 import com.ditchoom.socket.quic.LinkClass
 import com.ditchoom.socket.quic.QuicResumptionOutcome
 import com.ditchoom.socket.quic.QuicStreamId
+import com.ditchoom.socket.quic.core.life.CloseOutcome
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.RttSample
 import com.ditchoom.socket.quic.core.udp.NativeBytes
@@ -66,9 +67,13 @@ internal interface ConnSink {
         length: Int,
     )
 
-    /** The connection ended with [end]; [held] is what it received that no read returned, for the reads after it. */
+    /**
+     * The connection ended with [end]; [held] is what it received that no read returned, for the reads after it, and
+     * [outcome] how a close asked of it went.
+     */
     fun ended(
         end: ConnEnd,
         held: HeldReads,
+        outcome: CloseOutcome,
     )
 }

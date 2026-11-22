@@ -15,6 +15,7 @@ import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicStreamId
 import com.ditchoom.socket.quic.QuicStreamSide
 import com.ditchoom.socket.quic.core.observe.Published
+import com.ditchoom.socket.quic.core.stream.WriteEnd
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 import com.ditchoom.socket.quic.core.udp.ReadAddress
 import kotlin.concurrent.atomics.AtomicReference
@@ -25,7 +26,10 @@ import kotlin.time.Duration
 private enum class Use {
     Open,
 
-    /** Our FIN is sent; reads continue. */
+    /** A write that ends our side is out: whether it ended it is known once it answers. */
+    Finishing,
+
+    /** Our FIN is sent, or our side was reset; reads continue. */
     SendFinished,
 
     Closed,
@@ -35,7 +39,7 @@ private enum class Use {
 @Published
 internal class CoreStream(
     private val connection: CoreConnection,
-    private val id: QuicStreamId,
+    val id: QuicStreamId,
     override val readPolicy: ReadPolicy,
     override val writePolicy: WritePolicy,
 ) : ByteStream,
@@ -56,17 +60,70 @@ internal class CoreStream(
         deadline: Duration,
     ): BytesWritten {
         if (use.load() != Use.Open) raise(Raised.StreamClosed(id, QuicStreamSide.Write), QuicCloseCircumstance.Ended)
-        val address =
-            when (val at = NativeBytes.addressOf(buffer)) {
-                is ReadAddress.At -> at.address
-                is ReadAddress.NotAddressable -> raise(Raised.NotNative(id, buffer), QuicCloseCircumstance.Ended)
-            }
+        val address = addressOf(buffer)
         if (buffer.remaining() == 0) return BytesWritten(0)
-        return connection.write(id, WriteSource.Bytes(buffer, address), deadline)
+        return connection.submitted(id, WriteSource.Bytes(buffer, address, WriteEnd.More), deadline).answer()
     }
 
+    /**
+     * Writes every byte of [buffer] and ends our side with the last of them, in one send when quiche takes them all:
+     * a request that fits a datagram is one datagram. Reads continue; a write after it fails as after [shutdownSend].
+     * A failure after quiche took part of the bytes resets our side and answers [Finished.Cut]; one before quiche took
+     * any byte raises, and leaves our side open, so a later [close] sends the FIN.
+     */
+    suspend fun writeAndFinish(
+        buffer: ReadBuffer,
+        deadline: Duration,
+    ): Finished {
+        val address = addressOf(buffer)
+        if (!use.compareAndSet(Use.Open, Use.Finishing)) raise(Raised.StreamClosed(id, QuicStreamSide.Write), QuicCloseCircumstance.Ended)
+        return finishing(
+            if (buffer.remaining() ==
+                0
+            ) {
+                WriteSource.FinOnly
+            } else {
+                WriteSource.Bytes(buffer, address, WriteEnd.Finish)
+            },
+            deadline,
+        )
+    }
+
+    /** Sends [source], ending our side, while [use] is [Use.Finishing]; our side then stands where quiche left it. */
+    private suspend fun finishing(
+        source: WriteSource,
+        deadline: Duration,
+    ): Finished {
+        val op = connection.submitted(id, source, deadline)
+        try {
+            return op.finishAnswer()
+        } finally {
+            settled(op.fin())
+        }
+    }
+
+    /** Our side after a finishing write answered; a [close] that came meanwhile left the FIN to it, which goes now. */
+    private fun settled(fin: Fin) {
+        val after =
+            when (fin) {
+                Fin.Taken, Fin.Cut -> Use.SendFinished
+                Fin.Open -> Use.Open
+            }
+        if (use.compareAndSet(Use.Finishing, after)) return
+        when (fin) {
+            Fin.Open -> connection.finishAlone(id)
+            Fin.Taken, Fin.Cut -> Unit
+        }
+    }
+
+    private fun addressOf(buffer: ReadBuffer): Long =
+        when (val at = NativeBytes.addressOf(buffer)) {
+            is ReadAddress.At -> at.address
+            is ReadAddress.NotAddressable -> raise(Raised.NotNative(id, buffer), QuicCloseCircumstance.Ended)
+        }
+
     override suspend fun shutdownSend() {
-        if (use.compareAndSet(Use.Open, Use.SendFinished)) finish()
+        if (use.compareAndSet(Use.Open, Use.Finishing)) finishing(WriteSource.FinOnly, policyDeadline())
     }
 
     override suspend fun close() {
@@ -77,7 +134,7 @@ internal class CoreStream(
                 } finally {
                     connection.abandon(id)
                 }
-            Use.SendFinished -> connection.abandon(id)
+            Use.Finishing, Use.SendFinished -> connection.abandon(id)
             Use.Closed -> Unit
         }
     }
@@ -88,11 +145,12 @@ internal class CoreStream(
     }
 
     private suspend fun finish() {
-        val deadline =
-            when (val policy = writePolicy) {
-                is WritePolicy.Bounded -> policy.deadline
-                is WritePolicy.UntilClosed -> Duration.INFINITE
-            }
-        connection.write(id, WriteSource.FinOnly, deadline)
+        connection.submitted(id, WriteSource.FinOnly, policyDeadline()).answer()
     }
+
+    private fun policyDeadline(): Duration =
+        when (val policy = writePolicy) {
+            is WritePolicy.Bounded -> policy.deadline
+            is WritePolicy.UntilClosed -> Duration.INFINITE
+        }
 }

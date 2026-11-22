@@ -40,6 +40,69 @@ class PacerTests {
         assertEquals(Nanos(hour), sink.earliest())
     }
 
+    /** A new connection has no credit: its first flight is quiche's, held as quiche asks. */
+    @Test
+    fun aConnectionThatHasNotGoneQuietSendsNothingAheadButTheDatagramThatStopsTheWrite() {
+        assertEquals(Due.Now, pacer.sent(atNanos = 0, now = Nanos(0)))
+        assertEquals(Due.Hold, pacer.sent(atNanos = 5 * ms, now = Nanos(0)))
+    }
+
+    /** A quiet connection's datagram due now restores the credit: the burst's datagrams after it go ahead of their times. */
+    @Test
+    fun aQuietConnectionSendsABurstAheadOfQuichesTimesAndIsHeldAtItsLast() {
+        pacer.drained()
+
+        assertEquals(Due.Now, pacer.sent(atNanos = 0, now = Nanos(0)))
+        repeat(Pacer.BURST_DATAGRAMS - 1) { n ->
+            assertEquals(Due.Early, pacer.sent(atNanos = (n + 1) * 5 * ms, now = Nanos(0)), "datagram ${n + 1} goes ahead of its time")
+        }
+        val last = Pacer.BURST_DATAGRAMS * 5 * ms
+        assertEquals(Due.Hold, pacer.sent(atNanos = last, now = Nanos(0)), "the burst's last datagram ahead stops the write")
+        assertEquals(PaceState.Holding, pacer.state(Nanos(last - 2 * ms)))
+        assertEquals(PaceState.Free, pacer.state(Nanos(last)))
+        assertEquals(Due.Hold, pacer.sent(atNanos = last + 5 * ms, now = Nanos(last)), "past the burst, quiche's times hold")
+    }
+
+    /** The credit comes back only once quiche's times caught up with the clock: a quiet connection still ahead gets none. */
+    @Test
+    fun aQuietConnectionWhoseNextDatagramIsStillAheadGetsNoCredit() {
+        pacer.drained()
+        assertEquals(Due.Now, pacer.sent(atNanos = 0, now = Nanos(0)))
+        repeat(Pacer.BURST_DATAGRAMS - 1) { n -> pacer.sent(atNanos = (n + 1) * 5 * ms, now = Nanos(0)) }
+        pacer.drained()
+
+        // Quiet again, but the next datagram is still due after the burst's: nothing of the burst has caught up.
+        assertEquals(Due.Hold, pacer.sent(atNanos = 60 * ms, now = Nanos(1 * ms)))
+    }
+
+    /** A connection that keeps sending, held or not, never goes quiet: a datagram due now does not restore the credit. */
+    @Test
+    fun aDatagramDueNowOnAConnectionThatKeptSendingRestoresNothing() {
+        assertEquals(Due.Hold, pacer.sent(atNanos = 5 * ms, now = Nanos(0)))
+        pacer.drained()
+        assertEquals(PaceState.Holding, pacer.state(Nanos(1 * ms)), "a held connection stays held when quiche has nothing more")
+        assertEquals(PaceState.Free, pacer.state(Nanos(5 * ms)))
+
+        assertEquals(Due.Now, pacer.sent(atNanos = 5 * ms, now = Nanos(5 * ms)))
+        assertEquals(Due.Hold, pacer.sent(atNanos = 10 * ms, now = Nanos(5 * ms)))
+    }
+
+    /** Spent credit stays spent until the connection is quiet and quiche's times are due again. */
+    @Test
+    fun aBurstLeftUnspentKeepsWhatIsLeftAndAQuietDueDatagramRestoresAll() {
+        pacer.drained()
+        assertEquals(Due.Now, pacer.sent(atNanos = 0, now = Nanos(0)))
+        assertEquals(Due.Early, pacer.sent(atNanos = 5 * ms, now = Nanos(0)))
+        pacer.drained()
+
+        // Due now after the quiet: every datagram sent before it is past its time, and the whole burst is back.
+        assertEquals(Due.Now, pacer.sent(atNanos = 100 * ms, now = Nanos(100 * ms)))
+        repeat(Pacer.BURST_DATAGRAMS - 1) { n ->
+            assertEquals(Due.Early, pacer.sent(atNanos = (100 + (n + 1) * 5) * ms, now = Nanos(100 * ms)))
+        }
+        assertEquals(Due.Hold, pacer.sent(atNanos = 160 * ms, now = Nanos(100 * ms)))
+    }
+
     @Test
     fun aFirstStampBetweenTheReadingsAroundItsWriteAgrees() {
         assertEquals(ClockVerdict.Agrees, pacer.judge(atNanos = 5 * ms, before = Nanos(5 * ms), after = Nanos(9 * ms)))

@@ -77,7 +77,12 @@ internal class BoundedIo(
         if (waiting.size >= kernelBuffer) kernelDrops++ else waiting.addLast(Arrival(bytes, from))
     }
 
+    /** Runs at each send, on the sending thread: a test holds a caller inside its connection here. */
+    @Volatile
+    var onSend: () -> Unit = {}
+
     override fun send(batch: SendBatch): SendBatchResult {
+        onSend()
         for (n in 0 until batch.pending) {
             val storage = batch.storage.owner
             storage.setLimit(batch.offsetOf(n) + batch.lengthOf(n))
@@ -140,8 +145,9 @@ internal class ServerRig(
     val tokens: Tokens = Tokens.None,
     /** Lanes for threads other than the loop: with none, no caller ever enters a connection. */
     lanes: Int = 0,
+    /** A clock of its own by default, so nothing is paced; one standing in for libquiche's paces by the api's send times. */
+    val clock: VirtualClock = VirtualClock(),
 ) {
-    val clock = VirtualClock()
     val io = BoundedIo(kernelBuffer)
     val poller = FakePoller()
     val loop = loopOver(poller, clock)
@@ -211,6 +217,7 @@ internal class ServerRig(
             loop.port,
             clock,
             counts,
+            CoreTestRules.close,
         )
     val endpoint =
         Endpoint(

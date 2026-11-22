@@ -2,6 +2,7 @@ package com.ditchoom.socket.quic.core.edge
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.flow.writeFully
+import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicCloseReason
 import com.ditchoom.socket.quic.QuicConnectionState
@@ -23,8 +24,8 @@ import kotlin.time.Duration.Companion.seconds
 
 /**
  * Closing a core connection over a real loopback socket, on every platform: every call still waiting fails with the
- * typed close once the end is published, a write parked on the peer's flow window included, and once the connection's
- * linger is over every buffer it took from the caller's factory is back.
+ * typed close once the end is published, a write parked on the peer's flow window is refused at the close point, and
+ * once the connection's linger is over every buffer it took from the caller's factory is back.
  */
 class CoreCloseTests {
     private val loops = LoopSet(1)
@@ -71,8 +72,8 @@ class CoreCloseTests {
         }
 
     @Test
-    fun aWriteParkedOnThePeersFlowWindowFailsWithTheCloseAndTheCloseReturns() =
-        coreTest("CoreCloseTests.aWriteParkedOnThePeersFlowWindowFailsWithTheCloseAndTheCloseReturns") {
+    fun aWriteParkedOnThePeersFlowWindowIsRefusedAtTheClosePointAndTheCloseReturns() =
+        coreTest("CoreCloseTests.aWriteParkedOnThePeersFlowWindowIsRefusedAtTheClosePointAndTheCloseReturns") {
             val serverRead = CompletableDeferred<Unit>()
             withCoreServer(onConnection = { connection ->
                 // Reads once, then never again: the stream's flow window fills.
@@ -93,9 +94,58 @@ class CoreCloseTests {
                 client.connection.close(QuicError.NoError)
                 val failure = write.await()
                 assertEquals<QuicCloseReason>(QuicCloseReason.ByLocal(QuicError.NoError), failure.reason)
-                assertTrue(failure.endPublished)
+                assertEquals<QuicCloseCircumstance>(QuicCloseCircumstance.Closing, failure.circumstance, "refused at the close point")
             }
         }
+
+    @Test
+    fun streamDataHeldAtThePeersCloseAndNeverReadIsGivenBackOnceTheApplicationClosesTheConnection() =
+        coreTest("CoreCloseTests.streamDataHeldAtThePeersCloseAndNeverReadIsGivenBackOnceTheApplicationClosesTheConnection") {
+            heldAtThePeersClose(read = false)
+        }
+
+    @Test
+    fun streamDataHeldAtThePeersCloseAndReadIsGivenBackOnceTheApplicationClosesTheConnection() =
+        coreTest("CoreCloseTests.streamDataHeldAtThePeersCloseAndReadIsGivenBackOnceTheApplicationClosesTheConnection") {
+            heldAtThePeersClose(read = true)
+        }
+
+    /** The server writes and closes; the client's connection holds what arrived; [read] or not, every buffer comes back. */
+    private suspend fun heldAtThePeersClose(read: Boolean) {
+        val tracked = TrackedFactory()
+        withCoreServer(onConnection = { connection ->
+            connection.openStream().writeFully(
+                BufferFactory
+                    .network()
+                    .allocate(HELD)
+                    .also { it.position(HELD) }
+                    .also { it.resetForRead() },
+                10.seconds,
+            )
+            connection.close(QuicError.NoError)
+        }) { server ->
+            // The loop takes its own memory from the factory of the first connection placed on it: not the tracked one.
+            connectCore(server.port, loops = loops).connection.close(QuicError.NoError)
+            val client = connectCore(server.port, loops = loops, factory = tracked)
+            assertTrue(eventually(within = 10.seconds) { client.connection.end() is EdgeEnd.Ended }, "the server's close arrived")
+            val stream = client.connection.acceptStream()
+            if (read) {
+                var got = 0
+                try {
+                    while (stream.read(10.seconds) { got += it.remaining() } is com.ditchoom.socket.quic.ScopedRead.Data<*>) Unit
+                } catch (closed: QuicCloseException) {
+                    // The server never finished the stream: after what was held, the read meets the close.
+                }
+                assertEquals(HELD, got, "what was held was read")
+            }
+            // The application is done with the connection: what it never read goes back.
+            client.connection.close(QuicError.NoError)
+            assertTrue(
+                eventually(within = 10.seconds) { tracked.live() == 0 },
+                "${tracked.live()} buffers still live once the application closed the connection (read=$read): ${client.conn.life()::class.simpleName}",
+            )
+        }
+    }
 
     @Test
     fun onceItsLingerIsOverAClosedConnectionHasGivenBackEveryBufferItTook() =
@@ -156,10 +206,11 @@ class CoreCloseTests {
             }
         }
 
-    /** How a waiting call failed: its typed reason, and whether its connection's end was already published. */
+    /** How a waiting call failed: its typed reason and circumstance, and whether its connection's end was already published. */
     private class Failure(
         val call: String,
         val reason: QuicCloseReason,
+        val circumstance: QuicCloseCircumstance,
         val endPublished: Boolean,
     )
 
@@ -176,10 +227,11 @@ class CoreCloseTests {
             } catch (closed: QuicCloseException) {
                 closed
             }
-        return Failure(name, thrown.closeReason, connection.state.value is QuicConnectionState.Closed)
+        return Failure(name, thrown.closeReason, thrown.circumstance, connection.state.value is QuicConnectionState.Closed)
     }
 
     private companion object {
+        const val HELD = 8 * 1024
         val PARK = 100.milliseconds
         const val BEYOND_WINDOW = 4 * 1024 * 1024
         const val ROUNDS = 8

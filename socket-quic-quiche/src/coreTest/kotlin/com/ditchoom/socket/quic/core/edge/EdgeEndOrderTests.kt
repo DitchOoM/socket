@@ -6,6 +6,7 @@ import com.ditchoom.socket.quic.QuicCloseReason
 import com.ditchoom.socket.quic.QuicConnectionState
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.core.conn.HeldReads
+import com.ditchoom.socket.quic.core.life.CloseOutcome
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.network
 import com.ditchoom.socket.quic.trace.TraceCapture
@@ -36,7 +37,8 @@ class EdgeEndOrderTests {
                         Seen.Failed(closed.closeReason, edge.state.value)
                     }
                 }
-            edge.ended(ConnEnd.ByLocal(QuicError.NoError), HeldReads(emptyMap(), emptySet()))
+            val end = ConnEnd.ByLocal(QuicError.NoError)
+            edge.ended(end, HeldReads(emptyMap(), emptySet()), CloseOutcome.NotAsked)
             val seen = assertIs<Seen.Failed>(accept.await())
             assertEquals<QuicCloseReason>(QuicCloseReason.ByLocal(QuicError.NoError), seen.reason)
             assertEquals<QuicConnectionState>(QuicConnectionState.Closed(seen.reason), seen.state)

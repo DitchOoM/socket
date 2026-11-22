@@ -92,9 +92,9 @@ class PacingCollapseTests {
 
     /**
      * The client writes a stream over the link, [ONE_WAY] each way, and issues a spare connection ID every [CID_EVERY]: a
-     * small ack-eliciting packet, as a core client sends. It is paced as the core paces: a datagram due later than the
-     * allowance holds sending until then. Each send time is judged at the pair's clock less [loopLagNanos], the loop's
-     * reading taken that much before libquiche read its own; zero is the pin.
+     * small ack-eliciting packet, as a core client sends. It is paced as the core paces: past the burst a quiet connection
+     * may send, a datagram due later than the allowance holds sending until then. Each send time is judged at the pair's
+     * clock less [loopLagNanos], the loop's reading taken that much before libquiche read its own; zero is the pin.
      */
     private suspend fun drive(
         cc: CongestionControl,
@@ -132,7 +132,11 @@ class PacingCollapseTests {
                 }
                 if (pacer.state(loopNow) == PaceState.Free) {
                     while (true) {
-                        val w = pair.sendOne(pair.client) as? QuichePairByHand.Written.One ?: break
+                        val w = pair.sendOne(pair.client) as? QuichePairByHand.Written.One
+                        if (w == null) {
+                            pacer.drained()
+                            break
+                        }
                         val size = w.datagram.bytes.size
                         val dueNanos = now + stamps.ahead(w.dueNanos, now)
                         val due = pacer.sent(dueNanos, loopNow)
@@ -144,7 +148,7 @@ class PacingCollapseTests {
                         note(trace, "t=${now.nanoseconds} client ${size}B due +${(dueNanos - now).nanoseconds} $due")
                         if (size <= LINK) inFlight += Crossing(now + oneWay, w.datagram, toServer = true)
                         when (due) {
-                            is Due.Now -> Unit
+                            is Due.Now, is Due.Early -> Unit
                             is Due.Hold -> break
                         }
                     }

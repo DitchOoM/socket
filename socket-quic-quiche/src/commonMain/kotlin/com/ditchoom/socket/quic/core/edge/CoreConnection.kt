@@ -3,7 +3,6 @@ package com.ditchoom.socket.quic.core.edge
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.codec.Codec
-import com.ditchoom.buffer.flow.BytesWritten
 import com.ditchoom.buffer.flow.ConnectedDatagramChannel
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.ReadPolicy
@@ -35,6 +34,8 @@ import com.ditchoom.socket.quic.core.conn.ConnWork
 import com.ditchoom.socket.quic.core.conn.Inside
 import com.ditchoom.socket.quic.core.conn.NetworkChange
 import com.ditchoom.socket.quic.core.conn.NetworkWork
+import com.ditchoom.socket.quic.core.life.CloseChoice
+import com.ditchoom.socket.quic.core.life.CloseOutcome
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.testkit.trace.TraceSink
 import kotlinx.coroutines.CancellableContinuation
@@ -127,10 +128,13 @@ internal class CoreConnection(
         }
     }
 
-    override suspend fun openStream(): QuicByteStream {
+    override suspend fun openStream(): QuicByteStream = openCoreStream().let { QuicByteStream(it.id, it, QuicStreamOrigin.Confirmed) }
+
+    /** Opens the next bidirectional stream as the core's own [CoreStream]. */
+    internal suspend fun openCoreStream(): CoreStream {
         val open = OpenOp(conn)
         conn.submit(open, placeOf(currentCoroutineContext()))
-        return streamFor(open.answer())
+        return CoreStream(this, QuicStreamId(open.answer()), readPolicy, writePolicy)
     }
 
     override suspend fun acceptStream(): QuicByteStream = peerStream(edge.incoming.receive())
@@ -155,9 +159,16 @@ internal class CoreConnection(
 
     override fun streams(): Flow<QuicByteStream> = edge.incoming.consumeAsFlow().map { peerStream(it) }
 
+    /** The close point is this call's place in the order of work; once it returns, what no read took is freed. */
     override suspend fun close(error: QuicError) {
         if (!edge.closed.isCompleted) conn.submit(CloseWork(error), CallerPlace.HandToLoop)
-        edge.closed.await()
+        edge.closedByCaller()
+    }
+
+    /** Closes as [choice] says, returning once the connection ended, with how the close went. */
+    internal suspend fun close(choice: CloseChoice): CloseOutcome {
+        if (!edge.closed.isCompleted) conn.submit(ChosenCloseWork(choice), CallerPlace.HandToLoop)
+        return edge.closedByCaller().outcome
     }
 
     /** Closes without waiting; for a caller that has already given up on the connection. */
@@ -165,6 +176,9 @@ internal class CoreConnection(
 
     /** Tells the connection the network monitor's news. */
     fun network(change: NetworkChange) = conn.submit(NetworkWork(change), CallerPlace.HandToLoop)
+
+    /** Hands quiche [stream]'s FIN alone, from inside the connection, for a stream closed while a write ending it gave up. */
+    internal fun finishAlone(stream: QuicStreamId) = conn.submit(FinWork(stream), CallerPlace.HandToLoop)
 
     /** The caller closed [stream] without reading it to the end: what still arrives is dropped. */
     internal fun abandon(stream: QuicStreamId) {
@@ -214,19 +228,15 @@ internal class CoreConnection(
         return op.answer()
     }
 
-    internal suspend fun write(
+    /** A write handed to the connection; its caller takes the answer. */
+    internal suspend fun submitted(
         stream: QuicStreamId,
         source: WriteSource,
         deadline: Duration,
-    ): BytesWritten {
+    ): WriteOp {
         val caller = currentCoroutineContext()
-        val op = WriteOp(stream, source, deadline, deadlines, conn, caller)
-        conn.submit(op, placeOf(caller))
-        return op.answer()
+        return WriteOp(stream, source, deadline, deadlines, conn, caller).also { conn.submit(it, placeOf(caller)) }
     }
-
-    private fun streamFor(id: Long): QuicByteStream =
-        QuicByteStream(QuicStreamId(id), CoreStream(this, QuicStreamId(id), readPolicy, writePolicy), QuicStreamOrigin.Confirmed)
 
     /** A stream that arrived in 0-RTT is read only once the handshake completes, unless it is marked replay-safe. */
     @OptIn(QuicEngineSpi::class)
@@ -272,15 +282,6 @@ private val CORE_CAPABILITIES = QuicCapabilities(requiresNativeMemoryBuffers = t
 /** Lets a client's held first flight leave. */
 private class ReleaseFlight : ConnWork() {
     override fun run(inside: Inside) = inside.releaseFirstFlight()
-
-    override fun gone(end: ConnEnd) = Unit
-}
-
-/** Starts the connection's close inside it. */
-private class CloseWork(
-    private val error: QuicError,
-) : ConnWork() {
-    override fun run(inside: Inside) = inside.close(error)
 
     override fun gone(end: ConnEnd) = Unit
 }

@@ -11,7 +11,10 @@ internal sealed interface Due {
     /** Due within the allowance: send it. */
     data object Now : Due
 
-    /** Due later than the allowance, however much later: hold the connection's sending until then. */
+    /** Due later than the allowance, and sent ahead of its time on the burst's credit: the write goes on. */
+    data object Early : Due
+
+    /** Due later than the allowance, however much later, with no credit left: hold the connection's sending until then. */
     data object Hold : Due
 }
 
@@ -36,7 +39,11 @@ internal sealed interface ClockVerdict {
 }
 
 private sealed interface Pace {
-    data object Free : Pace
+    /** Sending on quiche's times: the last write wrote something, or a hold passed. */
+    data object Sending : Pace
+
+    /** The last write ended with quiche having nothing more to send. */
+    data object Quiet : Pace
 
     class Holding : Pace {
         var untilNanos = 0L
@@ -44,10 +51,17 @@ private sealed interface Pace {
 }
 
 /**
- * The send hold quiche's pacer asks for. A datagram due later than the allowance stops the write and holds the
- * connection's sending until then; that datagram is already written, so it leaves up to one pacing interval early, and
- * no datagram after it does. Whether the times are on the loop's clock at all is the [ClockVerdict] of the connection's
- * first datagram ([judge]).
+ * The send hold quiche's pacer asks for, after a short burst. A datagram due later than the allowance is sent ahead of
+ * its time while the burst's credit lasts ([Due.Early]); with none left it stops the write and holds the connection's
+ * sending until then ([Due.Hold]). That datagram is already written, so it leaves early too, and no datagram after it
+ * does: the credit counts the datagrams that may leave ahead of quiche's times, the one that stops the write included.
+ *
+ * The credit is [BURST_DATAGRAMS] again when a connection that went quiet (its last write ended with quiche having
+ * nothing more to send) writes a datagram quiche wants on the wire now: quiche's times have caught up with the clock, so
+ * no datagram sent earlier is still ahead of its time. A connection never has more than [BURST_DATAGRAMS] datagrams out
+ * ahead of quiche's times, and one that keeps sending, held or with the batch full, never goes quiet: past its burst it
+ * follows quiche's times as if there were none. A new connection starts with no credit: its first flight is quiche's.
+ * Whether the times are on the loop's clock at all is the [ClockVerdict] of the connection's first datagram ([judge]).
  */
 @Confined
 internal class Pacer(
@@ -55,7 +69,8 @@ internal class Pacer(
     first: ClockVerdict,
 ) {
     private val holding = Pace.Holding()
-    private var phase: Pace = Pace.Free
+    private var phase: Pace = Pace.Sending
+    private var credit = 0
     private var ahead = 0L
     private var verdict = first
 
@@ -85,12 +100,12 @@ internal class Pacer(
     /** Whether the connection may write at [now]; a hold due within the allowance is released. */
     fun state(now: Nanos): PaceState =
         when (val p = phase) {
-            is Pace.Free -> PaceState.Free
+            is Pace.Sending, is Pace.Quiet -> PaceState.Free
             is Pace.Holding ->
                 if (p.untilNanos - now.value > rule.allowanceNanos) {
                     PaceState.Holding
                 } else {
-                    phase = Pace.Free
+                    phase = Pace.Sending
                     PaceState.Free
                 }
         }
@@ -101,10 +116,29 @@ internal class Pacer(
         now: Nanos,
     ): Due {
         ahead = atNanos - now.value
-        if (ahead <= rule.allowanceNanos) return Due.Now
+        val due = ahead <= rule.allowanceNanos
+        when (phase) {
+            is Pace.Quiet -> if (due) credit = BURST_DATAGRAMS
+            is Pace.Sending, is Pace.Holding -> Unit
+        }
+        phase = Pace.Sending
+        if (due) return Due.Now
+        if (credit > 1) {
+            credit--
+            return Due.Early
+        }
+        credit = 0
         holding.untilNanos = atNanos
         phase = holding
         return Due.Hold
+    }
+
+    /** The write ended with quiche having nothing more to send; a connection held stays held. */
+    fun drained() {
+        when (phase) {
+            is Pace.Sending, is Pace.Quiet -> phase = Pace.Quiet
+            is Pace.Holding -> Unit
+        }
     }
 
     /** What the connection answers a [ClockVerdict.Differs] with. */
@@ -116,11 +150,17 @@ internal class Pacer(
     /** Offers the hold's time while holding; offers nothing otherwise. */
     fun offerWake(sink: WakeSink) =
         when (val p = phase) {
-            is Pace.Free -> Unit
+            is Pace.Sending, is Pace.Quiet -> Unit
             is Pace.Holding -> sink.offer(Nanos(p.untilNanos))
         }
 
     companion object {
+        /**
+         * How many datagrams a quiet connection may send ahead of quiche's times: an initial window's worth, which is
+         * what a TCP sender that was idle sends at once.
+         */
+        const val BURST_DATAGRAMS = 10
+
         /**
          * How far a first stamp may fall outside the loop's readings around its write and still be the loop's clock. The
          * readings bracket quiche's own read, so a stall anywhere in the write widens the bracket, not the error. What is

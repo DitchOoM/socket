@@ -113,7 +113,7 @@ internal class ReadOp(
         guarded(::failed) {
             when (val state = inside.streams.state) {
                 is Streams.Ended -> return connectionEnded(state.end)
-                is Streams.Open -> Unit
+                is Streams.Live -> Unit
             }
             if (hand.landed(ReadAnswer.Cancelled)) return release()
             if (inside.streams.isSpent(stream)) {
