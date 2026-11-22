@@ -82,6 +82,9 @@ class CoreRecordingReplayTests {
         /** Every datagram the client handed the link, lost or not. */
         val sent: Int get() = ordinal
 
+        /** What the link counted, in order: for a failure's report, which datagram its recording lacks and when it left. */
+        val handed = CopyOnWriteArrayList<Handed>()
+
         /** How many datagrams each receive call returned, in order. */
         val received = CopyOnWriteArrayList<Int>()
 
@@ -119,6 +122,13 @@ class CoreRecordingReplayTests {
                 }
             for (n in 0 until batch.pending) {
                 val this0 = ordinal++
+                handed +=
+                    Handed(
+                        this0,
+                        System.nanoTime(),
+                        Thread.currentThread().name,
+                        hexOf(batch.storage, batch.offsetOf(n), batch.lengthOf(n)),
+                    )
                 if (dropped.isEmpty() && this0 >= HANDSHAKE_DATAGRAMS && batch.lengthOf(n) >= DATA) {
                     dropped += this0
                     continue
@@ -192,6 +202,41 @@ class CoreRecordingReplayTests {
     }
 
     private fun linesOf(recording: List<TraceEvent>): String = recording.joinToString(separator = "\n", postfix = "\n")
+
+    /** A datagram the link counted: its [ordinal], the [nanos] it was counted at, the [thread] that handed it, and its payload. */
+    private class Handed(
+        val ordinal: Int,
+        val nanos: Long,
+        val thread: String,
+        val hex: String,
+    )
+
+    /**
+     * Which datagrams the link counted that [recording] does not hold, and when each was counted against [snapshotNanos],
+     * the time the recording was read: a datagram counted before it and missing was never recorded, one counted after it
+     * left once the recording was taken.
+     */
+    private fun unrecorded(
+        link: LossyLink,
+        recording: List<TraceEvent>,
+        snapshotNanos: Long,
+    ): String {
+        val held =
+            recording
+                .filterIsInstance<TraceEvent.DgramOut>()
+                .groupingBy { it.payloadHex }
+                .eachCount()
+                .toMutableMap()
+        val missing =
+            link.handed.filter { sent ->
+                val left = held[sent.hex] ?: 0
+                if (left > 0) held[sent.hex] = left - 1
+                left == 0
+            }
+        return missing.joinToString(prefix = "link datagrams the recording lacks: [", postfix = "]") {
+            "#${it.ordinal} ${it.hex.length / 2} bytes ${(it.nanos - snapshotNanos) / NANOS_PER_MILLI} ms from the snapshot on ${it.thread}"
+        }
+    }
 
     private class Recorded(
         val client: List<TraceEvent>,
@@ -311,11 +356,13 @@ class CoreRecordingReplayTests {
             server.close()
         }
         recordings = Recorded(clientRecording.toList(), serverRecording.toList(), link[0]!!.dropped.size)
+        val snapshotNanos = System.nanoTime()
         assertEquals(1, link[0]!!.dropped.size, "the link lost the client's data datagram")
         assertEquals(
             link[0]!!.sent,
             clientRecording.count { it is TraceEvent.DgramOut },
-            "the client's recording holds every datagram it sent; receive calls returned ${link[0]!!.received}",
+            "the client's recording holds every datagram it sent; receive calls returned ${link[0]!!.received}; " +
+                unrecorded(link[0]!!, clientRecording.toList(), snapshotNanos),
         )
         return Recorded(clientRecording.toList(), serverRecording.toList(), link[0]!!.dropped.size)
     }
@@ -850,6 +897,14 @@ class CoreRecordingReplayTests {
         /** A datagram this long carries the payload; acknowledgements are far shorter, and the handshake's come first. */
         const val DATA = 500
         const val PAYLOAD = 600
+
+        const val NANOS_PER_MILLI = 1_000_000L
+
+        fun hexOf(
+            bytes: NativeBytes,
+            offset: Int,
+            length: Int,
+        ): String = (offset until offset + length).joinToString("") { "%02x".format(bytes.byteAt(it)) }
 
         /** The spare ids a core client hands its peer as its handshake completes, with the default limit of 8. */
         const val SPARE_IDS = 7
