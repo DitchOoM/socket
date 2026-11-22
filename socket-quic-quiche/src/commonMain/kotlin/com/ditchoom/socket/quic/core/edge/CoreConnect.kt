@@ -23,9 +23,13 @@ import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.RouteSource
 import com.ditchoom.socket.quic.UdpBatching
 import com.ditchoom.socket.quic.UdpSocketChannelFactory
+import com.ditchoom.socket.quic.core.conn.AccessGuard
 import com.ditchoom.socket.quic.core.conn.ClientTokens
 import com.ditchoom.socket.quic.core.conn.FlightSize
 import com.ditchoom.socket.quic.core.conn.MismatchResponse
+import com.ditchoom.socket.quic.core.conn.accessGuardOfThisPlatform
+import com.ditchoom.socket.quic.core.conn.probing
+import com.ditchoom.socket.quic.core.conn.sendsAccess
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.loop.Placement
@@ -81,6 +85,7 @@ internal suspend fun coreConnect(
     datagramSize: DatagramSize = DatagramSize.Probed,
     tokens: ClientTokens = ClientTokens.NotKept,
     mismatch: MismatchResponse = MismatchResponse.Unpaced,
+    access: AccessGuard = accessGuardOfThisPlatform,
 ): CoreClient {
     // Before the setup lane, a socket or a file: a connect whose option values cannot be honoured opens nothing.
     verdictOn(options).orRefuse()
@@ -114,6 +119,7 @@ internal suspend fun coreConnect(
                     ride,
                     tokens,
                     mismatch,
+                    access,
                     moved = { setup = it },
                 )
             }
@@ -146,6 +152,7 @@ private suspend fun OnSetupLane.connectOnLane(
     ride: ClientRide,
     tokens: ClientTokens,
     mismatch: MismatchResponse,
+    access: AccessGuard,
     /** Told each time what the setup made passes to a new releaser; last, right before the connection starts. */
     moved: (ClientSetup) -> Unit,
 ): StartedClient {
@@ -173,11 +180,16 @@ private suspend fun OnSetupLane.connectOnLane(
     val socket =
         when (ride) {
             is ClientRide.OwnSocket -> {
+                val turn = access.probing(peerKey)
                 val bindHost =
                     when (val source = routeSource(route)) {
                         is RouteSource.Resolved -> source.host
                         is RouteSource.PlatformAssigned -> anyHostFor(peer)
-                        is RouteSource.Unresolved -> raise(Raised.RouteUnresolved(source.reason), QuicCloseCircumstance.HandshakeFailed)
+                        is RouteSource.Unresolved ->
+                            raise(
+                                unresolved(source.reason, peerKey, access, turn),
+                                QuicCloseCircumstance.HandshakeFailed,
+                            )
                     }
                 val bind = UdpSocket.resolve(bindHost, 0).toPathKey()
                 openStackSocket(running.io, memory, bind, SocketPeer.Connected(peerKey), buffers, batching, CLIENT_BATCH)
@@ -238,6 +250,7 @@ private suspend fun OnSetupLane.connectOnLane(
                     scope,
                     flight,
                     handshake,
+                    access.sendsAccess(peerKey),
                     readiness = socket.readiness(),
                     offer = offer,
                     tickets = plan.home,
@@ -267,17 +280,6 @@ private suspend fun OnSetupLane.connectOnLane(
     scope.feedNetwork(monitor, connection, built, { routeSource(route) }, local.hostLiteral(), onMoveOf(options.migration))
     return started
 }
-
-private fun hex(buffer: com.ditchoom.buffer.PlatformBuffer): String {
-    val out = StringBuilder(buffer.remaining() * 2)
-    for (i in buffer.position() until buffer.limit()) {
-        val b = buffer.get(i).toInt() and 0xFF
-        out.append(HEX[b ushr 4]).append(HEX[b and 0xF])
-    }
-    return out.toString()
-}
-
-private const val HEX = "0123456789abcdef"
 
 /** The wildcard of [peer]'s family: an IPv6 peer needs an IPv6 socket on the native stack. */
 private fun anyHostFor(peer: SocketAddress): String = if (peer.family == AddressFamily.IPv6) "::" else "0.0.0.0"

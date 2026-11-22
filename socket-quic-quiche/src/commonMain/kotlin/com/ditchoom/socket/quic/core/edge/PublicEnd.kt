@@ -68,6 +68,7 @@ internal fun publicEndOf(end: ConnEnd): QuicConnectionEnd =
         is ConnEnd.HandshakeTimedOut -> QuicConnectionEnd.HandshakeTimedOut(publicProgressOf(end.progress))
         is ConnEnd.HandshakeSendRefused ->
             QuicConnectionEnd.HandshakeSendRefused(publicProgressOf(end.progress), publicRefusalOf(end.refusal))
+        is ConnEnd.AccessDenied -> QuicConnectionEnd.AccessDenied(end.denial)
         is ConnEnd.SocketFailed -> QuicConnectionEnd.SocketFailed(publicFaultOf(end.fault))
         is ConnEnd.ProcessingFailed -> QuicConnectionEnd.ProcessingFailed(end.thrown.throwable)
         is ConnEnd.CallerFailed -> QuicConnectionEnd.CallerFailed(end.thrown.throwable)

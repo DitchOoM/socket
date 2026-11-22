@@ -8,6 +8,7 @@ import com.ditchoom.socket.ServerCertificateRejection
 import com.ditchoom.socket.quic.NativeSocketRefusal
 import com.ditchoom.socket.quic.NetworkRefusal
 import com.ditchoom.socket.quic.PinnedRadioRefusedException
+import com.ditchoom.socket.quic.QuicAccessDenial
 import com.ditchoom.socket.quic.QuicAppErrorCode
 import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicCloseException
@@ -126,6 +127,11 @@ internal sealed interface Raised : OpFailure {
         val refusal: NetworkRefusal,
     ) : Raised
 
+    /** The system refused the client's socket the network access it needs, before its connection was built. */
+    class AccessDenied(
+        val denial: QuicAccessDenial,
+    ) : Raised
+
     /** The server's chain was not kept whole for its check, which therefore fails as [rejection]. */
     class ChainRefused(
         val rejection: ServerCertificateRejection,
@@ -231,6 +237,11 @@ private fun exceptionOf(
         is Raised.SocketRefused -> failure.refusal
         is Raised.SpecLayoutRefused -> CoreSpecLayoutMismatch(failure.mismatch)
         is Raised.NetworkRefused -> failure.refusal
+        is Raised.AccessDenied ->
+            QuicCloseException(
+                end = QuicConnectionEnd.AccessDenied(failure.denial),
+                circumstance = QuicCloseCircumstance.HandshakeFailed,
+            )
     }
 
 /** The close exception for [end]: its public end and the circumstance it names. */
@@ -246,7 +257,7 @@ private fun ConnEnd.circumstance(during: QuicCloseCircumstance): QuicCloseCircum
         is ConnEnd.CallerFailed -> QuicCloseCircumstance.CallerThreadFailed
         is ConnEnd.Released -> QuicCloseCircumstance.Released
         is ConnEnd.ByPeer, is ConnEnd.ByLocal, is ConnEnd.IdleTimeout, is ConnEnd.HandshakeTimedOut,
-        is ConnEnd.HandshakeSendRefused,
+        is ConnEnd.HandshakeSendRefused, is ConnEnd.AccessDenied,
         is ConnEnd.SocketFailed, is ConnEnd.LoopStopped, is ConnEnd.ServerClosed, is ConnEnd.NoErrorRecorded,
         is ConnEnd.NetworkLost, is ConnEnd.LocalAddressGone, is ConnEnd.ServerClosedUnsettled, is ConnEnd.NoUsablePath,
         -> during

@@ -1,11 +1,30 @@
 package com.ditchoom.socket.quic.core.conn
 
+import com.ditchoom.socket.quic.QuicAccessDenial
+import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicResumptionOutcome
+import com.ditchoom.socket.quic.core.life.CloseChoice
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.Life
 import com.ditchoom.socket.quic.core.sched.SendRecord
 import com.ditchoom.socket.quic.core.time.Nanos
 import kotlinx.coroutines.Runnable
+
+/** Whether a serve's handshake leaves the connection open, and why it ends it if not: the end uses this verdict alone. */
+internal sealed interface HandshakeServe {
+    data object Open : HandshakeServe
+
+    /** The handshake is over; [handshakeEnd] makes its end from this alone. */
+    sealed interface Over : HandshakeServe
+
+    /** The system refused every send of it as it refuses an app the access it lacks. */
+    class Denied(
+        val denial: QuicAccessDenial,
+    ) : Over
+
+    /** Its deadline passed. */
+    data object DeadlinePassed : Over
+}
 
 /**
  * Serves the handshake. Before it completes, a server that accepted 0-RTT announces it once and hands up the streams
@@ -15,20 +34,38 @@ import kotlinx.coroutines.Runnable
 internal fun ConnParts.handshakeStep(
     now: Nanos,
     paths: Paths,
-): HandshakeStep {
-    val step = handshake.step(now)
-    when (step) {
-        HandshakeStep.Handshaking -> early()
+): HandshakeServe =
+    when (handshake.step(now)) {
+        HandshakeStep.Handshaking -> {
+            early()
+            when (val verdict = accessStep()) {
+                is AccessVerdict.NotDenied -> HandshakeServe.Open
+                is AccessVerdict.Denied -> HandshakeServe.Denied(verdict.denial)
+            }
+        }
         HandshakeStep.JustEstablished -> {
             paths.established()
             checkOnCompletion()
             established(now)
+            HandshakeServe.Open
         }
-        HandshakeStep.Established -> established(now)
-        HandshakeStep.DeadlinePassed -> Unit
+        HandshakeStep.Established -> {
+            established(now)
+            HandshakeServe.Open
+        }
+        HandshakeStep.DeadlinePassed -> HandshakeServe.DeadlinePassed
     }
-    return step
-}
+
+/**
+ * What a handshake still under way whose every datagram the network refused says about the app's access to its peer,
+ * from what the setup lane settled: nothing is read here. A handshake that completed was sent to, so a refusal after it
+ * never denies the connect.
+ */
+internal fun ConnParts.accessStep(): AccessVerdict =
+    when (handshake.reached()) {
+        Progress.Handshaking -> access.judge(sends.view())
+        Progress.Established -> AccessVerdict.NotDenied
+    }
 
 /**
  * The end of a serve after which the connection is open. A handshake that completed in it is reported now, after its
@@ -62,17 +99,31 @@ internal fun ConnParts.announce(
     }
 }
 
-/** The end of a handshake that passed its deadline: sent to and never answered, or never sent for the network refused each datagram. */
+/**
+ * The end of a handshake that is [over]: denied the access it needs, as its serve found; else past its deadline, sent
+ * to and never answered, or never sent for the network refused each datagram.
+ */
 internal fun ConnParts.handshakeEnd(
+    over: HandshakeServe.Over,
     now: Nanos,
     paths: Paths,
-): ConnEnd {
-    val progress = handshake.progress(now, paths.read())
-    return when (val record = sends.view()) {
-        is SendRecord.Refused -> ConnEnd.HandshakeSendRefused(progress, record.last)
-        is SendRecord.Quiet, is SendRecord.Taking -> ConnEnd.HandshakeTimedOut(progress)
+): ConnEnd =
+    when (over) {
+        is HandshakeServe.Denied -> ConnEnd.AccessDenied(over.denial)
+        is HandshakeServe.DeadlinePassed -> {
+            val progress = handshake.progress(now, paths.read())
+            when (val record = sends.view()) {
+                is SendRecord.Refused -> ConnEnd.HandshakeSendRefused(progress, record.last)
+                is SendRecord.Quiet, is SendRecord.Taking -> ConnEnd.HandshakeTimedOut(progress)
+            }
+        }
     }
-}
+
+/** The close point of a handshake that ended with [end]: immediate, with no error. The one place a handshake's end closes. */
+internal fun ConnParts.closeHandshake(
+    end: ConnEnd,
+    now: Nanos,
+) = close(CloseChoice.Immediate(QuicError.NoError), end, now)
 
 /**
  * Whether a client's output may leave. A flight held for 0-RTT is released once an operation inside waits on the peer,

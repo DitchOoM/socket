@@ -1,9 +1,11 @@
 package com.ditchoom.socket.quic.core.loop
 
 import com.ditchoom.socket.quic.core.conn.Conn
+import com.ditchoom.socket.quic.core.conn.SendsRefusedWork
 import com.ditchoom.socket.quic.core.demux.ServerPhase
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.Life
+import com.ditchoom.socket.quic.core.sched.RefusalNews
 
 /** A place in a loop's socket table: an endpoint, or empty. */
 internal sealed interface LoopSlot {
@@ -51,6 +53,20 @@ internal fun Route.endWith(end: ConnEnd) =
     when (this) {
         is Route.Fixed -> conn.endWithLoop(end)
         is Route.Demux -> demux.endAll(end)
+    }
+
+/**
+ * Loop thread, at each look at a live socket: the news that the network refused the first datagram it was handed, by
+ * the loop's flush, a lane it flushed or a caller's own send, goes to a client's connection to judge.
+ */
+internal fun Route.refused(news: RefusalNews) =
+    when (news) {
+        RefusalNews.None -> Unit
+        RefusalNews.Due ->
+            when (this) {
+                is Route.Fixed -> conn.submitFromLoop(SendsRefusedWork())
+                is Route.Demux -> Unit
+            }
     }
 
 /** Whether an endpoint is still on its loop after a serve. */
