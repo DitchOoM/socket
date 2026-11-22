@@ -31,7 +31,7 @@ internal class StreamTable(
     private val drain = StreamDrain(io, drains)
 
     /** What [unpark] finds for a stream that has no entry: nothing waits on it. */
-    private val absent = StreamEntry(QuicStreamId(0L))
+    private val absent = StreamEntry(QuicStreamId(0L), StreamShape.LocalBidirectional)
 
     private val entries = LongObjectMap(absent)
 
@@ -39,12 +39,12 @@ internal class StreamTable(
     private val spare = ArrayList<StreamEntry>()
 
     private val writeWaiters = LongSet()
-    private val opens = ArrayDeque<Waiter>()
     private val incoming = LongQueue()
-    private val peerBidi = PeerStreamIds(if (role == QuicRole.Client) 1L else 0L)
-    private val peerUni = PeerStreamIds(if (role == QuicRole.Client) 3L else 2L)
-    private var nextBidi: Long = if (role == QuicRole.Client) 0L else 1L
+    private val peerOpened = PeerOpened(role)
     private var opened: Long = 0L
+
+    /** The opens of each kind, and those waiting for the peer's credit. */
+    val opens = OpenLanes(q, role)
 
     var state: Streams = Streams.Open(StreamSend(q, io))
         private set
@@ -56,11 +56,19 @@ internal class StreamTable(
     fun entry(id: QuicStreamId): StreamEntry {
         val held = entries.getOrDefault(id.id, absent)
         if (held !== absent) return held
-        return (if (spare.isEmpty()) StreamEntry(id) else spare.removeAt(spare.size - 1).reuse(id)).also { entries[id.id] = it }
+        val shape = shapeOf(id, role)
+        return (if (spare.isEmpty()) StreamEntry(id, shape) else spare.removeAt(spare.size - 1).reuse(id, shape)).also { entries[id.id] = it }
     }
 
     /** Whether [id] names a stream that is spent: one this side opened or was told of, whose entry was let go. */
-    fun isSpent(id: QuicStreamId): Boolean = !entries.containsKey(id.id) && (initiatedByPeer(id) || id.id < nextBidi)
+    fun isSpent(id: QuicStreamId): Boolean {
+        if (entries.containsKey(id.id)) return false
+        val shape = shapeOf(id, role)
+        return when (shape.opener()) {
+            Opener.Peer -> true
+            Opener.Local -> id.id < opens.lane(shape.kind()).next
+        }
+    }
 
     /** Clears [waiter] from [id]'s entry, if the stream still has one. */
     fun unpark(
@@ -128,55 +136,47 @@ internal class StreamTable(
 
     /**
      * Lets [entry] go once its stream is spent: both directions ended, however each did (a direction this side has no
-     * part in counts as ended), and nothing waits on it. The table then holds only live streams, so it does not grow with every stream ever opened.
+     * part in is [Side.NotPart] from the start), and nothing waits on it. The table then holds only live streams, so it
+     * does not grow with every stream ever opened.
      */
     fun collect(entry: StreamEntry) {
         if (entry === absent || entry.reader !== Nobody || entry.writer !== Nobody) return
-        if (entry.received !is Side.Ended) return
-        if (entry.sent !is Side.Ended && sends(entry.id)) return
+        if (entry.received !is Side.Ended || entry.sent !is Side.Ended) return
         entries.remove(entry.id.id)
         spare.add(entry)
     }
-
-    /** Whether this side sends on [id]: every bidirectional stream, and the unidirectional ones it opened. */
-    private fun sends(id: QuicStreamId): Boolean = id.id and UNI_BIT == 0L || !initiatedByPeer(id)
 
     /** Asks for [stream]'s writer to be retried once quiche says it can take bytes. */
     fun wantWritable(stream: QuicStreamId) {
         writeWaiters.add(stream.id)
     }
 
-    /** Queues [open] behind the opens already waiting for the peer's credit. */
-    fun waitToOpen(open: Waiter) {
-        opens.addLast(open)
-    }
-
-    fun withdrawOpen(open: Waiter) {
-        opens.remove(open)
-    }
-
-    fun opensWaiting(): Int = opens.size
+    /** The opens of both kinds that wait for the peer's credit. */
+    fun opensWaiting(): Int = opens.waits()
 
     /** Whether a write or an open is parked until the peer gives room. */
-    fun backlog(): Backlog = if (opens.isNotEmpty() || writeWaiters.isNotEmpty()) Backlog.Waiting else Backlog.None
+    fun backlog(): Backlog = if (opensWaiting() > 0 || writeWaiters.isNotEmpty()) Backlog.Waiting else Backlog.None
 
     /** Whether an operation is parked until the peer answers: an open at its stream limit, a read, or a write. */
     fun waitsOnPeer(): Boolean {
-        if (opens.isNotEmpty() || writeWaiters.isNotEmpty()) return true
+        if (opensWaiting() > 0 || writeWaiters.isNotEmpty()) return true
         var parked = false
         entries.forEachValue { parked = parked || it.reader !== Nobody || it.writer !== Nobody }
         return parked
     }
 
     /**
-     * Opens the next bidirectional stream: a zero-length send makes quiche create it (a read on a stream quiche has
-     * not created answers INVALID_STREAM_STATE), which is also where the peer's limit shows. At the limit the id is
-     * not spent.
+     * Opens the next stream of [kind]: a zero-length send makes quiche create it (a read on a stream quiche has not
+     * created answers INVALID_STREAM_STATE), which is also where the peer's limit of that kind shows. At the limit the
+     * id is not spent.
      */
-    fun tryOpen(send: StreamSend): Opened {
-        val id = QuicStreamId(nextBidi)
-        if (send.send(id, 0L, 0, WriteEnd.More).code() == QUICHE_ERR_STREAM_LIMIT) return Opened.AtLimit
-        nextBidi += STREAM_ID_STEP
+    fun tryOpen(
+        kind: StreamKind,
+        send: StreamSend,
+    ): Opened {
+        val lane = opens.lane(kind)
+        if (send.send(QuicStreamId(lane.next), 0L, 0, WriteEnd.More).code() == QUICHE_ERR_STREAM_LIMIT) return Opened.AtLimit
+        val id = lane.spend()
         entry(id)
         opened = id.id
         return Opened.Opened
@@ -185,15 +185,12 @@ internal class StreamTable(
     /** The stream the last [tryOpen] that answered [Opened.Opened] created. */
     fun lastOpened(): QuicStreamId = QuicStreamId(opened)
 
-    /** Retries what quiche's readable and writable streams, and the peer's stream credit, let go on. */
+    /** Retries what quiche's readable and writable streams, and the peer's stream credit of each kind, let go on. */
     fun wake() {
         val readable = q.api.connReadable(q.handle)
         if (!readable.isExhausted) wakeReaders(readable)
         wakeWriters()
-        while (opens.isNotEmpty() && q.api.connPeerStreamsLeftBidi(q.handle) > 0) {
-            if (opens.first().retry(this) == Retry.Again) return
-            opens.removeFirst()
-        }
+        opens.wake(this)
     }
 
     private fun wakeReaders(readable: QuicheStreamIter) {
@@ -218,7 +215,7 @@ internal class StreamTable(
         val writing = ArrayList<StreamEntry>()
         entries.forEachValue { if (it.writer !== Nobody) writing.add(it) }
         for (entry in writing) entry.wakeWriter(this)
-        repeat(opens.size) { opens.removeFirst().let { if (it.retry(this) == Retry.Again) opens.addLast(it) } }
+        opens.refuseAll(this)
     }
 
     /** The connection ended with [end]: every waiting operation fails with it, and so does every later one. */
@@ -226,15 +223,14 @@ internal class StreamTable(
         if (state is Streams.Ended) return
         state = Streams.Ended(end)
         entries.forEachValue { it.endWaiters(end) }
-        while (opens.isNotEmpty()) opens.removeFirst().connectionEnded(end)
+        opens.endAll(end)
     }
 
     private fun readable(id: QuicStreamId): Boolean {
         val entry = entries.getOrDefault(id.id, absent)
         when {
             entry !== absent -> arrived(entry)
-            initiatedByPeer(id) && !peerIds(id).seen(id.id) -> {
-                peerIds(id).see(id.id)
+            peerOpened.firstSight(id) == Sight.First -> {
                 entry(id)
                 incoming.addLast(id.id)
                 handedUp++
@@ -256,8 +252,6 @@ internal class StreamTable(
         }
         collect(entry)
     }
-
-    private fun peerIds(id: QuicStreamId): PeerStreamIds = if (id.id and UNI_BIT == 0L) peerBidi else peerUni
 
     /**
      * The caller closed [id] without reading it to the end: what arrived is read and dropped now, and what arrives
@@ -288,12 +282,5 @@ internal class StreamTable(
             QUICHE_ERR_STREAM_STOPPED.toLong() -> stopped(id)
             else -> Unit
         }
-    }
-
-    private fun initiatedByPeer(id: QuicStreamId): Boolean = (id.id and 1L == 1L) == (role == QuicRole.Client)
-
-    private companion object {
-        const val STREAM_ID_STEP = 4L
-        const val UNI_BIT = 2L
     }
 }

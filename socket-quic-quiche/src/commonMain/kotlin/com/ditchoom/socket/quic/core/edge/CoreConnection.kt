@@ -19,16 +19,13 @@ import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicConnection
 import com.ditchoom.socket.quic.QuicConnectionIdentity
 import com.ditchoom.socket.quic.QuicConnectionState
-import com.ditchoom.socket.quic.QuicEngineSpi
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicPathState
 import com.ditchoom.socket.quic.QuicResumptionOutcome
 import com.ditchoom.socket.quic.QuicSessionTicketState
 import com.ditchoom.socket.quic.QuicStatsRead
 import com.ditchoom.socket.quic.QuicStreamId
-import com.ditchoom.socket.quic.QuicStreamOrigin
 import com.ditchoom.socket.quic.QuicUnreadAtClose
-import com.ditchoom.socket.quic.core.conn.Arrival
 import com.ditchoom.socket.quic.core.conn.CallerPlace
 import com.ditchoom.socket.quic.core.conn.Conn
 import com.ditchoom.socket.quic.core.conn.ConnWork
@@ -38,6 +35,7 @@ import com.ditchoom.socket.quic.core.conn.NetworkWork
 import com.ditchoom.socket.quic.core.life.CloseChoice
 import com.ditchoom.socket.quic.core.life.CloseOutcome
 import com.ditchoom.socket.quic.core.life.ConnEnd
+import com.ditchoom.socket.quic.core.stream.StreamKind
 import com.ditchoom.socket.testkit.trace.TraceSink
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CompletableDeferred
@@ -81,6 +79,8 @@ internal class CoreConnection(
     override val identity: QuicConnectionIdentity,
     private val readPolicy: ReadPolicy,
     private val writePolicy: WritePolicy,
+    /** How long an open waits at the peer's stream limit. */
+    private val openBound: Duration,
     scope: CoroutineScope,
 ) : QuicConnection,
     CoroutineScope by scope {
@@ -129,19 +129,20 @@ internal class CoreConnection(
         }
     }
 
-    override suspend fun openStream(): QuicByteStream {
-        val open = OpenOp(conn)
-        conn.submit(open, placeOf(currentCoroutineContext()))
-        return streamFor(open.answer())
-    }
+    /** This connection's streams in the core's own shapes: a send half, a receive half, or both. */
+    internal val halves = StreamHalves(this, edge, readPolicy, writePolicy)
 
-    override suspend fun acceptStream(): QuicByteStream = peerStream(edge.incoming.receive())
+    override suspend fun openStream(): QuicByteStream = halves.public(halves.openBidirectional())
+
+    override suspend fun openUniStream(): QuicByteStream = halves.public(halves.openSendOnly())
+
+    override suspend fun acceptStream(): QuicByteStream = halves.public(halves.accept())
 
     /** Opens the next bidirectional stream as one carrying values of [T] framed by [codec]. */
     internal suspend fun <T : Any> openTypedStream(
         codec: Codec<T>,
         config: TypedStreamConfig = TypedStreamConfig(),
-    ): TypedQuicStream<T> = typed(openStream().streamId, codec, config)
+    ): TypedQuicStream<T> = typed(open(StreamKind.Bidirectional), codec, config)
 
     /** Accepts the next stream the peer opened as one carrying values of [T] framed by [codec]. */
     internal suspend fun <T : Any> acceptTypedStream(
@@ -155,7 +156,7 @@ internal class CoreConnection(
         config: TypedStreamConfig,
     ): TypedQuicStream<T> = TypedQuicStream(this, conn, id, codec, config, readPolicy, writePolicy, bufferFactory)
 
-    override fun streams(): Flow<QuicByteStream> = edge.incoming.consumeAsFlow().map { peerStream(it) }
+    override fun streams(): Flow<QuicByteStream> = edge.incoming.consumeAsFlow().map { halves.public(halves.incomingOf(it)) }
 
     /** The close point is this call's place in the order of work; once it returns, what no read took is freed. */
     override suspend fun close(error: QuicError) {
@@ -181,13 +182,26 @@ internal class CoreConnection(
         conn.submit(AbandonWork(stream), CallerPlace.HandToLoop)
     }
 
-    /** Resets both directions of [stream] with [code]. */
-    internal fun resetStream(
+    /** Resets our sending direction of [stream] with [code]. */
+    internal fun resetSending(
+        stream: QuicStreamId,
+        code: QuicAppErrorCode,
+    ) = conn.submit(ResetSendWork(stream, code), CallerPlace.HandToLoop)
+
+    /** Tells the peer to stop sending on [stream] with [code]; what still arrives is dropped. */
+    internal fun stopReading(
         stream: QuicStreamId,
         code: QuicAppErrorCode,
     ) {
         edge.letGo(stream)
-        conn.submit(ResetWork(stream, code), CallerPlace.HandToLoop)
+        conn.submit(StopWork(stream, code), CallerPlace.HandToLoop)
+    }
+
+    /** Opens the next stream of [kind] under the connection's open policy; the id of the stream it made. */
+    internal suspend fun open(kind: StreamKind): QuicStreamId {
+        val open = OpenOp(kind, openBound, deadlines, conn)
+        conn.submit(open, placeOf(currentCoroutineContext()))
+        return QuicStreamId(open.answer())
     }
 
     /** Read inside the connection when asked; nothing is counted for it otherwise. */
@@ -233,21 +247,6 @@ internal class CoreConnection(
         conn.submit(op, placeOf(caller))
         return op.answer()
     }
-
-    private fun streamFor(id: Long): QuicByteStream =
-        QuicByteStream(QuicStreamId(id), CoreStream(this, QuicStreamId(id), readPolicy, writePolicy), QuicStreamOrigin.Confirmed)
-
-    /** A stream that arrived in 0-RTT is read only once the handshake completes, unless it is marked replay-safe. */
-    @OptIn(QuicEngineSpi::class)
-    private fun peerStream(peer: PeerStream): QuicByteStream =
-        QuicByteStream(
-            QuicStreamId(peer.id),
-            CoreStream(this, QuicStreamId(peer.id), readPolicy, writePolicy),
-            when (peer.arrival) {
-                Arrival.Confirmed -> QuicStreamOrigin.Confirmed
-                Arrival.Early -> QuicStreamOrigin.Early(::established)
-            },
-        )
 
     /**
      * Copies the peer's certificate at [position] into [der] inside the connection, with quiche's snprintf contract
