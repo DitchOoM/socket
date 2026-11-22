@@ -4,7 +4,9 @@ import com.ditchoom.data.readString
 import com.ditchoom.data.writeString
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.launch
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -90,35 +92,64 @@ class HostResolverTests {
         }
 
     /**
-     * Cancelling never waits for the lookup: `cancel()` only posts the teardown to the query's own queue (about 3 us),
-     * and the join is one dispatcher hop (about 70 us, measured on the iOS simulator even with 100 busy loops on 36
-     * cores). A cancel that did wait would wait for DNS, so EVERY sample would take a lookup's time; one scheduler
-     * stall (CI tvOS run 134236838626 saw a lone 33.9 ms on a 3-vCPU runner) hits one sample. So this asserts the
-     * median, not the worst, and prints every sample on failure.
+     * Cancelling never waits for the lookup: it costs what cancelling any suspended coroutine costs. Each round cancels
+     * a lookup and, beside it, a coroutine that only waits to be cancelled, so both see the machine as it was then; a
+     * cancel that waited would wait for DNS in EVERY round, far past the idle coroutine's cancel. One scheduler stall
+     * hits one sample, so the medians are compared, and every sample is printed on failure. That a lookup which never
+     * answers does not hold its cancelled caller at all is [BlockingHostResolverTests]' to show, with a lookup the
+     * test holds.
      */
     @Test
-    fun cancellingALookupReturnsWithinAMillisecondOfWork() =
+    fun cancellingALookupCostsWhatCancellingAnIdleCoroutineDoes() =
         runTestNoTimeSkipping(timeout = 60.seconds) {
             if (!tcpAvailable()) return@runTestNoTimeSkipping
-            val cancelCall = ArrayList<Long>()
-            val joined = ArrayList<Long>()
-            repeat(30) { round ->
-                val lookup =
-                    launch(start = CoroutineStart.UNDISPATCHED) {
-                        HostResolver.platform().resolve("cancel-$round.lookup.invalid")
-                    }
-                val start = TimeSource.Monotonic.markNow()
-                lookup.cancel()
-                cancelCall += start.elapsedNow().inWholeMicroseconds
-                lookup.join()
-                joined += start.elapsedNow().inWholeMicroseconds
+            val lookups = CancelTimes()
+            val idles = CancelTimes()
+            repeat(ROUNDS) { round ->
+                val lookup = launch(start = CoroutineStart.UNDISPATCHED) { HostResolver.platform().resolve("cancel-$round.lookup.invalid") }
+                lookups.time(lookup)
+                idles.time(launch(start = CoroutineStart.UNDISPATCHED) { awaitCancellation() })
             }
-            val calls = cancelCall.drop(10).sorted()
-            val joins = joined.drop(10).sorted()
-            val detail = "sorted after warm-up, us: cancel() calls=$calls; cancel+join=$joins"
-            assertTrue(calls[calls.size / 2] < 1_000, "median cancel() call ${calls[calls.size / 2]} us; $detail")
-            assertTrue(joins[joins.size / 2] < 1_000, "median cancel+join ${joins[joins.size / 2]} us; $detail")
+            val detail = "sorted after warm-up, us: lookup $lookups; idle coroutine $idles"
+            assertTrue(
+                lookups.medianCall() <= boundMicros(idles.medianCall()),
+                "median cancel() of a lookup ${lookups.medianCall()} us, bound ${boundMicros(idles.medianCall())} us; $detail",
+            )
+            assertTrue(
+                lookups.medianJoin() <= boundMicros(idles.medianJoin()),
+                "median cancel+join of a lookup ${lookups.medianJoin()} us, bound ${boundMicros(idles.medianJoin())} us; $detail",
+            )
         }
+
+    /** How long cancel() and cancel+join took, per round, in microseconds. */
+    private class CancelTimes {
+        private val calls = ArrayList<Long>()
+        private val joins = ArrayList<Long>()
+
+        suspend fun time(job: Job) {
+            val start = TimeSource.Monotonic.markNow()
+            job.cancel()
+            calls += start.elapsedNow().inWholeMicroseconds
+            job.join()
+            joins += start.elapsedNow().inWholeMicroseconds
+        }
+
+        fun medianCall(): Long = median(calls)
+
+        fun medianJoin(): Long = median(joins)
+
+        private fun median(samples: List<Long>): Long = samples.drop(WARM_UP).sorted().let { it[it.size / 2] }
+
+        override fun toString(): String = "cancel() calls=${calls.drop(WARM_UP).sorted()}; cancel+join=${joins.drop(WARM_UP).sorted()}"
+    }
+
+    /** Three times what cancelling an idle coroutine cost in the same rounds, plus half a millisecond. */
+    private fun boundMicros(idleMicros: Long): Long = idleMicros * 3 + 500
+
+    private companion object {
+        const val ROUNDS = 30
+        const val WARM_UP = 10
+    }
 
     @Test
     fun aConnectFallsBackToTheNextAddressWhenTheFirstDoesNotAnswer() =
