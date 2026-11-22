@@ -6591,6 +6591,7 @@ val stageCoreAndroidTests =
                 "demux/CoreServerCloseTests.kt",
                 "demux/ServerShutdownTests.kt",
                 "demux/CoreServerAdmissionTests.kt",
+                "demux/RoutedEvidence.kt",
                 "demux/CoreServerStartupHerdTests.kt",
             )
             into("com/ditchoom/socket/quic/core")
