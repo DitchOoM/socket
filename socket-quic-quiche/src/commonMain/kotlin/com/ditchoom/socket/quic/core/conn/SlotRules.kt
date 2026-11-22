@@ -2,7 +2,10 @@ package com.ditchoom.socket.quic.core.conn
 
 import com.ditchoom.socket.quic.LinkClass
 import com.ditchoom.socket.quic.core.life.CloseRule
+import com.ditchoom.socket.quic.core.time.Nanos
+import com.ditchoom.socket.quic.core.time.Span
 import com.ditchoom.socket.quic.core.time.WaitResolution
+import com.ditchoom.socket.quic.core.time.since
 import kotlin.jvm.JvmInline
 
 /** Whether a connection obeys the send times quiche's pacer gives each datagram. */
@@ -111,8 +114,17 @@ internal fun DatagramRule.On.quicheHandOff(): Int {
     return minOf(wanted, sendBound / 2).coerceAtLeast(1)
 }
 
-/** The datagrams the core's queue admits: the depth less quiche's hand-off, so the two hold at most [DatagramRule.On.sendBound]. */
-internal fun DatagramRule.On.queueBound(): Int = (sendBound - quicheHandOff()).coerceAtLeast(1)
+/**
+ * The datagrams the core's queue admits: the depth less quiche's hand-off and the one datagram the connection holds at
+ * the door while quiche's queue is full, so together they hold at most [DatagramRule.On.sendBound]. A depth below
+ * [MIN_SEND_DEPTH] leaves none, and is refused as an option.
+ */
+internal fun DatagramRule.On.queueBound(): Int = sendBound - quicheHandOff() - DOOR
+
+/** The smallest send depth: one datagram in quiche's hand-off, one at the door, and one in the core's queue. */
+internal const val MIN_SEND_DEPTH = 3
+
+private const val DOOR = 1
 
 private const val SHORT_HAND_OFF = 4
 private const val LONG_HAND_OFF = 32
@@ -124,20 +136,20 @@ internal enum class Overflow { RefuseNew, EvictOldest }
 internal sealed interface AgeBound {
     data object Unbounded : AgeBound
 
-    /** One queued longer than [nanos] is dropped when it reaches the head of its queue. */
+    /** One queued longer than [age] is dropped when it reaches the head of its queue. */
     class Within(
-        val nanos: Long,
+        val age: Span,
     ) : AgeBound
 }
 
-/** Whether a datagram queued at [queuedAt] is past [bound] at [now]. */
+/** Whether a datagram queued at [queuedAt] is past this bound at [now]. */
 internal fun AgeBound.expired(
-    queuedAt: Long,
-    now: Long,
+    queuedAt: Nanos,
+    now: Nanos,
 ): Expiry =
     when (this) {
         is AgeBound.Unbounded -> Expiry.Fresh
-        is AgeBound.Within -> if (now - queuedAt > nanos) Expiry.Expired else Expiry.Fresh
+        is AgeBound.Within -> if (now.since(queuedAt) > age) Expiry.Expired else Expiry.Fresh
     }
 
 internal enum class Expiry { Fresh, Expired }

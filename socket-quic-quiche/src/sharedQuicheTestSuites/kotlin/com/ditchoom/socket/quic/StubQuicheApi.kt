@@ -393,6 +393,11 @@ internal class StubQuicheApi(
         bufLen: Int,
     ) = dgramRecvSequence.removeFirstOrNull() ?: dgramRecvResult
 
+    /** Datagrams the stub's send queue holds, which [connDgramPurgeOutgoing] drops and reports. */
+    @Volatile var dgramSendQueueLen: Int = 0
+
+    override fun connDgramPurgeOutgoing(conn: QuicheConn): Int = dgramSendQueueLen.also { dgramSendQueueLen = 0 }
+
     @Volatile var hasReadableDgram: Boolean = false
 
     override fun hasReadableDgram(conn: QuicheConn) = hasReadableDgram

@@ -3,6 +3,7 @@
 package com.ditchoom.socket.quic.core.conn
 
 import com.ditchoom.socket.quic.core.observe.Pool
+import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 import kotlin.concurrent.atomics.AtomicInt
 import kotlin.concurrent.atomics.AtomicLong
@@ -16,7 +17,8 @@ internal sealed interface SlotMemory {
 
     class Made(
         val bytes: NativeBytes,
-    ) : SlotMemory
+    ) : SlotMemory,
+        Readied
 }
 
 /** What [DatagramSlots.take] found: a [DatagramSlot], which is its own answer, or [None] when every slot is taken. */
@@ -43,7 +45,7 @@ internal class DatagramSlot(
         private set
     var length = 0
         private set
-    var queuedAt = 0L
+    var queuedAt = Nanos(0L)
         private set
 
     fun holds(memory: SlotMemory) {
@@ -52,7 +54,7 @@ internal class DatagramSlot(
 
     fun carries(
         length: Int,
-        queuedAt: Long,
+        queuedAt: Nanos,
     ) {
         this.length = length
         this.queuedAt = queuedAt

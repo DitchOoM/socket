@@ -159,7 +159,7 @@ data class DatagramOptions(
     val recvQueueLen: Int = 1024,
     /**
      * The send queue's high-water mark: datagrams queued to be sent, those already handed to the QUIC stack for its next
-     * packets included; past it [overflow] decides.
+     * packets included; past it [overflow] decides. The core engine refuses a depth below 3.
      */
     val sendQueueLen: Int = 128,
     /** What a send does when the send queue is at its high-water mark. */

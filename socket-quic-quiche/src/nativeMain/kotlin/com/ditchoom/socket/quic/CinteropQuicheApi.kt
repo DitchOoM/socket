@@ -45,7 +45,9 @@ import com.ditchoom.socket.quic.quiche.quiche_conn_available_dcids
 import com.ditchoom.socket.quic.quiche.quiche_conn_close
 import com.ditchoom.socket.quic.quiche.quiche_conn_dgram_max_writable_len
 import com.ditchoom.socket.quic.quiche.quiche_conn_dgram_recv
+import com.ditchoom.socket.quic.quiche.quiche_conn_dgram_purge_outgoing
 import com.ditchoom.socket.quic.quiche.quiche_conn_dgram_recv_front_len
+import com.ditchoom.socket.quic.quiche.quiche_conn_dgram_send_queue_len
 import com.ditchoom.socket.quic.quiche.quiche_conn_dgram_send
 import com.ditchoom.socket.quic.quiche.quiche_conn_early_data_reason
 import com.ditchoom.socket.quic.quiche.quiche_conn_free
@@ -137,6 +139,7 @@ import kotlinx.cinterop.UByteVar
 import kotlinx.cinterop.UIntVar
 import kotlinx.cinterop.ULongVar
 import kotlinx.cinterop.alloc
+import kotlinx.cinterop.staticCFunction
 import kotlinx.cinterop.allocArray
 import kotlinx.cinterop.convert
 import kotlinx.cinterop.get
@@ -748,6 +751,12 @@ internal object CinteropQuicheApi : QuicheApi, QuicheRandomPin, QuicheClockPin {
     override fun connDgramMaxWritableBytes(conn: QuicheConn): Int {
         val raw = quiche_conn_dgram_max_writable_len(conn.handle.toCPointer()!!)
         return if (raw < 0) NO_DATAGRAM_ROOM else raw.toInt()
+    }
+
+    override fun connDgramPurgeOutgoing(conn: QuicheConn): Int {
+        val held = quiche_conn_dgram_send_queue_len(conn.handle.toCPointer()!!)
+        quiche_conn_dgram_purge_outgoing(conn.handle.toCPointer()!!, staticCFunction { _, _ -> true })
+        return held.toInt()
     }
 
     override fun hasReadableDgram(conn: QuicheConn): Boolean = quiche_conn_dgram_recv_front_len(conn.handle.toCPointer()!!) >= 0

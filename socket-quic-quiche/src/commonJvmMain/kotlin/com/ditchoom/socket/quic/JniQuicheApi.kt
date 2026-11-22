@@ -389,6 +389,8 @@ object JniQuicheApi : QuicheApi {
         return if (raw < 0) NO_DATAGRAM_ROOM else raw.toInt()
     }
 
+    override fun connDgramPurgeOutgoing(conn: QuicheConn): Int = nConnDgramPurgeOutgoing(conn.handle).toInt()
+
     override fun hasReadableDgram(conn: QuicheConn): Boolean = nConnDgramRecvFrontLen(conn.handle) >= 0
 
     override fun connDgramMaxWritableLen(conn: QuicheConn): MaxDatagramSize {
@@ -1209,6 +1211,8 @@ object JniQuicheApi : QuicheApi {
     @FastNative
     @JvmStatic
     private external fun nConnDgramRecvFrontLen(conn: Long): Long
+
+    private external fun nConnDgramPurgeOutgoing(conn: Long): Long
 
     @FastNative
     @JvmStatic

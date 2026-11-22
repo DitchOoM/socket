@@ -31,6 +31,17 @@ sealed interface QuicOptionRefusal {
         override val option: QuicOptionName get() = QuicOptionName.Trace
     }
 
+    /**
+     * A [DatagramOptions.sendQueueLen] of [sendQueueLen], below the [minimum] this engine can hold within it: one datagram
+     * handed to the QUIC stack, one waiting for it, and one in the queue a send copies into.
+     */
+    data class DatagramSendQueueTooShort(
+        val sendQueueLen: Int,
+        val minimum: Int,
+    ) : QuicOptionRefusal {
+        override val option: QuicOptionName get() = QuicOptionName.Datagrams
+    }
+
     /** A [DatagramMaxAge.Within] of [age], which is not positive: every datagram would be dropped. */
     data class DatagramMaxAgeNotPositive(
         val age: Duration,

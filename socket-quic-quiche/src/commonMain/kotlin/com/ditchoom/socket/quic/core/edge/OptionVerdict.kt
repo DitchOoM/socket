@@ -19,6 +19,7 @@ import com.ditchoom.socket.quic.QuicSessionStore
 import com.ditchoom.socket.quic.StandbyLink
 import com.ditchoom.socket.quic.StreamOpenPolicy
 import com.ditchoom.socket.quic.UdpBatching
+import com.ditchoom.socket.quic.core.conn.MIN_SEND_DEPTH
 import com.ditchoom.socket.quic.trace.QlogDeclaration
 import com.ditchoom.socket.quic.trace.QlogTarget
 import com.ditchoom.socket.quic.trace.TraceCapture
@@ -138,12 +139,21 @@ private fun transportVerdict(options: QuicOptions): OptionVerdict {
     return options.datagrams?.let { datagramVerdict(it) } ?: OptionVerdict.Honoured
 }
 
-/** The core's own send and receive queues honour every overflow rule, and every maximum age that is positive. */
+/**
+ * The core's own send and receive queues honour every overflow rule, every maximum age that is positive, and every send
+ * depth that holds its hand-off, its door and one queued datagram.
+ */
 private fun datagramVerdict(options: DatagramOptions): OptionVerdict {
     when (options.overflow) {
         is DatagramOverflow.RefuseNew, is DatagramOverflow.EvictOldest -> Unit
     }
-    return firstRefused(ageVerdict(options.outgoingMaxAge), ageVerdict(options.incomingMaxAge))
+    val depth =
+        if (options.sendQueueLen >= MIN_SEND_DEPTH) {
+            OptionVerdict.Honoured
+        } else {
+            refused(QuicOptionRefusal.DatagramSendQueueTooShort(options.sendQueueLen, MIN_SEND_DEPTH))
+        }
+    return firstRefused(depth, ageVerdict(options.outgoingMaxAge), ageVerdict(options.incomingMaxAge))
 }
 
 private fun ageVerdict(age: DatagramMaxAge): OptionVerdict =

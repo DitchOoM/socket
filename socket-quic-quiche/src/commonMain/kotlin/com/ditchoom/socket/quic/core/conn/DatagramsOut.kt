@@ -14,6 +14,8 @@ import com.ditchoom.socket.quic.core.observe.Published
 import com.ditchoom.socket.quic.core.stream.Backlog
 import com.ditchoom.socket.quic.core.stream.QUICHE_ERR_DONE
 import com.ditchoom.socket.quic.core.time.Nanos
+import com.ditchoom.socket.quic.core.time.Span
+import com.ditchoom.socket.quic.core.time.since
 import kotlinx.coroutines.CancellableContinuation
 import kotlin.concurrent.atomics.AtomicInt
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
@@ -72,11 +74,11 @@ internal class DatagramRefusedByQuiche(
 internal class DatagramMemoryNotAddressable : Throwable()
 
 /**
- * A connection's RFC 9221 sends, inside it. The [queue] any thread offers to is bounded so that it and quiche's short
- * hand-off behind it together hold at most the options' depth; it is fed into quiche from the head each time the
- * connection writes and each time the write runs dry. A datagram past the outgoing age at the head is dropped and
- * counted; the one quiche refused last for a full queue waits at the door and goes first next time, still counted in the
- * queue and still bound by the age. Callers waiting for room are woken in the order they began to wait once the queue
+ * A connection's RFC 9221 sends, inside it. The [queue] any thread offers to is bounded so that it, the door and quiche's
+ * short hand-off behind them together hold at most the options' depth; it is fed into quiche from the head each time
+ * the connection writes and each time the write runs dry. A datagram past the outgoing age at the head is dropped and
+ * counted; the one quiche refused last for a full queue waits at the door, outside the queue's bound, and goes first
+ * next time, still bound by the age. Callers waiting for room are woken in the order they began to wait once the queue
  * is at its low-water mark. The memory of slots nobody needed for a while is let go.
  */
 @Confined
@@ -87,12 +89,12 @@ internal class DatagramSender(
     private val counts: ConnCounts,
 ) {
     private val room = AtomicInt(NO_DATAGRAM_ROOM)
-    private val waiting = ArrayDeque<RoomWait>()
+    private val waiting = ArrayDeque<RoomWaiter>()
     private var door: Head = Head.Empty
     private var quiche = QuicheQueue.MayHaveRoom
     private var peak = 0
     private var lastPeak = 0
-    private var window = 0L
+    private var window = Nanos(0L)
 
     /** Monotonic: datagrams quiche took to send. */
     var output = 0L
@@ -105,8 +107,12 @@ internal class DatagramSender(
     /** Reads the room a datagram has now. */
     fun readRoom() = room.store(q.api.connDgramMaxWritableBytes(q.handle))
 
-    /** Whether datagrams wait to be sent. */
-    fun backlog(): Backlog = if (queue.size() > 0) Backlog.Waiting else Backlog.None
+    /** Whether datagrams wait to be sent, in the queue or at the door. */
+    fun backlog(): Backlog =
+        when (door) {
+            is DatagramSlot -> Backlog.Waiting
+            is Head.Empty -> if (queue.size() > 0) Backlog.Waiting else Backlog.None
+        }
 
     /** quiche wrote a packet, which may have carried datagrams out of its queue. */
     fun quicheWrote() {
@@ -118,6 +124,7 @@ internal class DatagramSender(
      * quiche that was full and has written nothing since is not asked again.
      */
     fun feed(now: Nanos): Refill {
+        wakeIfLow()
         if (queue.life() is QueueLife.Closed || quiche == QuicheQueue.Full) return Refill.Nothing
         peak = maxOf(peak, queue.size())
         var moved: Refill = Refill.Nothing
@@ -155,25 +162,25 @@ internal class DatagramSender(
     /** At [now], once a turn: lets go of the memory of free slots beyond twice what the last two windows needed. */
     fun trim(now: Nanos) {
         peak = maxOf(peak, queue.size())
-        if (now.value - window < TRIM_WINDOW_NANOS) return
+        if (now.since(window) < TRIM_WINDOW) return
         queue.trim(maxOf(MIN_KEPT, 2 * maxOf(peak, lastPeak)))
         lastPeak = peak
         peak = queue.size()
-        window = now.value
+        window = now
     }
 
-    /** [wait] is answered once the queue is at its low-water mark: now, or when a feed drains it there. */
-    fun awaitRoom(wait: RoomWait) {
+    /** [wait] is answered once the queue is at its low-water mark: now, or when a feed finds it there. */
+    fun awaitRoom(wait: RoomWaiter) {
         if (queue.size() <= queue.lowWater || queue.life() is QueueLife.Closed) wait.room() else waiting.addLast(wait)
     }
 
-    fun withdraw(wait: RoomWait) {
+    fun withdraw(wait: RoomWaiter) {
         waiting.remove(wait)
     }
 
     /**
-     * The connection reached its close point, or ended, with [end]: nothing more goes to quiche, what is queued and at
-     * the door is dropped and counted, and every waiting caller is answered.
+     * The connection reached its close point, or ended, with [end]: nothing more goes to quiche; what is queued, at the
+     * door and in quiche's own queue is dropped and counted, and every waiting caller is answered.
      */
     fun close(end: ConnEnd) {
         when (val held = door) {
@@ -183,7 +190,10 @@ internal class DatagramSender(
                 leaveDoor(held)
             }
         }
-        queue.close(end)
+        when (queue.close(end)) {
+            Closing.Now -> counts.datagramsDroppedAtClose(q.api.connDgramPurgeOutgoing(q.handle))
+            Closing.Already -> Unit
+        }
         while (waiting.isNotEmpty()) waiting.removeFirst().room()
     }
 
@@ -201,7 +211,7 @@ internal class DatagramSender(
         slot: DatagramSlot,
         now: Nanos,
     ): HandOff {
-        if (outgoing.expired(slot.queuedAt, now.value) == Expiry.Expired) {
+        if (outgoing.expired(slot.queuedAt, now) == Expiry.Expired) {
             counts.datagramExpiredOutgoing()
             return HandOff.Dropped
         }
@@ -222,12 +232,12 @@ internal class DatagramSender(
                 counts.datagramDroppedUnsendable()
                 HandOff.Dropped
             }
-            else -> HandOff.Refused(sent)
+            else -> HandOff.Refused(sent).also { counts.datagramDroppedUnsendable() }
         }
     }
 
     private companion object {
-        const val TRIM_WINDOW_NANOS = 1_000_000_000L
+        val TRIM_WINDOW = Span(1_000_000_000L)
         const val MIN_KEPT = 4
     }
 }
@@ -240,13 +250,20 @@ internal fun ConnParts.datagramsToWrite(): Datagrams =
         is Life.Over -> Datagrams.Off
     }
 
+/** A caller parked inside the connection until its send queue is at its low-water mark or closed. Answered once. */
+internal interface RoomWaiter {
+    /** The caller goes on. */
+    fun room()
+}
+
 /**
  * A caller waiting in [DatagramSend.NotSent.QueueFull.awaitRoom][com.ditchoom.socket.quic.DatagramSend.NotSent.QueueFull.awaitRoom],
  * parked inside the connection until its send queue is at its low-water mark or closed. Answered once.
  */
 internal class RoomWait(
     private val caller: CancellableContinuation<Unit>,
-) : ConnWork() {
+) : ConnWork(),
+    RoomWaiter {
     override fun run(inside: Inside) =
         when (val datagrams = inside.datagrams) {
             is Datagrams.Off -> room()
@@ -256,7 +273,7 @@ internal class RoomWait(
     override fun gone(end: ConnEnd) = room()
 
     /** The caller goes on; one cancelled meanwhile is not resumed. */
-    fun room() = caller.resume(Unit)
+    override fun room() = caller.resume(Unit)
 }
 
 /** Takes back a [RoomWait] whose caller was cancelled. */

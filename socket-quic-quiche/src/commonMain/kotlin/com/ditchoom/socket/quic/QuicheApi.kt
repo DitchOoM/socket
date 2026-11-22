@@ -320,6 +320,12 @@ interface QuicheApi {
             is MaxDatagramSize.Unavailable -> NO_DATAGRAM_ROOM
         }
 
+    /**
+     * Drops every datagram quiche's send queue holds, none of which is sent; returns how many. (Wraps
+     * `dgram_send_queue_len` and `dgram_purge_outgoing`.)
+     */
+    fun connDgramPurgeOutgoing(conn: QuicheConn): Int
+
     /** True when at least one datagram is queued for receive. (Wraps `dgram_recv_front_len`.) */
     fun hasReadableDgram(conn: QuicheConn): Boolean
 

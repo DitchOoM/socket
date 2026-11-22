@@ -54,13 +54,16 @@ internal class ConnCounts {
     /** Queued RFC 9221 datagrams dropped unsent because they waited longer than the outgoing maximum age. */
     val datagramsExpiredOutgoing: Long get() = expiredOut.value()
 
-    /** Queued RFC 9221 datagrams quiche would not take when they reached it, the path having shrunk below their size. */
+    /**
+     * Queued RFC 9221 datagrams quiche would not take when they reached it: the path had shrunk below their size, or
+     * quiche refused them with an error that ends the connection.
+     */
     val datagramsDroppedUnsendable: Long get() = unsendable.value()
 
     /** Received RFC 9221 datagrams dropped undelivered because they waited longer than the incoming maximum age. */
     val datagramsExpiredIncoming: Long get() = expiredIn.value()
 
-    /** Queued RFC 9221 datagrams dropped unsent because the connection reached its close point first. */
+    /** RFC 9221 datagrams dropped unsent because the connection reached its close point first: queued, at the door, or in quiche's queue. */
     val datagramsDroppedAtClose: Long get() = droppedAtClose.value()
 
     /** Datagrams whose due time quiche stamped on a clock the loop does not read: each was sent at once, unpaced. */
@@ -95,6 +98,8 @@ internal class ConnCounts {
     fun datagramExpiredIncoming() = expiredIn.increment()
 
     fun datagramDroppedAtClose() = droppedAtClose.increment()
+
+    fun datagramsDroppedAtClose(count: Int) = droppedAtClose.add(count)
 
     /** Every count, read now. */
     fun seen(): CountsSeen =

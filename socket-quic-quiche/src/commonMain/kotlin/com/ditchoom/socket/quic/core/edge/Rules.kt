@@ -17,6 +17,7 @@ import com.ditchoom.socket.quic.core.conn.KeepAliveRule
 import com.ditchoom.socket.quic.core.conn.Overflow
 import com.ditchoom.socket.quic.core.conn.PtoRule
 import com.ditchoom.socket.quic.core.conn.quicheHandOff
+import com.ditchoom.socket.quic.core.time.Span
 import com.ditchoom.socket.quic.core.life.CloseRule
 import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.transport.NetworkKind
@@ -57,7 +58,7 @@ internal fun datagramRuleOf(options: QuicOptions): DatagramRule =
 private fun ageBoundOf(age: DatagramMaxAge): AgeBound =
     when (age) {
         is DatagramMaxAge.Unbounded -> AgeBound.Unbounded
-        is DatagramMaxAge.Within -> AgeBound.Within(age.age.inWholeNanoseconds)
+        is DatagramMaxAge.Within -> AgeBound.Within(Span(age.age.inWholeNanoseconds))
     }
 
 private fun overflowOf(overflow: DatagramOverflow): Overflow =

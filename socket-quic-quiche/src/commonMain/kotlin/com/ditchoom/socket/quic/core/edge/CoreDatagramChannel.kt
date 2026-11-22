@@ -30,7 +30,6 @@ import com.ditchoom.socket.quic.closeReason
 import com.ditchoom.socket.quic.core.conn.CallerPlace
 import com.ditchoom.socket.quic.core.conn.Conn
 import com.ditchoom.socket.quic.core.conn.DATAGRAM_ROOM
-import com.ditchoom.socket.quic.core.conn.DatagramMemoryNotAddressable
 import com.ditchoom.socket.quic.core.conn.Datagrams
 import com.ditchoom.socket.quic.core.conn.EndWork
 import com.ditchoom.socket.quic.core.conn.Feed
@@ -104,7 +103,10 @@ internal class CoreDatagramChannel(
     /** Queues [payload]'s remaining bytes as one datagram; [payload] is the caller's again, unmoved, when this returns. */
     fun send(payload: ReadBuffer): DatagramSend = queue(payload, 0, payload)
 
-    /** Queues [prefix]'s remaining bytes then [payload]'s as one datagram, joined in the one copy into the queue. */
+    /**
+     * Queues [prefix]'s remaining bytes then [payload]'s as one datagram, joined in the one copy into the queue; a
+     * [DatagramSend.NotSent.TooLarge] reports the room left for [payload].
+     */
     fun send(
         prefix: ReadBuffer,
         payload: ReadBuffer,
@@ -131,7 +133,7 @@ internal class CoreDatagramChannel(
             Negotiation.None -> return DatagramSend.NotSent.Unavailable.NotNegotiated
         }
         val length = payload.remaining()
-        if (prefixLength + length > room.maxBytes()) return DatagramSend.NotSent.TooLarge(room.maxBytes())
+        if (prefixLength + length > room.maxBytes()) return DatagramSend.NotSent.TooLarge(maxOf(room.maxBytes() - prefixLength, 0))
         return when (val offered = out.queue.offer(prefix, prefixLength, payload, length)) {
             is Offered.Queued -> {
                 if (out.queue.wantsFeed() == Feed.Hand) conn.submit(out.queue.feedWork, CallerPlace.HandToLoop)
@@ -141,10 +143,16 @@ internal class CoreDatagramChannel(
                 conn.counts.datagramRefusedQueueFull()
                 full
             }
+            is Offered.Contended -> {
+                conn.counts.datagramRefusedQueueFull()
+                // A place this offer let go may have brought the queue to its low-water mark: the connection wakes its waiters.
+                if (out.queue.wantsFeed() == Feed.Hand) conn.submit(out.queue.feedWork, CallerPlace.HandToLoop)
+                full
+            }
             is QueueLife.Closed -> ended(offered.end)
-            is Offered.Unaddressable -> {
-                // The connect checked its factory makes memory with an address; one that stopped cannot carry datagrams.
-                val end = ConnEnd.ProcessingFailed(Thrown(DatagramMemoryNotAddressable()))
+            is Offered.NoMemory -> {
+                // The connect checked its factory makes memory with an address; one that fails cannot carry datagrams.
+                val end = ConnEnd.ProcessingFailed(Thrown(offered.failure))
                 conn.submit(EndWork(end), CallerPlace.HandToLoop)
                 ended(end)
             }

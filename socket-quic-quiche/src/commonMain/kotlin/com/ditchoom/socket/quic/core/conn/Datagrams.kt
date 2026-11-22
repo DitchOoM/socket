@@ -49,12 +49,12 @@ private class Queued(
 ) {
     var length = 0
         private set
-    var arrivedAt = 0L
+    var arrivedAt = Nanos(0L)
         private set
 
     fun filled(
         length: Int,
-        at: Long,
+        at: Nanos,
     ) {
         this.length = length
         arrivedAt = at
@@ -89,7 +89,7 @@ internal class DatagramBox(
         while (queued.isNotEmpty()) {
             val next = queued.removeFirst()
             spare.addLast(next)
-            when (incoming.expired(next.arrivedAt, now.value)) {
+            when (incoming.expired(next.arrivedAt, now)) {
                 Expiry.Expired -> counts.datagramExpiredIncoming()
                 Expiry.Fresh -> {
                     next.bytes.copyOut(waiter.address, next.length)
@@ -183,7 +183,7 @@ internal class DatagramBox(
                 reset = { return Kept.None },
                 error = { return Kept.None },
             )
-        slot.filled(got, now.value)
+        slot.filled(got, now)
         if (spare.isNotEmpty()) {
             spare.removeFirst()
         } else {

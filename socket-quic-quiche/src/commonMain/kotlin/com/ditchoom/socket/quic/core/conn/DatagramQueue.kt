@@ -18,11 +18,20 @@ import kotlin.concurrent.atomics.incrementAndFetch
 internal sealed interface Offered {
     data object Queued : Offered
 
-    /** The queue is at its bound and refuses new datagrams, or no cell or slot could be had; nothing was queued. */
+    /** Under [Overflow.RefuseNew], the queue is at its bound; nothing was queued. */
     data object Full : Offered
 
-    /** The connection's factory made memory without an address; nothing was queued. */
-    data object Unaddressable : Offered
+    /**
+     * Other threads held every place for longer than an offer waits: the bound was taken by offers still being admitted
+     * and none queued could be evicted in time, every slot was held, or the ring's cell was still in a taker's hands.
+     * Nothing was queued; a place this offer had taken is free again.
+     */
+    data object Contended : Offered
+
+    /** The connection's factory failed to make the datagram's memory with [failure]; nothing was queued or evicted. */
+    class NoMemory(
+        val failure: Throwable,
+    ) : Offered
 }
 
 /** Whether the queue takes datagrams, or was closed at the connection's close point with how it ended. */
@@ -34,6 +43,9 @@ internal sealed interface QueueLife {
     ) : QueueLife,
         Offered
 }
+
+/** Whether [DatagramQueue.close] closed the queue now, or it was closed already. */
+internal enum class Closing { Now, Already }
 
 /** Whether an offer must hand the connection the queue's feed, or it is handed already. */
 internal enum class Feed { Hand, Handed }
@@ -50,17 +62,16 @@ internal sealed interface QueueParts {
 
 /**
  * A connection's RFC 9221 send queue: any thread offers, and the connection takes from the head. At most [bound]
- * datagrams are admitted, counted from admission until the connection is done with them; past it a new datagram is
- * refused, or under [Overflow.EvictOldest] the oldest queued one is dropped, counted, and its place goes to the new one.
- * Each datagram is copied into a slot borrowed before it is admitted, so no allocation happens while a cell is claimed;
- * the slots and the ring are made at the first offer, so a connection that never sends holds neither. Closed at the
- * connection's close point; its memory goes once no offer is inside.
+ * datagrams are admitted, counted from admission until the connection takes them; past it a new datagram is refused, or
+ * under [Overflow.EvictOldest] the oldest queued one is dropped, counted, and its place goes to the new one. Each
+ * datagram is copied into a slot borrowed, with its memory made, before it is admitted, so nothing is allocated or
+ * evicted for a datagram that cannot be held; the slots and the ring are made at the first offer, so a connection that
+ * never sends holds neither. Closed by the connection at its close point; its memory goes once no offer is inside.
  */
 @Queue
 internal class DatagramQueue(
     private val bound: Int,
     private val overflow: Overflow,
-    private val outgoing: AgeBound,
     private val factory: BufferFactory,
     private val clock: LoopClock,
     private val counts: ConnCounts,
@@ -82,7 +93,7 @@ internal class DatagramQueue(
     /** Datagrams admitted at or below which senders waiting for room are woken. */
     val lowWater: Int = bound / LOW_WATER_DIVISOR
 
-    /** Any thread: datagrams admitted and not yet done with; stale by the time it returns. */
+    /** Any thread: datagrams admitted and not yet taken; stale by the time it returns. */
     fun size(): Int = admitted.load()
 
     fun life(): QueueLife = life.load()
@@ -122,24 +133,27 @@ internal class DatagramQueue(
         val slot =
             when (val taken = made.slots.take()) {
                 is DatagramSlot -> taken
-                is SlotTake.None -> return Offered.Full
+                is SlotTake.None -> return Offered.Contended
             }
-        var admission = Admission.Full
+        var admission = Admission.Out
         var placed = Put.Blocked
         try {
+            val memory =
+                when (val readied = slot.ready(factory, prefixLength + length)) {
+                    is SlotMemory.Made -> readied
+                    is Readied.Failed -> return Offered.NoMemory(readied.failure)
+                }
             admission = admit(made)
             when (admission) {
                 Admission.In -> Unit
-                Admission.Full -> return Offered.Full
+                Admission.Out -> return Offered.Full
+                Admission.Contended -> return Offered.Contended
             }
-            when (slot.fill(factory, clock, outgoing, prefix, prefixLength, payload, length)) {
-                Filled.Yes -> Unit
-                Filled.Unaddressable -> return Offered.Unaddressable
-            }
+            slot.fill(memory, clock, prefix, prefixLength, payload, length)
             placed = made.ring.put(slot)
             return when (placed) {
                 Put.Placed -> Offered.Queued
-                Put.Blocked -> Offered.Full
+                Put.Blocked -> Offered.Contended
             }
         } finally {
             when (placed) {
@@ -152,58 +166,67 @@ internal class DatagramQueue(
         }
     }
 
-    /** A place among the [bound]: a free one, or under eviction the oldest queued datagram's, which is dropped. */
+    /**
+     * A place among the [bound]: a free one, or under eviction the oldest queued datagram's, which is dropped. An evicting
+     * offer that finds none queued while the bound is taken by offers being admitted tries [PATIENCE] times.
+     */
     private fun admit(made: QueueParts.Made): Admission {
+        var tries = 0
         while (true) {
             val seen = admitted.load()
             if (seen < bound) {
                 if (admitted.compareAndSet(seen, seen + 1)) return Admission.In
                 continue
             }
-            return when (overflow) {
-                Overflow.RefuseNew -> Admission.Full
-                Overflow.EvictOldest -> evictOldest(made)
+            when (overflow) {
+                Overflow.RefuseNew -> return Admission.Out
+                Overflow.EvictOldest ->
+                    when (val oldest = made.ring.take()) {
+                        is DatagramSlot -> {
+                            made.slots.give(oldest)
+                            counts.datagramEvicted()
+                            return Admission.In
+                        }
+                        is Head.Empty -> if (++tries >= PATIENCE) return Admission.Contended
+                    }
             }
         }
     }
 
-    /** Takes the oldest queued datagram's place for the new one; none may be published yet, which reads as full. */
-    private fun evictOldest(made: QueueParts.Made): Admission {
-        repeat(PATIENCE) {
-            when (val oldest = made.ring.take()) {
-                is DatagramSlot -> {
-                    made.slots.give(oldest)
-                    counts.datagramEvicted()
-                    return Admission.In
-                }
-                is Head.Empty -> Unit
-            }
-        }
-        return Admission.Full
-    }
-
-    /** The connection: the oldest queued datagram, which is its own until [done]. */
+    /** The connection: the oldest queued datagram, which is its own, outside the bound, until [done]. */
     fun take(): Head =
         when (val now = parts.load()) {
             is QueueParts.Unmade -> Head.Empty
-            is QueueParts.Made -> now.ring.take()
+            is QueueParts.Made ->
+                now.ring.take().also { head ->
+                    when (head) {
+                        is DatagramSlot -> admitted.decrementAndFetch()
+                        is Head.Empty -> Unit
+                    }
+                }
         }
 
-    /** The connection is done with [slot]'s datagram: it left, or was dropped; its place and slot are free again. */
-    fun done(slot: DatagramSlot) {
+    /** The connection is done with [slot]'s datagram: it left, or was dropped; its slot is free again. */
+    fun done(slot: DatagramSlot) =
         when (val now = parts.load()) {
             is QueueParts.Unmade -> Unit
             is QueueParts.Made -> now.slots.give(slot)
         }
-        admitted.decrementAndFetch()
-    }
 
-    /** The connection: frees the memory of free slots beyond [keep]. */
-    fun trim(keep: Int) =
+    /**
+     * The connection: frees the memory of free slots beyond [keep]; nothing once it closed the queue, whose memory the
+     * last offer out may be freeing.
+     */
+    fun trim(keep: Int) {
+        when (life.load()) {
+            is QueueLife.Closed -> return
+            is QueueLife.Open -> Unit
+        }
         when (val now = parts.load()) {
             is QueueParts.Unmade -> Unit
             is QueueParts.Made -> now.slots.trim(keep)
         }
+    }
 
     /** Any thread, after an offer: [Feed.Hand] when the connection must be handed [feedWork], once until it runs. */
     fun wantsFeed(): Feed = if (feed.compareAndSet(IDLE, QUEUED)) Feed.Hand else Feed.Handed
@@ -215,13 +238,13 @@ internal class DatagramQueue(
      * The connection, at its close point with [end]: no offer is taken any more, and what is queued is dropped, counted,
      * by whoever leaves last, here or an offer still inside; then the memory goes.
      */
-    fun close(end: ConnEnd) {
-        if (!life.compareAndSet(QueueLife.Open, QueueLife.Closed(end))) return
+    fun close(end: ConnEnd): Closing {
+        if (!life.compareAndSet(QueueLife.Open, QueueLife.Closed(end))) return Closing.Already
         while (true) {
             val seen = inside.load()
             if (inside.compareAndSet(seen, seen or CLOSED)) {
                 if (seen == 0) drop()
-                return
+                return Closing.Now
             }
         }
     }
@@ -239,7 +262,10 @@ internal class DatagramQueue(
             is QueueParts.Made -> {
                 while (true) {
                     when (now.ring.take()) {
-                        is DatagramSlot -> counts.datagramDroppedAtClose()
+                        is DatagramSlot -> {
+                            admitted.decrementAndFetch()
+                            counts.datagramDroppedAtClose()
+                        }
                         is Head.Empty -> break
                     }
                 }
@@ -257,7 +283,7 @@ internal class DatagramQueue(
         return if (parts.compareAndSet(QueueParts.Unmade, fresh)) fresh else made()
     }
 
-    private enum class Admission { In, Full }
+    private enum class Admission { Out, In, Contended }
 
     private companion object {
         const val CLOSED = 1 shl 30

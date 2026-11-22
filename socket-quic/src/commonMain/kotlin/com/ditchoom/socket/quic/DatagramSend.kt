@@ -25,8 +25,14 @@ sealed interface DatagramSend {
     /** Nothing was queued. */
     sealed interface NotSent : DatagramSend {
         /**
-         * The send queue is at its high-water mark under [DatagramOverflow.RefuseNew]: wait with [awaitRoom] and send
-         * again, or drop the datagram. One per channel, made by the engine.
+         * The send queue had no place for the datagram: wait with [awaitRoom] and send again, or drop the datagram. One
+         * per channel, made by the engine.
+         *
+         * Under [DatagramOverflow.RefuseNew] the queue is at its high-water mark. Under [DatagramOverflow.EvictOldest] a
+         * send from one thread at a time is never refused; with sends from several threads at once it is refused only
+         * when other threads held what it needed for longer than a send waits: every place in the queue taken by sends
+         * still copying their datagrams, with none queued to evict; more sends copying at once than the engine keeps
+         * spare memory slots for (64); or the queue's next cell still being emptied by the connection.
          */
         class QueueFull private constructor(
             private val room: DatagramRoomWait,
@@ -74,7 +80,11 @@ sealed interface DatagramOverflow {
     /** The new datagram is refused with [DatagramSend.NotSent.QueueFull]; those queued stay. */
     data object RefuseNew : DatagramOverflow
 
-    /** The oldest queued datagram not yet being handed to the network is dropped, and counted: the send succeeds. */
+    /**
+     * The oldest queued datagram not yet being handed to the network is dropped, and counted: the send succeeds. Sends
+     * from several threads at once can still be told [DatagramSend.NotSent.QueueFull] when they hold every place
+     * between them; [DatagramSend.NotSent.QueueFull] says when.
+     */
     data object EvictOldest : DatagramOverflow
 }
 
