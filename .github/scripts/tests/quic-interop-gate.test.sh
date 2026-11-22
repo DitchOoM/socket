@@ -195,6 +195,48 @@ sed 's/"signal": "SIGSEGV"/"signal": "SIGWHAT"/' "$tmp/sig-exp.json" >"$tmp/bad-
 python3 "$script" judge "$tmp/bad-exp.json" "$tmp/sig" >/dev/null 2>"$tmp/bad.err"
 expect_rc "an unknown signal stops the gate" $? 1
 
+# A flaky cell with a pass signature accepts each of its two outcomes only with the cause the evidence shows: out of
+# ids at the peer's limit when the peer retired nothing unasked, every move when it retired one unasked.
+cat >"$tmp/moves-exp.json" <<'EOF2'
+{"our-client-migrating": {"m": {"transfer": "pass",
+  "active-migration": {"flaky": {"why": "peer: retires unasked or not",
+    "signature": {"kind": "migration-out-of-ids-peer-retired-nothing"},
+    "pass-signature": {"kind": "migration-peer-retired-unasked"}}}}}}
+EOF2
+moves_conn() { # <peer unasked retirements>
+  printf '{"qlog":"q.sqlog","remote_active_connection_id_limit":5,"peer_unasked_retirements":%s}' "$1"
+}
+moves_case() { # <name> <summary> <migrations json> <retirements> <expected rc> <line>
+  rm -rf "$tmp/moves" && mkdir "$tmp/moves"
+  runner "$tmp/moves/our-client-migrating__m.json" transfer:succeeded
+  echo "$2" >"$tmp/moves/our-client-migrating__m.summary"
+  evidence "$tmp/moves/our-client-migrating__m.evidence.json" our-client-migrating m transfer \
+    "{\"connections\":[$(moves_conn "$4")],\"exits\":{},\"migrations\":[$3]}"
+  out="$(python3 "$script" judge "$tmp/moves-exp.json" "$tmp/moves" --stale=fail)"
+  expect_rc "$1" $? "$5"
+  expect "$1 (shown)" "$out" "$6"
+}
+four='MIGRATION-SUMMARY attempted=6 succeeded=4 consecutive=4 firstUnmoved=move 5: NoSpareConnectionId attempts=5'
+four_json='{"attempted":6,"succeeded":4,"first_unmoved":"NoSpareConnectionId"}'
+six='MIGRATION-SUMMARY attempted=6 succeeded=6 consecutive=6 firstUnmoved=none'
+six_json='{"attempted":6,"succeeded":6}'
+moves_case "four moves with no retirement is the failure fingerprint" "$four" "$four_json" 0 0 \
+  "| flaky (signature) | our-client-migrating | m | active-migration | failed | flaky | no unasked RETIRE_CONNECTION_ID from the peer; 4 moves, then NoSpareConnectionId at its active_connection_id_limit 5 |"
+moves_case "four moves after an unasked retirement is a regression" "$four" "$four_json" 1 1 \
+  "| REGRESSION | our-client-migrating | m | active-migration | failed | flaky | failed, but not as migration-out-of-ids-peer-retired-nothing"
+moves_case "every move after an unasked retirement is the pass fingerprint" "$six" "$six_json" 1 0 \
+  "| flaky (pass signature) | our-client-migrating | m | active-migration | succeeded | flaky | the peer retired 1 id(s) of ours unasked; 6 of 6 moves |"
+moves_case "every move with no retirement is a regression" "$six" "$six_json" 0 1 \
+  "| REGRESSION | our-client-migrating | m | active-migration | succeeded | flaky | passed, but not as migration-peer-retired-unasked"
+moves_case "a third outcome is a regression" \
+  'MIGRATION-SUMMARY attempted=6 succeeded=2 consecutive=2 firstUnmoved=move 3: PathNotValidated attempts=1' \
+  '{"attempted":6,"succeeded":2,"first_unmoved":"PathNotValidated"}' 0 1 \
+  "| REGRESSION | our-client-migrating | m | active-migration | failed | flaky | failed, but not as migration-out-of-ids-peer-retired-nothing"
+sed 's/"flaky": {"why"/"known-failure": {"why"/' "$tmp/moves-exp.json" >"$tmp/bad-exp.json"
+python3 "$script" judge "$tmp/bad-exp.json" "$tmp/moves" >/dev/null 2>"$tmp/bad.err"
+expect_rc "a pass signature on a known failure stops the gate" $? 1
+expect "the misplaced pass signature is named" "$(cat "$tmp/bad.err")" "only a flaky cell takes a pass-signature"
+
 # A FRAME_ENCODING_ERROR close counts only against a peer whose source connection id is zero-length.
 cat >"$tmp/cid-exp.json" <<'EOF2'
 {"our-server": {"k": {"handshake": {"known-failure": {"why": "peer: sends NEW_CONNECTION_ID with a zero-length id", "signature": {"kind": "frame-encoding-error-from-zero-length-cid-peer"}}}}}}

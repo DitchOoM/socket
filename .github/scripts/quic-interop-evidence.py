@@ -97,6 +97,8 @@ def connection_facts(path, side):
         "qlog": os.path.basename(path),
         "local_initial_max_streams_bidi": 0,
         "remote_disable_active_migration": False,
+        "remote_active_connection_id_limit": 0,
+        "peer_unasked_retirements": 0,
         "peer_source_cid_lengths": [],
         "max_streams_bidi_sent": 0,
         "peer_bidi_streams_opened": 0,
@@ -124,6 +126,7 @@ def connection_facts(path, side):
     stream_packets = set()
     last_tx = -1.0
     closing = False
+    retire_prior_to_sent = 0
     for record in qlog_records(path):
         name = record.get("name", "")
         data = record.get("data") or {}
@@ -204,10 +207,14 @@ def connection_facts(path, side):
                 facts["local_initial_max_streams_bidi"] = int(data["initial_max_streams_bidi"])
             if data.get("initiator") == "remote" and "disable_active_migration" in data:
                 facts["remote_disable_active_migration"] = bool(data["disable_active_migration"])
+            if data.get("initiator") == "remote" and "active_connection_id_limit" in data:
+                facts["remote_active_connection_id_limit"] = int(data["active_connection_id_limit"])
         elif name.endswith("packet_sent"):
             for frame in data.get("frames") or []:
                 kind = frame.get("frame_type")
-                if kind == "max_streams" and frame.get("stream_type") == "bidirectional":
+                if kind == "new_connection_id":
+                    retire_prior_to_sent = max(retire_prior_to_sent, int(frame.get("retire_prior_to", 0)))
+                elif kind == "max_streams" and frame.get("stream_type") == "bidirectional":
                     facts["max_streams_bidi_sent"] = max(facts["max_streams_bidi_sent"], int(frame.get("maximum", 0)))
                 elif kind == "connection_close":
                     facts["local_closes"].append(
@@ -222,6 +229,9 @@ def connection_facts(path, side):
             if header.get("packet_type") == "initial" and "scil" in header and int(header["scil"]) not in facts["peer_source_cid_lengths"]:
                 facts["peer_source_cid_lengths"].append(int(header["scil"]))
             for frame in data.get("frames") or []:
+                # A retirement of an id of ours that no Retire Prior To we had sent asked for (RFC 9000 §19.16).
+                if frame.get("frame_type") == "retire_connection_id" and int(frame.get("sequence_number", 0)) >= retire_prior_to_sent:
+                    facts["peer_unasked_retirements"] += 1
                 if frame.get("frame_type") == "stream":
                     stream_id = int(frame.get("stream_id", 0))
                     if stream_id % 4 == remainder:

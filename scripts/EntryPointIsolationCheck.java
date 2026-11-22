@@ -23,6 +23,10 @@ import java.util.stream.Stream;
  * :socket-webtransport and :socket-testsuite; their main source sets may not mention any of those names, and may not
  * mention package `quic.core` at all. Everything in package `quic.core` must be `internal` or `private`.
  *
+ * Core production sources (package `quic.core`, every main source set of :socket-quic-quiche) may not mention the
+ * 4.x declarations in CORE_FORBIDDEN_4X: the driver, its commands, the engine, the UDP channel seam, the send window,
+ * the deadline timer and the 4.x connection setup, so those files can be deleted. This rule has no allow-list.
+ *
  * Today's violations are listed in scripts/entry-point-isolation.allowlist as `<file><TAB><symbol>`. The check fails on
  * a violation that is not listed and on a listed entry that no longer matches, so the list can only shrink.
  * Finding no source at all is a failure: a scan that matched nothing must not look like a clean one.
@@ -32,6 +36,10 @@ public class EntryPointIsolationCheck {
     static final String CORE_DIR = "/com/ditchoom/socket/quic/core/";
     static final List<String> ENTRY_MODULES = List.of("socket-quic-default", "socket-http3", "socket-webtransport", "socket-testsuite");
     static final List<String> QUIC_ENGINE_SURFACE = List.of("QuicEngine", "QuicEngineSpi", "UnsupportedQuicEngine");
+    /** 4.x names package quic.core must never mention, whole-word: UdpSocketChannelFactory is not UdpChannelFactory. */
+    static final Set<String> CORE_FORBIDDEN_4X = Set.of(
+        "QuicheDriver", "QuicheCmd", "QuicheEngine", "UdpChannel", "SendWindow", "DeadlineTimer",
+        "CommonJvmWithQuicConnection", "UdpChannelFactory");
     static final String ALLOWLIST = "scripts/entry-point-isolation.allowlist";
 
     static final Pattern TYPE_DECL = Pattern.compile("^((?:[a-z]+\\s+)*)(?:class|object|interface|typealias)\\s+`?(\\w+)`?");
@@ -90,7 +98,14 @@ public class EntryPointIsolationCheck {
         for (Path file : quicheFiles) {
             String rel = rel(root, file);
             boolean inCore = rel.contains(CORE_DIR);
-            for (String line : stripped(file).split("\n", -1)) {
+            String text = stripped(file);
+            if (inCore) {
+                Set<String> mentioned = new TreeSet<>();
+                Matcher id = IDENTIFIER.matcher(text);
+                while (id.find()) if (CORE_FORBIDDEN_4X.contains(id.group())) mentioned.add(id.group());
+                for (String name : mentioned) failures.add(rel + ": core production source references 4.x declaration " + name);
+            }
+            for (String line : text.split("\n", -1)) {
                 if (inCore) {
                     if (CORE_PUBLIC.matcher(line).find()) failures.add(rel + ": public declaration in package quic.core: " + line.strip());
                     continue;
@@ -230,6 +245,17 @@ public class EntryPointIsolationCheck {
         expect(root, Set.of(), 1, "public declaration in core fails");
         write(root, QUICHE + "/src/jvmMain/kotlin/com/ditchoom/socket/quic/core/Open.kt", "package x\nprivate fun ok() {}\n");
         expect(root, Set.of(), 0, "private declaration in core passes");
+
+        String coreFile = QUICHE + "/src/commonMain/kotlin/com/ditchoom/socket/quic/core/Uses4x.kt";
+        write(root, coreFile, "package x\ninternal val d = QuicheDriver.capabilities\n");
+        expect(root, Set.of(), 1, "core reference to a 4.x declaration fails");
+        write(root, coreFile, "package x\n// QuicheDriver in a comment\ninternal val d = UdpSocketChannelFactory\n");
+        expect(root, Set.of(), 0, "comment mention and a different identifier pass");
+        write(root, coreFile, "package x\ninternal val d = UdpChannelFactory\n");
+        expect(root, Set.of(), 1, "core reference to UdpChannelFactory fails");
+        write(root, QUICHE + "/src/jvmTest/kotlin/com/ditchoom/socket/quic/core/T.kt", "val d = QuicheDriver\n");
+        Files.delete(root.resolve(coreFile));
+        expect(root, Set.of(), 0, "core test source sets are not scanned");
 
         write(root, "socket-quic-default/src/commonTest/kotlin/T.kt", "val e = LegacyEngine\n");
         expect(root, Set.of(), 0, "test source sets are not scanned");

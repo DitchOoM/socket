@@ -427,6 +427,11 @@ val quicheSourceDigestStamp = ".socket-patch-digest"
  * clock `System.nanoTime` reads on macOS) plus how far `at` is from quiche's own now, so a caller compares it with
  * its own monotonic clock directly. No assumption is made about `Instant`'s layout. Windows keeps upstream's zero.
  *
+ * quiche's now is read first and the host clock after it, so a thread descheduled between the two reads moves `at`
+ * later by that pause, never earlier: `at` stays between the caller's clock readings around the write, which is how
+ * the core judges the first datagram to be on its clock. Read the other way round, the pause moved `at` before the
+ * write began, and the core judged that connection to be on another clock. The Windows conversion reads in this order too.
+ *
  * Marker-guarded and loud in both directions: a re-run returns, a moved anchor throws, and an upstream that
  * converts the Apple instant itself throws, telling you to delete this patch.
  */
@@ -457,10 +462,11 @@ fun patchQuichePacingTimeOnApple(sourceDir: File) {
         |// $marker: the instant as CLOCK_UPTIME_RAW nanoseconds, the clock a host's monotonic reads on Apple.
         |#[cfg(any(target_os = "macos", target_os = "ios"))]
         |fn std_time_to_c(time: &Instant, out: &mut timespec) {
+        |    // quiche's now before the host's: a pause between them makes `at` later, never earlier than the write.
+        |    let now = crate::now();
         |    let mut base: timespec = unsafe { std::mem::zeroed() };
         |    unsafe { libc::clock_gettime(libc::CLOCK_UPTIME_RAW, &mut base) };
         |    let base_nanos = base.tv_sec as i128 * 1_000_000_000 + base.tv_nsec as i128;
-        |    let now = crate::now();
         |    let ahead = match time.checked_duration_since(now) {
         |        Some(d) => d.as_nanos() as i128,
         |        None => -(now.saturating_duration_since(*time).as_nanos() as i128),
@@ -487,7 +493,7 @@ fun patchQuichePacingTimeOnApple(sourceDir: File) {
  * every Windows lane) and nothing was paced there.
  *
  * Here `at` is written as `QueryPerformanceCounter` scaled to nanoseconds, the reading `System.nanoTime` takes on
- * Windows, plus how far `at` is from quiche's own now, as the Apple conversion does.
+ * Windows, plus how far `at` is from quiche's own now, read in the order the Apple conversion reads them.
  *
  * Marker-guarded and loud in both directions: a re-run returns, a moved anchor throws, and an upstream that converts
  * the Windows instant itself throws, telling you to delete this patch.
@@ -526,12 +532,11 @@ fun patchQuichePacingTimeOnWindows(sourceDir: File) {
         |    }
         |    let mut count: i64 = 0;
         |    let mut frequency: i64 = 0;
-        |    unsafe {
-        |        QueryPerformanceCounter(&mut count);
-        |        QueryPerformanceFrequency(&mut frequency);
-        |    }
-        |    let base_nanos = if frequency > 0 { count as i128 * 1_000_000_000 / frequency as i128 } else { 0 };
+        |    unsafe { QueryPerformanceFrequency(&mut frequency) };
+        |    // quiche's now before the host's: a pause between them makes `at` later, never earlier than the write.
         |    let now = crate::now();
+        |    unsafe { QueryPerformanceCounter(&mut count) };
+        |    let base_nanos = if frequency > 0 { count as i128 * 1_000_000_000 / frequency as i128 } else { 0 };
         |    let ahead = match time.checked_duration_since(now) {
         |        Some(d) => d.as_nanos() as i128,
         |        None => -(now.saturating_duration_since(*time).as_nanos() as i128),

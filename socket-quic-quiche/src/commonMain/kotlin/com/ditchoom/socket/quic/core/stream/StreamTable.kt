@@ -30,18 +30,14 @@ internal class StreamTable(
 ) {
     private val drain = StreamDrain(io, drains)
 
-    private val entries = LongObjectMap<StreamEntry>()
-
-    /** Entries of spent streams, kept for the next streams. */
-    private val spare = ArrayList<StreamEntry>()
-
     /** What [unpark] finds for a stream that has no entry: nothing waits on it. */
     private val absent = StreamEntry(QuicStreamId(0L))
 
-    /** Made once, so a lookup of a stream that exists allocates nothing, and a new stream reuses a spent one's entry. */
-    private val newEntry: (Long) -> StreamEntry = { id ->
-        if (spare.isEmpty()) StreamEntry(QuicStreamId(id)) else spare.removeAt(spare.size - 1).reuse(QuicStreamId(id))
-    }
+    private val entries = LongObjectMap(absent)
+
+    /** Entries of spent streams, which [entry] gives the next streams: a lookup allocates nothing and boxes no id. */
+    private val spare = ArrayList<StreamEntry>()
+
     private val writeWaiters = LongSet()
     private val opens = ArrayDeque<Waiter>()
     private val incoming = LongQueue()
@@ -57,7 +53,11 @@ internal class StreamTable(
     var handedUp = 0L
         private set
 
-    fun entry(id: QuicStreamId): StreamEntry = entries.getOrPut(id.id, newEntry)
+    fun entry(id: QuicStreamId): StreamEntry {
+        val held = entries.getOrDefault(id.id, absent)
+        if (held !== absent) return held
+        return (if (spare.isEmpty()) StreamEntry(id) else spare.removeAt(spare.size - 1).reuse(id)).also { entries[id.id] = it }
+    }
 
     /** Whether [id] names a stream that is spent: one this side opened or was told of, whose entry was let go. */
     fun isSpent(id: QuicStreamId): Boolean = !entries.containsKey(id.id) && (initiatedByPeer(id) || id.id < nextBidi)

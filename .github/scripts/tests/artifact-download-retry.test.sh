@@ -53,6 +53,20 @@ check "a persistent 403 is captured, not guessed at" 1 "$RC" "$OUT" "edge reject
 run 'echo "(403) Forbidden" >&2; exit 1' art dest
 check "a token that cannot list is diagnosed as permissions" 1 "$RC" "$OUT" "not an edge rejection"
 
+# Not Found for an artifact this run's listing names: the service lagging its own listing just after the
+# upload finalized (run 44967402750). Retried to success.
+run 'n=$(cat "$ATTEMPT_FILE" 2>/dev/null || echo 0)
+     if [ "$1" = "api" ]; then echo 1; exit 0; fi
+     n=$((n+1)); echo "$n" >"$ATTEMPT_FILE"
+     if [ "$n" -lt 2 ]; then echo "HTTP 404: Not Found" >&2; exit 1; fi
+     exit 0' art dest
+check "a not-found for a listed artifact is retried to success" 0 "$RC" "$OUT" "retrying"
+
+# Not Found for an artifact the listing does not name: genuinely missing, not retried.
+run 'if [ "$1" = "api" ]; then echo 0; exit 0; fi
+     echo "HTTP 404: Not Found" >&2; exit 1' art dest
+check "a not-found for an unlisted artifact is not retried" 1 "$RC" "$OUT" "non-transient"
+
 echo "---"
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -4998,15 +4998,8 @@ class QuicheDriver(
          */
         internal const val MAX_COMMANDS_PER_TURN = 64
 
-        /**
-         * What every driver-backed connection declares to its callers. All three bindings —
-         * FFM, JNI, cinterop — pass `quiche_conn_stream_send` / `quiche_conn_dgram_send` a raw
-         * address and a length, so a caller-supplied buffer must expose one; there is no copy at the
-         * boundary on any platform. Stated once here, and answered identically by the client
-         * connections on JVM/Android, Linux and Apple and by the server-side [DriverQuicConnection],
-         * because it is a property of the engine binding, not of the platform.
-         */
-        val capabilities: QuicCapabilities = QuicCapabilities(requiresNativeMemoryBuffers = true)
+        /** What every driver-backed connection declares to its callers; see [quicheCapabilities]. */
+        val capabilities: QuicCapabilities = quicheCapabilities
 
         /**
          * How many consecutive receive failures a path's reader tolerates before it stops.
@@ -5161,7 +5154,7 @@ class QuicheDriver(
          * should retry once the peer's `MAX_STREAM_DATA` / `MAX_DATA` reopens the window. (The read path
          * already maps it to [StreamRecvResult.Done].)
          */
-        const val QUICHE_ERR_DONE = -1
+        const val QUICHE_ERR_DONE = com.ditchoom.socket.quic.QUICHE_ERR_DONE
 
         /**
          * `QUICHE_ERR_STREAM_STOPPED` (quiche.h). The peer sent STOP_SENDING (RFC 9000 §19.5): it no
