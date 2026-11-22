@@ -94,6 +94,35 @@ internal value class Hand<A : HandAnswer> private constructor(
         }
     }
 
+    /**
+     * Lands [answer] and, when it is the first, runs [ahead] before a waiting caller resumes with it: what [ahead] queues
+     * is ahead of anything the resumed caller does next.
+     */
+    fun answer(
+        answer: A,
+        ahead: () -> Unit,
+    ): Landed {
+        while (true) {
+            when (val now = phase.load()) {
+                is HandAnswer -> return Landed.Late
+                is HandPhase.Out ->
+                    if (phase.compareAndSet(now, answer)) {
+                        ahead()
+                        return Landed.First
+                    }
+                is HandPhase.Waiting ->
+                    if (phase.compareAndSet(now, answer)) {
+                        try {
+                            ahead()
+                        } finally {
+                            now.caller.resume(answer)
+                        }
+                        return Landed.First
+                    }
+            }
+        }
+    }
+
     /** Whether [answer] is the one that landed. */
     fun landed(answer: A): Boolean = phase.load() === answer
 
