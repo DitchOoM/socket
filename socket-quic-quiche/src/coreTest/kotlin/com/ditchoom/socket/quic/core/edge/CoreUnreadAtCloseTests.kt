@@ -39,7 +39,12 @@ class CoreUnreadAtCloseTests {
             withCoreServer(onConnection = { connection -> connection.close(QuicError.NoError) }) { server ->
                 val client = connectCore(server.port, loops = loops)
                 val connection = client.connection
-                assertEquals<QuicUnreadAtClose>(QuicUnreadAtClose.ConnectionOpen, connection.unreadAtClose.value)
+                // The close may land before the connect returns: then the connection is handed over ended, all read.
+                val unread = connection.unreadAtClose.value
+                assertTrue(
+                    unread is QuicUnreadAtClose.ConnectionOpen || connection.end() is EdgeEnd.Ended,
+                    "nothing is unread at a close that has not happened: $unread",
+                )
                 val began = TimeSource.Monotonic.markNow()
                 val closed = assertFailsWith<QuicCloseException> { connection.runUntilClosed(LINGER) { awaitCancellation() } }
                 val took = began.elapsedNow()

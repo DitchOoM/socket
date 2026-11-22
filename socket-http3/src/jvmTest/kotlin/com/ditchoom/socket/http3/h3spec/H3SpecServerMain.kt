@@ -11,7 +11,7 @@ import kotlinx.coroutines.runBlocking
  * A standalone HTTP/3 server that boots the PRODUCTION [withHttp3Server] for the external **h3spec**
  * conformance client (github.com/kazu-yamamoto/h3spec) to probe. h3spec sends fixed malformed / edge
  * HTTP/3 and asserts the server closes the connection with the RFC 9114 §8.1 error code the spec
- * mandates — the external proof of the Phase-0 / STEP-1 typed [com.ditchoom.socket.http3.Http3Violation]
+ * mandates — the external proof of the Phase-0 / STEP-1 typed [com.ditchoom.socket.http3.codec.Http3Violation]
  * enforcement (control-stream framing, SETTINGS rules, reserved-HTTP2 frames, request framing).
  *
  * Launched by the Gradle `:socket-http3:h3specServer` task (which puts the quiche native lib on the

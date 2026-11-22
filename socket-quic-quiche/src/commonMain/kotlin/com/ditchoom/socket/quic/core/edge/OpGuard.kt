@@ -1,6 +1,8 @@
 package com.ditchoom.socket.quic.core.edge
 
 import com.ditchoom.buffer.BufferOverflowException
+import com.ditchoom.socket.quic.QuicCloseCircumstance
+import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.core.stream.SendRefusal
 
 /**
@@ -15,6 +17,21 @@ internal inline fun guarded(
         body()
     } catch (failure: Exception) {
         failed(failure)
+    }
+}
+
+/**
+ * Runs [body], the caller's own block on a connection: the close it meets once the connection ended ([ended]) is the
+ * end's, which the next operation reports, so it does not fail [body]'s own caller; anything else it throws does.
+ */
+internal inline fun outlivingTheEnd(
+    ended: () -> Boolean,
+    body: () -> Unit,
+) {
+    try {
+        body()
+    } catch (closed: QuicCloseException) {
+        if (!ended()) raise(Raised.Thrown(closed), QuicCloseCircumstance.Ended)
     }
 }
 

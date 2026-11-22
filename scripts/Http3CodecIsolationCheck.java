@@ -17,23 +17,27 @@ import java.util.stream.Stream;
  *     java scripts/Http3CodecIsolationCheck.java <repository root>
  *     java scripts/Http3CodecIsolationCheck.java --selftest
  *
- * Every main-source file of :socket-http3 is listed in scripts/http3-layers.list as `codec` or `binding`. A codec
- * file may not mention package `com.ditchoom.socket.quic` (an import or a qualified name), nor any public top-level
- * type declared under that package in :socket-quic or :socket-quic-quiche, nor any non-private top-level type declared
- * in a binding file: a codec that needs a binding type would drag the transport in with it. A binding file is not
- * checked.
- * The check also fails on a main-source file missing from the list and on a listed file that does not exist, so a
- * new file has to pick its layer. Finding no codec file at all is a failure: an empty scan must not look clean.
+ * The layer of a :socket-http3 file is its directory: everything under `.../com/ditchoom/socket/http3/codec/` is the
+ * codec and declares package `com.ditchoom.socket.http3.codec`; nothing else does. A codec file may not mention
+ * package `com.ditchoom.socket.quic` (an import or a qualified name), nor any public top-level type declared under
+ * that package in :socket-quic or :socket-quic-quiche, nor any non-private top-level type declared in a binding file
+ * (a main-source file outside the codec directory): a codec that needs a binding type would drag the transport in
+ * with it. A binding file is not checked for QUIC use.
+ * The check also fails on a file under the codec directory that declares another package, and on a file anywhere in
+ * the module's source sets that declares the codec package from outside the codec directory. Finding no codec file at
+ * all is a failure: an empty scan must not look clean.
  */
 public class Http3CodecIsolationCheck {
     static final String MODULE = "socket-http3";
     static final List<String> QUIC_MODULES = List.of("socket-quic", "socket-quic-quiche");
     static final String QUIC_DIR = "/com/ditchoom/socket/quic/";
-    static final String LAYERS = "scripts/http3-layers.list";
+    static final String CODEC_DIR = "/com/ditchoom/socket/http3/codec/";
+    static final String CODEC_PACKAGE = "com.ditchoom.socket.http3.codec";
 
     static final Pattern TOP_LEVEL_TYPE = Pattern.compile("^((?:[a-z]+\\s+)*)(?:class|object|interface|typealias)\\s+`?(\\w+)`?");
     static final Pattern IDENTIFIER = Pattern.compile("[A-Za-z_][A-Za-z0-9_]*");
     static final Pattern QUIC_PACKAGE = Pattern.compile("\\bsocket\\s*\\.\\s*quic\\b");
+    static final Pattern PACKAGE_LINE = Pattern.compile("^package\\s+([\\w.]+)", Pattern.MULTILINE);
 
     public static void main(String[] args) throws IOException {
         if (args.length == 1 && args[0].equals("--selftest")) {
@@ -56,9 +60,17 @@ public class Http3CodecIsolationCheck {
 
     record Result(int codec, int binding, int quicTypes, List<String> failures) {}
 
+    static boolean inCodecDir(Path file) {
+        return file.toString().replace('\\', '/').contains(CODEC_DIR);
+    }
+
+    static String declaredPackage(Path file) throws IOException {
+        Matcher m = PACKAGE_LINE.matcher(stripped(file));
+        return m.find() ? m.group(1) : "";
+    }
+
     static Result run(Path root) throws IOException {
         List<String> failures = new ArrayList<>();
-        Map<String, String> layers = readLayers(root.resolve(LAYERS), failures);
 
         Map<String, String> quicTypes = new TreeMap<>();
         for (String module : QUIC_MODULES) {
@@ -72,27 +84,32 @@ public class Http3CodecIsolationCheck {
         }
         if (quicTypes.isEmpty()) failures.add("no QUIC type found under " + QUIC_MODULES + "; refusing to pass an empty scan");
 
+        List<Path> main = mainSources(root, MODULE);
         Map<String, String> bindingTypes = new TreeMap<>();
-        for (Path file : mainSources(root, MODULE)) {
-            if (!"binding".equals(layers.get(file.getFileName().toString()))) continue;
+        for (Path file : main) {
+            if (inCodecDir(file)) continue;
             for (String line : stripped(file).split("\n", -1)) {
                 Matcher m = TOP_LEVEL_TYPE.matcher(line);
                 if (m.find() && !m.group(1).contains("private")) bindingTypes.putIfAbsent(m.group(2), rel(root, file));
             }
         }
 
-        Set<String> present = new TreeSet<>();
+        // Directory and package agree in every source set of the module, tests included.
+        for (Path file : allSources(root, MODULE)) {
+            boolean codecDir = inCodecDir(file);
+            String pkg = declaredPackage(file);
+            if (codecDir && !pkg.equals(CODEC_PACKAGE)) {
+                failures.add(rel(root, file) + ": file under the codec directory declares package '" + pkg + "', want " + CODEC_PACKAGE);
+            }
+            if (!codecDir && pkg.equals(CODEC_PACKAGE)) {
+                failures.add(rel(root, file) + ": declares package " + CODEC_PACKAGE + " outside a .../http3/codec/ directory");
+            }
+        }
+
         int codec = 0;
         int binding = 0;
-        for (Path file : mainSources(root, MODULE)) {
-            String name = file.getFileName().toString();
-            present.add(name);
-            String layer = layers.get(name);
-            if (layer == null) {
-                failures.add(rel(root, file) + ": not listed in " + LAYERS + "; add it as codec or binding");
-                continue;
-            }
-            if (layer.equals("binding")) {
+        for (Path file : main) {
+            if (!inCodecDir(file)) {
                 binding++;
                 continue;
             }
@@ -109,34 +126,23 @@ public class Http3CodecIsolationCheck {
                 }
                 if (bindingTypes.containsKey(n)) {
                     failures.add(rel(root, file) + ": codec file names " + n + ", declared in binding file " + bindingTypes.get(n)
-                        + " (move the type into a codec file, or list this file as binding)");
+                        + " (move the type into the codec directory, or move this file out of it)");
                 }
             }
-        }
-        for (String name : layers.keySet()) {
-            if (!present.contains(name)) failures.add(LAYERS + ": stale entry, no such file in " + MODULE + ": " + name);
         }
         if (codec == 0) failures.add("no codec file scanned; refusing to pass an empty scan");
         return new Result(codec, binding, quicTypes.size(), failures);
     }
 
-    static Map<String, String> readLayers(Path file, List<String> failures) throws IOException {
-        Map<String, String> layers = new TreeMap<>();
-        if (!Files.exists(file)) {
-            failures.add(LAYERS + " is missing");
-            return layers;
+    /** Every `.kt` file under `<module>/src`, whatever the source set. */
+    static List<Path> allSources(Path root, String module) throws IOException {
+        Path src = root.resolve(module).resolve("src");
+        List<Path> out = new ArrayList<>();
+        if (!Files.isDirectory(src)) return out;
+        try (Stream<Path> walk = Files.walk(src)) {
+            walk.filter(p -> p.toString().endsWith(".kt")).sorted().forEach(out::add);
         }
-        for (String line : Files.readAllLines(file)) {
-            String t = line.strip();
-            if (t.isEmpty() || t.startsWith("#")) continue;
-            String[] parts = t.split("\t");
-            if (parts.length != 2 || !(parts[0].equals("codec") || parts[0].equals("binding"))) {
-                failures.add(LAYERS + ": malformed line (want codec|binding<TAB>file): " + t);
-                continue;
-            }
-            if (layers.put(parts[1], parts[0]) != null) failures.add(LAYERS + ": listed twice: " + parts[1]);
-        }
-        return layers;
+        return out;
     }
 
     /** `<module>/src/<set>Main/kotlin` for every source set whose name ends in Main. */
@@ -203,40 +209,53 @@ public class Http3CodecIsolationCheck {
     // ---- selftest ----
 
     static final String H3 = MODULE + "/src/commonMain/kotlin/com/ditchoom/socket/http3/";
+    static final String CODEC = H3 + "codec/";
+    static final String CP = "package " + CODEC_PACKAGE + "\n";
+    static final String BP = "package com.ditchoom.socket.http3\n";
 
     static void selftest() throws IOException {
         Path root = Files.createTempDirectory("http3-codec-isolation");
         write(root, "socket-quic/src/commonMain/kotlin/com/ditchoom/socket/quic/Ids.kt",
             "package com.ditchoom.socket.quic\nvalue class QuicStreamId(val id: Long)\ninternal class HiddenQuic\n");
-        write(root, LAYERS, "codec\tFrame.kt\nbinding\tConn.kt\n");
-        write(root, H3 + "Frame.kt", "package p\n// QuicStreamId in a comment\nval s = \"QuicStreamId\"\nclass Mine { val h = HiddenQuic }\n");
-        write(root, H3 + "Conn.kt", "package p\nimport com.ditchoom.socket.quic.QuicStreamId\nval x = QuicStreamId(1)\nclass Connection\n");
+        write(root, CODEC + "Frame.kt", CP + "// QuicStreamId in a comment\nval s = \"QuicStreamId\"\nclass Mine { val h = HiddenQuic }\n");
+        write(root, H3 + "Conn.kt", BP + "import com.ditchoom.socket.quic.QuicStreamId\nval x = QuicStreamId(1)\nclass Connection\n");
         expect(root, 0, "clean codec file and a binding file using QUIC pass");
 
-        write(root, H3 + "Frame.kt", "package p\nimport com.ditchoom.socket.quic.QuicStreamId\n");
+        write(root, CODEC + "Frame.kt", CP + "import com.ditchoom.socket.quic.QuicStreamId\n");
         expect(root, 2, "codec import of a QUIC type fails (package and name)");
-        write(root, H3 + "Frame.kt", "package p\nval id = QuicStreamId(1)\n");
+        write(root, CODEC + "Frame.kt", CP + "val id = QuicStreamId(1)\n");
         expect(root, 1, "codec use of a QUIC type name fails");
-        write(root, H3 + "Frame.kt", "package p\nval id = com.ditchoom.socket.quic.Other\n");
+        write(root, CODEC + "Frame.kt", CP + "val id = com.ditchoom.socket.quic.Other\n");
         expect(root, 1, "codec qualified QUIC name fails");
-        write(root, H3 + "Frame.kt", "package p\nimport com.ditchoom.socket.quic.QuicStreamId as Q\nval id = Q(1)\n");
+        write(root, CODEC + "Frame.kt", CP + "import com.ditchoom.socket.quic.QuicStreamId as Q\nval id = Q(1)\n");
         expect(root, 2, "codec import alias of a QUIC type fails (package and name)");
-        write(root, H3 + "Frame.kt", "package p\nval id = com.ditchoom.socket.quic.QuicStreamId(1)\n");
+        write(root, CODEC + "Frame.kt", CP + "val id = com.ditchoom.socket.quic.QuicStreamId(1)\n");
         expect(root, 2, "codec fully qualified QUIC type fails (package and name)");
-        write(root, H3 + "Frame.kt", "package p\nval c = Connection()\n");
+        write(root, CODEC + "Frame.kt", CP + "val c = Connection()\n");
         expect(root, 1, "codec use of a type declared in a binding file fails");
-        write(root, H3 + "Conn.kt", "package p\nprivate class Hidden\ninternal class Connection\n");
-        write(root, H3 + "Frame.kt", "package p\nval c = Hidden()\n");
+        write(root, H3 + "Conn.kt", BP + "private class Hidden\ninternal class Connection\n");
+        write(root, CODEC + "Frame.kt", CP + "val c = Hidden()\n");
         expect(root, 0, "a private binding type is not a binding type");
-        write(root, H3 + "Frame.kt", "package p\n");
+        write(root, CODEC + "Frame.kt", CP);
 
-        write(root, H3 + "New.kt", "package p\n");
-        expect(root, 1, "an unlisted file fails");
-        Files.delete(root.resolve(H3 + "New.kt"));
+        write(root, CODEC + "Wrong.kt", BP);
+        expect(root, 1, "a codec-directory file declaring another package fails");
+        write(root, CODEC + "Wrong.kt", "package " + CODEC_PACKAGE + ".sub\n");
+        expect(root, 1, "a codec-directory file declaring a sub-package fails");
+        Files.delete(root.resolve(CODEC + "Wrong.kt"));
 
-        Files.delete(root.resolve(H3 + "Conn.kt"));
-        expect(root, 1, "a stale list entry fails");
-        write(root, H3 + "Conn.kt", "package p\n");
+        write(root, H3 + "Stray.kt", CP);
+        expect(root, 1, "a main file outside the codec directory declaring the codec package fails");
+        Files.delete(root.resolve(H3 + "Stray.kt"));
+        write(root, "socket-http3/src/commonTest/kotlin/com/ditchoom/socket/http3/StrayTest.kt", CP);
+        expect(root, 1, "a test file outside the codec directory declaring the codec package fails");
+        Files.delete(root.resolve("socket-http3/src/commonTest/kotlin/com/ditchoom/socket/http3/StrayTest.kt"));
+        write(root, "socket-http3/src/commonTest/kotlin/com/ditchoom/socket/http3/codec/FrameTest.kt", CP);
+        expect(root, 0, "a codec test inside the codec directory passes");
+
+        Files.delete(root.resolve(CODEC + "Frame.kt"));
+        expect(root, 1, "an empty codec scan fails");
+        write(root, CODEC + "Frame.kt", CP);
 
         write(root, "socket-http3/src/commonTest/kotlin/T.kt", "val id = QuicStreamId(1)\n");
         expect(root, 0, "test source sets are not scanned");

@@ -64,7 +64,10 @@ internal class ClientParts(
     private val socket = SendPort(io, loop.port, lanes, SocketDiedNotice(), loop.counts, loop.callerCounts)
     private val alpn = w.memory.native(MAX_ALPN)
     val capture: TraceCapture = w.capture
-    private val edge = EdgeState(alpn.owner, capture, w.tickets)
+
+    /** The server's certificates the handshake copies for the connect's check. */
+    val chain = KeptChain()
+    private val edge = EdgeState(alpn.owner, capture, w.tickets, ChainHome.Kept(chain))
     val conn: Conn =
         buildConn(
             rules =
@@ -85,6 +88,7 @@ internal class ClientParts(
                     w.kept,
                     w.tokens,
                     { bind, prior -> loop.move(endpoint, bind, prior) },
+                    chainSourceOf(w.options, w.memory.factory()),
                 ),
             address =
                 ConnAddress(
