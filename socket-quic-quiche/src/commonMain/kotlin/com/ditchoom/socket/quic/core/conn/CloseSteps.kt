@@ -110,15 +110,16 @@ internal fun ConnParts.keepClose(
         }
     }
     when (egress.last()) {
-        LastOut.Kept -> life.linger.closeOut(out, egress.lastOffset(), egress.lastLength(), egress.lastTarget(), until)
+        LastOut.Kept -> life.linger.closeOut(out, egress.lastOffset(), egress.lastLength(), egress.lastTarget(), now, until)
         LastOut.Dropped, LastOut.None -> life.linger.silent(until)
     }
     return CloseSent.Yes
 }
 
 /**
- * Serves a connection that has ended: sends the close it still owes, answers late datagrams with it, and lets go
- * once its linger is over. Only its own deadline brings it back; quiche's timers no longer drive it.
+ * Serves a connection that has ended: sends the close it still owes, answers late datagrams with it, repeats it as its
+ * linger says, and lets go once the linger is over. Only its own deadline brings it back; quiche's timers no longer
+ * drive it.
  */
 internal fun ConnParts.over(
     now: Nanos,
@@ -129,6 +130,7 @@ internal fun ConnParts.over(
     val linger = life.linger
     if (linger.sending()) sendClose(now, out, paths)
     val before = out.pending
+    linger.repeatDue(now)
     val room = linger.answer(out)
     for (n in before until out.pending) flight.datagramOut(now, out.storage, out.offsetOf(n), out.lengthOf(n))
     if (linger.due(now)) life.settle()
