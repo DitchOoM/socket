@@ -100,7 +100,7 @@ class PtoCeilingPastConfirmationTests {
         val client =
             Client(
                 pair,
-                pair.onClock(pair.client) { Handshake(q, rule, 0L, nativeBytes(255)) },
+                pair.onClock(pair.client) { Handshake(q, rule, 0L, nativeBytes(255), ChainSource.NotAsked) },
                 SinglePath(q, SockAddr(0L, 0), SockAddr(0L, 0), SendTarget.ConnectedPeer),
             )
         val first = pair.sends(pair.client)

@@ -2,7 +2,6 @@ package com.ditchoom.socket.quic.core.conn
 
 import com.ditchoom.socket.quic.DeadlineFired
 import com.ditchoom.socket.quic.PathKey
-import com.ditchoom.socket.quic.PeerCertPosition
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicStatsRead
 import com.ditchoom.socket.quic.Rearmable
@@ -84,12 +83,8 @@ internal class Inside(
     /** Writes the connection's flight recording into [sink], in the trace grammar. */
     fun dump(sink: TraceSink) = turn.dump(sink)
 
-    /** Copies the peer's certificate at [position] into [address]; see [Handshake.peerCertificate]. */
-    fun peerCertificate(
-        position: PeerCertPosition,
-        address: Long,
-        capacity: Int,
-    ): Int = c.handshake.peerCertificate(position, address, capacity)
+    /** A client's server passed its check after the handshake: output held for it leaves. */
+    fun serverChecked() = c.serverChecked()
 
     /** The connection's statistics, read now. */
     fun stats(): QuicStatsRead = c.slots.paths.stats()

@@ -6,6 +6,7 @@ import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.codec.DecodeContext
 import com.ditchoom.buffer.codec.Decoder
 import com.ditchoom.buffer.stream.StreamProcessor
+import com.ditchoom.socket.quic.QuicAppErrorCode
 import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.core.observe.CallerSide
 import com.ditchoom.socket.quic.core.udp.NativeBytes
@@ -18,8 +19,10 @@ internal sealed interface Ending {
     /** The peer's FIN arrived. */
     data object Finished : Ending
 
-    /** The peer reset the stream. */
-    data object Reset : Ending
+    /** The peer reset the stream with [code]. */
+    class Reset(
+        val code: QuicAppErrorCode,
+    ) : Ending
 
     /** A frame was refused; the stream's reads fail with [failure] from now on. */
     class Broken(
@@ -53,9 +56,9 @@ internal class FrameAccumulator(
         ending = Ending.Finished
     }
 
-    /** The peer reset the stream. */
-    fun peerReset() {
-        ending = Ending.Reset
+    /** The peer reset the stream with [code]. */
+    fun peerReset(code: QuicAppErrorCode) {
+        ending = Ending.Reset(code)
     }
 
     /** A frame was refused: reads fail with [failure] from now on. */

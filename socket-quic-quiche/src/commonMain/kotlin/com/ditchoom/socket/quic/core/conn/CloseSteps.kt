@@ -62,7 +62,7 @@ internal fun ConnParts.ended(
     held: HeldReads,
     outcome: CloseOutcome,
 ) {
-    sink.ended(end, held, outcome)
+    sink.ended(end, held, outcome, handshake.fate())
     inbox.shut(end) { it.gone(end) }
     streams.endAll(end)
     slots.datagrams.endAll(end)

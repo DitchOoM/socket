@@ -55,9 +55,14 @@ class CoreFailureTierTests {
                             connection.deadlines,
                             rig.conn,
                             // An edge of its own: the planted buffer the read keeps must not reach the other stream's reads.
-                            EdgeState(BufferFactory.network().allocate(ALPN_BYTES), TraceCapture.Off, TicketHome.NotKept),
+                            EdgeState(
+                                BufferFactory.network().allocate(ALPN_BYTES),
+                                TraceCapture.Off,
+                                TicketHome.NotKept,
+                                ChainHome.NotKept,
+                            ),
                             ThrowingFactory(planted),
-                            ReadSizing(),
+                            StreamReads(),
                         )
                     rig.conn.submit(op)
                     op.answer()
