@@ -11,8 +11,6 @@ import com.ditchoom.socket.quic.PinnedRadioRefusedException
 import com.ditchoom.socket.quic.QuicAppErrorCode
 import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicCloseException
-import com.ditchoom.socket.quic.QuicCloseReason
-import com.ditchoom.socket.quic.QuicConnectionEnd
 import com.ditchoom.socket.quic.QuicNativeMemoryRequiredException
 import com.ditchoom.socket.quic.QuicOptionNotHonouredException
 import com.ditchoom.socket.quic.QuicStreamAbort
@@ -25,7 +23,6 @@ import com.ditchoom.socket.quic.QuicStreamSide
 import com.ditchoom.socket.quic.QuicWriteTarget
 import com.ditchoom.socket.quic.RouteProbeFailure
 import com.ditchoom.socket.quic.UnresolvedRouteSourceException
-import com.ditchoom.socket.quic.closeReason
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.stream.QUICHE_ERR_INVALID_STREAM_STATE
 import com.ditchoom.socket.quic.core.stream.QUICHE_ERR_STREAM_RESET
@@ -187,32 +184,6 @@ internal fun endedWith(
     end: ConnEnd,
     during: QuicCloseCircumstance,
 ): Throwable = closeOf(end, during)
-
-/** How [end] reads in the public close reason: the reason of its [publicEndOf]. */
-internal fun closeReasonOf(end: ConnEnd): QuicCloseReason = publicEndOf(end).closeReason
-
-/** The one mapping from how a connection ended to what callers are told: each [ConnEnd] to its [QuicConnectionEnd]. */
-internal fun publicEndOf(end: ConnEnd): QuicConnectionEnd =
-    when (end) {
-        is ConnEnd.ByPeer -> QuicConnectionEnd.ByPeer(end.error)
-        is ConnEnd.ByLocal -> QuicConnectionEnd.ByLocal(end.error)
-        is ConnEnd.IdleTimeout -> QuicConnectionEnd.IdleTimeout
-        is ConnEnd.HandshakeTimedOut -> QuicConnectionEnd.HandshakeTimedOut(publicProgressOf(end.progress))
-        is ConnEnd.HandshakeSendRefused ->
-            QuicConnectionEnd.HandshakeSendRefused(publicProgressOf(end.progress), publicRefusalOf(end.refusal))
-        is ConnEnd.SocketFailed -> QuicConnectionEnd.SocketFailed(publicFaultOf(end.fault))
-        is ConnEnd.ProcessingFailed -> QuicConnectionEnd.ProcessingFailed(end.thrown.throwable)
-        is ConnEnd.CallerFailed -> QuicConnectionEnd.CallerFailed(end.thrown.throwable)
-        is ConnEnd.LoopFailed -> QuicConnectionEnd.LoopFailed(end.thrown.throwable)
-        is ConnEnd.LoopStopped -> QuicConnectionEnd.LoopStopped
-        is ConnEnd.ServerClosed -> QuicConnectionEnd.ServerClosed
-        is ConnEnd.ServerClosedUnsettled -> QuicConnectionEnd.ServerClosedUnsettled
-        is ConnEnd.NoErrorRecorded -> QuicConnectionEnd.NoErrorRecorded
-        is ConnEnd.Released -> QuicConnectionEnd.Released
-        is ConnEnd.NetworkLost -> QuicConnectionEnd.NetworkLost
-        is ConnEnd.LocalAddressGone -> QuicConnectionEnd.LocalAddressGone
-        is ConnEnd.NoUsablePath -> QuicConnectionEnd.NoUsablePath
-    }
 
 private fun exceptionOf(
     failure: Raised,
