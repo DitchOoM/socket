@@ -2,7 +2,6 @@ package com.ditchoom.socket.http3
 
 import com.ditchoom.socket.http3.codec.Http3StreamException
 import com.ditchoom.socket.http3.codec.QpackHeaderField
-
 import kotlinx.coroutines.Deferred
 
 /**

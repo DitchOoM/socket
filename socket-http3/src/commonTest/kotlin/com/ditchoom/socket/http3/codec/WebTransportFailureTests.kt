@@ -1,7 +1,6 @@
 package com.ditchoom.socket.http3.codec
 
 import com.ditchoom.socket.http3.codec.WebTransportFailure
-
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals

@@ -7,7 +7,6 @@ import com.ditchoom.socket.http3.codec.InsertCountDelta
 import com.ditchoom.socket.http3.codec.QpackDecoder
 import com.ditchoom.socket.http3.codec.QpackDecoderInstruction
 import com.ditchoom.socket.http3.codec.QpackDecoderStream
-
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals

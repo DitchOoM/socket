@@ -18,6 +18,7 @@ import com.ditchoom.socket.http3.codec.Http3StreamId
 import com.ditchoom.socket.http3.codec.Http3StreamReader
 import com.ditchoom.socket.http3.codec.QpackDecoder
 import com.ditchoom.socket.http3.codec.QpackInstructionReader
+import com.ditchoom.socket.http3.codec.RecordingQpackDecoderStream
 import kotlinx.coroutines.runBlocking
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
@@ -116,8 +117,7 @@ object Http3CodecFuzzer {
             tolerate {
                 QpackDecoder(
                     maxCapacity = 0,
-                    com.ditchoom.socket.http3
-                        .RecordingQpackDecoderStream(),
+                    RecordingQpackDecoderStream(),
                 ).decodeSection(fresh(source), streamId = Http3StreamId(0L), scratchPool = null)
             }
             tolerate {

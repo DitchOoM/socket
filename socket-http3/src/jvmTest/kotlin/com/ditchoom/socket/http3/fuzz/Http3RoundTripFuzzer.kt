@@ -1,6 +1,6 @@
 package com.ditchoom.socket.http3.fuzz
 
-import com.ditchoom.socket.http3.Http3FuzzGenerators
+import com.ditchoom.socket.http3.codec.Http3FuzzGenerators
 import kotlinx.coroutines.runBlocking
 
 /**

@@ -15,6 +15,7 @@ import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.pool.ThreadingMode
 import com.ditchoom.buffer.stream.StreamProcessor
+import com.ditchoom.socket.http3.withDiffDebug
 import kotlin.random.Random
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals

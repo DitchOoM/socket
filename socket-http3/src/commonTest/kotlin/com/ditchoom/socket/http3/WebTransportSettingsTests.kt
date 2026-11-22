@@ -2,7 +2,6 @@ package com.ditchoom.socket.http3
 
 import com.ditchoom.socket.http3.codec.Http3Setting
 import com.ditchoom.socket.http3.codec.Http3SettingId
-
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith

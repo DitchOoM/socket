@@ -1,11 +1,5 @@
 package com.ditchoom.socket.http3.codec
 
-import com.ditchoom.socket.http3.codec.Http3Frame
-import com.ditchoom.socket.http3.codec.Http3Setting
-import com.ditchoom.socket.http3.codec.Http3SettingId
-import com.ditchoom.socket.http3.codec.Http3StreamReader
-import com.ditchoom.socket.http3.codec.VarIntCodec
-
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ByteOrder
 import com.ditchoom.buffer.Default
@@ -18,6 +12,11 @@ import com.ditchoom.buffer.codec.PeekResult
 import com.ditchoom.buffer.codec.WireSize
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.stream.StreamProcessor
+import com.ditchoom.socket.http3.codec.Http3Frame
+import com.ditchoom.socket.http3.codec.Http3Setting
+import com.ditchoom.socket.http3.codec.Http3SettingId
+import com.ditchoom.socket.http3.codec.Http3StreamReader
+import com.ditchoom.socket.http3.codec.VarIntCodec
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals

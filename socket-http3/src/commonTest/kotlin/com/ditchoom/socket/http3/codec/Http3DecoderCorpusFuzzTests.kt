@@ -3,7 +3,7 @@ package com.ditchoom.socket.http3.codec
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.codec.EncodeContext
-import com.ditchoom.socket.http3.Http3FuzzGenerators.runDecoderEntryPoints
+import com.ditchoom.socket.http3.codec.Http3FuzzGenerators.runDecoderEntryPoints
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.test.runTest
 import kotlin.random.Random

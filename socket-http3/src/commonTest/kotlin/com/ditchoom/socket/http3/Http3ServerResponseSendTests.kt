@@ -1,7 +1,5 @@
 package com.ditchoom.socket.http3
 
-import com.ditchoom.socket.http3.codec.QpackFieldSectionCodec
-
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.ReadBuffer
@@ -14,6 +12,7 @@ import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.socket.TransportConfig
+import com.ditchoom.socket.http3.codec.QpackFieldSectionCodec
 import com.ditchoom.socket.quic.FinishingWrite
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicStreamId

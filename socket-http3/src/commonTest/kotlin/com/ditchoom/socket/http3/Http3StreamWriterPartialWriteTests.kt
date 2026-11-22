@@ -1,9 +1,5 @@
 package com.ditchoom.socket.http3
 
-import com.ditchoom.socket.http3.codec.Http3Frame
-import com.ditchoom.socket.http3.codec.Http3StreamType
-import com.ditchoom.socket.http3.codec.QpackEncoderInstruction
-
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.ReadBuffer
@@ -12,6 +8,9 @@ import com.ditchoom.buffer.flow.BytesWritten
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.socket.TransportConfig
+import com.ditchoom.socket.http3.codec.Http3Frame
+import com.ditchoom.socket.http3.codec.Http3StreamType
+import com.ditchoom.socket.http3.codec.QpackEncoderInstruction
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test

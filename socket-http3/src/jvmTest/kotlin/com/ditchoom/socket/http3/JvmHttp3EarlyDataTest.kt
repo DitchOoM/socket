@@ -2,10 +2,6 @@
 
 package com.ditchoom.socket.http3
 
-import com.ditchoom.socket.http3.codec.Http3ReplaySafety
-import com.ditchoom.socket.http3.codec.QpackFieldSectionCodec
-import com.ditchoom.socket.http3.codec.QpackHeaderField
-
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.ReadBuffer
@@ -18,6 +14,9 @@ import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.socket.http3.codec.Http3ReplaySafety
+import com.ditchoom.socket.http3.codec.QpackFieldSectionCodec
+import com.ditchoom.socket.http3.codec.QpackHeaderField
 import com.ditchoom.socket.quic.MigrationPolicy
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicEarlyDataOutcome

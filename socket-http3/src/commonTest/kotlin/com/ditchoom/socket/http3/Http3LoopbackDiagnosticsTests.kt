@@ -4,7 +4,6 @@ import com.ditchoom.socket.http3.codec.Http3StreamException
 import com.ditchoom.socket.http3.codec.Http3StreamId
 import com.ditchoom.socket.http3.codec.Http3Violation
 import com.ditchoom.socket.http3.codec.InsertCountDelta
-
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertFalse
