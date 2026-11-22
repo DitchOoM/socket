@@ -2,6 +2,7 @@ package com.ditchoom.socket.quic.core.edge
 
 import com.ditchoom.socket.quic.core.conn.CallerPlace
 import com.ditchoom.socket.quic.core.life.ConnEnd
+import com.ditchoom.socket.quic.core.sched.SendRule
 import kotlinx.coroutines.withTimeout
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
@@ -32,7 +33,10 @@ class CoreErrorTierTests {
 
     @Test
     fun anErrorInsideACallerEndsThatConnectionIsReportedAndTheCallerLeaves() =
-        withFailureRig("CoreErrorTierTests.anErrorInsideACallerEndsThatConnectionIsReportedAndTheCallerLeaves") { rig ->
+        withFailureRig(
+            "CoreErrorTierTests.anErrorInsideACallerEndsThatConnectionIsReportedAndTheCallerLeaves",
+            sends = listOf(SendRule.InPlace),
+        ) { rig ->
             val planted = PlantedError()
             val reported = CompletableFuture<Throwable>()
             runOnAReportingCaller(rig, reported) { OnACaller(planted) }
