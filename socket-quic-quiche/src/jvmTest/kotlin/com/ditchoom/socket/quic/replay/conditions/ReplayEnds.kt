@@ -19,12 +19,12 @@ import com.ditchoom.socket.quic.QuicWireConnectionId
 import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.applyQuicOptions
 import com.ditchoom.socket.quic.clientAlpnOffer
-import com.ditchoom.socket.quic.core.conn.AccessGuard
 import com.ditchoom.socket.quic.core.conn.ClientSession
 import com.ditchoom.socket.quic.core.conn.FlightArena
 import com.ditchoom.socket.quic.core.conn.LoopMemory
 import com.ditchoom.socket.quic.core.conn.MismatchResponse
 import com.ditchoom.socket.quic.core.conn.Offer
+import com.ditchoom.socket.quic.core.conn.SendsAccess
 import com.ditchoom.socket.quic.core.conn.SessionScratch
 import com.ditchoom.socket.quic.core.demux.ServerConfig
 import com.ditchoom.socket.quic.core.edge.ClientParts
@@ -223,7 +223,7 @@ internal fun replayClient(
             scope,
             TEST_FLIGHT,
             handshake,
-            AccessGuard.Unguarded,
+            SendsAccess.NeverDenied,
             clock,
             Readiness.EveryPass,
             // Not the stream the client's first id came from: the ids it hands out must differ from it.

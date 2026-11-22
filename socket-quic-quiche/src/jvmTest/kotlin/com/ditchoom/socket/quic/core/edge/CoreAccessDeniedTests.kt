@@ -101,7 +101,7 @@ class CoreAccessDeniedTests {
         quiche {
             val guard = AccessGuard.AndroidPermission({ PermissionRead.Withheld }, docNet)
             val (thrown, took) =
-                failure { connect("127.0.0.1", guard, wrapIo = { RefusesEverySend(it, UdpError.PermissionDenied) }) }
+                failure { connect("192.0.2.10", guard, wrapIo = { RefusesEverySend(it, UdpError.PermissionDenied) }) }
 
             val closed = assertIs<QuicCloseException>(thrown)
             val end = assertIs<QuicConnectionEnd.AccessDenied>(closed.end)
@@ -109,6 +109,21 @@ class CoreAccessDeniedTests {
             assertEquals(NetworkAccess.LocalNetwork, end.denial.access)
             assertTrue("ACCESS_LOCAL_NETWORK" in closed.message.orEmpty(), "message was: ${closed.message}")
             assertTrue(took < 2.seconds, "the denial took $took: it waited instead of failing on the refused send")
+        }
+
+    /** Data Saver, a background firewall chain or VPN lockdown refuses sends as not permitted too: not the permission. */
+    @Test
+    fun androidWithThePermissionWithheldDoesNotBlameItForLoopbackOrInternetPeers() =
+        quiche {
+            val guard = AccessGuard.AndroidPermission({ PermissionRead.Withheld }, docNet)
+            for (host in listOf("127.0.0.1", "203.0.113.10")) {
+                val (thrown, took) =
+                    failure { connect(host, guard, wrapIo = { RefusesEverySend(it, UdpError.PermissionDenied) }) }
+
+                val end = assertIs<QuicConnectionEnd.HandshakeSendRefused>(assertIs<QuicCloseException>(thrown).end, host)
+                assertEquals(QuicSendRefusal.PermissionDenied, end.refusal, host)
+                assertTrue(took >= BOUND, "$host ended after $took, before the bound")
+            }
         }
 
     @Test
@@ -133,18 +148,31 @@ class CoreAccessDeniedTests {
         }
 
     @Test
-    fun macosEverySendToAnOnLinkPeerRefusedWithNoRouteFailsAtOnce() =
+    fun macosNoRouteOnALaterRouteProbeToTheSamePeerStaysAnUnresolvedRoute() =
+        quiche {
+            val guard = AccessGuard.MacosPrivacy(docNet)
+            failure { connect("192.0.2.11", guard, routeSource = noRoute) }
+
+            val (thrown, _) = failure { connect("192.0.2.11", guard, routeSource = noRoute) }
+
+            assertIs<UnresolvedRouteSourceException>(thrown, "a reconnect may follow a neighbour that stopped answering")
+        }
+
+    /**
+     * After a neighbour stops answering, macOS refuses the first send of a new socket to it at once, for about twenty
+     * seconds: a dead host on the link looks like the privacy refusal, so no refused send is judged on macOS.
+     */
+    @Test
+    fun macosEverySendToAnOnLinkPeerRefusedWithNoRouteWaitsOutTheBound() =
         quiche {
             val (thrown, took) =
                 failure {
                     connect("192.0.2.10", AccessGuard.MacosPrivacy(docNet), wrapIo = { RefusesEverySend(it, UdpError.HostUnreachable) })
                 }
 
-            assertSame(
-                QuicAccessDenial.MacosNoRouteOnLink,
-                assertIs<QuicConnectionEnd.AccessDenied>(assertIs<QuicCloseException>(thrown).end).denial,
-            )
-            assertTrue(took < 2.seconds, "took $took")
+            val end = assertIs<QuicConnectionEnd.HandshakeSendRefused>(assertIs<QuicCloseException>(thrown).end)
+            assertEquals(QuicSendRefusal.HostUnreachable, end.refusal)
+            assertTrue(took >= BOUND, "ended after $took, before the bound")
         }
 
     @Test

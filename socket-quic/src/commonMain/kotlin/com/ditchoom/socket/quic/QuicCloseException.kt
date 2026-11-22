@@ -174,7 +174,7 @@ internal fun QuicCloseReason.errorOrNoError(): QuicError =
 /** The message of a close that ended with [this] while the endpoint was in [circumstance]: a denial names its remedy. */
 private fun QuicConnectionEnd.summaryDuring(circumstance: QuicCloseCircumstance): String =
     when (this) {
-        is QuicConnectionEnd.AccessDenied -> "${circumstance.summary()}: ${denial.access.description}; ${denial.remedy}"
+        is QuicConnectionEnd.AccessDenied -> "${circumstance.summary()}: ${denial.access.description}; ${denial.remedy.summary()}"
         else -> circumstance.summary()
     }
 

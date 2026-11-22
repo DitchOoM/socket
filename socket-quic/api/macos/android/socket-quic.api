@@ -809,14 +809,14 @@ public final class com/ditchoom/socket/quic/PinnedRadioUnavailableException : ja
 
 public abstract interface class com/ditchoom/socket/quic/QuicAccessDenial {
 	public abstract fun getAccess ()Lcom/ditchoom/socket/NetworkAccess;
-	public abstract fun getRemedy ()Ljava/lang/String;
+	public abstract fun getRemedy ()Lcom/ditchoom/socket/quic/QuicAccessRemedy;
 }
 
 public final class com/ditchoom/socket/quic/QuicAccessDenial$AndroidPermissionNotHeld : com/ditchoom/socket/quic/QuicAccessDenial$Reported {
 	public static final field INSTANCE Lcom/ditchoom/socket/quic/QuicAccessDenial$AndroidPermissionNotHeld;
 	public fun equals (Ljava/lang/Object;)Z
 	public fun getAccess ()Lcom/ditchoom/socket/NetworkAccess;
-	public fun getRemedy ()Ljava/lang/String;
+	public fun getRemedy ()Lcom/ditchoom/socket/quic/QuicAccessRemedy;
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
 }
@@ -825,7 +825,7 @@ public final class com/ditchoom/socket/quic/QuicAccessDenial$AndroidSendsNotPerm
 	public static final field INSTANCE Lcom/ditchoom/socket/quic/QuicAccessDenial$AndroidSendsNotPermitted;
 	public fun equals (Ljava/lang/Object;)Z
 	public fun getAccess ()Lcom/ditchoom/socket/NetworkAccess;
-	public fun getRemedy ()Ljava/lang/String;
+	public fun getRemedy ()Lcom/ditchoom/socket/quic/QuicAccessRemedy;
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
 }
@@ -837,7 +837,7 @@ public final class com/ditchoom/socket/quic/QuicAccessDenial$AppleSettings : com
 	public static synthetic fun copy$default (Lcom/ditchoom/socket/quic/QuicAccessDenial$AppleSettings;Lcom/ditchoom/socket/NetworkAccess;ILjava/lang/Object;)Lcom/ditchoom/socket/quic/QuicAccessDenial$AppleSettings;
 	public fun equals (Ljava/lang/Object;)Z
 	public fun getAccess ()Lcom/ditchoom/socket/NetworkAccess;
-	public fun getRemedy ()Ljava/lang/String;
+	public fun getRemedy ()Lcom/ditchoom/socket/quic/QuicAccessRemedy;
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
 }
@@ -849,12 +849,23 @@ public final class com/ditchoom/socket/quic/QuicAccessDenial$MacosNoRouteOnLink 
 	public static final field INSTANCE Lcom/ditchoom/socket/quic/QuicAccessDenial$MacosNoRouteOnLink;
 	public fun equals (Ljava/lang/Object;)Z
 	public fun getAccess ()Lcom/ditchoom/socket/NetworkAccess;
-	public fun getRemedy ()Ljava/lang/String;
+	public fun getRemedy ()Lcom/ditchoom/socket/quic/QuicAccessRemedy;
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
 }
 
 public abstract interface class com/ditchoom/socket/quic/QuicAccessDenial$Reported : com/ditchoom/socket/quic/QuicAccessDenial {
+}
+
+public final class com/ditchoom/socket/quic/QuicAccessRemedy : java/lang/Enum {
+	public static final field AllowCellularDataInAppleSettings Lcom/ditchoom/socket/quic/QuicAccessRemedy;
+	public static final field AllowLocalNetworkInAppleSettings Lcom/ditchoom/socket/quic/QuicAccessRemedy;
+	public static final field AllowLocalNetworkInMacosSettings Lcom/ditchoom/socket/quic/QuicAccessRemedy;
+	public static final field AllowWifiDataInAppleSettings Lcom/ditchoom/socket/quic/QuicAccessRemedy;
+	public static final field RequestAndroidLocalNetworkPermission Lcom/ditchoom/socket/quic/QuicAccessRemedy;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Lcom/ditchoom/socket/quic/QuicAccessRemedy;
+	public static fun values ()[Lcom/ditchoom/socket/quic/QuicAccessRemedy;
 }
 
 public abstract interface class com/ditchoom/socket/quic/QuicActivePathStats {

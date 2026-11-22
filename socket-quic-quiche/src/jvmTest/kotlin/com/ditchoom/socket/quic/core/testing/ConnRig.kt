@@ -32,6 +32,7 @@ import com.ditchoom.socket.quic.core.conn.SlotRules
 import com.ditchoom.socket.quic.core.conn.TokenHome
 import com.ditchoom.socket.quic.core.conn.buildConn
 import com.ditchoom.socket.quic.core.conn.freeInfo
+import com.ditchoom.socket.quic.core.conn.sendsAccess
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.loop.Endpoint
@@ -156,7 +157,7 @@ internal fun testConn(
                 KeptTicket.None,
                 TokenHome.NotKept,
                 NO_MOVES,
-                access,
+                access.sendsAccess(peer),
             ),
         address =
             ConnAddress(

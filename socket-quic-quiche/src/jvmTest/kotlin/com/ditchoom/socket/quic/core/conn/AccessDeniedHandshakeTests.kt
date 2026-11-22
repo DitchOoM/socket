@@ -16,6 +16,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertSame
+import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.milliseconds
 
 /**
@@ -72,13 +73,65 @@ class AccessDeniedHandshakeTests {
         assertEquals(1 * ms, endedAt, "ended one pass after the refused first flight, ${endedAt / ms} ms in, not at the bound")
     }
 
+    /** A neighbour that stopped answering draws the same refusal of a new socket's first sends for a while. */
     @Test
-    fun aFirstFlightRefusedWithNoRouteToAnOnLinkPeerOnMacosEndsAsLikelyLocalNetworkPrivacy() {
+    fun noRouteToAnOnLinkPeerOnMacosIsNotJudgedAndEndsAtTheBoundAsToday() {
         val rig = rig(AccessGuard.MacosPrivacy(attached), onLink, refusing(UdpError.HostUnreachable))
-        val endedAt = rig.runUntilEnded(bound)
+        api.connTimeout = 250.milliseconds
+        val endedAt = rig.runUntilEnded(2 * bound)
 
-        assertSame(QuicAccessDenial.MacosNoRouteOnLink, assertIs<ConnEnd.AccessDenied>(rig.sink.ended.single()).denial)
-        assertEquals(1 * ms, endedAt)
+        assertSame(SendRefusal.HostUnreachable, assertIs<ConnEnd.HandshakeSendRefused>(rig.sink.ended.single()).refusal)
+        assertEquals(bound, endedAt)
+    }
+
+    /** The turn that found the handshake denied ends it as denied: the end is not judged a second time. */
+    @Test
+    fun aHandshakeDeniedInItsTurnEndsAsDeniedThoughThePermissionReadsDifferentlyLater() {
+        var reads = 0
+        val permission = { if (reads++ == 0) PermissionRead.Withheld else PermissionRead.Held }
+        var sends = 0
+        val io =
+            FakeIo().apply {
+                onSend = { SendBatchResult.Partial(0, if (sends++ == 0) UdpError.NetworkUnreachable else UdpError.PermissionDenied) }
+            }
+        val rig = rig(AccessGuard.AndroidPermission(permission, attached), onLink, io)
+        api.connTimeout = 1.milliseconds
+        var now = 0L
+        while (rig.sink.ended.isEmpty() && now < 2 * bound) {
+            api.connSendQueue.addLast(1200)
+            rig.pass(now)
+            now += ms
+        }
+
+        assertSame(QuicAccessDenial.AndroidPermissionNotHeld, assertIs<ConnEnd.AccessDenied>(rig.sink.ended.single()).denial)
+    }
+
+    /** The loop thread never enumerates interfaces nor asks for the permission, however long the handshake is refused. */
+    @Test
+    fun aHandshakeRefusedForItsWholeBoundReadsThePermissionAndTheInterfacesAtMostOnce() {
+        var permissionReads = 0
+        var interfaceReads = 0
+        val held =
+            AccessGuard.AndroidPermission(
+                { PermissionRead.Held.also { permissionReads++ } },
+                { attached().also { interfaceReads++ } },
+            )
+        val withheld =
+            AccessGuard.AndroidPermission(
+                { PermissionRead.Withheld.also { permissionReads++ } },
+                { attached().also { interfaceReads++ } },
+            )
+        for ((access, peer) in listOf(held to onLink, withheld to internet)) {
+            permissionReads = 0
+            interfaceReads = 0
+            val rig = rig(access, peer, refusing(UdpError.PermissionDenied))
+            api.connTimeout = 250.milliseconds
+            rig.runUntilEnded(2 * bound)
+
+            assertIs<ConnEnd.HandshakeSendRefused>(rig.sink.ended.single())
+            assertTrue(permissionReads <= 1, "the permission was read $permissionReads times")
+            assertTrue(interfaceReads <= 1, "the interfaces were listed $interfaceReads times")
+        }
     }
 
     @Test

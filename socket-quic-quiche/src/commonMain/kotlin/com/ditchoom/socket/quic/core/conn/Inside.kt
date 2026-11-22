@@ -63,13 +63,15 @@ internal class Inside(
         }
 
     /** The network refused the first of the connection's datagrams it was handed: a handshake it denies ends now. */
-    fun sendsRefused() {
-        val verdict = c.accessStep()
-        if (verdict !is AccessVerdict.Denied) return
-        val denied = ConnEnd.AccessDenied(verdict.denial)
-        life.close(QuicError.NoError, denied, CloseHow.Now, clock.now())
-        end(denied)
-    }
+    fun sendsRefused() =
+        when (val verdict = c.accessStep()) {
+            is AccessVerdict.NotDenied -> Unit
+            is AccessVerdict.Denied -> {
+                val denied = ConnEnd.AccessDenied(verdict.denial)
+                c.closeHandshake(denied, clock.now())
+                end(denied)
+            }
+        }
 
     /** The client's socket now leaves from [to]. */
     fun moved(to: MoveTo) = turn.moved(clock.now(), to)

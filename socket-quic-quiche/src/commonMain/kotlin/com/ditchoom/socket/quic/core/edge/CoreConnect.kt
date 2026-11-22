@@ -28,6 +28,8 @@ import com.ditchoom.socket.quic.core.conn.ClientTokens
 import com.ditchoom.socket.quic.core.conn.FlightSize
 import com.ditchoom.socket.quic.core.conn.MismatchResponse
 import com.ditchoom.socket.quic.core.conn.accessGuardOfThisPlatform
+import com.ditchoom.socket.quic.core.conn.probing
+import com.ditchoom.socket.quic.core.conn.sendsAccess
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.loop.Placement
@@ -170,13 +172,14 @@ private suspend fun OnSetupLane.connectOnLane(
     val socket =
         when (ride) {
             is ClientRide.OwnSocket -> {
+                val turn = access.probing(peerKey)
                 val bindHost =
                     when (val source = routeSource(route)) {
                         is RouteSource.Resolved -> source.host
                         is RouteSource.PlatformAssigned -> anyHostFor(peer)
                         is RouteSource.Unresolved ->
                             raise(
-                                unresolved(source.reason, peerKey, access),
+                                unresolved(source.reason, peerKey, access, turn),
                                 QuicCloseCircumstance.HandshakeFailed,
                             )
                     }
@@ -239,7 +242,7 @@ private suspend fun OnSetupLane.connectOnLane(
                     scope,
                     flight,
                     handshake,
-                    access,
+                    access.sendsAccess(peerKey),
                     readiness = socket.readiness(),
                     offer = offer,
                     tickets = plan.home,

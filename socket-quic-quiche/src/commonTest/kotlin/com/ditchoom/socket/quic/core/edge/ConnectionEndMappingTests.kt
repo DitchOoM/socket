@@ -3,6 +3,7 @@ package com.ditchoom.socket.quic.core.edge
 import com.ditchoom.socket.NetworkAccess
 import com.ditchoom.socket.quic.LinkClass
 import com.ditchoom.socket.quic.QuicAccessDenial
+import com.ditchoom.socket.quic.QuicAccessRemedy
 import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicCloseReason
@@ -144,7 +145,8 @@ class ConnectionEndMappingTests {
         assertEquals(QuicCloseReason.Unspecified, thrown.closeReason, "no CONNECTION_CLOSE was exchanged and nothing timed out")
         val message = thrown.message.orEmpty()
         assertTrue(NetworkAccess.LocalNetwork.description in message, message)
-        assertTrue(QuicAccessDenial.MacosNoRouteOnLink.remedy in message, message)
+        assertEquals(QuicAccessRemedy.AllowLocalNetworkInMacosSettings, QuicAccessDenial.MacosNoRouteOnLink.remedy)
+        assertTrue("Local Network" in message, message)
     }
 
     @Test

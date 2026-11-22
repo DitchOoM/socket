@@ -7,12 +7,12 @@ import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.QuicheConn
 import com.ditchoom.socket.quic.connectionIdRandom
-import com.ditchoom.socket.quic.core.conn.AccessGuard
 import com.ditchoom.socket.quic.core.conn.FlightSize
 import com.ditchoom.socket.quic.core.conn.HandshakeRule
 import com.ditchoom.socket.quic.core.conn.KeptTicket
 import com.ditchoom.socket.quic.core.conn.MismatchResponse
 import com.ditchoom.socket.quic.core.conn.Offer
+import com.ditchoom.socket.quic.core.conn.SendsAccess
 import com.ditchoom.socket.quic.core.conn.TokenHome
 import com.ditchoom.socket.quic.core.loop.Readiness
 import com.ditchoom.socket.quic.core.loop.RunningLoop
@@ -37,8 +37,8 @@ internal class ClientWiring(
     val scope: CoroutineScope,
     val flight: FlightSize,
     val handshake: HandshakeRule,
-    /** How the platform withholds network access from the app, which a handshake whose sends were all refused is judged by. */
-    val access: AccessGuard,
+    /** What a handshake whose sends were all refused says about the app's access, settled on the setup lane. */
+    val access: SendsAccess,
     /** What the connection reads the time from: the loop's own clock. */
     val clock: LoopClock = MonotonicClock,
     /**

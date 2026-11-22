@@ -54,7 +54,7 @@ internal sealed interface ConnSide {
         val kept: KeptTicket,
         val tokens: TokenHome,
         val mover: (PathKey, RttPrior) -> Unit,
-        val access: AccessGuard,
+        val access: SendsAccess,
     ) : ConnSide
 
     /** A server hands its peer the ids its loop routes to it. */
@@ -205,8 +205,8 @@ private fun composed(
             sends = socket.ledger,
             access =
                 when (side) {
-                    is ConnSide.Client -> PeerAccess(side.access, address.peerKey)
-                    is ConnSide.Server -> PeerAccess(AccessGuard.Unguarded, address.peerKey)
+                    is ConnSide.Client -> side.access
+                    is ConnSide.Server -> SendsAccess.NeverDenied
                 },
             endHold = EndHold(StreamIo(q), memory.factory),
         )

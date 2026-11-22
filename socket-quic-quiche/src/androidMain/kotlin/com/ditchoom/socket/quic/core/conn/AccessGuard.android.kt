@@ -14,7 +14,7 @@ internal actual val accessGuardOfThisPlatform: AccessGuard =
         AccessGuard.Unguarded
     }
 
-/** Read when a send is refused: the user can grant or revoke it at any time. */
+/** Read on the setup lane of each connect: the user can grant or revoke it at any time. */
 private fun localNetworkPermission(): PermissionRead =
     when (NetworkMonitor.androidLocalNetworkAccess()) {
         is AndroidLocalNetworkAccess.Allowed -> PermissionRead.Held

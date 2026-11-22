@@ -24,6 +24,6 @@ internal class ConnParts(
     val ackReads: AckHoldReads,
     val sends: SendLedger,
     /** What a handshake whose sends were all refused says about the app's access to its peer. */
-    val access: PeerAccess,
+    val access: SendsAccess,
     val endHold: EndHold,
 )
