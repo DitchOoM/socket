@@ -38,7 +38,7 @@ class EdgeEndOrderTests {
                     }
                 }
             val end = ConnEnd.ByLocal(QuicError.NoError)
-            edge.ended(end, HeldReads(emptyMap(), emptySet()), CloseOutcome.EndedFirst(end))
+            edge.ended(end, HeldReads(emptyMap(), emptySet()), CloseOutcome.NotAsked)
             val seen = assertIs<Seen.Failed>(accept.await())
             assertEquals<QuicCloseReason>(QuicCloseReason.ByLocal(QuicError.NoError), seen.reason)
             assertEquals<QuicConnectionState>(QuicConnectionState.Closed(seen.reason), seen.state)

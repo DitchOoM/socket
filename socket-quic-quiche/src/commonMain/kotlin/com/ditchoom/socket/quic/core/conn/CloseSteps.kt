@@ -1,11 +1,13 @@
 package com.ditchoom.socket.quic.core.conn
 
 import com.ditchoom.socket.quic.core.life.CloseChoice
+import com.ditchoom.socket.quic.core.life.CloseOutcome
 import com.ditchoom.socket.quic.core.life.ConnEnd
+import com.ditchoom.socket.quic.core.life.Ending
+import com.ditchoom.socket.quic.core.life.Flushed
 import com.ditchoom.socket.quic.core.life.Holding
 import com.ditchoom.socket.quic.core.life.Life
 import com.ditchoom.socket.quic.core.life.LifeStep
-import com.ditchoom.socket.quic.core.life.endOf
 import com.ditchoom.socket.quic.core.life.errorCode
 import com.ditchoom.socket.quic.core.life.flightCode
 import com.ditchoom.socket.quic.core.path.Outgoing
@@ -29,12 +31,42 @@ internal fun ConnParts.close(
     choice: CloseChoice,
     end: ConnEnd,
     now: Nanos,
-) {
-    life.close(choice, end, now)
-    when (val at = life.view()) {
-        is Life.Closing -> streams.closePoint(endOf(at))
-        is Life.Running, is Life.Over -> Unit
+) = life.close(choice, end, now, streams::closePoint)
+
+/**
+ * The start of the end, inside: [end] is recorded once and the answer says how a close asked of the connection went.
+ * A handshake that completed in the serve that ends the connection is reported first, so an established connection is
+ * always reported as such; that report runs before the end is recorded, so a throw in it is contained like any
+ * work's and the end still follows. The deadline goes, and the end goes into the flight recording.
+ */
+internal fun ConnParts.ending(
+    now: Nanos,
+    end: ConnEnd,
+): Ending {
+    if (life.view() is Life.Over) return Ending.Already
+    announce(now, slots.paths)
+    val ending = life.end(end)
+    when (ending) {
+        is Ending.First -> {
+            timer.disarm()
+            recordEnd(now, end)
+        }
+        is Ending.Already -> Unit
     }
+    return ending
+}
+
+/** The end of the end, inside: the sink publishes it first, so a resumed caller can read it; then work fails. */
+internal fun ConnParts.ended(
+    end: ConnEnd,
+    held: HeldReads,
+    outcome: CloseOutcome,
+) {
+    sink.ended(end, held, outcome)
+    inbox.shut(end) { it.gone(end) }
+    streams.endAll(end)
+    slots.datagrams.endAll(end)
+    flight.toTrace()
 }
 
 /**
@@ -52,6 +84,22 @@ internal fun ConnParts.quicheEnded(
     }
     return paths.endOf(network.endOf(life.quicheEnd()))
 }
+
+/**
+ * A flush is judged after the serve's write, so what the close point queued (a stream's reset) leaves before the
+ * CONNECTION_CLOSE; a flush that is over writes the close into [out] at once. [LifeStep.Closed] when handing quiche the
+ * close closed it with nothing to write.
+ */
+internal fun ConnParts.flushStep(
+    now: Nanos,
+    out: SendBatch,
+    paths: Paths,
+): LifeStep =
+    when (life.flushStep(now)) {
+        Flushed.Waiting -> LifeStep.Open
+        Flushed.Handed -> LifeStep.Open.also { writeOut(out, paths) }
+        Flushed.Closed -> LifeStep.Closed
+    }
 
 /** Whether the end reads out what quiche holds for the streams, or only notes which were live. */
 internal enum class HoldAtEnd { ReadOut, LiveOnly }
@@ -75,16 +123,11 @@ internal fun ConnParts.heldAtEnd(how: HoldAtEnd): HeldReads {
     return HeldReads(held, live)
 }
 
-/**
- * At the end: a handshake that completed in the serve that ends the connection is reported first, so an established
- * connection is always reported as such before its end; a client's unused ticket goes back, and the end goes into the
- * flight recording.
- */
+/** At the end: a client's unused ticket goes back, and the end goes into the flight recording. */
 internal fun ConnParts.recordEnd(
     now: Nanos,
     end: ConnEnd,
 ) {
-    announce(now, slots.paths)
     ticketAtEnd()
     flight.ended(now, end.flightCode(), end.errorCode())
     flight.keepEnded(role, end)
@@ -155,5 +198,5 @@ private fun ConnParts.sendClose(
 ) {
     timer.expire()
     egress.write(out, paths, flight)
-    if (keepClose(now, out) == CloseSent.No && life.observe() == LifeStep.Closed) life.linger.done()
+    if (keepClose(now, out) == CloseSent.No && life.quicheClosed()) life.linger.done()
 }

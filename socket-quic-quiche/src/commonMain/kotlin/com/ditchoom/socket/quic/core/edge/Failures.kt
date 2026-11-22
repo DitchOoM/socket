@@ -27,6 +27,7 @@ import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.stream.QUICHE_ERR_INVALID_STREAM_STATE
 import com.ditchoom.socket.quic.core.stream.QUICHE_ERR_STREAM_RESET
 import com.ditchoom.socket.quic.core.stream.QUICHE_ERR_STREAM_STOPPED
+import com.ditchoom.socket.quic.core.stream.SendRefusal
 import com.ditchoom.socket.quic.core.udp.SpecLayoutMismatch
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.InternalCoroutinesApi
@@ -53,7 +54,10 @@ internal sealed interface Raised : OpFailure {
         val end: ConnEnd,
     ) : Raised
 
-    /** A write or an open came after the close point of a close that ends with [end]: nothing of it was sent. */
+    /**
+     * A write, an open or a datagram came after the close point of a close that ends with [end]: nothing more of it was
+     * accepted. A typed frame cut short there resets its stream.
+     */
     class PastClose(
         val end: ConnEnd,
     ) : Raised
@@ -121,6 +125,13 @@ internal sealed interface Raised : OpFailure {
         val refusal: NetworkRefusal,
     ) : Raised
 }
+
+/** The failure a refused stream send is: past the close point, or after the end. */
+internal fun SendRefusal.raised(): Raised =
+    when (this) {
+        is SendRefusal.PastClose -> Raised.PastClose(end)
+        is SendRefusal.Ended -> Raised.ConnEnded(end)
+    }
 
 /** The one place the edge hands a caller a failure: [failure] resumes this continuation as an exception. */
 internal fun <T> CancellableContinuation<T>.fail(

@@ -10,10 +10,14 @@ import kotlin.concurrent.atomics.AtomicReference
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 
 /**
- * A connection's life, as any thread may read it: [Running] → [Closing] → [Lingering] → [Ended], or straight to
- * [Lingering] or [Ended] from either open state. Only a [Running] connection accepts stream data: a [Closing] one is
- * past its close point. Callers may use it while it is [Open]; once it is [Over] they have its end. What it still does
- * on the wire is its [Linger]'s.
+ * A connection's life, as any thread may read it:
+ *
+ *     Running → Flushing → Handed → Lingering → Ended
+ *
+ * where a step may be skipped: an immediate close goes from [Running] to [Handed], and an end from any open state goes
+ * to [Lingering] or [Ended]. Only a [Running] connection accepts stream data: a [Closing] one is past its close point.
+ * Callers may use it while it is [Open]; once it is [Over] they have its end. What it still does on the wire is its
+ * [Linger]'s.
  */
 internal sealed interface Life {
     sealed interface Open : Life
@@ -49,23 +53,6 @@ internal sealed interface Life {
     ) : Over
 }
 
-/** How a close asked of a connection went. */
-internal sealed interface CloseOutcome {
-    /** Everything written before the close point was delivered as the graceful close waited for; then it closed. */
-    data object Drained : CloseOutcome
-
-    /** The graceful close's limit passed first: it closed then, and what was still undelivered is abandoned. */
-    data object LimitReached : CloseOutcome
-
-    /** It closed at once: an immediate close, or one that cut a graceful one short. */
-    data object Immediate : CloseOutcome
-
-    /** The connection ended, or was ending, another way before its close went: [end] says how. */
-    class EndedFirst(
-        val end: ConnEnd,
-    ) : CloseOutcome
-}
-
 /** How a connection that is over ended. */
 internal fun endOf(over: Life.Over): ConnEnd =
     when (over) {
@@ -86,11 +73,11 @@ internal fun endOf(closing: Life.Closing): ConnEnd =
  */
 internal enum class LifeStep { Open, Draining, Closed }
 
-/** Whether this call recorded the end, or another had already. */
-internal enum class Ending { First, Already }
-
 /** Where a graceful close's flush stands at a serve. */
 private enum class Flush { Waiting, Drained, LimitReached }
+
+/** What a serve's flush step did: nothing yet, handed quiche the close to write, or closed quiche with nothing to write. */
+internal enum class Flushed { Waiting, Handed, Closed }
 
 /**
  * Lifecycle and the connection's end. [end] is the only writer of the end; quiche's own close is read here and nowhere
@@ -111,8 +98,8 @@ internal class ConnLife(
     fun heard() = linger.heard()
 
     /**
-     * Each serve: closed, or draining with no close of ours to send once the peer's CONNECTION_CLOSE arrived, which is
-     * asked of quiche only after a datagram reached it.
+     * The serve's one reading, before anything else is stepped: closed, or draining with no close of ours to send once
+     * the peer's CONNECTION_CLOSE arrived, which quiche is asked only after a datagram reached it.
      */
     fun observe(): LifeStep {
         if (q.api.connIsClosed(q.handle)) return LifeStep.Closed
@@ -122,6 +109,9 @@ internal class ConnLife(
             else -> LifeStep.Open
         }
     }
+
+    /** Whether quiche has closed: it sends nothing more. */
+    fun quicheClosed(): Boolean = q.api.connIsClosed(q.handle)
 
     /** Whether quiche, holding our close, has sent its CONNECTION_CLOSE: it drains and sends nothing more. */
     fun closeSent(): Boolean = q.api.connIsDraining(q.handle)
@@ -146,14 +136,16 @@ internal class ConnLife(
     }
 
     /**
-     * The close point, at [now]: the connection ends with [end] once its CONNECTION_CLOSE is out. A graceful [choice]
-     * flushes first; an immediate one asked while flushing cuts the flush short. A connection whose peer closed first
-     * ends as quiche says, and sends nothing.
+     * The close point, at [now]: the connection ends with [end] once its CONNECTION_CLOSE is out, and [point] is told
+     * the end the moment the connection passes it, so nothing after it accepts stream data. A graceful [choice] flushes
+     * first; an immediate one asked while flushing cuts the flush short. A connection whose peer closed first ends as
+     * quiche says, and sends nothing.
      */
     fun close(
         choice: CloseChoice,
         end: ConnEnd,
         now: Nanos,
+        point: (ConnEnd) -> Unit,
     ) {
         when (val at = life.load()) {
             is Life.Running -> {
@@ -161,12 +153,13 @@ internal class ConnLife(
                     val ending = quicheEnd()
                     life.store(Life.Handed(ending, CloseOutcome.EndedFirst(ending)))
                     linger.draining()
-                    return
+                    return point(ending)
                 }
                 when (choice) {
                     is CloseChoice.Graceful -> life.store(Life.Flushing(end, now + choice.limitNanos, choice.waits))
                     is CloseChoice.Immediate -> hand(Life.Handed(end, CloseOutcome.Immediate), choice.error)
                 }
+                point(end)
             }
             is Life.Flushing ->
                 when (choice) {
@@ -177,18 +170,22 @@ internal class ConnLife(
         }
     }
 
-    /** Each serve while closing: a flush that is over at [now] hands quiche the close. */
-    fun flushStep(now: Nanos) {
+    /**
+     * Each serve, after [observe] found quiche open and after its write: a flush that is over at [now] hands quiche the
+     * close, which the serve writes next, unless it closed quiche at once with nothing to send.
+     */
+    fun flushStep(now: Nanos): Flushed {
         val flushing =
             when (val at = life.load()) {
                 is Life.Flushing -> at
-                is Life.Running, is Life.Handed, is Life.Over -> return
+                is Life.Running, is Life.Handed, is Life.Over -> return Flushed.Waiting
             }
         when (flushed(flushing, now)) {
-            Flush.Waiting -> Unit
+            Flush.Waiting -> return Flushed.Waiting
             Flush.Drained -> hand(Life.Handed(flushing.end, CloseOutcome.Drained), QuicError.NoError)
             Flush.LimitReached -> hand(Life.Handed(flushing.end, CloseOutcome.LimitReached), QuicError.NoError)
         }
+        return if (q.api.connIsClosed(q.handle)) Flushed.Closed else Flushed.Handed
     }
 
     private fun flushed(
@@ -207,33 +204,24 @@ internal class ConnLife(
         }
     }
 
-    /** The connection ends another way while flushing, with quiche still open: its CONNECTION_CLOSE goes now. */
-    fun endFlush() {
-        when (val at = life.load()) {
-            is Life.Flushing ->
-                if (observe() ==
-                    LifeStep.Open
-                ) {
-                    hand(Life.Handed(at.end, CloseOutcome.EndedFirst(at.end)), QuicError.NoError)
+    /** quiche drains with no close of ours: the ids stay until [until]; a flush waiting for the peer drained, else not. */
+    fun drains(until: Nanos) {
+        linger.silent(until)
+        val flushing =
+            when (val at = life.load()) {
+                is Life.Flushing -> at
+                is Life.Running, is Life.Handed, is Life.Over -> return
+            }
+        val outcome =
+            when (flushing.waits) {
+                DrainUntil.PeerDone -> CloseOutcome.Drained
+                DrainUntil.Acknowledged -> {
+                    val peer = q.api.connPeerError(q.handle)
+                    CloseOutcome.EndedFirst(if (peer != null) ConnEnd.ByPeer(peer) else ConnEnd.NoErrorRecorded)
                 }
-            is Life.Running, is Life.Handed, is Life.Over -> Unit
-        }
+            }
+        life.store(Life.Handed(flushing.end, outcome))
     }
-
-    /** quiche drains with no close of ours: nothing of ours goes out, and the connection keeps its ids until [until]. */
-    fun drains(until: Nanos) = linger.silent(until)
-
-    /** How the close asked of this connection went, now that it ends with [end]; read before [end] records it. */
-    fun outcome(end: ConnEnd): CloseOutcome =
-        when (val at = life.load()) {
-            is Life.Handed -> at.outcome
-            is Life.Flushing ->
-                when (at.waits) {
-                    DrainUntil.PeerDone -> if (q.api.connPeerError(q.handle) != null) CloseOutcome.Drained else CloseOutcome.EndedFirst(end)
-                    DrainUntil.Acknowledged -> CloseOutcome.EndedFirst(end)
-                }
-            is Life.Running, is Life.Over -> CloseOutcome.EndedFirst(end)
-        }
 
     /** Offers the time the close next needs the connection served: a flush's limit, or the linger's end. */
     fun offerWake(sink: WakeSink) {
@@ -244,19 +232,27 @@ internal class ConnLife(
         linger.offerWake(sink)
     }
 
-    /** Records [end], once. */
+    /**
+     * Records [end], once, and answers how a close asked of the connection went. A flush the end cuts short hands quiche
+     * its CONNECTION_CLOSE, which leaves only if the connection is served again: by a caller inside it, or the loop's
+     * next pass; an end on the loop's own paths (a stopped loop, a server past its drain bound, a release) serves it no
+     * more, so nothing is sent there.
+     */
     fun end(end: ConnEnd): Ending {
-        when (life.load()) {
-            is Life.Over -> return Ending.Already
-            is Life.Open -> Unit
-        }
-        val over =
+        val outcome =
+            when (val at = life.load()) {
+                is Life.Over -> return Ending.Already
+                is Life.Running -> CloseOutcome.NotAsked
+                is Life.Handed -> at.outcome
+                is Life.Flushing -> CloseOutcome.EndedFirst(end).also { hand(Life.Handed(at.end, it), QuicError.NoError) }
+            }
+        life.store(
             when (linger.afterEnd()) {
                 AfterEnd.Lingers -> Life.Lingering(end)
                 AfterEnd.Released -> Life.Ended(end)
-            }
-        life.store(over)
-        return Ending.First
+            },
+        )
+        return Ending.First(outcome)
     }
 
     /** The linger is over: nothing is left on the wire. */

@@ -312,6 +312,7 @@ internal class VirtualPair private constructor(
             serverConfig: ServerConfig = ServerConfig(),
             delivery: Delivery = Delivery.ToEnd,
             start: PairStart = PairStart.Established,
+            clientApi: (QuicheApi) -> QuicheApi = { it },
             body: suspend CoroutineScope.(VirtualPair) -> Unit,
         ) = runBlocking {
             val api = loadQuicheApi()
@@ -322,7 +323,7 @@ internal class VirtualPair private constructor(
                 pair.serverKey = InetSocketAddress(LOCALHOST, pair.server.port).toPathKey()
                 pair.client =
                     replayClient(
-                        pair.CountingClientApi(api),
+                        clientApi(pair.CountingClientApi(api)),
                         options,
                         BufferFactory.Default,
                         pair.Socket(End.Client),

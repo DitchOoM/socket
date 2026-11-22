@@ -28,6 +28,15 @@ class ConnLifeTests {
 
     private val life = lifeWith()
 
+    /** The ends the close point was told, in order. */
+    private val points = ArrayList<ConnEnd>()
+
+    private fun ConnLife.close(
+        choice: CloseChoice,
+        end: ConnEnd,
+        now: Nanos,
+    ) = close(choice, end, now) { points += it }
+
     @Test
     fun quichesEndIsReadInOrderTimedOutPeerLocalThenNothing() {
         assertSame(ConnEnd.NoErrorRecorded, life.quicheEnd())
@@ -56,7 +65,7 @@ class ConnLifeTests {
         assertEquals(QuicError.ProtocolViolation, assertIs<ConnEnd.ByPeer>(endOf(assertIs<Life.Closing>(life.view()))).error)
         assertSame(Wire.Draining, life.linger.wire())
         assertEquals(emptyList(), api.closeErrors, "quiche is draining the peer's close: ours is never asked for")
-        assertIs<CloseOutcome.EndedFirst>(life.outcome(ConnEnd.ByPeer(QuicError.ProtocolViolation)))
+        assertIs<CloseOutcome.EndedFirst>(assertIs<Ending.First>(life.end(ConnEnd.ByPeer(QuicError.ProtocolViolation))).outcome)
     }
 
     @Test
@@ -68,7 +77,7 @@ class ConnLifeTests {
 
     @Test
     fun theEndIsRecordedOnceAndPublished() {
-        assertEquals(Ending.First, life.end(ConnEnd.LoopStopped))
+        assertSame(CloseOutcome.NotAsked, assertIs<Ending.First>(life.end(ConnEnd.LoopStopped)).outcome, "no close was asked")
         assertEquals(Ending.Already, life.end(ConnEnd.IdleTimeout))
         assertSame(ConnEnd.LoopStopped, assertIs<Life.Ended>(life.view()).end)
     }
@@ -87,7 +96,7 @@ class ConnLifeTests {
         life.heard()
         assertEquals(LifeStep.Draining, life.observe(), "the peer's CONNECTION_CLOSE arrived: quiche drains")
         life.drains(Nanos(LINGER))
-        assertEquals(Ending.First, life.end(ConnEnd.ByPeer(QuicError.ApplicationError(3))))
+        assertIs<Ending.First>(life.end(ConnEnd.ByPeer(QuicError.ApplicationError(3))))
         assertIs<Life.Lingering>(life.view(), "the ids stay for quiche's draining time")
         assertEquals(Holding.Ids, life.linger.holds())
         life.linger.late()
@@ -152,7 +161,35 @@ class ConnLifeTests {
         val waiting = lifeWith(peerDone)
         waiting.close(peerDone, BY_LOCAL, Nanos(0L))
         api.peerError = QuicError.NoError
-        assertSame(CloseOutcome.Drained, waiting.outcome(BY_LOCAL))
+        waiting.drains(Nanos(LINGER))
+        assertSame(CloseOutcome.Drained, assertIs<Life.Handed>(waiting.view()).outcome)
+        assertIs<Wire.Silent>(waiting.linger.wire(), "the ids stay through the drain")
+    }
+
+    @Test
+    fun aFlushWaitingForAcknowledgementThatThePeersCloseEndsIsNotDrained() {
+        val graceful = lifeWith(GRACEFUL)
+        api.streamDataUnacknowledged = true
+        graceful.close(GRACEFUL, BY_LOCAL, Nanos(0L))
+        api.peerError = QuicError.ApplicationError(2)
+        graceful.drains(Nanos(LINGER))
+        // quiche then reports everything acknowledged: our close was never sent, so the flush did not drain.
+        api.streamDataUnacknowledged = false
+        graceful.flushStep(Nanos(1L))
+        val outcome = assertIs<CloseOutcome.EndedFirst>(assertIs<Life.Handed>(graceful.view()).outcome)
+        assertEquals(QuicError.ApplicationError(2), assertIs<ConnEnd.ByPeer>(outcome.end).error)
+        assertEquals(emptyList(), api.closeErrors, "nothing of ours goes to a draining quiche")
+        assertIs<Wire.Silent>(graceful.linger.wire())
+        assertIs<CloseOutcome.EndedFirst>(assertIs<Ending.First>(graceful.end(BY_LOCAL)).outcome)
+        assertIs<Life.Lingering>(graceful.view(), "the ids stay through the drain, not released at once")
+    }
+
+    @Test
+    fun theClosePointIsToldOnceWithTheEndItsCloseAsked() {
+        val graceful = lifeWith(GRACEFUL)
+        graceful.close(GRACEFUL, BY_LOCAL, Nanos(0L))
+        graceful.close(CloseChoice.Immediate(QuicError.ApplicationError(1)), ConnEnd.ServerClosed, Nanos(1L))
+        assertEquals(listOf<ConnEnd>(BY_LOCAL), points)
     }
 
     @Test
@@ -166,14 +203,15 @@ class ConnLifeTests {
     }
 
     @Test
-    fun anEndWhileFlushingHasNothingLeftOnTheWire() {
+    fun anEndWhileFlushingHandsQuicheTheCloseSoTheNextServeSendsIt() {
         val flushing = lifeWith(GRACEFUL)
         api.streamDataUnacknowledged = true
         flushing.close(GRACEFUL, BY_LOCAL, Nanos(0L))
-        assertIs<CloseOutcome.EndedFirst>(flushing.outcome(ConnEnd.LocalAddressGone))
-        flushing.end(ConnEnd.LocalAddressGone)
-        assertSame(ConnEnd.LocalAddressGone, assertIs<Life.Ended>(flushing.view()).end)
-        assertSame(Wire.Done, flushing.linger.wire())
+        val outcome = assertIs<CloseOutcome.EndedFirst>(assertIs<Ending.First>(flushing.end(ConnEnd.LocalAddressGone)).outcome)
+        assertSame(ConnEnd.LocalAddressGone, outcome.end)
+        assertSame(ConnEnd.LocalAddressGone, assertIs<Life.Lingering>(flushing.view()).end)
+        assertSame(Wire.Sending, flushing.linger.wire())
+        assertEquals(listOf<QuicError>(QuicError.NoError), api.closeErrors)
     }
 
     @Test
@@ -183,7 +221,7 @@ class ConnLifeTests {
         out.storage.putLong(0, CLOSE_BYTES)
         out.commit(CLOSE_LENGTH, SendTarget.ConnectedPeer)
         life.linger.closeOut(out, 0, CLOSE_LENGTH, SendTarget.ConnectedPeer, Nanos(LINGER))
-        assertEquals(Ending.First, life.end(ConnEnd.ByLocal(QuicError.NoError)))
+        assertIs<Ending.First>(life.end(ConnEnd.ByLocal(QuicError.NoError)))
         assertIs<Life.Lingering>(life.view(), "the close is out: the connection lingers with its ids")
         out.took(out.pending)
 

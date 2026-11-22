@@ -45,12 +45,11 @@ private sealed interface Phase {
 internal class ServerLife(
     close: CloseChoice,
 ) {
-    private val bound =
-        SETTLE_MARGIN +
-            when (close) {
-                is CloseChoice.Graceful -> close.limitNanos
-                is CloseChoice.Immediate -> 0L
-            }
+    private val limit =
+        when (close) {
+            is CloseChoice.Graceful -> close.limitNanos
+            is CloseChoice.Immediate -> 0L
+        }
     private val atBound = Runnable { }
     private var phase: Phase = Phase.Running
 
@@ -67,7 +66,7 @@ internal class ServerLife(
         port: LoopPort,
     ): ServerPhase {
         if (phase !is Phase.Running) return view()
-        val until = now + bound
+        val until = now + limit + SETTLE_MARGIN
         phase = Phase.Draining(until, port.arm(until, atBound))
         return ServerPhase.Running
     }

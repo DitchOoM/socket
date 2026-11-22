@@ -184,26 +184,23 @@ internal class Turn(
 
     fun dump(sink: TraceSink) = c.flight.dump(sink)
 
-    /** Inside: the connection ends with [end], once. The sink publishes the end first, so a resumed caller can read it; then work fails. */
+    /** Inside: the connection ends with [end], once ([ending], then [ended]); what quiche held for reads goes with it. */
     fun finish(
         now: Nanos,
         end: ConnEnd,
     ) {
-        val outcome = c.life.outcome(end).also { c.life.endFlush() }
-        if (c.life.end(end) == Ending.Already) return
-        c.timer.disarm()
-        c.recordEnd(now, end)
+        val first =
+            when (val ending = c.ending(now, end)) {
+                is Ending.First -> ending
+                is Ending.Already -> return
+            }
         val held =
             try {
                 c.heldAtEnd(HoldAtEnd.ReadOut)
             } catch (again: Exception) {
                 c.heldAtEnd(HoldAtEnd.LiveOnly)
             }
-        c.sink.ended(end, held, outcome)
-        c.inbox.shut(end) { it.gone(end) }
-        c.streams.endAll(end)
-        c.slots.datagrams.endAll(end)
-        c.flight.toTrace()
+        c.ended(end, held, first.outcome)
     }
 
     /** Inside for good, nobody else can enter: a linger still running is cut, and quiche's memory is freed. */
@@ -227,7 +224,6 @@ internal class Turn(
                 return Collected.Everything
             }
         }
-        c.life.flushStep(now)
         when (val quiche = c.life.observe()) {
             LifeStep.Open -> Unit
             LifeStep.Draining, LifeStep.Closed -> {
@@ -241,12 +237,12 @@ internal class Turn(
         }
         if (c.firstFlight() == FlightGate.Held) return Collected.Everything
         c.ackStep(now).let { if (it != AckStep.Write) return it.collected() }
-        val wrote =
-            when (val pacing = c.slots.pacing) {
-                is Pacing.Unpaced -> c.egress.write(out, paths, c.flight)
-                is Pacing.ByQuiche -> c.egress.writePaced(out, paths, pacing.pacer, c.flight)
-            }
+        val wrote = c.writeOut(out, paths)
         c.wrote(now)
+        if (c.flushStep(now, out, paths) == LifeStep.Closed) {
+            finish(now, c.quicheEnded(now, LifeStep.Closed, paths))
+            return Collected.Everything
+        }
         if (c.life.linger.sending() && c.keepClose(now, out) == CloseSent.Yes) {
             when (val life = c.life.view()) {
                 is Life.Closing -> finish(now, endOf(life))

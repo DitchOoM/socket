@@ -60,6 +60,6 @@ class EdgeUnreadAtEndTests {
         val STREAM = QuicStreamId(1L)
         val NOTHING_HELD = HeldReads(emptyMap(), emptySet())
         val BY_PEER = ConnEnd.ByPeer(QuicError.NoError)
-        val NOT_ASKED = CloseOutcome.EndedFirst(BY_PEER)
+        val NOT_ASKED = CloseOutcome.NotAsked
     }
 }

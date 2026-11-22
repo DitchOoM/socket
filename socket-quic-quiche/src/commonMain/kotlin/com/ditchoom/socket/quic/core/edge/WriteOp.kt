@@ -13,6 +13,7 @@ import com.ditchoom.socket.quic.core.observe.Confined
 import com.ditchoom.socket.quic.core.stream.QUICHE_ERR_DONE
 import com.ditchoom.socket.quic.core.stream.QUICHE_ERR_STREAM_STOPPED
 import com.ditchoom.socket.quic.core.stream.Retry
+import com.ditchoom.socket.quic.core.stream.Sender
 import com.ditchoom.socket.quic.core.stream.Side
 import com.ditchoom.socket.quic.core.stream.StreamTable
 import com.ditchoom.socket.quic.core.stream.Streams
@@ -20,6 +21,7 @@ import com.ditchoom.socket.quic.core.stream.Waiter
 import com.ditchoom.socket.quic.core.stream.WriteEnd
 import com.ditchoom.socket.quic.core.stream.code
 import com.ditchoom.socket.quic.core.stream.peer
+import com.ditchoom.socket.quic.core.stream.sender
 import kotlinx.coroutines.isActive
 import kotlin.coroutines.CoroutineContext
 import kotlin.time.Duration
@@ -126,15 +128,11 @@ internal class WriteOp(
 
     private fun attempt(table: StreamTable): Retry {
         val send =
-            when (val state = table.state) {
-                is Streams.Open -> state.send
-                is Streams.Closing -> {
+            when (val sender = table.sender()) {
+                is Streams.Open -> sender.send
+                is Sender.Refused -> {
                     lease = deadlines.disarm(lease)
-                    settle(WriteAnswer.Failed(Raised.PastClose(state.end), QuicCloseCircumstance.Closing))
-                    return Retry.Settled
-                }
-                is Streams.Ended -> {
-                    connectionEnded(state.end)
+                    settle(WriteAnswer.Failed(sender.why.raised(), QuicCloseCircumstance.Ended))
                     return Retry.Settled
                 }
             }

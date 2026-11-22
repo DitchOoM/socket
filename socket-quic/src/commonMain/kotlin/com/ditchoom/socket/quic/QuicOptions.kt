@@ -263,15 +263,15 @@ data class QuicOptions(
      */
     val streamOpenPolicy: StreamOpenPolicy = StreamOpenPolicy.UntilClosed,
     /**
-     * **Server-side only**: when an accepted connection may send its CONNECTION_CLOSE after the
-     * [QuicScope] handler returns — see [QuicCloseLinger]. Defaults to [QuicCloseLinger.Default]
-     * (linger until the peer has acknowledged everything written, for at most ten seconds on the
-     * core engine and [idleTimeout] on the legacy driver), so a reply that is slow or lost on the wire
-     * is still delivered instead of dying with the connection. On the core engine it is also what a
-     * client's `close(QuicError.NoError)` does.
+     * When a connection may send its CONNECTION_CLOSE after a close with [QuicError.NoError] — see
+     * [QuicCloseLinger]. Defaults to [QuicCloseLinger.Default] (linger until the peer has acknowledged
+     * everything written), so a reply that is slow or lost on the wire is still delivered instead of
+     * dying with the connection.
      *
-     * Ignored for the client role, where the application decides when to call
-     * [QuicConnection.close] and nothing closes the connection behind its back.
+     * On the core engine it applies to every such close, a client's and a server's, the close of each
+     * connection at server shutdown included, and waits at most ten seconds (or the
+     * [QuicCloseLinger.UntilPeerDone] bound); server shutdown waits that long plus one second. On the
+     * legacy driver it applies only when a server's handler returns, bounded by [idleTimeout].
      */
     val closeLinger: QuicCloseLinger = QuicCloseLinger.Default,
     /** Maximum UDP payload size (bytes). Must be >= 1200 per RFC 9000. */

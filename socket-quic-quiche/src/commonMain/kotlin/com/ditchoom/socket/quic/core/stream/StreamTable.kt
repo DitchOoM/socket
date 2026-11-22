@@ -214,6 +214,7 @@ internal class StreamTable(
     fun closePoint(end: ConnEnd) {
         if (state !is Streams.Open) return
         state = Streams.Closing(end)
+        writeWaiters.clear()
         val writing = ArrayList<StreamEntry>()
         entries.forEachValue { if (it.writer !== Nobody) writing.add(it) }
         for (entry in writing) entry.wakeWriter(this)

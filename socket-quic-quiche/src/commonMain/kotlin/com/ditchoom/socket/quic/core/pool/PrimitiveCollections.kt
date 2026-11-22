@@ -18,6 +18,8 @@ internal class LongSet {
 
     fun isNotEmpty(): Boolean = map.size > 0
 
+    fun clear() = map.clear()
+
     private object Present
 }
 

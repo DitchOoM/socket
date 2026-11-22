@@ -4,6 +4,7 @@ package com.ditchoom.socket.quic.core.edge
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.flow.writeFully
+import com.ditchoom.socket.quic.FlowControl
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicCloseException
@@ -19,9 +20,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeout
 import kotlin.concurrent.atomics.AtomicInt
 import kotlin.concurrent.atomics.AtomicLong
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
@@ -30,7 +29,6 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
-import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TimeSource
 
@@ -53,7 +51,7 @@ class CoreClosePointTests {
             // The server reads nothing until the close is asked: each stream's flow window fills, so every writer is
             // parked at the close point. quiche acknowledges what arrives whether or not it is read.
             val closing = CompletableDeferred<Unit>()
-            withCoreServer(onConnection = { connection ->
+            withCoreServer(options = OPTIONS, onConnection = { connection ->
                 repeat(WRITERS) {
                     val stream = connection.acceptStream()
                     launch {
@@ -69,7 +67,7 @@ class CoreClosePointTests {
                 }
                 awaitCancellation()
             }) { server ->
-                val client = connectCore(server.port, loops = loops)
+                val client = connectCore(server.port, loops = loops, options = OPTIONS)
                 val streams = List(WRITERS) { client.connection.openStream() }
                 for (stream in streams) {
                     stream.writeFully(
@@ -83,8 +81,7 @@ class CoreClosePointTests {
                 }
                 val writers = streams.map { Writer(it) }
                 val writing = writers.map { writer -> async(Dispatchers.Default) { writer.writeUntilRefused() } }
-                // Every writer parked on its stream's full window.
-                withTimeout(10.seconds) { while (!allParked(writers)) Unit }
+                assertTrue(eventually(within = 10.seconds) { allParked(writers) }, "every writer parked on its stream's full window")
 
                 closing.complete(Unit)
                 val began = TimeSource.Monotonic.markNow()
@@ -134,18 +131,15 @@ class CoreClosePointTests {
         }
     }
 
-    /** Every writer is inside a write and none moved for [STILL]: each is parked, its stream's window full. */
-    private suspend fun allParked(writers: List<Writer>): Boolean {
-        val before = writers.sumOf { it.accepted.load() }
-        if (writers.any { it.inWrite.load() == 0 }) return false
-        delay(STILL)
-        return writers.all { it.inWrite.load() == 1 } && writers.sumOf { it.accepted.load() } == before
-    }
+    /** Every writer filled its stream's window (its first byte included) and is inside its next write: it is parked. */
+    private fun allParked(writers: List<Writer>): Boolean = writers.all { it.inWrite.load() == 1 && it.accepted.load() + 1 == WINDOW }
 
     private companion object {
         const val WRITERS = 4
         const val CHUNK = 16 * 1024
-        val STILL = 300.milliseconds
+        const val WINDOW = 256L * 1024
         val LIMIT = 10.seconds
+        val OPTIONS =
+            coreTestOptions.copy(flowControl = FlowControl(initialMaxStreamDataBidiLocal = WINDOW, initialMaxStreamDataBidiRemote = WINDOW))
     }
 }
