@@ -13,12 +13,6 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlin.concurrent.Volatile
 
-/** Why a WebTransport session ended: the application error [code] and human-readable [reason]. */
-data class WebTransportCloseInfo(
-    val code: Int = 0,
-    val reason: String = "",
-)
-
 /**
  * A WebTransport-over-HTTP/3 failure (RFC 9220 + draft-ietf-webtrans-http3) that isn't a plain H3 error.
  * The typed reason is [failure] (see [WebTransportFailure]); the exception [message] is rendered from it,

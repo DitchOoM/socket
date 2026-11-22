@@ -3,7 +3,6 @@ package com.ditchoom.socket.http3
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.codec.DecodeException
 import com.ditchoom.buffer.pool.BufferPool
-import com.ditchoom.socket.quic.QuicStreamId
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
@@ -87,7 +86,7 @@ class QpackDecoder(
      */
     suspend fun decodeSection(
         buffer: ReadBuffer,
-        streamId: QuicStreamId,
+        streamId: Http3StreamId,
         scratchPool: BufferPool?,
     ): List<QpackHeaderField> {
         // Any failure to decode a field section — a bad prefix, an out-of-range static/dynamic index,
@@ -128,7 +127,7 @@ class QpackDecoder(
     }
 
     /** Notify the peer's encoder that [streamId]'s outstanding section references are abandoned (§4.4.2). */
-    suspend fun cancelStream(streamId: QuicStreamId) = decoderStream.cancelStream(streamId)
+    suspend fun cancelStream(streamId: Http3StreamId) = decoderStream.cancelStream(streamId)
 
     private fun decodeFieldLine(
         buffer: ReadBuffer,
