@@ -404,7 +404,7 @@ sealed interface com.ditchoom.socket.http3/Http3Violation { // com.ditchoom.sock
     }
 
     final class PeerStreamDeadlineExpired : com.ditchoom.socket.http3/Http3Violation { // com.ditchoom.socket.http3/Http3Violation.PeerStreamDeadlineExpired|null[0]
-        constructor <init>(com.ditchoom.socket.quic/QuicStreamId, kotlin.time/Duration, kotlin/Throwable? = ...) // com.ditchoom.socket.http3/Http3Violation.PeerStreamDeadlineExpired.<init>|<init>(com.ditchoom.socket.quic.QuicStreamId;kotlin.time.Duration;kotlin.Throwable?){}[0]
+        constructor <init>(com.ditchoom.socket.http3/Http3StreamId, kotlin.time/Duration, kotlin/Throwable? = ...) // com.ditchoom.socket.http3/Http3Violation.PeerStreamDeadlineExpired.<init>|<init>(com.ditchoom.socket.http3.Http3StreamId;kotlin.time.Duration;kotlin.Throwable?){}[0]
 
         final val cause // com.ditchoom.socket.http3/Http3Violation.PeerStreamDeadlineExpired.cause|{}cause[0]
             final fun <get-cause>(): kotlin/Throwable? // com.ditchoom.socket.http3/Http3Violation.PeerStreamDeadlineExpired.cause.<get-cause>|<get-cause>(){}[0]
@@ -413,12 +413,12 @@ sealed interface com.ditchoom.socket.http3/Http3Violation { // com.ditchoom.sock
         final val errorCode // com.ditchoom.socket.http3/Http3Violation.PeerStreamDeadlineExpired.errorCode|{}errorCode[0]
             final fun <get-errorCode>(): kotlin/Long // com.ditchoom.socket.http3/Http3Violation.PeerStreamDeadlineExpired.errorCode.<get-errorCode>|<get-errorCode>(){}[0]
         final val streamId // com.ditchoom.socket.http3/Http3Violation.PeerStreamDeadlineExpired.streamId|{}streamId[0]
-            final fun <get-streamId>(): com.ditchoom.socket.quic/QuicStreamId // com.ditchoom.socket.http3/Http3Violation.PeerStreamDeadlineExpired.streamId.<get-streamId>|<get-streamId>(){}[0]
+            final fun <get-streamId>(): com.ditchoom.socket.http3/Http3StreamId // com.ditchoom.socket.http3/Http3Violation.PeerStreamDeadlineExpired.streamId.<get-streamId>|<get-streamId>(){}[0]
 
-        final fun component1(): com.ditchoom.socket.quic/QuicStreamId // com.ditchoom.socket.http3/Http3Violation.PeerStreamDeadlineExpired.component1|component1(){}[0]
+        final fun component1(): com.ditchoom.socket.http3/Http3StreamId // com.ditchoom.socket.http3/Http3Violation.PeerStreamDeadlineExpired.component1|component1(){}[0]
         final fun component2(): kotlin.time/Duration // com.ditchoom.socket.http3/Http3Violation.PeerStreamDeadlineExpired.component2|component2(){}[0]
         final fun component3(): kotlin/Throwable? // com.ditchoom.socket.http3/Http3Violation.PeerStreamDeadlineExpired.component3|component3(){}[0]
-        final fun copy(com.ditchoom.socket.quic/QuicStreamId = ..., kotlin.time/Duration = ..., kotlin/Throwable? = ...): com.ditchoom.socket.http3/Http3Violation.PeerStreamDeadlineExpired // com.ditchoom.socket.http3/Http3Violation.PeerStreamDeadlineExpired.copy|copy(com.ditchoom.socket.quic.QuicStreamId;kotlin.time.Duration;kotlin.Throwable?){}[0]
+        final fun copy(com.ditchoom.socket.http3/Http3StreamId = ..., kotlin.time/Duration = ..., kotlin/Throwable? = ...): com.ditchoom.socket.http3/Http3Violation.PeerStreamDeadlineExpired // com.ditchoom.socket.http3/Http3Violation.PeerStreamDeadlineExpired.copy|copy(com.ditchoom.socket.http3.Http3StreamId;kotlin.time.Duration;kotlin.Throwable?){}[0]
         final fun describe(): kotlin/String // com.ditchoom.socket.http3/Http3Violation.PeerStreamDeadlineExpired.describe|describe(){}[0]
         final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.http3/Http3Violation.PeerStreamDeadlineExpired.equals|equals(kotlin.Any?){}[0]
         final fun hashCode(): kotlin/Int // com.ditchoom.socket.http3/Http3Violation.PeerStreamDeadlineExpired.hashCode|hashCode(){}[0]
@@ -595,15 +595,15 @@ sealed interface com.ditchoom.socket.http3/Http3Violation { // com.ditchoom.sock
     }
 
     final class QpackSectionAckWithoutOutstanding : com.ditchoom.socket.http3/Http3Violation { // com.ditchoom.socket.http3/Http3Violation.QpackSectionAckWithoutOutstanding|null[0]
-        constructor <init>(com.ditchoom.socket.quic/QuicStreamId) // com.ditchoom.socket.http3/Http3Violation.QpackSectionAckWithoutOutstanding.<init>|<init>(com.ditchoom.socket.quic.QuicStreamId){}[0]
+        constructor <init>(com.ditchoom.socket.http3/Http3StreamId) // com.ditchoom.socket.http3/Http3Violation.QpackSectionAckWithoutOutstanding.<init>|<init>(com.ditchoom.socket.http3.Http3StreamId){}[0]
 
         final val errorCode // com.ditchoom.socket.http3/Http3Violation.QpackSectionAckWithoutOutstanding.errorCode|{}errorCode[0]
             final fun <get-errorCode>(): kotlin/Long // com.ditchoom.socket.http3/Http3Violation.QpackSectionAckWithoutOutstanding.errorCode.<get-errorCode>|<get-errorCode>(){}[0]
         final val streamId // com.ditchoom.socket.http3/Http3Violation.QpackSectionAckWithoutOutstanding.streamId|{}streamId[0]
-            final fun <get-streamId>(): com.ditchoom.socket.quic/QuicStreamId // com.ditchoom.socket.http3/Http3Violation.QpackSectionAckWithoutOutstanding.streamId.<get-streamId>|<get-streamId>(){}[0]
+            final fun <get-streamId>(): com.ditchoom.socket.http3/Http3StreamId // com.ditchoom.socket.http3/Http3Violation.QpackSectionAckWithoutOutstanding.streamId.<get-streamId>|<get-streamId>(){}[0]
 
-        final fun component1(): com.ditchoom.socket.quic/QuicStreamId // com.ditchoom.socket.http3/Http3Violation.QpackSectionAckWithoutOutstanding.component1|component1(){}[0]
-        final fun copy(com.ditchoom.socket.quic/QuicStreamId = ...): com.ditchoom.socket.http3/Http3Violation.QpackSectionAckWithoutOutstanding // com.ditchoom.socket.http3/Http3Violation.QpackSectionAckWithoutOutstanding.copy|copy(com.ditchoom.socket.quic.QuicStreamId){}[0]
+        final fun component1(): com.ditchoom.socket.http3/Http3StreamId // com.ditchoom.socket.http3/Http3Violation.QpackSectionAckWithoutOutstanding.component1|component1(){}[0]
+        final fun copy(com.ditchoom.socket.http3/Http3StreamId = ...): com.ditchoom.socket.http3/Http3Violation.QpackSectionAckWithoutOutstanding // com.ditchoom.socket.http3/Http3Violation.QpackSectionAckWithoutOutstanding.copy|copy(com.ditchoom.socket.http3.Http3StreamId){}[0]
         final fun describe(): kotlin/String // com.ditchoom.socket.http3/Http3Violation.QpackSectionAckWithoutOutstanding.describe|describe(){}[0]
         final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.http3/Http3Violation.QpackSectionAckWithoutOutstanding.equals|equals(kotlin.Any?){}[0]
         final fun hashCode(): kotlin/Int // com.ditchoom.socket.http3/Http3Violation.QpackSectionAckWithoutOutstanding.hashCode|hashCode(){}[0]
@@ -877,26 +877,26 @@ sealed interface com.ditchoom.socket.http3/QpackDecoderInstruction { // com.ditc
     }
 
     final class SectionAck : com.ditchoom.socket.http3/QpackDecoderInstruction { // com.ditchoom.socket.http3/QpackDecoderInstruction.SectionAck|null[0]
-        constructor <init>(com.ditchoom.socket.quic/QuicStreamId) // com.ditchoom.socket.http3/QpackDecoderInstruction.SectionAck.<init>|<init>(com.ditchoom.socket.quic.QuicStreamId){}[0]
+        constructor <init>(com.ditchoom.socket.http3/Http3StreamId) // com.ditchoom.socket.http3/QpackDecoderInstruction.SectionAck.<init>|<init>(com.ditchoom.socket.http3.Http3StreamId){}[0]
 
         final val streamId // com.ditchoom.socket.http3/QpackDecoderInstruction.SectionAck.streamId|{}streamId[0]
-            final fun <get-streamId>(): com.ditchoom.socket.quic/QuicStreamId // com.ditchoom.socket.http3/QpackDecoderInstruction.SectionAck.streamId.<get-streamId>|<get-streamId>(){}[0]
+            final fun <get-streamId>(): com.ditchoom.socket.http3/Http3StreamId // com.ditchoom.socket.http3/QpackDecoderInstruction.SectionAck.streamId.<get-streamId>|<get-streamId>(){}[0]
 
-        final fun component1(): com.ditchoom.socket.quic/QuicStreamId // com.ditchoom.socket.http3/QpackDecoderInstruction.SectionAck.component1|component1(){}[0]
-        final fun copy(com.ditchoom.socket.quic/QuicStreamId = ...): com.ditchoom.socket.http3/QpackDecoderInstruction.SectionAck // com.ditchoom.socket.http3/QpackDecoderInstruction.SectionAck.copy|copy(com.ditchoom.socket.quic.QuicStreamId){}[0]
+        final fun component1(): com.ditchoom.socket.http3/Http3StreamId // com.ditchoom.socket.http3/QpackDecoderInstruction.SectionAck.component1|component1(){}[0]
+        final fun copy(com.ditchoom.socket.http3/Http3StreamId = ...): com.ditchoom.socket.http3/QpackDecoderInstruction.SectionAck // com.ditchoom.socket.http3/QpackDecoderInstruction.SectionAck.copy|copy(com.ditchoom.socket.http3.Http3StreamId){}[0]
         final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.http3/QpackDecoderInstruction.SectionAck.equals|equals(kotlin.Any?){}[0]
         final fun hashCode(): kotlin/Int // com.ditchoom.socket.http3/QpackDecoderInstruction.SectionAck.hashCode|hashCode(){}[0]
         final fun toString(): kotlin/String // com.ditchoom.socket.http3/QpackDecoderInstruction.SectionAck.toString|toString(){}[0]
     }
 
     final class StreamCancellation : com.ditchoom.socket.http3/QpackDecoderInstruction { // com.ditchoom.socket.http3/QpackDecoderInstruction.StreamCancellation|null[0]
-        constructor <init>(com.ditchoom.socket.quic/QuicStreamId) // com.ditchoom.socket.http3/QpackDecoderInstruction.StreamCancellation.<init>|<init>(com.ditchoom.socket.quic.QuicStreamId){}[0]
+        constructor <init>(com.ditchoom.socket.http3/Http3StreamId) // com.ditchoom.socket.http3/QpackDecoderInstruction.StreamCancellation.<init>|<init>(com.ditchoom.socket.http3.Http3StreamId){}[0]
 
         final val streamId // com.ditchoom.socket.http3/QpackDecoderInstruction.StreamCancellation.streamId|{}streamId[0]
-            final fun <get-streamId>(): com.ditchoom.socket.quic/QuicStreamId // com.ditchoom.socket.http3/QpackDecoderInstruction.StreamCancellation.streamId.<get-streamId>|<get-streamId>(){}[0]
+            final fun <get-streamId>(): com.ditchoom.socket.http3/Http3StreamId // com.ditchoom.socket.http3/QpackDecoderInstruction.StreamCancellation.streamId.<get-streamId>|<get-streamId>(){}[0]
 
-        final fun component1(): com.ditchoom.socket.quic/QuicStreamId // com.ditchoom.socket.http3/QpackDecoderInstruction.StreamCancellation.component1|component1(){}[0]
-        final fun copy(com.ditchoom.socket.quic/QuicStreamId = ...): com.ditchoom.socket.http3/QpackDecoderInstruction.StreamCancellation // com.ditchoom.socket.http3/QpackDecoderInstruction.StreamCancellation.copy|copy(com.ditchoom.socket.quic.QuicStreamId){}[0]
+        final fun component1(): com.ditchoom.socket.http3/Http3StreamId // com.ditchoom.socket.http3/QpackDecoderInstruction.StreamCancellation.component1|component1(){}[0]
+        final fun copy(com.ditchoom.socket.http3/Http3StreamId = ...): com.ditchoom.socket.http3/QpackDecoderInstruction.StreamCancellation // com.ditchoom.socket.http3/QpackDecoderInstruction.StreamCancellation.copy|copy(com.ditchoom.socket.http3.Http3StreamId){}[0]
         final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.http3/QpackDecoderInstruction.StreamCancellation.equals|equals(kotlin.Any?){}[0]
         final fun hashCode(): kotlin/Int // com.ditchoom.socket.http3/QpackDecoderInstruction.StreamCancellation.hashCode|hashCode(){}[0]
         final fun toString(): kotlin/String // com.ditchoom.socket.http3/QpackDecoderInstruction.StreamCancellation.toString|toString(){}[0]
@@ -1015,8 +1015,8 @@ abstract class com.ditchoom.socket.http3/QpackDecoderStream { // com.ditchoom.so
     constructor <init>() // com.ditchoom.socket.http3/QpackDecoderStream.<init>|<init>(){}[0]
 
     abstract suspend fun write(com.ditchoom.socket.http3/QpackDecoderInstruction): com.ditchoom.socket.http3/DecoderStreamWrite // com.ditchoom.socket.http3/QpackDecoderStream.write|write(com.ditchoom.socket.http3.QpackDecoderInstruction){}[0]
-    final suspend fun acknowledgeSection(com.ditchoom.socket.quic/QuicStreamId, com.ditchoom.socket.http3/InsertCount) // com.ditchoom.socket.http3/QpackDecoderStream.acknowledgeSection|acknowledgeSection(com.ditchoom.socket.quic.QuicStreamId;com.ditchoom.socket.http3.InsertCount){}[0]
-    final suspend fun cancelStream(com.ditchoom.socket.quic/QuicStreamId) // com.ditchoom.socket.http3/QpackDecoderStream.cancelStream|cancelStream(com.ditchoom.socket.quic.QuicStreamId){}[0]
+    final suspend fun acknowledgeSection(com.ditchoom.socket.http3/Http3StreamId, com.ditchoom.socket.http3/InsertCount) // com.ditchoom.socket.http3/QpackDecoderStream.acknowledgeSection|acknowledgeSection(com.ditchoom.socket.http3.Http3StreamId;com.ditchoom.socket.http3.InsertCount){}[0]
+    final suspend fun cancelStream(com.ditchoom.socket.http3/Http3StreamId) // com.ditchoom.socket.http3/QpackDecoderStream.cancelStream|cancelStream(com.ditchoom.socket.http3.Http3StreamId){}[0]
     final suspend fun reportInsertsUpTo(com.ditchoom.socket.http3/InsertCount) // com.ditchoom.socket.http3/QpackDecoderStream.reportInsertsUpTo|reportInsertsUpTo(com.ditchoom.socket.http3.InsertCount){}[0]
 }
 
@@ -1255,8 +1255,8 @@ final class com.ditchoom.socket.http3/QpackDecoder { // com.ditchoom.socket.http
         final fun <get-insertCountValue>(): com.ditchoom.socket.http3/InsertCount // com.ditchoom.socket.http3/QpackDecoder.insertCountValue.<get-insertCountValue>|<get-insertCountValue>(){}[0]
 
     final suspend fun applyEncoderInstruction(com.ditchoom.socket.http3/QpackEncoderInstruction) // com.ditchoom.socket.http3/QpackDecoder.applyEncoderInstruction|applyEncoderInstruction(com.ditchoom.socket.http3.QpackEncoderInstruction){}[0]
-    final suspend fun cancelStream(com.ditchoom.socket.quic/QuicStreamId) // com.ditchoom.socket.http3/QpackDecoder.cancelStream|cancelStream(com.ditchoom.socket.quic.QuicStreamId){}[0]
-    final suspend fun decodeSection(com.ditchoom.buffer/ReadBuffer, com.ditchoom.socket.quic/QuicStreamId, com.ditchoom.buffer.pool/BufferPool?): kotlin.collections/List<com.ditchoom.socket.http3/QpackHeaderField> // com.ditchoom.socket.http3/QpackDecoder.decodeSection|decodeSection(com.ditchoom.buffer.ReadBuffer;com.ditchoom.socket.quic.QuicStreamId;com.ditchoom.buffer.pool.BufferPool?){}[0]
+    final suspend fun cancelStream(com.ditchoom.socket.http3/Http3StreamId) // com.ditchoom.socket.http3/QpackDecoder.cancelStream|cancelStream(com.ditchoom.socket.http3.Http3StreamId){}[0]
+    final suspend fun decodeSection(com.ditchoom.buffer/ReadBuffer, com.ditchoom.socket.http3/Http3StreamId, com.ditchoom.buffer.pool/BufferPool?): kotlin.collections/List<com.ditchoom.socket.http3/QpackHeaderField> // com.ditchoom.socket.http3/QpackDecoder.decodeSection|decodeSection(com.ditchoom.buffer.ReadBuffer;com.ditchoom.socket.http3.Http3StreamId;com.ditchoom.buffer.pool.BufferPool?){}[0]
 }
 
 final class com.ditchoom.socket.http3/QpackDynamicTable { // com.ditchoom.socket.http3/QpackDynamicTable|null[0]
@@ -1315,7 +1315,7 @@ final class com.ditchoom.socket.http3/QpackEncoder { // com.ditchoom.socket.http
     final val insertCountValue // com.ditchoom.socket.http3/QpackEncoder.insertCountValue|{}insertCountValue[0]
         final fun <get-insertCountValue>(): com.ditchoom.socket.http3/InsertCount // com.ditchoom.socket.http3/QpackEncoder.insertCountValue.<get-insertCountValue>|<get-insertCountValue>(){}[0]
 
-    final suspend fun encodeSection(kotlin.collections/List<com.ditchoom.socket.http3/QpackHeaderField>, com.ditchoom.socket.quic/QuicStreamId, com.ditchoom.buffer.pool/BufferPool): com.ditchoom.buffer/ReadBuffer // com.ditchoom.socket.http3/QpackEncoder.encodeSection|encodeSection(kotlin.collections.List<com.ditchoom.socket.http3.QpackHeaderField>;com.ditchoom.socket.quic.QuicStreamId;com.ditchoom.buffer.pool.BufferPool){}[0]
+    final suspend fun encodeSection(kotlin.collections/List<com.ditchoom.socket.http3/QpackHeaderField>, com.ditchoom.socket.http3/Http3StreamId, com.ditchoom.buffer.pool/BufferPool): com.ditchoom.buffer/ReadBuffer // com.ditchoom.socket.http3/QpackEncoder.encodeSection|encodeSection(kotlin.collections.List<com.ditchoom.socket.http3.QpackHeaderField>;com.ditchoom.socket.http3.Http3StreamId;com.ditchoom.buffer.pool.BufferPool){}[0]
     final suspend fun processDecoderInstruction(com.ditchoom.socket.http3/QpackDecoderInstruction) // com.ditchoom.socket.http3/QpackEncoder.processDecoderInstruction|processDecoderInstruction(com.ditchoom.socket.http3.QpackDecoderInstruction){}[0]
     final suspend fun setCapacity(kotlin/Long) // com.ditchoom.socket.http3/QpackEncoder.setCapacity|setCapacity(kotlin.Long){}[0]
 }
@@ -1512,6 +1512,20 @@ final value class com.ditchoom.socket.http3/Http3FrameType { // com.ditchoom.soc
         final fun isReserved(kotlin/Long): kotlin/Boolean // com.ditchoom.socket.http3/Http3FrameType.Companion.isReserved|isReserved(kotlin.Long){}[0]
         final fun isReservedHttp2(kotlin/Long): kotlin/Boolean // com.ditchoom.socket.http3/Http3FrameType.Companion.isReservedHttp2|isReservedHttp2(kotlin.Long){}[0]
     }
+}
+
+final value class com.ditchoom.socket.http3/Http3StreamId : kotlin/Comparable<com.ditchoom.socket.http3/Http3StreamId> { // com.ditchoom.socket.http3/Http3StreamId|null[0]
+    constructor <init>(kotlin/Long) // com.ditchoom.socket.http3/Http3StreamId.<init>|<init>(kotlin.Long){}[0]
+
+    final val id // com.ditchoom.socket.http3/Http3StreamId.id|{}id[0]
+        final fun <get-id>(): kotlin/Long // com.ditchoom.socket.http3/Http3StreamId.id.<get-id>|<get-id>(){}[0]
+    final val isUnidirectional // com.ditchoom.socket.http3/Http3StreamId.isUnidirectional|{}isUnidirectional[0]
+        final fun <get-isUnidirectional>(): kotlin/Boolean // com.ditchoom.socket.http3/Http3StreamId.isUnidirectional.<get-isUnidirectional>|<get-isUnidirectional>(){}[0]
+
+    final fun compareTo(com.ditchoom.socket.http3/Http3StreamId): kotlin/Int // com.ditchoom.socket.http3/Http3StreamId.compareTo|compareTo(com.ditchoom.socket.http3.Http3StreamId){}[0]
+    final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.http3/Http3StreamId.equals|equals(kotlin.Any?){}[0]
+    final fun hashCode(): kotlin/Int // com.ditchoom.socket.http3/Http3StreamId.hashCode|hashCode(){}[0]
+    final fun toString(): kotlin/String // com.ditchoom.socket.http3/Http3StreamId.toString|toString(){}[0]
 }
 
 final value class com.ditchoom.socket.http3/InsertCount : kotlin/Comparable<com.ditchoom.socket.http3/InsertCount> { // com.ditchoom.socket.http3/InsertCount|null[0]

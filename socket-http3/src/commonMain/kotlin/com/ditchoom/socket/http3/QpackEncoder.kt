@@ -3,7 +3,6 @@ package com.ditchoom.socket.http3
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.WriteBuffer
 import com.ditchoom.buffer.pool.BufferPool
-import com.ditchoom.socket.quic.QuicStreamId
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -60,7 +59,7 @@ class QpackEncoder(
     // Insert Count (to advance the Known Received Count on ack) and the absolute indices it references
     // (to release their entry reference counts on ack/cancel). Sections that reference no dynamic
     // entry (RIC 0) are never recorded — the decoder never acks them.
-    private val outstandingSections = mutableMapOf<QuicStreamId, ArrayDeque<OutstandingSection>>()
+    private val outstandingSections = mutableMapOf<Http3StreamId, ArrayDeque<OutstandingSection>>()
 
     // Absolute index → number of outstanding sections referencing it. An entry present here (count ≥ 1)
     // is "pinned": an insert must not evict it (RFC 9204 §2.1.3). Absent ⇒ count 0 ⇒ evictable.
@@ -93,7 +92,7 @@ class QpackEncoder(
      */
     suspend fun encodeSection(
         fields: List<QpackHeaderField>,
-        streamId: QuicStreamId,
+        streamId: Http3StreamId,
         pool: BufferPool,
     ): ReadBuffer =
         mutex.withLock {
@@ -199,7 +198,7 @@ class QpackEncoder(
      * A stream counts as blocked while it has an outstanding section whose Required Insert Count exceeds
      * the Known Received Count — i.e. one the peer's decoder might not yet be able to resolve.
      */
-    private fun canBlockStream(streamId: QuicStreamId): Boolean {
+    private fun canBlockStream(streamId: Http3StreamId): Boolean {
         if (peerMaxBlockedStreams <= 0) return false
         var blocked = 0
         var thisStreamAlreadyBlocking = false

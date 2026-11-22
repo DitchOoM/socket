@@ -15,7 +15,6 @@ import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.pool.ThreadingMode
 import com.ditchoom.buffer.stream.StreamProcessor
-import com.ditchoom.socket.quic.QuicStreamId
 import kotlin.random.Random
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
@@ -264,9 +263,9 @@ object Http3FuzzGenerators {
             streamId: Long,
             pool: BufferPool,
         ): List<QpackHeaderField> {
-            val section = encoder.encodeSection(fields, QuicStreamId(streamId), pool)
+            val section = encoder.encodeSection(fields, Http3StreamId(streamId), pool)
             pump()
-            val decoded = decoder.decodeSection(section, QuicStreamId(streamId), scratchPool = null)
+            val decoded = decoder.decodeSection(section, Http3StreamId(streamId), scratchPool = null)
             pump()
             // Both tables must have applied the exact same inserts/duplicates — a divergence means the
             // encoder-stream instructions and the decoder's replay of them disagree, which a field-equality
@@ -385,7 +384,7 @@ object Http3FuzzGenerators {
             QpackDecoder(
                 maxCapacity = 0,
                 RecordingQpackDecoderStream(),
-            ).decodeSection(buffer(wire), streamId = QuicStreamId(0L), scratchPool = null)
+            ).decodeSection(buffer(wire), streamId = Http3StreamId(0L), scratchPool = null)
         }
         tolerate {
             val reader = QpackInstructionReader.encoder(OneShotByteStream(buffer(wire)), decoderPool())

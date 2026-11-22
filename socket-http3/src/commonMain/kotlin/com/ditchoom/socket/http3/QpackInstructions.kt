@@ -5,7 +5,6 @@ import com.ditchoom.buffer.WriteBuffer
 import com.ditchoom.buffer.codec.PeekResult
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.stream.StreamProcessor
-import com.ditchoom.socket.quic.QuicStreamId
 
 /**
  * An instruction an encoder sends to the peer's decoder on the QPACK **encoder stream** (RFC 9204
@@ -43,12 +42,12 @@ sealed interface QpackEncoderInstruction {
 sealed interface QpackDecoderInstruction {
     /** Section Acknowledgment (§4.4.1): `1` + 7-bit stream id — a field section on that stream decoded. */
     data class SectionAck(
-        val streamId: QuicStreamId,
+        val streamId: Http3StreamId,
     ) : QpackDecoderInstruction
 
     /** Stream Cancellation (§4.4.2): `01` + 6-bit stream id — the stream was reset/abandoned. */
     data class StreamCancellation(
-        val streamId: QuicStreamId,
+        val streamId: Http3StreamId,
     ) : QpackDecoderInstruction
 
     /**
@@ -183,10 +182,10 @@ object QpackDecoderInstructionCodec {
         val first = buffer.readByte().toInt() and 0xFF
         return when {
             first and SECTION_ACK != 0 ->
-                QpackDecoderInstruction.SectionAck(QuicStreamId(QpackPrefixedInteger.decodeFromFirstByte(buffer, first, prefixBits = 7)))
+                QpackDecoderInstruction.SectionAck(Http3StreamId(QpackPrefixedInteger.decodeFromFirstByte(buffer, first, prefixBits = 7)))
             first and STREAM_CANCELLATION != 0 ->
                 QpackDecoderInstruction.StreamCancellation(
-                    QuicStreamId(QpackPrefixedInteger.decodeFromFirstByte(buffer, first, prefixBits = 6)),
+                    Http3StreamId(QpackPrefixedInteger.decodeFromFirstByte(buffer, first, prefixBits = 6)),
                 )
             else ->
                 // The wire-decode boundary: QpackPrefixedInteger rejects overflow with a typed

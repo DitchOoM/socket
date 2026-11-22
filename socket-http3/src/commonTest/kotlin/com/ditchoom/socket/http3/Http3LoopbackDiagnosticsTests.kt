@@ -1,6 +1,5 @@
 package com.ditchoom.socket.http3
 
-import com.ditchoom.socket.quic.QuicStreamId
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertFalse
@@ -22,14 +21,14 @@ class Http3LoopbackDiagnosticsTests {
         val diagnostics = Http3LoopbackDiagnostics()
         diagnostics.recordStreamViolation(
             "S",
-            Http3StreamException(Http3Violation.QpackSectionAckWithoutOutstanding(streamId = QuicStreamId(4L))),
+            Http3StreamException(Http3Violation.QpackSectionAckWithoutOutstanding(streamId = Http3StreamId(4L))),
         )
 
         val report = diagnostics.report(IllegalStateException("boom"))
 
         // The discriminator: which of the four, and its operand.
         assertContains(report, "QpackSectionAckWithoutOutstanding")
-        assertContains(report, "streamId=QuicStreamId(4)")
+        assertContains(report, "streamId=Http3StreamId(4)")
         // The human-readable form, so the report stands alone without the reader consulting the source.
         assertContains(report, "Section Acknowledgment for stream 4 with no outstanding section")
         // Rendered as the wire code the QUIC layer reports, so the report can be tied back to the

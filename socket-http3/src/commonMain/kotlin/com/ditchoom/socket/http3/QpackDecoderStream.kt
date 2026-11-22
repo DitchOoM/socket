@@ -1,6 +1,5 @@
 package com.ditchoom.socket.http3
 
-import com.ditchoom.socket.quic.QuicStreamId
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.sync.Mutex
@@ -57,7 +56,7 @@ abstract class QpackDecoderStream {
      *
      * Returns what happened, because the accounting depends on it and a `Unit` return cannot tell
      * "wrote" from "silently did not". Both subclasses have a path that writes nothing and raises
-     * nothing: the client swallows a [com.ditchoom.socket.quic.QuicCloseException] (the ack is moot
+     * nothing: the client swallows a the transport's close exception (the ack is moot
      * once the connection is gone) and the server returns early when its decoder stream is not open
      * yet. Under a `Unit` contract both of those advance [acknowledgedInsertCount] past instructions
      * the peer never received, and every later increment is short by that much — silently, since a
@@ -71,7 +70,7 @@ abstract class QpackDecoderStream {
      * implicitly covers.
      */
     suspend fun acknowledgeSection(
-        streamId: QuicStreamId,
+        streamId: Http3StreamId,
         requiredInsertCount: InsertCount,
     ) = withOwnedLock {
         if (write(QpackDecoderInstruction.SectionAck(streamId)) is DecoderStreamWrite.NotSent) return@withOwnedLock
@@ -100,7 +99,7 @@ abstract class QpackDecoderStream {
         }
 
     /** Tell the peer's encoder that [streamId]'s outstanding section references are abandoned (§4.4.2). */
-    suspend fun cancelStream(streamId: QuicStreamId) =
+    suspend fun cancelStream(streamId: Http3StreamId) =
         withOwnedLock {
             // Carries no count, but still takes the lock: it is a write on the same single-writer stream,
             // and interleaving its bytes with an acknowledgment's would corrupt both.

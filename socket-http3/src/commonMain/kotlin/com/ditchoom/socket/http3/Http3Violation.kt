@@ -1,6 +1,5 @@
 package com.ditchoom.socket.http3
 
-import com.ditchoom.socket.quic.QuicStreamId
 import kotlin.time.Duration
 
 /**
@@ -9,7 +8,7 @@ import kotlin.time.Duration
  * context (push ids, setting/frame type codes, an underlying buffer cause, …) rather than a hand-written
  * message string. The RFC application [errorCode] an endpoint puts on the wire is *derived* from the
  * variant, and [describe] renders the human-readable diagnostic from the typed fields. Errors stay typed,
- * never stringly — mirroring the `QuicError` sealed convention in `:socket-quic`.
+ * never stringly — mirroring the transport layer's sealed error convention.
  */
 sealed interface Http3Violation {
     /** The RFC 9114 §8.1 / RFC 9204 §8.3 application error code for a CONNECTION_CLOSE or stream reset. */
@@ -271,7 +270,7 @@ sealed interface Http3Violation {
      * stream and says nothing must not be waited on forever — so the deadline is right; what must not
      * happen is for its expiry to look like cancellation.
      *
-     * `QuicheDriver` implements a deadline as `withTimeout`, whose `TimeoutCancellationException` is a
+     * a transport driver may implement a deadline as `withTimeout`, whose `TimeoutCancellationException` is a
      * `CancellationException`; a `launch` child completing with one is *cancelled, not failed*, so
      * `route()`'s per-stream catch arms would never see it and the child would vanish with a bare
      * `close()` — indistinguishable from a genuinely cancelled router, and on QUIC a send-side FIN only,
@@ -288,7 +287,7 @@ sealed interface Http3Violation {
      * names a stall identically on both roles.
      */
     data class PeerStreamDeadlineExpired(
-        val streamId: QuicStreamId,
+        val streamId: Http3StreamId,
         val deadline: Duration,
         val cause: Throwable? = null,
     ) : Http3Violation {
@@ -362,7 +361,7 @@ sealed interface Http3Violation {
 
     /** A Section Acknowledgment named a stream with no outstanding section. */
     data class QpackSectionAckWithoutOutstanding(
-        val streamId: QuicStreamId,
+        val streamId: Http3StreamId,
     ) : Http3Violation {
         override val errorCode get() = Http3ErrorCode.QPACK_DECODER_STREAM_ERROR
 
@@ -389,7 +388,7 @@ sealed interface Http3Violation {
      * they read with `Duration.INFINITE`, delegating liveness to the connection's idle timeout, exactly
      * as the control stream does — so this should be unreachable.
      *
-     * It exists because the failure it names is otherwise **silent**: `QuicheDriver` implements a
+     * It exists because the failure it names is otherwise **silent**: a transport driver may implement a
      * deadline as `withTimeout`, whose `TimeoutCancellationException` is a `CancellationException`, and a
      * `launch` child completing with one is treated as *cancelled, not failed*. The pump would exit, the
      * connection stay "healthy", and the decoder's dynamic table silently desync from the peer's until

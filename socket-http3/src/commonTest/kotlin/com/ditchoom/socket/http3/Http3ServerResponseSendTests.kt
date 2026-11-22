@@ -78,8 +78,7 @@ class Http3ServerResponseSendTests {
             QuicByteStream(id, stream),
             BufferPool(factory = BufferFactory.Default),
             TransportConfig(),
-            id,
-        ) { fields, _ ->
+        ) { fields ->
             val size = (QpackFieldSectionCodec.wireSize(fields, EncodeContext.Empty) as WireSize.Exact).bytes
             BufferFactory.Default.allocate(size).also {
                 QpackFieldSectionCodec.encode(it, fields, EncodeContext.Empty)
