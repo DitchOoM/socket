@@ -15,6 +15,7 @@ import kotlinx.coroutines.withTimeout
 import java.net.ConnectException
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.net.SocketException
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -127,6 +128,9 @@ class ServerSocketAllocateTests {
                             Socket().use { it.connect(InetSocketAddress("127.0.0.1", port), 500) }
                             delay(50)
                         } catch (_: ConnectException) {
+                            refused = true
+                        } catch (_: SocketException) {
+                            // A connect the kernel queued just before the close is reset by it: the listener is gone too.
                             refused = true
                         }
                     }
