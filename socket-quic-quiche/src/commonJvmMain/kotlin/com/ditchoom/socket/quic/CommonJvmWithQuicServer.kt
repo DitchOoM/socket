@@ -3,8 +3,6 @@
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.buffer.Charset
-import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.nativeMemoryAccess
 import com.ditchoom.buffer.use
@@ -118,15 +116,4 @@ internal suspend fun buildJvmQuicServer(
             receivePlacement.release()
         }
     }
-}
-
-internal fun writeNullTerminatedString(
-    str: String,
-    factory: BufferFactory,
-): PlatformBuffer {
-    val buf = factory.allocate(str.length + 1)
-    buf.writeString(str, Charset.UTF8)
-    buf.writeByte(0)
-    buf.resetForRead()
-    return buf
 }

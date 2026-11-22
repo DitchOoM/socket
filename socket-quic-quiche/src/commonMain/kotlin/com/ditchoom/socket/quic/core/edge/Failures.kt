@@ -19,7 +19,6 @@ import com.ditchoom.socket.quic.QuicStreamReadError
 import com.ditchoom.socket.quic.QuicStreamReadException
 import com.ditchoom.socket.quic.QuicStreamSide
 import com.ditchoom.socket.quic.QuicWriteTarget
-import com.ditchoom.socket.quic.QuicheDriver
 import com.ditchoom.socket.quic.RouteProbeFailure
 import com.ditchoom.socket.quic.UnresolvedRouteSourceException
 import com.ditchoom.socket.quic.closeReason
@@ -28,6 +27,7 @@ import com.ditchoom.socket.quic.core.stream.QUICHE_ERR_INVALID_STREAM_STATE
 import com.ditchoom.socket.quic.core.stream.QUICHE_ERR_STREAM_RESET
 import com.ditchoom.socket.quic.core.stream.QUICHE_ERR_STREAM_STOPPED
 import com.ditchoom.socket.quic.core.udp.SpecLayoutMismatch
+import com.ditchoom.socket.quic.quicheCapabilities
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.InternalCoroutinesApi
 import kotlinx.coroutines.awaitCancellation
@@ -216,10 +216,10 @@ private fun exceptionOf(
             QuicNativeMemoryRequiredException.forBuffer(
                 QuicWriteTarget.Stream(failure.stream.id),
                 failure.buffer,
-                QuicheDriver.capabilities,
+                quicheCapabilities,
             )
         is Raised.FactoryNotNative ->
-            QuicNativeMemoryRequiredException.forBuffer(QuicWriteTarget.Datagram, failure.buffer, QuicheDriver.capabilities)
+            QuicNativeMemoryRequiredException.forBuffer(QuicWriteTarget.Datagram, failure.buffer, quicheCapabilities)
         is Raised.RouteUnresolved -> UnresolvedRouteSourceException(failure.reason)
         is Raised.LoopsClosed -> CoreLoopsClosed()
         is Raised.SocketRefused -> failure.refusal
