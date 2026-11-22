@@ -3,7 +3,10 @@ package com.ditchoom.socket.quic.core.edge
 import com.ditchoom.buffer.BufferOverflowException
 import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicCloseException
+import com.ditchoom.socket.quic.core.sched.Caught
 import com.ditchoom.socket.quic.core.stream.SendRefusal
+import com.ditchoom.socket.quic.core.udp.Thrown
+import kotlinx.coroutines.Runnable
 
 /**
  * The operation-tier containment site: what one operation's attempt throws (an `Exception`) fails that operation's
@@ -34,6 +37,33 @@ internal inline fun outlivingTheEnd(
         if (!ended()) raise(Raised.Thrown(closed), QuicCloseCircumstance.Ended)
     }
 }
+
+/**
+ * The handler-tier containment site: runs [body], a stream handler of the application's; whatever it throws, `Error`
+ * included, reaches [failed], which decides how far it goes by its tier, and nothing propagates out of here.
+ */
+internal inline fun handlerCode(
+    failed: (Throwable) -> Unit,
+    body: () -> Unit,
+) {
+    try {
+        body()
+    } catch (failure: Throwable) {
+        failed(failure)
+    }
+}
+
+/**
+ * The pool-tier containment site, which a handler pool runs every step and its observation sink under: what [code]
+ * throws, `Error` included, is caught and answered, so the pool thread goes on.
+ */
+internal fun poolContained(code: Runnable): Caught =
+    try {
+        code.run()
+        Caught.Clean
+    } catch (failure: Throwable) {
+        Caught.Threw(Thrown(failure))
+    }
 
 /** Runs [body], which is the caller's own code (a codec); what it throws is turned into the answer by [failed]. */
 internal inline fun <R> userCode(

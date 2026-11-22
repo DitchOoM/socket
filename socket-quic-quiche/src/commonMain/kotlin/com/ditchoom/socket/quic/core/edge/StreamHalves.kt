@@ -191,3 +191,11 @@ internal sealed interface IncomingStream {
         val arrival: Arrival,
     ) : IncomingStream
 }
+
+/** The stream's id, whichever its shape. */
+internal val IncomingStream.id: QuicStreamId
+    get() =
+        when (this) {
+            is IncomingStream.Bidirectional -> stream.id
+            is IncomingStream.ReceiveOnly -> receive.id
+        }

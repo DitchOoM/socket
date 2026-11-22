@@ -190,10 +190,13 @@ internal class EdgeState(
         wake(ended)
     }
 
-    /** Fails a parked accept and every later one, and returns every waiting `close()`; only after the end is published. */
+    /**
+     * Fails a parked accept and every later one, and returns every waiting `close()`; only after the end is published.
+     * [closed] completes first, so whoever the incoming streams' close wakes finds the end already there to await.
+     */
     private fun wake(ended: EdgeEnd.Ended) {
-        incoming.close(endedWith(ended.end, QuicCloseCircumstance.Ended))
         closed.complete(ended)
+        incoming.close(endedWith(ended.end, QuicCloseCircumstance.Ended))
     }
 
     /** Any thread, after the end: what a read of [stream] gets next. */

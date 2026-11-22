@@ -8,7 +8,6 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.consumeAsFlow
 import kotlinx.coroutines.flow.merge
-import kotlinx.coroutines.selects.select
 
 /**
  * The streams the peer opened that nobody accepted yet, oldest first, in a queue per kind: an acceptor of one kind
@@ -19,20 +18,27 @@ internal class IncomingQueues {
     val bidirectional = Channel<PeerStream>(Channel.UNLIMITED)
     val unidirectional = Channel<PeerStream>(Channel.UNLIMITED)
 
+    /** Raised after each offer, so an acceptor of either kind parks on one channel, not a select over two. */
+    private val arrived = Channel<Unit>(Channel.CONFLATED)
+
     /** Inside: the peer opened the stream [peer] names. */
     fun offer(peer: PeerStream) {
         when (kindOf(QuicStreamId(peer.id))) {
             StreamKind.Bidirectional -> bidirectional.trySend(peer)
             StreamKind.Unidirectional -> unidirectional.trySend(peer)
         }
+        arrived.trySend(Unit)
     }
 
     /** The next stream of either kind, whichever is there first. */
-    suspend fun receiveAny(): PeerStream =
-        select {
-            bidirectional.onReceive { it }
-            unidirectional.onReceive { it }
+    suspend fun receiveAny(): PeerStream {
+        while (true) {
+            bidirectional.tryReceive().getOrNull()?.let { return it }
+            unidirectional.tryReceive().getOrNull()?.let { return it }
+            // A stream offered after the two tries left the signal raised, so this does not miss it.
+            arrived.receive()
         }
+    }
 
     /** Every stream of either kind, as each arrives; it ends when the connection ends. */
     fun all(): Flow<PeerStream> = merge(bidirectional.consumeAsFlow(), unidirectional.consumeAsFlow())
@@ -41,5 +47,6 @@ internal class IncomingQueues {
     fun close(cause: Throwable) {
         bidirectional.close(cause)
         unidirectional.close(cause)
+        arrived.close(cause)
     }
 }
