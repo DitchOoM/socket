@@ -46,6 +46,19 @@ internal enum class DrainUntil {
 /** Whether a datagram reached quiche since the connection last asked whether quiche drains. */
 internal enum class Heard { Nothing, Datagram }
 
+/**
+ * The repeat of a lingering close that is owed next, unprompted, for a peer whose copy of the close was lost and that
+ * has nothing in flight to draw an answer: one probe timeout after the close, then two, then none. [ptos] is how many
+ * probe timeouts after the close it is due.
+ */
+internal enum class Repeat(
+    val ptos: Int,
+) {
+    First(1),
+    Second(2),
+    None(0),
+}
+
 /** Whether a connection that just ended keeps its ids for a linger. */
 internal enum class AfterEnd { Lingers, Released }
 
@@ -63,11 +76,16 @@ internal sealed interface Wire {
     /** quiche is closing on its own, the peer's close first: nothing of ours goes out. */
     data object Draining : Wire
 
-    /** RFC 9000 §10.2.1 closing state: the close is out; late packets are answered with [copy] until [until]. */
+    /**
+     * RFC 9000 §10.2.1 closing state: the close went out at [sent]; late packets are answered with [copy] until
+     * [until], and the close is repeated unprompted as [Repeat] says, one probe timeout ([ptoNanos]) apart.
+     */
     class Answering(
         val copy: NativeBytes,
         val length: Int,
         val target: SendTarget,
+        val sent: Nanos,
+        val ptoNanos: Long,
         val until: Nanos,
     ) : Wire
 
@@ -95,6 +113,7 @@ internal class Linger(
     private var late = 0
     private var owed = 0
     private var heard = Heard.Nothing
+    private var repeat = Repeat.None
 
     fun wire(): Wire = wire
 
@@ -127,24 +146,26 @@ internal class Linger(
     }
 
     /**
-     * The close's datagram went into [out] at [offset], [length] bytes to [target]: a copy answers late packets until
-     * [until], quiche's own draining time.
+     * The close's datagram went into [out] at [offset], [length] bytes to [target], at [now]: a copy answers late
+     * packets, and is repeated, until [until], quiche's own draining time of three probe timeouts.
      */
     fun closeOut(
         out: SendBatch,
         offset: Int,
         length: Int,
         target: SendTarget,
+        now: Nanos,
         until: Nanos,
     ) {
         val buffer = factory.allocate(length)
         late = 0
         owed = 0
+        repeat = Repeat.First
         wire =
             when (val made = NativeBytes.of(buffer)) {
                 is Addressed.Native -> {
                     made.bytes.copyFrom(out.storage, offset, 0, length)
-                    Wire.Answering(made.bytes, length, target, until)
+                    Wire.Answering(made.bytes, length, target, now, (until - now) / DRAIN_PTOS, until)
                 }
                 is Addressed.NotAddressable -> {
                     buffer.freeNativeMemory()
@@ -163,12 +184,36 @@ internal class Linger(
         counts.lateDatagram()
         when (wire) {
             is Wire.Answering -> {
+                // The peer still sends: its packets draw the answers, and a repeat would only add to them.
+                repeat = Repeat.None
                 late++
                 if (late and (late - 1) == 0) owed++
             }
             is Wire.Quiet, is Wire.Sending, is Wire.Draining, is Wire.Silent, is Wire.Done -> Unit
         }
     }
+
+    /** At [now]: a repeat that fell due before the linger's end is owed, and the next one is scheduled. */
+    fun repeatDue(now: Nanos) {
+        val answering =
+            when (val w = wire) {
+                is Wire.Answering -> w
+                is Wire.Quiet, is Wire.Sending, is Wire.Draining, is Wire.Silent, is Wire.Done -> return
+            }
+        val due = dueOf(answering, repeat)
+        if (repeat == Repeat.None || now < due) return
+        if (due < answering.until) owed++
+        repeat =
+            when (repeat) {
+                Repeat.First -> Repeat.Second
+                Repeat.Second, Repeat.None -> Repeat.None
+            }
+    }
+
+    private fun dueOf(
+        answering: Wire.Answering,
+        next: Repeat,
+    ): Nanos = answering.sent + next.ptos * answering.ptoNanos
 
     /** Writes the answers owed into [out] while it has room; [Room.Full] when some are still owed. */
     fun answer(out: SendBatch): Room {
@@ -195,10 +240,13 @@ internal class Linger(
             is Wire.Quiet, is Wire.Sending, is Wire.Draining, is Wire.Done -> false
         }
 
-    /** Offers the time the linger ends. */
+    /** Offers the time the linger ends, and its next repeat. */
     fun offerWake(sink: WakeSink) {
         when (val w = wire) {
-            is Wire.Answering -> sink.offer(w.until)
+            is Wire.Answering -> {
+                sink.offer(w.until)
+                if (repeat != Repeat.None) sink.offer(dueOf(w, repeat))
+            }
             is Wire.Silent -> sink.offer(w.until)
             is Wire.Quiet, is Wire.Sending, is Wire.Draining, is Wire.Done -> Unit
         }
@@ -224,5 +272,9 @@ internal class Linger(
             is Wire.Quiet, is Wire.Sending, is Wire.Draining, is Wire.Silent, is Wire.Done -> Unit
         }
         wire = Wire.Done
+        repeat = Repeat.None
     }
 }
+
+/** quiche's draining time, in probe timeouts (RFC 9000 §10.2: three). */
+private const val DRAIN_PTOS = 3
