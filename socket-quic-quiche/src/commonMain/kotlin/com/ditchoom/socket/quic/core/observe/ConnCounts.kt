@@ -19,6 +19,7 @@ internal class ConnCounts {
     private val expiredOut = Counter()
     private val unsendable = Counter()
     private val expiredIn = Counter()
+    private val droppedAtClose = Counter()
 
     /** Times a caller entered a free connection and served it on its own thread. */
     val enteredInPlace: Long get() = entered.value()
@@ -59,6 +60,9 @@ internal class ConnCounts {
     /** Received RFC 9221 datagrams dropped undelivered because they waited longer than the incoming maximum age. */
     val datagramsExpiredIncoming: Long get() = expiredIn.value()
 
+    /** Queued RFC 9221 datagrams dropped unsent because the connection reached its close point first. */
+    val datagramsDroppedAtClose: Long get() = droppedAtClose.value()
+
     /** Datagrams whose due time quiche stamped on a clock the loop does not read: each was sent at once, unpaced. */
     val pacingClockMismatches: Long get() = mismatched.value()
 
@@ -89,6 +93,8 @@ internal class ConnCounts {
     fun datagramDroppedUnsendable() = unsendable.increment()
 
     fun datagramExpiredIncoming() = expiredIn.increment()
+
+    fun datagramDroppedAtClose() = droppedAtClose.increment()
 
     /** Every count, read now. */
     fun seen(): CountsSeen =
@@ -126,6 +132,7 @@ internal fun QuicStatsRead.withDatagramCounts(counts: ConnCounts): QuicStatsRead
                     datagramsExpiredOutgoing = QuicDatagramCount.Counted(counts.datagramsExpiredOutgoing),
                     datagramsDroppedUnsendable = QuicDatagramCount.Counted(counts.datagramsDroppedUnsendable),
                     datagramsExpiredIncoming = QuicDatagramCount.Counted(counts.datagramsExpiredIncoming),
+                    datagramsDroppedAtClose = QuicDatagramCount.Counted(counts.datagramsDroppedAtClose),
                 ),
             )
         is QuicStatsRead.Ended, is QuicStatsRead.NotReported -> this

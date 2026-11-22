@@ -2,124 +2,194 @@
 
 package com.ditchoom.socket.quic.core.conn
 
-import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.socket.quic.NO_DATAGRAM_ROOM
+import com.ditchoom.socket.quic.QUICHE_ERR_INVALID_STATE
 import com.ditchoom.socket.quic.QuicheSendStop
 import com.ditchoom.socket.quic.core.life.ConnEnd
+import com.ditchoom.socket.quic.core.life.Life
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.observe.Confined
 import com.ditchoom.socket.quic.core.observe.ConnCounts
 import com.ditchoom.socket.quic.core.observe.Published
+import com.ditchoom.socket.quic.core.stream.Backlog
 import com.ditchoom.socket.quic.core.stream.QUICHE_ERR_DONE
 import com.ditchoom.socket.quic.core.time.Nanos
-import com.ditchoom.socket.quic.core.udp.Addressed
-import com.ditchoom.socket.quic.core.udp.NativeBytes
 import kotlinx.coroutines.CancellableContinuation
 import kotlin.concurrent.atomics.AtomicInt
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.coroutines.resume
+import kotlin.jvm.JvmInline
 
-/** Whether a feed moved any datagram into quiche. */
-internal enum class Refill { Moved, Nothing }
+/** What a feed did: moved datagrams into quiche, moved none, or met a quiche refusal that ends the connection. */
+internal sealed interface Refill {
+    data object Moved : Refill
+
+    data object Nothing : Refill
+
+    /** quiche refused a datagram with [code], which no live connection answers. */
+    class Refused(
+        val code: Int,
+    ) : Refill
+}
 
 /** What quiche did with one datagram handed to it. */
-private enum class HandOff { Took, Full, Dropped }
+private sealed interface HandOff {
+    data object Took : HandOff
 
-/** Whether the door holds the datagram quiche last refused for a full queue. */
-private enum class Door { Empty, Holding }
+    /** quiche's queue is full, or it has no path to size a datagram for: the datagram waits. */
+    data object Wait : HandOff
+
+    data object Dropped : HandOff
+
+    class Refused(
+        val code: Int,
+    ) : HandOff
+}
+
+/** Whether quiche's datagram queue was full when last asked, and has not written a packet since. */
+private enum class QuicheQueue { MayHaveRoom, Full }
+
+/** Whether a connection's datagrams are negotiated. */
+internal enum class Negotiation { Negotiated, None }
+
+/** The bytes one datagram may carry, as quiche last said, or none when the connection carries no datagram. */
+@JvmInline
+internal value class DatagramRoom(
+    private val bytes: Int,
+) {
+    fun negotiation(): Negotiation = if (bytes == NO_DATAGRAM_ROOM) Negotiation.None else Negotiation.Negotiated
+
+    /** The bytes one datagram may carry; 0 when none can be sent. */
+    fun maxBytes(): Int = maxOf(bytes, 0)
+}
+
+/** A quiche refusal of a datagram that no live connection answers: what ends the connection. */
+internal class DatagramRefusedByQuiche(
+    val code: Int,
+) : Throwable()
+
+/** The connection's factory made datagram memory without an address, which the connect had checked it would not. */
+internal class DatagramMemoryNotAddressable : Throwable()
 
 /**
- * A connection's RFC 9221 sends, inside it. The [queue] any thread offers to is the queue its options bound; quiche's own send queue is a short hand-off behind it,
- * fed from the queue's head whenever quiche has room: when the connection is served, and each time quiche's output runs
- * dry in a write. A datagram past the outgoing age at the head is dropped and counted; the one quiche refused last for
- * a full queue waits at the door, copied out of its cell, and goes first next time. Callers waiting for room are woken
- * in the order they began to wait once the queue is at its low-water mark.
+ * A connection's RFC 9221 sends, inside it. The [queue] any thread offers to is bounded so that it and quiche's short
+ * hand-off behind it together hold at most the options' depth; it is fed into quiche from the head each time the
+ * connection writes and each time the write runs dry. A datagram past the outgoing age at the head is dropped and
+ * counted; the one quiche refused last for a full queue waits at the door and goes first next time, still counted in the
+ * queue and still bound by the age. Callers waiting for room are woken in the order they began to wait once the queue
+ * is at its low-water mark. The memory of slots nobody needed for a while is let go.
  */
 @Confined
 internal class DatagramSender(
     private val q: QuicheConnRef,
     val queue: DatagramQueue,
     private val outgoing: AgeBound,
-    private val factory: BufferFactory,
     private val counts: ConnCounts,
 ) {
     private val room = AtomicInt(NO_DATAGRAM_ROOM)
     private val waiting = ArrayDeque<RoomWait>()
-    private var door = Door.Empty
-    private var doorMemory: CellMemory = CellMemory.Unmade
-    private var doorLength = 0
-    private var doorQueuedAt = 0L
+    private var door: Head = Head.Empty
+    private var quiche = QuicheQueue.MayHaveRoom
+    private var peak = 0
+    private var lastPeak = 0
+    private var window = 0L
 
     /** Monotonic: datagrams quiche took to send. */
     var output = 0L
         private set
 
-    /** Any thread: the bytes one datagram may carry as of the connection's last turn; [NO_DATAGRAM_ROOM] when none can be sent. */
+    /** Any thread: the room a datagram has, as of the connection's last turn. */
     @Published
-    fun room(): Int = room.load()
+    fun room(): DatagramRoom = DatagramRoom(room.load())
 
     /** Reads the room a datagram has now. */
     fun readRoom() = room.store(q.api.connDgramMaxWritableBytes(q.handle))
 
-    /** Moves datagrams from the queue's head into quiche until quiche's queue is full or this one is empty, at [now]. */
+    /** Whether datagrams wait to be sent. */
+    fun backlog(): Backlog = if (queue.size() > 0) Backlog.Waiting else Backlog.None
+
+    /** quiche wrote a packet, which may have carried datagrams out of its queue. */
+    fun quicheWrote() {
+        quiche = QuicheQueue.MayHaveRoom
+    }
+
+    /**
+     * Moves datagrams from the queue's head into quiche until quiche's queue is full or this one is empty, at [now]. A
+     * quiche that was full and has written nothing since is not asked again.
+     */
     fun feed(now: Nanos): Refill {
-        if (door == Door.Empty && queue.size() == 0) return Refill.Nothing
-        var moved = Refill.Nothing
-        when (door) {
-            Door.Empty -> Unit
-            Door.Holding ->
-                when (fromDoor(now)) {
-                    HandOff.Took -> moved = Refill.Moved
-                    HandOff.Dropped -> Unit
-                    HandOff.Full -> return moved
+        if (queue.life() is QueueLife.Closed || quiche == QuicheQueue.Full) return Refill.Nothing
+        peak = maxOf(peak, queue.size())
+        var moved: Refill = Refill.Nothing
+        when (val held = door) {
+            is Head.Empty -> Unit
+            is DatagramSlot ->
+                when (val handed = handOff(held, now)) {
+                    is HandOff.Took -> moved = Refill.Moved.also { leaveDoor(held) }
+                    is HandOff.Dropped -> leaveDoor(held)
+                    is HandOff.Wait -> return moved.also { quiche = QuicheQueue.Full }
+                    is HandOff.Refused -> return Refill.Refused(handed.code).also { leaveDoor(held) }
                 }
         }
         while (true) {
-            val cell =
+            val slot =
                 when (val head = queue.take()) {
                     is Head.Empty -> break
-                    is QueuedDatagram -> head
+                    is DatagramSlot -> head
                 }
-            val handed =
-                when (val memory = cell.memory) {
-                    is CellMemory.Unmade -> HandOff.Dropped
-                    is CellMemory.Made ->
-                        when (cell.fill) {
-                            Fill.Nothing -> HandOff.Dropped
-                            Fill.Datagram -> handOff(memory.bytes.address, cell.length, cell.queuedAt, now)
-                        }
+            when (val handed = handOff(slot, now)) {
+                is HandOff.Took -> moved = Refill.Moved.also { queue.done(slot) }
+                is HandOff.Dropped -> queue.done(slot)
+                is HandOff.Wait -> {
+                    door = slot
+                    quiche = QuicheQueue.Full
+                    break
                 }
-            when (handed) {
-                HandOff.Took -> moved = Refill.Moved
-                HandOff.Dropped -> Unit
-                HandOff.Full -> keepAtDoor(cell)
+                is HandOff.Refused -> return Refill.Refused(handed.code).also { queue.done(slot) }
             }
-            queue.release(cell)
-            if (handed == HandOff.Full) break
         }
         wakeIfLow()
         return moved
     }
 
+    /** At [now], once a turn: lets go of the memory of free slots beyond twice what the last two windows needed. */
+    fun trim(now: Nanos) {
+        peak = maxOf(peak, queue.size())
+        if (now.value - window < TRIM_WINDOW_NANOS) return
+        queue.trim(maxOf(MIN_KEPT, 2 * maxOf(peak, lastPeak)))
+        lastPeak = peak
+        peak = queue.size()
+        window = now.value
+    }
+
     /** [wait] is answered once the queue is at its low-water mark: now, or when a feed drains it there. */
     fun awaitRoom(wait: RoomWait) {
-        if (queue.size() <= queue.lowWater) wait.room() else waiting.addLast(wait)
+        if (queue.size() <= queue.lowWater || queue.life() is QueueLife.Closed) wait.room() else waiting.addLast(wait)
     }
 
     fun withdraw(wait: RoomWait) {
         waiting.remove(wait)
     }
 
-    /** The connection ended: the queue takes nothing more and its memory goes, and every waiting caller is answered. */
-    fun endAll() {
-        queue.close()
-        when (val memory = doorMemory) {
-            is CellMemory.Made -> memory.bytes.free()
-            is CellMemory.Unmade -> Unit
+    /**
+     * The connection reached its close point, or ended, with [end]: nothing more goes to quiche, what is queued and at
+     * the door is dropped and counted, and every waiting caller is answered.
+     */
+    fun close(end: ConnEnd) {
+        when (val held = door) {
+            is Head.Empty -> Unit
+            is DatagramSlot -> {
+                counts.datagramDroppedAtClose()
+                leaveDoor(held)
+            }
         }
-        doorMemory = CellMemory.Unmade
-        door = Door.Empty
+        queue.close(end)
         while (waiting.isNotEmpty()) waiting.removeFirst().room()
+    }
+
+    private fun leaveDoor(slot: DatagramSlot) {
+        door = Head.Empty
+        queue.done(slot)
     }
 
     private fun wakeIfLow() {
@@ -128,80 +198,51 @@ internal class DatagramSender(
     }
 
     private fun handOff(
-        address: Long,
-        length: Int,
-        queuedAt: Long,
+        slot: DatagramSlot,
         now: Nanos,
     ): HandOff {
-        if (outgoing.expired(queuedAt, now.value) == Expiry.Expired) {
+        if (outgoing.expired(slot.queuedAt, now.value) == Expiry.Expired) {
             counts.datagramExpiredOutgoing()
             return HandOff.Dropped
         }
-        val sent = q.api.connDgramSend(q.handle, if (length > 0) address else 0L, length)
+        val address =
+            when (val memory = slot.memory) {
+                is SlotMemory.Made -> memory.bytes.address
+                is SlotMemory.Unmade -> return HandOff.Dropped.also { counts.datagramDroppedUnsendable() }
+            }
+        val sent = q.api.connDgramSend(q.handle, address, slot.length)
         return when {
             sent >= 0 -> {
                 output++
                 HandOff.Took
             }
-            sent == QUICHE_ERR_DONE -> HandOff.Full
-            else -> {
-                if (sent == QuicheSendStop.QUICHE_ERR_BUFFER_TOO_SHORT) readRoom()
+            sent == QUICHE_ERR_DONE || sent == QUICHE_ERR_INVALID_STATE -> HandOff.Wait
+            sent == QuicheSendStop.QUICHE_ERR_BUFFER_TOO_SHORT -> {
+                readRoom()
                 counts.datagramDroppedUnsendable()
                 HandOff.Dropped
             }
+            else -> HandOff.Refused(sent)
         }
     }
 
-    /** Copies [cell]'s datagram to the door, whose memory is made the first time and grown when it is too small. */
-    private fun keepAtDoor(cell: QueuedDatagram) {
-        val memory = cell.memory
-        if (memory !is CellMemory.Made) return
-        val held = doorMemory
-        val into =
-            if (held is CellMemory.Made && held.bytes.capacity >= cell.length) {
-                held
-            } else {
-                if (held is CellMemory.Made) held.bytes.free()
-                made(cell.length)
-            }
-        doorMemory = into
-        when (into) {
-            is CellMemory.Unmade -> counts.datagramDroppedUnsendable()
-            is CellMemory.Made -> {
-                memory.bytes.copyOut(into.bytes.address, cell.length)
-                doorLength = cell.length
-                doorQueuedAt = cell.queuedAt
-                door = Door.Holding
-            }
-        }
-    }
-
-    private fun made(length: Int): CellMemory {
-        val buffer = factory.allocate(maxOf(length, DATAGRAM_ROOM))
-        return when (val made = NativeBytes.of(buffer)) {
-            is Addressed.Native -> CellMemory.Made(made.bytes)
-            is Addressed.NotAddressable -> {
-                buffer.freeNativeMemory()
-                CellMemory.Unmade
-            }
-        }
-    }
-
-    /** Hands quiche the datagram at the door; the door is empty after unless quiche's queue is still full. */
-    private fun fromDoor(now: Nanos): HandOff {
-        val handed =
-            when (val memory = doorMemory) {
-                is CellMemory.Made -> handOff(memory.bytes.address, doorLength, doorQueuedAt, now)
-                is CellMemory.Unmade -> HandOff.Dropped
-            }
-        if (handed != HandOff.Full) door = Door.Empty
-        return handed
+    private companion object {
+        const val TRIM_WINDOW_NANOS = 1_000_000_000L
+        const val MIN_KEPT = 4
     }
 }
 
+/** The datagrams a write may feed: the connection's while it runs; past its close point none, and what waited is dropped. */
+internal fun ConnParts.datagramsToWrite(): Datagrams =
+    when (val now = life.view()) {
+        is Life.Running -> slots.datagrams
+        is Life.Closing -> slots.datagrams.closed(now.end)
+        is Life.Over -> Datagrams.Off
+    }
+
 /**
- * A caller waiting in [DatagramSend.QueueFull.awaitRoom][com.ditchoom.socket.quic.DatagramSend.QueueFull.awaitRoom],
- * parked inside the connection until its send queue is at its low-water mark or the connection ends. Answered once.
+ * A caller waiting in [DatagramSend.NotSent.QueueFull.awaitRoom][com.ditchoom.socket.quic.DatagramSend.NotSent.QueueFull.awaitRoom],
+ * parked inside the connection until its send queue is at its low-water mark or closed. Answered once.
  */
 internal class RoomWait(
     private val caller: CancellableContinuation<Unit>,
@@ -231,17 +272,11 @@ internal class RoomWithdraw(
     override fun gone(end: ConnEnd) = Unit
 }
 
-/** Serves the connection after a send queued into an idle queue: its datagrams go to quiche. One per queue, reused. */
+/** Has the connection served after a send queued into an idle queue: its next write feeds quiche. One per queue, reused. */
 internal class FeedWork(
     private val queue: DatagramQueue,
 ) : ConnWork() {
-    override fun run(inside: Inside) {
-        queue.fed()
-        when (val datagrams = inside.datagrams) {
-            is Datagrams.Off -> Unit
-            is Datagrams.On -> datagrams.out.feed(inside.now())
-        }
-    }
+    override fun run(inside: Inside) = queue.fed()
 
     override fun gone(end: ConnEnd) = queue.fed()
 }

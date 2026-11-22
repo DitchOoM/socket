@@ -16,6 +16,7 @@ import com.ditchoom.socket.quic.core.conn.HandshakeRule
 import com.ditchoom.socket.quic.core.conn.KeepAliveRule
 import com.ditchoom.socket.quic.core.conn.Overflow
 import com.ditchoom.socket.quic.core.conn.PtoRule
+import com.ditchoom.socket.quic.core.conn.quicheHandOff
 import com.ditchoom.socket.quic.core.life.CloseRule
 import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.transport.NetworkKind
@@ -67,24 +68,18 @@ private fun overflowOf(overflow: DatagramOverflow): Overflow =
 
 /**
  * The options a core endpoint configures quiche with. The core's own queues are the ones its options bound: quiche's
- * send queue is a short hand-off of at most [QUICHE_DATAGRAM_HAND_OFF] behind the core's, and its receive queue holds
- * every datagram one packet can carry, which the core takes out after each packet, so quiche never drops one uncounted.
+ * send queue is the short hand-off behind the core's ([quicheHandOff]), and its receive queue holds every datagram one
+ * packet can carry, which the core takes out after each packet, so quiche never drops one uncounted.
  */
 internal fun QuicOptions.forQuiche(): QuicOptions =
-    when (val d = datagrams) {
-        null -> this
-        else ->
+    when (val rule = datagramRuleOf(this)) {
+        is DatagramRule.Off -> this
+        is DatagramRule.On ->
             copy(
                 datagrams =
-                    d.copy(
-                        sendQueueLen = minOf(d.sendQueueLen, QUICHE_DATAGRAM_HAND_OFF),
-                        recvQueueLen = QUICHE_DATAGRAMS_PER_PACKET,
-                    ),
+                    datagrams?.copy(sendQueueLen = rule.quicheHandOff(), recvQueueLen = QUICHE_DATAGRAMS_PER_PACKET),
             )
     }
-
-/** The datagrams quiche holds for its next packets: enough to fill one with small datagrams. */
-internal const val QUICHE_DATAGRAM_HAND_OFF = 32
 
 /** More DATAGRAM frames than one packet can carry: each empty one takes two bytes. */
 internal const val QUICHE_DATAGRAMS_PER_PACKET = 1024

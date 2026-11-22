@@ -240,11 +240,7 @@ internal class Turn(
         }
         if (c.firstFlight() == FlightGate.Held) return Collected.Everything
         c.ackStep(now).let { if (it != AckStep.Write) return it.collected() }
-        val wrote =
-            when (val pacing = c.slots.pacing) {
-                is Pacing.Unpaced -> c.egress.write(out, paths, c.flight, c.slots.datagrams)
-                is Pacing.ByQuiche -> c.egress.writePaced(out, paths, pacing.pacer, c.flight, c.slots.datagrams)
-            }
+        val wrote = c.writeOut(out, paths)
         c.wrote(now)
         if (c.life.linger.sending() && c.keepClose(now, out) == CloseSent.Yes) {
             when (val life = c.life.view()) {
@@ -252,7 +248,7 @@ internal class Turn(
                 is Life.Running, is Life.Over -> Unit
             }
         }
-        if (wrote == Wrote.ClockMismatch) finish(now, c.egress.mismatchEnd())
+        c.egress.failure(wrote).let { if (it is WriteFailure.Ends) finish(now, it.end) }
         return wrote.collected()
     }
 

@@ -181,9 +181,8 @@ private fun composed(
                             DatagramBox(q, r.bound, r.incoming, memory.factory, counts),
                             DatagramSender(
                                 q,
-                                DatagramQueue(r.sendBound, r.overflow, r.outgoing, memory.factory, clock, counts),
+                                DatagramQueue(r.queueBound(), r.overflow, r.outgoing, memory.factory, clock, counts),
                                 r.outgoing,
-                                memory.factory,
                                 counts,
                             ),
                         )

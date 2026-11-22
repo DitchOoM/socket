@@ -4,7 +4,7 @@ import com.ditchoom.socket.quic.trace.QlogTarget
 import kotlin.time.Duration
 
 /** The [QuicOptions] property a [QuicOptionRefusal] is about. */
-enum class QuicOptionName { Migration, StandbyLink, StreamOpenPolicy, Trace }
+enum class QuicOptionName { Migration, StandbyLink, StreamOpenPolicy, Trace, Datagrams }
 
 /**
  * Why an option value was refused: the engine cannot honour it, so the connect or serve that carries it fails before any
@@ -29,6 +29,13 @@ sealed interface QuicOptionRefusal {
     /** A [QlogTarget.Budgeted] qlog, declared or named by a capture: use [QlogTarget.File], or the `QUIC_QLOG_DIR` environment. */
     data object QlogNotBudgeted : QuicOptionRefusal {
         override val option: QuicOptionName get() = QuicOptionName.Trace
+    }
+
+    /** A [DatagramMaxAge.Within] of [age], which is not positive: every datagram would be dropped. */
+    data class DatagramMaxAgeNotPositive(
+        val age: Duration,
+    ) : QuicOptionRefusal {
+        override val option: QuicOptionName get() = QuicOptionName.Datagrams
     }
 }
 

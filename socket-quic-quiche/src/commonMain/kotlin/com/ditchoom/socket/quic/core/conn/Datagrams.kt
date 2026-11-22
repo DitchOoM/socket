@@ -5,6 +5,7 @@ import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.observe.Confined
 import com.ditchoom.socket.quic.core.observe.ConnCounts
+import com.ditchoom.socket.quic.core.stream.Backlog
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.udp.Addressed
 import com.ditchoom.socket.quic.core.udp.NativeBytes
@@ -221,14 +222,14 @@ internal class DatagramBox(
     private enum class Kept { One, None }
 }
 
-/** Inside, at [now]: the datagram work of an established connection, served each turn: the room is read, what quiche received moves on, and queued sends go to quiche. */
+/** Inside, at [now]: the datagram work of an established connection, served each turn: the room is read, what quiche received moves on, and idle send memory is let go. */
 internal fun Datagrams.wake(now: Nanos) =
     when (this) {
         is Datagrams.Off -> Unit
         is Datagrams.On -> {
             out.readRoom()
             box.drain(now)
-            out.feed(now)
+            out.trim(now)
         }
     }
 
@@ -239,19 +240,42 @@ internal fun Datagrams.received(now: Nanos) =
         is Datagrams.On -> box.drain(now)
     }
 
-/** Inside, as a write's output runs dry at [now]: queued sends go to quiche, which may then have more to write. */
+/** Inside, as a write begins or its output runs dry at [now]: queued sends go to quiche, which may then have more to write. */
 internal fun Datagrams.refill(now: Nanos): Refill =
     when (this) {
         is Datagrams.Off -> Refill.Nothing
         is Datagrams.On -> out.feed(now)
     }
 
+/** Inside: quiche wrote a packet, which may have taken datagrams out of its queue. */
+internal fun Datagrams.quicheWrote() =
+    when (this) {
+        is Datagrams.Off -> Unit
+        is Datagrams.On -> out.quicheWrote()
+    }
+
+/** Whether datagrams wait to be sent. */
+internal fun Datagrams.backlog(): Backlog =
+    when (this) {
+        is Datagrams.Off -> Backlog.None
+        is Datagrams.On -> out.backlog()
+    }
+
+/** Inside: the connection's close point, with [end]: nothing more is sent; none are left to write. */
+internal fun Datagrams.closed(end: ConnEnd): Datagrams {
+    when (this) {
+        is Datagrams.Off -> Unit
+        is Datagrams.On -> out.close(end)
+    }
+    return Datagrams.Off
+}
+
 /** Inside: the connection ended with [end]. */
 internal fun Datagrams.endAll(end: ConnEnd) =
     when (this) {
         is Datagrams.Off -> Unit
         is Datagrams.On -> {
-            out.endAll()
+            out.close(end)
             box.endAll(end)
         }
     }
@@ -260,5 +284,5 @@ internal fun Datagrams.endAll(end: ConnEnd) =
 internal fun Datagrams.maxBytes(): Int =
     when (this) {
         is Datagrams.Off -> 0
-        is Datagrams.On -> maxOf(out.room(), 0)
+        is Datagrams.On -> out.room().maxBytes()
     }

@@ -15,16 +15,6 @@ import com.ditchoom.socket.quic.core.udp.Room
 import com.ditchoom.socket.quic.core.udp.SendBatch
 import com.ditchoom.socket.quic.core.udp.Thrown
 
-/** Whether a write collected everything quiche had, the batch filled first, or the first datagram found another clock and the response is to end. */
-internal enum class Wrote { All, BatchFull, ClockMismatch }
-
-/** What a serve left after a write that ended as [this]. */
-internal fun Wrote.collected(): Collected =
-    when (this) {
-        Wrote.All, Wrote.ClockMismatch -> Collected.Everything
-        Wrote.BatchFull -> Collected.MoreWaiting
-    }
-
 /** What became of the last datagram quiche wrote: none was written, it is in the batch, or no socket of ours took it. */
 internal enum class LastOut { None, Kept, Dropped }
 
@@ -51,12 +41,18 @@ internal class Egress(
     private var lastTarget: SendTarget = SendTarget.ConnectedPeer
     private var first = FirstOut.NotYet
     private var mismatchOffset = 0L
+    private var refusedCode = 0
 
     /** When quiche wants the last datagram it wrote on the wire, on the loop's clock. */
     private var lastDueNanos = 0L
 
-    /** The end of a connection whose write ended as [Wrote.ClockMismatch]: processing failed with a [PacingClockMismatch]. */
-    fun mismatchEnd(): ConnEnd = ConnEnd.ProcessingFailed(Thrown(PacingClockMismatch(mismatchOffset)))
+    /** How a write that ended as [wrote] ends the connection: processing failed with what the write met. */
+    fun failure(wrote: Wrote): WriteFailure =
+        when (wrote) {
+            Wrote.All, Wrote.BatchFull -> WriteFailure.None
+            Wrote.ClockMismatch -> WriteFailure.Ends(ConnEnd.ProcessingFailed(Thrown(PacingClockMismatch(mismatchOffset))))
+            Wrote.DatagramRefused -> WriteFailure.Ends(ConnEnd.ProcessingFailed(Thrown(DatagramRefusedByQuiche(refusedCode))))
+        }
 
     /** Whether quiche has written any datagram of this connection, kept or dropped. */
     fun firstOut(): FirstOut = first
@@ -81,8 +77,13 @@ internal class Egress(
     ): Wrote {
         last = LastOut.None
         val at = clock.now()
+        if (fed(datagrams, at) == Dry.Refused) return Wrote.DatagramRefused
         while (out.room() == Room.Open) {
-            if (dry(one(out, paths, flight, at), datagrams, at) == Dry.Yes) return Wrote.All
+            when (dry(one(out, paths, flight, at), datagrams, at)) {
+                Dry.No -> Unit
+                Dry.Yes -> return Wrote.All
+                Dry.Refused -> return Wrote.DatagramRefused
+            }
         }
         return Wrote.BatchFull
     }
@@ -101,9 +102,14 @@ internal class Egress(
     ): Wrote {
         last = LastOut.None
         val at = clock.now()
+        if (fed(datagrams, at) == Dry.Refused) return Wrote.DatagramRefused
         if (pacer.state(at) == PaceState.Holding) return Wrote.All
         while (out.room() == Room.Open) {
-            if (dry(one(out, paths, flight, at), datagrams, at) == Dry.Yes) return Wrote.All
+            when (dry(one(out, paths, flight, at), datagrams, at)) {
+                Dry.No -> Unit
+                Dry.Yes -> return Wrote.All
+                Dry.Refused -> return Wrote.DatagramRefused
+            }
             when (judged(pacer, at, flight)) {
                 is ClockVerdict.Differs ->
                     when (pacer.response()) {
@@ -158,12 +164,26 @@ internal class Egress(
         at: Nanos,
     ): Dry =
         when {
-            written > 0 -> Dry.No
-            written == QUICHE_ERR_DONE && datagrams.refill(at) == Refill.Moved -> Dry.No
+            written > 0 -> Dry.No.also { datagrams.quicheWrote() }
+            written == QUICHE_ERR_DONE -> fed(datagrams, at)
             else -> Dry.Yes
         }
 
-    private enum class Dry { Yes, No }
+    /** Feeds [datagrams] queued to send into quiche: [Dry.No] when some went, so quiche may have more to write. */
+    private fun fed(
+        datagrams: Datagrams,
+        at: Nanos,
+    ): Dry =
+        when (val refill = datagrams.refill(at)) {
+            is Refill.Moved -> Dry.No
+            is Refill.Nothing -> Dry.Yes
+            is Refill.Refused -> {
+                refusedCode = refill.code
+                Dry.Refused
+            }
+        }
+
+    private enum class Dry { Yes, No, Refused }
 
     private fun one(
         out: SendBatch,

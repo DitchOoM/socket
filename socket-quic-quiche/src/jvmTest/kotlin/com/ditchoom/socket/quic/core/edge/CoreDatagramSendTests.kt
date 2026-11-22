@@ -55,21 +55,21 @@ class CoreDatagramSendTests {
             val channel = pair.client.connection.coreDatagrams
             val payload = payloadOf(SMALL)
             // The loop does not run while the test sends, so the queue fills to its depth exactly.
-            repeat(DEPTH) { assertSame(DatagramSend.Sent, channel.send(payload), "send $it") }
-            val full = assertIs<DatagramSend.QueueFull>(channel.send(payload))
+            repeat(QUEUED) { assertSame(DatagramSend.Sent, channel.send(payload), "send $it") }
+            val full = assertIs<DatagramSend.NotSent.QueueFull>(channel.send(payload))
             assertSame(full, channel.send(payload), "a channel's QueueFull is made once")
             val max = channel.maxWritableSize
-            assertEquals(DatagramSend.TooLarge(max), channel.send(payloadOf(max + 1)))
+            assertEquals(DatagramSend.NotSent.TooLarge(max), channel.send(payloadOf(max + 1)))
             pair.runFor(100.milliseconds)
             assertSame(DatagramSend.Sent, channel.send(payload), "the queue drained into quiche")
             pair.client.connection.closeNow(QuicError.NoError)
             pair.runFor(1.milliseconds)
-            assertIs<DatagramSend.ConnectionEnded>(
+            assertIs<DatagramSend.NotSent.Unavailable.ConnectionEnded>(
                 channel.send(payload),
                 "a send after the close point is refused, not queued to never leave",
             )
             pair.runUntil { pair.client.connection.end() is EdgeEnd.Ended }
-            val ended = assertIs<DatagramSend.ConnectionEnded>(channel.send(payload))
+            val ended = assertIs<DatagramSend.NotSent.Unavailable.ConnectionEnded>(channel.send(payload))
             assertIs<QuicConnectionEnd.ByLocal>(ended.end)
             assertFailsWith<QuicCloseException>("the buffer-flow send still raises the close") {
                 (channel as ConnectedDatagramChannel).send(payload)
@@ -78,12 +78,41 @@ class CoreDatagramSendTests {
         }
 
     @Test
+    fun datagramsQueuedWhenAGracefulCloseBeginsAreDroppedAndCountedAndLaterSendsRefused() =
+        VirtualPair.with(options(DatagramOptions(sendQueueLen = DEPTH))) { pair ->
+            val serverSide = pair.accept()
+            val channel = pair.client.connection.coreDatagrams
+            val payload = payloadOf(SMALL)
+            repeat(QUEUED) { assertSame(DatagramSend.Sent, channel.send(payload)) }
+            // The close joins the connection's work behind the sends, before any of them was fed to quiche.
+            pair.client.connection.closeNow(QuicError.NoError)
+            pair.runUntil { pair.client.connection.end() is EdgeEnd.Ended }
+            assertEquals(QUEUED.toLong(), pair.client.connection.counts.datagramsDroppedAtClose, "dropped at the close point, counted")
+            assertEquals(0L, serverSide.counts.datagramsOverflowed + received(pair, serverSide), "none of them left")
+            assertIs<DatagramSend.NotSent.Unavailable.ConnectionEnded>(channel.send(payload))
+            payload.freeIfNeeded()
+        }
+
+    /** Datagrams [connection] received: none waiting for a receive once one finds nothing within a round trip. */
+    private suspend fun kotlinx.coroutines.CoroutineScope.received(
+        pair: VirtualPair,
+        connection: CoreConnection,
+    ): Long {
+        val got = async(start = CoroutineStart.UNDISPATCHED) { connection.coreDatagrams.receiveDatagram() }
+        pair.runFor(pair.oneWay * 2)
+        return when (val received = if (got.isCompleted) got.await() else null.also { got.cancel() }) {
+            is DatagramReceive.Received -> 1L.also { received.buffer.freeIfNeeded() }
+            else -> 0L
+        }
+    }
+
+    @Test
     fun aConnectionWithoutDatagramsAnswersNotNegotiated() =
         VirtualPair.with(options(DatagramOptions()).copy(datagrams = null)) { pair ->
             pair.accept()
             val channel = pair.client.connection.coreDatagrams
-            assertSame(DatagramSend.NotNegotiated, channel.send(payloadOf(SMALL)))
-            assertSame(DatagramReceive.NotNegotiated, channel.receiveDatagram())
+            assertSame(DatagramSend.NotSent.Unavailable.NotNegotiated, channel.send(payloadOf(SMALL)))
+            assertSame(DatagramReceive.NotReceived.Unavailable.NotNegotiated, channel.receiveDatagram())
         }
 
     @Test
@@ -107,7 +136,7 @@ class CoreDatagramSendTests {
             repeat(REFUSED) { channel.send(payload) }
             val refused = threads.getThreadAllocatedBytes(self)
             println("[core datagram send allocation] $sent sends queued: ${queued - before} B; $REFUSED refused: ${refused - queued} B")
-            assertEquals(DEPTH, sent, "the queue was empty when the measured sends began")
+            assertEquals(QUEUED, sent, "the queue was empty when the measured sends began")
             assertEquals(0L, queued - before, "$sent sends queued")
             assertEquals(0L, refused - queued, "$REFUSED sends refused at a full queue")
             payload.freeIfNeeded()
@@ -119,7 +148,7 @@ class CoreDatagramSendTests {
             val serverSide = pair.accept()
             val server = serverSide.coreDatagrams
             val first = async(start = CoroutineStart.UNDISPATCHED) { server.receiveDatagram() }
-            assertSame(DatagramReceive.ReceiverBusy, server.receiveDatagram())
+            assertSame(DatagramReceive.NotReceived.ReceiverBusy, server.receiveDatagram())
             val refusal = assertFailsWith<QuicDatagramRefused> { serverSide.datagramChannel().receive() }
             assertIs<DatagramRefusal.ReceiverBusy>(refusal.refusal)
             assertSame(
@@ -192,8 +221,8 @@ class CoreDatagramSendTests {
                 repeat(BURST) {
                     when (client.send(payload)) {
                         is DatagramSend.Sent -> accepted++
-                        is DatagramSend.QueueFull -> refused++
-                        is DatagramSend.TooLarge, is DatagramSend.NotNegotiated, is DatagramSend.ConnectionEnded -> error("unexpected")
+                        is DatagramSend.NotSent.QueueFull -> refused++
+                        is DatagramSend.NotSent.TooLarge, is DatagramSend.NotSent.Unavailable -> error("unexpected")
                     }
                 }
                 pair.runFor(AGE / 2)
@@ -261,6 +290,9 @@ class CoreDatagramSendTests {
 
     private companion object {
         const val DEPTH = 64
+
+        /** What the core's queue admits of [DEPTH]: the rest is quiche's hand-off of 32, half the depth at most. */
+        const val QUEUED = DEPTH - 32
         const val RECEIVE_DEPTH = 8
         const val SMALL = 64
         const val WARM_ROUNDS = 3

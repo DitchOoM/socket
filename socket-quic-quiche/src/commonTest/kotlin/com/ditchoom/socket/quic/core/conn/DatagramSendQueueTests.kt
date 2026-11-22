@@ -1,15 +1,18 @@
 package com.ditchoom.socket.quic.core.conn
 
 import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.UnsafeMemory
+import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.buffer.managed
 import com.ditchoom.socket.quic.MaxDatagramSize
 import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.QuicheConn
 import com.ditchoom.socket.quic.StubQuicheApi
+import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.observe.ConnCounts
 import com.ditchoom.socket.quic.core.testing.VirtualClock
-import com.ditchoom.socket.quic.core.testing.nativeBytes
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.network
 import kotlinx.coroutines.CoroutineStart
@@ -20,6 +23,9 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.yield
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertIs
+import kotlin.test.assertTrue
 
 /**
  * A connection's datagram send queue and the sender that feeds quiche from its head, on a stub quiche that takes as
@@ -53,7 +59,6 @@ class DatagramSendQueueTests {
     private val quiche = DatagramQuiche()
     private val counts = ConnCounts()
     private val clock = VirtualClock()
-    private val memory = nativeBytes(MAX)
 
     private fun sender(
         depth: Int,
@@ -65,15 +70,14 @@ class DatagramSendQueueTests {
             q,
             DatagramQueue(depth, overflow, outgoing, BufferFactory.network(), clock, counts),
             outgoing,
-            BufferFactory.network(),
             counts,
         ).also { it.readRoom() }
     }
 
-    /** Offers a datagram of [bytes], one byte each, through the test's memory. */
+    /** Offers a datagram of [bytes], one byte each. */
     private fun DatagramSender.offer(vararg bytes: Int): Offered {
-        bytes.forEachIndexed { at, byte -> UnsafeMemory.putByte(memory.address + at, byte.toByte()) }
-        return queue.offer(0L, 0, memory.address, bytes.size)
+        val buffer = bufferOf(*bytes)
+        return queue.offer(buffer, 0, buffer, bytes.size).also { buffer.freeIfNeeded() }
     }
 
     private fun firstBytes(): List<Int> = quiche.taken.map { it.first() }
@@ -117,9 +121,10 @@ class DatagramSendQueueTests {
         quiche.room = 2
         assertEquals(Refill.Moved, sender.feed(clock.now()))
         assertEquals(listOf(0, 1), firstBytes())
-        assertEquals(2, sender.queue.size(), "the third waits at the door, out of the queue")
+        assertEquals(3, sender.queue.size(), "the third waits at the door, still counted in the queue")
         assertEquals(Refill.Nothing, sender.feed(clock.now()), "quiche is still full")
         quiche.room = Int.MAX_VALUE
+        sender.quicheWrote()
         sender.feed(clock.now())
         assertEquals(listOf(0, 1, 2, 3, 4), firstBytes(), "the door's datagram goes before the rest, in order")
         assertEquals(5L, sender.output)
@@ -128,13 +133,10 @@ class DatagramSendQueueTests {
     @Test
     fun aPrefixAndAPayloadGoAsOneDatagramPrefixFirst() {
         val sender = sender(depth = 2)
-        val prefix =
-            nativeBytes(2).also {
-                UnsafeMemory.putByte(it.address, 0x40)
-                UnsafeMemory.putByte(it.address + 1, 0x01)
-            }
-        repeat(3) { UnsafeMemory.putByte(memory.address + it, (it + 7).toByte()) }
-        assertEquals(Offered.Queued, sender.queue.offer(prefix.address, 2, memory.address, 3))
+        val prefix = bufferOf(0x40, 0x01)
+        val payload = heapBufferOf(7, 8, 9)
+        assertEquals(Offered.Queued, sender.queue.offer(prefix, 2, payload, 3))
+        assertEquals(0, payload.position(), "the payload is the caller's again, unmoved")
         sender.feed(clock.now())
         assertEquals(listOf(listOf(0x40, 0x01, 7, 8, 9)), quiche.taken)
     }
@@ -149,9 +151,10 @@ class DatagramSendQueueTests {
             quiche.room = 1
             sender.feed(clock.now())
             yield()
-            assertEquals(6, sender.queue.size(), "one taken, one at the door")
+            assertEquals(7, sender.queue.size(), "one taken, the next at the door")
             assertEquals(emptyList(), woken, "a free slot is not room: the queue is above its low-water mark")
-            quiche.room = 2
+            quiche.room = 3
+            sender.quicheWrote()
             sender.feed(clock.now())
             yield()
             assertEquals(4, sender.queue.size())
@@ -198,10 +201,11 @@ class DatagramSendQueueTests {
             val woken = ArrayList<Int>()
             val waiter = wait(sender) { woken += 0 }
             quiche.room = 0
-            sender.endAll()
+            sender.close(ConnEnd.Released)
             yield()
             assertEquals(listOf(0), woken, "a waiter goes on when the connection ends")
-            assertEquals(Offered.Closed, sender.offer(5))
+            assertIs<QueueLife.Closed>(sender.offer(5))
+            assertEquals(2L, counts.datagramsDroppedAtClose, "what was queued at the close point is dropped and counted")
             waiter.join()
         }
 
@@ -214,6 +218,97 @@ class DatagramSendQueueTests {
             wait(sender) { woken += 0 }.join()
             assertEquals(listOf(0), woken)
         }
+
+    @Test
+    fun evictingWhileTheConnectionHoldsTheOldestEvictsOneAndNeverWaits() {
+        val sender = sender(depth = 4, overflow = Overflow.EvictOldest)
+        repeat(4) { sender.offer(it) }
+        val held = assertIs<DatagramSlot>(sender.queue.take(), "the connection holds the oldest, as it does while quiche copies it")
+        assertEquals(Offered.Queued, sender.offer(9), "the full queue takes the new datagram at once")
+        assertEquals(1L, counts.datagramsEvicted, "one eviction: the oldest the connection does not hold")
+        sender.queue.done(held)
+        sender.feed(clock.now())
+        assertEquals(listOf(2, 3, 9), firstBytes())
+    }
+
+    @Test
+    fun aRefusingQueueRefusesOnlyWhenItsBoundIsReachedTheHeldOneIncluded() {
+        val sender = sender(depth = 4)
+        repeat(4) { sender.offer(it) }
+        val held = assertIs<DatagramSlot>(sender.queue.take())
+        assertEquals(Offered.Full, sender.offer(9), "the held datagram still counts")
+        sender.queue.done(held)
+        assertEquals(Offered.Queued, sender.offer(9), "once it is done with there is room, and no refusal is spurious")
+    }
+
+    @Test
+    fun aQueueThatIsNeverOfferedADatagramMakesNoRingAndNoMemory() {
+        val sender = sender(depth = 1024)
+        sender.feed(clock.now())
+        sender.trim(clock.now())
+        assertIs<QueueParts.Unmade>(sender.queue.parts())
+    }
+
+    @Test
+    fun aSteadyOccupancyOfOneKeepsTheMemoryOfAFewSlotsAfterManySends() {
+        val sender = sender(depth = 1024)
+        repeat(SENDS) {
+            sender.offer(it and 0xFF)
+            clock.at = Nanos(clock.at.value + STEP)
+            sender.feed(clock.now())
+            sender.trim(clock.now())
+        }
+        val slots = assertIs<QueueParts.Made>(sender.queue.parts()).slots
+        assertTrue(slots.made() <= 2, "one slot in use at a time: ${slots.made()} made")
+        assertTrue(slots.keptWithMemory() <= 4, "a few kept: ${slots.keptWithMemory()}")
+    }
+
+    @Test
+    fun aQueueThatWasFullOnceLetsTheMemoryGoOnceItHasBeenLowForAWhile() {
+        val sender = sender(depth = 256)
+        repeat(256) { sender.offer(it and 0xFF) }
+        sender.feed(clock.now())
+        repeat(3) {
+            clock.at = Nanos(clock.at.value + WINDOW)
+            sender.offer(1)
+            sender.feed(clock.now())
+            sender.trim(clock.now())
+        }
+        val slots = assertIs<QueueParts.Made>(sender.queue.parts()).slots
+        assertTrue(slots.keptWithMemory() <= 4, "memory follows occupancy: ${slots.keptWithMemory()} slots keep memory")
+    }
+
+    @Test
+    fun aFactoryThatThrowsLeavesTheQueueWorking() {
+        val failing = FailingFactory()
+        val q = QuicheConnRef(quiche, QuicheConn(1L))
+        val sender =
+            DatagramSender(q, DatagramQueue(4, Overflow.RefuseNew, AgeBound.Unbounded, failing, clock, counts), AgeBound.Unbounded, counts)
+                .also { it.readRoom() }
+        failing.failing = true
+        assertFailsWith<IllegalStateException> { sender.offer(1) }
+        assertEquals(0, sender.queue.size(), "a send that threw holds no place")
+        failing.failing = false
+        repeat(4) { assertEquals(Offered.Queued, sender.offer(it), "the queue takes datagrams after the failure") }
+        sender.feed(clock.now())
+        assertEquals(listOf(0, 1, 2, 3), firstBytes())
+        val slots = assertIs<QueueParts.Made>(sender.queue.parts()).slots
+        sender.close(ConnEnd.Released)
+        assertEquals(0, slots.holdingMemory(), "every slot's memory was freed at the close")
+    }
+
+    /** Makes network buffers, or throws while [failing]. */
+    private class FailingFactory : BufferFactory by BufferFactory.network() {
+        var failing = false
+
+        override fun allocate(
+            size: Int,
+            byteOrder: com.ditchoom.buffer.ByteOrder,
+        ): PlatformBuffer {
+            check(!failing) { "the factory fails" }
+            return BufferFactory.network().allocate(size, byteOrder)
+        }
+    }
 
     /** A caller parked in [sender] the way a [RoomWait] parks it inside a connection; runs [then] once woken. */
     private fun kotlinx.coroutines.CoroutineScope.wait(
@@ -230,9 +325,24 @@ class DatagramSendQueueTests {
             then()
         }
 
+    private fun bufferOf(vararg bytes: Int): PlatformBuffer =
+        BufferFactory.network().allocate(maxOf(bytes.size, 1)).apply {
+            bytes.forEach { writeByte(it.toByte()) }
+            resetForRead()
+        }
+
+    private fun heapBufferOf(vararg bytes: Int): PlatformBuffer =
+        BufferFactory.managed().allocate(bytes.size).apply {
+            bytes.forEach { writeByte(it.toByte()) }
+            resetForRead()
+        }
+
     private companion object {
         const val MAX = 1200
         const val DONE = -1
         const val AGE = 10_000_000L
+        const val SENDS = 10_000
+        const val STEP = 1_000_000L
+        const val WINDOW = 1_100_000_000L
     }
 }

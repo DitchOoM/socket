@@ -135,19 +135,20 @@ private fun transportVerdict(options: QuicOptions): OptionVerdict {
     when (options.appleTrustSource) {
         is AppleTrustSource.SystemTrustStore, is AppleTrustSource.BundledMozillaRoots -> Unit
     }
-    options.datagrams?.let { datagramVerdict(it) }
-    return OptionVerdict.Honoured
+    return options.datagrams?.let { datagramVerdict(it) } ?: OptionVerdict.Honoured
 }
 
-/** The core's own send and receive queues honour every overflow rule and maximum age. */
-private fun datagramVerdict(options: DatagramOptions) {
+/** The core's own send and receive queues honour every overflow rule, and every maximum age that is positive. */
+private fun datagramVerdict(options: DatagramOptions): OptionVerdict {
     when (options.overflow) {
         is DatagramOverflow.RefuseNew, is DatagramOverflow.EvictOldest -> Unit
     }
-    when (options.outgoingMaxAge) {
-        is DatagramMaxAge.Unbounded, is DatagramMaxAge.Within -> Unit
-    }
-    when (options.incomingMaxAge) {
-        is DatagramMaxAge.Unbounded, is DatagramMaxAge.Within -> Unit
-    }
+    return firstRefused(ageVerdict(options.outgoingMaxAge), ageVerdict(options.incomingMaxAge))
 }
+
+private fun ageVerdict(age: DatagramMaxAge): OptionVerdict =
+    when (age) {
+        is DatagramMaxAge.Unbounded -> OptionVerdict.Honoured
+        is DatagramMaxAge.Within ->
+            if (age.age.isPositive()) OptionVerdict.Honoured else refused(QuicOptionRefusal.DatagramMaxAgeNotPositive(age.age))
+    }

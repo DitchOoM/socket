@@ -54,6 +54,8 @@ data class QuicConnectionStats
         val datagramsDroppedUnsendable: QuicDatagramCount = QuicDatagramCount.NotCounted,
         /** Received datagrams dropped undelivered because they were older than [DatagramOptions.incomingMaxAge]. */
         val datagramsExpiredIncoming: QuicDatagramCount = QuicDatagramCount.NotCounted,
+        /** Queued datagrams dropped unsent because the connection reached its close point first. */
+        val datagramsDroppedAtClose: QuicDatagramCount = QuicDatagramCount.NotCounted,
     )
 
 /** A count of datagrams the engine may not keep: a zero is a measurement only when it is [Counted]. */

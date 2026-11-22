@@ -50,7 +50,7 @@ private fun ConnParts.holdGate(now: Nanos): HoldGate {
     if (life.view() !is Life.Running) return HoldGate.Closing
     if (handshake.confirmation() == Confirmation.Pending) return HoldGate.Handshaking
     if (slots.paths.calm() == PathCalm.Moving) return HoldGate.PathMoving
-    if (streams.backlog() == Backlog.Waiting) return HoldGate.Backlogged
+    if (streams.backlog() == Backlog.Waiting || slots.datagrams.backlog() == Backlog.Waiting) return HoldGate.Backlogged
     return when (ackReads.loss(now)) {
         LossSeen.Quiet -> HoldGate.Open
         LossSeen.Recent -> HoldGate.LossRecent

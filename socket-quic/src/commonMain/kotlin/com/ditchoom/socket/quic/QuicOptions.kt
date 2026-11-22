@@ -157,8 +157,11 @@ data class FlowControl(
 data class DatagramOptions(
     /** The receive queue's high-water mark: datagrams kept for a receiver; past it the oldest is dropped and counted. */
     val recvQueueLen: Int = 1024,
-    /** The send queue's high-water mark: datagrams queued to be sent; past it [overflow] decides. */
-    val sendQueueLen: Int = 1024,
+    /**
+     * The send queue's high-water mark: datagrams queued to be sent, those already handed to the QUIC stack for its next
+     * packets included; past it [overflow] decides.
+     */
+    val sendQueueLen: Int = 128,
     /** What a send does when the send queue is at its high-water mark. */
     val overflow: DatagramOverflow = DatagramOverflow.RefuseNew,
     /** How long a datagram may wait in the send queue; one older when it reaches the head is dropped and counted. */

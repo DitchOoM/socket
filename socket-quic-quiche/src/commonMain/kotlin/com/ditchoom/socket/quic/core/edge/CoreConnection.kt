@@ -36,6 +36,7 @@ import com.ditchoom.socket.quic.core.conn.Inside
 import com.ditchoom.socket.quic.core.conn.NetworkChange
 import com.ditchoom.socket.quic.core.conn.NetworkWork
 import com.ditchoom.socket.quic.core.life.ConnEnd
+import com.ditchoom.socket.quic.core.observe.ConnCounts
 import com.ditchoom.socket.quic.core.observe.withDatagramCounts
 import com.ditchoom.socket.testkit.trace.TraceSink
 import kotlinx.coroutines.CancellableContinuation
@@ -114,8 +115,8 @@ internal class CoreConnection(
     @OptIn(ExperimentalDatagramApi::class)
     override fun datagramChannel(): ConnectedDatagramChannel = coreDatagrams
 
-    /** Received datagrams dropped because the receive queue was full and nobody was receiving; any thread. */
-    fun datagramsOverflowed(): Long = conn.counts.datagramsOverflowed
+    /** What the connection counted, any thread: the datagrams it dropped or refused among them. */
+    internal val counts: ConnCounts get() = conn.counts
 
     /** How the connection stands: open, or ended and how. */
     fun end(): EdgeEnd = edge.end()

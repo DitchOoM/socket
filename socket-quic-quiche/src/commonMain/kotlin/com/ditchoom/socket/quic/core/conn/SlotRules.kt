@@ -94,6 +94,29 @@ internal sealed interface DatagramRule {
     ) : DatagramRule
 }
 
+/**
+ * The datagrams quiche's own send queue holds for its next packets: enough to fill one with small datagrams, or a few
+ * when eviction or an outgoing age must reach nearly every queued datagram; never more than half of [DatagramRule.On.sendBound].
+ */
+internal fun DatagramRule.On.quicheHandOff(): Int {
+    val wanted =
+        when (overflow) {
+            Overflow.EvictOldest -> SHORT_HAND_OFF
+            Overflow.RefuseNew ->
+                when (outgoing) {
+                    is AgeBound.Within -> SHORT_HAND_OFF
+                    is AgeBound.Unbounded -> LONG_HAND_OFF
+                }
+        }
+    return minOf(wanted, sendBound / 2).coerceAtLeast(1)
+}
+
+/** The datagrams the core's queue admits: the depth less quiche's hand-off, so the two hold at most [DatagramRule.On.sendBound]. */
+internal fun DatagramRule.On.queueBound(): Int = (sendBound - quicheHandOff()).coerceAtLeast(1)
+
+private const val SHORT_HAND_OFF = 4
+private const val LONG_HAND_OFF = 32
+
 /** What a full datagram send queue does with one more. */
 internal enum class Overflow { RefuseNew, EvictOldest }
 
