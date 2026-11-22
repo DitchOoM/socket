@@ -57,6 +57,7 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
@@ -656,6 +657,27 @@ class CoreRecordingReplayTests {
             recordings = Recorded(emptyList(), emptyList(), 1)
             assertFollowedWholeTwice(schedule)
         }
+
+    /**
+     * Kept recordings of clients that never ran quiche's timeout: each read the server's next datagrams late, and what
+     * it read made the probe it was owed unnecessary. A replay runs no timer its recording does not hold, so it sends
+     * what was recorded and nothing more (CI: "our datagram 4 [OneRtt] is one more than the capture holds" at 38.61 ms,
+     * and "our datagram 3 [Handshake]" at 9.43 ms).
+     */
+    @Test
+    fun aClientThatRanNoTimerIsReplayedRunningNone() =
+        replayTest("aClientThatRanNoTimerIsReplayedRunningNone") {
+            for (kept in listOf("no-timer-run-one-rtt", "no-timer-run-handshake")) {
+                val client = keptRecording("$kept.client.trace")
+                assertTrue(client.none { it is TraceEvent.TimerFired }, "$kept: the recorded client ran no timer")
+                assertFollowedWholeTwice(scheduleOf(Recorded(client, keptRecording("$kept.server.trace"), 1)))
+            }
+        }
+
+    private fun keptRecording(name: String): List<TraceEvent> =
+        TraceEvent.parseAll(
+            assertNotNull(this::class.java.classLoader.getResource("replay-recordings/$name"), "no kept recording $name").readText(),
+        )
 
     /** Whether a call has reached quiche yet. */
     private enum class Calls { Cold, Warm }
