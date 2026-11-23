@@ -8241,7 +8241,8 @@ android {
     }
     defaultConfig {
         minSdk = 28
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        // Reports the test process's heap first; see HeapCheckedTestRunner in src/androidInstrumentedTest.
+        testInstrumentationRunner = "com.ditchoom.socket.quic.HeapCheckedTestRunner"
         // Shipped in the AAR as proguard.txt: keeps JniQuicheApi's by-name JNI binding intact in any app
         // that minifies, whether or not it uses AGP's default rules. Without it (and without AGP's
         // default file) R8 renames the class and every QUIC call fails with UnsatisfiedLinkError —

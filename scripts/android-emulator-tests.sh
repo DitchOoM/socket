@@ -73,13 +73,17 @@ LOGCAT_PID=$!
 
 # THE HEAP THE TESTS GET
 # ----------------------
-# The test APK asks for largeHeap, yet an API 29 run's test process was clamped at a 16 MB growth limit and ran out of
-# memory in the many-connection suites (run 44967892040), on an emulator booted with dalvik.vm.heapsize=512m. A
-# low-RAM device ignores largeHeap, so the properties that decide the limit are kept for every run: in the job log, to
-# compare a red run with a green one, and beside the logcat.
+# An app's heap is the zygote's, and the API 29 zygote can start before init sets dalvik.vm.heapsize, leaving every
+# app the 16 MB fallback (see scripts/android-zygote-heap.sh). That is checked and repaired here, before any test. The
+# properties and the zygote's reservation are kept for every run, in the job log and beside the logcat; the quiche
+# test process also reports its own heap at start (HeapCheckedTestRunner).
+# shellcheck source=scripts/android-zygote-heap.sh
+source "$(dirname "${BASH_SOURCE[0]}")/android-zygote-heap.sh"
+ensure_zygote_heap "$API_LEVEL"
 HEAP_FILE="emulator-diagnostics/heap-api${API_LEVEL}.txt"
 {
   adb shell getprop 2>/dev/null | grep -E 'dalvik\.vm\.heap|ro\.config\.low_ram|ro\.product\.ram|qemu\.dalvik' || echo "(no heap properties reported)"
+  echo "zygote heap reservation: $(($(zygote_heap_reservation_bytes) / 1024 / 1024)) MB"
   adb shell head -n 3 /proc/meminfo 2>/dev/null || true
 } > "$HEAP_FILE"
 echo "heap properties (API ${API_LEVEL}):"
