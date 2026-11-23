@@ -109,6 +109,7 @@ data class QuicStatsSnapshot(
 internal fun publicStatsOf(
     conn: QuicConnStats,
     active: ActivePath,
+    drops: QuicDatagramDrops,
 ): QuicConnectionStats =
     QuicConnectionStats(
         packetsSent = conn.sent,
@@ -129,6 +130,7 @@ internal fun publicStatsOf(
                 is ActivePath.Read -> publicPathOf(active.stats)
                 ActivePath.Unreadable -> QuicActivePathStats.BetweenPaths
             },
+        datagramDrops = drops,
     )
 
 private fun publicPathOf(path: QuicPathStats): QuicActivePathStats =
@@ -146,11 +148,20 @@ private fun publicPathOf(path: QuicPathStats): QuicActivePathStats =
         packetsLost = path.lost,
     )
 
-/** Reads [conn]'s statistics as the public type: [QuicStatsRead.NotReported] on a backend without the stats FFI. */
-internal fun QuicheApi.readStats(conn: QuicheConn): QuicStatsRead =
+/** A connection whose datagram drops nothing counted. */
+internal val NO_DATAGRAM_DROPS = QuicDatagramDrops(0, 0, 0, 0, 0, 0, 0)
+
+/**
+ * Reads [conn]'s statistics as the public type, with [drops] as its datagram drops: [QuicStatsRead.NotReported] on a
+ * backend without the stats FFI.
+ */
+internal fun QuicheApi.readStats(
+    conn: QuicheConn,
+    drops: QuicDatagramDrops = NO_DATAGRAM_DROPS,
+): QuicStatsRead =
     when (val stats = connStats(conn)) {
         null -> QuicStatsRead.NotReported
-        else -> QuicStatsRead.Read(publicStatsOf(stats, readActivePath(conn)))
+        else -> QuicStatsRead.Read(publicStatsOf(stats, readActivePath(conn), drops))
     }
 
 /** This driver's connection statistics, read on its loop; [QuicStatsRead.Ended] once the connection is torn down. */

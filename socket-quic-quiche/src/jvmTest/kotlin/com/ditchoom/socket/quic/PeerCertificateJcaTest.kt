@@ -140,7 +140,7 @@ class PeerCertificateJcaTest {
             quicOptions: QuicOptions,
             transport: TransportConfig,
             timeout: Duration,
-        ): QuicConnection = throw UnsupportedOperationException("bind-only test engine")
+        ): QuicEngineConnection = throw UnsupportedOperationException("bind-only test engine")
 
         override suspend fun bind(
             binding: QuicPortBinding,

@@ -84,7 +84,7 @@ class ReadHandOffAtCloseTests {
             val connection =
                 DriverQuicConnection(driver, bufferFactory, SocketAddress.ofLiteral("127.0.0.1", 4433), CoroutineScope(connJob))
             val reader = ParkingDispatcher()
-            val received = CompletableDeferred<ScopedRead<Int>>()
+            val received = CompletableDeferred<ScopedReadResult<Int>>()
             val blockEnded = CompletableDeferred<Throwable>()
             val outcome = CompletableDeferred<Throwable?>()
             launch {
@@ -132,7 +132,7 @@ class ReadHandOffAtCloseTests {
                 )
 
                 settle(reader) // the read returns its bytes to the block
-                assertEquals(ScopedRead.Data(HANDED_OFF_BYTES), received.getCompleted(), "the handed-off bytes must arrive")
+                assertEquals(ScopedReadResult.Data(HANDED_OFF_BYTES), received.getCompleted(), "the handed-off bytes must arrive")
                 assertEquals(QuicUnreadAtClose.AllRead, connection.unreadAtClose.value)
                 assertIs<CancellationException>(blockEnded.getCompleted(), "once everything is read, the block is cancelled")
                 assertIs<QuicCloseException>(outcome.getCompleted())

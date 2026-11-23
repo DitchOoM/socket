@@ -6,11 +6,11 @@
 // - Show declarations: true
 
 // Library unique name: <com.ditchoom:socket-quic-default>
-final class com.ditchoom.socket.quic/QuicSessionTransport : com.ditchoom.socket.transport/SessionTransport<com.ditchoom.socket.quic/QuicConnection> { // com.ditchoom.socket.quic/QuicSessionTransport|null[0]
+final class com.ditchoom.socket.quic/QuicSessionTransport : com.ditchoom.socket.transport/SessionTransport<com.ditchoom.socket.quic/QuicEngineConnection> { // com.ditchoom.socket.quic/QuicSessionTransport|null[0]
     constructor <init>(com.ditchoom.socket.quic/QuicOptions, com.ditchoom.socket.quic/QuicEngine = ...) // com.ditchoom.socket.quic/QuicSessionTransport.<init>|<init>(com.ditchoom.socket.quic.QuicOptions;com.ditchoom.socket.quic.QuicEngine){}[0]
 
-    final suspend fun close(com.ditchoom.socket.quic/QuicConnection) // com.ditchoom.socket.quic/QuicSessionTransport.close|close(com.ditchoom.socket.quic.QuicConnection){}[0]
-    final suspend fun establish(kotlin/String, kotlin/Int, com.ditchoom.socket/TransportConfig): com.ditchoom.socket.quic/QuicConnection // com.ditchoom.socket.quic/QuicSessionTransport.establish|establish(kotlin.String;kotlin.Int;com.ditchoom.socket.TransportConfig){}[0]
+    final suspend fun close(com.ditchoom.socket.quic/QuicEngineConnection) // com.ditchoom.socket.quic/QuicSessionTransport.close|close(com.ditchoom.socket.quic.QuicEngineConnection){}[0]
+    final suspend fun establish(kotlin/String, kotlin/Int, com.ditchoom.socket/TransportConfig): com.ditchoom.socket.quic/QuicEngineConnection // com.ditchoom.socket.quic/QuicSessionTransport.establish|establish(kotlin.String;kotlin.Int;com.ditchoom.socket.TransportConfig){}[0]
 }
 
 final class com.ditchoom.socket.quic/QuicTransport : com.ditchoom.socket.transport/MultiplexingTransport, com.ditchoom.socket.transport/Transport { // com.ditchoom.socket.quic/QuicTransport|null[0]

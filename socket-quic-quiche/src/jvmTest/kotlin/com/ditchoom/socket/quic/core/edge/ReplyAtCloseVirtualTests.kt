@@ -7,7 +7,7 @@ import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicUnreadAtClose
-import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.ScopedReadResult
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.read
 import kotlinx.coroutines.launch
@@ -66,20 +66,20 @@ class ReplyAtCloseVirtualTests {
             pair.runUntil { client.end() is EdgeEnd.Ended }
             val unread = assertIs<QuicUnreadAtClose.Unread>(client.unreadAtClose.value)
             assertEquals(2, unread.streams.size, "both streams still hold the reply: $unread")
-            var finished: ScopedRead<Int> = ScopedRead.Reset
+            var finished: ScopedReadResult<Int> = ScopedReadResult.Reset
             var unfinished: Throwable = AssertionError("not read")
             var done = false
             launch {
                 val first = client.acceptStream()
-                assertIs<ScopedRead.Data<*>>(first.read(1.hours) { it.remaining() })
+                assertIs<ScopedReadResult.Data<*>>(first.read(1.hours) { it.remaining() })
                 finished = first.read(1.hours) { it.remaining() }
                 val second = client.acceptStream()
-                assertIs<ScopedRead.Data<*>>(second.read(1.hours) { it.remaining() })
+                assertIs<ScopedReadResult.Data<*>>(second.read(1.hours) { it.remaining() })
                 unfinished = assertFailsWith<QuicCloseException> { second.read(1.hours) { it.remaining() } }
                 done = true
             }
             pair.runUntil { done }
-            assertEquals<ScopedRead<Int>>(ScopedRead.End, finished, "the FIN that came with the reply ends its stream")
+            assertEquals<ScopedReadResult<Int>>(ScopedReadResult.End, finished, "the FIN that came with the reply ends its stream")
             assertIs<QuicCloseException>(unfinished)
             assertEquals<QuicUnreadAtClose>(QuicUnreadAtClose.AllRead, client.unreadAtClose.value)
         }

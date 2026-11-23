@@ -340,7 +340,7 @@ internal class LinuxQuicConnection(
     override val remoteAddress: SocketAddress,
     private val scope: CoroutineScope,
     private val onRelease: (() -> Unit)? = null,
-) : QuicConnection,
+) : QuicEngineConnection,
     QuicheBackedConnection,
     CoroutineScope by scope {
     override val state: StateFlow<QuicConnectionState> = driver.state

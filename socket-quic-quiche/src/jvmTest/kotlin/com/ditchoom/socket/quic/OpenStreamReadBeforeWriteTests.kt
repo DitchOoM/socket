@@ -109,7 +109,7 @@ class OpenStreamReadBeforeWriteTests {
                                         )
                                     is Read ->
                                         assertTrue(
-                                            outcome.result !is ScopedRead.End,
+                                            outcome.result !is ScopedReadResult.End,
                                             "a read before the first write must not report end-of-stream " +
                                                 "(#423): nothing has closed this stream, and reporting End " +
                                                 "tells the caller to stop reading and release it.",
@@ -165,7 +165,7 @@ class OpenStreamReadBeforeWriteTests {
                                     stream.write(buf, 10.seconds)
 
                                     val response = reader.await()
-                                    if (response is ScopedRead.Data) {
+                                    if (response is ScopedReadResult.Data) {
                                         response.value
                                     } else {
                                         fail(
@@ -188,7 +188,7 @@ class OpenStreamReadBeforeWriteTests {
     private sealed interface ReadOutcome
 
     private data class Read(
-        val result: ScopedRead<Int>,
+        val result: ScopedReadResult<Int>,
     ) : ReadOutcome
 
     private data class Threw(

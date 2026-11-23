@@ -5,12 +5,10 @@ import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.socket.quic.MigrationPolicy
 import com.ditchoom.socket.quic.PinnedRadioRefusal
-import com.ditchoom.socket.quic.PinnedRadioRefusedException
 import com.ditchoom.socket.quic.QuicError
-import com.ditchoom.socket.quic.QuicOptionNotHonouredException
-import com.ditchoom.socket.quic.QuicOptionRefusal
-import com.ditchoom.socket.quic.QuicOptionRefusedException
 import com.ditchoom.socket.quic.QuicOptions
+import com.ditchoom.socket.quic.QuicRefusal
+import com.ditchoom.socket.quic.QuicRefusedException
 import com.ditchoom.socket.quic.StandbyLink
 import com.ditchoom.socket.quic.core.conn.MismatchResponse
 import com.ditchoom.socket.quic.core.demux.loopbackV4
@@ -53,7 +51,7 @@ class CoreOptionRefusalTests {
 
     private fun tracing(
         target: QlogTarget = QlogTarget.Off,
-        declaration: QlogDeclaration = QlogDeclaration.Undeclared,
+        declaration: QlogDeclaration = QlogDeclaration.NotBudgeted,
     ) = QuicTraceCapture(
         captureFor = {
             factoryThreads.add(Thread.currentThread())
@@ -92,11 +90,11 @@ class CoreOptionRefusalTests {
             writePolicy = WritePolicy.Bounded(2.seconds),
         )
 
-    private inline fun <reified E : QuicOptionRefusedException> refusedConnect(options: QuicOptions): E =
+    private fun refusedConnect(options: QuicOptions): QuicRefusal =
         runBlocking {
-            var failure: E? = null
+            var failure: QuicRefusal? = null
             skipOnMissingNativeLib(CoreOptionRefusalTests::class) {
-                failure = assertFailsWith<E> { connectWith(options) }
+                failure = assertFailsWith<QuicRefusedException> { connectWith(options) }.refusal
                 assertEquals(0, routesAsked.get(), "a refused connect resolves no route and opens no socket")
             }
             failure ?: throw AssertionError("skipped")
@@ -106,30 +104,30 @@ class CoreOptionRefusalTests {
 
     @Test
     fun aConnectPinnedToARadioIsRefusedBecauseTheCoreCannotPinASocket() {
-        val e = refusedConnect<PinnedRadioRefusedException>(traced.copy(migration = MigrationPolicy.Pinned(NetworkKind.Cellular)))
-        assertEquals(PinnedRadioRefusal.EngineCannotPin, e.refusal)
+        val refusal = refusedConnect(traced.copy(migration = MigrationPolicy.Pinned(NetworkKind.Cellular)))
+        assertEquals(QuicRefusal.RadioNotPinnable(NetworkKind.Cellular, PinnedRadioRefusal.EngineCannotPin), refusal)
         assertTrue(factoryThreads.isEmpty(), "a refused connect never asks the application's trace factory")
     }
 
     @Test
     fun aStandbyLinkIsRefusedBecauseTheCoreHoldsNone() {
-        val e = refusedConnect<QuicOptionNotHonouredException>(traced.copy(standbyLink = StandbyLink.KeepCellularReady))
-        assertEquals(QuicOptionRefusal.StandbyLinkNotHeld, e.refused)
+        val refusal = refusedConnect(traced.copy(standbyLink = StandbyLink.KeepCellularReady))
+        assertEquals<QuicRefusal>(QuicRefusal.StandbyLinkNotHeld, refusal)
         assertTrue(factoryThreads.isEmpty(), "a refused connect never asks the application's trace factory")
     }
 
     @Test
     fun aDeclaredBudgetedQlogIsRefusedWithoutAskingTheFactory() {
-        val e = refusedConnect<QuicOptionNotHonouredException>(coreTestOptions.copy(trace = tracing(budgeted, QlogDeclaration.Budgeted)))
-        assertEquals(QuicOptionRefusal.QlogNotBudgeted, e.refused)
+        val refusal = refusedConnect(coreTestOptions.copy(trace = tracing(budgeted, QlogDeclaration.Budgeted)))
+        assertEquals<QuicRefusal>(QuicRefusal.QlogNotBudgeted, refusal)
         assertTrue(factoryThreads.isEmpty(), "a declared target is refused without minting a capture")
     }
 
     @Test
-    fun anUndeclaredBudgetedQlogIsRefusedByAClientBeforeAnySocketAndOffTheCallingThread() {
+    fun aBudgetedQlogDeclaredNotBudgetedIsRefusedByAClientBeforeAnySocketAndOffTheCallingThread() {
         val caller = Thread.currentThread()
-        val e = refusedConnect<QuicOptionNotHonouredException>(coreTestOptions.copy(trace = tracing(budgeted)))
-        assertEquals(QuicOptionRefusal.QlogNotBudgeted, e.refused)
+        val refusal = refusedConnect(coreTestOptions.copy(trace = tracing(budgeted)))
+        assertEquals<QuicRefusal>(QuicRefusal.QlogNotBudgeted, refusal)
         assertEquals(1, factoryThreads.size, "the factory is asked once, to name the qlog")
         assertNotEquals(caller, factoryThreads[0], "and not on the calling thread")
     }
@@ -153,10 +151,10 @@ class CoreOptionRefusalTests {
         runBlocking {
             skipOnMissingNativeLib(CoreOptionRefusalTests::class) {
                 val e =
-                    assertFailsWith<PinnedRadioRefusedException> {
+                    assertFailsWith<QuicRefusedException> {
                         serveWith(traced.copy(migration = MigrationPolicy.Pinned(NetworkKind.Wifi)))
                     }
-                assertEquals(PinnedRadioRefusal.EngineCannotPin, e.refusal)
+                assertEquals<QuicRefusal>(QuicRefusal.RadioNotPinnable(NetworkKind.Wifi, PinnedRadioRefusal.EngineCannotPin), e.refusal)
                 assertTrue(factoryThreads.isEmpty())
             }
         }
@@ -166,12 +164,12 @@ class CoreOptionRefusalTests {
         runBlocking {
             skipOnMissingNativeLib(CoreOptionRefusalTests::class) {
                 val e =
-                    assertFailsWith<QuicOptionNotHonouredException> {
+                    assertFailsWith<QuicRefusedException> {
                         serveWith(
                             coreTestOptions.copy(standbyLink = StandbyLink.KeepCellularReady),
                         )
                     }
-                assertEquals(QuicOptionRefusal.StandbyLinkNotHeld, e.refused)
+                assertEquals<QuicRefusal>(QuicRefusal.StandbyLinkNotHeld, e.refusal)
             }
         }
 
@@ -180,10 +178,10 @@ class CoreOptionRefusalTests {
         runBlocking {
             skipOnMissingNativeLib(CoreOptionRefusalTests::class) {
                 val e =
-                    assertFailsWith<QuicOptionNotHonouredException> {
+                    assertFailsWith<QuicRefusedException> {
                         serveWith(coreTestOptions.copy(trace = tracing(budgeted, QlogDeclaration.Budgeted)))
                     }
-                assertEquals(QuicOptionRefusal.QlogNotBudgeted, e.refused)
+                assertEquals<QuicRefusal>(QuicRefusal.QlogNotBudgeted, e.refusal)
                 assertTrue(factoryThreads.isEmpty(), "a refused serve mints no capture")
             }
         }
@@ -192,16 +190,13 @@ class CoreOptionRefusalTests {
     fun anIdleServeMintsNoCapture() =
         runBlocking {
             skipOnMissingNativeLib(CoreOptionRefusalTests::class) {
-                for (declaration in listOf(QlogDeclaration.Undeclared, QlogDeclaration.NotBudgeted)) {
-                    val server = serveWith(coreTestOptions.copy(trace = tracing(declaration = declaration)))
-                    server.close()
-                }
+                serveWith(coreTestOptions.copy(trace = tracing())).close()
                 assertTrue(factoryThreads.isEmpty(), "a server asks the factory only as it accepts a connection")
             }
         }
 
     @Test
-    fun anUndeclaredBudgetedQlogOnAServerIsNotWrittenAndIsCounted() =
+    fun aBudgetedQlogDeclaredNotBudgetedOnAServerIsNotWrittenAndIsCounted() =
         runBlocking {
             skipOnMissingNativeLib(CoreOptionRefusalTests::class) {
                 var counted = 0L

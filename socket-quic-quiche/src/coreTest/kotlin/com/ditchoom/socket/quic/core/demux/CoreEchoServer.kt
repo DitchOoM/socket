@@ -8,7 +8,7 @@ import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicheApi
-import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.ScopedReadResult
 import com.ditchoom.socket.quic.core.conn.MismatchResponse
 import com.ditchoom.socket.quic.core.edge.CoreConnection
 import com.ditchoom.socket.quic.core.edge.CoreServer
@@ -90,7 +90,7 @@ private suspend fun serveEchoes(
                             launch {
                                 // The peer closing the connection ends the echo; it is not a failure.
                                 try {
-                                    while (stream.read(10.seconds) { stream.writeFully(it, 10.seconds) } is ScopedRead.Data<*>) Unit
+                                    while (stream.read(10.seconds) { stream.writeFully(it, 10.seconds) } is ScopedReadResult.Data<*>) Unit
                                     stream.close()
                                 } catch (closed: QuicCloseException) {
                                     Unit

@@ -86,6 +86,12 @@ internal class WriteOp(
     /** The cancelling thread: the connection takes the write back from inside, and answers it there. */
     private fun withdraw() = conn.submit(Withdraw(), CallerPlace.HandToLoop)
 
+    /** The write's own answer, for a caller that reports it as a value; a cancelled caller raises as [answer] does. */
+    suspend fun settled(): WriteAnswer {
+        val answer = hand.await(caller) { withdraw() }
+        return if (caller.isActive && answer !is WriteAnswer.Cancelled) answer else raiseCancelled(caller)
+    }
+
     private fun resultOf(answer: WriteAnswer): BytesWritten =
         when (answer) {
             is WriteAnswer.Written -> if (caller.isActive) BytesWritten(taken()) else raiseCancelled(caller)

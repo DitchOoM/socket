@@ -119,8 +119,8 @@ abstract class PmtuPathEventTestSuite {
         val sb = StringBuilder()
         while (true) {
             when (val chunk = read(STREAM_DEADLINE) { it.readString(it.remaining(), Charset.UTF8) }) {
-                is ScopedRead.Data -> sb.append(chunk.value)
-                ScopedRead.End, ScopedRead.Reset -> return sb.toString()
+                is ScopedReadResult.Data -> sb.append(chunk.value)
+                ScopedReadResult.End, ScopedReadResult.Reset -> return sb.toString()
             }
         }
     }

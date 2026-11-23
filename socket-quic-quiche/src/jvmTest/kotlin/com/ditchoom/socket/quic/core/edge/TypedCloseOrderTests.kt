@@ -1,7 +1,7 @@
 package com.ditchoom.socket.quic.core.edge
 
 import com.ditchoom.socket.quic.QuicError
-import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.ScopedReadResult
 import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.testing.coreTest
 import kotlinx.coroutines.CompletableDeferred
@@ -39,7 +39,7 @@ class TypedCloseOrderTests {
             val serverClosed = CompletableDeferred<Unit>()
             withCoreServer(onConnection = { connection ->
                 val stream = connection.acceptTypedStream(NoteCodec)
-                while (stream.receive() is ScopedRead.Data) Unit
+                while (stream.receive() is ScopedReadResult.Data) Unit
                 stream.close()
                 serverClosed.complete(Unit)
             }) { server ->

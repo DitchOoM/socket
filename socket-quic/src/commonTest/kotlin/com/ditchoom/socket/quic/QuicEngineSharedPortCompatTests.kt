@@ -46,7 +46,7 @@ class QuicEngineSharedPortCompatTests {
             quicOptions: QuicOptions,
             transport: TransportConfig,
             timeout: Duration,
-        ): QuicConnection {
+        ): QuicEngineConnection {
             lastClientBinding = binding
             throw UnsupportedOperationException("no connection is established here; the binding is what this records")
         }

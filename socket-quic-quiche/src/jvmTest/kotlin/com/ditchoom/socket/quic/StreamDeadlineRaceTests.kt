@@ -96,7 +96,7 @@ class StreamDeadlineRaceTests {
             buffer.resetForRead()
             stream.write(buffer, 30.seconds)
             val read = withContext(firesWhenTheBlockReturns) { stream.read(30.seconds) { it.remaining() } }
-            assertIs<ScopedRead.Data<*>>(read, "the chunk the read took was reported as a timeout")
+            assertIs<ScopedReadResult.Data<*>>(read, "the chunk the read took was reported as a timeout")
             assertEquals(64, read.value)
             stream.shutdownSend()
             stream.close()
@@ -121,7 +121,7 @@ class StreamDeadlineRaceTests {
                                     val stream = acceptStream()
                                     while (true) {
                                         val echoed = stream.read(30.seconds) { chunk -> stream.write(chunk, 30.seconds) }
-                                        if (echoed !is ScopedRead.Data) break
+                                        if (echoed !is ScopedReadResult.Data) break
                                     }
                                     stream.close()
                                 }

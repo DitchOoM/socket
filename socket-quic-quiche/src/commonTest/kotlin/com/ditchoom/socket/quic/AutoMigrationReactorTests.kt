@@ -39,7 +39,7 @@ import kotlin.time.Duration.Companion.seconds
  * Unit coverage for the [wireAutoMigration] reactor branches, isolated from any real backend.
  *
  * The end-to-end [QuicAutoMigrationTests] proves the happy path over a live quiche connection; here we
- * drive the reactor with a [RecordingQuicConnection] (which records [QuicConnection.migrate] calls and
+ * drive the reactor with a [RecordingQuicConnection] (which records [QuicEngineConnection.migrate] calls and
  * can be made to *suspend* inside one, exactly as the real connection does) and a scriptable
  * [SimNetworkMonitor], so every guard — the two non-automatic policies, the `AlwaysAvailable`
  * short-circuit, the `canRouteOffLink` filter, the `Unidentified` filter, the connect-time baseline,
@@ -88,7 +88,7 @@ class AutoMigrationReactorTests {
     }
 
     /**
-     * A [QuicConnection] that records `migrate` calls and answers a scripted [MigrationResult].
+     * A [QuicEngineConnection] that records `migrate` calls and answers a scripted [MigrationResult].
      *
      * [gate] models the real connection's defining property: `migrate()` suspends until the driver
      * completes the path move ([JvmQuicConnection] awaits a `CompletableDeferred` the path-event drain
@@ -105,7 +105,7 @@ class AutoMigrationReactorTests {
          * keeps the instant answers the older tests were written against.
          */
         private val validation: Duration,
-    ) : QuicConnection {
+    ) : QuicEngineConnection {
         private val job = SupervisorJob()
         override val coroutineContext: CoroutineContext = dispatcher + job
 

@@ -63,7 +63,7 @@ abstract class ComposedBufferFactoryTestSuite {
                             val stream = acceptStream()
                             while (true) {
                                 val chunk = stream.read(ECHO_BOUND) { it.readString(it.remaining(), Charset.UTF8) }
-                                if (chunk !is ScopedRead.Data) break
+                                if (chunk !is ScopedReadResult.Data) break
                                 stream.writeText(bufferFactory, chunk.value)
                             }
                             stream.close()
@@ -76,7 +76,7 @@ abstract class ComposedBufferFactoryTestSuite {
                             val text = "echo-$round"
                             stream.writeText(bufferFactory, text)
                             val echoed = stream.read(ECHO_BOUND) { it.readString(it.remaining(), Charset.UTF8) }
-                            assertEquals(text, (echoed as ScopedRead.Data).value)
+                            assertEquals(text, (echoed as ScopedReadResult.Data).value)
                         }
                         stream.shutdownSend()
                         stream.close()

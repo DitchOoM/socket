@@ -17,7 +17,7 @@ import com.ditchoom.socket.quic.QuicPathStats
 import com.ditchoom.socket.quic.QuicSessionTicketState
 import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.QuicheConn
-import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.ScopedReadResult
 import com.ditchoom.socket.quic.core.life.CloseChoice
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.DrainUntil
@@ -98,13 +98,13 @@ class CloseEdgeVirtualTests {
             }
             pair.runUntil { returned }
             pair.runUntil { serverSide.end() is EdgeEnd.Ended }
-            var last: ScopedRead<*> = ScopedRead.End
+            var last: ScopedReadResult<*> = ScopedReadResult.End
             val stream: QuicByteStream = serverSide.acceptStream()
             while (true) {
                 last = stream.read(1.hours) { }
-                if (last !is ScopedRead.Data<*>) break
+                if (last !is ScopedReadResult.Data<*>) break
             }
-            assertIs<ScopedRead.Reset>(last, "the peer is told the frame was cut short, not handed half of it")
+            assertIs<ScopedReadResult.Reset>(last, "the peer is told the frame was cut short, not handed half of it")
         }
 
     @Test
@@ -127,7 +127,7 @@ class CloseEdgeVirtualTests {
                     }.circumstance
             }
             pair.runUntil { refusal != QuicCloseCircumstance.Unstated }
-            assertEquals<QuicCloseCircumstance>(QuicCloseCircumstance.Closing, refusal)
+            assertEquals<QuicCloseCircumstance>(QuicCloseCircumstance.Ended, refusal)
         }
 
     @Test

@@ -14,7 +14,7 @@ import com.ditchoom.socket.quic.QuicheConfig
 import com.ditchoom.socket.quic.QuicheConn
 import com.ditchoom.socket.quic.QuicheRecvInfo
 import com.ditchoom.socket.quic.QuicheSendInfo
-import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.ScopedReadResult
 import com.ditchoom.socket.quic.core.conn.FlightSize
 import com.ditchoom.socket.quic.core.conn.MismatchResponse
 import com.ditchoom.socket.quic.core.demux.ServerConfig
@@ -317,7 +317,7 @@ class CoreRecordingReplayTests {
                 val stream = connection.acceptStream()
                 // The client closing the connection ends the echo; it is not a failure.
                 try {
-                    while (stream.read(10.seconds) { stream.writeFully(it, 10.seconds) } is ScopedRead.Data<*>) Unit
+                    while (stream.read(10.seconds) { stream.writeFully(it, 10.seconds) } is ScopedReadResult.Data<*>) Unit
                 } catch (closed: QuicCloseException) {
                     Unit
                 }

@@ -101,7 +101,7 @@ class QuicByteStream(
      * native memory. The two compound: a reader that drops every buffer grows address space without
      * bound until a native allocation fails.
      *
-     * **Use the scoped [read] (`read(deadline) { … }`, returning [ScopedRead]) unless the bytes have to
+     * **Use the scoped [read] (`read(deadline) { … }`, returning [ScopedReadResult]) unless the bytes have to
      * outlive the call** — it releases on every exit path, exception and cancellation included. This
      * overload is for the callers that genuinely keep the buffer, and it is the one the codec/mux path
      * uses: `CodecConnection` hands each chunk to its `StreamProcessor`, which takes ownership.

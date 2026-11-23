@@ -10,7 +10,7 @@ import com.ditchoom.buffer.codec.PeekResult
 import com.ditchoom.buffer.codec.WireSize
 import com.ditchoom.buffer.stream.StreamProcessor
 import com.ditchoom.socket.quic.QuicError
-import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.ScopedReadResult
 import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.sched.SendRule
 import com.ditchoom.socket.quic.core.sched.sendRuleOfThisRuntime
@@ -76,7 +76,7 @@ private object TickCodec : Codec<Tick> {
  * counter after warm-up, as [CoreQuicAllocationTests] measures a byte-stream echo. The caller's total is split into what
  * the codec and its value force (encoding, frame detection and decoding the same message with no transport, measured the
  * same way) and what is left, which is the transport's: the suspend calls of [TypedQuicStream.send] and
- * [TypedQuicStream.receive], the [ScopedRead] that carries a message, and the continuation of a call that has to wait.
+ * [TypedQuicStream.receive], the [ScopedReadResult] that carries a message, and the continuation of a call that has to wait.
  * A receive of a frame already buffered allocates no continuation, nor, where callers send in place
  * ([SendRule.InPlace]), does a send that quiche takes at once; under [SendRule.ByLoop] every send waits for the loop.
  */
@@ -111,7 +111,7 @@ class CoreTypedAllocationTests {
                     val stream = connection.acceptTypedStream(TickCodec)
                     while (true) {
                         when (val read = stream.receive()) {
-                            is ScopedRead.Data -> stream.send(read.value)
+                            is ScopedReadResult.Data -> stream.send(read.value)
                             else -> break
                         }
                     }
@@ -158,7 +158,7 @@ class CoreTypedAllocationTests {
         val stream = client.connection.openTypedStream(TickCodec)
         for (round in 0 until WARM_UP / batch) {
             for (i in 0 until batch) stream.send(Tick(i.toLong()))
-            for (i in 0 until batch) check((stream.receive() as ScopedRead.Data<Tick>).value.n == i.toLong())
+            for (i in 0 until batch) check((stream.receive() as ScopedReadResult.Data<Tick>).value.n == i.toLong())
         }
         val codecBytes = codecOnly(threads)
         val loopId = threadId(client.loop.name)
@@ -171,7 +171,7 @@ class CoreTypedAllocationTests {
         val from = Instant.now()
         for (round in 0 until MEASURED / batch) {
             for (i in 0 until batch) stream.send(Tick(i.toLong()))
-            for (i in 0 until batch) check((stream.receive() as ScopedRead.Data<Tick>).value.n == i.toLong())
+            for (i in 0 until batch) check((stream.receive() as ScopedReadResult.Data<Tick>).value.n == i.toLong())
         }
         val callerBytes = (threads.getThreadAllocatedBytes(callerId) - callerBefore).toDouble() / MEASURED
         val loopBytes = (threads.getThreadAllocatedBytes(loopId) - loopBefore).toDouble() / MEASURED

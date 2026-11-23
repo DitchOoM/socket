@@ -2,7 +2,7 @@ package com.ditchoom.socket.quic.core.edge
 
 import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.socket.quic.QuicTlsConfig
-import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.ScopedReadResult
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.ReceiveBatchResult
@@ -57,7 +57,7 @@ internal suspend fun withEchoServer(
                             launch {
                                 // The client closing the connection ends the echo; it is not a failure of the server.
                                 try {
-                                    while (stream.read(10.seconds) { stream.writeFully(it, 10.seconds) } is ScopedRead.Data<*>) Unit
+                                    while (stream.read(10.seconds) { stream.writeFully(it, 10.seconds) } is ScopedReadResult.Data<*>) Unit
                                 } catch (closed: com.ditchoom.socket.quic.QuicCloseException) {
                                     Unit
                                 }

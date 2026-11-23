@@ -10,7 +10,7 @@ import kotlin.time.TimeMark
 
 /**
  * One connection's view of its [NetworkMonitor], reduced to the single value
- * [QuicConnection.networkAtClose] reports.
+ * [QuicEngineConnection.networkAtClose] reports.
  *
  * ## Why the monitor is shared, not re-resolved
  * The connection's engine resolves [QuicOptions.networkMonitor] **once** and hands that one instance to

@@ -8,7 +8,7 @@ HSPLcom/ditchoom/socket/quic/AcceptedConnection;->getDriver()Lcom/ditchoom/socke
 HSPLcom/ditchoom/socket/quic/AcceptedConnection;->getRemoteAddress()Lcom/ditchoom/buffer/flow/SocketAddress;
 HSPLcom/ditchoom/socket/quic/AutoMigrationWiringKt;-><clinit>()V
 HSPLcom/ditchoom/socket/quic/AutoMigrationWiringKt;->resolveNetworkMonitor(Lcom/ditchoom/socket/quic/NetworkMonitorSource;)Lcom/ditchoom/socket/NetworkMonitor;
-HSPLcom/ditchoom/socket/quic/AutoMigrationWiringKt;->wireAutoMigration(Lcom/ditchoom/socket/quic/QuicOptions;Lcom/ditchoom/socket/quic/QuicConnection;Lcom/ditchoom/socket/NetworkMonitor;Lkotlinx/coroutines/flow/StateFlow;Lcom/ditchoom/socket/quic/trace/TraceCapture;Lcom/ditchoom/socket/quic/StandbyPaths;)V
+HSPLcom/ditchoom/socket/quic/AutoMigrationWiringKt;->wireAutoMigration(Lcom/ditchoom/socket/quic/QuicOptions;Lcom/ditchoom/socket/quic/QuicEngineConnection;Lcom/ditchoom/socket/NetworkMonitor;Lkotlinx/coroutines/flow/StateFlow;Lcom/ditchoom/socket/quic/trace/TraceCapture;Lcom/ditchoom/socket/quic/StandbyPaths;)V
 HSPLcom/ditchoom/socket/quic/CachedRecvInfo;-><init>(JLkotlin/jvm/functions/Function0;)V
 HSPLcom/ditchoom/socket/quic/CachedRecvInfo;-><init>(JLkotlin/jvm/functions/Function0;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
 HSPLcom/ditchoom/socket/quic/CachedRecvInfo;->getInFlight()Lcom/ditchoom/socket/quic/RecvInfoRefCount;
@@ -728,7 +728,7 @@ HSPLcom/ditchoom/socket/quic/SharedQuicheServer$acceptNewConnection$udpChannel$1
 HSPLcom/ditchoom/socket/quic/SharedQuicheServer$acceptNewConnection$udpChannel$2;-><init>(Ljava/lang/Object;)V
 HSPLcom/ditchoom/socket/quic/SharedQuicheServer$connections$2$1$1;-><init>(Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)V
 HSPLcom/ditchoom/socket/quic/SharedQuicheServer$connections$2$1$1;->create(Ljava/lang/Object;Lkotlin/coroutines/Continuation;)Lkotlin/coroutines/Continuation;
-HSPLcom/ditchoom/socket/quic/SharedQuicheServer$connections$2$1$1;->invoke(Lcom/ditchoom/socket/quic/QuicConnection;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+HSPLcom/ditchoom/socket/quic/SharedQuicheServer$connections$2$1$1;->invoke(Lcom/ditchoom/socket/quic/QuicEngineConnection;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 HSPLcom/ditchoom/socket/quic/SharedQuicheServer$connections$2$1$1;->invoke(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;
 HSPLcom/ditchoom/socket/quic/SharedQuicheServer$connections$2$1$1;->invokeSuspend(Ljava/lang/Object;)Ljava/lang/Object;
 HSPLcom/ditchoom/socket/quic/SharedQuicheServer$connections$2$1$invokeSuspend$$inlined$filterIsInstance$1$1;-><init>(Lcom/ditchoom/socket/quic/SharedQuicheServer$connections$2$1$invokeSuspend$$inlined$filterIsInstance$1;Lkotlin/coroutines/Continuation;)V

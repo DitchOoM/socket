@@ -130,6 +130,12 @@ internal class StreamHalves(
 
     suspend fun openSendOnly(): SendHalf = SendHalf(connection, connection.open(StreamKind.Unidirectional), writePolicy)
 
+    /** Both halves of the bidirectional stream [id], which this side opened. */
+    fun openedBoth(id: QuicStreamId): BidiStream = both(id)
+
+    /** The sending half of the unidirectional stream [id], which this side opened. */
+    fun openedSendOnly(id: QuicStreamId): SendHalf = SendHalf(connection, id, writePolicy)
+
     /** The next stream the peer opened, of either kind. */
     suspend fun accept(): IncomingStream = incomingOf(edge.incoming.receiveAny())
 

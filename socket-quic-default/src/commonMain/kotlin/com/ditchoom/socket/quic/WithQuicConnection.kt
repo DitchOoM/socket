@@ -25,7 +25,7 @@ import kotlin.time.Duration.Companion.seconds
  * This is the client-facing entry point and it owns the lifecycle: it asks the
  * platform's [QuicEngine][defaultQuicEngine] to [connect][QuicEngine.connect],
  * runs [block], and closes the connection in a `finally`. The engine is a
- * constructor, not a factory the caller babysits — the returned [QuicConnection]
+ * constructor, not a factory the caller babysits — the returned [QuicEngineConnection]
  * never escapes this scope, so there is nothing to leak on a dropped error path.
  * The scope-only block boundary remains the lifecycle.
  *

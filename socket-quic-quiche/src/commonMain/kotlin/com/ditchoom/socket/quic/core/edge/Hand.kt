@@ -180,6 +180,16 @@ internal sealed interface ReadAnswer : HandAnswer {
     data object Cancelled : ReadAnswer
 }
 
+/** [answer] for a caller whose context is [context] still active; a caller cancelled meanwhile frees the buffer and raises. */
+internal fun liveOr(
+    answer: ReadAnswer,
+    context: CoroutineContext,
+): ReadAnswer {
+    if (context.isActive && answer !is ReadAnswer.Cancelled) return answer
+    if (answer is ReadAnswer.Data) answer.buffer.freeIfNeeded()
+    raiseCancelled(context)
+}
+
 /** What [answer] gives a caller whose context is [context]; a caller cancelled meanwhile frees the buffer and raises. */
 internal fun resultOf(
     answer: ReadAnswer,

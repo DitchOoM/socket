@@ -7,7 +7,7 @@ import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicCloseReason
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicStreamId
-import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.ScopedReadResult
 import com.ditchoom.socket.quic.core.conn.CallerPlace
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.sched.SendRule
@@ -177,7 +177,7 @@ class CoreFailureTierTests {
                 val reader =
                     async {
                         while (received.size < payload.size) {
-                            if (stream.read(10.seconds) { received.add(it) } !is ScopedRead.Data<*>) break
+                            if (stream.read(10.seconds) { received.add(it) } !is ScopedReadResult.Data<*>) break
                         }
                     }
                 stream.writeFully(

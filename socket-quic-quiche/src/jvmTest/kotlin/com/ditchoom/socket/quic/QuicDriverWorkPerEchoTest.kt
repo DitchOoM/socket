@@ -114,7 +114,7 @@ class QuicDriverWorkPerEchoTest {
                             connections {
                                 val stream = acceptStream()
                                 while (true) {
-                                    if (stream.read(9.seconds) { stream.write(it, 5.seconds) } !is ScopedRead.Data) break
+                                    if (stream.read(9.seconds) { stream.write(it, 5.seconds) } !is ScopedReadResult.Data) break
                                 }
                                 stream.close()
                             }

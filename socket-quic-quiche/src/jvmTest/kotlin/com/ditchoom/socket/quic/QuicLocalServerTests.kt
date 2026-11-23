@@ -168,7 +168,7 @@ class QuicLocalServerTests {
 
                                             diag.clientStep = PeerStep.Reached("read")
                                             val response = stream.read(5.seconds) { it.readString(it.remaining(), Charset.UTF8) }
-                                            if (response is ScopedRead.Data) {
+                                            if (response is ScopedReadResult.Data) {
                                                 echoResult.complete(response.value)
                                             } else {
                                                 echoResult.complete("no_data")
@@ -245,7 +245,7 @@ class QuicLocalServerTests {
                                             while (true) {
                                                 diag.serverStep = PeerStep.Reached("read(${received.length})")
                                                 val r = stream.read(5.seconds) { it.readString(it.remaining(), Charset.UTF8) }
-                                                if (r !is ScopedRead.Data) break
+                                                if (r !is ScopedReadResult.Data) break
                                                 received.append(r.value)
                                             }
                                             val reply = BufferFactory.Default.allocate(received.length)
@@ -287,7 +287,7 @@ class QuicLocalServerTests {
 
                                             diag.clientStep = PeerStep.Reached("read")
                                             val response = stream.read(5.seconds) { it.readString(it.remaining(), Charset.UTF8) }
-                                            if (response is ScopedRead.Data) {
+                                            if (response is ScopedReadResult.Data) {
                                                 echoResult.complete(response.value)
                                             } else {
                                                 echoResult.complete("no_data:${response::class.simpleName}")
@@ -512,7 +512,7 @@ class QuicLocalServerTests {
         val stream = acceptStream()
         stream.read(10.seconds) { stream.write(it, 10.seconds) }
         while (true) {
-            if (stream.read(10.seconds) { it.remaining() } !is ScopedRead.Data) break
+            if (stream.read(10.seconds) { it.remaining() } !is ScopedReadResult.Data) break
         }
         val reply = BufferFactory.Default.allocate(replyPayload.length)
         reply.writeString(replyPayload, Charset.UTF8)
@@ -556,12 +556,12 @@ class QuicLocalServerTests {
                     return sb.toString()
                 }
             when (r) {
-                is ScopedRead.Data -> sb.append(r.value)
-                ScopedRead.End -> {
+                is ScopedReadResult.Data -> sb.append(r.value)
+                ScopedReadResult.End -> {
                     onEnded(ReadEnding.End)
                     return sb.toString()
                 }
-                ScopedRead.Reset -> {
+                ScopedReadResult.Reset -> {
                     onEnded(ReadEnding.Reset)
                     return sb.toString()
                 }

@@ -23,7 +23,7 @@ class JvmPinnedRadioRefusalTests {
         runBlocking {
             for (radio in listOf(NetworkKind.Wifi, NetworkKind.Cellular)) {
                 val refused =
-                    assertFailsWith<PinnedRadioRefusedException> {
+                    assertFailsWith<QuicRefusedException> {
                         QuicheEngine.connect(
                             QuicClientBinding.OwnSocket,
                             QuicEndpoint(ResolvedAddress("127.0.0.1", IpFamily.V4), 9),
@@ -33,8 +33,7 @@ class JvmPinnedRadioRefusalTests {
                             5.seconds,
                         )
                     }
-                assertEquals(radio, refused.radio)
-                assertEquals(PinnedRadioRefusal.EngineCannotPin, refused.refusal)
+                assertEquals<QuicRefusal>(QuicRefusal.RadioNotPinnable(radio, PinnedRadioRefusal.EngineCannotPin), refused.refusal)
             }
         }
 }

@@ -322,7 +322,7 @@ internal class MigrationSimScope(
  * every handoff themselves, and it is the wrong one for #453: the defect there was not in the driver
  * at all but in **who decides to call migrate, and when** ([wireAutoMigration]). A harness that can
  * only call the driver cannot test a reactor that calls the driver — so the sim now hands the real
- * reactor a real [QuicConnection] and lets it drive, exactly as the three platform `connect()` paths do.
+ * reactor a real [QuicEngineConnection] and lets it drive, exactly as the three platform `connect()` paths do.
  *
  * [attempts] is the record of what the reactor asked for and what it got. It is the honest observable
  * for a retry policy: counting opened probe paths would miss every attempt that answered
@@ -335,7 +335,7 @@ internal class SimClientQuicConnection(
     private val delegate: DriverQuicConnection,
     /** The sim's clock, so [timeline] reads in the same virtual time the test body does. */
     private val now: () -> Duration,
-) : QuicConnection by delegate {
+) : QuicEngineConnection by delegate {
     private val _timeline = mutableListOf<SimAttempt>()
 
     /** Every [migrate] outcome so far, in order — whoever asked, reactor or test body. */

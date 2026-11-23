@@ -10,6 +10,7 @@ import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicScope
+import com.ditchoom.socket.quic.trace.QlogDeclaration
 import com.ditchoom.socket.quic.trace.QlogTarget
 import com.ditchoom.socket.quic.trace.QuicConnectionCapture
 import com.ditchoom.socket.quic.trace.QuicTraceCapture
@@ -214,6 +215,7 @@ class RemoteQuicLoad {
                                 trafficSecrets = TrafficSecretsLog.File(keys.absolutePath),
                             )
                         },
+                        qlog = QlogDeclaration.NotBudgeted,
                     ),
             )
 

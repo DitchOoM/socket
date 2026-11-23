@@ -23,6 +23,17 @@ import kotlinx.coroutines.isActive
 import kotlin.coroutines.CoroutineContext
 import kotlin.time.Duration
 
+/** What an open came to, for a caller that reports a refused open as a value. */
+internal sealed interface OpenSettled {
+    class Stream(
+        val id: QuicStreamId,
+    ) : OpenSettled
+
+    class NotOpened(
+        val answer: OpenAnswer.Failed,
+    ) : OpenSettled
+}
+
 /**
  * Opens the next stream of [kind]. At the peer's stream limit of that kind it waits, behind any open of the kind already
  * waiting, until the peer grants another stream, the connection ends, or [bound] passes; a bound that passes fails it
@@ -56,6 +67,16 @@ internal class OpenOp(
         return when (val answer = hand.await(context) { cancelled() }) {
             is OpenAnswer.Opened -> if (context.isActive) opened else unclaimed(context)
             is OpenAnswer.Failed -> raiseFailure(answer.failure, answer.during)
+            is OpenAnswer.Cancelled -> raiseCancelled(context)
+        }
+    }
+
+    /** [answer] with a refused open as a value; a cancelled caller raises as [answer] does. */
+    suspend fun settled(): OpenSettled {
+        val context = currentCoroutineContext()
+        return when (val answer = hand.await(context) { cancelled() }) {
+            is OpenAnswer.Opened -> if (context.isActive) OpenSettled.Stream(QuicStreamId(opened)) else unclaimed(context)
+            is OpenAnswer.Failed -> OpenSettled.NotOpened(answer)
             is OpenAnswer.Cancelled -> raiseCancelled(context)
         }
     }

@@ -190,7 +190,7 @@ internal class CoreDatagramChannel(
             is DatagramSend.NotSent.Unavailable.ConnectionEnded ->
                 when (val life = conn.life()) {
                     // Past the close point nothing more is sent, datagrams included.
-                    is Life.Closing -> raise(Raised.PastClose(endOf(life)), QuicCloseCircumstance.Closing)
+                    is Life.Closing -> raise(Raised.PastClose(endOf(life)), QuicCloseCircumstance.Ended)
                     is Life.Running, is Life.Over -> raiseEnded(sent.end, QuicCloseCircumstance.Ended)
                 }
         }

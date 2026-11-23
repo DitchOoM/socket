@@ -22,7 +22,7 @@ sealed interface StandbyLink {
      * On Android, keep cellular data attached while at least one connection with this policy is open,
      * move onto it as soon as the connection detects that its path has stopped answering, and move
      * back onto the platform's default link as soon as that link answers again. The core holds no standby link
-     * and refuses this with [QuicOptionRefusal.StandbyLinkNotHeld].
+     * and refuses this with [QuicRefusal.StandbyLinkNotHeld].
      *
      * **The way back.** The platform usually reports nothing when a link that went quiet for a few
      * seconds recovers, so the connection asks for itself: while it is on cellular and the platform

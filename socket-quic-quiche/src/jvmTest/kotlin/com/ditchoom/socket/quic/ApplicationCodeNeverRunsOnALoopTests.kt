@@ -90,7 +90,7 @@ class ApplicationCodeNeverRunsOnALoopTests {
                             connections {
                                 probe.note("server handler start")
                                 launch { probe.note("server connection-scope launch") }
-                                (this as QuicConnection).state.first { it is QuicConnectionState.Established }
+                                (this as QuicEngineConnection).state.first { it is QuicConnectionState.Established }
                                 probe.note("server after state collect")
                                 val stream = acceptStream()
                                 probe.note("server after acceptStream")
@@ -102,7 +102,7 @@ class ApplicationCodeNeverRunsOnALoopTests {
                                             probe.note("server after write")
                                         }
                                     probe.note("server after read")
-                                    if (r !is ScopedRead.Data) break
+                                    if (r !is ScopedReadResult.Data) break
                                 }
                                 stream.close()
                                 probe.note("server after close")
@@ -155,7 +155,7 @@ class ApplicationCodeNeverRunsOnALoopTests {
                         launch {
                             connections {
                                 val stream = acceptStream()
-                                while (stream.read(OP_DEADLINE) { stream.writeFully(it, OP_DEADLINE) } is ScopedRead.Data) Unit
+                                while (stream.read(OP_DEADLINE) { stream.writeFully(it, OP_DEADLINE) } is ScopedReadResult.Data) Unit
                                 stream.close()
                             }
                         }

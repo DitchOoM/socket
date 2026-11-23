@@ -4,7 +4,7 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.socket.quic.QuicError
-import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.ScopedReadResult
 import com.ditchoom.socket.quic.core.conn.CallerPlace
 import com.ditchoom.socket.quic.core.conn.Conn
 import com.ditchoom.socket.quic.core.conn.ConnWork
@@ -102,7 +102,12 @@ class CallerInPlaceTests {
                     withTimeout(10.seconds) {
                         val stream = client.connection.acceptStream()
                         while (received.size() < payload.size) {
-                            if (stream.read(10.seconds) { received.write(it.readByteArray(it.remaining())) } !is ScopedRead.Data<*>) break
+                            if (stream.read(
+                                    10.seconds,
+                                ) { received.write(it.readByteArray(it.remaining())) } !is ScopedReadResult.Data<*>
+                            ) {
+                                break
+                            }
                         }
                     }
                     println(

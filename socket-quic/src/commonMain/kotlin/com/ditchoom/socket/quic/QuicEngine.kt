@@ -13,12 +13,12 @@ import kotlin.time.Duration
  * explicit engine.
  *
  * **Lifecycle contract — the engine is a constructor, not a factory you babysit.** [connect] /
- * [bind] return a [QuicConnection] / [QuicServer] that has already completed its handshake / bind.
+ * [bind] return a [QuicEngineConnection] / [QuicServer] that has already completed its handshake / bind.
  * The *public* entry points are [withQuicConnection] / [withQuicServer], which own the lifecycle:
- * they call the engine, run your block, and [close][QuicConnection.close] in a `finally`. The
+ * they call the engine, run your block, and [close][QuicEngineConnection.close] in a `finally`. The
  * returned handle therefore never escapes as the primary API surface — there is no factory to leak
  * on a dropped error path. Calling [connect] / [bind] directly is the advanced escape hatch and
- * makes you responsible for [close][QuicConnection.close].
+ * makes you responsible for [close][QuicEngineConnection.close].
  */
 interface QuicEngine {
     /** What this engine supports, independent of any particular connection. */
@@ -26,8 +26,8 @@ interface QuicEngine {
 
     /**
      * Open a client QUIC connection to one [endpoint], presenting [serverName], suspending through the
-     * TLS 1.3 handshake. The returned [QuicConnection] is established; the caller (normally
-     * [withQuicConnection]) owns its [close][QuicConnection.close]. [timeout] bounds establishment.
+     * TLS 1.3 handshake. The returned [QuicEngineConnection] is established; the caller (normally
+     * [withQuicConnection]) owns its [close][QuicEngineConnection.close]. [timeout] bounds establishment.
      *
      * The endpoint and the name are two arguments because they answer two questions: where the
      * datagrams go, and who the peer has to prove it is. A candidate set is many endpoints and one
@@ -48,7 +48,7 @@ interface QuicEngine {
         quicOptions: QuicOptions,
         transport: TransportConfig,
         timeout: Duration,
-    ): QuicConnection
+    ): QuicEngineConnection
 
     /**
      * Open a client QUIC connection to [hostname]:[port], racing every address the name resolves to
@@ -61,7 +61,7 @@ interface QuicEngine {
         quicOptions: QuicOptions,
         transport: TransportConfig,
         timeout: Duration,
-    ): QuicConnection = connect(binding, QuicPeer.Named(hostname, port), quicOptions, transport, timeout)
+    ): QuicEngineConnection = connect(binding, QuicPeer.Named(hostname, port), quicOptions, transport, timeout)
 
     @Deprecated(
         "Superseded by QuicClientBinding, which also expresses a shared port.",
@@ -73,7 +73,7 @@ interface QuicEngine {
         quicOptions: QuicOptions,
         transport: TransportConfig,
         timeout: Duration,
-    ): QuicConnection = connect(QuicClientBinding.OwnSocket, hostname, port, quicOptions, transport, timeout)
+    ): QuicEngineConnection = connect(QuicClientBinding.OwnSocket, hostname, port, quicOptions, transport, timeout)
 
     /**
      * Bind a QUIC server according to [binding]: its own UDP port ([QuicPortBinding.Own]), or one

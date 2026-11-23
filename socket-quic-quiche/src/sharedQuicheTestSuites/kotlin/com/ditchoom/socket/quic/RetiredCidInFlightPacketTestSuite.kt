@@ -292,7 +292,7 @@ abstract class RetiredCidInFlightPacketTestSuite {
         return ConnectionIdKey.from(buf, offset = 0, length = cid.size)
     }
 
-    private fun ScopedRead<String>.text(): String = if (this is ScopedRead.Data) value else NO_DATA
+    private fun ScopedReadResult<String>.text(): String = if (this is ScopedReadResult.Data) value else NO_DATA
 
     private suspend fun QuicByteStream.writeString(
         payload: String,

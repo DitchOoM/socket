@@ -5,7 +5,7 @@ public final class com/ditchoom/socket/quic/DefaultQuicEngine_commonJvmKt {
 public final class com/ditchoom/socket/quic/QuicSessionTransport : com/ditchoom/socket/transport/SessionTransport {
 	public fun <init> (Lcom/ditchoom/socket/quic/QuicOptions;Lcom/ditchoom/socket/quic/QuicEngine;)V
 	public synthetic fun <init> (Lcom/ditchoom/socket/quic/QuicOptions;Lcom/ditchoom/socket/quic/QuicEngine;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
-	public fun close (Lcom/ditchoom/socket/quic/QuicConnection;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun close (Lcom/ditchoom/socket/quic/QuicEngineConnection;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public synthetic fun close (Ljava/lang/Object;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public fun establish (Ljava/lang/String;ILcom/ditchoom/socket/TransportConfig;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 }

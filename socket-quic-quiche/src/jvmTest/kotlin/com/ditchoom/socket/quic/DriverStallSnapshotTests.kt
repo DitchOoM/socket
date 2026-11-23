@@ -88,7 +88,7 @@ class DriverStallSnapshotTests {
                                 assertIs<QuicheTimer.Due>(held.quicheTimer, "an established connection's idle timer: $held")
 
                                 val read = stream.read(5.seconds) { it.readString(it.remaining(), Charset.UTF8) }
-                                assertEquals(ScopedRead.Data("held"), read)
+                                assertEquals(ScopedReadResult.Data("held"), read)
                                 val drained = snapshotOf(driver)
                                 assertTrue(stream.streamId.id !in drained.readable, "a read stream is no longer readable: $drained")
                             }

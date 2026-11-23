@@ -6,6 +6,7 @@ import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.quic.trace.QlogBudget
 import com.ditchoom.socket.quic.trace.QlogClosed
+import com.ditchoom.socket.quic.trace.QlogDeclaration
 import com.ditchoom.socket.quic.trace.QlogDirectory
 import com.ditchoom.socket.quic.trace.QlogEvent
 import com.ditchoom.socket.quic.trace.QlogPressure
@@ -47,7 +48,11 @@ abstract class QlogBudgetTestSuite {
     private fun captureInto(
         directory: QlogDirectory,
         name: String,
-    ): QuicTraceCapture = QuicTraceCapture(captureFor = { QuicConnectionCapture(TraceSink { }, QlogTarget.Budgeted(directory, name)) })
+    ): QuicTraceCapture =
+        QuicTraceCapture(
+            captureFor = { QuicConnectionCapture(TraceSink { }, QlogTarget.Budgeted(directory, name)) },
+            qlog = QlogDeclaration.Budgeted,
+        )
 
     /** A connection that echoes [echoes] times; the server echoes on the stream the client opens. */
     private suspend fun echoingConnection(

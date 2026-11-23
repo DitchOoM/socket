@@ -77,7 +77,12 @@ class AndroidQuicStreamReadMemorySoakTests {
                                         while (true) {
                                             // Echo inside the read scope: write takes no ownership,
                                             // the scope releases the read buffer on exit (#538).
-                                            if (stream.read(OP_DEADLINE) { stream.writeFully(it, OP_DEADLINE) } !is ScopedRead.Data) break
+                                            if (stream.read(
+                                                    OP_DEADLINE,
+                                                ) { stream.writeFully(it, OP_DEADLINE) } !is ScopedReadResult.Data
+                                            ) {
+                                                break
+                                            }
                                         }
                                     } finally {
                                         stream.close()
@@ -236,9 +241,9 @@ class AndroidQuicStreamReadMemorySoakTests {
         var received = 0
         while (received < PAYLOAD.length) {
             when (val chunk = read(OP_DEADLINE) { it.remaining() }) {
-                is ScopedRead.Data -> received += chunk.value
-                ScopedRead.End -> error("the peer finished the stream mid-soak after $received bytes of this round")
-                ScopedRead.Reset -> error("the peer reset the stream mid-soak after $received bytes of this round")
+                is ScopedReadResult.Data -> received += chunk.value
+                ScopedReadResult.End -> error("the peer finished the stream mid-soak after $received bytes of this round")
+                ScopedReadResult.Reset -> error("the peer reset the stream mid-soak after $received bytes of this round")
             }
         }
         return received

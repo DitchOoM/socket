@@ -58,7 +58,7 @@ class LoopThreadsEndWithTheirConnectionsTests {
                             launch {
                                 server.connections {
                                     val stream = acceptStream()
-                                    while (stream.read(10.seconds) { stream.writeFully(it, 5.seconds) } is ScopedRead.Data) Unit
+                                    while (stream.read(10.seconds) { stream.writeFully(it, 5.seconds) } is ScopedReadResult.Data) Unit
                                     stream.close()
                                 }
                             }

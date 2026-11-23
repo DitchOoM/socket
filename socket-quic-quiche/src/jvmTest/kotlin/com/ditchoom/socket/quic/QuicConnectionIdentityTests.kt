@@ -9,7 +9,7 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * Pins [QuicConnection.identity] against a real quiche connection.
+ * Pins [QuicEngineConnection.identity] against a real quiche connection.
  *
  * The property that matters is **not** that an id exists — it is that two connections alive at the
  * same moment can be told apart. That is the exact question consumer issue #1178 could not answer:

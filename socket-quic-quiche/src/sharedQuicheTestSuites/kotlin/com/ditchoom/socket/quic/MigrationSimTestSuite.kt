@@ -2885,7 +2885,7 @@ abstract class MigrationSimTestSuite {
      * **#453, end to end: one lost probe must not cost the connection — with no second network event.**
      *
      * The whole defect lived in the gap between two harnesses. `AutoMigrationReactorTests` drives the
-     * real reactor but against a [QuicConnection] double, so "the probe was lost" is a scripted
+     * real reactor but against a [QuicEngineConnection] double, so "the probe was lost" is a scripted
      * [MigrationResult] rather than a thing that happens; the sim drives real quiche but reached
      * migration only through [MigrationSimScope.migrate], so the *caller* was always the test. Neither
      * could express the field condition, which is about the reactor and the wire at once. This test is

@@ -6,7 +6,7 @@ import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicCloseReason
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicUnreadAtClose
-import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.ScopedReadResult
 import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.testing.coreTest
 import com.ditchoom.socket.quic.network
@@ -23,7 +23,7 @@ import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TimeSource
 
 /**
- * A core connection's [com.ditchoom.socket.quic.QuicConnection.unreadAtClose] tracks the connection: open while it is,
+ * A core connection's [com.ditchoom.socket.quic.QuicEngineConnection.unreadAtClose] tracks the connection: open while it is,
  * and settled once it ends, so `runUntilClosed` cancels a block on a connection the peer closed promptly instead of
  * waiting out its linger.
  */
@@ -76,7 +76,7 @@ class CoreUnreadAtCloseTests {
                 assertFailsWith<QuicCloseException> {
                     connection.runUntilClosed(LINGER) {
                         val stream = acceptStream()
-                        stream.read(10.seconds) { replied = it.readByte().toInt() }.also { assertIs<ScopedRead.Data<*>>(it) }
+                        stream.read(10.seconds) { replied = it.readByte().toInt() }.also { assertIs<ScopedReadResult.Data<*>>(it) }
                         awaitCancellation()
                     }
                 }

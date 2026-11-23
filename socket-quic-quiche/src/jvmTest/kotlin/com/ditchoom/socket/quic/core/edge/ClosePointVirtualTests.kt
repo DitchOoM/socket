@@ -10,7 +10,7 @@ import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicConnectionState
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicOptions
-import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.ScopedReadResult
 import com.ditchoom.socket.quic.core.demux.ServerPhase
 import com.ditchoom.socket.quic.core.life.CloseChoice
 import com.ditchoom.socket.quic.core.life.CloseOutcome
@@ -79,7 +79,7 @@ class ClosePointVirtualTests {
             assertEquals(accepted, received[0], "the peer received exactly the bytes accepted before the close point")
             for (writer in writers) {
                 assertTrue(writer.refusedAt in asked until asked + MS, "refused ${(writer.refusedAt - asked) / MS} ms after the close")
-                assertEquals(listOf<QuicCloseCircumstance>(QuicCloseCircumstance.Closing, QuicCloseCircumstance.Closing), writer.refusals)
+                assertEquals(listOf<QuicCloseCircumstance>(QuicCloseCircumstance.Ended, QuicCloseCircumstance.Ended), writer.refusals)
                 assertEquals(writer.refusedAt, writer.refusedAgainAt, "a write after the point is refused without waiting")
             }
         }
@@ -347,7 +347,7 @@ class ClosePointVirtualTests {
         got: LongArray,
     ) {
         try {
-            while (stream.read(1.hours) { got[0] += it.remaining() } is ScopedRead.Data<*>) Unit
+            while (stream.read(1.hours) { got[0] += it.remaining() } is ScopedReadResult.Data<*>) Unit
         } catch (ended: QuicCloseException) {
             // The connection ended under the read, with nothing more held for it.
         }

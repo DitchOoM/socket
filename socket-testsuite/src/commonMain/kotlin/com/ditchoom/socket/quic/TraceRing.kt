@@ -2,6 +2,7 @@
 
 package com.ditchoom.socket.quic
 
+import com.ditchoom.socket.quic.trace.QlogDeclaration
 import com.ditchoom.socket.quic.trace.QuicConnectionCapture
 import com.ditchoom.socket.quic.trace.QuicTraceCapture
 import com.ditchoom.socket.testkit.trace.TraceEvent
@@ -157,5 +158,12 @@ internal fun QuicOptions.withTraceRing(
             )
         }
     }
-    return copy(trace = QuicTraceCapture(factory, existing?.recordNetworkObservations ?: false))
+    return copy(
+        trace =
+            QuicTraceCapture(
+                factory,
+                existing?.qlog ?: QlogDeclaration.NotBudgeted,
+                existing?.recordNetworkObservations ?: false,
+            ),
+    )
 }

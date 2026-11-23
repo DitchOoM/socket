@@ -190,7 +190,7 @@ class UniStreamVirtualTests {
             launch { client.close(CloseChoice.Graceful(10.seconds.inWholeNanoseconds, DrainUntil.Acknowledged)) }
             pair.runUntil { waiting != null }
             assertTrue(pair.now() - asked < MS, "refused at the close point")
-            assertEquals(QuicCloseCircumstance.Closing, assertIs<QuicCloseException>(waiting).circumstance)
+            assertEquals(QuicCloseCircumstance.Ended, assertIs<QuicCloseException>(waiting).circumstance)
         }
 
     /**

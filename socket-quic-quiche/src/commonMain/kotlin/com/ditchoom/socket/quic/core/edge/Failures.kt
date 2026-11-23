@@ -7,14 +7,13 @@ import com.ditchoom.socket.ServerCertificateRejectedException
 import com.ditchoom.socket.ServerCertificateRejection
 import com.ditchoom.socket.quic.NativeSocketRefusal
 import com.ditchoom.socket.quic.NetworkRefusal
-import com.ditchoom.socket.quic.PinnedRadioRefusedException
 import com.ditchoom.socket.quic.QuicAccessDenial
 import com.ditchoom.socket.quic.QuicAppErrorCode
 import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicConnectionEnd
 import com.ditchoom.socket.quic.QuicNativeMemoryRequiredException
-import com.ditchoom.socket.quic.QuicOptionNotHonouredException
+import com.ditchoom.socket.quic.QuicRefusedException
 import com.ditchoom.socket.quic.QuicStreamAbort
 import com.ditchoom.socket.quic.QuicStreamClosedException
 import com.ditchoom.socket.quic.QuicStreamException
@@ -22,6 +21,7 @@ import com.ditchoom.socket.quic.QuicStreamId
 import com.ditchoom.socket.quic.QuicStreamReadError
 import com.ditchoom.socket.quic.QuicStreamReadException
 import com.ditchoom.socket.quic.QuicStreamSide
+import com.ditchoom.socket.quic.QuicStreamsAlreadyHandledException
 import com.ditchoom.socket.quic.QuicWriteTarget
 import com.ditchoom.socket.quic.RouteProbeFailure
 import com.ditchoom.socket.quic.UnresolvedRouteSourceException
@@ -56,10 +56,7 @@ internal sealed interface Raised : OpFailure {
         val end: ConnEnd,
     ) : Raised
 
-    /**
-     * A write, an open or a datagram came after the close point of a close that ends with [end]: nothing more of it was
-     * accepted. A typed frame cut short there resets its stream.
-     */
+    /** A write, an open or a datagram came after the close point of a close that ends with [end]; a typed frame cut short resets its stream. */
     class PastClose(
         val end: ConnEnd,
     ) : Raised
@@ -118,6 +115,9 @@ internal sealed interface Raised : OpFailure {
     /** The connect was given a set of loops that has been closed. */
     data object LoopsClosed : Raised
 
+    /** A second call asked to handle a connection's streams while a first still does. */
+    data object StreamsHandled : Raised
+
     /** The native stack could not open the socket or the loop's poller. */
     class SocketRefused(
         val refusal: NativeSocketRefusal,
@@ -170,8 +170,7 @@ internal fun raiseFailure(
 internal fun OptionVerdict.orRefuse() {
     when (this) {
         is OptionVerdict.Honoured -> Unit
-        is OptionVerdict.Refused -> throw QuicOptionNotHonouredException(refusal)
-        is OptionVerdict.PinRefused -> throw PinnedRadioRefusedException(radio, refusal)
+        is OptionVerdict.Refused -> throw QuicRefusedException(refusal)
     }
 }
 
@@ -204,7 +203,7 @@ private fun exceptionOf(
 ): Exception =
     when (failure) {
         is Raised.ConnEnded -> closeOf(failure.end, during)
-        is Raised.PastClose -> QuicCloseException(end = publicEndOf(failure.end), circumstance = QuicCloseCircumstance.Closing)
+        is Raised.PastClose -> QuicCloseException(end = publicEndOf(failure.end), circumstance = QuicCloseCircumstance.Ended)
         is Raised.WriteRefused ->
             when (failure.code) {
                 QUICHE_ERR_STREAM_STOPPED -> QuicStreamException(failure.stream.id, QuicStreamAbort.StopSending(failure.peer))
@@ -235,6 +234,7 @@ private fun exceptionOf(
         is Raised.RouteUnresolved -> UnresolvedRouteSourceException(failure.reason)
         is Raised.ChainRefused -> ServerCertificateRejectedException(failure.rejection)
         is Raised.LoopsClosed -> CoreLoopsClosed()
+        is Raised.StreamsHandled -> QuicStreamsAlreadyHandledException()
         is Raised.SocketRefused -> failure.refusal
         is Raised.SpecLayoutRefused -> CoreSpecLayoutMismatch(failure.mismatch)
         is Raised.NetworkRefused -> failure.refusal

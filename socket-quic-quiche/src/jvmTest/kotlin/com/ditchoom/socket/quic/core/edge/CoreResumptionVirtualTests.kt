@@ -18,7 +18,7 @@ import com.ditchoom.socket.quic.QuicSessionTicket
 import com.ditchoom.socket.quic.QuicSessionTicketKeys
 import com.ditchoom.socket.quic.QuicSessionTicketState
 import com.ditchoom.socket.quic.QuicStreamOrigin
-import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.ScopedReadResult
 import com.ditchoom.socket.quic.read
 import com.ditchoom.socket.quic.replay.conditions.REPLAY_DEADLINE
 import kotlinx.coroutines.CompletableDeferred
@@ -246,8 +246,8 @@ class CoreResumptionVirtualTests {
         val out = StringBuilder()
         while (true) {
             when (val chunk = read(REPLAY_DEADLINE) { it.readString(it.remaining(), Charset.UTF8) }) {
-                is ScopedRead.Data -> out.append(chunk.value)
-                ScopedRead.End, ScopedRead.Reset -> return out.toString()
+                is ScopedReadResult.Data -> out.append(chunk.value)
+                ScopedReadResult.End, ScopedReadResult.Reset -> return out.toString()
             }
         }
     }

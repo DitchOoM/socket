@@ -7,6 +7,7 @@ import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.core.demux.withCoreEchoServer
 import com.ditchoom.socket.quic.network
 import com.ditchoom.socket.quic.skipOnMissingNativeLib
+import com.ditchoom.socket.quic.trace.QlogDeclaration
 import com.ditchoom.socket.quic.trace.QlogTarget
 import com.ditchoom.socket.quic.trace.QuicConnectionCapture
 import com.ditchoom.socket.quic.trace.QuicTraceCapture
@@ -38,6 +39,7 @@ class CoreQlogTests {
                 val capture =
                     QuicTraceCapture(
                         captureFor = { QuicConnectionCapture(sink = TraceSink { }, qlog = QlogTarget.File(clientQlog.absolutePath)) },
+                        qlog = QlogDeclaration.NotBudgeted,
                     )
                 val accepted = CompletableDeferred<CoreConnection>()
                 withQlogDir(serverDir) {

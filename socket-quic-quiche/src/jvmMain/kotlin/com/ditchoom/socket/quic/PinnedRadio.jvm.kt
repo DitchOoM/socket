@@ -11,4 +11,4 @@ internal actual suspend fun pinnedRadioOpener(
     radio: NetworkKind.Radio,
     bound: Duration,
     lifetime: Job,
-): ConnectedUdpOpener = throw PinnedRadioRefusedException(radio, PinnedRadioRefusal.EngineCannotPin)
+): ConnectedUdpOpener = throw notPinnable(radio, PinnedRadioRefusal.EngineCannotPin)

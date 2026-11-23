@@ -82,8 +82,8 @@ sealed interface QuicCloseLinger {
     /**
      * Hold the CONNECTION_CLOSE until the peer has acknowledged everything the connection wrote on its
      * streams — every byte and every FIN — or until the connection ends on its own, whichever comes first.
-     * On the core engine it waits at most ten seconds, and a write after the close is refused with
-     * [QuicCloseCircumstance.Closing]; on the legacy driver, at most the connection's
+     * On the core engine it waits at most ten seconds, and a write after the close is refused at
+     * once; on the legacy driver, at most the connection's
      * [QuicOptions.idleTimeout].
      *
      * It returns as soon as delivery is done: the limit is a cap for a peer that stops acknowledging,
@@ -300,7 +300,7 @@ data class QuicOptions(
     val migration: MigrationPolicy = MigrationPolicy.Automatic,
     /**
      * Which [com.ditchoom.socket.NetworkMonitor] this connection observes — for
-     * [MigrationPolicy.Automatic], for [QuicConnection.networkAtClose], and for the trace's NET/NET_CAP
+     * [MigrationPolicy.Automatic], for [QuicEngineConnection.networkAtClose], and for the trace's NET/NET_CAP
      * lines when [trace] asks for them. Resolved **once per connection** and shared by all three, so the
      * observation sequence they report indexes one stream rather than three unrelated ones.
      *
@@ -465,7 +465,7 @@ data class QuicOptions(
     /**
      * **Client-side, under [MigrationPolicy.Automatic]**: whether a second link is kept attached for a
      * dead path to move onto. Defaults to [StandbyLink.OnDemand]; the core refuses [StandbyLink.KeepCellularReady] with
-     * [QuicOptionRefusal.StandbyLinkNotHeld]. Ignored
+     * [QuicRefusal.StandbyLinkNotHeld]. Ignored
      * for the server role and under every other [MigrationPolicy], none of which migrates on its own.
      */
     val standbyLink: StandbyLink = StandbyLink.OnDemand,

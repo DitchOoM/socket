@@ -8,7 +8,7 @@ import com.ditchoom.socket.quic.FlowControl
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicCloseException
-import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.ScopedReadResult
 import com.ditchoom.socket.quic.core.life.CloseChoice
 import com.ditchoom.socket.quic.core.life.CloseOutcome
 import com.ditchoom.socket.quic.core.life.DrainUntil
@@ -35,7 +35,7 @@ import kotlin.time.TimeSource
 /**
  * A graceful close with writers on other threads parked mid-write, over a real loopback socket, on every platform: the
  * close returns well inside its limit, the peer receives exactly the bytes accepted before the close point, and every
- * write parked at the close point is refused with [QuicCloseCircumstance.Closing].
+ * write parked at the close point is refused with [QuicCloseCircumstance.Ended].
  */
 class CoreClosePointTests {
     private val loops = LoopSet(1)
@@ -57,7 +57,12 @@ class CoreClosePointTests {
                     launch {
                         try {
                             closing.await()
-                            while (stream.read(10.seconds) { received.addAndFetch(it.remaining().toLong()) } is ScopedRead.Data<*>) Unit
+                            while (stream.read(
+                                    10.seconds,
+                                ) { received.addAndFetch(it.remaining().toLong()) } is ScopedReadResult.Data<*>
+                            ) {
+                                Unit
+                            }
                         } catch (ended: QuicCloseException) {
                             // The connection ended with nothing more held for this stream.
                         } finally {
@@ -92,7 +97,7 @@ class CoreClosePointTests {
                 assertSame(CloseOutcome.Drained, outcome, "everything accepted before the close point was acknowledged")
                 assertTrue(took < LIMIT, "close returned in $took; its limit is $LIMIT")
                 for (writer in written) {
-                    assertEquals<QuicCloseCircumstance>(QuicCloseCircumstance.Closing, writer.refusal, "a write parked at the close point")
+                    assertEquals<QuicCloseCircumstance>(QuicCloseCircumstance.Ended, writer.refusal, "a write parked at the close point")
                 }
                 val accepted = written.sumOf { it.accepted } + WRITERS
                 assertTrue(written.all { it.accepted > 0 }, "every writer wrote before the close")

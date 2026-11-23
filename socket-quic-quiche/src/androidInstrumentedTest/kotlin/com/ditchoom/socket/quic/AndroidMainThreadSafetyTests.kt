@@ -213,7 +213,7 @@ class AndroidMainThreadSafetyTests {
                         val reply = StringBuilder()
                         while (reply.length < "echo:hello".length) {
                             val read = stream.read(5.seconds) { it.readString(it.remaining(), Charset.UTF8) }
-                            reply.append(assertIs<ScopedRead.Data<String>>(read).value)
+                            reply.append(assertIs<ScopedReadResult.Data<String>>(read).value)
                         }
                         assertEquals("echo:hello", reply.toString())
                         stream.close()

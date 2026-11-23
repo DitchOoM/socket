@@ -28,6 +28,17 @@ internal sealed interface HandlerClaim {
     data object Refused : HandlerClaim
 }
 
+/** What [HandlerSeat.enter] answered. */
+internal sealed interface LaneEntry {
+    /** The caller's block runs on [lane], the pool entered for it; it calls [HandlerSeat.left] after. */
+    class Entered(
+        val lane: HandlerLane,
+    ) : LaneEntry
+
+    /** The endpoint stopped: no block is placed. */
+    data object Refused : LaneEntry
+}
+
 /** Whether a connection has its lane yet, and whether its streams are handled. */
 private sealed interface Seat {
     data object Empty : Seat
@@ -80,6 +91,24 @@ internal class HandlerSeat(
                 }
             if (seat.compareAndSet(now, Seat.Handling(lane))) return HandlerClaim.Claimed(lane)
             pool.leave()
+        }
+    }
+
+    /** Any thread: the connection's lane for a block of the caller's, made if this is its first application code. */
+    fun enter(): LaneEntry {
+        when (pool.enter()) {
+            Entered.Entered -> Unit
+            Entered.Refused -> return LaneEntry.Refused
+        }
+        while (true) {
+            when (val now = seat.load()) {
+                is Seat.Laned -> return LaneEntry.Entered(now.lane)
+                is Seat.Handling -> return LaneEntry.Entered(now.lane)
+                is Seat.Empty -> {
+                    val lane = pool.lane(outbox, connection)
+                    if (seat.compareAndSet(now, Seat.Laned(lane))) return LaneEntry.Entered(lane)
+                }
+            }
         }
     }
 

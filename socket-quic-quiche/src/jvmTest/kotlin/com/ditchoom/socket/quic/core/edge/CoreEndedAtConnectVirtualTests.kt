@@ -12,7 +12,7 @@ import com.ditchoom.socket.quic.QuicStatsRead
 import com.ditchoom.socket.quic.QuicUnreadAtClose
 import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.QuicheConn
-import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.ScopedReadResult
 import com.ditchoom.socket.quic.ServerCertVerdict
 import com.ditchoom.socket.quic.ServerCertVerifier
 import com.ditchoom.socket.quic.core.conn.HandshakeFate
@@ -171,7 +171,7 @@ class CoreEndedAtConnectVirtualTests {
                 val stream = client.acceptStream()
                 var read = 0
                 try {
-                    while (stream.read(1.hours) { read += it.remaining() } is ScopedRead.Data<*>) Unit
+                    while (stream.read(1.hours) { read += it.remaining() } is ScopedReadResult.Data<*>) Unit
                 } catch (closed: QuicCloseException) {
                     // The server never finished the stream: after what was held, the read meets the close.
                 }

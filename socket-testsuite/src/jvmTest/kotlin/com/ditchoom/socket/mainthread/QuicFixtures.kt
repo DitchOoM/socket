@@ -11,7 +11,7 @@ import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicScope
 import com.ditchoom.socket.quic.QuicServer
 import com.ditchoom.socket.quic.QuicTlsConfig
-import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.ScopedReadResult
 import com.ditchoom.socket.quic.read
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -59,7 +59,7 @@ internal object QuicFixtures {
         val reply = StringBuilder()
         while (reply.length < "echo:hello".length) {
             val read = stream.read(5.seconds) { it.readString(it.remaining(), Charset.UTF8) }
-            reply.append(assertIs<ScopedRead.Data<String>>(read).value)
+            reply.append(assertIs<ScopedReadResult.Data<String>>(read).value)
         }
         if (checkThread) assertOnMainLike("stream read")
         assertEquals("echo:hello", reply.toString())

@@ -15,11 +15,12 @@ import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicPathState
-import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.ScopedReadResult
 import com.ditchoom.socket.quic.UnresolvedRouteSourceException
 import com.ditchoom.socket.quic.describe
 import com.ditchoom.socket.quic.read
 import com.ditchoom.socket.quic.trace.QlogBudget
+import com.ditchoom.socket.quic.trace.QlogDeclaration
 import com.ditchoom.socket.quic.trace.QlogDirectory
 import com.ditchoom.socket.quic.trace.QlogTarget
 import com.ditchoom.socket.quic.trace.QuicConnectionCapture
@@ -465,6 +466,7 @@ object IosHandoffProbe {
                                     },
                             )
                         },
+                        qlog = QlogDeclaration.NotBudgeted,
                         // The connectivity stream is half of every migration question — which trigger
                         // fired, and whether the platform had even noticed the link yet.
                         recordNetworkObservations = true,
@@ -950,9 +952,9 @@ private class QuicEchoStream(
     override suspend fun read(deadline: Duration): StreamReply =
         try {
             when (val resp = stream.read(deadline) { it.readString(it.remaining(), Charset.UTF8) }) {
-                is ScopedRead.Data -> StreamReply.Echoed(resp.value)
-                ScopedRead.End -> StreamReply.PeerEnded
-                ScopedRead.Reset -> StreamReply.PeerReset
+                is ScopedReadResult.Data -> StreamReply.Echoed(resp.value)
+                ScopedReadResult.End -> StreamReply.PeerEnded
+                ScopedReadResult.Reset -> StreamReply.PeerReset
             }
         } catch (e: TimeoutCancellationException) {
             // The deadline is where "late" begins, not where an exchange fails: the reply is still

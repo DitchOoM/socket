@@ -84,6 +84,47 @@ internal class SendHalf(
         return finishing(source, deadline)
     }
 
+    /** One [write] with its answer as a value: [buffer] moved past what quiche took. */
+    suspend fun writeSettled(
+        buffer: ReadBuffer,
+        deadline: Duration,
+    ): WriteAnswer {
+        if (use.load() != Sending.Open) raise(Raised.StreamClosed(id, QuicStreamSide.Write), QuicCloseCircumstance.Ended)
+        val address = addressOf(buffer)
+        if (buffer.remaining() == 0) return WriteAnswer.Written
+        return connection.submitted(id, WriteSource.Bytes(buffer, address, WriteEnd.More), deadline).settled()
+    }
+
+    /** [writeAndFinish] with its answer as a value. */
+    suspend fun finishSettled(
+        buffer: ReadBuffer,
+        deadline: Duration,
+    ): WriteAnswer {
+        val address = addressOf(buffer)
+        return finishingSettled(
+            if (buffer.remaining() == 0) WriteSource.FinOnly else WriteSource.Bytes(buffer, address, WriteEnd.Finish),
+            deadline,
+        )
+    }
+
+    /** Our FIN alone, with its answer as a value. */
+    suspend fun finSettled(): WriteAnswer = finishingSettled(WriteSource.FinOnly, deadlineOf(writePolicy))
+
+    private suspend fun finishingSettled(
+        source: WriteSource,
+        deadline: Duration,
+    ): WriteAnswer {
+        if (!use.compareAndSet(Sending.Open, Sending.Finishing)) {
+            raise(Raised.StreamClosed(id, QuicStreamSide.Write), QuicCloseCircumstance.Ended)
+        }
+        val op = connection.submitted(id, source, deadline)
+        try {
+            return op.settled()
+        } finally {
+            settled(op.fin())
+        }
+    }
+
     /**
      * Ends this half with our FIN. A half already finished or reset is left as it is; one whose finishing write is out
      * gets its FIN once that write answers, unless the write ended the half itself.
@@ -155,6 +196,12 @@ internal class ReceiveHalf(
     suspend fun read(deadline: Duration): ReadResult {
         if (use.load() == Receiving.Closed) raise(Raised.StreamClosed(id, QuicStreamSide.Read), QuicCloseCircumstance.Ended)
         return connection.read(id, deadline, streamReads)
+    }
+
+    /** One [read] with its answer as a value. */
+    suspend fun take(deadline: Duration): ReadAnswer {
+        if (use.load() == Receiving.Closed) raise(Raised.StreamClosed(id, QuicStreamSide.Read), QuicCloseCircumstance.Ended)
+        return connection.taken(id, deadline, streamReads)
     }
 
     /** Reads no more: what still arrives is dropped, and the peer is not told to stop. */

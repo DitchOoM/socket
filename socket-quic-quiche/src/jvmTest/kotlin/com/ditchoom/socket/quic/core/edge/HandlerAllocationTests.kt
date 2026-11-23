@@ -6,7 +6,7 @@ import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicError
-import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.ScopedReadResult
 import com.ditchoom.socket.quic.core.demux.SERVER_LOOP_THREAD
 import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.testing.allocationSamples
@@ -126,7 +126,7 @@ class HandlerAllocationTests {
             skipOnMissingNativeLib(HandlerAllocationTests::class) {
                 withCoreServer(onConnection = { connection ->
                     connection.handleStreams { stream ->
-                        while (stream.read(10.seconds) { stream.writeFully(it, 10.seconds) } is ScopedRead.Data<*>) Unit
+                        while (stream.read(10.seconds) { stream.writeFully(it, 10.seconds) } is ScopedReadResult.Data<*>) Unit
                         stream.close()
                     }
                 }) { server ->

@@ -91,7 +91,7 @@ class AndroidQuicConnectivityTests {
                 stream.write(sendBuf, 5.seconds)
 
                 val response = stream.read(5.seconds) { it.remaining() }
-                assertIs<ScopedRead.Data<Int>>(response)
+                assertIs<ScopedReadResult.Data<Int>>(response)
 
                 stream.close()
             }
@@ -105,7 +105,7 @@ class AndroidQuicConnectivityTests {
         // Scoped read (#538): decode inside the block, buffer released on the way out — read
         // transfers ownership and no collector will reclaim what a pool never gets back.
         val resp = read(5.seconds) { it.readString(it.remaining(), Charset.UTF8) }
-        return if (resp is ScopedRead.Data) resp.value else "no_data"
+        return if (resp is ScopedReadResult.Data) resp.value else "no_data"
     }
 
     /**

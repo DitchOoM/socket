@@ -153,7 +153,7 @@ class QuicTransportTest {
             quicOptions: QuicOptions,
             transport: TransportConfig,
             timeout: kotlin.time.Duration,
-        ): QuicConnection {
+        ): QuicEngineConnection {
             lastBinding = binding
             return FakeQuicConnection(openStreamDelegate).also { connection = it }
         }
@@ -168,7 +168,7 @@ class QuicTransportTest {
 
     private class FakeQuicConnection(
         private val openStreamDelegate: ByteStream?,
-    ) : QuicConnection {
+    ) : QuicEngineConnection {
         private val job = SupervisorJob()
         override val coroutineContext: CoroutineContext = job + Dispatchers.Default
         override val bufferFactory: BufferFactory = BufferFactory.Default

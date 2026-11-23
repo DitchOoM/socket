@@ -315,7 +315,7 @@ class QuicheDriver(
             if (api.connStreamDataUnacknowledged(conn)) SentStreamData.AwaitingAcknowledgement else SentStreamData.Acknowledged
     }
 
-    /** [QuicConnection.unreadAtClose] for every connection this driver backs; settled in [transitionToClosed]. */
+    /** [QuicEngineConnection.unreadAtClose] for every connection this driver backs; settled in [transitionToClosed]. */
     val unreadAtClose: StateFlow<QuicUnreadAtClose> = _unreadAtClose
 
     /**
@@ -922,7 +922,7 @@ class QuicheDriver(
      * buffer stays mapped for the life of the process, no collector involved. Even the collector-owned
      * `BufferFactory.Default` only substitutes one unbounded growth for another: the collector
      * schedules itself on managed-heap pressure, which a pointer-sized wrapper in front of 64 KB does
-     * not produce. The scoped `read(deadline) { … }` (`ScopedRead`, in `:socket-quic`) is what makes the
+     * not produce. The scoped `read(deadline) { … }` (`ScopedReadResult`, in `:socket-quic`) is what makes the
      * release automatic.
      *
      * MultiThreaded mode: stream readers acquire on their own coroutines; consumers release on
@@ -3203,7 +3203,7 @@ class QuicheDriver(
     /**
      * The handshake's negotiated ALPN protocol (`quiche_conn_application_proto`), read once at the
      * Handshaking→Established edge and published in [QuicConnectionState.Established] — the value
-     * behind [QuicConnection.negotiatedAlpn] and the server-side ALPN demux (`connectionsByAlpn`).
+     * behind [QuicEngineConnection.negotiatedAlpn] and the server-side ALPN demux (`connectionsByAlpn`).
      * Empty when the backend does not expose it (a [QuicheApi] test double using the interface
      * default). RFC 7301 caps an identifier at 255 bytes, so one fixed allocation never re-tries.
      */

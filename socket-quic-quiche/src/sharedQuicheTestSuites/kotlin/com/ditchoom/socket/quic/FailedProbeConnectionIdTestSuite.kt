@@ -218,7 +218,7 @@ abstract class FailedProbeConnectionIdTestSuite {
             else -> "not a CID-pool failure; see the result"
         }
 
-    private fun ScopedRead<String>.text(): String = if (this is ScopedRead.Data) value else NO_DATA
+    private fun ScopedReadResult<String>.text(): String = if (this is ScopedReadResult.Data) value else NO_DATA
 
     private suspend fun QuicByteStream.writeString(
         payload: String,

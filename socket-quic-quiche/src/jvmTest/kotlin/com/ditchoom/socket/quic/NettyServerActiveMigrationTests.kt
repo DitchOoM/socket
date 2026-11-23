@@ -6,6 +6,7 @@ import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.socket.quic.trace.QlogDeclaration
 import com.ditchoom.socket.quic.trace.QlogTarget
 import com.ditchoom.socket.quic.trace.QuicConnectionCapture
 import com.ditchoom.socket.quic.trace.QuicTraceCapture
@@ -317,6 +318,7 @@ class NettyServerActiveMigrationTests {
                                 qlog = QlogTarget.File(qlog.path),
                             )
                         },
+                        qlog = QlogDeclaration.NotBudgeted,
                     ),
             )
 
