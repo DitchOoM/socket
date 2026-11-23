@@ -7,6 +7,7 @@ import com.ditchoom.socket.quic.core.pool.FixedPool
 import com.ditchoom.socket.quic.core.pool.MemoryHold
 import com.ditchoom.socket.quic.core.ready.NetStack
 import com.ditchoom.socket.quic.core.sched.CallerLanes
+import com.ditchoom.socket.quic.core.sched.PoolSlot
 import com.ditchoom.socket.quic.core.time.WaitResolution
 import com.ditchoom.socket.quic.core.udp.Addressed
 import com.ditchoom.socket.quic.core.udp.BatchLimits
@@ -74,4 +75,6 @@ internal class RunningLoop(
     val lanes: CallerLanes,
     /** What its client connections copy a session ticket or token through. */
     val sessions: FixedPool<SessionScratch>,
+    /** The threads that run its connections' handlers: its set's, made by the first connection that runs any. */
+    val handlers: PoolSlot,
 )

@@ -3,6 +3,7 @@ package com.ditchoom.socket.quic.core.demux
 import com.ditchoom.socket.quic.core.conn.AckRule
 import com.ditchoom.socket.quic.core.conn.FlightSize
 import com.ditchoom.socket.quic.core.conn.LoopMemory
+import com.ditchoom.socket.quic.core.sched.HandlerPool
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.seconds
@@ -65,4 +66,6 @@ internal class ServerConfig(
     val flightArenaBytes: Int = LoopMemory.ARENA_BYTES,
     /** When each accepted connection writes the ACK it owes. */
     val ack: AckRule = AckRule.UntilPassEnds,
+    /** A handler step that holds a thread of the server's pool longer than this is reported, and only reported. */
+    val handlerStallBound: Duration = HandlerPool.DEFAULT_STALL_BOUND,
 )

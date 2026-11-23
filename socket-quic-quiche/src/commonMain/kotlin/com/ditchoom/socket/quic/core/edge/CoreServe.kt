@@ -19,6 +19,7 @@ import com.ditchoom.socket.quic.core.observe.Published
 import com.ditchoom.socket.quic.core.observe.ServerCounts
 import com.ditchoom.socket.quic.core.ready.NetStack
 import com.ditchoom.socket.quic.core.ready.netStackOfThisRuntime
+import com.ditchoom.socket.quic.core.sched.HandlerPool
 import com.ditchoom.socket.quic.core.sched.LoopPort
 import com.ditchoom.socket.quic.core.sched.LoopWork
 import com.ditchoom.socket.quic.core.sched.SendRule
@@ -60,10 +61,16 @@ internal class CoreServer(
     /** The socket's granted buffer sizes, and its drop count on demand. */
     val socket: SocketReport,
     private val stopped: CompletableDeferred<Unit>,
+    /** The threads its connections' application code runs on. */
+    val handlers: HandlerPool,
 ) {
     private val closing = CloseCell(ShutServer(parts, stopped))
 
-    /** The next established connection; a closed-channel exception once the server stopped. */
+    /**
+     * The next established connection; a closed-channel exception once the server stopped. Each connection is offered from
+     * its own lane of the server's pool, so connections are accepted in an order that may differ from the one they were
+     * established in.
+     */
     suspend fun accept(): CoreConnection = accepted.receive()
 
     fun connections(): Flow<CoreConnection> = accepted.consumeAsFlow()
@@ -155,3 +162,6 @@ internal suspend fun coreServe(
 
 /** The name of the server loop's thread. */
 internal const val SERVER_THREAD = "quic-core-server"
+
+/** The prefix of the names of a server's handler threads; the thread's number follows. */
+internal const val SERVER_HANDLER_THREAD = "quic-core-server-handler"

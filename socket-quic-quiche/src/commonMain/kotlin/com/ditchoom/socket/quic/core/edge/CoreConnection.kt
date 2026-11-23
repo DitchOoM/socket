@@ -56,7 +56,7 @@ import kotlin.time.Duration
  */
 internal class CoreConnection(
     private val conn: Conn,
-    private val edge: EdgeState,
+    internal val edge: EdgeState,
     override val bufferFactory: BufferFactory,
     override val remoteAddress: SocketAddress,
     override val identity: QuicConnectionIdentity,
@@ -65,6 +65,7 @@ internal class CoreConnection(
     /** How long an open waits at the peer's stream limit. */
     private val openBound: Duration,
     scope: CoroutineScope,
+    internal val handlers: HandlerSeat,
 ) : QuicConnection,
     CoroutineScope by scope {
     override val state: StateFlow<QuicConnectionState> = edge.state

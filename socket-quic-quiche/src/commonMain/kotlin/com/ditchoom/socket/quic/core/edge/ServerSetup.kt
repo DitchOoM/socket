@@ -3,19 +3,14 @@ package com.ditchoom.socket.quic.core.edge
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.WritePolicy
-import com.ditchoom.buffer.use
-import com.ditchoom.socket.quic.ApiQuicConfigCalls
 import com.ditchoom.socket.quic.NativeSocketRefusal
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicOptions
-import com.ditchoom.socket.quic.QuicRole
 import com.ditchoom.socket.quic.QuicTlsConfig
 import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.QuicheConfig
 import com.ditchoom.socket.quic.UdpBatching
-import com.ditchoom.socket.quic.applyQuicOptions
-import com.ditchoom.socket.quic.applySessionTicketKeys
 import com.ditchoom.socket.quic.core.conn.FlightArena
 import com.ditchoom.socket.quic.core.conn.LoopMemory
 import com.ditchoom.socket.quic.core.conn.MismatchResponse
@@ -52,6 +47,8 @@ import com.ditchoom.socket.quic.core.ready.jdkPoller
 import com.ditchoom.socket.quic.core.sched.CallerLanes
 import com.ditchoom.socket.quic.core.sched.CallerSend
 import com.ditchoom.socket.quic.core.sched.Entrant
+import com.ditchoom.socket.quic.core.sched.HandlerPool
+import com.ditchoom.socket.quic.core.sched.HandlerThreads
 import com.ditchoom.socket.quic.core.sched.SendPort
 import com.ditchoom.socket.quic.core.sched.SendRule
 import com.ditchoom.socket.quic.core.sched.callerLanesOf
@@ -71,9 +68,7 @@ import com.ditchoom.socket.quic.core.udp.SendBatch
 import com.ditchoom.socket.quic.core.udp.SocketBuffers
 import com.ditchoom.socket.quic.core.udp.SocketPeer
 import com.ditchoom.socket.quic.core.udp.SocketReport
-import com.ditchoom.socket.quic.encodeAlpnList
 import com.ditchoom.socket.quic.encodeToNative
-import com.ditchoom.socket.quic.keyLogDirectory
 import com.ditchoom.socket.quic.newConnectionIdRandom
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Runnable
@@ -100,6 +95,19 @@ internal class ServerSetup(
 ) {
     /** The memory this server holds from [factory]: freed by the setup's [SetupOwner] until the loop is built, then by the loop. */
     private val memory = EdgeMemory(factory)
+
+    /** The threads that run the server's application code: started off the loop when its first connection is offered. */
+    private val handlers =
+        when (driver) {
+            LoopDriver.OwnThread ->
+                HandlerPool(
+                    HandlerThreads.Own(HandlerPool.SERVER_THREADS),
+                    SERVER_HANDLER_THREAD,
+                    ::poolContained,
+                    config.handlerStallBound,
+                )
+            LoopDriver.Caller -> HandlerPool(HandlerThreads.ByLoopCaller, SERVER_HANDLER_THREAD, ::poolContained, config.handlerStallBound)
+        }
 
     fun start(): CoreServer {
         var owner: SetupOwner = SetupOwner.Allocating(memory)
@@ -156,7 +164,7 @@ internal class ServerSetup(
         moved(SetupOwner.Polled(memory, poller))
         val quicheConfig = api.configNew(QUIC_V1)
         moved(SetupOwner.Configured(memory, poller, quicheConfig))
-        configure(quicheConfig)
+        configureServer(api, quicheConfig, tls, options, factory, handshake)
         val socket = openStackSocket(loopIo, memory, bind, SocketPeer.Unconnected, buffers, batching, limits.maxDatagrams)
         val socketIo = socket.ioOf(listOf(send.storage) + lanes.storages(), MAX_PEERS_CACHED, PeerKeys.SERVER_SETS) { }
         moved(SetupOwner.Opened(memory, poller, quicheConfig, socketIo.io))
@@ -211,7 +219,7 @@ internal class ServerSetup(
         val sendPort = SendPort(io, loop.port, lanes, SocketDiedNotice(), loop.counts, loop.callerCounts)
         val counts = ServerCounts()
         val accepted = Channel<CoreConnection>(Channel.UNLIMITED)
-        val edge = ServerEdge(options, factory, readPolicy, writePolicy, accepted, keyLogDirectory(), counts)
+        val edge = ServerEdge(options, factory, readPolicy, writePolicy, accepted, counts, HandlerSeats(handlers, loop.handlers))
         val parts =
             ServerParts(
                 SlotRules.forWaits(
@@ -246,6 +254,7 @@ internal class ServerSetup(
         val finished =
             Runnable {
                 accepted.close()
+                handlers.stop()
                 stopped.complete(Unit)
             }
         val readiness =
@@ -263,7 +272,7 @@ internal class ServerSetup(
             // The caller's first pass would place the socket only after that pass's receive: place it now.
             LoopDriver.Caller -> loop.pass(clock.now())
         }
-        return CoreServer(localKey.port, loop, demux, counts, accepted, SocketReport(socket.granted(), localKey.port), stopped)
+        return CoreServer(localKey.port, loop, demux, counts, accepted, SocketReport(socket.granted(), localKey.port), stopped, handlers)
     }
 
     /** A chunk of the Initial backlog: at setup, then on the loop thread, which owns [memory] from its start. */
@@ -275,16 +284,6 @@ internal class ServerSetup(
 
     /** The handshake rule every connection of this server is built with. */
     private val handshake = serverHandshakeRule(options)
-
-    /** Applies the certificate, ALPN, options, handshake rule and session ticket keys to [quicheConfig]. */
-    private fun configure(quicheConfig: QuicheConfig) {
-        nullTerminated(tls.certChainPath, factory).use { api.configLoadCertChainFromPemFile(quicheConfig, addressOf(it)) }
-        nullTerminated(tls.privKeyPath, factory).use { api.configLoadPrivKeyFromPemFile(quicheConfig, addressOf(it)) }
-        encodeAlpnList(options.alpnProtocols, factory).use { api.configSetApplicationProtos(quicheConfig, addressOf(it), it.remaining()) }
-        applyQuicOptions(options.forQuiche(), ApiQuicConfigCalls(api, quicheConfig), QuicRole.Server)
-        handshake.applyTo(api, quicheConfig)
-        api.applySessionTicketKeys(quicheConfig, tls.sessionTicketKeys, factory)
-    }
 
     private companion object {
         const val QUIC_V1 = 1

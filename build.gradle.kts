@@ -922,6 +922,8 @@ project(":socket-quic-quiche") {
             javaLauncher.set(jvmTestTask.javaLauncher)
             jvmArgumentProviders.add(CommandLineArgumentProvider { jvmTestTask.jvmArgs.orEmpty() })
             doFirst { environment(jvmTestTask.environment - "QUIC_RECVINFO_GUARD") }
+            // Assertions turn on coroutine debug mode, which names each coroutine's thread per step: not the production path.
+            systemProperty("kotlinx.coroutines.debug", "off")
             filter { includeTestsMatching("com.ditchoom.socket.quic.core.*AllocationTests") }
         }
         tasks.named<Test>("jvmTest") {
