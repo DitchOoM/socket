@@ -2822,7 +2822,7 @@ class QuicheDriver(
 
     /**
      * Start the migration that arrived before the handshake confirmed, on the turn that confirms it —
-     * the turn whose packet carried HANDSHAKE_DONE. Costs one lane check when nothing waits.
+     * the turn whose packet carried HANDSHAKE_DONE or acknowledged a 1-RTT packet. Costs one lane check when nothing waits.
      */
     private fun resumeMigrationAwaitingConfirmation() {
         val waiting =

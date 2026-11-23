@@ -9,8 +9,9 @@ import javax.crypto.spec.SecretKeySpec
 
 /**
  * RFC 9001 packet protection, written against the RFC with javax.crypto and nothing of quiche's: enough
- * to open the QUIC v1 packets a replay trace recorded, given the secrets an NSS key log holds. It is
- * the offline reader a walk's `traces/` + key logs are for, kept to what a test needs.
+ * to open the QUIC v1 packets a replay trace recorded, given the secrets an NSS key log holds, and to seal
+ * the packets a test writes as a peer. It is the offline reader a walk's `traces/` + key logs are for, kept
+ * to what a test needs.
  */
 internal object QuicPacketOpener {
     /** The TLS 1.3 cipher suites QUIC v1 uses (RFC 9001 §5.3). */
@@ -157,7 +158,51 @@ internal object QuicPacketOpener {
             nonce[nonce.size - 1 - i] = (nonce[nonce.size - 1 - i].toInt() xor (packetNumber ushr (8 * i)).toInt()).toByte()
         }
         val sealed = datagram.copyOfRange(pnOffset + pnLength, packet.end)
-        return Opened(packetNumber, aeadOpen(keys, nonce, aad, sealed))
+        return Opened(packetNumber, aead(keys, Cipher.DECRYPT_MODE, nonce, aad, sealed))
+    }
+
+    /** A sealed Handshake packet from [scid] to [dcid] carrying [payload] as packet number [packetNumber] (RFC 9000 §17.2.4). */
+    fun sealHandshake(
+        dcid: ByteArray,
+        scid: ByteArray,
+        packetNumber: Long,
+        payload: ByteArray,
+        keys: PacketKeys,
+    ): ByteArray {
+        val length = SEALED_PN_LENGTH + payload.size + AEAD_TAG_LENGTH
+        val header =
+            byteArrayOf((0xE0 or (SEALED_PN_LENGTH - 1)).toByte(), 0, 0, 0, 1, dcid.size.toByte()) + dcid +
+                byteArrayOf(scid.size.toByte()) + scid + byteArrayOf((0x40 or (length shr 8)).toByte(), length.toByte())
+        return seal(header, packetNumber, payload, keys, 0x0f)
+    }
+
+    /** A sealed 1-RTT packet to [dcid], key phase 0, carrying [payload] as packet number [packetNumber] (RFC 9000 §17.3.1). */
+    fun sealOneRtt(
+        dcid: ByteArray,
+        packetNumber: Long,
+        payload: ByteArray,
+        keys: PacketKeys,
+    ): ByteArray = seal(byteArrayOf((0x40 or (SEALED_PN_LENGTH - 1)).toByte()) + dcid, packetNumber, payload, keys, 0x1f)
+
+    /** [header] then a [SEALED_PN_LENGTH]-byte packet number, the AEAD over [payload], and header protection (RFC 9001 §5.3–5.4). */
+    private fun seal(
+        header: ByteArray,
+        packetNumber: Long,
+        payload: ByteArray,
+        keys: PacketKeys,
+        firstByteMask: Int,
+    ): ByteArray {
+        val pnOffset = header.size
+        val aad = header + ByteArray(SEALED_PN_LENGTH) { (packetNumber ushr (8 * (SEALED_PN_LENGTH - 1 - it))).toByte() }
+        val nonce = keys.iv.copyOf()
+        for (i in 0 until 8) {
+            nonce[nonce.size - 1 - i] = (nonce[nonce.size - 1 - i].toInt() xor (packetNumber ushr (8 * i)).toInt()).toByte()
+        }
+        val packet = aad + aead(keys, Cipher.ENCRYPT_MODE, nonce, aad, payload)
+        val mask = headerProtectionMask(keys, packet.copyOfRange(pnOffset + 4, pnOffset + 20))
+        packet[0] = (packet[0].toInt() xor (mask[0].toInt() and firstByteMask)).toByte()
+        for (i in 0 until SEALED_PN_LENGTH) packet[pnOffset + i] = (packet[pnOffset + i].toInt() xor mask[1 + i].toInt()).toByte()
+        return packet
     }
 
     /** The data of the CRYPTO frames at the front of an Initial or Handshake payload, in offset order. */
@@ -222,25 +267,27 @@ internal object QuicPacketOpener {
             }
         }
 
-    private fun aeadOpen(
+    /** The packet AEAD in [mode] (`Cipher.ENCRYPT_MODE` or `Cipher.DECRYPT_MODE`) over [input]. */
+    private fun aead(
         keys: PacketKeys,
+        mode: Int,
         nonce: ByteArray,
         aad: ByteArray,
-        sealed: ByteArray,
+        input: ByteArray,
     ): ByteArray {
         val cipher =
             when (keys.suite) {
                 Suite.Aes128GcmSha256, Suite.Aes256GcmSha384 ->
                     Cipher.getInstance("AES/GCM/NoPadding").apply {
-                        init(Cipher.DECRYPT_MODE, SecretKeySpec(keys.key, "AES"), GCMParameterSpec(128, nonce))
+                        init(mode, SecretKeySpec(keys.key, "AES"), GCMParameterSpec(128, nonce))
                     }
                 Suite.ChaCha20Poly1305Sha256 ->
                     Cipher.getInstance("ChaCha20-Poly1305").apply {
-                        init(Cipher.DECRYPT_MODE, SecretKeySpec(keys.key, "ChaCha20"), IvParameterSpec(nonce))
+                        init(mode, SecretKeySpec(keys.key, "ChaCha20"), IvParameterSpec(nonce))
                     }
             }
         cipher.updateAAD(aad)
-        return cipher.doFinal(sealed)
+        return cipher.doFinal(input)
     }
 
     private fun decodePacketNumber(
@@ -298,6 +345,9 @@ internal object QuicPacketOpener {
         for (i in 1 until length) value = (value shl 8) or (bytes[at + i].toLong() and 0xff)
         return value to length
     }
+
+    private const val SEALED_PN_LENGTH = 4
+    private const val AEAD_TAG_LENGTH = 16
 
     private val INITIAL_SALT_V1 = "38762cf7f55934b34d179ae6a4c80cadccbb7f0a".hexToBytes()
 }

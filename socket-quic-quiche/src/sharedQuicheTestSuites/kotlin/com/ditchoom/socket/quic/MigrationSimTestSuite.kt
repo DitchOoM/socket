@@ -210,14 +210,14 @@ abstract class MigrationSimTestSuite {
     /**
      * A network change that arrives after the client's handshake completes but before it is confirmed
      * moves the connection once it is confirmed, and not before. RFC 9000 §9: an endpoint MUST NOT
-     * initiate migration before the handshake is confirmed, and a client confirms only when
-     * HANDSHAKE_DONE arrives (RFC 9001 §4.1.2), one round trip after it completes.
+     * initiate migration before the handshake is confirmed, and a client confirms when HANDSHAKE_DONE
+     * arrives or the server acknowledges one of its 1-RTT packets (RFC 9001 §4.1.2), a round trip after
+     * it completes.
      *
-     * The link holds the server's HANDSHAKE_DONE, and every retransmission of it, for seconds, but carries
-     * its first NEW_CONNECTION_IDs: the client knows the server's transport parameters and has spare
-     * connection ids, so nothing but the missing confirmation stands in the way. While held, the
-     * migration the change asked for opens no socket and is not answered; once HANDSHAKE_DONE arrives,
-     * that same migration completes.
+     * The link holds the server's HANDSHAKE_DONE for seconds; the change arrives before anything else
+     * from the server, and the server's next packets bring its NEW_CONNECTION_IDs with an acknowledgement
+     * that confirms the client. Until then the migration the change asked for opens no socket and is not
+     * answered; once confirmed, that same migration completes.
      */
     @Test
     fun aNetworkChangeBeforeTheHandshakeIsConfirmedMigratesOnceItIs() =
@@ -243,36 +243,34 @@ abstract class MigrationSimTestSuite {
                         currentTime.milliseconds < first.from + DEFAULT_PATH_LATENCY * 2,
                         "the scenario must start while HANDSHAKE_DONE is still held; it started at ${currentTime}ms",
                     )
-                    // Let the server's NEW_CONNECTION_IDs through, then hold everything after them, which
-                    // includes every retransmission of HANDSHAKE_DONE.
-                    pipe.impair(link, PathImpairment(latency = DEFAULT_PATH_LATENCY))
-                    awaitSpareDcids()
-                    pipe.impair(
-                        link,
-                        PathImpairment(
-                            latency = DEFAULT_PATH_LATENCY,
-                            reach = LinkReach(PathReach.Open, PathReach.HeldUntil(CONFIRMATION_HELD_UNTIL)),
-                        ),
-                    )
+                    assertFalse(clientConfirmed(), "the network change must arrive before the client is confirmed")
                     monitor.setNetworkId(CELLULAR)
+                    // HANDSHAKE_DONE stays held; what the server sends next is carried.
+                    pipe.impair(link, PathImpairment(latency = DEFAULT_PATH_LATENCY))
 
-                    delay(CONFIRMATION_HELD_UNTIL - currentTime.milliseconds - 100.milliseconds)
-                    assertTrue(clientAvailableDcids() > 0, "the client must hold a spare connection id, so only confirmation is missing")
-                    assertEquals(
-                        emptyList(),
-                        clientPaths(),
-                        "no path may be opened for a migration before the handshake is confirmed; traffic ${pipeTraffic()}",
-                    )
-                    assertEquals(emptyList(), client.timeline, "the migration must wait for confirmation, not answer before it")
-
+                    // Confirmation is permanent, so a path seen open with the client still unconfirmed was opened before it.
                     val moved =
                         withTimeoutOrNull(MIGRATION_AFTER_CONFIRMATION_WITHIN) {
-                            while (client.timeline.isEmpty()) delay(10.milliseconds)
+                            while (client.timeline.isEmpty()) {
+                                val paths = clientPaths()
+                                if (!clientConfirmed()) {
+                                    assertEquals(
+                                        emptyList(),
+                                        paths,
+                                        "no path may be opened for a migration before the handshake is confirmed; traffic ${pipeTraffic()}",
+                                    )
+                                }
+                                delay(1.milliseconds)
+                            }
                         }
                     assertEquals(Unit, moved, "the migration must be answered once confirmed; traffic ${pipeTraffic()}")
                     val attempt = client.timeline.single()
                     assertIs<MigrationResult.Succeeded>(attempt.result, "the waiting migration must move the connection: $attempt")
-                    assertTrue(attempt.ended >= CONFIRMATION_HELD_UNTIL, "it must complete after confirmation: $attempt")
+                    assertTrue(clientConfirmed(), "the migration completed with the client confirmed")
+                    assertTrue(
+                        attempt.ended < CONFIRMATION_HELD_UNTIL,
+                        "an acknowledged 1-RTT packet confirmed it before HANDSHAKE_DONE: $attempt",
+                    )
                 }
             }
         }

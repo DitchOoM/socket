@@ -340,8 +340,8 @@ interface QuicheApi {
 
     /**
      * Whether the handshake is confirmed (RFC 9001 §4.1.2; `quiche_conn_is_handshake_confirmed`, a
-     * patched-in export). A server confirms when it completes; a client when HANDSHAKE_DONE arrives, one
-     * round trip after [connIsEstablished] turns true.
+     * patched-in export). A server confirms when it completes; a client when HANDSHAKE_DONE arrives or the
+     * server acknowledges one of its 1-RTT packets, one round trip after [connIsEstablished] turns true.
      */
     fun connIsHandshakeConfirmed(conn: QuicheConn): Boolean
 

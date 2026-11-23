@@ -388,6 +388,10 @@ fun downloadQuicheSource(
     // RTT sample after confirmation, so retransmit gaps follow the caller's prior and growth rule until the
     // connection has a sample of its own. Idempotent, fails loudly on drift. See the KDoc.
     patchQuicheHandshakePtoCeiling(sourceDir)
+    // A client confirms its handshake when the peer acknowledges a 1-RTT packet (RFC 9001 §4.1.2), no send arms the
+    // Application Data PTO before confirmation, and a PTO with no space to probe counts nothing. Applied after
+    // patchQuicheHandshakePtoCeiling, whose PTO edits share the recovery functions. Idempotent, fails loudly on drift.
+    patchQuicheOneRttAckConfirms(sourceDir)
     // A path already validated is never failed by PATH_CHALLENGEs counted lost, and a connection left with no path
     // closes with NO_VIABLE_PATH instead of no error. Applied after patchQuicheRetireDcidNoRelink, whose edit of
     // the same branch it guards. Idempotent, fails loudly on drift. See the KDoc.
@@ -1819,9 +1823,11 @@ fun patchQuicheProbeAppDataInItsOwnDatagram(sourceDir: File) {
  * outage is resent only once its acknowledgement arrives, a round trip late (`WalkConditionReplayTests`).
  *
  * RFC 9002 §6.2.4: probe packets MUST NOT be blocked by the congestion controller, and are at most two; this sends
- * exactly that, early, on the application's evidence instead of the timer's. It neither counts a PTO nor declares
- * any packet lost, so the congestion controller and the PTO backoff are untouched; the probes' acknowledgements
- * then drive ordinary loss detection for the rest. Both recovery implementations (`congestion` and `gcongestion`).
+ * exactly that, early, on the application's evidence instead of the timer's. With no packet number space allowed to
+ * probe (an unconfirmed client whose only data in flight is 1-RTT) it sets no probes. It neither counts a PTO nor
+ * declares any packet lost, so the congestion controller and the PTO backoff are untouched; the probes'
+ * acknowledgements then drive ordinary loss detection for the rest. Both recovery implementations (`congestion` and
+ * `gcongestion`).
  *
  * Marker-guarded and loud in both directions: a re-run returns, a moved anchor throws, and an upstream that exports
  * the same throws, telling you to delete this patch.
@@ -1874,7 +1880,11 @@ fun patchQuicheProbeNowFfi(sourceDir: File) {
         |        if self.bytes_in_flight.get() == 0 {
         |            return;
         |        }
-        |        let (_, e) = self.pto_time_and_space(handshake_status, now);
+        |        // No space may probe while the Application Data space waits for confirmation (RFC 9002 §6.2.1).
+        |        let e = match self.pto_time_and_space(handshake_status, now) {
+        |            (Some(_), e) => e,
+        |            (None, _) => return,
+        |        };
         |        let epoch = &mut self.epochs[e];
         |        epoch.loss_probes = MAX_PTO_PROBES_COUNT;
         |        if !epoch.lost_frames_pto.is_empty() {
@@ -1902,7 +1912,11 @@ fun patchQuicheProbeNowFfi(sourceDir: File) {
         |        if self.bytes_in_flight.get() == 0 {
         |            return;
         |        }
-        |        let (_, e) = self.pto_time_and_space(handshake_status, now);
+        |        // No space may probe while the Application Data space waits for confirmation (RFC 9002 §6.2.1).
+        |        let e = match self.pto_time_and_space(handshake_status, now) {
+        |            (Some(_), e) => e,
+        |            (None, _) => return,
+        |        };
         |        let epoch = &mut self.epochs[e];
         |        epoch.loss_probes = MAX_PTO_PROBES_COUNT;
         |        if !epoch.lost_frames_pto.is_empty() {
@@ -2233,6 +2247,173 @@ fun patchQuicheHandshakePtoCeiling(sourceDir: File) {
         "Patched quiche source: quiche_config_set_initial_rtt, quiche_conn_set_handshake_pto_ceiling and " +
             "quiche_conn_handshake_pto_ceiling_held FFI exports",
     )
+}
+
+/**
+ * A client confirms its handshake when the peer acknowledges a packet it sent with 1-RTT keys (RFC 9001 §4.1.2),
+ * exactly as HANDSHAKE_DONE confirms it, and a PTO that finds no packet number space allowed to probe counts nothing.
+ *
+ * **Why.** [patchQuichePtoWaitsForConfirmation] holds a client's Application Data PTO until confirmation, which was
+ * HANDSHAKE_DONE alone. A peer that acknowledges the Finished in the Handshake space empties that space, and with its
+ * HANDSHAKE_DONE lost no space was left to probe. `send_single` built its own `HandshakeStatus` from
+ * `handshake_completed`, so each 1-RTT send still armed an Application PTO; when it fired, the recovery read
+ * `handshake_status()`, found no space, and probed Initial, whose keys are gone: a PTO counted, nothing sent, the timer
+ * cleared, and the client silent until its idle timeout (quic-interop-runner `handshakeloss`, our client against
+ * xquic). Reproduced by `OneRttAckConfirmsTests`.
+ *
+ * The edits:
+ *  - a connection records the first packet number it sends in a short header (`SocketFirstOneRtt`). An
+ *    Application-space ACK whose largest acknowledged packet is at or past it acknowledges a 1-RTT packet, not only
+ *    0-RTT ones, and confirms an unconfirmed client: `handshake_confirmed`, and the Handshake keys dropped, which
+ *    re-arms the timers with the Application Data PTO.
+ *  - `send_single` passes `handshake_status()` to recovery, so no send arms the Application Data PTO before
+ *    confirmation (RFC 9002 §6.2.1).
+ *  - `on_loss_detection_timeout`, in both recovery implementations, re-arms and returns without counting a PTO or
+ *    setting probes when `pto_time_and_space` finds no space; [patchQuicheProbeNowFfi]'s `socket_probe_now` returns.
+ *
+ * A 1-RTT acknowledgement proves the server has the client's Finished: a server does not process 1-RTT packets before
+ * its handshake completes (RFC 9001 §5.7), and completing confirms it.
+ *
+ * **Idempotent and loud** (the [patchQuicheForCallerClock] discipline).
+ */
+fun patchQuicheOneRttAckConfirms(sourceDir: File) {
+    val marker = "socket-one-rtt-ack-confirms"
+    val src = sourceDir.resolve("quiche/src")
+    val libRs = src.resolve("lib.rs")
+    val legacyRs = src.resolve("recovery/congestion/recovery.rs")
+    val gcongestionRs = src.resolve("recovery/gcongestion/recovery.rs")
+    if (listOf(libRs, legacyRs, gcongestionRs).any { !it.exists() }) return
+    if (libRs.readText().contains(marker)) return
+
+    fun replaceOnce(
+        file: File,
+        anchor: String,
+        replacement: String,
+    ) {
+        val text = file.readText()
+        if (text.split(anchor).size != 2) {
+            throw GradleException(
+                "$marker: `${anchor.trim().lines().first()}` not found exactly once in ${file.relativeTo(src)} — a " +
+                    "quiche bump moved it, or upstream now confirms a client's handshake on a 1-RTT acknowledgement. " +
+                    "Re-fit or delete patchQuicheOneRttAckConfirms, and keep OneRttAckConfirmsTests.",
+            )
+        }
+        file.writeText(text.replace(anchor, replacement))
+    }
+
+    val connectionDecl = "/// A QUIC connection.\npub struct Connection<F = DefaultBufFactory>\n"
+    replaceOnce(
+        libRs,
+        connectionDecl,
+        """
+        |// $marker: the first packet number a connection sent in a short header.
+        |#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        |enum SocketFirstOneRtt {
+        |    NotSent,
+        |    Sent(u64),
+        |}
+        |
+        |impl SocketFirstOneRtt {
+        |    fn on_sent(self, pn: u64) -> Self {
+        |        match self {
+        |            SocketFirstOneRtt::NotSent => SocketFirstOneRtt::Sent(pn),
+        |            sent => sent,
+        |        }
+        |    }
+        |
+        |    // Whether an Application-space ACK up to `largest_acked` acknowledges a 1-RTT packet, not only 0-RTT ones.
+        |    fn acked_by(self, largest_acked: u64) -> bool {
+        |        match self {
+        |            SocketFirstOneRtt::NotSent => false,
+        |            SocketFirstOneRtt::Sent(first) => largest_acked >= first,
+        |        }
+        |    }
+        |}
+        |
+        |
+        """.trimMargin() + connectionDecl,
+    )
+    val field = "    /// Whether the connection handshake has been completed.\n    handshake_completed: bool,\n"
+    replaceOnce(libRs, field, field + "\n    // $marker\n    socket_first_one_rtt: SocketFirstOneRtt,\n")
+    val init = "            handshake_completed: false,\n"
+    replaceOnce(libRs, init, init + "\n            socket_first_one_rtt: SocketFirstOneRtt::NotSent,\n")
+    replaceOnce(
+        libRs,
+        """
+        |        self.next_pkt_num += 1;
+        |
+        |        let handshake_status = recovery::HandshakeStatus {
+        |            has_handshake_keys: self.crypto_ctx[packet::Epoch::Handshake]
+        |                .has_keys(),
+        |            peer_verified_address: self.peer_verified_initial_address,
+        |            completed: self.handshake_completed,
+        |        };
+        |
+        """.trimMargin(),
+        """
+        |        self.next_pkt_num += 1;
+        |
+        |        // $marker
+        |        if pkt_type == Type::Short {
+        |            self.socket_first_one_rtt = self.socket_first_one_rtt.on_sent(pn);
+        |        }
+        |
+        |        // $marker: the status every other recovery call reads, so no send arms the
+        |        // Application Data PTO before confirmation (RFC 9002 §6.2.1).
+        |        let handshake_status = self.handshake_status();
+        |
+        """.trimMargin(),
+    )
+    val ackEnd =
+        """
+        |                    self.lost_count += lost_packets;
+        |                    self.lost_bytes += lost_bytes as u64;
+        |                    self.acked_bytes += acked_bytes as u64;
+        |                    self.spurious_lost_count += spurious_losses;
+        |                }
+        |
+        """.trimMargin()
+    replaceOnce(
+        libRs,
+        ackEnd + "            },\n",
+        ackEnd +
+            """
+            |
+            |                // $marker: an acknowledged 1-RTT packet confirms a client's handshake
+            |                // (RFC 9001 §4.1.2), as HANDSHAKE_DONE does.
+            |                if !self.is_server &&
+            |                    !self.handshake_confirmed &&
+            |                    epoch == packet::Epoch::Application &&
+            |                    self.socket_first_one_rtt.acked_by(largest_acked)
+            |                {
+            |                    self.peer_verified_initial_address = true;
+            |                    self.handshake_confirmed = true;
+            |                    self.drop_epoch_state(packet::Epoch::Handshake, now);
+            |                }
+            |            },
+            |
+            """.trimMargin(),
+    )
+    val probeSpace = "            let (_, e) = self.pto_time_and_space(handshake_status, now);\n\n            e\n"
+    val noSpace =
+        """
+        |            // $marker: no space may probe (the Application Data space waits for
+        |            // confirmation, RFC 9002 §6.2.1): no PTO is counted and no probe is set.
+        |            match self.pto_time_and_space(handshake_status, now) {
+        |                (Some(_), e) => e,
+        |                (None, _) => {
+        |                    self.set_loss_detection_timer(handshake_status, now);
+        |                    return OnLossDetectionTimeoutOutcome {
+        |                        lost_packets: 0,
+        |                        lost_bytes: 0,
+        |                    };
+        |                },
+        |            }
+        |
+        """.trimMargin()
+    replaceOnce(legacyRs, probeSpace, noSpace)
+    replaceOnce(gcongestionRs, probeSpace, noSpace)
+    logger.lifecycle("Patched quiche source: an acknowledged 1-RTT packet confirms a client's handshake")
 }
 
 /**

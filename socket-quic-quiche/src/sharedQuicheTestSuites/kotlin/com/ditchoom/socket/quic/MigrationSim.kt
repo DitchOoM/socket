@@ -176,6 +176,9 @@ internal class MigrationSimScope(
      */
     suspend fun clientAvailableDcids(): Long = clientDriver.read("clientAvailableDcids") { api, conn -> api.connAvailableDcids(conn) }
 
+    /** Whether the client's handshake is confirmed (RFC 9001 §4.1.2). */
+    suspend fun clientConfirmed(): Boolean = clientDriver.read("clientConfirmed") { api, conn -> api.connIsHandshakeConfirmed(conn) }
+
     /** Diagnostic: quiche's own client-side path table — index, validation state, active flag. */
     suspend fun clientPathTable(): String =
         clientDriver.read("clientPathTable") { api, conn ->
