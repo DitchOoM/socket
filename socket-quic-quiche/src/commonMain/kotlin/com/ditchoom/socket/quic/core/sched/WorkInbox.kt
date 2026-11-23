@@ -35,8 +35,8 @@ internal abstract class InboxItem<T : InboxItem<T>> : InboxLink<T> {
 }
 
 /**
- * Many producers, one consumer, no lock. Producers push onto a stack; the consumer takes the whole stack in one
- * exchange and runs it oldest first. Once shut, a push is refused with the end the inbox was shut with.
+ * Many producers, no lock. Producers push onto a stack; a consumer takes the whole stack in one exchange and runs it
+ * oldest first. Once shut, a push is refused with the end the inbox was shut with.
  */
 @Queue
 internal class WorkInbox<T : InboxItem<T>> {
@@ -51,7 +51,10 @@ internal class WorkInbox<T : InboxItem<T>> {
         }
     }
 
-    /** Consumer only. Runs every item pushed before this call, oldest first; returns how many. */
+    /**
+     * Runs every item pushed before this call, oldest first; returns how many. Several threads may drain at once: each
+     * takes the whole chain it saw with one compare-and-set, so the chains they run are disjoint and no item runs twice.
+     */
     fun drain(run: (T) -> Unit): Int = runAll(take(InboxLink.End), run)
 
     /** Consumer only, once. Refuses every later push with [end] and runs what was still queued, oldest first. */

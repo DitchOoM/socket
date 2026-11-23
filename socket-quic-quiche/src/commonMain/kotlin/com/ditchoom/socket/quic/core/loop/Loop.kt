@@ -14,6 +14,7 @@ import com.ditchoom.socket.quic.core.observe.traced
 import com.ditchoom.socket.quic.core.pool.IntStack
 import com.ditchoom.socket.quic.core.ready.Poller
 import com.ditchoom.socket.quic.core.ready.ReadyTokens
+import com.ditchoom.socket.quic.core.sched.HandlerOutbox
 import com.ditchoom.socket.quic.core.sched.LoopPort
 import com.ditchoom.socket.quic.core.sched.SleepPlan
 import com.ditchoom.socket.quic.core.time.LoopClock
@@ -72,6 +73,9 @@ internal class Loop(
     val callerCounts = CallerCounts()
     val port = LoopPort(poller, callerCounts)
     val life = LoopLifeCell()
+
+    /** The lanes of handler pools whose steps a pass resumed, made ready together at the pass's end. */
+    val handlers = HandlerOutbox()
 
     /** Connections placed here, counted when placed and not when they end: what placement balances. */
     val connections = Counter()
@@ -174,6 +178,7 @@ internal class Loop(
 
     private fun passInside(now: Nanos): NextDue {
         counts.passed()
+        handlers.begin()
         port.fireDue(now)
         for (i in 0 until ready.count) {
             when (val slot = slots[ready.tokenAt(i)]) {
@@ -203,6 +208,7 @@ internal class Loop(
                 is LoopSlot.Empty -> Unit
             }
         }
+        handlers.end()
         val due = port.nextDue(now)
         // Datagrams the io holds are invisible to the poller: with any, the next pass is due now (a poll of zero), whatever
         // cut this one short (the per-pass bound included).
@@ -270,7 +276,8 @@ internal class Loop(
         if (run is Run.Stopped) return StopOutcome.AlreadyStopped
         run = Run.Stopped
         life.stopped()
-        var outcome: StopOutcome = StopOutcome.Clean
+        // A pass that threw left its resumed lanes unclaimed; what the stop resumes is queued as from any thread.
+        var outcome: StopOutcome = StopOutcome.Clean.then { handlers.end() }
         for (i in slots.indices) {
             val slot = slots[i]
             slots[i] = LoopSlot.Empty

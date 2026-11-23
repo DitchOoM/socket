@@ -129,7 +129,18 @@ internal class ClientParts(
         remote: SocketAddress,
         identity: QuicConnectionIdentity,
     ): CoreConnection =
-        CoreConnection(conn, edge, factory, remote, identity, w.readPolicy, w.writePolicy, w.options.streamOpenPolicy.toDeadline(), w.scope)
+        CoreConnection(
+            conn,
+            edge,
+            factory,
+            remote,
+            identity,
+            w.readPolicy,
+            w.writePolicy,
+            w.options.streamOpenPolicy.toDeadline(),
+            w.scope,
+            HandlerSeat(w.running.handlers.pool(::poolContained), loop.handlers, identity.session),
+        )
 
     private val endpoint = Endpoint(socketIo.ref, io, socket, Route.Fixed(conn, SharedBatch(w.running.out)), released, w.readiness)
 

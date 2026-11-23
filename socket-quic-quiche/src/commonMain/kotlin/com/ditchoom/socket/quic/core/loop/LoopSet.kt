@@ -19,6 +19,9 @@ import com.ditchoom.socket.quic.core.ready.PollerOpened
 import com.ditchoom.socket.quic.core.ready.jdkPoller
 import com.ditchoom.socket.quic.core.ready.netStackOfThisRuntime
 import com.ditchoom.socket.quic.core.sched.CallerSend
+import com.ditchoom.socket.quic.core.sched.HandlerPool
+import com.ditchoom.socket.quic.core.sched.HandlerThreads
+import com.ditchoom.socket.quic.core.sched.PoolSlot
 import com.ditchoom.socket.quic.core.sched.SendRule
 import com.ditchoom.socket.quic.core.sched.callerLanesOf
 import com.ditchoom.socket.quic.core.sched.laneCount
@@ -36,9 +39,8 @@ import com.ditchoom.socket.quic.core.udp.ReceiveBuffer
 import com.ditchoom.socket.quic.core.udp.SendBatch
 import kotlinx.coroutines.Runnable
 import kotlin.concurrent.atomics.AtomicArray
-import kotlin.concurrent.atomics.AtomicInt
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
-import kotlin.concurrent.atomics.fetchAndIncrement
+import kotlin.time.Duration
 
 /** What [LoopSet.place] answers. */
 internal sealed interface Placement {
@@ -82,8 +84,13 @@ internal class LoopSet(
     val stack: NetStack = netStackOfThisRuntime,
     /** Which threads send on this set's sockets. */
     private val sends: SendRule = sendRuleOfThisRuntime,
+    /** A handler step that holds a thread of the set's pool longer than this is reported, and only reported. */
+    handlerStallBound: Duration = HandlerPool.DEFAULT_STALL_BOUND,
 ) {
     private val slots = AtomicArray(Array<Slot>(size) { Slot.Unstarted })
+
+    /** The threads that run handlers of this set's connections, started by the first; stopped with the set. */
+    val handlers = PoolSlot(HandlerThreads.Own(HandlerPool.CLIENT_THREADS), HANDLER_THREAD_PREFIX, handlerStallBound)
 
     /** Any thread: the loop for the next connection, counted against it, started if it had not started. */
     fun place(
@@ -144,6 +151,7 @@ internal class LoopSet(
                 is Slot.Unstarted, is Slot.Closed -> Unit
             }
         }
+        handlers.stop()
     }
 
     private fun start(
@@ -226,6 +234,7 @@ internal class LoopSet(
                 out = out,
                 lanes = callerLanesOf(laneBytes.size) { CallerSend(it, SendBatch(laneBytes[it], LANE_LIMITS, lane = it + 1)) },
                 sessions = FixedPool(sessionBytes.size) { SessionScratch(it, sessionBytes[it]) },
+                handlers = handlers,
             )
         if (!slots.compareAndSetAt(index, seen, Slot.Running(running))) {
             loop.close(Runnable { })
@@ -243,6 +252,9 @@ internal class LoopSet(
 
         /** The prefix of every client loop thread's name; the loop's own number follows. */
         const val THREAD_PREFIX = "quic-core-client"
+
+        /** The prefix of every client handler thread's name. */
+        const val HANDLER_THREAD_PREFIX = "quic-core-client-handler"
     }
 }
 
@@ -252,14 +264,6 @@ internal fun waitsOf(stack: NetStack): WaitResolution =
         is NetStack.Jdk -> stack.waits
         is NetStack.Native -> stack.waits
     }
-
-/** Numbers loops, so each loop's turns are its own in a connection's owner word. */
-@Published
-internal object LoopIds {
-    private val sequence = AtomicInt(1)
-
-    fun next(): Int = sequence.fetchAndIncrement()
-}
 
 /** The number of loops [LoopSet.shared] spreads connections over. */
 internal const val DEFAULT_CLIENT_LOOPS = 2

@@ -21,6 +21,7 @@ import com.ditchoom.socket.quic.core.demux.Opened
 import com.ditchoom.socket.quic.core.demux.ServerHooks
 import com.ditchoom.socket.quic.core.observe.ServerCounts
 import com.ditchoom.socket.quic.encodeToNative
+import com.ditchoom.socket.quic.keyLogDirectory
 import com.ditchoom.socket.quic.toSocketAddress
 import com.ditchoom.socket.quic.traceRecorderFor
 import kotlinx.coroutines.CoroutineScope
@@ -44,10 +45,13 @@ internal class ServerEdge(
     private val readPolicy: ReadPolicy,
     private val writePolicy: WritePolicy,
     private val accepted: SendChannel<CoreConnection>,
-    /** The key log directory the environment names, read once when the server is set up. */
-    private val keyLogDirectory: EnvironmentSetting,
     private val counts: ServerCounts,
+    /** Where accepted connections run application code: the offer, and their handlers. */
+    private val seats: HandlerSeats,
 ) {
+    /** The key log directory the environment names, read once when the server is set up. */
+    private val keyLogDirectory: EnvironmentSetting = keyLogDirectory()
+
     val hooks = ServerHooks(::encode, ::open)
 
     /** [key] as quiche reads it, in memory the accepted connection frees. */
@@ -69,6 +73,7 @@ internal class ServerEdge(
         val edge = EdgeState(build.alpn, capture, TicketHome.NotKept, ChainHome.NotKept)
         val conn = build.build(edge, capture)
         val scope = CoroutineScope(SupervisorJob())
+        val seat = seats.seat(QuicSessionId(id))
         val connection =
             CoreConnection(
                 conn,
@@ -80,12 +85,14 @@ internal class ServerEdge(
                 writePolicy,
                 options.streamOpenPolicy.toDeadline(),
                 scope,
+                seat,
             )
-        // Offered once established, or once its 0-RTT is accepted; a connection that ends first is never offered. The offer
-        // is made on the thread that decided it, the loop, with no hop: it only hands the connection to the acceptor.
+        // Offered once established, or once its 0-RTT is accepted; a connection that ends first is never offered. The
+        // decision is seen on the loop, with no hop; only then does the connection get its lane, and the offer itself runs
+        // on that lane, so an acceptor that resumes where it is resumed runs on a pool thread, never on the loop.
         scope.launch(Dispatchers.Unconfined, CoroutineStart.UNDISPATCHED) {
             when (edge.start.first { it is HandlerStart.Decided }) {
-                HandlerStart.Now -> accepted.trySend(connection)
+                HandlerStart.Now -> seat.offer(Runnable { accepted.trySend(connection) })
                 HandlerStart.Never, HandlerStart.NotYet -> Unit
             }
         }

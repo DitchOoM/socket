@@ -59,6 +59,9 @@ import com.ditchoom.socket.quic.core.pool.MemoryHold
 import com.ditchoom.socket.quic.core.ready.jdkStackOfThisRuntime
 import com.ditchoom.socket.quic.core.sched.CallerLanes
 import com.ditchoom.socket.quic.core.sched.CallerSend
+import com.ditchoom.socket.quic.core.sched.HandlerPool
+import com.ditchoom.socket.quic.core.sched.HandlerThreads
+import com.ditchoom.socket.quic.core.sched.PoolSlot
 import com.ditchoom.socket.quic.core.sched.SendRule
 import com.ditchoom.socket.quic.core.testing.FakePoller
 import com.ditchoom.socket.quic.core.testing.VirtualClock
@@ -225,6 +228,7 @@ internal fun replayClient(
                     },
                 ),
                 FixedPool(1) { SessionScratch(it, memory.native(ClientSession.TICKET_BYTES)) },
+                PoolSlot(HandlerThreads.ByLoopCaller, "condition-replay-handler", HandlerPool.DEFAULT_STALL_BOUND),
             ),
             StackSocket.Jdk(JdkSocket(channel), loopIo, SocketBound(local.toPathKey(), GrantedBuffers(SocketBuffers.Default, 0, 0))),
             { io },
