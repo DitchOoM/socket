@@ -39,15 +39,40 @@ main_space_span_bytes() {
   echo "$total"
 }
 
-# The zygote's Java heap reservation in bytes (the 64-bit zygote where there is one), 0 when it cannot be read.
-zygote_heap_reservation_bytes() {
-  local pid
-  pid=$({ adb shell 'pidof zygote64 || pidof zygote' 2>/dev/null || true; } | tr -d '\r' | awk '{ print $1 }')
+# The zygote's Java heap reservation (the 64-bit zygote where there is one): its size in bytes, or
+# "unreadable: <why>" naming which step failed and how.
+zygote_heap_reservation() {
+  local out rc pid bytes
+  out=$(adb shell 'pidof zygote64 || pidof zygote' 2>&1) && rc=0 || rc=$?
+  out="${out//$'\r'/}"
+  pid=$(awk 'NR == 1 && $1 ~ /^[0-9]+$/ { print $1 }' <<<"$out")
   if [ -z "$pid" ]; then
-    echo 0
+    if [ "$rc" = "0" ] || [ -z "$out" ]; then
+      echo "unreadable: no zygote process (pidof zygote64 and pidof zygote found none)"
+    else
+      echo "unreadable: adb shell pidof failed (exit $rc): $(head -c 200 <<<"$out" | tr '\n' ' ')"
+    fi
     return 0
   fi
-  { adb shell cat "/proc/$pid/maps" 2>/dev/null || true; } | main_space_span_bytes
+  out=$(adb shell cat "/proc/$pid/maps" 2>&1) && rc=0 || rc=$?
+  bytes=$(main_space_span_bytes <<<"$out")
+  if [ "$bytes" != "0" ]; then
+    echo "$bytes"
+  elif grep -qi 'permission denied' <<<"$out"; then
+    echo "unreadable: /proc/$pid/maps: permission denied (adbd is not root)"
+  elif [ "$rc" != "0" ]; then
+    echo "unreadable: adb shell cat /proc/$pid/maps failed (exit $rc): $(head -c 200 <<<"${out//$'\r'/}" | tr '\n' ' ')"
+  else
+    echo "unreadable: /proc/$pid/maps of zygote $pid has no dalvik-main space mapping"
+  fi
+}
+
+# The reservation from zygote_heap_reservation, for a person: "<n> MB" or the reason it is unknown.
+reservation_text() {
+  case "$1" in
+    unreadable:*) echo "$1" ;;
+    *) echo "$(($1 / 1024 / 1024)) MB" ;;
+  esac
 }
 
 # 0 once sys.boot_completed is 1, 1 if not within $1 seconds.
@@ -64,19 +89,29 @@ await_boot_completed() {
 # Restarts the framework when the zygote's heap is smaller than dalvik.vm.heapsize. Prints what it found and
 # did; returns 1 when the zygote still has the wrong heap afterwards. Needs a root adbd.
 ensure_zygote_heap() {
-  local api="$1" wanted_prop wanted reserved
-  wanted_prop=$({ adb shell getprop dalvik.vm.heapsize 2>/dev/null || true; } | tr -d '\r')
+  local api="$1" wanted_prop wanted reserved rc
+  wanted_prop=$(adb shell getprop dalvik.vm.heapsize 2>&1) && rc=0 || rc=$?
+  wanted_prop="${wanted_prop//$'\r'/}"
+  if [ "$rc" != "0" ]; then
+    wanted_prop="unreadable: adb shell getprop failed (exit $rc): $(head -c 200 <<<"$wanted_prop" | tr '\n' ' ')"
+  fi
   wanted=$(heap_property_bytes "$wanted_prop")
-  reserved=$(zygote_heap_reservation_bytes)
-  echo "zygote heap (API ${api}): dalvik.vm.heapsize=${wanted_prop:-unset}, zygote reserved $((reserved / 1024 / 1024)) MB"
-  if [ -z "$wanted" ] || [ "$reserved" = "0" ]; then
-    echo "zygote heap (API ${api}): not comparable on this image; the test process reports its own heap at start"
+  reserved=$(zygote_heap_reservation)
+  echo "zygote heap (API ${api}): dalvik.vm.heapsize=${wanted_prop:-unset}, zygote reserved $(reservation_text "$reserved")"
+  case "$reserved" in
+    unreadable:*)
+      echo "zygote heap (API ${api}): not compared, because the zygote's reservation is ${reserved}; the test process reports its own heap at start"
+      return 0
+      ;;
+  esac
+  if [ -z "$wanted" ]; then
+    echo "zygote heap (API ${api}): not compared, because dalvik.vm.heapsize is ${wanted_prop:-unset}; the test process reports its own heap at start"
     return 0
   fi
   if [ "$reserved" -ge "$wanted" ]; then
     return 0
   fi
-  echo "::warning title=Zygote started without the emulator's heap size (API ${api})::$(gh_escape "The zygote reserved $((reserved / 1024 / 1024)) MB of Java heap, below dalvik.vm.heapsize=${wanted_prop}: it started before init set the property, so every app would get the 16 MB fallback. Restarting the framework so the zygote reads it.")"
+  echo "::warning title=Zygote started without the emulator's heap size (API ${api})::$(gh_escape "The zygote reserved $(reservation_text "$reserved") of Java heap, below dalvik.vm.heapsize=${wanted_prop}: it started before init set the property, so every app would get the 16 MB fallback. Restarting the framework so the zygote reads it.")"
   adb shell stop
   adb shell setprop sys.boot_completed 0
   adb shell start
@@ -84,10 +119,12 @@ ensure_zygote_heap() {
     echo "::error title=Framework restart did not complete (API ${api})::$(gh_escape "After restarting the framework to give the zygote dalvik.vm.heapsize=${wanted_prop}, sys.boot_completed was not 1 within 240 s. This is the emulator, not a test result.")"
     return 1
   fi
-  reserved=$(zygote_heap_reservation_bytes)
-  echo "zygote heap (API ${api}) after the framework restart: zygote reserved $((reserved / 1024 / 1024)) MB"
-  if [ "$reserved" -lt "$wanted" ]; then
-    echo "::error title=Zygote heap is still below dalvik.vm.heapsize (API ${api})::$(gh_escape "The restarted zygote reserved $((reserved / 1024 / 1024)) MB, below dalvik.vm.heapsize=${wanted_prop}. No test ran: their heap would not be the emulator's. This is the emulator, not a test result.")"
-    return 1
-  fi
+  reserved=$(zygote_heap_reservation)
+  echo "zygote heap (API ${api}) after the framework restart: zygote reserved $(reservation_text "$reserved")"
+  case "$reserved" in
+    unreadable:*) ;;
+    *) [ "$reserved" -lt "$wanted" ] || return 0 ;;
+  esac
+  echo "::error title=Zygote heap is still below dalvik.vm.heapsize (API ${api})::$(gh_escape "The restarted zygote reserved $(reservation_text "$reserved"), below dalvik.vm.heapsize=${wanted_prop}. No test ran: their heap would not be the emulator's. This is the emulator, not a test result.")"
+  return 1
 }

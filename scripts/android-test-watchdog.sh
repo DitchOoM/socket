@@ -12,6 +12,35 @@ test_run_events() { # <logcat file>
   if [ -f "$1" ]; then grep -cE 'TestRunner: (started|finished): ' "$1" || true; else echo 0; fi
 }
 
+# The last TestRunner started/finished line in the logcat text on stdin; empty when there is none.
+last_test_event() {
+  grep -E 'TestRunner: (started|finished): ' | tail -1 || true
+}
+
+# A stall read from the streamed logcat is checked against the device's own logcat, read directly: the
+# stream can end while the tests go on (run 45222410247, API 35: the reader ended a second after it started,
+# and a run whose instrumentation was still running tests was stopped as hung after 301 s).
+# Prints "progress" when the device logged a test event other than <baseline>, the last one already
+# accounted for; otherwise why the stall stands.
+stall_on_device() { # <baseline event line> <device read exit status> <device's last event line>
+  if [ "$2" != "0" ]; then
+    echo "the device's own logcat could not be read either (adb exit $2)"
+  elif [ -n "$3" ] && [ "$3" != "$1" ]; then
+    echo "progress"
+  else
+    echo "the device's own logcat has no later test event either"
+  fi
+}
+
+# Reads the device's TestRunner events directly and prints "<stall_on_device verdict><TAB><device's last
+# event>". The baseline is <accounted event>, or the streamed logcat's last event when that is empty.
+device_stall_check() { # <streamed logcat file> <device event already accounted for, or empty>
+  local events rc last
+  events=$(timeout 30 adb logcat -d -v threadtime 'TestRunner:I' '*:S' 2>&1) && rc=0 || rc=$?
+  last=$(last_test_event <<<"${events//$'\r'/}")
+  printf '%s\t%s\n' "$(stall_on_device "${2:-$(last_test_event <"$1" 2>/dev/null)}" "$rc" "$last")" "$last"
+}
+
 # Why the run must be stopped, or nothing when it may go on. Reaching the total bound while tests
 # still start and finish is running out of time, not a hang: run 44683082787 (API 29) reached it 1 s
 # after a test started, and the report that named that test "hung" sent the hunt into a test that
