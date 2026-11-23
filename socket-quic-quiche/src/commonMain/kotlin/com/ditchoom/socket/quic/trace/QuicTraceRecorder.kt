@@ -95,7 +95,7 @@ class QuicTraceRecorder(
     private val origin: TimeMark = clock.markNow()
 
     /** Offset from the recorder's single clock origin — a Duration, matching [TraceEvent.at]. */
-    private fun now(): Duration = origin.elapsedNow()
+    internal fun now(): Duration = origin.elapsedNow()
 
     /**
      * Waits (suspending, bounded) until what was recorded so far has reached the application's sink,

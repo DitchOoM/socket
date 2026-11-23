@@ -36,7 +36,8 @@ import kotlin.time.Duration.Companion.seconds
  * context, each read's cancellation hook, suspend frames), still to trim. The hand-off allocates nothing: a step is a
  * ring slot, a ready lane a ring push. The loop's share is the incoming-stream record and its queue's segments, about
  * 35 B per stream, and nothing per echo to a pool handler. Per connection offered, the loop makes the connection's lane,
- * 880 to 2,750 B in the pool's code: that figure sums JFR samples, so it spreads, and its gate sits over the spread.
+ * reported, not gated: it sums JFR samples, and a sample's weight is all the thread allocated since the last one, so
+ * one sample landing in the pool's frames can count kilobytes of the handshake (667 B to 13 KB across runners).
  * The other gates read the threads' exact allocation counters, which vary by under 1 %; each sits a little over its measurement.
  */
 class HandlerAllocationTests {
@@ -73,10 +74,10 @@ class HandlerAllocationTests {
     /**
      * What the server's loop allocates in the handler code for each connection it offers: the connection's lane, made
      * when its handshake completes, and the offer's step. Sampled by JFR on the loop thread, from the frames of the pool
-     * and seat classes only, as the rest of a connection's setup is not the pool's.
+     * and seat classes only, as the rest of a connection's setup is not the pool's. Printed only: see the class notes.
      */
     @Test
-    fun aConnectionOfferedCostsTheLoopOnlyItsLane() =
+    fun whatTheLoopAllocatesInThePoolPerOfferedConnectionIsReported() =
         runBlocking {
             skipOnMissingNativeLib(HandlerAllocationTests::class) {
                 // The helper takes every accepted connection, so the test waits on its offer, not on a second accept.
@@ -110,7 +111,6 @@ class HandlerAllocationTests {
                         .delete(dump)
                     val perConnection = bytes.toDouble() / CONNECTIONS
                     println("[handler allocation] offer: server loop %.0f B/connection in the pool's code".format(perConnection))
-                    assertTrue(perConnection <= OFFER_GATE, "the loop allocated %.0f B per offered connection".format(perConnection))
                 }
             }
         }
@@ -268,7 +268,6 @@ class HandlerAllocationTests {
         const val POOL_GATE_CLOSES = 1_450
         const val POOL_GATE_READS = 1_900
         const val CONNECTIONS = 300
-        const val OFFER_GATE = 3_200
         const val ECHO_BYTES = 64
         const val ECHOES = 20_000
 
