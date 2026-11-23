@@ -59,6 +59,10 @@ class NioBlockingReadTimeoutContractTests {
 
     @Test
     fun connectionSurvivesReadTimeoutForWriting() = ReadTimeoutContractTests().connectionSurvivesReadTimeoutForWriting()
+
+    @Test
+    fun enclosingDeadlineDuringBoundedReadIsTheCallersCancellation() =
+        ReadTimeoutContractTests().enclosingDeadlineDuringBoundedReadIsTheCallersCancellation()
 }
 
 /** The JVM reference path (non-blocking selector). Expected all-green — see class KDoc above. */
@@ -94,4 +98,8 @@ class NioSelectorReadTimeoutContractTests {
 
     @Test
     fun connectionSurvivesReadTimeoutForWriting() = ReadTimeoutContractTests().connectionSurvivesReadTimeoutForWriting()
+
+    @Test
+    fun enclosingDeadlineDuringBoundedReadIsTheCallersCancellation() =
+        ReadTimeoutContractTests().enclosingDeadlineDuringBoundedReadIsTheCallersCancellation()
 }

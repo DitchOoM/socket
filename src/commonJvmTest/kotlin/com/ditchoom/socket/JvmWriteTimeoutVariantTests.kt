@@ -52,6 +52,10 @@ class NioBlockingWriteTimeoutContractTests {
 
     @Test
     fun boundedWriteTimeoutClosesConnection() = WriteTimeoutContractTests().boundedWriteTimeoutClosesConnection()
+
+    @Test
+    fun enclosingDeadlineDuringBoundedWriteIsTheCallersCancellation() =
+        WriteTimeoutContractTests().enclosingDeadlineDuringBoundedWriteIsTheCallersCancellation()
 }
 
 /** The JVM selector (non-blocking) write path. Expected enforced + destructive — see class KDoc above. */
@@ -84,4 +88,8 @@ class NioSelectorWriteTimeoutContractTests {
 
     @Test
     fun boundedWriteTimeoutClosesConnection() = WriteTimeoutContractTests().boundedWriteTimeoutClosesConnection()
+
+    @Test
+    fun enclosingDeadlineDuringBoundedWriteIsTheCallersCancellation() =
+        WriteTimeoutContractTests().enclosingDeadlineDuringBoundedWriteIsTheCallersCancellation()
 }

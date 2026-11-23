@@ -8,12 +8,11 @@ import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.unwrapFully
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ClosedReceiveChannelException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import org.khronos.webgl.Int8Array
 import org.khronos.webgl.Uint8Array
 import kotlin.coroutines.cancellation.CancellationException
@@ -124,24 +123,20 @@ open class NodeSocket(
         // Draining the channel first prevents a race where fast-closing servers
         // (like Autobahn) send a response and close before read() is called.
         socket.resume()
+        // This read's own deadline surfaces as the uniform timeout type (RFC_READ_TIMEOUT_CONTRACT §4.1,
+        // Axis 3); a caller's enclosing timeout stays the caller's cancellation. Node reads are
+        // non-destructive, so the connection stays usable either way.
         val message =
-            try {
-                withTimeout(timeout) {
-                    try {
-                        incomingMessageChannel.receive()
-                    } catch (e: ClosedReceiveChannelException) {
-                        throw SocketClosedException.General(
-                            "Socket is already closed. transmissionError=$hadTransmissionError",
-                            e,
-                        )
-                    }
+            withTimeoutOrNull(timeout) {
+                try {
+                    incomingMessageChannel.receive()
+                } catch (e: ClosedReceiveChannelException) {
+                    throw SocketClosedException.General(
+                        "Socket is already closed. transmissionError=$hadTransmissionError",
+                        e,
+                    )
                 }
-            } catch (e: TimeoutCancellationException) {
-                // withTimeout expiry leaks kotlinx's TimeoutCancellationException; surface the uniform
-                // timeout type instead (RFC_READ_TIMEOUT_CONTRACT §4.1, Axis 3). Node reads are already
-                // non-destructive, so the connection stays usable after this throws.
-                throw SocketTimeoutException(TimeoutContext.Read(timeout), cause = e)
-            }
+            } ?: throw SocketTimeoutException(TimeoutContext.Read(timeout))
         if (message.bytesRead < 0) {
             throw SocketClosedException.General(
                 "Received ${message.bytesRead} from server indicating a socket close. transmissionError=$hadTransmissionError",
@@ -191,14 +186,15 @@ open class NodeSocket(
             if (deadline.isInfinite()) {
                 flushed.await()
             } else {
-                withTimeout(deadline) { flushed.await() }
+                // Bounded write-timeout is DESTRUCTIVE (§4): the send buffer is wedged. Tear the socket
+                // down and null it so isOpen is deterministically false, then surface the uniform typed
+                // timeout. A caller's enclosing timeout is an outer cancel, handled below.
+                withTimeoutOrNull(deadline) { flushed.await() } ?: run {
+                    cleanSocket(socket)
+                    netSocket = null
+                    throw SocketTimeoutException(TimeoutContext.Write(deadline))
+                }
             }
-        } catch (e: TimeoutCancellationException) {
-            // Bounded write-timeout is DESTRUCTIVE (§4): the send buffer is wedged. Tear the socket down
-            // and null it so isOpen is deterministically false, then surface the uniform typed timeout.
-            cleanSocket(socket)
-            netSocket = null
-            throw SocketTimeoutException(TimeoutContext.Write(deadline), cause = e)
         } catch (e: CancellationException) {
             // An outer cancel (not the deadline above) while the chunk is still queued: Node holds a
             // view of the caller's own ArrayBuffer, not a copy, and the caller owns the buffer again

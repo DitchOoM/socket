@@ -21,11 +21,10 @@ import com.ditchoom.socket.translateRead
 import com.ditchoom.socket.wrapJvmException
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.IOException
 import java.net.StandardSocketOptions
 import java.nio.channels.AsynchronousSocketChannel
@@ -187,12 +186,14 @@ abstract class AsyncBaseClientSocket(
                     if (deadline.isInfinite()) {
                         inFlight.await()
                     } else {
-                        withTimeout(deadline) { inFlight.await() }
+                        // Our deadline elapsed: orphan the read (keep the buffer + single-flight state) and
+                        // abandon only the wait. The next read() re-awaits this same background read. A
+                        // caller's enclosing timeout is a cancellation from outside, handled below.
+                        withTimeoutOrNull(deadline) { inFlight.await() }
+                            ?: throw SocketTimeoutException(TimeoutContext.Read(deadline))
                     }
-                } catch (e: TimeoutCancellationException) {
-                    // Our deadline elapsed: orphan the read (keep the buffer + single-flight state) and
-                    // abandon only the wait. The next read() re-awaits this same background read.
-                    throw SocketTimeoutException(TimeoutContext.Read(deadline))
+                } catch (e: SocketTimeoutException) {
+                    throw e
                 } catch (e: CancellationException) {
                     // The waiter was cancelled from outside; the read still owns the buffer, so leave it
                     // orphaned for the next read() and let the cancellation propagate. (A close() is not a
