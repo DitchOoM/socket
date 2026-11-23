@@ -196,11 +196,10 @@ class HandlerAllocationTests {
                     payload.position(0)
                     stream.write(payload, 10.seconds)
                     stream.close()
-                    var waited = 0
-                    while (handled.get() < target) {
-                        if (++waited > 1_000_000) fail("the handler of stream ${stream.streamId} never returned")
-                        Thread.onSpinWait()
-                        kotlinx.coroutines.yield()
+                    when (val awaited = awaitCount(handled, target, HANDLER_RETURNS_WITHIN)) {
+                        is CountAwaited.Reached -> Unit
+                        is CountAwaited.NotReached ->
+                            fail("the handler of stream ${stream.streamId} did not return within ${awaited.waited}")
                     }
                 }
                 repeat(WARM_UP) { oneStream() }
@@ -270,6 +269,9 @@ class HandlerAllocationTests {
         const val CONNECTIONS = 300
         const val ECHO_BYTES = 64
         const val ECHOES = 20_000
+
+        /** Past the handler's own 10 s read and write deadlines: a handler stuck on either has failed by then. */
+        val HANDLER_RETURNS_WITHIN = 15.seconds
 
         /**
          * The loop's gates, per stream and per echo. On the JDK stack (Windows) its selector boxes each ready socket
