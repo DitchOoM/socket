@@ -19,11 +19,9 @@ import com.ditchoom.socket.nwhelpers.nw_helper_send_tcp
 import com.ditchoom.socket.nwhelpers.nw_helper_tcp_receive
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withTimeout
 import platform.Foundation.NSData
 import platform.Network.nw_connection_t
 import platform.posix.ECONNABORTED
@@ -121,19 +119,13 @@ open class NWSocketWrapper(
         val conn = connection ?: throw SocketClosedException.General("Socket is closed")
         return readMutex.withLock {
             val pending = inFlightRead ?: startReceive(conn).also { inFlightRead = it }
-            val buffer =
+            val waited =
                 try {
                     if (deadline.isInfinite()) {
-                        pending.await()
+                        WithinDeadline.Completed(pending.await())
                     } else {
-                        withTimeout(deadline) { pending.await() }
+                        withinDeadline(deadline) { pending.await() }
                     }
-                } catch (e: TimeoutCancellationException) {
-                    // Deadline elapsed: leave the native receive outstanding (single-flight) and abandon
-                    // only the wait — the next read() re-awaits this same receive. Do NOT cancel the
-                    // connection (RFC §3.2, Axis 2). withTimeout leaks kotlinx's
-                    // TimeoutCancellationException; surface the uniform type (§4.1, Axis 3).
-                    throw SocketTimeoutException(TimeoutContext.Read(deadline), cause = e)
                 } catch (e: Throwable) {
                     // Only a receive that itself failed or hit EOF (its deferred completed exceptionally)
                     // ends single-flight: the next read() starts a fresh receive. A waiter cancelled from
@@ -145,8 +137,16 @@ open class NWSocketWrapper(
                     if (pending.isCancelled) inFlightRead = null
                     throw e
                 }
-            inFlightRead = null
-            buffer
+            when (waited) {
+                is WithinDeadline.Completed -> {
+                    inFlightRead = null
+                    waited.value
+                }
+                // Deadline elapsed: leave the native receive outstanding (single-flight) and abandon only
+                // the wait — the next read() re-awaits this same receive. Do NOT cancel the connection
+                // (RFC §3.2, Axis 2).
+                WithinDeadline.Expired -> throw SocketTimeoutException(TimeoutContext.Read(deadline))
+            }
         }
     }
 
@@ -208,31 +208,31 @@ open class NWSocketWrapper(
         val bytesToWrite = nsData.length.toInt()
 
         val bytesWritten =
-            try {
-                writeMutex.withLock {
-                    // The default WritePolicy.UntilClosed passes an infinite deadline: suspend on
-                    // back-pressure (RFC_WRITE_TIMEOUT_CONTRACT §1) without arming a timeout that could
-                    // kill the connection. Only an opt-in Bounded(d) write bounds the send.
-                    if (deadline.isInfinite()) {
-                        performSend(conn, nsData)
-                    } else {
-                        withTimeout(deadline) { performSend(conn, nsData) }
+            writeMutex.withLock {
+                // The default WritePolicy.UntilClosed passes an infinite deadline: suspend on
+                // back-pressure (RFC_WRITE_TIMEOUT_CONTRACT §1) without arming a timeout that could
+                // kill the connection. Only an opt-in Bounded(d) write bounds the send.
+                if (deadline.isInfinite()) {
+                    performSend(conn, nsData)
+                } else {
+                    // An opt-in Bounded(d) write that blows its own deadline is DESTRUCTIVE (RFC §4):
+                    // Network.framework has no per-send cancel, so cancel the connection to abandon the
+                    // outstanding send. A caller's enclosing timeout is a cancellation from outside and,
+                    // like any other, leaves the connection open.
+                    when (withinDeadline(deadline) { performSend(conn, nsData) }) {
+                        is WithinDeadline.Completed -> Unit
+                        WithinDeadline.Expired -> {
+                            closeInternal()
+                            throw SocketTimeoutException(TimeoutContext.Write(deadline))
+                        }
                     }
-                    // Committed here, on the awaiting caller, only once the send completed and this call
-                    // is still the buffer's owner. The completion block runs on a dispatch thread at any
-                    // time up to cancel, including after a cancelled write returned the buffer to its
-                    // caller, so it must never touch the buffer.
-                    buffer.position(buffer.position() + bytesToWrite)
-                    bytesToWrite
                 }
-            } catch (e: TimeoutCancellationException) {
-                // An opt-in Bounded(d) write blew its deadline. DESTRUCTIVE (RFC §4): Network.framework
-                // has no per-send cancel, so cancel the connection to abandon the outstanding send, then
-                // surface the uniform typed Write timeout. (No blanket invokeOnCancellation close here —
-                // that would also kill an infinite write cancelled from outside, which must stay
-                // non-destructive.)
-                closeInternal()
-                throw SocketTimeoutException(TimeoutContext.Write(deadline), cause = e)
+                // Committed here, on the awaiting caller, only once the send completed and this call
+                // is still the buffer's owner. The completion block runs on a dispatch thread at any
+                // time up to cancel, including after a cancelled write returned the buffer to its
+                // caller, so it must never touch the buffer.
+                buffer.position(buffer.position() + bytesToWrite)
+                bytesToWrite
             }
         return BytesWritten(bytesWritten)
     }

@@ -185,6 +185,38 @@ class ReadTimeoutContractTests {
         }
 
     /**
+     * A caller's own deadline that expires around a bounded read is the caller's cancellation, not the
+     * read's timeout: the read must not convert it into a [SocketTimeoutException] (a caller that retries
+     * on that would never see its cancellation), and the connection stays usable afterwards.
+     */
+    @Test
+    fun enclosingDeadlineDuringBoundedReadIsTheCallersCancellation() =
+        runTestNoTimeSkipping {
+            if (!tcpAvailable()) return@runTestNoTimeSkipping
+            val peer = SilentPeer.start()
+            val client = ClientSocket.connect(peer.port, config = boundedConfig())
+            try {
+                val enclosing =
+                    runCatching {
+                        withTimeoutOrNull(deadline / 4) { client.readBuffer(watchdog) }
+                    }
+                assertTrue(
+                    enclosing.isSuccess && enclosing.getOrNull() == null,
+                    "the enclosing deadline expired during a $watchdog-bounded read and surfaced as " +
+                        "${enclosing.exceptionOrNull() ?: enclosing.getOrNull()}, not as the caller's own timeout",
+                )
+
+                val payload = "after-enclosing-deadline"
+                peer.send(payload)
+                val buffer = client.readBuffer(watchdog)
+                assertEquals(payload, buffer.readString(buffer.remaining(), Charset.UTF8))
+            } finally {
+                client.close()
+                peer.close()
+            }
+        }
+
+    /**
      * Axis 2 (non-destructive, write half): non-destructiveness extends to the write side — a write
      * issued after a read timed out succeeds on the still-open connection.
      */

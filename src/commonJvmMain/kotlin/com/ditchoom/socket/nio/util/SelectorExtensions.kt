@@ -2,13 +2,13 @@
 
 package com.ditchoom.socket.nio.util
 
+import com.ditchoom.socket.WithinDeadline
+import com.ditchoom.socket.withinDeadline
 import com.ditchoom.socket.wrapJvmException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeout
 import java.nio.channels.AsynchronousCloseException
 import java.nio.channels.Selector
 import kotlin.coroutines.resume
@@ -18,8 +18,11 @@ import kotlin.time.Duration
 
 suspend fun Selector.aSelect(timeout: Duration): Int {
     val selector = this
-    return try {
-        withTimeout(timeout) {
+    // The deadline elapsing with no key ready reports "no selection" (0): `Selector.select` translates a
+    // 0 count into the uniform SocketTimeoutException (RFC_READ_TIMEOUT_CONTRACT §4.1, Axis 3). Only this
+    // call's own deadline does; a caller's enclosing timeout or any other cancellation propagates.
+    val selected =
+        withinDeadline(timeout) {
             withContext(Dispatchers.IO.limitedParallelism(1)) {
                 while (isActive) {
                     try {
@@ -37,13 +40,9 @@ suspend fun Selector.aSelect(timeout: Duration): Int {
                 0
             }
         }
-    } catch (e: TimeoutCancellationException) {
-        // The deadline elapsed with no key ready. Report "no selection" (0) rather than leaking a
-        // raw TimeoutCancellationException: `Selector.select` translates a 0 count into the uniform
-        // SocketTimeoutException (RFC_READ_TIMEOUT_CONTRACT §4.1, Axis 3). Only *our* withTimeout's
-        // own expiry produces TimeoutCancellationException; an external cancellation arrives as a
-        // plain CancellationException and still propagates.
-        0
+    return when (selected) {
+        is WithinDeadline.Completed -> selected.value
+        WithinDeadline.Expired -> 0
     }
 }
 
