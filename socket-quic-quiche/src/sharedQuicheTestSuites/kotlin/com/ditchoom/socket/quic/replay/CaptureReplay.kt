@@ -594,6 +594,23 @@ private class CaptureReplay(
         }
     }
 
+    /**
+     * Our timeout just ran: what it made is written when the capture's endpoint wrote it, when that is the capture's next
+     * step and no recorded timer runs before it. A host can stall between running quiche's timeout and writing its probe,
+     * and quiche stamps the probe as it writes it, so writing it sooner would move every timer armed from it.
+     */
+    private fun writeWhenCaptured() {
+        val next = schedule.steps.drop(stepNext).firstOrNull { !(it is Step.PeerSent && it.fate == Fate.Lost) }
+        if (next !is Step.OursSent || next.at <= now) return
+        val firings =
+            when (val timers = schedule.ourTimers) {
+                OurTimers.WhenDue -> return
+                is OurTimers.AsRecorded -> timers.firings
+            }
+        if (firings.any { it > now + TIMER_PRECISION && it < next.at }) return
+        background(next.at, endpoint = OurEndpoint.Busy)
+    }
+
     /** Our endpoint's work is done: its timers run again and what it wrote is taken. */
     private fun free() {
         ourWork = OurEndpoint.Free
@@ -680,7 +697,10 @@ private class CaptureReplay(
                     peerSends(peerSend.first(), peerNext - 1)
                 }
                 // quiche's timeout runs once, as the core's does: what it re-arms overdue fires after its probes are sent.
-                else -> pair.runTimeout(ours)
+                else -> {
+                    pair.runTimeout(ours)
+                    writeWhenCaptured()
+                }
             }
             when (endpoint) {
                 OurEndpoint.Free -> {

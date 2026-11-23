@@ -23,12 +23,14 @@ import com.ditchoom.socket.quic.core.stream.StreamIo
 import com.ditchoom.socket.quic.core.stream.StreamTable
 import com.ditchoom.socket.quic.core.time.ClockBase
 import com.ditchoom.socket.quic.core.time.LoopClock
+import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.time.QuicheTime
 import com.ditchoom.socket.quic.core.time.RttPrior
 import com.ditchoom.socket.quic.core.time.WakeSink
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 import com.ditchoom.socket.quic.core.udp.SockAddr
 import com.ditchoom.socket.quic.trace.TraceCapture
+import com.ditchoom.socket.quic.trace.recordOr
 import kotlin.random.Random
 
 /** The memory one connection is built with: what its loop's connections share, and its own ALPN scratch. */
@@ -208,7 +210,7 @@ private fun composed(
             egress = Egress(q, counts, turnClock),
             release = Release(q),
             network = NetworkWatch(),
-            flight = ConnFlight(flight, memory.shared.arena, address.peerKey, capture, clock.now().value),
+            flight = ConnFlight(flight, memory.shared.arena, address.peerKey, capture, flightOrigin(capture, clock.now())),
             inbox = WorkInbox(),
             slots = chosen,
             sink = sink,
@@ -223,6 +225,15 @@ private fun composed(
         )
     return Conn(Turn(parts, turnClock, port), port, socket, turnClock, loopEntrant, counts)
 }
+
+/**
+ * What the connection's flight recording counts from, read at [now] on the loop's clock: the trace recorder's origin when
+ * a trace is on, so the datagrams it records and the states the recorder stamps share one timeline; [now] when it is off.
+ */
+private fun flightOrigin(
+    capture: TraceCapture,
+    now: Nanos,
+): Long = capture.recordOr(now.value) { now.value - it.now().inWholeNanoseconds }
 
 private fun ConnSide.chainSource(): ChainSource =
     when (this) {

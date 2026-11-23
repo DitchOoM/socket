@@ -10,6 +10,7 @@ import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicRole
 import com.ditchoom.socket.quic.QuicheApi
+import com.ditchoom.socket.quic.QuicheConfig
 import com.ditchoom.socket.quic.QuicheConn
 import com.ditchoom.socket.quic.QuicheRecvInfo
 import com.ditchoom.socket.quic.QuicheSendInfo
@@ -103,8 +104,9 @@ class CoreRecordingReplayTests {
             when (host) {
                 ClientHost.StalledAroundConfirmation -> PAST_THE_PROBE
                 ClientHost.StalledPastItsNextProbe -> PAST_THE_NEXT_PROBE
-                ClientHost.Fast, ClientHost.SlowToRead, ClientHost.SlowToAnswer, ClientHost.LateForTimers, ClientHost.ColdToSend ->
-                    Duration.ZERO
+                ClientHost.Fast, ClientHost.SlowToRead, ClientHost.SlowToAnswer, ClientHost.LateForTimers, ClientHost.ColdToSend,
+                ClientHost.SlowToSetUp, ClientHost.SlowAfterItsTimer,
+                -> Duration.ZERO
             }
 
         override fun receive(into: ReceiveBatch): ReceiveBatchResult =
@@ -271,6 +273,12 @@ class CoreRecordingReplayTests {
         /** Its first send call reaches quiche [ENTRY] after the host read its clock for it, as a cold downcall does. */
         ColdToSend,
 
+        /** It takes [SETUP] to make its quiche connection after the trace's recorder was made for it. */
+        SlowToSetUp,
+
+        /** It holds its thread for [LATE] after running quiche's timeout, before it writes what the timeout made. */
+        SlowAfterItsTimer,
+
         /**
          * After its payload is lost, it reads the server's next datagrams [PAST_THE_PROBE] late, past when the probe for
          * the payload falls due, then stalls [LATE] after sending its answer, before its loop runs again.
@@ -329,6 +337,8 @@ class CoreRecordingReplayTests {
                             ClientHost.SlowToAnswer -> SlowToAnswer(loadQuicheApi())
                             ClientHost.LateForTimers -> LateForTimers(loadQuicheApi())
                             ClientHost.ColdToSend -> ColdToSend(loadQuicheApi())
+                            ClientHost.SlowToSetUp -> SlowToSetUp(loadQuicheApi())
+                            ClientHost.SlowAfterItsTimer -> SlowAfterItsTimer(loadQuicheApi())
                             ClientHost.Fast,
                             ClientHost.SlowToRead,
                             ClientHost.StalledAroundConfirmation,
@@ -545,6 +555,53 @@ class CoreRecordingReplayTests {
         }
 
     /**
+     * A host that took [SETUP] between making the trace's recorder and making its connection, as a Windows runner took
+     * 35 ms: the datagrams and the states its recording holds count from one origin, so its close is recorded as closing
+     * before its linger repeats it, and the replay follows it whole (CI Windows: the Closed state, stamped 36 ms late,
+     * took two of the close's repeats into the connection: "expected:<1> but was:<3>").
+     */
+    @Test
+    fun aRunWhoseClientWasSlowToSetUpIsFollowedWholeByItsReplayTwice() =
+        replayTest("aRunWhoseClientWasSlowToSetUpIsFollowedWholeByItsReplayTwice") {
+            val recorded = recordAnEcho(ClientHost.SlowToSetUp)
+            val finished = recorded.client.filterIsInstance<TraceEvent.DgramOut>()[HANDSHAKE_DATAGRAMS - 1].at
+            val established =
+                recorded.client
+                    .filterIsInstance<TraceEvent.State>()
+                    .first { it.name.endsWith(".Established") }
+                    .at
+            assertTrue(
+                established >= finished && established - finished < SETUP,
+                "the client recorded itself established at $established, after its handshake's last datagram at $finished",
+            )
+            assertFollowedWholeTwice(scheduleOf(recorded))
+        }
+
+    /**
+     * A host that stalled between running quiche's timeout and writing the probe it made: its recording has the timer
+     * fire, then the probe leave [LATE] later, stamped by quiche as it wrote it. The replay's client writes the probe when
+     * the recording's did, not when its timer ran (CI macOS JDK 25 FFM: a timer recorded at 55.90 ms, its probe at
+     * 70.71 ms, "our datagram 4 [OneRtt] was sent at 55.81 ms, the capture's at 70.62 ms").
+     */
+    @Test
+    fun aRunWhoseClientWasSlowAfterItsTimerIsFollowedWholeByItsReplayTwice() =
+        replayTest("aRunWhoseClientWasSlowAfterItsTimerIsFollowedWholeByItsReplayTwice") {
+            val recorded = recordAnEcho(ClientHost.SlowAfterItsTimer)
+            val fired =
+                recorded.client
+                    .filterIsInstance<TraceEvent.TimerFired>()
+                    .first()
+                    .at
+            val probe =
+                recorded.client
+                    .filterIsInstance<TraceEvent.DgramOut>()
+                    .first { it.at > fired }
+                    .at
+            assertTrue(probe - fired >= LATE, "the probe left $probe, at least $LATE after its timer ran at $fired")
+            assertFollowedWholeTwice(scheduleOf(recorded))
+        }
+
+    /**
      * A host stalled past its next probe as well: by the time it reads the server's answer to its first probe, the next
      * has fallen due, but the answer acknowledges what it would probe, so the host never runs that timer, and its
      * recording holds no firing after the first probe's. The replay's client, with no recorded firing left, fired the
@@ -752,6 +809,15 @@ class CoreRecordingReplayTests {
             assertFollowedWholeTwice(scheduleOf(Recorded(client, keptRecording("same-turn-answer.server.trace"), 1)))
         }
 
+    /** A kept CI recording whose client's probe left 14.8 ms after its timer ran (macOS JDK 25 FFM). */
+    @Test
+    fun aProbeWrittenLateAfterItsTimerIsReplayedWhenItWasWritten() =
+        replayTest("aProbeWrittenLateAfterItsTimerIsReplayedWhenItWasWritten") {
+            assertFollowedWholeTwice(
+                scheduleOf(Recorded(keptRecording("probe-written-late.client.trace"), keptRecording("probe-written-late.server.trace"), 1)),
+            )
+        }
+
     private fun keptRecording(name: String): List<TraceEvent> =
         TraceEvent.parseAll(
             assertNotNull(this::class.java.classLoader.getResource("replay-recordings/$name"), "no kept recording $name").readText(),
@@ -790,6 +856,36 @@ class CoreRecordingReplayTests {
                 NO_TIMEOUT_NANOS, FALLEN_DUE -> wait
                 else -> wait + LATE.inWholeNanoseconds
             }
+    }
+
+    /** quiche that holds its thread for [LATE] after each timeout it runs. */
+    private class SlowAfterItsTimer(
+        private val real: QuicheApi,
+    ) : QuicheApi by real {
+        override fun connOnTimeout(conn: QuicheConn) {
+            real.connOnTimeout(conn)
+            Thread.sleep(LATE.inWholeMilliseconds)
+        }
+    }
+
+    /** quiche that takes [SETUP] to make a connection. */
+    private class SlowToSetUp(
+        private val real: QuicheApi,
+    ) : QuicheApi by real {
+        override fun connect(
+            serverNameAddr: Long,
+            serverNameLen: Int,
+            scidAddr: Long,
+            scidLen: Int,
+            localAddr: Long,
+            localAddrLen: Int,
+            peerAddr: Long,
+            peerAddrLen: Int,
+            config: QuicheConfig,
+        ): QuicheConn {
+            Thread.sleep(SETUP.inWholeMilliseconds)
+            return real.connect(serverNameAddr, serverNameLen, scidAddr, scidLen, localAddr, localAddrLen, peerAddr, peerAddrLen, config)
+        }
     }
 
     /** quiche that, after each datagram it reads, holds its thread for [SLOW]: the host's work before quiche answers. */
@@ -933,6 +1029,9 @@ class CoreRecordingReplayTests {
 
         /** Longer than the replay's tolerance of a send's time: a replay that fires when due leaves the recording. */
         val LATE = 20.milliseconds
+
+        /** Longer than the close's linger takes to repeat it twice. */
+        val SETUP = 40.milliseconds
 
         /** Trebled from a first round trip into its probe, far past the replay's precision on a timer. */
         val ENTRY = 3.milliseconds
