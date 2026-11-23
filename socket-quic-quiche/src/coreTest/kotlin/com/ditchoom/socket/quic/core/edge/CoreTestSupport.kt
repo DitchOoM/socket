@@ -7,7 +7,7 @@ import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicOptions
-import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.ScopedReadResult
 import com.ditchoom.socket.quic.core.conn.ClientTokens
 import com.ditchoom.socket.quic.core.conn.FlightSize
 import com.ditchoom.socket.quic.core.conn.MismatchResponse
@@ -70,7 +70,7 @@ internal suspend fun echoOver(
         val reader =
             async {
                 while (received.size < payload.size) {
-                    if (stream.read(10.seconds) { received.add(it) } !is ScopedRead.Data<*>) break
+                    if (stream.read(10.seconds) { received.add(it) } !is ScopedReadResult.Data<*>) break
                 }
             }
         stream.writeFully(

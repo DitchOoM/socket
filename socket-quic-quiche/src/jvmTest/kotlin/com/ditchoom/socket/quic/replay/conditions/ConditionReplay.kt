@@ -6,7 +6,7 @@ import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.socket.networkId
 import com.ditchoom.socket.quic.QuicConnectionState
 import com.ditchoom.socket.quic.QuicError
-import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.ScopedReadResult
 import com.ditchoom.socket.quic.core.edge.CoreServer
 import com.ditchoom.socket.quic.core.edge.EdgeEnd
 import com.ditchoom.socket.quic.core.edge.feedNetwork
@@ -223,7 +223,7 @@ internal class ConditionReplay(
                 var got = 0
                 while (got < conditions.echoBytes) {
                     val read = stream.read(REPLAY_DEADLINE) { got += it.readByteArray(it.remaining()).size }
-                    if (read !is ScopedRead.Data<*>) return
+                    if (read !is ScopedReadResult.Data<*>) return
                 }
                 echoes += Echo(script(sent), script(clock.at.value))
                 steps++
@@ -243,7 +243,7 @@ internal class ConditionReplay(
             val connection = server.accept()
             accepted.complete(Unit)
             val stream = connection.acceptStream()
-            while (stream.read(REPLAY_DEADLINE) { stream.writeFully(it, REPLAY_DEADLINE) } is ScopedRead.Data<*>) steps++
+            while (stream.read(REPLAY_DEADLINE) { stream.writeFully(it, REPLAY_DEADLINE) } is ScopedReadResult.Data<*>) steps++
         } catch (ended: Exception) {
             steps++
         }

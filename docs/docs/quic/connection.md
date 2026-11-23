@@ -17,7 +17,7 @@ connection on exit:
 ```kotlin
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.use
-import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.ScopedReadResult
 import com.ditchoom.socket.quic.read
 import kotlin.time.Duration.Companion.seconds
 
@@ -43,8 +43,8 @@ val reply = withQuicConnection(
     // Read the response. The scoped read gives the block the bytes and releases the buffer on
     // every exit path — exception and cancellation included — so the free is not yours to remember.
     val text = when (val r = stream.read(5.seconds) { it.readString(it.remaining(), Charset.UTF8) }) {
-        is ScopedRead.Data -> r.value
-        ScopedRead.End, ScopedRead.Reset -> ""
+        is ScopedReadResult.Data -> r.value
+        ScopedReadResult.End, ScopedReadResult.Reset -> ""
     }
     stream.close() // optional here — the scope would reclaim it — but sends a prompt FIN.
     text

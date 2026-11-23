@@ -5,7 +5,7 @@ package com.ditchoom.socket.quic.core.edge
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.socket.quic.QuicError
-import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.ScopedReadResult
 import com.ditchoom.socket.quic.core.demux.withCoreEchoServer
 import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.network
@@ -38,7 +38,7 @@ class NativeEchoAllocationReport {
                     stream.writeFully(out, 10.seconds)
                     var got = 0
                     while (got < PAYLOAD) {
-                        if (stream.read(10.seconds) { got += it.remaining() } !is ScopedRead.Data<*>) break
+                        if (stream.read(10.seconds) { got += it.remaining() } !is ScopedReadResult.Data<*>) break
                     }
                 }
                 repeat(WARMUP) { echo() }

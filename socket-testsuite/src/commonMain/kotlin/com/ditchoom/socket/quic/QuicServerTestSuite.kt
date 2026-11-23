@@ -179,7 +179,7 @@ abstract class QuicServerTestSuite {
                                 stream.write(sendBuf, 5.seconds)
 
                                 val response = stream.read(5.seconds) { it.readString(it.remaining(), Charset.UTF8) }
-                                if (response is ScopedRead.Data) {
+                                if (response is ScopedReadResult.Data) {
                                     echoResult.complete(response.value)
                                 } else {
                                     echoResult.complete("no_data")
@@ -388,7 +388,7 @@ abstract class QuicServerTestSuite {
         // Scoped read (#538): decode inside the block, so the read buffer is released before the
         // reply is even allocated. read transfers ownership; write takes none.
         val data = stream.read(5.seconds) { it.readString(it.remaining(), Charset.UTF8) }
-        if (data is ScopedRead.Data) {
+        if (data is ScopedReadResult.Data) {
             val text = data.value
             val out = BufferFactory.deterministic().allocate(tag.length + 1 + text.length)
             out.writeString("$tag:$text", Charset.UTF8)
@@ -417,7 +417,7 @@ abstract class QuicServerTestSuite {
             stream.write(sendBuf, 5.seconds)
             val response = stream.read(5.seconds) { it.readString(it.remaining(), Charset.UTF8) }
             val reply =
-                if (response is ScopedRead.Data) {
+                if (response is ScopedReadResult.Data) {
                     response.value
                 } else {
                     "no_data:${response::class.simpleName}"
@@ -600,7 +600,7 @@ abstract class QuicServerTestSuite {
                             stream.write(sendBuf, 5.seconds)
                             val response = stream.read(5.seconds) { it.readString(it.remaining(), Charset.UTF8) }
                             val text =
-                                if (response is ScopedRead.Data) response.value else "no_data:${response::class.simpleName}"
+                                if (response is ScopedReadResult.Data) response.value else "no_data:${response::class.simpleName}"
                             stream.close()
 
                             assertEquals(
@@ -710,7 +710,7 @@ abstract class QuicServerTestSuite {
                                         stream.write(out, 5.seconds)
                                         val response = stream.read(5.seconds) { it.readString(it.remaining(), Charset.UTF8) }
                                         stream.close()
-                                        if (response is ScopedRead.Data) response.value else "no_data:${response::class.simpleName}"
+                                        if (response is ScopedReadResult.Data) response.value else "no_data:${response::class.simpleName}"
                                     }
                                 } catch (e: Throwable) {
                                     if (e is kotlinx.coroutines.CancellationException &&
@@ -826,7 +826,7 @@ abstract class QuicServerTestSuite {
         assertEquals(
             "Reset",
             resultClassName,
-            "a peer RESET_STREAM must surface as the Reset arm (ReadResult.Reset / ScopedRead.Reset — " +
+            "a peer RESET_STREAM must surface as the Reset arm (ReadResult.Reset / ScopedReadResult.Reset — " +
                 "the two mirror each other, hence the bare simple name); every stream-level quiche error " +
                 "collapsing to End is issue #398",
         )
@@ -853,7 +853,7 @@ abstract class QuicServerTestSuite {
                                 val stream = acceptStream()
                                 val first = stream.read(5.seconds) { it.readString(it.remaining(), Charset.UTF8) }
                                 serverGotData.complete(
-                                    if (first is ScopedRead.Data) {
+                                    if (first is ScopedReadResult.Data) {
                                         first.value
                                     } else {
                                         "no_data:${first::class.simpleName}"
@@ -966,7 +966,7 @@ abstract class QuicServerTestSuite {
                             world.resetForRead()
                             s2.write(world, 5.seconds)
                             val resp = s2.read(5.seconds) { it.readString(it.remaining(), Charset.UTF8) }
-                            assertTrue(resp is ScopedRead.Data, "fresh stream after a peer stream-reset must round-trip, got $resp")
+                            assertTrue(resp is ScopedReadResult.Data, "fresh stream after a peer stream-reset must round-trip, got $resp")
                             assertEquals("world", resp.value)
                             s2.close()
                         }
@@ -1117,7 +1117,7 @@ abstract class QuicServerTestSuite {
                                 stream.write(sendBuf, 5.seconds)
 
                                 val response = stream.read(5.seconds) { it.readString(it.remaining(), Charset.UTF8) }
-                                if (response is ScopedRead.Data) {
+                                if (response is ScopedReadResult.Data) {
                                     echoResult.complete(response.value)
                                 } else {
                                     echoResult.complete("no_data")
@@ -1197,7 +1197,7 @@ abstract class QuicServerTestSuite {
                                 val received = StringBuilder()
                                 while (true) {
                                     val r = stream.read(5.seconds) { it.readString(it.remaining(), Charset.UTF8) }
-                                    if (r is ScopedRead.Data) {
+                                    if (r is ScopedReadResult.Data) {
                                         received.append(r.value)
                                     } else {
                                         break
@@ -1224,7 +1224,7 @@ abstract class QuicServerTestSuite {
                                 stream.shutdownSend()
 
                                 val response = stream.read(5.seconds) { it.readString(it.remaining(), Charset.UTF8) }
-                                if (response is ScopedRead.Data) {
+                                if (response is ScopedReadResult.Data) {
                                     echoResult.complete(response.value)
                                 } else {
                                     echoResult.complete("no_data:${response::class.simpleName}")
@@ -1281,7 +1281,7 @@ abstract class QuicServerTestSuite {
                                 val received = StringBuilder()
                                 while (true) {
                                     val r = stream.read(5.seconds) { it.readString(it.remaining(), Charset.UTF8) }
-                                    if (r !is ScopedRead.Data) break
+                                    if (r !is ScopedReadResult.Data) break
                                     received.append(r.value)
                                 }
                                 val reply = BufferFactory.deterministic().allocate(received.length)
@@ -1307,7 +1307,7 @@ abstract class QuicServerTestSuite {
                                 delay(2.seconds)
 
                                 val response = stream.read(5.seconds) { it.readString(it.remaining(), Charset.UTF8) }
-                                if (response is ScopedRead.Data) {
+                                if (response is ScopedReadResult.Data) {
                                     echoResult.complete(response.value)
                                 } else {
                                     echoResult.complete("no_data:${response::class.simpleName}")

@@ -22,7 +22,7 @@ import kotlinx.coroutines.withTimeout
 
 /**
  * The Layer-2 multiplexed QUIC transport (RFC_UNIFIED_ESTABLISHMENT.md §3.2): establishes a held
- * [QuicConnection] over which the caller opens many streams and datagrams.
+ * [QuicEngineConnection] over which the caller opens many streams and datagrams.
  *
  * This is the held ↔ scoped duality's one home for QUIC. `withQuicConnection { }` is the scoped form;
  * this is the held form, and [use][com.ditchoom.socket.transport.use] gives the scoped ergonomic over
@@ -41,12 +41,12 @@ import kotlinx.coroutines.withTimeout
 class QuicSessionTransport(
     private val quicOptions: QuicOptions,
     private val engine: QuicEngine = defaultQuicEngine,
-) : SessionTransport<QuicConnection> {
+) : SessionTransport<QuicEngineConnection> {
     override suspend fun establish(
         hostname: String,
         port: Int,
         config: TransportConfig,
-    ): QuicConnection =
+    ): QuicEngineConnection =
         try {
             withTimeout(config.connectTimeout) {
                 engine.connect(
@@ -66,7 +66,7 @@ class QuicSessionTransport(
             )
         }
 
-    override suspend fun close(session: QuicConnection) = session.close()
+    override suspend fun close(session: QuicEngineConnection) = session.close()
 }
 
 /**

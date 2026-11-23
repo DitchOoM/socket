@@ -52,7 +52,7 @@ abstract class ConnectionEndCancelsScopeTestSuite {
         val ended = CompletableDeferred<Throwable>()
 
         suspend fun park(scope: QuicScope): Nothing {
-            entered.complete((scope as QuicConnection).state)
+            entered.complete((scope as QuicEngineConnection).state)
             try {
                 awaitCancellation()
             } catch (e: Throwable) {
@@ -148,7 +148,7 @@ abstract class ConnectionEndCancelsScopeTestSuite {
                     try {
                         val result =
                             withQuicConnection("127.0.0.1", port, options) {
-                                val state = (this as QuicConnection).state
+                                val state = (this as QuicEngineConnection).state
                                 closeWithError(APPLICATION_CLOSE_CODE)
                                 val closed = withTimeout(closeBound) { state.first { it is QuicConnectionState.Closed } }
                                 // Time for a watcher that saw the same Closed to cancel this block, were it to.
@@ -233,7 +233,7 @@ abstract class ConnectionEndCancelsScopeTestSuite {
                         val reply =
                             try {
                                 withQuicConnection("127.0.0.1", port, options) {
-                                    val connection = this as QuicConnection
+                                    val connection = this as QuicEngineConnection
                                     unread = { connection.unreadAtClose.value }
                                     val stream = openStream()
                                     step = "writing the request"
@@ -277,7 +277,7 @@ abstract class ConnectionEndCancelsScopeTestSuite {
                     val serverJob =
                         launch {
                             connections {
-                                val connection = this as QuicConnection
+                                val connection = this as QuicEngineConnection
                                 var step = "accepting the stream"
                                 try {
                                     val stream = acceptStream()
@@ -356,7 +356,7 @@ abstract class ConnectionEndCancelsScopeTestSuite {
                             outcome.complete(
                                 runCatching {
                                     withQuicConnection("127.0.0.1", port, clientOptions) {
-                                        val connection = this as QuicConnection
+                                        val connection = this as QuicEngineConnection
                                         launch {
                                             connection.state.first { it is QuicConnectionState.Closed }
                                             unreadWhenClosed.complete(connection.unreadAtClose.value)
@@ -391,9 +391,9 @@ abstract class ConnectionEndCancelsScopeTestSuite {
     private suspend fun QuicByteStream.readToEnd(text: StringBuilder = StringBuilder()): String {
         while (true) {
             when (val r = read(closeBound) { it.readString(it.remaining(), Charset.UTF8) }) {
-                is ScopedRead.Data -> text.append(r.value)
-                ScopedRead.End -> return text.toString()
-                ScopedRead.Reset -> fail("the peer reset a stream it was answering on, after ${text.length} chars")
+                is ScopedReadResult.Data -> text.append(r.value)
+                ScopedReadResult.End -> return text.toString()
+                ScopedReadResult.Reset -> fail("the peer reset a stream it was answering on, after ${text.length} chars")
             }
         }
     }

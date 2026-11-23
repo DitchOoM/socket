@@ -201,7 +201,7 @@ class PathRetirementTests {
                 driverContext = EmptyCoroutineContext,
             )
 
-        /** Ask the driver to migrate, exactly as every platform `QuicConnection.migrate` does. */
+        /** Ask the driver to migrate, exactly as every platform `QuicEngineConnection.migrate` does. */
         suspend fun migrate(): CompletableDeferred<MigrationResult> {
             val deferred = CompletableDeferred<MigrationResult>()
             driver.commands.send(QuicheCmd.Migrate(MigrationTarget.FreshLocalEndpoint, deferred))

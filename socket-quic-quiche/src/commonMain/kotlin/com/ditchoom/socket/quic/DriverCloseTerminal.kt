@@ -21,7 +21,7 @@ internal fun QuicheDriver.connectionClosed(): QuicCloseException =
     )
 
 /**
- * [QuicConnection.acceptStream] for every backend — a receive that reports the connection's close
+ * [QuicEngineConnection.acceptStream] for every backend — a receive that reports the connection's close
  * instead of the channel's.
  *
  * `cleanup()` ends teardown with `incomingStreams.close()`, which resumes whatever is parked here.

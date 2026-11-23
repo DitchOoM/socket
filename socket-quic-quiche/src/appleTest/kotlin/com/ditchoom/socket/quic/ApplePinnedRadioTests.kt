@@ -99,7 +99,7 @@ class ApplePinnedRadioTests {
                     sendBuf.resetForRead()
                     stream.write(sendBuf, 5.seconds)
                     val response = stream.read(5.seconds) { it.readString(it.remaining(), Charset.UTF8) }
-                    assertEquals("pinned", assertIs<ScopedRead.Data<String>>(response).value)
+                    assertEquals("pinned", assertIs<ScopedReadResult.Data<String>>(response).value)
                     stream.close()
                     assertEquals(MigrationResult.Unmoved.Impossible.PolicyForbids, conn.migrate(MigrationTarget.FreshLocalEndpoint))
                 } finally {

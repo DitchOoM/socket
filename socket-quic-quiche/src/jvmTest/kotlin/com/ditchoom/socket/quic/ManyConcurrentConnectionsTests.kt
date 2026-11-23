@@ -68,7 +68,7 @@ class ManyConcurrentConnectionsTests {
                                 val stream = acceptStream()
                                 try {
                                     while (true) {
-                                        if (stream.read(OP_DEADLINE) { stream.writeFully(it, OP_DEADLINE) } !is ScopedRead.Data) break
+                                        if (stream.read(OP_DEADLINE) { stream.writeFully(it, OP_DEADLINE) } !is ScopedReadResult.Data) break
                                     }
                                 } finally {
                                     stream.close()
@@ -96,7 +96,7 @@ class ManyConcurrentConnectionsTests {
                                             var got = ""
                                             while (true) {
                                                 val r = stream.read(OP_DEADLINE) { got += it.readString(it.remaining(), Charset.UTF8) }
-                                                if (r !is ScopedRead.Data) break
+                                                if (r !is ScopedReadResult.Data) break
                                             }
                                             stream.close()
                                             got

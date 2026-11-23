@@ -4,6 +4,7 @@ import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.socket.quic.trace.QlogDeclaration
 import com.ditchoom.socket.quic.trace.QuicConnectionCapture
 import com.ditchoom.socket.quic.trace.QuicTraceCapture
 import com.ditchoom.socket.testkit.trace.TraceSink
@@ -393,7 +394,7 @@ private sealed interface TraceDirectory {
                         val writer = BudgetedTraceWriter(file("server").bufferedWriter(), SERVER_TRACE_BUDGET)
                         serverWriters.add(writer)
                         QuicConnectionCapture(writer.sink)
-                    }),
+                    }, QlogDeclaration.NotBudgeted),
             )
 
         override fun flushServerTraces() = serverWriters.forEach(BudgetedTraceWriter::flush)
@@ -416,7 +417,13 @@ private class FileConnectionCapture(
 ) : InteropConnectionCapture {
     private val writer = BudgetedTraceWriter(file.bufferedWriter(), Long.MAX_VALUE)
 
-    override fun options(base: QuicOptions): QuicOptions = base.copy(trace = QuicTraceCapture({ QuicConnectionCapture(writer.sink) }))
+    override fun options(base: QuicOptions): QuicOptions =
+        base.copy(
+            trace =
+                QuicTraceCapture({
+                    QuicConnectionCapture(writer.sink)
+                }, QlogDeclaration.NotBudgeted),
+        )
 
     override fun keep() = writer.close()
 

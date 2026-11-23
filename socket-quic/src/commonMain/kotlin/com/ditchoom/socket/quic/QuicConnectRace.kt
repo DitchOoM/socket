@@ -17,7 +17,7 @@ import kotlin.time.Duration
  * finding it.
  */
 class QuicRacedConnect(
-    val connection: QuicConnection,
+    val connection: QuicEngineConnection,
     val candidateRace: QuicCandidateRace,
 )
 
@@ -71,7 +71,7 @@ suspend fun QuicEngine.connect(
     quicOptions: QuicOptions,
     transport: TransportConfig,
     timeout: Duration,
-): QuicConnection = connectRacing(binding, peer, quicOptions, transport, timeout).connection
+): QuicEngineConnection = connectRacing(binding, peer, quicOptions, transport, timeout).connection
 
 /**
  * What a failed QUIC connect attempt says about the peer's *other* candidates.
@@ -91,7 +91,7 @@ suspend fun QuicEngine.connect(
  * built from the one [QuicOptions] the caller passed, so a connect it does not permit is refused
  * identically at every endpoint. [EarlyDataProtocolNotOfferedException] is that case — it is raised
  * before an attempt opens a socket, so retrying it would open none either, just report the same
- * programming error once per candidate. [PinnedRadioRefusedException] is another.
+ * programming error once per candidate. [QuicRefusedException] is another.
  *
  * A pinned radio the platform never produced ([PinnedRadioUnavailableException] for anything but
  * [PinnedRadioUnavailable.NoPath]) is the same radio at every endpoint, so it is fatal too; a path the
@@ -101,7 +101,7 @@ fun quicConnectVerdict(error: Throwable): AttemptVerdict =
     when {
         error is QuicCloseException && error.quicError.isAboutThePeersIdentity() -> AttemptVerdict.Fatal
         error is EarlyDataProtocolNotOfferedException -> AttemptVerdict.Fatal
-        error is PinnedRadioRefusedException -> AttemptVerdict.Fatal
+        error is QuicRefusedException -> AttemptVerdict.Fatal
         error is PinnedRadioUnavailableException -> error.reason.verdict()
         else -> AttemptVerdict.of(error)
     }
@@ -152,7 +152,7 @@ private fun QuicError.isAboutThePeersIdentity(): Boolean = this is QuicError.Cry
 /** One candidate's attempt, carrying the slot it has to report its own fate into. */
 private class Attempted(
     val index: Int,
-    val connection: QuicConnection,
+    val connection: QuicEngineConnection,
 )
 
 /**

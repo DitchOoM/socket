@@ -5,6 +5,7 @@ package com.ditchoom.socket.quic
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.deterministic
+import com.ditchoom.socket.quic.trace.QlogDeclaration
 import com.ditchoom.socket.quic.trace.QlogTarget
 import com.ditchoom.socket.quic.trace.QuicConnectionCapture
 import com.ditchoom.socket.quic.trace.QuicTraceCapture
@@ -62,7 +63,7 @@ abstract class TrafficSecretsLogTestSuite {
 
     /** A client options value whose single connection is captured as [capture] describes. */
     protected fun capturing(capture: QuicConnectionCapture): QuicOptions =
-        serverOptions.copy(trace = QuicTraceCapture(captureFor = { capture }))
+        serverOptions.copy(trace = QuicTraceCapture(captureFor = { capture }, qlog = QlogDeclaration.NotBudgeted))
 
     /**
      * One client connection that echoes [ECHO_PAYLOAD] over a stream, so both directions carry 1-RTT
@@ -89,7 +90,7 @@ abstract class TrafficSecretsLogTestSuite {
                         stream.write(out, 5.seconds)
                         val reply = stream.read(5.seconds) { it.readString(it.remaining(), Charset.UTF8) }
                         stream.close()
-                        Echo(identity.session.hex, if (reply is ScopedRead.Data) reply.value else "no data: $reply")
+                        Echo(identity.session.hex, if (reply is ScopedReadResult.Data) reply.value else "no data: $reply")
                     }
                 } finally {
                     serverJob.cancel()

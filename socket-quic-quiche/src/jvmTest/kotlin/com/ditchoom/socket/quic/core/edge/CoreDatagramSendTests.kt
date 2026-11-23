@@ -15,7 +15,6 @@ import com.ditchoom.socket.quic.DatagramSend
 import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicConnectionEnd
 import com.ditchoom.socket.quic.QuicConnectionStats
-import com.ditchoom.socket.quic.QuicDatagramCount
 import com.ditchoom.socket.quic.QuicDatagramRefused
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicOptions
@@ -181,10 +180,10 @@ class CoreDatagramSendTests {
             assertEquals(FRESH.toByte(), buffer.readByte(), "the stale datagrams were passed over for the fresh one")
             buffer.freeIfNeeded()
             val stats = statsOf(pair, serverSide)
-            assertEquals(STALE.toLong(), stats.datagramsExpiredIncoming.n)
+            assertEquals(STALE.toLong(), stats.datagramDrops.expiredIncoming)
             assertEquals(
                 stats.datagramsReceived,
-                1 + stats.datagramsExpiredIncoming.n + stats.datagramsDroppedReceiveQueue.n,
+                1 + stats.datagramDrops.expiredIncoming + stats.datagramDrops.receiveQueue,
                 "received = delivered + dropped",
             )
         }
@@ -230,17 +229,17 @@ class CoreDatagramSendTests {
             pair.runFor(1.seconds)
             val sender = statsOf(pair, pair.client.connection)
             assertEquals((BURSTS * BURST).toLong(), accepted + refused, "attempts = accepted + refused")
-            assertEquals(refused, sender.datagramsRefusedQueueFull.n)
+            assertEquals(refused, sender.datagramDrops.refusedQueueFull)
             assertEquals(
                 accepted,
-                sender.datagramsSent + sender.datagramsEvicted.n + sender.datagramsExpiredOutgoing.n + sender.datagramsDroppedUnsendable.n,
+                sender.datagramsSent + sender.datagramDrops.run { evicted + expiredOutgoing + unsendable },
                 "accepted = sent + evicted + expired + unsendable: $sender",
             )
             when (datagrams.overflow) {
                 is DatagramOverflow.RefuseNew -> assertTrue(refused > 0, "the overrun refused some sends")
                 is DatagramOverflow.EvictOldest ->
                     assertTrue(
-                        refused == 0L && sender.datagramsEvicted.n > 0,
+                        refused == 0L && sender.datagramDrops.evicted > 0,
                         "the overrun evicted: $sender",
                     )
             }
@@ -258,10 +257,10 @@ class CoreDatagramSendTests {
             }
             val receiver = statsOf(pair, serverSide)
             assertEquals(sender.datagramsSent, receiver.datagramsReceived, "the link loses nothing")
-            assertTrue(receiver.datagramsDroppedReceiveQueue.n + receiver.datagramsExpiredIncoming.n > 0, "the slow receiver dropped some")
+            assertTrue(receiver.datagramDrops.receiveQueue + receiver.datagramDrops.expiredIncoming > 0, "the slow receiver dropped some")
             assertEquals(
                 receiver.datagramsReceived,
-                delivered + receiver.datagramsDroppedReceiveQueue.n + receiver.datagramsExpiredIncoming.n,
+                delivered + receiver.datagramDrops.receiveQueue + receiver.datagramDrops.expiredIncoming,
                 "received = delivered + dropped + expired: $receiver",
             )
             payload.freeIfNeeded()
@@ -277,7 +276,6 @@ class CoreDatagramSendTests {
     }
 
     /** A count the core keeps: every one it reports is counted. */
-    private val QuicDatagramCount.n: Long get() = assertIs<QuicDatagramCount.Counted>(this).datagrams
 
     private fun payloadOf(
         size: Int,

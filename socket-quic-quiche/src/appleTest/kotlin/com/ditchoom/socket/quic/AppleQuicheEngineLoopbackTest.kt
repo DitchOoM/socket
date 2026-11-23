@@ -65,7 +65,7 @@ class AppleQuicheEngineLoopbackTest {
                     stream.write(sendBuf, 5.seconds)
                     val response = stream.read(5.seconds) { it.readString(it.remaining(), Charset.UTF8) }
                     echo.complete(
-                        if (response is ScopedRead.Data) {
+                        if (response is ScopedReadResult.Data) {
                             response.value
                         } else {
                             "no_data:${response::class.simpleName}"

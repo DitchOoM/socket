@@ -10,7 +10,6 @@ import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.quic.DatagramOptions
 import com.ditchoom.socket.quic.DatagramRefusal
 import com.ditchoom.socket.quic.QuicConnectionStats
-import com.ditchoom.socket.quic.QuicDatagramCount
 import com.ditchoom.socket.quic.QuicDatagramRefused
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicStatsRead
@@ -99,7 +98,7 @@ class CoreDatagramStatsTests {
                     val receiving = withTimeout(WAIT) { serverSide.await() }
                     withTimeout(WAIT) { readStatsUntil(receiving) { it.datagramsReceived == accepted } }
                     val sent = withTimeout(WAIT) { readStatsUntil(client.connection) { it.datagramsSent == accepted } }
-                    assertEquals(QuicDatagramCount.Counted(ATTEMPTS - accepted), sent.datagramsRefusedQueueFull)
+                    assertEquals(ATTEMPTS - accepted, sent.datagramDrops.refusedQueueFull)
                 } finally {
                     stall.store(Stall.Released)
                     client.connection.close(QuicError.NoError)
@@ -122,7 +121,7 @@ class CoreDatagramStatsTests {
                 try {
                     val channel = connection.datagramChannel()
                     val read = assertIs<QuicStatsRead.Read>(connection.stats()).stats
-                    val kept = read.datagramsReceived - (read.datagramsDroppedReceiveQueue as QuicDatagramCount.Counted).datagrams
+                    val kept = read.datagramsReceived - read.datagramDrops.receiveQueue
                     repeat(kept.toInt()) {
                         withTimeout(WAIT) { assertIs<DatagramReadResult.Received>(channel.receive()).datagram.payload.freeIfNeeded() }
                     }
@@ -162,17 +161,17 @@ class CoreDatagramStatsTests {
                     )
 
                     val sent = withTimeout(WAIT) { readStatsUntil(client.connection) { it.datagramsSent == accepted } }
-                    assertEquals(QuicDatagramCount.Counted(refused), sent.datagramsRefusedQueueFull, "refused at the sender, by the queue")
+                    assertEquals(refused, sent.datagramDrops.refusedQueueFull, "refused at the sender, by the queue")
                     assertEquals(
                         ATTEMPTS.toLong(),
-                        sent.datagramsSent + (sent.datagramsRefusedQueueFull as QuicDatagramCount.Counted).datagrams,
+                        sent.datagramsSent + sent.datagramDrops.refusedQueueFull,
                         "the connection's own sent + refused = attempts",
                     )
 
                     everythingArrived.complete(Unit)
                     val kept = withTimeout(WAIT) { delivered.await() }
                     val taken = assertIs<QuicStatsRead.Read>(receiving.stats()).stats
-                    val dropped = (taken.datagramsDroppedReceiveQueue as QuicDatagramCount.Counted).datagrams
+                    val dropped = taken.datagramDrops.receiveQueue
                     assertTrue(dropped > 0, "a slow receiver drops: delivered $kept")
                     assertEquals(taken.datagramsReceived, kept + dropped, "received = delivered + dropped")
                 } finally {

@@ -42,7 +42,7 @@ class PinnedRadioTests {
             quicOptions: QuicOptions,
             transport: TransportConfig,
             timeout: Duration,
-        ): QuicConnection {
+        ): QuicEngineConnection {
             attempts++
             throw UnsupportedOperationException("no connection is established here")
         }
@@ -74,11 +74,13 @@ class PinnedRadioTests {
                 )
             val engine = RecordingEngine(capabilities(NetworkKind.Wifi))
             val refused =
-                assertFailsWith<PinnedRadioRefusedException> {
+                assertFailsWith<QuicRefusedException> {
                     engine.connect(QuicClientBinding.OwnSocket, QuicPeer.Named("example.test", 443), pinned, transport, 5.seconds)
                 }
-            assertEquals(NetworkKind.Cellular, refused.radio)
-            assertEquals(PinnedRadioRefusal.EngineCannotPin, refused.refusal)
+            assertEquals<QuicRefusal>(
+                QuicRefusal.RadioNotPinnable(NetworkKind.Cellular, PinnedRadioRefusal.EngineCannotPin),
+                refused.refusal,
+            )
             assertEquals(0, resolutions)
             assertEquals(0, engine.attempts)
         }
@@ -103,10 +105,10 @@ class PinnedRadioTests {
     @Test
     fun aSharedPortCannotBePinned() {
         val refused =
-            assertFailsWith<PinnedRadioRefusedException> {
+            assertFailsWith<QuicRefusedException> {
                 capabilities(NetworkKind.Cellular).requirePinnable(QuicClientBinding.Shared(UnusedChannel()), pinned)
             }
-        assertEquals(PinnedRadioRefusal.SharedPort, refused.refusal)
+        assertEquals<QuicRefusal>(QuicRefusal.RadioNotPinnable(NetworkKind.Cellular, PinnedRadioRefusal.SharedPort), refused.refusal)
     }
 
     @Test
@@ -119,7 +121,7 @@ class PinnedRadioTests {
     @Test
     fun onlyAPathTheRadioLacksToOneAddressIsWorthAnotherCandidate() {
         val radio = NetworkKind.Wifi
-        assertEquals(AttemptVerdict.Fatal, quicConnectVerdict(PinnedRadioRefusedException(radio, PinnedRadioRefusal.EngineCannotPin)))
+        assertEquals(AttemptVerdict.Fatal, quicConnectVerdict(notPinnable(radio, PinnedRadioRefusal.EngineCannotPin)))
         assertEquals(
             AttemptVerdict.TryOthers,
             quicConnectVerdict(PinnedRadioUnavailableException(radio, PinnedRadioUnavailable.NoPath(RuntimeException("unsatisfied")))),

@@ -3,7 +3,7 @@ package com.ditchoom.socket.quic.core.edge
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.socket.quic.QuicError
-import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.ScopedReadResult
 import com.ditchoom.socket.quic.core.demux.withCoreEchoServer
 import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.network
@@ -77,7 +77,7 @@ class CoreClientMemoryTests {
             if (stream.read(10.seconds) {
                     received += it.remaining()
                     it.position(it.limit())
-                } !is ScopedRead.Data<*>
+                } !is ScopedReadResult.Data<*>
             ) {
                 break
             }

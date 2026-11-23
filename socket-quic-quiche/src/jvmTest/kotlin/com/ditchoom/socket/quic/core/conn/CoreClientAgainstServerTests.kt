@@ -10,7 +10,7 @@ import com.ditchoom.socket.quic.QuicCloseLinger
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicTlsConfig
-import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.ScopedReadResult
 import com.ditchoom.socket.quic.core.conn.MismatchResponse
 import com.ditchoom.socket.quic.core.edge.EdgeEnd
 import com.ditchoom.socket.quic.core.edge.coreConnect
@@ -57,7 +57,7 @@ class CoreClientAgainstServerTests {
                         launch(Dispatchers.IO) {
                             connections {
                                 val stream = acceptStream()
-                                while (stream.read(10.seconds) { stream.writeFully(it, 10.seconds) } is ScopedRead.Data<*>) Unit
+                                while (stream.read(10.seconds) { stream.writeFully(it, 10.seconds) } is ScopedReadResult.Data<*>) Unit
                                 stream.shutdownSend()
                             }
                         }
@@ -119,7 +119,7 @@ class CoreClientAgainstServerTests {
             val reader =
                 async {
                     while (true) {
-                        if (stream.read(10.seconds) { received.write(it.readByteArray(it.remaining())) } !is ScopedRead.Data<*>) {
+                        if (stream.read(10.seconds) { received.write(it.readByteArray(it.remaining())) } !is ScopedReadResult.Data<*>) {
                             endedBy = "fin after ${payload.size} written"
                             break
                         }

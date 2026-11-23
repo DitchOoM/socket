@@ -1,5 +1,6 @@
 package com.ditchoom.socket.quic
 
+import com.ditchoom.socket.quic.trace.QlogDeclaration
 import com.ditchoom.socket.quic.trace.QlogTarget
 import com.ditchoom.socket.quic.trace.QuicConnectionCapture
 import com.ditchoom.socket.quic.trace.QuicTraceCapture
@@ -134,6 +135,7 @@ class QlogPerConnectionTests {
                                 qlog = QlogTarget.File(File(dir, "$name.sqlog").absolutePath),
                             )
                         },
+                        qlog = QlogDeclaration.NotBudgeted,
                     )
                 val sessions = twoConsecutiveConnections(options.copy(trace = capture))
                 assertEquals(2, sessions.toSet().size, "two connections carry two session ids: $sessions")

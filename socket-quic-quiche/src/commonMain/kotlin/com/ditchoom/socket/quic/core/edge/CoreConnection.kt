@@ -13,9 +13,9 @@ import com.ditchoom.socket.quic.QuicAppErrorCode
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicCapabilities
 import com.ditchoom.socket.quic.QuicCloseCircumstance
-import com.ditchoom.socket.quic.QuicConnection
 import com.ditchoom.socket.quic.QuicConnectionIdentity
 import com.ditchoom.socket.quic.QuicConnectionState
+import com.ditchoom.socket.quic.QuicEngineConnection
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicPathState
 import com.ditchoom.socket.quic.QuicResumptionOutcome
@@ -50,7 +50,7 @@ import kotlin.coroutines.CoroutineContext
 import kotlin.time.Duration
 
 /**
- * A [QuicConnection] on the run-to-completion core. Every call becomes work inside the connection and suspends until
+ * A [QuicEngineConnection] on the run-to-completion core. Every call becomes work inside the connection and suspends until
  * the connection has done it; nothing here blocks a thread. A caller on a main dispatcher leaves its work for the loop;
  * any other caller runs it in place when the connection is free.
  */
@@ -66,7 +66,7 @@ internal class CoreConnection(
     private val openBound: Duration,
     scope: CoroutineScope,
     internal val handlers: HandlerSeat,
-) : QuicConnection,
+) : QuicEngineConnection,
     CoroutineScope by scope {
     override val state: StateFlow<QuicConnectionState> = edge.state
     override val unreadAtClose: StateFlow<QuicUnreadAtClose> = edge.unread
@@ -237,6 +237,16 @@ internal class CoreConnection(
         val op = ReadOp(stream, deadline, deadlines, conn, edge, bufferFactory, streamReads)
         conn.submit(op, placeOf(currentCoroutineContext()))
         return op.answer()
+    }
+
+    internal suspend fun taken(
+        stream: QuicStreamId,
+        deadline: Duration,
+        streamReads: StreamReads,
+    ): ReadAnswer {
+        val op = ReadOp(stream, deadline, deadlines, conn, edge, bufferFactory, streamReads)
+        conn.submit(op, placeOf(currentCoroutineContext()))
+        return op.taken()
     }
 
     /** A write handed to the connection; its caller takes the answer. */

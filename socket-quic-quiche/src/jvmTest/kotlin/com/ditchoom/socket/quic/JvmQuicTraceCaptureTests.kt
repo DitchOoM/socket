@@ -240,7 +240,7 @@ class JvmQuicTraceCaptureTests {
 
                                     val response = stream.read(5.seconds) { it.readString(it.remaining(), Charset.UTF8) }
                                     val echoed =
-                                        if (response is ScopedRead.Data) {
+                                        if (response is ScopedReadResult.Data) {
                                             response.value
                                         } else {
                                             "no_data"
@@ -334,7 +334,7 @@ class JvmQuicTraceCaptureTests {
                                 stream.write(sendBuf, 5.seconds)
                                 val response = stream.read(5.seconds) { describeEcho(it, expected = payload) }
                                 echoed.complete(
-                                    if (response is ScopedRead.Data) {
+                                    if (response is ScopedReadResult.Data) {
                                         response.value
                                     } else {
                                         "no_data"

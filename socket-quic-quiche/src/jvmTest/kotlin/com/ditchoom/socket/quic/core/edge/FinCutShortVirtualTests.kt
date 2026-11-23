@@ -6,7 +6,7 @@ import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicStreamClosedException
-import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.ScopedReadResult
 import com.ditchoom.socket.quic.read
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
@@ -51,7 +51,7 @@ class FinCutShortVirtualTests {
             val cut = assertIs<Finished.Cut>(result, "the deadline passed with part of the write taken")
             assertEquals(WINDOW, cut.accepted, "quiche took the stream's window")
             assertIs<OpFailure.DeadlinePassed>(cut.failure)
-            assertSame(ScopedRead.Reset, endOf(pair, serverSide.acceptStream()), "the peer is told by a reset, never a FIN")
+            assertSame(ScopedReadResult.Reset, endOf(pair, serverSide.acceptStream()), "the peer is told by a reset, never a FIN")
         }
 
     @Test
@@ -69,7 +69,7 @@ class FinCutShortVirtualTests {
             assertIs<CancellationException>(failed, "nothing was taken: the deadline raises, as a write's does")
 
             closed(pair, stream)
-            assertSame(ScopedRead.End, endOf(pair, serverSide.acceptStream()), "the close sent the FIN")
+            assertSame(ScopedReadResult.End, endOf(pair, serverSide.acceptStream()), "the close sent the FIN")
         }
 
     @Test
@@ -89,7 +89,7 @@ class FinCutShortVirtualTests {
             caller.runAll()
             assertTrue(writer.isCancelled)
 
-            assertSame(ScopedRead.Reset, endOf(pair, serverSide.acceptStream()), "the peer is told by a reset, never a FIN")
+            assertSame(ScopedReadResult.Reset, endOf(pair, serverSide.acceptStream()), "the peer is told by a reset, never a FIN")
             assertFailsWith<QuicStreamClosedException> { stream.write(bytes(REQUEST), 1.hours) }
         }
 
@@ -112,7 +112,7 @@ class FinCutShortVirtualTests {
             assertTrue(writer.isCancelled)
 
             closed(pair, stream)
-            assertSame(ScopedRead.End, endOf(pair, serverSide.acceptStream()), "the close sent the FIN")
+            assertSame(ScopedReadResult.End, endOf(pair, serverSide.acceptStream()), "the close sent the FIN")
         }
 
     /**
@@ -134,13 +134,13 @@ class FinCutShortVirtualTests {
             pair.runFor(10.milliseconds)
             // The server reads: the window opens, quiche takes the request and its FIN, and the answer waits for the caller.
             val got = LongArray(1)
-            var end: ScopedRead<*> = ScopedRead.Data(Unit)
+            var end: ScopedReadResult<*> = ScopedReadResult.Data(Unit)
             launch { end = readToEnd(serverSide.acceptStream(), got) }
-            pair.runUntil { end !is ScopedRead.Data<*> }
+            pair.runUntil { end !is ScopedReadResult.Data<*> }
             writer.cancel()
             caller.runAll()
 
-            assertSame(ScopedRead.End, end)
+            assertSame(ScopedReadResult.End, end)
             assertEquals((WINDOW + REQUEST).toLong(), got[0])
             assertFailsWith<QuicStreamClosedException> { stream.write(bytes(REQUEST), 1.hours) }
             closed(pair, stream)
@@ -176,7 +176,7 @@ class FinCutShortVirtualTests {
             }
             pair.runUntil { closing }
             val got = LongArray(1)
-            assertSame(ScopedRead.End, readToEnd(pair, serverSide.acceptStream(), got), "the close sent the FIN")
+            assertSame(ScopedReadResult.End, readToEnd(pair, serverSide.acceptStream(), got), "the close sent the FIN")
             assertEquals(WINDOW.toLong(), got[0], "every frame sent before arrived, and nothing of the cancelled one")
         }
 
@@ -209,26 +209,26 @@ class FinCutShortVirtualTests {
     private suspend fun CoroutineScope.endOf(
         pair: VirtualPair,
         stream: QuicByteStream,
-    ): ScopedRead<*> = readToEnd(pair, stream, LongArray(1))
+    ): ScopedReadResult<*> = readToEnd(pair, stream, LongArray(1))
 
     private suspend fun CoroutineScope.readToEnd(
         pair: VirtualPair,
         stream: QuicByteStream,
         got: LongArray,
-    ): ScopedRead<*> {
-        var end: ScopedRead<*> = ScopedRead.Data(Unit)
+    ): ScopedReadResult<*> {
+        var end: ScopedReadResult<*> = ScopedReadResult.Data(Unit)
         launch { end = readToEnd(stream, got) }
-        pair.runUntil { end !is ScopedRead.Data<*> }
+        pair.runUntil { end !is ScopedReadResult.Data<*> }
         return end
     }
 
     private suspend fun readToEnd(
         stream: QuicByteStream,
         got: LongArray,
-    ): ScopedRead<*> {
+    ): ScopedReadResult<*> {
         while (true) {
             val read = stream.read(1.hours) { got[0] += it.remaining() }
-            if (read !is ScopedRead.Data<*>) return read
+            if (read !is ScopedReadResult.Data<*>) return read
         }
     }
 

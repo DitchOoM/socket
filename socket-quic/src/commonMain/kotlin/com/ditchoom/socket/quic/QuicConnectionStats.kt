@@ -1,13 +1,11 @@
 package com.ditchoom.socket.quic
 
-import kotlin.jvm.JvmInline
-import kotlin.jvm.JvmOverloads
 import kotlin.time.Duration
 
-/** What one [QuicScope.stats] read answered. */
+/** What one statistics read of a connection answered. */
 sealed interface QuicStatsRead {
     /** The connection's counters and its active path's estimates at the moment of the read. */
-    data class Read(
+    class Read(
         val stats: QuicConnectionStats,
     ) : QuicStatsRead
 
@@ -22,59 +20,45 @@ sealed interface QuicStatsRead {
  * A connection's counters since it began, and its active path, as one immutable value. Packets are QUIC packets;
  * bytes are UDP payload bytes; datagrams are RFC 9221 DATAGRAM frames.
  */
-data class QuicConnectionStats
-    @JvmOverloads
-    constructor(
-        val packetsSent: Long,
-        val packetsReceived: Long,
-        val packetsLost: Long,
-        /** Lost packets later acknowledged after all. */
-        val packetsSpuriouslyLost: Long,
-        /** Sent packets that carried retransmitted data. */
-        val packetsRetransmitted: Long,
-        val bytesSent: Long,
-        val bytesReceived: Long,
-        val bytesAcknowledged: Long,
-        val bytesLost: Long,
-        val streamBytesRetransmitted: Long,
-        val datagramsSent: Long,
-        val datagramsReceived: Long,
-        /** Paths the connection knows, validated or not. */
-        val paths: Int,
-        val activePath: QuicActivePathStats,
-        /** Datagrams a send refused because the send queue was full; [datagramsSent] counts only those the queue took. */
-        val datagramsRefusedQueueFull: QuicDatagramCount = QuicDatagramCount.NotCounted,
-        /** Received datagrams dropped, oldest first, because the receive queue was full; [datagramsReceived] counts them. */
-        val datagramsDroppedReceiveQueue: QuicDatagramCount = QuicDatagramCount.NotCounted,
-        /** Queued datagrams dropped, oldest first, to make room for a newer send under [DatagramOverflow.EvictOldest]. */
-        val datagramsEvicted: QuicDatagramCount = QuicDatagramCount.NotCounted,
-        /** Queued datagrams dropped unsent because they were older than [DatagramOptions.outgoingMaxAge]. */
-        val datagramsExpiredOutgoing: QuicDatagramCount = QuicDatagramCount.NotCounted,
-        /**
-         * Queued datagrams the engine would not take when they reached the head: the path had shrunk below their size,
-         * or the engine refused them with an error that ends the connection.
-         */
-        val datagramsDroppedUnsendable: QuicDatagramCount = QuicDatagramCount.NotCounted,
-        /** Received datagrams dropped undelivered because they were older than [DatagramOptions.incomingMaxAge]. */
-        val datagramsExpiredIncoming: QuicDatagramCount = QuicDatagramCount.NotCounted,
-        /**
-         * Datagrams a send accepted that were dropped unsent because the connection reached its close point first,
-         * those already handed to the QUIC stack included.
-         */
-        val datagramsDroppedAtClose: QuicDatagramCount = QuicDatagramCount.NotCounted,
-    )
+class QuicConnectionStats(
+    val packetsSent: Long,
+    val packetsReceived: Long,
+    val packetsLost: Long,
+    /** Lost packets later acknowledged after all. */
+    val packetsSpuriouslyLost: Long,
+    /** Sent packets that carried retransmitted data. */
+    val packetsRetransmitted: Long,
+    val bytesSent: Long,
+    val bytesReceived: Long,
+    val bytesAcknowledged: Long,
+    val bytesLost: Long,
+    val streamBytesRetransmitted: Long,
+    val datagramsSent: Long,
+    val datagramsReceived: Long,
+    /** Paths the connection knows, validated or not. */
+    val paths: Int,
+    val activePath: QuicActivePathStats,
+    /** The datagrams that were refused or dropped, by where. */
+    val datagramDrops: QuicDatagramDrops,
+)
 
-/** A count of datagrams the engine may not keep: a zero is a measurement only when it is [Counted]. */
-sealed interface QuicDatagramCount {
-    /** This engine does not count them. */
-    data object NotCounted : QuicDatagramCount
-
-    /** The engine counted [datagrams], possibly none. */
-    @JvmInline
-    value class Counted(
-        val datagrams: Long,
-    ) : QuicDatagramCount
-}
+/** A connection's RFC 9221 datagrams that did not reach the receiving application, counted by where they stopped. */
+class QuicDatagramDrops(
+    /** Refused by a send because the send queue was full; [QuicConnectionStats.datagramsSent] counts only those the queue took. */
+    val refusedQueueFull: Long,
+    /** Received and dropped, oldest first, because the receive queue was full; [QuicConnectionStats.datagramsReceived] counts them. */
+    val receiveQueue: Long,
+    /** Queued and dropped, oldest first, to make room for a newer send under [DatagramOverflow.EvictOldest]. */
+    val evicted: Long,
+    /** Queued and dropped unsent because they were older than [DatagramOptions.outgoingMaxAge]. */
+    val expiredOutgoing: Long,
+    /** Queued and not taken at the head: the path had shrunk below their size, or the connection was ending on an error. */
+    val unsendable: Long,
+    /** Received and dropped undelivered because they were older than [DatagramOptions.incomingMaxAge]. */
+    val expiredIncoming: Long,
+    /** Accepted by a send and dropped unsent because the connection reached its close point first. */
+    val atClose: Long,
+)
 
 /** The path the connection sends on, or none while it switches paths. */
 sealed interface QuicActivePathStats {

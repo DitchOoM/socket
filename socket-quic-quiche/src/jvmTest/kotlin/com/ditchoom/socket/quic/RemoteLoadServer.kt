@@ -3,6 +3,7 @@ package com.ditchoom.socket.quic
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.socket.quic.trace.QlogDeclaration
 import com.ditchoom.socket.quic.trace.QlogTarget
 import com.ditchoom.socket.quic.trace.QuicConnectionCapture
 import com.ditchoom.socket.quic.trace.QuicTraceCapture
@@ -65,6 +66,7 @@ private fun perConnectionCapture(dir: File): QuicTraceCapture {
                 trafficSecrets = TrafficSecretsLog.File(File(dir, "$name.keys").absolutePath),
             )
         },
+        qlog = QlogDeclaration.NotBudgeted,
     )
 }
 

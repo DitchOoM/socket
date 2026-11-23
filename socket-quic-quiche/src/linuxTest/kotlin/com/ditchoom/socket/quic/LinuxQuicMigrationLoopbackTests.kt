@@ -49,7 +49,7 @@ class LinuxQuicMigrationLoopbackTests {
         // Scoped read (#538): decode inside the block, buffer released on the way out. On K/N there
         // is no collector behind a buffer's native memory at all — an unreleased one leaks outright.
         val resp = read(5.seconds) { it.readString(it.remaining(), Charset.UTF8) }
-        return if (resp is ScopedRead.Data) resp.value else "no_data"
+        return if (resp is ScopedReadResult.Data) resp.value else "no_data"
     }
 
     @Test
@@ -62,7 +62,7 @@ class LinuxQuicMigrationLoopbackTests {
                         connections {
                             val stream = acceptStream()
                             while (true) {
-                                if (stream.read(8.seconds) { stream.write(it, 5.seconds) } !is ScopedRead.Data) break
+                                if (stream.read(8.seconds) { stream.write(it, 5.seconds) } !is ScopedReadResult.Data) break
                             }
                             stream.close()
                         }

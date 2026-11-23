@@ -7,7 +7,7 @@ import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicStreamId
 import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.QuicheConn
-import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.ScopedReadResult
 import com.ditchoom.socket.quic.StreamSendStep
 import com.ditchoom.socket.quic.read
 import kotlinx.coroutines.launch
@@ -139,7 +139,7 @@ class FinWithDataVirtualTests {
         var endedAt = -1L
 
         suspend fun readAll(stream: QuicByteStream) {
-            while (stream.read(1.hours) { bytes += it.remaining() } is ScopedRead.Data<*>) Unit
+            while (stream.read(1.hours) { bytes += it.remaining() } is ScopedReadResult.Data<*>) Unit
             endedAt = pair.now()
         }
     }

@@ -15,7 +15,7 @@ import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicStreamClosedException
 import com.ditchoom.socket.quic.QuicStreamSide
 import com.ditchoom.socket.quic.QuicTlsConfig
-import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.ScopedReadResult
 import com.ditchoom.socket.quic.core.conn.MismatchResponse
 import com.ditchoom.socket.quic.loadQuicheApi
 import com.ditchoom.socket.quic.read
@@ -150,7 +150,7 @@ class CoreEdgeTests {
             val reader =
                 async {
                     while (received.size() < payload.size) {
-                        if (stream.read(10.seconds) { received.write(it.readByteArray(it.remaining())) } !is ScopedRead.Data<*>) break
+                        if (stream.read(10.seconds) { received.write(it.readByteArray(it.remaining())) } !is ScopedReadResult.Data<*>) break
                     }
                 }
             stream.writeFully(bytes(payload), 10.seconds)
@@ -176,7 +176,12 @@ class CoreEdgeTests {
                                     if (serverHolds) release.await()
                                     // The client closing the connection ends the echo; it is not a failure of the server.
                                     try {
-                                        while (stream.read(10.seconds) { stream.writeFully(it, 10.seconds) } is ScopedRead.Data<*>) Unit
+                                        while (stream.read(
+                                                10.seconds,
+                                            ) { stream.writeFully(it, 10.seconds) } is ScopedReadResult.Data<*>
+                                        ) {
+                                            Unit
+                                        }
                                     } catch (closed: com.ditchoom.socket.quic.QuicCloseException) {
                                         Unit
                                     }

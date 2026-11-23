@@ -125,10 +125,10 @@ class QuicEchoServerTests {
                 // Scoped on both halves (#538) — the other tests in this file free by hand and this
                 // one did not, which is exactly the asymmetry the scoped form removes.
                 val serverResult = peerStreams[i].read(5.seconds) { peerStreams[i].write(it, 5.seconds) }
-                assertIs<ScopedRead.Data<BytesWritten>>(serverResult)
+                assertIs<ScopedReadResult.Data<BytesWritten>>(serverResult)
 
                 val clientResult = stream.read(5.seconds) { assertBufferEquals(msg, it, factory) }
-                assertIs<ScopedRead.Data<Unit>>(clientResult)
+                assertIs<ScopedReadResult.Data<Unit>>(clientResult)
             }
 
             streams.forEach { it.close() }

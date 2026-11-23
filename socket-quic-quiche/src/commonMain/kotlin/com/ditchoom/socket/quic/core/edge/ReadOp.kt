@@ -11,10 +11,8 @@ import com.ditchoom.socket.quic.core.conn.ConnWork
 import com.ditchoom.socket.quic.core.conn.HeldTake
 import com.ditchoom.socket.quic.core.conn.Inside
 import com.ditchoom.socket.quic.core.life.ConnEnd
-import com.ditchoom.socket.quic.core.observe.CallerSide
 import com.ditchoom.socket.quic.core.observe.Confined
 import com.ditchoom.socket.quic.core.stream.InHand
-import com.ditchoom.socket.quic.core.stream.ReadChunk
 import com.ditchoom.socket.quic.core.stream.Retry
 import com.ditchoom.socket.quic.core.stream.Side
 import com.ditchoom.socket.quic.core.stream.StreamEntry
@@ -24,34 +22,6 @@ import com.ditchoom.socket.quic.core.stream.Waiter
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 import kotlinx.coroutines.currentCoroutineContext
 import kotlin.time.Duration
-
-/**
- * The buffer a read holds until it hands it to its caller, already made into the answer the bytes will be:
- * [ReadAnswer.Data]; [None] once handed over or freed.
- */
-internal sealed interface Spare {
-    data object None : Spare
-}
-
-/**
- * What a stream's reads keep between them: how many bytes the next asks for, its reader's (a stream has one reader at
- * a time), and the peer's reset they met, which any thread reads.
- */
-@CallerSide
-internal class StreamReads {
-    var chunk: ReadChunk = ReadChunk.Initial
-        private set
-
-    val reset = PeerResetSeen()
-
-    /** A read that [asked] for its chunk got [got] bytes: the next read's size follows [ReadChunk.after]. */
-    fun read(
-        asked: ReadChunk,
-        got: Int,
-    ) {
-        chunk = asked.after(asked.bytes, got)
-    }
-}
 
 /**
  * Reads the next chunk, sized by [streamReads], into a buffer the caller's thread takes from [idle] or [factory] when it makes
@@ -99,6 +69,23 @@ internal class ReadOp(
                 is ReadAnswer.End, is ReadAnswer.Failed, is ReadAnswer.Cancelled -> Unit
             }
             return resultOf(answer, context)
+        } finally {
+            hand.taken()
+            edge.returned(stream)
+        }
+    }
+
+    /** [answer] with the read's own answer as it is, for a caller that reports failures as values. */
+    suspend fun taken(): ReadAnswer {
+        val context = currentCoroutineContext()
+        val answer = hand.await(context) { cancelled() }
+        try {
+            when (answer) {
+                is ReadAnswer.Data -> streamReads.read(asked, answer.buffer.remaining())
+                is ReadAnswer.Reset -> streamReads.reset.met(answer.code)
+                is ReadAnswer.End, is ReadAnswer.Failed, is ReadAnswer.Cancelled -> Unit
+            }
+            return liveOr(answer, context)
         } finally {
             hand.taken()
             edge.returned(stream)

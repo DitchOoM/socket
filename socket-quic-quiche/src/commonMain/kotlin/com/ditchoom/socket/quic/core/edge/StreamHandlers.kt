@@ -59,6 +59,13 @@ internal value class HandlerResetCode(
 internal suspend fun CoreConnection.handleStreams(
     resetCode: HandlerResetCode = HandlerResetCode.Default,
     handler: suspend (QuicByteStream) -> Unit,
+): StreamsHandled = handleStreams(resetCode, halves::public, handler)
+
+/** [handleStreams] with each stream handed to [handler] as [shape] makes it. */
+internal suspend fun <S> CoreConnection.handleStreams(
+    resetCode: HandlerResetCode,
+    shape: (IncomingStream) -> S,
+    handler: suspend (S) -> Unit,
 ): StreamsHandled =
     when (val claimed = handlers.claim()) {
         is HandlerClaim.Taken -> StreamsHandled.AlreadyHandling
@@ -66,7 +73,7 @@ internal suspend fun CoreConnection.handleStreams(
         is HandlerClaim.Claimed ->
             try {
                 withContext(claimed.lane + HandlerSite.Accepting) {
-                    supervisorScope { while (acceptOne(this, claimed.lane, resetCode, handler) == Accepting.More) Unit }
+                    supervisorScope { while (acceptOne(this, claimed.lane, resetCode, shape, handler) == Accepting.More) Unit }
                     StreamsHandled.Ended(edge.closed.await().end)
                 }
             } finally {
@@ -81,19 +88,20 @@ private enum class Accepting { More, Ended }
  * Takes the next stream the peer opens and starts its handler. Only the connection's end ends the accepting: its close
  * fails the receive. Anything else that fails it is reported as [HandlerObservation.AcceptFailed], and the next is taken.
  */
-private suspend inline fun CoreConnection.acceptOne(
+private suspend inline fun <S> CoreConnection.acceptOne(
     scope: CoroutineScope,
     lane: HandlerLane,
     resetCode: HandlerResetCode,
-    noinline handler: suspend (QuicByteStream) -> Unit,
+    shape: (IncomingStream) -> S,
+    noinline handler: suspend (S) -> Unit,
 ): Accepting {
     var next = Accepting.More
     handlerCode(failed = { failure -> next = acceptFailed(scope, lane, failure) }) {
         // A plain receive resumes with the stream itself, where a catching one would box its result per stream.
         val incoming = shaped(edge.incoming.receiveAny())
-        val stream = halves.public(incoming)
+        val stream = shape(incoming)
         // Started at once, on this thread and this step: the handler's coroutine is made here, on the pool.
-        scope.launch(HandlerSite.Stream(stream.streamId), CoroutineStart.UNDISPATCHED) {
+        scope.launch(HandlerSite.Stream(incoming.id), CoroutineStart.UNDISPATCHED) {
             serve(this, lane, incoming, stream, resetCode, handler)
         }
     }
@@ -111,13 +119,13 @@ private fun CoreConnection.acceptFailed(
     return Accepting.More
 }
 
-private suspend inline fun CoreConnection.serve(
+private suspend inline fun <S> CoreConnection.serve(
     scope: CoroutineScope,
     lane: HandlerLane,
     incoming: IncomingStream,
-    stream: QuicByteStream,
+    stream: S,
     resetCode: HandlerResetCode,
-    handler: suspend (QuicByteStream) -> Unit,
+    handler: suspend (S) -> Unit,
 ) {
     handlerCode(failed = { failure -> handlerFailed(scope, lane, incoming, resetCode, failure) }) { handler(stream) }
 }

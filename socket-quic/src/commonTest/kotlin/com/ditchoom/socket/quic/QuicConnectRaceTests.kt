@@ -81,7 +81,7 @@ class QuicConnectRaceTests {
     private class Dialled(
         val endpoint: QuicEndpoint,
         private val delegate: MockQuicConnection = MockQuicConnection(),
-    ) : QuicConnection by delegate {
+    ) : QuicEngineConnection by delegate {
         var closeCalls = 0
             private set
 
@@ -117,7 +117,7 @@ class QuicConnectRaceTests {
             quicOptions: QuicOptions,
             transport: TransportConfig,
             timeout: Duration,
-        ): QuicConnection {
+        ): QuicEngineConnection {
             startedAt += scope.testScheduler.currentTime
             dialled += endpoint
             identities += serverName

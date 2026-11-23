@@ -149,7 +149,7 @@ class ServerConnectionTimingTest {
                                     stream.write(buf, 5.seconds)
 
                                     val response = stream.read(5.seconds) { it.readString(it.remaining(), Charset.UTF8) }
-                                    if (response is ScopedRead.Data) {
+                                    if (response is ScopedReadResult.Data) {
                                         echoResult.complete(response.value)
                                     } else {
                                         echoResult.complete("no_data")

@@ -11,6 +11,7 @@ import com.ditchoom.socket.quic.core.demux.withCoreEchoServer
 import com.ditchoom.socket.quic.hexToBytes
 import com.ditchoom.socket.quic.network
 import com.ditchoom.socket.quic.skipOnMissingNativeLib
+import com.ditchoom.socket.quic.trace.QlogDeclaration
 import com.ditchoom.socket.quic.trace.QlogTarget
 import com.ditchoom.socket.quic.trace.QuicConnectionCapture
 import com.ditchoom.socket.quic.trace.QuicTraceCapture
@@ -54,7 +55,13 @@ class CoreTrafficSecretsLogTests {
     /** One client connection to a core server that echoes [PAYLOAD]; both connections are freed when this returns. */
     private suspend fun echoOnce(capture: QuicConnectionCapture?): Echoed {
         val options =
-            if (capture == null) coreTestOptions else coreTestOptions.copy(trace = QuicTraceCapture(captureFor = { capture }))
+            if (capture ==
+                null
+            ) {
+                coreTestOptions
+            } else {
+                coreTestOptions.copy(trace = QuicTraceCapture(captureFor = { capture }, qlog = QlogDeclaration.NotBudgeted))
+            }
         val accepted = CompletableDeferred<CoreConnection>()
         var session = ""
         var reply = ""

@@ -34,7 +34,7 @@ class QuicEchoServerStreamLifetimeTests {
     private val tlsConfig
         get() = QuicTlsConfig(certChainPath = certPath("cert.crt"), privKeyPath = certPath("cert.key"))
 
-    private suspend fun ByteStream.echo(payload: String): ScopedRead<String> {
+    private suspend fun ByteStream.echo(payload: String): ScopedReadResult<String> {
         val out = BufferFactory.Default.allocate(payload.length)
         try {
             out.writeString(payload, Charset.UTF8)
@@ -70,10 +70,10 @@ class QuicEchoServerStreamLifetimeTests {
                         try {
                             withQuicConnection("localhost", port, clientOptions, timeout = 50.seconds) {
                                 val stream = openStream()
-                                assertEquals(ScopedRead.Data("probe-1;"), stream.echo("probe-1;"))
+                                assertEquals(ScopedReadResult.Data("probe-1;"), stream.echo("probe-1;"))
                                 delay(12.seconds)
                                 assertEquals(
-                                    ScopedRead.Data("probe-2;"),
+                                    ScopedReadResult.Data("probe-2;"),
                                     stream.echo("probe-2;"),
                                     "12 s of silence on a live connection (keepalive 3 s, idle 10 s) ended the echo stream",
                                 )

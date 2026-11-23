@@ -17,7 +17,7 @@ import com.ditchoom.socket.quic.QuicSessionTicket
 import com.ditchoom.socket.quic.QuicSessionTicketState
 import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.QuicheConn
-import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.ScopedReadResult
 import com.ditchoom.socket.quic.ServerCertVerdict
 import com.ditchoom.socket.quic.ServerCertVerifier
 import com.ditchoom.socket.quic.core.conn.Offer
@@ -252,8 +252,8 @@ class CoreServerCheckVirtualTests {
                         val out = StringBuilder()
                         while (true) {
                             when (val chunk = stream.read(REPLAY_DEADLINE) { it.readString(it.remaining(), Charset.UTF8) }) {
-                                is ScopedRead.Data -> out.append(chunk.value)
-                                ScopedRead.End, ScopedRead.Reset -> break
+                                is ScopedReadResult.Data -> out.append(chunk.value)
+                                ScopedReadResult.End, ScopedReadResult.Reset -> break
                             }
                         }
                         read += out.toString()

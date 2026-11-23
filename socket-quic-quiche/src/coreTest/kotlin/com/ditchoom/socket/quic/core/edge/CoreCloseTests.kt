@@ -94,7 +94,7 @@ class CoreCloseTests {
                 client.connection.close(QuicError.NoError)
                 val failure = write.await()
                 assertEquals<QuicCloseReason>(QuicCloseReason.ByLocal(QuicError.NoError), failure.reason)
-                assertEquals<QuicCloseCircumstance>(QuicCloseCircumstance.Closing, failure.circumstance, "refused at the close point")
+                assertEquals<QuicCloseCircumstance>(QuicCloseCircumstance.Ended, failure.circumstance, "refused at the close point")
             }
         }
 
@@ -132,7 +132,7 @@ class CoreCloseTests {
             if (read) {
                 var got = 0
                 try {
-                    while (stream.read(10.seconds) { got += it.remaining() } is com.ditchoom.socket.quic.ScopedRead.Data<*>) Unit
+                    while (stream.read(10.seconds) { got += it.remaining() } is com.ditchoom.socket.quic.ScopedReadResult.Data<*>) Unit
                 } catch (closed: QuicCloseException) {
                     // The server never finished the stream: after what was held, the read meets the close.
                 }

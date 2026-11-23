@@ -1,5 +1,6 @@
 package com.ditchoom.socket.quic
 
+import com.ditchoom.socket.quic.trace.QlogDeclaration
 import com.ditchoom.socket.quic.trace.QlogTarget
 import com.ditchoom.socket.quic.trace.QuicConnectionCapture
 import com.ditchoom.socket.quic.trace.QuicTraceCapture
@@ -50,7 +51,11 @@ class TraceRingTests {
     fun anEnabledRingMintsOneRingPerConnectionAndKeepsTheTestsOwnCapture() {
         TraceRings.beginTest()
         val seen = mutableListOf<TraceEvent>()
-        val own = QuicTraceCapture({ QuicConnectionCapture(TraceSink { seen += it }, qlog = QlogTarget.File("/tmp/x.sqlog")) })
+        val own =
+            QuicTraceCapture(
+                { QuicConnectionCapture(TraceSink { seen += it }, qlog = QlogTarget.File("/tmp/x.sqlog")) },
+                QlogDeclaration.NotBudgeted,
+            )
         val traced = options().copy(trace = own).withTraceRing("peer", enabled = true)
         val capture = assertNotNull(traced.trace)
         val first = capture.captureFor()

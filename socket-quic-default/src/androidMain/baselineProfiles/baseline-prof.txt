@@ -9,7 +9,7 @@ HSPLcom/ditchoom/socket/quic/WithQuicConnectionKt$withQuicConnection$2;->invokeS
 HSPLcom/ditchoom/socket/quic/WithQuicConnectionKt$withQuicConnection$3;-><init>(Lkotlin/coroutines/Continuation;)V
 HSPLcom/ditchoom/socket/quic/WithQuicConnectionKt$withQuicConnection$4$1;-><init>(Lkotlin/jvm/functions/Function3;Lcom/ditchoom/socket/quic/QuicRacedConnect;Lkotlin/coroutines/Continuation;)V
 HSPLcom/ditchoom/socket/quic/WithQuicConnectionKt$withQuicConnection$4$1;->create(Ljava/lang/Object;Lkotlin/coroutines/Continuation;)Lkotlin/coroutines/Continuation;
-HSPLcom/ditchoom/socket/quic/WithQuicConnectionKt$withQuicConnection$4$1;->invoke(Lcom/ditchoom/socket/quic/QuicConnection;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+HSPLcom/ditchoom/socket/quic/WithQuicConnectionKt$withQuicConnection$4$1;->invoke(Lcom/ditchoom/socket/quic/QuicEngineConnection;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 HSPLcom/ditchoom/socket/quic/WithQuicConnectionKt$withQuicConnection$4$1;->invoke(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;
 HSPLcom/ditchoom/socket/quic/WithQuicConnectionKt$withQuicConnection$4$1;->invokeSuspend(Ljava/lang/Object;)Ljava/lang/Object;
 HSPLcom/ditchoom/socket/quic/WithQuicConnectionKt$withQuicConnection$4;-><init>(Lcom/ditchoom/socket/quic/QuicClientBinding;Lcom/ditchoom/socket/quic/QuicPeer;Lcom/ditchoom/socket/quic/QuicOptions;Lcom/ditchoom/socket/TransportConfig;JLkotlin/jvm/internal/Ref$BooleanRef;Lkotlin/jvm/functions/Function3;Lkotlin/coroutines/Continuation;)V

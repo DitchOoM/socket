@@ -7,7 +7,7 @@ import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicError
-import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.ScopedReadResult
 import com.ditchoom.socket.quic.core.conn.MismatchResponse
 import com.ditchoom.socket.quic.core.demux.loopbackV4
 import com.ditchoom.socket.quic.core.loop.LoopSet
@@ -104,7 +104,7 @@ class StreamHandlersTests {
                                     if (first && chunk.get(chunk.position()) == BOOM) throw IllegalStateException()
                                     first = false
                                     stream.writeFully(chunk, 10.seconds)
-                                } is ScopedRead.Data<*>
+                                } is ScopedReadResult.Data<*>
                             ) {
                                 Unit
                             }
@@ -197,7 +197,7 @@ class StreamHandlersTests {
                     withCoreServer(onConnection = { connection ->
                         connection.handleStreams { stream ->
                             when (stream.read(10.seconds) { it.get(it.position()) }) {
-                                ScopedRead.Data(BOOM) -> throw AssertionError()
+                                ScopedReadResult.Data(BOOM) -> throw AssertionError()
                                 else -> Unit
                             }
                             stream.close()
@@ -261,7 +261,7 @@ class StreamHandlersTests {
         )
 
     private suspend fun echo(stream: QuicByteStream) {
-        while (stream.read(10.seconds) { stream.writeFully(it, 10.seconds) } is ScopedRead.Data<*>) Unit
+        while (stream.read(10.seconds) { stream.writeFully(it, 10.seconds) } is ScopedReadResult.Data<*>) Unit
         stream.close()
     }
 

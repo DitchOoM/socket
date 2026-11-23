@@ -125,7 +125,7 @@ class ServerRecvInfoPerPeerTests {
 
     private suspend fun echoUntilEnd(stream: QuicByteStream) {
         try {
-            while (stream.read(30.seconds) { stream.writeFully(it, 10.seconds) } is ScopedRead.Data) {
+            while (stream.read(30.seconds) { stream.writeFully(it, 10.seconds) } is ScopedReadResult.Data) {
                 // Echo until the peer finishes.
             }
         } finally {
@@ -144,7 +144,7 @@ class ServerRecvInfoPerPeerTests {
         }
         var got = ""
         while (got.length < text.length) {
-            got += assertIs<ScopedRead.Data<String>>(read(30.seconds) { it.readString(it.remaining(), Charset.UTF8) }).value
+            got += assertIs<ScopedReadResult.Data<String>>(read(30.seconds) { it.readString(it.remaining(), Charset.UTF8) }).value
         }
         assertEquals(text, got)
     }

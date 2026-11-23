@@ -30,7 +30,7 @@ object QuicheEngine : QuicEngine {
         quicOptions: QuicOptions,
         transport: TransportConfig,
         timeout: Duration,
-    ): QuicConnection {
+    ): QuicEngineConnection {
         capabilities.requirePinnable(binding, quicOptions)
         // Opt-in capture (QuicOptions.trace): record QUIC traffic via the driver seam, then tap the
         // client's NetworkMonitor into the same recorder. Off (trace == null) → tuning is the default.

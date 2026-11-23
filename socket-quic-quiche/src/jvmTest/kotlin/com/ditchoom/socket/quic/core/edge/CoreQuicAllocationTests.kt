@@ -8,7 +8,7 @@ import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicError
-import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.ScopedReadResult
 import com.ditchoom.socket.quic.core.ready.NetStack
 import com.ditchoom.socket.quic.core.ready.netStackOfThisRuntime
 import com.ditchoom.socket.quic.core.testing.allocationSamples
@@ -194,7 +194,12 @@ class CoreQuicAllocationTests {
                                     // The client closing the connection ends the read with a QuicCloseException; uncaught here it would end the
                                     // whole process on Android.
                                     try {
-                                        while (stream.read(10.seconds) { stream.writeFully(it, 10.seconds) } is ScopedRead.Data<*>) Unit
+                                        while (stream.read(
+                                                10.seconds,
+                                            ) { stream.writeFully(it, 10.seconds) } is ScopedReadResult.Data<*>
+                                        ) {
+                                            Unit
+                                        }
                                     } catch (closed: QuicCloseException) {
                                         // The peer is gone: the echo is over.
                                     }

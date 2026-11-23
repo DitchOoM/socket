@@ -458,7 +458,7 @@ private fun after(wait: Duration): Flow<Unit> =
  */
 internal fun wireAutoMigration(
     quicOptions: QuicOptions,
-    connection: QuicConnection,
+    connection: QuicEngineConnection,
     monitor: NetworkMonitor,
     pathLiveness: StateFlow<PathLiveness>,
     capture: TraceCapture,

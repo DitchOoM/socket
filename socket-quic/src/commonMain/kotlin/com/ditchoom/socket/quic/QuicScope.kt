@@ -52,7 +52,7 @@ interface QuicScope : CoroutineScope {
      * connection to the stack that speaks what the client negotiated.
      *
      * Defaults to [UnsupportedOperationException] for scope implementations that cannot know the
-     * negotiated protocol; [QuicConnection] overrides it by deriving from
+     * negotiated protocol; [QuicEngineConnection] overrides it by deriving from
      * [QuicConnectionState.Established], which every driver-backed platform populates.
      */
     val negotiatedAlpn: String
@@ -61,20 +61,20 @@ interface QuicScope : CoroutineScope {
     /**
      * Which connection this is — the stable session id plus the current wire CID.
      *
-     * Declared here, not only on [QuicConnection], because this is the receiver user code actually has
+     * Declared here, not only on [QuicEngineConnection], because this is the receiver user code actually has
      * inside a `withQuicConnection { }` / `QuicServer.connections { }` block. Identity that a caller
      * cannot reach from where they write their log line is identity that does not exist; the first test
      * written against it caught exactly that.
      *
      * Defaults to throwing for scope implementations with no connection behind them, matching
-     * [negotiatedAlpn]. [QuicConnection] redeclares it abstract, so every real backend must answer.
+     * [negotiatedAlpn]. [QuicEngineConnection] redeclares it abstract, so every real backend must answer.
      */
     val identity: QuicConnectionIdentity
         get() = throw UnsupportedOperationException("Connection identity is not available on this platform")
 
     /**
      * What the network was doing, for correlating this connection against a
-     * [com.ditchoom.socket.NetworkMonitor]. See [QuicConnection.networkAtClose].
+     * [com.ditchoom.socket.NetworkMonitor]. See [QuicEngineConnection.networkAtClose].
      */
     val networkAtClose: NetworkAtClose get() = NetworkAtClose.NotObserved
 
@@ -83,7 +83,7 @@ interface QuicScope : CoroutineScope {
      * resumed it, and whether 0-RTT was accepted. Settled by the time user code runs in a scope block.
      *
      * Defaults to a full handshake with no ticket offered — the truthful answer for a scope with no
-     * handshake behind it. [QuicConnection] derives it from [QuicConnectionState.Established].
+     * handshake behind it. [QuicEngineConnection] derives it from [QuicConnectionState.Established].
      */
     val resumption: QuicResumptionOutcome get() = QuicResumptionOutcome.FullHandshake(QuicFullHandshakeReason.NoTicketOffered)
 
@@ -129,7 +129,7 @@ interface QuicScope : CoroutineScope {
      * typed rejection ([QuicNativeMemoryRequiredException]) a violation produces.
      *
      * Defaults to throwing for scope implementations with no connection behind them, matching
-     * [identity]. [QuicConnection] redeclares it abstract, so every real backend must answer.
+     * [identity]. [QuicEngineConnection] redeclares it abstract, so every real backend must answer.
      */
     val capabilities: QuicCapabilities
         get() = throw UnsupportedOperationException("Connection capabilities are not available on this platform")

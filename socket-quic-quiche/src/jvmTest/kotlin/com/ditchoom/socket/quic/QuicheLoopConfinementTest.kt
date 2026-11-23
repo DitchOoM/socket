@@ -120,7 +120,7 @@ class QuicheLoopConfinementTest {
     }
 
     /** Every caller-visible accessor of a connection, read once. */
-    private suspend fun readEverything(connection: QuicConnection) {
+    private suspend fun readEverything(connection: QuicEngineConnection) {
         connection.identity
         connection.state.value
         connection.unreadAtClose.value
@@ -145,7 +145,7 @@ class QuicheLoopConfinementTest {
 
     /** [readEverything] in a loop on another thread until cancelled; counts its rounds. */
     private fun CoroutineScope.hammer(
-        connection: QuicConnection,
+        connection: QuicEngineConnection,
         rounds: AtomicLong,
     ): Job =
         launch(Dispatchers.Default) {
@@ -171,11 +171,11 @@ class QuicheLoopConfinementTest {
                     val serverJob =
                         launch {
                             server.connections {
-                                val serverHammer = hammers.hammer(this as QuicConnection, serverRounds)
+                                val serverHammer = hammers.hammer(this as QuicEngineConnection, serverRounds)
                                 try {
                                     val stream = acceptStream()
                                     while (true) {
-                                        if (stream.read(10.seconds) { stream.writeFully(it, 5.seconds) } !is ScopedRead.Data) break
+                                        if (stream.read(10.seconds) { stream.writeFully(it, 5.seconds) } !is ScopedReadResult.Data) break
                                     }
                                     stream.close()
                                 } finally {
@@ -193,7 +193,7 @@ class QuicheLoopConfinementTest {
                             api = confinement.api,
                             tuning = tuning,
                         ) {
-                            val clientHammer = hammers.hammer(this as QuicConnection, clientRounds)
+                            val clientHammer = hammers.hammer(this as QuicEngineConnection, clientRounds)
                             val stream = openStream()
                             repeat(ECHOES) { i -> stream.echo("before-$i") }
                             assertIs<MigrationResult.Succeeded>(migrate(MigrationTarget.LocalAddress("127.0.0.1")))
@@ -234,7 +234,7 @@ class QuicheLoopConfinementTest {
         val back = StringBuilder()
         while (back.length < text.length) {
             val r = read(5.seconds) { it.readString(it.remaining(), Charset.UTF8) }
-            back.append(assertIs<ScopedRead.Data<String>>(r, "echo of '$text' ended after '$back'").value)
+            back.append(assertIs<ScopedReadResult.Data<String>>(r, "echo of '$text' ended after '$back'").value)
         }
     }
 

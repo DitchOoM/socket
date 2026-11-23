@@ -195,7 +195,7 @@ class DriverFlightRecorderTests {
                             println(lost.render(tail = 12))
 
                             readerContext.release()
-                            assertEquals(ScopedRead.Data("late"), read.await())
+                            assertEquals(ScopedReadResult.Data("late"), read.await())
                             val resumed = awaitRecording(driver) { it.signalledReadersNotResumed.isEmpty() }
                             assertTrue(resumed.entries.any { it.event == FlightEvent.ReaderResumed && it.arg == id }, resumed.render(12))
                         }
@@ -265,7 +265,7 @@ class DriverFlightRecorderTests {
 
     private suspend fun echoUntilEnd(stream: QuicByteStream) {
         try {
-            while (stream.read(10.seconds) { stream.writeFully(it, 5.seconds) } is ScopedRead.Data) Unit
+            while (stream.read(10.seconds) { stream.writeFully(it, 5.seconds) } is ScopedReadResult.Data) Unit
         } finally {
             stream.close()
         }
@@ -275,7 +275,7 @@ class DriverFlightRecorderTests {
         writeText(text)
         var got = ""
         while (got.length < text.length) {
-            val chunk = assertIs<ScopedRead.Data<String>>(read(10.seconds) { it.readString(it.remaining(), Charset.UTF8) })
+            val chunk = assertIs<ScopedReadResult.Data<String>>(read(10.seconds) { it.readString(it.remaining(), Charset.UTF8) })
             got += chunk.value
         }
         assertEquals(text, got)

@@ -21,14 +21,11 @@ sealed interface QuicCloseCircumstance {
     /** The connection was released before the operation ran. */
     data object Released : QuicCloseCircumstance
 
-    /** The connection ended and the operation found it closed. */
-    data object Ended : QuicCloseCircumstance
-
     /**
-     * The operation came after the connection's close: a write or an open of a stream is refused at once, and nothing of
-     * it is sent. [QuicCloseException.end] is the end that close asked for.
+     * The connection ended, or passed its close point, and the operation found it so: after a close nothing more is
+     * accepted, and [QuicCloseException.end] is the end that close asked for.
      */
-    data object Closing : QuicCloseCircumstance
+    data object Ended : QuicCloseCircumstance
 
     /** The thrower described the close in its own message; nothing more is known by type. */
     data object Unstated : QuicCloseCircumstance
@@ -42,6 +39,5 @@ internal fun QuicCloseCircumstance.summary(): String =
         QuicCloseCircumstance.CallerThreadFailed -> "a caller's thread failed inside the connection"
         QuicCloseCircumstance.Released -> "connection released"
         QuicCloseCircumstance.Ended -> "connection closed"
-        QuicCloseCircumstance.Closing -> "the connection was closing"
         QuicCloseCircumstance.Unstated -> "connection closed"
     }

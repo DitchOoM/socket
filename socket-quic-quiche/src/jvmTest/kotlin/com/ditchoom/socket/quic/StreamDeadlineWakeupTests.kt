@@ -34,7 +34,7 @@ class StreamDeadlineWakeupTests {
                                     val stream = acceptStream()
                                     while (true) {
                                         val echoed = stream.read(30.seconds) { chunk -> stream.write(chunk, 30.seconds) }
-                                        if (echoed !is ScopedRead.Data) break
+                                        if (echoed !is ScopedReadResult.Data) break
                                     }
                                     stream.close()
                                 }

@@ -10,7 +10,7 @@ import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicStreamId
 import com.ditchoom.socket.quic.QuicStreamSide
-import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.ScopedReadResult
 import com.ditchoom.socket.quic.core.conn.CallerPlace
 import com.ditchoom.socket.quic.core.conn.Conn
 import com.ditchoom.socket.quic.core.observe.CallerSide
@@ -140,10 +140,10 @@ internal class TypedQuicStream<T : Any>(
     }
 
     /**
-     * The next value: [ScopedRead.Data] with it, [ScopedRead.End] once the peer finished the stream, [ScopedRead.Reset]
+     * The next value: [ScopedReadResult.Data] with it, [ScopedReadResult.End] once the peer finished the stream, [ScopedReadResult.Reset]
      * when it reset the stream, whose code [peerReset] then holds. A malformed frame throws a [QuicTypedStreamException].
      */
-    suspend fun receive(): ScopedRead<T> {
+    suspend fun receive(): ScopedReadResult<T> {
         if (use.load() is TypedUse.Closed) raise(Raised.StreamClosed(id, QuicStreamSide.Read), QuicCloseCircumstance.Ended)
         return when (reader.acquire()) {
             Acquired.Granted -> receiveHeld()
@@ -151,25 +151,25 @@ internal class TypedQuicStream<T : Any>(
         }
     }
 
-    /** The caller, after a [receive]: the peer's reset and its code once one returned [ScopedRead.Reset]. */
+    /** The caller, after a [receive]: the peer's reset and its code once one returned [ScopedReadResult.Reset]. */
     fun peerReset(): PeerReset =
         when (val ending = accumulator.ending()) {
             is Ending.Reset -> PeerReset.Reset(ending.code)
             is Ending.Open, is Ending.Finished, is Ending.Broken -> PeerReset.NotMet
         }
 
-    private suspend fun settleThenReceive(): ScopedRead<T> {
+    private suspend fun settleThenReceive(): ScopedReadResult<T> {
         reader.awaitSettled()
         return receive()
     }
 
-    private suspend fun receiveHeld(): ScopedRead<T> {
+    private suspend fun receiveHeld(): ScopedReadResult<T> {
         val place = connection.placeOf(coroutineContext)
         while (true) {
             when (step()) {
                 Step.Message -> return message()
-                Step.End -> return finished(ScopedRead.End)
-                Step.Reset -> return finished(ScopedRead.Reset)
+                Step.End -> return finished(ScopedReadResult.End)
+                Step.Reset -> return finished(ScopedReadResult.Reset)
                 Step.Fill -> Unit
             }
             reader.arm(place)
@@ -178,19 +178,19 @@ internal class TypedQuicStream<T : Any>(
         }
     }
 
-    private suspend fun awaitReceive(): ScopedRead<T> {
+    private suspend fun awaitReceive(): ScopedReadResult<T> {
         reader.awaitDone()
         reader.taken()
         return receiveHeld()
     }
 
-    private fun message(): ScopedRead<T> {
+    private fun message(): ScopedReadResult<T> {
         val value = decoded.removeAt(0)
         reader.leave()
-        return ScopedRead.Data(value)
+        return ScopedReadResult.Data(value)
     }
 
-    private fun finished(end: ScopedRead<Nothing>): ScopedRead<Nothing> {
+    private fun finished(end: ScopedReadResult<Nothing>): ScopedReadResult<Nothing> {
         reader.leave()
         return end
     }

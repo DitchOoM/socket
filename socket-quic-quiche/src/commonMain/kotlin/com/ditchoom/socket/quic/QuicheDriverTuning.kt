@@ -49,7 +49,7 @@ internal class QuicheDriverTuning(
     val captureFactory: () -> TraceCapture = { TraceCapture.Off },
     /**
      * The client connection's resolved [com.ditchoom.socket.NetworkMonitor] observation, threaded to the
-     * driver so it can latch [QuicConnection.networkAtClose] on the close transition. Default
+     * driver so it can latch [QuicEngineConnection.networkAtClose] on the close transition. Default
      * [ConnectionNetworkObservation.Unobserved] — a server bind or a test double watches no network, and
      * says so with a value rather than with `null`.
      *

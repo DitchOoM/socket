@@ -17,7 +17,7 @@ import kotlin.time.Duration.Companion.seconds
  * coroutines internal (#488).
  *
  * `QuicheDriver.cleanup()` ends teardown with `incomingStreams.close()`. Anything parked in
- * [QuicConnection.acceptStream] at that moment is resumed by that close, and while `acceptStream`
+ * [QuicEngineConnection.acceptStream] at that moment is resumed by that close, and while `acceptStream`
  * was a bare `receive()` it was resumed with `ClosedReceiveChannelException` — a control-flow signal
  * wearing an error type, from a library whose own rule is that close reasons stay typed. A caller
  * could not tell "the peer closed cleanly and there will be no more streams" from "the driver died",

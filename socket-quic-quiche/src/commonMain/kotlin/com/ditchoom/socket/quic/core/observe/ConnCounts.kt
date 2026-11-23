@@ -1,6 +1,7 @@
 package com.ditchoom.socket.quic.core.observe
 
-import com.ditchoom.socket.quic.QuicDatagramCount
+import com.ditchoom.socket.quic.QuicConnectionStats
+import com.ditchoom.socket.quic.QuicDatagramDrops
 import com.ditchoom.socket.quic.QuicStatsRead
 
 /** What a connection did with the threads and datagrams that reached it: any thread counts, tests read. */
@@ -125,20 +126,40 @@ internal class CountsSeen(
     val pacingClockMismatches: Long,
 )
 
-/** This read with the datagrams [counts] saw refused at the sender and dropped at the receiver; a read that has no statistics has none. */
+/** This read with the datagrams [counts] saw refused and dropped; a read that has no statistics has none. */
 internal fun QuicStatsRead.withDatagramCounts(counts: ConnCounts): QuicStatsRead =
     when (this) {
-        is QuicStatsRead.Read ->
-            QuicStatsRead.Read(
-                stats.copy(
-                    datagramsRefusedQueueFull = QuicDatagramCount.Counted(counts.datagramsRefusedQueueFull),
-                    datagramsDroppedReceiveQueue = QuicDatagramCount.Counted(counts.datagramsOverflowed),
-                    datagramsEvicted = QuicDatagramCount.Counted(counts.datagramsEvicted),
-                    datagramsExpiredOutgoing = QuicDatagramCount.Counted(counts.datagramsExpiredOutgoing),
-                    datagramsDroppedUnsendable = QuicDatagramCount.Counted(counts.datagramsDroppedUnsendable),
-                    datagramsExpiredIncoming = QuicDatagramCount.Counted(counts.datagramsExpiredIncoming),
-                    datagramsDroppedAtClose = QuicDatagramCount.Counted(counts.datagramsDroppedAtClose),
-                ),
-            )
+        is QuicStatsRead.Read -> QuicStatsRead.Read(stats.dropping(dropsOf(counts)))
         is QuicStatsRead.Ended, is QuicStatsRead.NotReported -> this
     }
+
+private fun dropsOf(counts: ConnCounts) =
+    QuicDatagramDrops(
+        refusedQueueFull = counts.datagramsRefusedQueueFull,
+        receiveQueue = counts.datagramsOverflowed,
+        evicted = counts.datagramsEvicted,
+        expiredOutgoing = counts.datagramsExpiredOutgoing,
+        unsendable = counts.datagramsDroppedUnsendable,
+        expiredIncoming = counts.datagramsExpiredIncoming,
+        atClose = counts.datagramsDroppedAtClose,
+    )
+
+/** These statistics with [drops] as their datagram drops. */
+private fun QuicConnectionStats.dropping(drops: QuicDatagramDrops) =
+    QuicConnectionStats(
+        packetsSent = packetsSent,
+        packetsReceived = packetsReceived,
+        packetsLost = packetsLost,
+        packetsSpuriouslyLost = packetsSpuriouslyLost,
+        packetsRetransmitted = packetsRetransmitted,
+        bytesSent = bytesSent,
+        bytesReceived = bytesReceived,
+        bytesAcknowledged = bytesAcknowledged,
+        bytesLost = bytesLost,
+        streamBytesRetransmitted = streamBytesRetransmitted,
+        datagramsSent = datagramsSent,
+        datagramsReceived = datagramsReceived,
+        paths = paths,
+        activePath = activePath,
+        datagramDrops = drops,
+    )

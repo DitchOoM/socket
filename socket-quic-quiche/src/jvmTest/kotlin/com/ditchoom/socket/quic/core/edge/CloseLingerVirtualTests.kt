@@ -6,7 +6,7 @@ import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.socket.quic.QuicCloseLinger
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicOptions
-import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.ScopedReadResult
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.time.RttPrior
 import com.ditchoom.socket.quic.read
@@ -192,7 +192,7 @@ class CloseLingerVirtualTests {
     ) {
         try {
             val stream = connection.acceptStream()
-            while (stream.read(1.hours) { got[0] += it.remaining() } is ScopedRead.Data<*>) Unit
+            while (stream.read(1.hours) { got[0] += it.remaining() } is ScopedReadResult.Data<*>) Unit
         } catch (ended: Exception) {
             // The connection ended under the read: what arrived is counted.
         }

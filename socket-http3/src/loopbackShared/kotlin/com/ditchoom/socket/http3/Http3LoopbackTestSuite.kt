@@ -17,7 +17,7 @@ import com.ditchoom.socket.quic.DatagramOptions
 import com.ditchoom.socket.quic.FlowControl
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicTlsConfig
-import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.ScopedReadResult
 import com.ditchoom.socket.quic.connectionsByAlpn
 import com.ditchoom.socket.quic.read
 import com.ditchoom.socket.quic.trace.QuicTraceCapture
@@ -1928,7 +1928,7 @@ abstract class Http3LoopbackTestSuite {
                                 "raw-echo" to {
                                     val stream = acceptStream()
                                     val data = stream.read(5.seconds.scaled) { it.readString(it.remaining(), Charset.UTF8) }
-                                    if (data is ScopedRead.Data) {
+                                    if (data is ScopedReadResult.Data) {
                                         val text = data.value
                                         val out = textBuffer("raw:$text")
                                         try {
@@ -1980,7 +1980,7 @@ abstract class Http3LoopbackTestSuite {
                                 }
                                 val reply = stream.read(5.seconds.scaled) { it.readString(it.remaining(), Charset.UTF8) }
                                 val text =
-                                    if (reply is ScopedRead.Data) {
+                                    if (reply is ScopedReadResult.Data) {
                                         reply.value
                                     } else {
                                         "no_data:${reply::class.simpleName}"
@@ -2061,7 +2061,7 @@ abstract class Http3LoopbackTestSuite {
                                     serverEvents.send("raw-connection")
                                     val stream = acceptStream()
                                     val data = stream.read(5.seconds.scaled) { it.readString(it.remaining(), Charset.UTF8) }
-                                    if (data is ScopedRead.Data) {
+                                    if (data is ScopedReadResult.Data) {
                                         val text = data.value
                                         val out = textBuffer("raw:$text")
                                         try {
@@ -2126,7 +2126,7 @@ abstract class Http3LoopbackTestSuite {
                                 }
                                 val reply = stream.read(5.seconds.scaled) { it.readString(it.remaining(), Charset.UTF8) }
                                 val text =
-                                    if (reply is ScopedRead.Data) {
+                                    if (reply is ScopedReadResult.Data) {
                                         reply.value
                                     } else {
                                         "no_data:${reply::class.simpleName}"
