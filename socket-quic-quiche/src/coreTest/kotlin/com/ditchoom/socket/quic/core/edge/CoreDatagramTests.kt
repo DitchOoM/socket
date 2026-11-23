@@ -15,6 +15,7 @@ import com.ditchoom.socket.quic.QuicDatagramRefused
 import com.ditchoom.socket.quic.QuicDatagramTooLarge
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.core.loop.LoopSet
+import com.ditchoom.socket.quic.core.sched.SendRule
 import com.ditchoom.socket.quic.core.testing.coreTest
 import com.ditchoom.socket.quic.network
 import kotlinx.coroutines.CompletableDeferred
@@ -40,10 +41,14 @@ import kotlin.time.Duration.Companion.seconds
  */
 class CoreDatagramTests {
     private val loops = LoopSet(1)
+    private val inPlace = LoopSet(1, sends = SendRule.InPlace)
     private val on = coreTestOptions.copy(datagrams = DatagramOptions())
 
     @AfterTest
-    fun closeLoops() = loops.close()
+    fun closeLoops() {
+        loops.close()
+        inPlace.close()
+    }
 
     @Test
     fun aConnectionWithDatagramsOnClosesCleanlyWithNoneSent() =
@@ -185,7 +190,8 @@ class CoreDatagramTests {
             val stall = AtomicReference<Stall>(Stall.Off)
             val go = CompletableDeferred<Unit>()
             val refused = CompletableDeferred<List<Int>>()
-            withCoreServer(options = small, wrapIo = { StallingIo(it, stall) }, onConnection = { connection ->
+            // Callers serve in place on both ends, as on Linux and Android: the client's receive enters its connection.
+            withCoreServer(options = small, wrapIo = { StallingIo(it, stall) }, sends = SendRule.InPlace, onConnection = { connection ->
                 val channel = connection.datagramChannel()
                 go.await()
                 val notSent = ArrayList<Int>()
@@ -207,7 +213,7 @@ class CoreDatagramTests {
                 refused.complete(notSent)
                 delay(HOLD)
             }) { server ->
-                val client = connectCore(server.port, loops = loops, options = small)
+                val client = connectCore(server.port, loops = inPlace, options = small)
                 try {
                     val channel = client.connection.datagramChannel()
                     go.complete(Unit)

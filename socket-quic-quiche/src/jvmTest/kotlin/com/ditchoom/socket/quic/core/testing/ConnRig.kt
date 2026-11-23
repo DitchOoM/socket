@@ -150,6 +150,7 @@ internal fun testConn(
     counts: ConnCounts,
     access: AccessGuard = AccessGuard.Unguarded,
     peer: PathKey = PathKey(4, 443, 0L, 0x7F000001L),
+    memory: ConnMemory = ConnMemory(testLoopMemory(), BufferFactory.Default, nativeBytes(255)),
 ): Conn =
     buildConn(
         rules = rules,
@@ -175,7 +176,7 @@ internal fun testConn(
                 PathKey(4, 50_000, 0L, 0x7F000001L),
                 target,
             ),
-        memory = ConnMemory(testLoopMemory(), BufferFactory.Default, nativeBytes(255)),
+        memory = memory,
         flight = FlightSize(records = 512),
         capture = capture,
         port = loop.port,
@@ -212,12 +213,14 @@ internal class ConnRig(
     time: QuicheTime = QuicheTime.Own,
     access: AccessGuard = AccessGuard.Unguarded,
     peer: PathKey = PathKey(4, 443, 0L, 0x7F000001L),
+    lanes: CallerLanes = CallerLanes.None,
+    memory: ConnMemory = ConnMemory(testLoopMemory(), BufferFactory.Default, nativeBytes(255)),
 ) {
     val sink = RecordingSink()
     val counts = ConnCounts()
     val loop = loopOver(poller, clock, maxDatagrams, time)
-    val socket = SendPort(io, loop.port, CallerLanes.None, RecordingWork(), loop.counts, loop.callerCounts)
-    val conn: Conn = testConn(api, rules, target, capture, loop, socket, clock, sink, counts, access, peer)
+    val socket = SendPort(io, loop.port, lanes, RecordingWork(), loop.counts, loop.callerCounts)
+    val conn: Conn = testConn(api, rules, target, capture, loop, socket, clock, sink, counts, access, peer, memory)
     val endpoint =
         Endpoint(
             SocketRef(DatagramChannel.open()),
