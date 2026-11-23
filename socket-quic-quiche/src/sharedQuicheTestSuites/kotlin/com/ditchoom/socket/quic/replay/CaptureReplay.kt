@@ -596,19 +596,24 @@ private class CaptureReplay(
 
     /**
      * Our timeout just ran: what it made is written when the capture's endpoint wrote it, when that is the capture's next
-     * step and no recorded timer runs before it. A host can stall between running quiche's timeout and writing its probe,
-     * and quiche stamps the probe as it writes it, so writing it sooner would move every timer armed from it.
+     * datagram of ours, with nothing between but our endpoint's own actions, and no recorded timer runs before it. A host
+     * can stall between running quiche's timeout and writing its probe, and quiche stamps the probe as it writes it, so
+     * writing it sooner would move every timer armed from it. An action between is taken in the same turn, before the
+     * write, as a host whose loop ran the timeout and the application's work in one pass did: our endpoint stays busy
+     * until the action is performed.
      */
     private fun writeWhenCaptured() {
-        val next = schedule.steps.drop(stepNext).firstOrNull { !(it is Step.PeerSent && it.fate == Fate.Lost) }
-        if (next !is Step.OursSent || next.at <= now) return
+        val ahead = schedule.steps.drop(stepNext).filterNot { it is Step.PeerSent && it.fate == Fate.Lost }
+        val actions = ahead.takeWhile { it is Step.OursDid }.size
+        val next = ahead.getOrNull(actions)
+        if (next !is Step.OursSent || (actions == 0 && next.at <= now)) return
         val firings =
             when (val timers = schedule.ourTimers) {
                 OurTimers.WhenDue -> return
                 is OurTimers.AsRecorded -> timers.firings
             }
         if (firings.any { it > now + TIMER_PRECISION && it < next.at }) return
-        background(next.at, endpoint = OurEndpoint.Busy)
+        if (actions == 0) background(next.at, endpoint = OurEndpoint.Busy) else ourWork = OurEndpoint.Busy
     }
 
     /** Our endpoint's work is done: its timers run again and what it wrote is taken. */
@@ -700,6 +705,8 @@ private class CaptureReplay(
                 else -> {
                     pair.runTimeout(ours)
                     writeWhenCaptured()
+                    // The timeout's turn holds an action of ours: what it made is written once that is performed.
+                    if (ourWork == OurEndpoint.Busy) return
                 }
             }
             when (endpoint) {
