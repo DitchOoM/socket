@@ -110,6 +110,12 @@ class DatagramQueueConcurrencyTests {
                 is Head.Empty -> Unit
             }
         }
+        // The first offer makes the queue's parts; on a slow machine the takes above can finish before any sender ran.
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS)
+        while (queued.get() == 0L) {
+            assertTrue(System.nanoTime() < deadline, "no offer was queued within $WAIT_SECONDS s")
+            Thread.onSpinWait()
+        }
         val slots = assertIs<QueueParts.Made>(queue.parts()).slots
         queue.close(ConnEnd.Released)
         senders.forEach { it.join() }
