@@ -25,15 +25,21 @@ MAPS_16M=$'12c00000-13c00000 rw-p 00000000 00:00 0                              
 72cba000-72cbb000 rw-p 00000000 00:00 0                                  [anon:dalvik-non moving space]'
 
 # A fake device: the zygote's maps are $ZYGOTE_MAPS until a `start`, then $ZYGOTE_MAPS_AFTER_RESTART.
+# DEVICE=gone fails every command after getprop the way a dropped transport does; DEVICE=no-zygote has no
+# zygote process; DEVICE=not-root cannot read another process's maps.
 ADB_LOG=""
+DEVICE=up
 adb() {
   ADB_LOG="${ADB_LOG}$*"$'\n'
-  case "$*" in
-    "shell getprop dalvik.vm.heapsize") printf '%s\r\n' "$HEAPSIZE" ;;
-    "shell pidof zygote64 || pidof zygote") printf '178\r\n' ;;
-    "shell cat /proc/178/maps") printf '%s\n' "$ZYGOTE_MAPS" ;;
-    "shell start") ZYGOTE_MAPS="$ZYGOTE_MAPS_AFTER_RESTART" ;;
-    "shell getprop sys.boot_completed") printf '1\r\n' ;;
+  case "$DEVICE:$*" in
+    *":shell getprop dalvik.vm.heapsize") printf '%s\r\n' "$HEAPSIZE" ;;
+    "gone:"*) echo "adb: device 'emulator-5554' not found" >&2; return 1 ;;
+    "no-zygote:shell pidof zygote64 || pidof zygote") return 1 ;;
+    *":shell pidof zygote64 || pidof zygote") printf '178\r\n' ;;
+    "not-root:shell cat /proc/178/maps") echo "cat: /proc/178/maps: Permission denied" >&2; return 1 ;;
+    *":shell cat /proc/178/maps") printf '%s\n' "$ZYGOTE_MAPS" ;;
+    *":shell start") ZYGOTE_MAPS="$ZYGOTE_MAPS_AFTER_RESTART" ;;
+    *":shell getprop sys.boot_completed") printf '1\r\n' ;;
   esac
 }
 
@@ -76,14 +82,23 @@ else
   bad "a restart that did not help was not reported" "$out"
 fi
 
-# No maps to read: not comparable, nothing restarts, and the test process's own report is named.
-HEAPSIZE=512m ZYGOTE_MAPS="" ZYGOTE_MAPS_AFTER_RESTART="" ADB_LOG=""
-out=$(ensure_zygote_heap 29; echo "status=$?"; printf '%s' "$ADB_LOG")
-if grep -q 'status=0' <<<"$out" && grep -q 'not comparable' <<<"$out" && ! grep -q 'shell stop' <<<"$out"; then
-  ok "an unreadable zygote heap is reported as not comparable"
-else
-  bad "an unreadable zygote heap was misreported" "$out"
-fi
+# A reservation that cannot be read is never a 0 MB reading: each way it fails is named, and nothing restarts.
+for case_ in \
+  "up|no dalvik-main space mapping" \
+  "gone|adb shell pidof failed (exit 1): adb: device 'emulator-5554' not found" \
+  "no-zygote|no zygote process" \
+  "not-root|permission denied (adbd is not root)"; do
+  DEVICE="${case_%%|*}" HEAPSIZE=512m ZYGOTE_MAPS="" ZYGOTE_MAPS_AFTER_RESTART="" ADB_LOG=""
+  want="${case_#*|}"
+  out=$(ensure_zygote_heap 35; echo "status=$?"; printf '%s' "$ADB_LOG")
+  if grep -q 'status=0' <<<"$out" && grep -qF "$want" <<<"$out" && grep -q 'not compared' <<<"$out" &&
+    ! grep -q '0 MB' <<<"$out" && ! grep -q 'shell stop' <<<"$out"; then
+    ok "an unreadable reservation ($DEVICE) says: $want"
+  else
+    bad "an unreadable reservation ($DEVICE) was misreported" "$out"
+  fi
+done
+DEVICE=up
 
 echo "---"
 echo "$pass passed, $fail failed"
