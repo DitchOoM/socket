@@ -11,6 +11,7 @@ import com.ditchoom.socket.SocketClosedException
 import com.ditchoom.socket.SocketTimeoutException
 import com.ditchoom.socket.TimeoutContext
 import com.ditchoom.socket.TransportConfig
+import com.ditchoom.socket.WithinDeadline
 import com.ditchoom.socket.nio.ByteBufferClientSocket
 import com.ditchoom.socket.nio2.util.aRead
 import com.ditchoom.socket.nio2.util.aWrite
@@ -18,13 +19,13 @@ import com.ditchoom.socket.nio2.util.assignedPort
 import com.ditchoom.socket.offTheAndroidMainThread
 import com.ditchoom.socket.resumeOffThisThread
 import com.ditchoom.socket.translateRead
+import com.ditchoom.socket.withinDeadline
 import com.ditchoom.socket.wrapJvmException
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withTimeoutOrNull
 import java.io.IOException
 import java.net.StandardSocketOptions
 import java.nio.channels.AsynchronousSocketChannel
@@ -181,19 +182,13 @@ abstract class AsyncBaseClientSocket(
     private suspend fun orphanedReadRaw(deadline: Duration): ReadBuffer =
         readMutex.withLock {
             val inFlight = inFlightRead ?: startOrphanedRead().also { inFlightRead = it }
-            val bytesRead =
+            val waited =
                 try {
                     if (deadline.isInfinite()) {
-                        inFlight.await()
+                        WithinDeadline.Completed(inFlight.await())
                     } else {
-                        // Our deadline elapsed: orphan the read (keep the buffer + single-flight state) and
-                        // abandon only the wait. The next read() re-awaits this same background read. A
-                        // caller's enclosing timeout is a cancellation from outside, handled below.
-                        withTimeoutOrNull(deadline) { inFlight.await() }
-                            ?: throw SocketTimeoutException(TimeoutContext.Read(deadline))
+                        withinDeadline(deadline) { inFlight.await() }
                     }
-                } catch (e: SocketTimeoutException) {
-                    throw e
                 } catch (e: CancellationException) {
                     // The waiter was cancelled from outside; the read still owns the buffer, so leave it
                     // orphaned for the next read() and let the cancellation propagate. (A close() is not a
@@ -205,6 +200,13 @@ abstract class AsyncBaseClientSocket(
                     inFlightRead = null
                     inFlight.buffer.freeNativeMemory()
                     throw e
+                }
+            val bytesRead =
+                when (waited) {
+                    is WithinDeadline.Completed -> waited.value
+                    // Our deadline elapsed: orphan the read (keep the buffer + single-flight state) and
+                    // abandon only the wait. The next read() re-awaits this same background read.
+                    WithinDeadline.Expired -> throw SocketTimeoutException(TimeoutContext.Read(deadline))
                 }
             inFlightRead = null
             if (bytesRead < 0) {

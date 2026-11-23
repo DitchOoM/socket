@@ -22,7 +22,6 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withTimeoutOrNull
 import platform.Foundation.NSData
 import platform.Network.nw_connection_t
 import platform.posix.ECONNABORTED
@@ -120,17 +119,12 @@ open class NWSocketWrapper(
         val conn = connection ?: throw SocketClosedException.General("Socket is closed")
         return readMutex.withLock {
             val pending = inFlightRead ?: startReceive(conn).also { inFlightRead = it }
-            val buffer =
+            val waited =
                 try {
                     if (deadline.isInfinite()) {
-                        pending.await()
+                        WithinDeadline.Completed(pending.await())
                     } else {
-                        // Deadline elapsed: leave the native receive outstanding (single-flight) and abandon
-                        // only the wait — the next read() re-awaits this same receive. Do NOT cancel the
-                        // connection (RFC §3.2, Axis 2). Only this read's own deadline becomes a
-                        // SocketTimeoutException; a caller's enclosing timeout stays the caller's cancellation.
-                        withTimeoutOrNull(deadline) { pending.await() }
-                            ?: throw SocketTimeoutException(TimeoutContext.Read(deadline))
+                        withinDeadline(deadline) { pending.await() }
                     }
                 } catch (e: Throwable) {
                     // Only a receive that itself failed or hit EOF (its deferred completed exceptionally)
@@ -143,8 +137,16 @@ open class NWSocketWrapper(
                     if (pending.isCancelled) inFlightRead = null
                     throw e
                 }
-            inFlightRead = null
-            buffer
+            when (waited) {
+                is WithinDeadline.Completed -> {
+                    inFlightRead = null
+                    waited.value
+                }
+                // Deadline elapsed: leave the native receive outstanding (single-flight) and abandon only
+                // the wait — the next read() re-awaits this same receive. Do NOT cancel the connection
+                // (RFC §3.2, Axis 2).
+                WithinDeadline.Expired -> throw SocketTimeoutException(TimeoutContext.Read(deadline))
+            }
         }
     }
 
@@ -217,9 +219,12 @@ open class NWSocketWrapper(
                     // Network.framework has no per-send cancel, so cancel the connection to abandon the
                     // outstanding send. A caller's enclosing timeout is a cancellation from outside and,
                     // like any other, leaves the connection open.
-                    withTimeoutOrNull(deadline) { performSend(conn, nsData) } ?: run {
-                        closeInternal()
-                        throw SocketTimeoutException(TimeoutContext.Write(deadline))
+                    when (withinDeadline(deadline) { performSend(conn, nsData) }) {
+                        is WithinDeadline.Completed -> Unit
+                        WithinDeadline.Expired -> {
+                            closeInternal()
+                            throw SocketTimeoutException(TimeoutContext.Write(deadline))
+                        }
                     }
                 }
                 // Committed here, on the awaiting caller, only once the send completed and this call

@@ -12,7 +12,6 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ClosedReceiveChannelException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withTimeoutOrNull
 import org.khronos.webgl.Int8Array
 import org.khronos.webgl.Uint8Array
 import kotlin.coroutines.cancellation.CancellationException
@@ -126,8 +125,8 @@ open class NodeSocket(
         // This read's own deadline surfaces as the uniform timeout type (RFC_READ_TIMEOUT_CONTRACT §4.1,
         // Axis 3); a caller's enclosing timeout stays the caller's cancellation. Node reads are
         // non-destructive, so the connection stays usable either way.
-        val message =
-            withTimeoutOrNull(timeout) {
+        val waited =
+            withinDeadline(timeout) {
                 try {
                     incomingMessageChannel.receive()
                 } catch (e: ClosedReceiveChannelException) {
@@ -136,7 +135,12 @@ open class NodeSocket(
                         e,
                     )
                 }
-            } ?: throw SocketTimeoutException(TimeoutContext.Read(timeout))
+            }
+        val message =
+            when (waited) {
+                is WithinDeadline.Completed -> waited.value
+                WithinDeadline.Expired -> throw SocketTimeoutException(TimeoutContext.Read(timeout))
+            }
         if (message.bytesRead < 0) {
             throw SocketClosedException.General(
                 "Received ${message.bytesRead} from server indicating a socket close. transmissionError=$hadTransmissionError",
@@ -189,10 +193,13 @@ open class NodeSocket(
                 // Bounded write-timeout is DESTRUCTIVE (§4): the send buffer is wedged. Tear the socket
                 // down and null it so isOpen is deterministically false, then surface the uniform typed
                 // timeout. A caller's enclosing timeout is an outer cancel, handled below.
-                withTimeoutOrNull(deadline) { flushed.await() } ?: run {
-                    cleanSocket(socket)
-                    netSocket = null
-                    throw SocketTimeoutException(TimeoutContext.Write(deadline))
+                when (withinDeadline(deadline) { flushed.await() }) {
+                    is WithinDeadline.Completed -> Unit
+                    WithinDeadline.Expired -> {
+                        cleanSocket(socket)
+                        netSocket = null
+                        throw SocketTimeoutException(TimeoutContext.Write(deadline))
+                    }
                 }
             }
         } catch (e: CancellationException) {
