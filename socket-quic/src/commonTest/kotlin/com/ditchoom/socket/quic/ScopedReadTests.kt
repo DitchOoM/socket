@@ -47,6 +47,19 @@ class ScopedReadTests {
     }
 
     @Test
+    fun anOpenGivesItsStreamOrWhyThereIsNone() {
+        assertEquals(7, StreamOpen.opened(7).getOrElse { 0 })
+        val ended = StreamOpen.NotOpened.ConnectionEnded(QuicConnectionEnd.IdleTimeout)
+        for (reason in listOf(ended, StreamOpen.NotOpened.DeadlinePassed)) {
+            val open: StreamOpen<Int> = StreamOpen.notOpened(reason)
+            assertSame(reason, open.fold({ ended }, { it }))
+            assertEquals(-1, open.getOrElse { -1 })
+        }
+        val kept: StreamOpen<StreamOpen.NotOpened> = StreamOpen.opened(StreamOpen.NotOpened.DeadlinePassed)
+        assertEquals("opened", kept.fold({ "opened" }, { "not opened" }))
+    }
+
+    @Test
     fun readEachRunsItsBlockOnEveryChunkAndReturnsWhyTheStreamStopped() =
         runTest {
             val stream = ScriptedReceive(chunks = 3, then = ScopedRead.End.PeerReset(QuicAppErrorCode(9L)))

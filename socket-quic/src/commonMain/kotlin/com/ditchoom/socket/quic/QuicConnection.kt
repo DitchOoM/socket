@@ -27,26 +27,25 @@ interface QuicConnection {
     suspend fun awaitEnd(): QuicConnectionEnd
 
     /**
-     * Opens a bidirectional stream, waiting at the peer's stream limit as the connection's [StreamOpenPolicy] says. The
-     * stream is reset with the connection if it is still open when the connection's block ends.
-     *
-     * @throws QuicCloseException when the connection has ended or passed its close point.
-     * @throws com.ditchoom.socket.SocketTimeoutException when a [StreamOpenPolicy.Bounded] wait ran out; no stream was opened.
+     * Opens a bidirectional stream, waiting at the peer's stream limit as the connection's [StreamOpenPolicy] says, and
+     * answers the stream or why none was opened. The stream is reset with the connection if it is still open when the
+     * connection's block ends.
      */
-    suspend fun openStream(): QuicStream
+    suspend fun openStream(): StreamOpen<QuicStream>
 
     /**
-     * Opens a bidirectional stream and runs [block] on it, placed by the library. When [block] returns, a sending
-     * direction still open is finished and a receiving direction not read to its end is stopped; when it throws, both
-     * are reset with [QuicAbortCodes.handlerFailed] and the exception reaches the caller.
+     * Opens a bidirectional stream and runs [block] on it, placed by the library; answers [block]'s value, or why no
+     * stream was opened, in which case [block] did not run. When [block] returns, a sending direction still open is
+     * finished and a receiving direction not read to its end is stopped; when it throws, both are reset with
+     * [QuicAbortCodes.handlerFailed] and the exception reaches the caller.
      */
-    suspend fun <R> openStream(block: suspend (QuicStream) -> R): R
+    suspend fun <R> openStream(block: suspend (QuicStream) -> R): StreamOpen<R>
 
-    /** Opens a stream this side only sends on. Waits and fails as [openStream] does. */
-    suspend fun openSendStream(): QuicSendStream
+    /** Opens a stream this side only sends on. Waits and answers as [openStream] does. */
+    suspend fun openSendStream(): StreamOpen<QuicSendStream>
 
     /** Opens a stream this side only sends on and runs [block] on it, as [openStream] does for both directions. */
-    suspend fun <R> openSendStream(block: suspend (QuicSendStream) -> R): R
+    suspend fun <R> openSendStream(block: suspend (QuicSendStream) -> R): StreamOpen<R>
 
     /**
      * Runs [handler] once for every stream the peer opens, placed by the library, and returns how the connection ended

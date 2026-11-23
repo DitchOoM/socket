@@ -1455,10 +1455,10 @@ public abstract interface class com/ditchoom/socket/quic/QuicConnection {
 	public abstract fun getIdentity ()Lcom/ditchoom/socket/quic/QuicConnectionIdentity;
 	public abstract fun handleStreams (Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public abstract fun life ()Lcom/ditchoom/socket/quic/QuicConnectionLife;
-	public abstract fun openSendStream (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
-	public abstract fun openSendStream (Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
-	public abstract fun openStream (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
-	public abstract fun openStream (Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public abstract fun openSendStream-GcK6Fd4 (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public abstract fun openSendStream-fVlxIpk (Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public abstract fun openStream-GcK6Fd4 (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public abstract fun openStream-fVlxIpk (Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public abstract fun stats (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 }
 
@@ -3436,6 +3436,51 @@ public final class com/ditchoom/socket/quic/StandbyLink$OnDemand : com/ditchoom/
 	public fun equals (Ljava/lang/Object;)Z
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/quic/StreamOpen {
+	public static final field Companion Lcom/ditchoom/socket/quic/StreamOpen$Companion;
+	public static final synthetic fun box-impl (Ljava/lang/Object;)Lcom/ditchoom/socket/quic/StreamOpen;
+	public static fun constructor-impl (Ljava/lang/Object;)Ljava/lang/Object;
+	public fun equals (Ljava/lang/Object;)Z
+	public static fun equals-impl (Ljava/lang/Object;Ljava/lang/Object;)Z
+	public static final fun equals-impl0 (Ljava/lang/Object;Ljava/lang/Object;)Z
+	public static final fun fold-impl (Ljava/lang/Object;Lkotlin/jvm/functions/Function1;Lkotlin/jvm/functions/Function1;)Ljava/lang/Object;
+	public fun hashCode ()I
+	public static fun hashCode-impl (Ljava/lang/Object;)I
+	public fun toString ()Ljava/lang/String;
+	public static fun toString-impl (Ljava/lang/Object;)Ljava/lang/String;
+	public final synthetic fun unbox-impl ()Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/quic/StreamOpen$Companion {
+	public final fun notOpened-GcK6Fd4 (Lcom/ditchoom/socket/quic/StreamOpen$NotOpened;)Ljava/lang/Object;
+	public final fun opened-GcK6Fd4 (Ljava/lang/Object;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/quic/StreamOpen$Kept {
+	public fun <init> (Ljava/lang/Object;)V
+	public final fun getValue ()Ljava/lang/Object;
+}
+
+public abstract interface class com/ditchoom/socket/quic/StreamOpen$NotOpened {
+}
+
+public final class com/ditchoom/socket/quic/StreamOpen$NotOpened$ConnectionEnded : com/ditchoom/socket/quic/StreamOpen$NotOpened {
+	public fun <init> (Lcom/ditchoom/socket/quic/QuicConnectionEnd;)V
+	public final fun getEnd ()Lcom/ditchoom/socket/quic/QuicConnectionEnd;
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/quic/StreamOpen$NotOpened$DeadlinePassed : com/ditchoom/socket/quic/StreamOpen$NotOpened {
+	public static final field INSTANCE Lcom/ditchoom/socket/quic/StreamOpen$NotOpened$DeadlinePassed;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/quic/StreamOpenKt {
+	public static final fun getOrElse-AT2iScU (Ljava/lang/Object;Lkotlin/jvm/functions/Function1;)Ljava/lang/Object;
 }
 
 public abstract interface class com/ditchoom/socket/quic/StreamOpenPolicy {

@@ -92,7 +92,7 @@ interface QuicReceiveStream : QuicIncomingStream {
  * A bidirectional stream: its two directions, each used on its own.
  *
  * ```
- * val (send, receive) = connection.openStream()
+ * val (send, receive) = connection.openStream().getOrElse { why -> return failed(why) }
  * ```
  */
 interface QuicStream : QuicIncomingStream {

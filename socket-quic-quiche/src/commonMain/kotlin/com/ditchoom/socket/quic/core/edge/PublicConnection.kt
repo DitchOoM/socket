@@ -15,11 +15,13 @@ import com.ditchoom.socket.quic.QuicIncomingStream
 import com.ditchoom.socket.quic.QuicSendStream
 import com.ditchoom.socket.quic.QuicStatsRead
 import com.ditchoom.socket.quic.QuicStream
+import com.ditchoom.socket.quic.StreamOpen
 import com.ditchoom.socket.quic.core.conn.Arrival
 import com.ditchoom.socket.quic.core.life.CloseChoice
 import com.ditchoom.socket.quic.core.life.CloseOutcome
 import com.ditchoom.socket.quic.core.life.DrainUntil
 import com.ditchoom.socket.quic.core.sched.HandlerSite
+import com.ditchoom.socket.quic.core.stream.StreamKind
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.flow.first
@@ -61,20 +63,28 @@ internal class CoreQuicConnection(
                 .end,
         )
 
-    override suspend fun openStream(): QuicStream = bidirectional()
+    override suspend fun openStream(): StreamOpen<QuicStream> = bidirectional()
 
-    override suspend fun <R> openStream(block: suspend (QuicStream) -> R): R =
+    override suspend fun <R> openStream(block: suspend (QuicStream) -> R): StreamOpen<R> =
         placed {
-            val stream = bidirectional()
-            owning({ stream.abandon(codes.handlerFailed) }) { block(stream).also { stream.complete() } }
+            bidirectional().fold(
+                { stream ->
+                    StreamOpen.opened(owning({ stream.abandon(codes.handlerFailed) }) { block(stream).also { stream.complete() } })
+                },
+                { StreamOpen.notOpened(it) },
+            )
         }
 
-    override suspend fun openSendStream(): QuicSendStream = sendOnly()
+    override suspend fun openSendStream(): StreamOpen<QuicSendStream> = sendOnly()
 
-    override suspend fun <R> openSendStream(block: suspend (QuicSendStream) -> R): R =
+    override suspend fun <R> openSendStream(block: suspend (QuicSendStream) -> R): StreamOpen<R> =
         placed {
-            val stream = sendOnly()
-            owning({ stream.reset(codes.handlerFailed) }) { block(stream).also { stream.complete() } }
+            sendOnly().fold(
+                { stream ->
+                    StreamOpen.opened(owning({ stream.reset(codes.handlerFailed) }) { block(stream).also { stream.complete() } })
+                },
+                { StreamOpen.notOpened(it) },
+            )
         }
 
     override suspend fun handleStreams(handler: suspend (QuicIncomingStream) -> Unit): QuicConnectionEnd =
@@ -94,9 +104,17 @@ internal class CoreQuicConnection(
 
     override suspend fun stats(): QuicStatsRead = core.stats()
 
-    private suspend fun bidirectional() = streams.both(core.halves.openBidirectional(), Arrival.Confirmed)
+    private suspend fun bidirectional(): StreamOpen<CoreBidiStream> =
+        when (val open = core.opened(StreamKind.Bidirectional)) {
+            is OpenSettled.Stream -> StreamOpen.opened(streams.both(core.halves.openedBoth(open.id), Arrival.Confirmed))
+            is OpenSettled.NotOpened -> StreamOpen.notOpened(notOpened(open.answer))
+        }
 
-    private suspend fun sendOnly() = streams.sending(core.halves.openSendOnly())
+    private suspend fun sendOnly(): StreamOpen<CoreSendStream> =
+        when (val open = core.opened(StreamKind.Unidirectional)) {
+            is OpenSettled.Stream -> StreamOpen.opened(streams.sending(core.halves.openedSendOnly(open.id)))
+            is OpenSettled.NotOpened -> StreamOpen.notOpened(notOpened(open.answer))
+        }
 
     /** Runs [handler] on [stream], then completes the stream it returned from; one it throws from is reset by its caller. */
     private suspend fun handle(
@@ -127,6 +145,19 @@ internal class CoreQuicConnection(
             is LaneEntry.Refused -> withContext(Dispatchers.Default) { block() }
         }
 }
+
+/** What a refused open is to its caller: the connection's end or a passed bound as a value, or a failure of the open's own, which raises. */
+private fun notOpened(answer: OpenAnswer.Failed): StreamOpen.NotOpened =
+    when (val failure = answer.failure) {
+        is OpFailure.DeadlinePassed -> StreamOpen.NotOpened.DeadlinePassed
+        is Raised.ConnEnded -> StreamOpen.NotOpened.ConnectionEnded(publicEndOf(failure.end))
+        is Raised.PastClose -> StreamOpen.NotOpened.ConnectionEnded(publicEndOf(failure.end))
+        is Raised.WriteRefused, is Raised.ReadRefused, is Raised.Thrown, is Raised.Typed, is Raised.StreamClosed,
+        is Raised.NoSuchDirection, is Raised.NotNative, is Raised.FactoryNotNative, is Raised.RouteUnresolved,
+        is Raised.LoopsClosed, is Raised.StreamsHandled, is Raised.SocketRefused, is Raised.SpecLayoutRefused,
+        is Raised.NetworkRefused, is Raised.AccessDenied, is Raised.ChainRefused,
+        -> raise(failure, answer.during)
+    }
 
 /** Whether a block that owns a stream returned. */
 private enum class Returned { No, Yes }

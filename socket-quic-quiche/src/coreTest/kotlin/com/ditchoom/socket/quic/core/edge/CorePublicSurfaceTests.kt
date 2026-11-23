@@ -3,10 +3,10 @@ package com.ditchoom.socket.quic.core.edge
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.ReadPolicy
+import com.ditchoom.socket.quic.FlowControl
 import com.ditchoom.socket.quic.QuicAbortCodes
 import com.ditchoom.socket.quic.QuicAppErrorCode
 import com.ditchoom.socket.quic.QuicCloseChoice
-import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicCloseOutcome
 import com.ditchoom.socket.quic.QuicConnection
 import com.ditchoom.socket.quic.QuicConnectionEnd
@@ -17,6 +17,8 @@ import com.ditchoom.socket.quic.QuicReceiveStream
 import com.ditchoom.socket.quic.QuicStream
 import com.ditchoom.socket.quic.QuicStreamsAlreadyHandledException
 import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.StreamOpen
+import com.ditchoom.socket.quic.StreamOpenPolicy
 import com.ditchoom.socket.quic.StreamWrite
 import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.testing.coreTest
@@ -56,11 +58,12 @@ class CorePublicSurfaceTests {
                 val client = connect(server.port)
                 assertEquals("test", client.handshake.negotiatedAlpn)
                 val reply =
-                    client.openStream { (send, receive) ->
-                        assertIs<StreamWrite.Written>(send.writeAndFinish(bytes(payload())))
-                        assertIs<StreamWrite.Written>(send.finish(), "finishing twice answers the same")
-                        collect(receive, ScopedRead.End.PeerFinished)
-                    }
+                    client
+                        .openStream { (send, receive) ->
+                            assertIs<StreamWrite.Written>(send.writeAndFinish(bytes(payload())))
+                            assertIs<StreamWrite.Written>(send.finish(), "finishing twice answers the same")
+                            collect(receive, ScopedRead.End.PeerFinished)
+                        }.orFail()
                 assertContentEquals(payload(), reply)
                 assertIs<QuicConnectionLife.Open>(client.life())
                 assertIs<QuicCloseOutcome.Drained>(client.close())
@@ -84,7 +87,7 @@ class CorePublicSurfaceTests {
                 }
             }) { server ->
                 val client = connect(server.port)
-                client.openSendStream { send -> assertIs<StreamWrite.Written>(send.write(bytes(payload()))) }
+                client.openSendStream { send -> assertIs<StreamWrite.Written>(send.write(bytes(payload()))) }.orFail()
                 assertContentEquals(payload(), withTimeout(WAIT) { got.await() }, "the block's return finished the stream")
                 assertIs<QuicReceiveStream>(shape.await())
                 client.close(QuicCloseChoice.Immediate())
@@ -96,7 +99,7 @@ class CorePublicSurfaceTests {
         coreTest("CorePublicSurfaceTests.aPassedReadDeadlineIsAValueAndTheStreamStillReads") {
             withCoreServer(onConnection = { core -> core.public().handleStreams(::echo) }) { server ->
                 val client = connect(server.port)
-                val (send, receive) = client.openStream()
+                val (send, receive) = client.openStream().orFail()
                 val early = receive.read(ReadPolicy.Bounded(150.milliseconds)) { it.remaining() }
                 assertSame<Any>(ScopedRead.DeadlinePassed, early.fold({ it }, { it }))
                 assertIs<StreamWrite.Written>(send.write(bytes(payload())))
@@ -117,7 +120,7 @@ class CorePublicSurfaceTests {
                 }
             }) { server ->
                 val client = connect(server.port)
-                val (send, receive) = client.openStream()
+                val (send, receive) = client.openStream().orFail()
                 assertIs<StreamWrite.Written>(send.write(bytes(payload())))
                 val why = withTimeout(WAIT) { receive.readEach { } }
                 assertEquals(QuicAppErrorCode(RESET_CODE), assertIs<ScopedRead.End.PeerReset>(why).code)
@@ -138,15 +141,16 @@ class CorePublicSurfaceTests {
                 }
             }) { server ->
                 val client = connect(server.port)
-                val (send, receive) = client.openStream()
+                val (send, receive) = client.openStream().orFail()
                 send.write(bytes(payload()))
                 val why = withTimeout(WAIT) { receive.readEach { } }
                 assertEquals(QuicAppErrorCode(HANDLER_CODE), assertIs<ScopedRead.End.PeerReset>(why).code)
                 val reply =
-                    client.openStream { (again, echoed) ->
-                        again.writeAndFinish(bytes(payload()))
-                        collect(echoed, ScopedRead.End.PeerFinished)
-                    }
+                    client
+                        .openStream { (again, echoed) ->
+                            again.writeAndFinish(bytes(payload()))
+                            collect(echoed, ScopedRead.End.PeerFinished)
+                        }.orFail()
                 assertContentEquals(payload(), reply, "the next stream is served")
                 client.close(QuicCloseChoice.Immediate())
             }
@@ -164,7 +168,7 @@ class CorePublicSurfaceTests {
                 }
             }) { server ->
                 val client = connect(server.port)
-                val (send, _) = client.openStream()
+                val (send, _) = client.openStream().orFail()
                 val stopped =
                     withTimeout(WAIT) {
                         var result = send.write(bytes(payload()))
@@ -189,7 +193,7 @@ class CorePublicSurfaceTests {
                 connection.handleStreams { connection.close(QuicCloseChoice.Immediate(QuicError.ApplicationError(CLOSE_CODE))) }
             }) { server ->
                 val client = connect(server.port)
-                val (send, receive) = client.openStream()
+                val (send, receive) = client.openStream().orFail()
                 send.write(bytes(payload()))
                 val why = withTimeout(WAIT) { receive.readEach { } }
                 val end = assertIs<ScopedRead.End.ConnectionEnded>(why).end
@@ -199,7 +203,11 @@ class CorePublicSurfaceTests {
                 assertSame<StreamWrite>(refused, send.finish())
                 assertIs<QuicConnectionEnd.ByPeer>(withTimeout(WAIT) { client.awaitEnd() })
                 assertIs<QuicCloseOutcome.EndedFirst>(client.close())
-                assertFailsWith<QuicCloseException> { client.openStream() }
+                val notOpened = client.openStream().fold({ throw AssertionError("opened on an ended connection") }, { it })
+                assertIs<QuicConnectionEnd.ByPeer>(assertIs<StreamOpen.NotOpened.ConnectionEnded>(notOpened).end)
+                var ran = 0
+                assertIs<StreamOpen.NotOpened.ConnectionEnded>(client.openSendStream { ran++ }.fold({ null }, { it }))
+                assertEquals(0, ran, "the block of an open that made no stream does not run")
             }
         }
 
@@ -216,7 +224,25 @@ class CorePublicSurfaceTests {
             }
         }
 
+    @Test
+    fun anOpenWhoseBoundPassesAtThePeersStreamLimitIsAValueAndTheConnectionGoesOn() =
+        coreTest("CorePublicSurfaceTests.anOpenWhoseBoundPassesAtThePeersStreamLimitIsAValueAndTheConnectionGoesOn") {
+            val oneStream = coreTestOptions.copy(flowControl = FlowControl(initialMaxStreamsBidi = 1))
+            val bounded = coreTestOptions.copy(streamOpenPolicy = StreamOpenPolicy.Bounded(200.milliseconds))
+            withCoreServer(options = oneStream, onConnection = { core -> core.public().handleStreams(::echo) }) { server ->
+                val client = connectCore(server.port, loops = loops, options = bounded).connection.public()
+                val (send, receive) = client.openStream().orFail()
+                val second = client.openStream().fold({ throw AssertionError("opened past the peer's limit") }, { it })
+                assertSame<StreamOpen.NotOpened>(StreamOpen.NotOpened.DeadlinePassed, second)
+                assertIs<StreamWrite.Written>(send.writeAndFinish(bytes(payload())))
+                assertContentEquals(payload(), collect(receive, ScopedRead.End.PeerFinished), "the open stream is unaffected")
+                client.close(QuicCloseChoice.Immediate())
+            }
+        }
+
     private suspend fun connect(port: Int): QuicConnection = connectCore(port, loops = loops).connection.public()
+
+    private fun <S> StreamOpen<S>.orFail(): S = getOrElse { throw AssertionError("no stream was opened: $it") }
 
     /** Echoes a bidirectional stream until its peer finishes; a receive-only one is read to its end. */
     private suspend fun echo(incoming: QuicIncomingStream) {

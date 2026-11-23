@@ -208,6 +208,13 @@ internal class CoreConnection(
         return QuicStreamId(open.answer())
     }
 
+    /** [open] with a refused open as a value. */
+    internal suspend fun opened(kind: StreamKind): OpenSettled {
+        val open = OpenOp(kind, openBound, deadlines, conn)
+        conn.submit(open, placeOf(currentCoroutineContext()))
+        return open.settled()
+    }
+
     /** Read inside the connection when asked; nothing is counted for it otherwise. */
     override suspend fun stats(): QuicStatsRead =
         suspendCancellableCoroutine { cont -> conn.submit(StatsWork(cont), CallerPlace.HandToLoop) }.withDatagramCounts(conn.counts)
