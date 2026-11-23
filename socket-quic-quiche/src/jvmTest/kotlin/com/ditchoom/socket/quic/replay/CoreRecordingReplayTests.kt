@@ -818,6 +818,25 @@ class CoreRecordingReplayTests {
             )
         }
 
+    /**
+     * A kept CI recording (macOS JDK 21 FFM) whose client's write reached quiche with its handshake probe due: one turn ran
+     * the timeout and took the write, and quiche coalesced the Handshake probe with the payload's 1-RTT packet. The write is
+     * replayed in that turn, so the replay's probe carries the payload too.
+     */
+    @Test
+    fun aWriteTakenInItsProbesTurnIsCoalescedWithTheProbe() =
+        replayTest("aWriteTakenInItsProbesTurnIsCoalescedWithTheProbe") {
+            assertFollowedWholeTwice(
+                scheduleOf(
+                    Recorded(
+                        keptRecording("write-with-handshake-probe.client.trace"),
+                        keptRecording("write-with-handshake-probe.server.trace"),
+                        1,
+                    ),
+                ),
+            )
+        }
+
     private fun keptRecording(name: String): List<TraceEvent> =
         TraceEvent.parseAll(
             assertNotNull(this::class.java.classLoader.getResource("replay-recordings/$name"), "no kept recording $name").readText(),
@@ -979,27 +998,21 @@ class CoreRecordingReplayTests {
             assertFollowedWholeTwice(scheduleOf(recorded, lingered, recorded.server + lateSent))
         }
 
-    /** The client's application wrote the payload on its first stream when its first datagram carrying data left. */
+    /**
+     * The client's application wrote the payload on its first stream when its first datagram carrying it left: the first
+     * after the handshake's at least [DATA] long, the one the link loses. It may lead with a Handshake probe the same turn
+     * coalesced with it.
+     */
     private fun writeOf(recording: List<TraceEvent>): RecordingToSchedule.RecordedAction {
         val first =
             recording
                 .filterIsInstance<TraceEvent.DgramOut>()
-                .filter {
-                    isShortHeader(
-                        it.payloadHex,
-                    ) &&
-                        it.len >= DATA
-                }.minBy { it.at }
+                .drop(HANDSHAKE_DATAGRAMS)
+                .first { it.len >= DATA }
         return RecordingToSchedule.RecordedAction(first.at, OurAction.Write(stream = 0, bytes = PAYLOAD, end = StreamEnd.Open))
     }
 
-    /** Whether a datagram, in hex, starts with a short header (RFC 9000 §17.3): a packet of the connection's 1-RTT space. */
-    private fun isShortHeader(hex: String): Boolean = hex.take(2).toInt(HEX) and LONG_HEADER_BIT == 0
-
     private companion object {
-        const val HEX = 16
-        const val LONG_HEADER_BIT = 0x80
-
         /** The handshake's datagrams of the client: its Initial, then its Initial and Handshake coalesced. */
         const val HANDSHAKE_DATAGRAMS = 2
 
