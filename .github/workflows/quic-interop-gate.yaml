@@ -115,9 +115,26 @@ jobs:
           path: /tmp/quic-interop-image.tar.zst
           retention-days: 3
 
+  # The PPA's tshark, fetched once per run for every cell. See fetch-ppa-tshark.sh for why this uses
+  # Launchpad's API and file server rather than the PPA's apt archive (2026-11-23: the archive answered 503
+  # for every cell of run 45187417720 while the file server kept serving the same .debs).
+  tshark:
+    name: "tshark (wireshark-dev PPA)"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Fetch the PPA's tshark packages
+        run: .github/scripts/fetch-ppa-tshark.sh /tmp/tshark-debs
+      - uses: actions/upload-artifact@v7
+        with:
+          name: quic-interop-tshark-debs
+          path: /tmp/tshark-debs
+          retention-days: 3
+
   cell:
     name: "${{ matrix.direction }} · ${{ matrix.peer }}"
-    needs: [plan, image]
+    needs: [plan, image, tshark]
     runs-on: ubuntu-24.04
     timeout-minutes: 150
     strategy:
@@ -148,10 +165,15 @@ jobs:
           zstd -dc /tmp/quic-interop-image.tar.zst | docker load
           sudo modprobe ip6table_filter
 
+      - uses: actions/download-artifact@v8
+        with:
+          name: quic-interop-tshark-debs
+          path: /tmp/tshark-debs
+
       # tshark decodes the captures the runner judges rebinding and handshakes from. See quic-interop.yaml's
       # history for why the issued connection id length must stay below 20.
-      # Every cell job starts this at once, and Launchpad's API answers some of them 500
-      # (GPGKeyTemporarilyNotFoundError) under that burst, so the PPA and apt steps are retried with backoff.
+      # The PPA's own packages come from the tshark job's artifact, so no cell contacts Launchpad. Only their
+      # Ubuntu dependencies come from the archive, and the update and install are retried with backoff.
       - name: Install the runner and tshark
         run: |
           set -euo pipefail
@@ -165,16 +187,15 @@ jobs:
             "$@"
           }
           sleep $((RANDOM % 30))
-          retry sudo add-apt-repository -y ppa:wireshark-dev/stable
-          # Error-Mode=any: a source that answers 503 fails the update, so it is retried. Without it apt-get exits 0
-          # and the install takes Ubuntu's own tshark (4.2), whose dissector cannot follow a rebound path: every
-          # our-server rebind cell then fails "did not contain a PATH_CHALLENGE" (run 44069038229).
-          retry sudo apt-get update -o APT::Update::Error-Mode=any
+          retry sudo apt-get update
           echo "wireshark-common wireshark-common/install-setuid boolean false" | sudo debconf-set-selections
-          retry sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tshark
+          # Installing the .debs by path pins the PPA's build. Ubuntu's own tshark (4.2) has a dissector that
+          # cannot follow a rebound path: every our-server rebind cell then fails "did not contain a
+          # PATH_CHALLENGE" (run 44069038229). The version check below keeps that from passing silently.
+          retry sudo DEBIAN_FRONTEND=noninteractive apt-get install -y /tmp/tshark-debs/*.deb
           installed=$(dpkg-query -W -f='${Version}' tshark)
           case "$installed" in
-            *~ppa*) echo "tshark $installed from the wireshark-dev PPA" ;;
+            "$(cat /tmp/tshark-debs/VERSION)") echo "tshark $installed from the wireshark-dev PPA" ;;
             *) echo "::error title=tshark is not the PPA's::installed $installed; the rebind cells need the PPA's dissector"; exit 1 ;;
           esac
           git clone --depth 1 https://github.com/quic-interop/quic-interop-runner.git /tmp/runner
