@@ -89,7 +89,13 @@ internal class Inside(
         bytes: NativeBytes,
         length: Int,
         from: PathKey,
-    ) = turn.receive(bytes, length, from, clock.now())
+    ) {
+        try {
+            turn.receive(bytes, length, from, clock.now())
+        } finally {
+            c.ingress.copyRead()
+        }
+    }
 
     /** Writes the connection's flight recording into [sink], in the trace grammar. */
     fun dump(sink: TraceSink) = turn.dump(sink)

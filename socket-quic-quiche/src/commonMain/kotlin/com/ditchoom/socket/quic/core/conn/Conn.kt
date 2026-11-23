@@ -103,9 +103,9 @@ internal class Conn(
         from: PathKey,
         at: Nanos,
     ) {
-        when (touch()) {
-            LoopHold.In -> turn.receive(bytes, length, from, clock.held(at))
-            LoopHold.Out -> copyForHolder(bytes, length, from)
+        when (turn.ingress().reach(touch())) {
+            Reach.Direct -> turn.receive(bytes, length, from, clock.held(at))
+            Reach.Copy -> copyForHolder(bytes, length, from)
         }
     }
 
@@ -203,13 +203,13 @@ internal class Conn(
         from: PathKey,
     ) {
         val work =
-            when (val copy = turn.copy(bytes, length, from)) {
+            when (val copy = turn.ingress().copy(bytes, length, from)) {
                 is CopiedWork -> copy
                 is Copy.Dropped -> return
             }
         when (val pushed = turn.push(work)) {
             is Shut -> {
-                counts.datagramDropped()
+                turn.ingress().copyRefused()
                 return work.gone(pushed.end)
             }
             is Pushed.Open -> Unit

@@ -64,7 +64,10 @@ internal fun ConnParts.ended(
     outcome: CloseOutcome,
 ) {
     sink.ended(end, held, outcome, handshake.fate())
-    inbox.shut(end) { it.gone(end) }
+    inbox.shut(end) { work ->
+        if (work is CopiedWork) ingress.copyGone()
+        work.gone(end)
+    }
     streams.endAll(end)
     slots.datagrams.endAll(end)
     flight.toTrace()
