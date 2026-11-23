@@ -837,6 +837,26 @@ class CoreRecordingReplayTests {
             )
         }
 
+    /**
+     * A kept CI recording (macOS JDK 21 FFM) whose client read nothing for 165 ms after its stall, then read its server's
+     * probes and resent its lost payload on the acknowledgement they carried, running no timer. The modelled peer stands in
+     * for each probe with one it wrote after reading what the captured server had read, so its last probe acknowledges
+     * the client's datagram as the server's did, and the replay's client finds the payload lost and resends it too.
+     */
+    @Test
+    fun aLossFoundOnALateAcknowledgementIsResentInTheReplay() =
+        replayTest("aLossFoundOnALateAcknowledgementIsResentInTheReplay") {
+            assertFollowedWholeTwice(
+                scheduleOf(
+                    Recorded(
+                        keptRecording("loss-found-on-a-late-ack.client.trace"),
+                        keptRecording("loss-found-on-a-late-ack.server.trace"),
+                        1,
+                    ),
+                ),
+            )
+        }
+
     private fun keptRecording(name: String): List<TraceEvent> =
         TraceEvent.parseAll(
             assertNotNull(this::class.java.classLoader.getResource("replay-recordings/$name"), "no kept recording $name").readText(),

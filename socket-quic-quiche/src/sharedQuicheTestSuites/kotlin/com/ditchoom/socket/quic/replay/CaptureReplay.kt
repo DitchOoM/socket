@@ -1007,17 +1007,26 @@ private class CaptureReplay(
 
     private fun isLongHeader(packet: ByteArray): Boolean = packet[0].toInt() and 0x80 != 0
 
-    /** Bring the modelled peer's loss timer forward until it holds a stand-in for each of [shape], if it will. */
+    /**
+     * Bring the modelled peer's loss timer forward until it holds a stand-in for each of [shape], if it will. A timer run
+     * here stands in for what the captured peer sent now: the probes it wrote beyond that are lost on the way, so none of
+     * them stands in later for a datagram the captured peer wrote after reading more of ours.
+     */
     private fun retransmitFor(shape: List<PacketKind>) {
+        val wanted = shape.groupingBy { it }.eachCount()
+        val held = standIns.mapValues { (kind, waiting) -> maxOf(waiting.size, wanted[kind] ?: 0) }
         repeat(PEER_RETRANSMISSIONS) {
-            val wanted = shape.groupingBy { it }.eachCount()
-            if (wanted.all { (kind, count) -> standIns.getValue(kind).size >= count }) return
+            if (wanted.all { (kind, count) -> standIns.getValue(kind).size >= count }) return trimTo(held)
             when (pair.bringTimerForward(peer)) {
-                QuichePairByHand.Timer.Unarmed -> return
+                QuichePairByHand.Timer.Unarmed -> return trimTo(held)
                 is QuichePairByHand.Timer.DueIn -> collectPeer()
             }
         }
+        trimTo(held)
     }
+
+    private fun trimTo(held: Map<PacketKind, Int>) =
+        standIns.forEach { (kind, waiting) -> while (waiting.size > held.getValue(kind)) waiting.removeLast() }
 
     /** [bytes] with the packets at [packets] made unreadable; padding after the last packet stays. */
     private fun damage(
