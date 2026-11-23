@@ -1,5 +1,8 @@
 package com.ditchoom.socket.quic.core.observe
 
+import com.ditchoom.socket.quic.QuicDatagramCount
+import com.ditchoom.socket.quic.QuicStatsRead
+
 /** What a connection did with the threads and datagrams that reached it: any thread counts, tests read. */
 internal class ConnCounts {
     private val entered = Counter()
@@ -10,7 +13,13 @@ internal class ConnCounts {
     private val late = Counter()
     private val resent = Counter()
     private val overflowed = Counter()
+    private val refused = Counter()
     private val mismatched = Counter()
+    private val evicted = Counter()
+    private val expiredOut = Counter()
+    private val unsendable = Counter()
+    private val expiredIn = Counter()
+    private val droppedAtClose = Counter()
 
     /** Times a caller entered a free connection and served it on its own thread. */
     val enteredInPlace: Long get() = entered.value()
@@ -36,6 +45,27 @@ internal class ConnCounts {
     /** Received RFC 9221 datagrams dropped because the connection's receive queue was full and nobody was receiving. */
     val datagramsOverflowed: Long get() = overflowed.value()
 
+    /** RFC 9221 datagrams the connection's send queue refused because it was full: the caller was told, nothing was queued. */
+    val datagramsRefusedQueueFull: Long get() = refused.value()
+
+    /** Queued RFC 9221 datagrams dropped, oldest first, to make room for a newer send. */
+    val datagramsEvicted: Long get() = evicted.value()
+
+    /** Queued RFC 9221 datagrams dropped unsent because they waited longer than the outgoing maximum age. */
+    val datagramsExpiredOutgoing: Long get() = expiredOut.value()
+
+    /**
+     * Queued RFC 9221 datagrams quiche would not take when they reached it: the path had shrunk below their size, or
+     * quiche refused them with an error that ends the connection.
+     */
+    val datagramsDroppedUnsendable: Long get() = unsendable.value()
+
+    /** Received RFC 9221 datagrams dropped undelivered because they waited longer than the incoming maximum age. */
+    val datagramsExpiredIncoming: Long get() = expiredIn.value()
+
+    /** RFC 9221 datagrams dropped unsent because the connection reached its close point first: queued, at the door, or in quiche's queue. */
+    val datagramsDroppedAtClose: Long get() = droppedAtClose.value()
+
     /** Datagrams whose due time quiche stamped on a clock the loop does not read: each was sent at once, unpaced. */
     val pacingClockMismatches: Long get() = mismatched.value()
 
@@ -55,7 +85,21 @@ internal class ConnCounts {
 
     fun datagramOverflowed() = overflowed.increment()
 
+    fun datagramRefusedQueueFull() = refused.increment()
+
     fun pacingClockMismatch() = mismatched.increment()
+
+    fun datagramEvicted() = evicted.increment()
+
+    fun datagramExpiredOutgoing() = expiredOut.increment()
+
+    fun datagramDroppedUnsendable() = unsendable.increment()
+
+    fun datagramExpiredIncoming() = expiredIn.increment()
+
+    fun datagramDroppedAtClose() = droppedAtClose.increment()
+
+    fun datagramsDroppedAtClose(count: Int) = droppedAtClose.add(count)
 
     /** Every count, read now. */
     fun seen(): CountsSeen =
@@ -80,3 +124,21 @@ internal class CountsSeen(
     val lateDatagrams: Long,
     val pacingClockMismatches: Long,
 )
+
+/** This read with the datagrams [counts] saw refused at the sender and dropped at the receiver; a read that has no statistics has none. */
+internal fun QuicStatsRead.withDatagramCounts(counts: ConnCounts): QuicStatsRead =
+    when (this) {
+        is QuicStatsRead.Read ->
+            QuicStatsRead.Read(
+                stats.copy(
+                    datagramsRefusedQueueFull = QuicDatagramCount.Counted(counts.datagramsRefusedQueueFull),
+                    datagramsDroppedReceiveQueue = QuicDatagramCount.Counted(counts.datagramsOverflowed),
+                    datagramsEvicted = QuicDatagramCount.Counted(counts.datagramsEvicted),
+                    datagramsExpiredOutgoing = QuicDatagramCount.Counted(counts.datagramsExpiredOutgoing),
+                    datagramsDroppedUnsendable = QuicDatagramCount.Counted(counts.datagramsDroppedUnsendable),
+                    datagramsExpiredIncoming = QuicDatagramCount.Counted(counts.datagramsExpiredIncoming),
+                    datagramsDroppedAtClose = QuicDatagramCount.Counted(counts.datagramsDroppedAtClose),
+                ),
+            )
+        is QuicStatsRead.Ended, is QuicStatsRead.NotReported -> this
+    }

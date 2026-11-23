@@ -69,7 +69,7 @@ internal fun clientConfigPlan(
     handshake: HandshakeRule,
 ): ClientConfigPlan {
     val recording = RecordedCalls()
-    applyClientOptions(options, recording)
+    applyClientOptions(options.forQuiche(), recording)
     return ClientConfigPlan(recording.calls(), clientAlpnOffer(options), options.trustedCaCertificatesPem, handshake.priorNanos())
 }
 
@@ -83,7 +83,7 @@ internal fun buildClientConfig(
     val config = api.configNew(QUIC_V1)
     return runCatching {
         encodeAlpnList(clientAlpnOffer(options), factory).use { api.configSetApplicationProtos(config, addressOf(it), it.remaining()) }
-        applyClientOptions(options, ApiQuicConfigCalls(api, config))
+        applyClientOptions(options.forQuiche(), ApiQuicConfigCalls(api, config))
         handshake.applyTo(api, config)
         loadTrustAnchors(api, config, options, factory)
         config

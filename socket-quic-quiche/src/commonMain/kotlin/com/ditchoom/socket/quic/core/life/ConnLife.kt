@@ -136,6 +136,17 @@ internal class ConnLife(
     }
 
     /**
+     * How a connection whose quiche refused to write a datagram ended: as quiche recorded, the peer's close or its own
+     * error (a TLS alert raised in the handshake it ran while writing), else [otherwise]. Asked once, at the refusal.
+     */
+    fun refusedEnd(otherwise: ConnEnd): ConnEnd {
+        val peer = q.api.connPeerError(q.handle)
+        if (peer != null) return ConnEnd.ByPeer(peer)
+        val local = q.api.connLocalError(q.handle) ?: return otherwise
+        return if (local is QuicError.NoViablePath) ConnEnd.NoUsablePath else ConnEnd.ByLocal(local)
+    }
+
+    /**
      * The close point, at [now]: the connection ends with [end] once its CONNECTION_CLOSE is out, and [point] is told
      * the end the moment the connection passes it, so nothing after it accepts stream data. A graceful [choice] flushes
      * first; an immediate one asked while flushing cuts the flush short. A connection whose peer closed first ends as

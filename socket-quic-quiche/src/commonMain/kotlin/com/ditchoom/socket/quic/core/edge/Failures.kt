@@ -3,14 +3,18 @@
 package com.ditchoom.socket.quic.core.edge
 
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.socket.ServerCertificateRejectedException
+import com.ditchoom.socket.ServerCertificateRejection
 import com.ditchoom.socket.quic.NativeSocketRefusal
 import com.ditchoom.socket.quic.NetworkRefusal
+import com.ditchoom.socket.quic.PinnedRadioRefusedException
+import com.ditchoom.socket.quic.QuicAccessDenial
 import com.ditchoom.socket.quic.QuicAppErrorCode
 import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicCloseException
-import com.ditchoom.socket.quic.QuicCloseReason
 import com.ditchoom.socket.quic.QuicConnectionEnd
 import com.ditchoom.socket.quic.QuicNativeMemoryRequiredException
+import com.ditchoom.socket.quic.QuicOptionNotHonouredException
 import com.ditchoom.socket.quic.QuicStreamAbort
 import com.ditchoom.socket.quic.QuicStreamClosedException
 import com.ditchoom.socket.quic.QuicStreamException
@@ -21,12 +25,10 @@ import com.ditchoom.socket.quic.QuicStreamSide
 import com.ditchoom.socket.quic.QuicWriteTarget
 import com.ditchoom.socket.quic.RouteProbeFailure
 import com.ditchoom.socket.quic.UnresolvedRouteSourceException
-import com.ditchoom.socket.quic.closeReason
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.stream.QUICHE_ERR_INVALID_STREAM_STATE
 import com.ditchoom.socket.quic.core.stream.QUICHE_ERR_STREAM_RESET
 import com.ditchoom.socket.quic.core.stream.QUICHE_ERR_STREAM_STOPPED
-import com.ditchoom.socket.quic.core.stream.SendRefusal
 import com.ditchoom.socket.quic.core.udp.SpecLayoutMismatch
 import com.ditchoom.socket.quic.quicheCapabilities
 import kotlinx.coroutines.CancellableContinuation
@@ -91,6 +93,12 @@ internal sealed interface Raised : OpFailure {
         val side: QuicStreamSide,
     ) : Raised
 
+    /** A call on a direction a unidirectional stream does not have: a read of a send-only one, a write of a receive-only one. */
+    class NoSuchDirection(
+        val stream: QuicStreamId,
+        val side: QuicStreamSide,
+    ) : Raised
+
     /** A write was handed memory quiche cannot read in place. */
     class NotNative(
         val stream: QuicStreamId,
@@ -124,14 +132,17 @@ internal sealed interface Raised : OpFailure {
     class NetworkRefused(
         val refusal: NetworkRefusal,
     ) : Raised
-}
 
-/** The failure a refused stream send is: past the close point, or after the end. */
-internal fun SendRefusal.raised(): Raised =
-    when (this) {
-        is SendRefusal.PastClose -> Raised.PastClose(end)
-        is SendRefusal.Ended -> Raised.ConnEnded(end)
-    }
+    /** The system refused the client's socket the network access it needs, before its connection was built. */
+    class AccessDenied(
+        val denial: QuicAccessDenial,
+    ) : Raised
+
+    /** The server's chain was not kept whole for its check, which therefore fails as [rejection]. */
+    class ChainRefused(
+        val rejection: ServerCertificateRejection,
+    ) : Raised
+}
 
 /** The one place the edge hands a caller a failure: [failure] resumes this continuation as an exception. */
 internal fun <T> CancellableContinuation<T>.fail(
@@ -155,6 +166,15 @@ internal fun raiseFailure(
         is Raised -> raise(failure, during)
     }
 
+/** Raises an option refusal on the caller's thread, before anything is opened; a honoured verdict raises nothing. */
+internal fun OptionVerdict.orRefuse() {
+    when (this) {
+        is OptionVerdict.Honoured -> Unit
+        is OptionVerdict.Refused -> throw QuicOptionNotHonouredException(refusal)
+        is OptionVerdict.PinRefused -> throw PinnedRadioRefusedException(radio, refusal)
+    }
+}
+
 /** Raises, on the caller's thread, the cancellation of the job in [context], which a caller that was cancelled has. */
 @OptIn(InternalCoroutinesApi::class)
 internal fun raiseCancelled(context: CoroutineContext): Nothing = throw context.job.getCancellationException()
@@ -172,37 +192,11 @@ internal fun raise(
     during: QuicCloseCircumstance,
 ): Nothing = throw exceptionOf(failure, during)
 
-/** The exception that reports [end] to a caller who was [during] something, for channels that are closed with one. */
-internal fun endedWith(
-    end: ConnEnd,
+/** Raises the close of a connection that ended with the public [end], to a caller who was [during] something. */
+internal fun raiseEnded(
+    end: QuicConnectionEnd,
     during: QuicCloseCircumstance,
-): Throwable = closeOf(end, during)
-
-/** How [end] reads in the public close reason: the reason of its [publicEndOf]. */
-internal fun closeReasonOf(end: ConnEnd): QuicCloseReason = publicEndOf(end).closeReason
-
-/** The one mapping from how a connection ended to what callers are told: each [ConnEnd] to its [QuicConnectionEnd]. */
-internal fun publicEndOf(end: ConnEnd): QuicConnectionEnd =
-    when (end) {
-        is ConnEnd.ByPeer -> QuicConnectionEnd.ByPeer(end.error)
-        is ConnEnd.ByLocal -> QuicConnectionEnd.ByLocal(end.error)
-        is ConnEnd.IdleTimeout -> QuicConnectionEnd.IdleTimeout
-        is ConnEnd.HandshakeTimedOut -> QuicConnectionEnd.HandshakeTimedOut(publicProgressOf(end.progress))
-        is ConnEnd.HandshakeSendRefused ->
-            QuicConnectionEnd.HandshakeSendRefused(publicProgressOf(end.progress), publicRefusalOf(end.refusal))
-        is ConnEnd.SocketFailed -> QuicConnectionEnd.SocketFailed(publicFaultOf(end.fault))
-        is ConnEnd.ProcessingFailed -> QuicConnectionEnd.ProcessingFailed(end.thrown.throwable)
-        is ConnEnd.CallerFailed -> QuicConnectionEnd.CallerFailed(end.thrown.throwable)
-        is ConnEnd.LoopFailed -> QuicConnectionEnd.LoopFailed(end.thrown.throwable)
-        is ConnEnd.LoopStopped -> QuicConnectionEnd.LoopStopped
-        is ConnEnd.ServerClosed -> QuicConnectionEnd.ServerClosed
-        is ConnEnd.ServerClosedUnsettled -> QuicConnectionEnd.ServerClosedUnsettled
-        is ConnEnd.NoErrorRecorded -> QuicConnectionEnd.NoErrorRecorded
-        is ConnEnd.Released -> QuicConnectionEnd.Released
-        is ConnEnd.NetworkLost -> QuicConnectionEnd.NetworkLost
-        is ConnEnd.LocalAddressGone -> QuicConnectionEnd.LocalAddressGone
-        is ConnEnd.NoUsablePath -> QuicConnectionEnd.NoUsablePath
-    }
+): Nothing = throw QuicCloseException(end = end, circumstance = during)
 
 private fun exceptionOf(
     failure: Raised,
@@ -228,6 +222,7 @@ private fun exceptionOf(
             )
         is Raised.Thrown -> failure.exception
         is Raised.StreamClosed -> QuicStreamClosedException(failure.stream.id, failure.side)
+        is Raised.NoSuchDirection -> QuicStreamDirectionAbsent(failure.stream.id, failure.side)
         is Raised.Typed -> QuicTypedStreamException(failure.stream.id, failure.failure)
         is Raised.NotNative ->
             QuicNativeMemoryRequiredException.forBuffer(
@@ -238,14 +233,20 @@ private fun exceptionOf(
         is Raised.FactoryNotNative ->
             QuicNativeMemoryRequiredException.forBuffer(QuicWriteTarget.Datagram, failure.buffer, quicheCapabilities)
         is Raised.RouteUnresolved -> UnresolvedRouteSourceException(failure.reason)
+        is Raised.ChainRefused -> ServerCertificateRejectedException(failure.rejection)
         is Raised.LoopsClosed -> CoreLoopsClosed()
         is Raised.SocketRefused -> failure.refusal
         is Raised.SpecLayoutRefused -> CoreSpecLayoutMismatch(failure.mismatch)
         is Raised.NetworkRefused -> failure.refusal
+        is Raised.AccessDenied ->
+            QuicCloseException(
+                end = QuicConnectionEnd.AccessDenied(failure.denial),
+                circumstance = QuicCloseCircumstance.HandshakeFailed,
+            )
     }
 
 /** The close exception for [end]: its public end and the circumstance it names. */
-private fun closeOf(
+internal fun closeOf(
     end: ConnEnd,
     during: QuicCloseCircumstance,
 ): QuicCloseException = QuicCloseException(end = publicEndOf(end), circumstance = end.circumstance(during))
@@ -257,7 +258,7 @@ private fun ConnEnd.circumstance(during: QuicCloseCircumstance): QuicCloseCircum
         is ConnEnd.CallerFailed -> QuicCloseCircumstance.CallerThreadFailed
         is ConnEnd.Released -> QuicCloseCircumstance.Released
         is ConnEnd.ByPeer, is ConnEnd.ByLocal, is ConnEnd.IdleTimeout, is ConnEnd.HandshakeTimedOut,
-        is ConnEnd.HandshakeSendRefused,
+        is ConnEnd.HandshakeSendRefused, is ConnEnd.AccessDenied,
         is ConnEnd.SocketFailed, is ConnEnd.LoopStopped, is ConnEnd.ServerClosed, is ConnEnd.NoErrorRecorded,
         is ConnEnd.NetworkLost, is ConnEnd.LocalAddressGone, is ConnEnd.ServerClosedUnsettled, is ConnEnd.NoUsablePath,
         -> during
@@ -278,6 +279,12 @@ internal class CoreLoopsClosed : IllegalStateException()
 internal class CoreSpecLayoutMismatch(
     val mismatch: SpecLayoutMismatch,
 ) : IllegalStateException()
+
+/** A call on the [side] of a unidirectional stream that it does not have; distinct from a side the caller closed. */
+internal class QuicStreamDirectionAbsent(
+    val streamId: Long,
+    val side: QuicStreamSide,
+) : UnsupportedOperationException()
 
 /** A write quiche refused for a reason of its own, by quiche's code. */
 internal class QuicStreamWriteFailed(

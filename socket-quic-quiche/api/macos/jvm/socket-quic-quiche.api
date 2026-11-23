@@ -173,6 +173,7 @@ public final class com/ditchoom/socket/quic/JniQuicheApi : com/ditchoom/socket/q
 	public fun connClose-7TBY80c (JLcom/ditchoom/socket/quic/QuicError;)I
 	public fun connDgramMaxWritableBytes-ObL0uzk (J)I
 	public fun connDgramMaxWritableLen-ObL0uzk (J)Lcom/ditchoom/socket/quic/MaxDatagramSize;
+	public fun connDgramPurgeOutgoing-ObL0uzk (J)I
 	public fun connDgramRecv-RTtnfzo (JJI)Lcom/ditchoom/socket/quic/StreamRecvResult;
 	public fun connDgramRecvStep-19tTNE0 (JJI)J
 	public fun connDgramSend-RTtnfzo (JJI)I
@@ -695,6 +696,7 @@ public abstract interface class com/ditchoom/socket/quic/QuicheApi {
 	public abstract fun connClose-7TBY80c (JLcom/ditchoom/socket/quic/QuicError;)I
 	public fun connDgramMaxWritableBytes-ObL0uzk (J)I
 	public abstract fun connDgramMaxWritableLen-ObL0uzk (J)Lcom/ditchoom/socket/quic/MaxDatagramSize;
+	public abstract fun connDgramPurgeOutgoing-ObL0uzk (J)I
 	public abstract fun connDgramRecv-RTtnfzo (JJI)Lcom/ditchoom/socket/quic/StreamRecvResult;
 	public fun connDgramRecvStep-19tTNE0 (JJI)J
 	public abstract fun connDgramSend-RTtnfzo (JJI)I

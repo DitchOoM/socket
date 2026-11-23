@@ -30,7 +30,6 @@ import com.ditchoom.socket.quic.core.udp.MAX_CACHED_TARGETS
 import com.ditchoom.socket.quic.core.udp.PeerKeys
 import com.ditchoom.socket.quic.core.udp.SockAddr
 import com.ditchoom.socket.quic.trace.TraceCapture
-import com.ditchoom.socket.quic.traceRecorderFor
 import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.cancel
 
@@ -64,8 +63,11 @@ internal class ClientParts(
     private val loop = w.running.loop
     private val socket = SendPort(io, loop.port, lanes, SocketDiedNotice(), loop.counts, loop.callerCounts)
     private val alpn = w.memory.native(MAX_ALPN)
-    val capture: TraceCapture = traceRecorderFor(w.options)
-    private val edge = EdgeState(alpn.owner, capture, w.tickets)
+    val capture: TraceCapture = w.capture
+
+    /** The server's certificates the handshake copies for the connect's check. */
+    val chain = KeptChain()
+    private val edge = EdgeState(alpn.owner, capture, w.tickets, ChainHome.Kept(chain))
     val conn: Conn =
         buildConn(
             rules =
@@ -86,6 +88,8 @@ internal class ClientParts(
                     w.kept,
                     w.tokens,
                     { bind, prior -> loop.move(endpoint, bind, prior) },
+                    w.access,
+                    chainSourceOf(w.options, w.memory.factory()),
                 ),
             address =
                 ConnAddress(
@@ -124,7 +128,8 @@ internal class ClientParts(
         factory: BufferFactory,
         remote: SocketAddress,
         identity: QuicConnectionIdentity,
-    ): CoreConnection = CoreConnection(conn, edge, factory, remote, identity, w.readPolicy, w.writePolicy, w.scope)
+    ): CoreConnection =
+        CoreConnection(conn, edge, factory, remote, identity, w.readPolicy, w.writePolicy, w.options.streamOpenPolicy.toDeadline(), w.scope)
 
     private val endpoint = Endpoint(socketIo.ref, io, socket, Route.Fixed(conn, SharedBatch(w.running.out)), released, w.readiness)
 

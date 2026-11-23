@@ -7,6 +7,18 @@ import java.lang.foreign.ValueLayout.JAVA_BOOLEAN
 import java.lang.foreign.ValueLayout.JAVA_INT
 import java.lang.foreign.ValueLayout.JAVA_LONG
 import java.lang.invoke.MethodHandle
+import java.lang.invoke.MethodHandles
+import java.lang.invoke.MethodType
+
+/** The predicate of `dgram_purge_outgoing` that every datagram matches. */
+internal object PurgeEvery {
+    @JvmStatic
+    @Suppress("UNUSED_PARAMETER")
+    fun matches(
+        buf: Long,
+        len: Long,
+    ): Boolean = true
+}
 
 /**
  * Per-datagram and per-stream downcalls. Each handle is `static final`, so C2 compiles the call as a direct native
@@ -172,6 +184,27 @@ internal object HotCalls {
 
 /** Connection setup, teardown and inspection downcalls. */
 internal object ConnCalls {
+    @JvmField
+    val hConnDgramSendQueueLen: MethodHandle =
+        FfmLibrary.downcall("quiche_conn_dgram_send_queue_len", FunctionDescriptor.of(JAVA_LONG, JAVA_LONG))
+
+    @JvmField
+    val hConnDgramPurgeOutgoing: MethodHandle =
+        // void quiche_conn_dgram_purge_outgoing(quiche_conn *conn, bool (*f)(uint8_t *, size_t))
+        FfmLibrary.downcall("quiche_conn_dgram_purge_outgoing", FunctionDescriptor.ofVoid(JAVA_LONG, JAVA_LONG))
+
+    /** A C predicate every queued datagram matches, so [hConnDgramPurgeOutgoing] drops them all. */
+    @JvmField
+    val purgeEveryDgram: Long =
+        FfmLibrary.upcall(
+            MethodHandles.lookup().findStatic(
+                PurgeEvery::class.java,
+                "matches",
+                MethodType.methodType(Boolean::class.javaPrimitiveType, Long::class.javaPrimitiveType, Long::class.javaPrimitiveType),
+            ),
+            FunctionDescriptor.of(JAVA_BOOLEAN, JAVA_LONG, JAVA_LONG),
+        )
+
     @JvmField
     val hConnect: MethodHandle =
         FfmLibrary.downcall(

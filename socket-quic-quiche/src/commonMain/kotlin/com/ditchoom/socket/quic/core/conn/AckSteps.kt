@@ -50,7 +50,7 @@ private fun ConnParts.holdGate(now: Nanos): HoldGate {
     if (life.view() !is Life.Running) return HoldGate.Closing
     if (handshake.confirmation() == Confirmation.Pending) return HoldGate.Handshaking
     if (slots.paths.calm() == PathCalm.Moving) return HoldGate.PathMoving
-    if (streams.backlog() == Backlog.Waiting) return HoldGate.Backlogged
+    if (streams.backlog() == Backlog.Waiting || slots.datagrams.backlog() == Backlog.Waiting) return HoldGate.Backlogged
     return when (ackReads.loss(now)) {
         LossSeen.Quiet -> HoldGate.Open
         LossSeen.Recent -> HoldGate.LossRecent
@@ -61,7 +61,7 @@ private fun ConnParts.holdGate(now: Nanos): HoldGate {
 private fun Datagrams.output(): Long =
     when (this) {
         is Datagrams.Off -> 0L
-        is Datagrams.On -> box.output
+        is Datagrams.On -> out.output
     }
 
 /** What a turn whose ACK waits leaves: a serve again in this pass, or nothing until the reply or the deadline. */

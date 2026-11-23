@@ -55,9 +55,10 @@ internal sealed interface Resumption {
 internal sealed interface Datagrams {
     data object Off : Datagrams
 
-    /** RFC 9221 datagrams are carried: [box] holds what arrives and sends what is handed it. */
+    /** RFC 9221 datagrams are carried: [box] holds what arrives, and [out] sends what is queued. */
     class On(
         val box: DatagramBox,
+        val out: DatagramSender,
     ) : Datagrams
 }
 

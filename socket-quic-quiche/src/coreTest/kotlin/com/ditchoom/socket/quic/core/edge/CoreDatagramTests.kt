@@ -155,9 +155,13 @@ class CoreDatagramTests {
                     receive(channel)
                     send(channel, ByteArray(1))
                     withTimeout(WAIT) {
-                        while (client.connection.datagramsOverflowed() < SENT - QUEUE) delay(SETTLE)
+                        while (client.connection.counts.datagramsOverflowed < SENT - QUEUE) delay(SETTLE)
                     }
-                    assertEquals((SENT - QUEUE).toLong(), client.connection.datagramsOverflowed(), "everything past the bound is counted")
+                    assertEquals(
+                        (SENT - QUEUE).toLong(),
+                        client.connection.counts.datagramsOverflowed,
+                        "everything past the bound is counted",
+                    )
                     val kept = (0 until QUEUE).map { receive(channel) }
                     assertEquals(
                         (SENT - QUEUE + 1..SENT).toList(),

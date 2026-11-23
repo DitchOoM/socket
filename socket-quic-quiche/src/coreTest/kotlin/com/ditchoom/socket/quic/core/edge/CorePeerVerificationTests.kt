@@ -168,13 +168,13 @@ class CorePeerVerificationTests {
 }
 
 /** A fresh W3C-conformant self-signed certificate. */
-private suspend fun mint(): PeerCertificate =
+internal suspend fun mint(): PeerCertificate =
     when (val support = QuicheEngine.peerCertificates) {
         is PeerCertificateSupport.Available -> support.mint()
         PeerCertificateSupport.Unavailable -> fail("the quiche engine mints peer certificates on every platform the core runs on")
     }
 
-private fun bytesOf(buffer: com.ditchoom.buffer.ReadBuffer): ByteArray {
+internal fun bytesOf(buffer: com.ditchoom.buffer.ReadBuffer): ByteArray {
     val view = buffer.slice()
     return view.readByteArray(view.remaining())
 }
@@ -183,7 +183,7 @@ private fun bytesOf(buffer: com.ditchoom.buffer.ReadBuffer): ByteArray {
  * Serves [certificate] from a core server for the length of [body], which gets its port. The certificate's key exists
  * as files only while a [QuicEngine.bind] taking a [QuicTlsConfig] runs, which is where the core server loads it.
  */
-private suspend fun withMintedCoreServer(
+internal suspend fun withMintedCoreServer(
     certificate: PeerCertificate,
     onConnection: suspend kotlinx.coroutines.CoroutineScope.(CoreConnection) -> Unit,
     body: suspend (port: Int) -> Unit,

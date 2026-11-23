@@ -6,6 +6,7 @@ import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicCloseException
+import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.ScopedRead
 import com.ditchoom.socket.quic.core.conn.MismatchResponse
@@ -44,6 +45,7 @@ internal suspend fun withCoreEchoServer(
     api: QuicheApi = platformQuicheApi(),
     onAccepted: (CoreConnection) -> Unit = {},
     factory: BufferFactory = BufferFactory.network(),
+    options: QuicOptions = coreTestOptions,
     sends: SendRule = sendRuleOfThisRuntime,
     body: suspend CoroutineScope.(CoreServer) -> Unit,
 ) {
@@ -52,7 +54,7 @@ internal suspend fun withCoreEchoServer(
             mismatch = MismatchResponse.Fail,
             bind = bind,
             tls = platformTlsConfig(),
-            options = coreTestOptions,
+            options = options,
             factory = factory,
             api = api,
             readPolicy = ReadPolicy.Bounded(10.seconds),

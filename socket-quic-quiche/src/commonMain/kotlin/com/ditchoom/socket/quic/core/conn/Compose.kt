@@ -44,7 +44,9 @@ internal sealed interface ConnSide {
     /**
      * A client draws the ids it hands its peer from [ids], offered quiche [offer] before its first flight, and copies
      * its server's session ticket through one of its loop's [scratch] slots; what it took from its stores, [kept], goes
-     * back if it never sent; its server's NEW_TOKEN token goes to [tokens]; its socket is moved by [mover].
+     * back if it never sent; its server's NEW_TOKEN token goes to [tokens]; its socket is moved by [mover]; a handshake
+     * the system refused every send of is judged by [access]; its server's certificates are copied at completion as
+     * [chain] says.
      */
     class Client(
         val ids: Random,
@@ -53,6 +55,8 @@ internal sealed interface ConnSide {
         val kept: KeptTicket,
         val tokens: TokenHome,
         val mover: (PathKey, RttPrior) -> Unit,
+        val access: SendsAccess,
+        val chain: ChainSource,
     ) : ConnSide
 
     /** A server hands its peer the ids its loop routes to it. */
@@ -170,13 +174,22 @@ private fun composed(
                 },
             resumption =
                 when (side) {
-                    is ConnSide.Client -> Resumption.Client(ClientSession(q, side.offer, side.scratch, side.kept, side.tokens))
+                    is ConnSide.Client -> Resumption.Client(ClientSession(q, side.offer, side.scratch, side.kept, side.tokens, side.chain))
                     is ConnSide.Server -> Resumption.Server(ServerSession(q, rules.earlyData))
                 },
             datagrams =
                 when (val r = rules.datagrams) {
                     is DatagramRule.Off -> Datagrams.Off
-                    is DatagramRule.On -> Datagrams.On(DatagramBox(q, r.bound, memory.factory, counts))
+                    is DatagramRule.On ->
+                        Datagrams.On(
+                            DatagramBox(q, r.bound, r.incoming, memory.factory, counts),
+                            DatagramSender(
+                                q,
+                                DatagramQueue(r.queueBound(), r.overflow, memory.factory, clock, counts),
+                                r.outgoing,
+                                counts,
+                            ),
+                        )
                 },
             keepAlive =
                 when (val r = rules.keepAlive) {
@@ -188,7 +201,7 @@ private fun composed(
         ConnParts(
             role = side.role(),
             life = ConnLife(q, Linger(memory.factory, counts), rules.close),
-            handshake = Handshake(q, rules.handshake, clock.now().value, memory.alpn),
+            handshake = Handshake(q, rules.handshake, clock.now().value, memory.alpn, side.chainSource()),
             streams = StreamTable(q, StreamIo(q), side.role(), memory.shared.drains),
             timer = ConnTimer(q, port, WakeSink()),
             ingress = Ingress(q, memory.shared, memory.factory, counts, turnClock),
@@ -201,10 +214,21 @@ private fun composed(
             sink = sink,
             ackReads = AckHoldReads(q),
             sends = socket.ledger,
+            access =
+                when (side) {
+                    is ConnSide.Client -> side.access
+                    is ConnSide.Server -> SendsAccess.NeverDenied
+                },
             endHold = EndHold(StreamIo(q), memory.factory),
         )
     return Conn(Turn(parts, turnClock, port), port, socket, turnClock, loopEntrant, counts)
 }
+
+private fun ConnSide.chainSource(): ChainSource =
+    when (this) {
+        is ConnSide.Client -> chain
+        is ConnSide.Server -> ChainSource.NotAsked
+    }
 
 private fun ConnSide.role(): QuicRole =
     when (this) {

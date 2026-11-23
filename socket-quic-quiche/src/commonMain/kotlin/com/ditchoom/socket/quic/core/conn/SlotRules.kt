@@ -3,7 +3,10 @@ package com.ditchoom.socket.quic.core.conn
 import com.ditchoom.socket.quic.LinkClass
 import com.ditchoom.socket.quic.core.life.CloseChoice
 import com.ditchoom.socket.quic.core.life.DrainUntil
+import com.ditchoom.socket.quic.core.time.Nanos
+import com.ditchoom.socket.quic.core.time.Span
 import com.ditchoom.socket.quic.core.time.WaitResolution
+import com.ditchoom.socket.quic.core.time.since
 import kotlin.jvm.JvmInline
 
 /** Whether a connection obeys the send times quiche's pacer gives each datagram. */
@@ -81,11 +84,76 @@ internal value class AckDelayCap private constructor(
 internal sealed interface DatagramRule {
     data object Off : DatagramRule
 
-    /** Datagrams that arrive while no receive waits are kept, [bound] at most, the oldest dropped first. */
+    /**
+     * Datagrams that arrive while no receive waits are kept, [bound] at most, the oldest dropped first, and dropped
+     * undelivered past [incoming]. Up to [sendBound] wait to be sent; a send past it goes as [overflow] says, and one
+     * older than [outgoing] at the head of the queue is dropped.
+     */
     class On(
         val bound: Int,
+        val incoming: AgeBound,
+        val sendBound: Int,
+        val overflow: Overflow,
+        val outgoing: AgeBound,
     ) : DatagramRule
 }
+
+/**
+ * The datagrams quiche's own send queue holds for its next packets: enough to fill one with small datagrams, or a few
+ * when eviction or an outgoing age must reach nearly every queued datagram; never more than half of [DatagramRule.On.sendBound].
+ */
+internal fun DatagramRule.On.quicheHandOff(): Int {
+    val wanted =
+        when (overflow) {
+            Overflow.EvictOldest -> SHORT_HAND_OFF
+            Overflow.RefuseNew ->
+                when (outgoing) {
+                    is AgeBound.Within -> SHORT_HAND_OFF
+                    is AgeBound.Unbounded -> LONG_HAND_OFF
+                }
+        }
+    return minOf(wanted, sendBound / 2).coerceAtLeast(1)
+}
+
+/**
+ * The datagrams the core's queue admits: the depth less quiche's hand-off and the one datagram the connection holds at
+ * the door while quiche's queue is full, so together they hold at most [DatagramRule.On.sendBound]. A depth below
+ * [MIN_SEND_DEPTH] leaves none, and is refused as an option.
+ */
+internal fun DatagramRule.On.queueBound(): Int = sendBound - quicheHandOff() - DOOR
+
+/** The smallest send depth: one datagram in quiche's hand-off, one at the door, and one in the core's queue. */
+internal const val MIN_SEND_DEPTH = 3
+
+private const val DOOR = 1
+
+private const val SHORT_HAND_OFF = 4
+private const val LONG_HAND_OFF = 32
+
+/** What a full datagram send queue does with one more. */
+internal enum class Overflow { RefuseNew, EvictOldest }
+
+/** How long a queued datagram stays worth delivering. */
+internal sealed interface AgeBound {
+    data object Unbounded : AgeBound
+
+    /** One queued longer than [age] is dropped when it reaches the head of its queue. */
+    class Within(
+        val age: Span,
+    ) : AgeBound
+}
+
+/** Whether a datagram queued at [queuedAt] is past this bound at [now]. */
+internal fun AgeBound.expired(
+    queuedAt: Nanos,
+    now: Nanos,
+): Expiry =
+    when (this) {
+        is AgeBound.Unbounded -> Expiry.Fresh
+        is AgeBound.Within -> if (now.since(queuedAt) > age) Expiry.Expired else Expiry.Fresh
+    }
+
+internal enum class Expiry { Fresh, Expired }
 
 /** Whether an idle connection is pinged. */
 internal sealed interface KeepAliveRule {

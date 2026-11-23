@@ -26,3 +26,14 @@ internal value class Nanos(
 
     operator fun compareTo(other: Nanos): Int = value.compareTo(other.value)
 }
+
+/** A length of time in nanoseconds, as between two [Nanos]. */
+@JvmInline
+internal value class Span(
+    val nanos: Long,
+) {
+    operator fun compareTo(other: Span): Int = nanos.compareTo(other.nanos)
+}
+
+/** The [Span] from [earlier] to this time. */
+internal fun Nanos.since(earlier: Nanos): Span = Span(value - earlier.value)

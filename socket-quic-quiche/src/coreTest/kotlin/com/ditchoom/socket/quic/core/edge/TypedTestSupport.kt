@@ -30,6 +30,7 @@ import com.ditchoom.socket.quic.core.sched.SendRule
 import com.ditchoom.socket.quic.core.sched.sendRuleOfThisRuntime
 import com.ditchoom.socket.quic.core.testing.platformQuicheApi
 import com.ditchoom.socket.quic.core.testing.platformTlsConfig
+import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 import com.ditchoom.socket.quic.network
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -202,6 +203,7 @@ internal suspend fun withCoreServer(
     api: QuicheApi = platformQuicheApi(),
     options: QuicOptions = coreTestOptions,
     tls: QuicTlsConfig = platformTlsConfig(),
+    wrapIo: (DatagramBatchIo) -> DatagramBatchIo = { it },
     sends: SendRule = sendRuleOfThisRuntime,
     onConnection: suspend CoroutineScope.(CoreConnection) -> Unit,
     body: suspend CoroutineScope.(CoreServer) -> Unit,
@@ -217,6 +219,7 @@ internal suspend fun withCoreServer(
             readPolicy = ReadPolicy.Bounded(10.seconds),
             writePolicy = WritePolicy.Bounded(10.seconds),
             config = config,
+            wrapIo = wrapIo,
             sends = sends,
         )
     try {

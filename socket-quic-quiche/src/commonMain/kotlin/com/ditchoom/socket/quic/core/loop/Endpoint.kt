@@ -131,7 +131,7 @@ internal class Endpoint(
         now: Nanos,
         port: LoopPort,
     ): Stay {
-        noticeDeath()
+        noticeSocket()
         if (phase == Phase.Live) socket.flushWaiting()
         val send = out.batch()
         while (true) {
@@ -149,7 +149,7 @@ internal class Endpoint(
             if (collected != Collected.MoreWaiting || send.pending > 0) break
         }
         out.served()
-        noticeDeath()
+        noticeSocket()
         if (route.ended() && (!out.holds() || phase != Phase.Live) && !socket.hasWaiting()) {
             when (phase) {
                 Phase.Gone -> Unit
@@ -253,9 +253,9 @@ internal class Endpoint(
         onLeft.run()
     }
 
-    private fun noticeDeath() {
+    private fun noticeSocket() {
         when (val health = socket.health()) {
-            is SocketHealth.Live -> Unit
+            is SocketHealth.Live -> route.refused(socket.ledger.takeNews())
             is SocketHealth.Dead ->
                 if (phase == Phase.Live) {
                     phase = Phase.Dead

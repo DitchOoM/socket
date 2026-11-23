@@ -1,5 +1,6 @@
 package com.ditchoom.socket.quic.core.life
 
+import com.ditchoom.socket.quic.QuicAccessDenial
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.core.udp.SendRefusal
 import com.ditchoom.socket.quic.core.udp.SocketFault
@@ -29,6 +30,11 @@ internal sealed interface ConnEnd {
     class HandshakeSendRefused(
         val progress: HandshakeProgress,
         val refusal: SendRefusal,
+    ) : ConnEnd
+
+    /** A client's handshake ended at once because the system withholds network access from the app, as [denial] says. */
+    class AccessDenied(
+        val denial: QuicAccessDenial,
     ) : ConnEnd
 
     class SocketFailed(

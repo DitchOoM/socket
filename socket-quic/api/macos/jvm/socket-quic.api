@@ -87,17 +87,61 @@ public final class com/ditchoom/socket/quic/CongestionControl$Reno : com/ditchoo
 	public fun toString ()Ljava/lang/String;
 }
 
+public abstract interface class com/ditchoom/socket/quic/DatagramMaxAge {
+}
+
+public final class com/ditchoom/socket/quic/DatagramMaxAge$Unbounded : com/ditchoom/socket/quic/DatagramMaxAge {
+	public static final field INSTANCE Lcom/ditchoom/socket/quic/DatagramMaxAge$Unbounded;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/quic/DatagramMaxAge$Within : com/ditchoom/socket/quic/DatagramMaxAge {
+	public synthetic fun <init> (JLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-UwyO8pc ()J
+	public final fun copy-LRDsOJo (J)Lcom/ditchoom/socket/quic/DatagramMaxAge$Within;
+	public static synthetic fun copy-LRDsOJo$default (Lcom/ditchoom/socket/quic/DatagramMaxAge$Within;JILjava/lang/Object;)Lcom/ditchoom/socket/quic/DatagramMaxAge$Within;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getAge-UwyO8pc ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
 public final class com/ditchoom/socket/quic/DatagramOptions {
 	public fun <init> ()V
-	public fun <init> (II)V
-	public synthetic fun <init> (IIILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun <init> (IILcom/ditchoom/socket/quic/DatagramOverflow;Lcom/ditchoom/socket/quic/DatagramMaxAge;Lcom/ditchoom/socket/quic/DatagramMaxAge;)V
+	public synthetic fun <init> (IILcom/ditchoom/socket/quic/DatagramOverflow;Lcom/ditchoom/socket/quic/DatagramMaxAge;Lcom/ditchoom/socket/quic/DatagramMaxAge;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun component1 ()I
 	public final fun component2 ()I
-	public final fun copy (II)Lcom/ditchoom/socket/quic/DatagramOptions;
-	public static synthetic fun copy$default (Lcom/ditchoom/socket/quic/DatagramOptions;IIILjava/lang/Object;)Lcom/ditchoom/socket/quic/DatagramOptions;
+	public final fun component3 ()Lcom/ditchoom/socket/quic/DatagramOverflow;
+	public final fun component4 ()Lcom/ditchoom/socket/quic/DatagramMaxAge;
+	public final fun component5 ()Lcom/ditchoom/socket/quic/DatagramMaxAge;
+	public final fun copy (IILcom/ditchoom/socket/quic/DatagramOverflow;Lcom/ditchoom/socket/quic/DatagramMaxAge;Lcom/ditchoom/socket/quic/DatagramMaxAge;)Lcom/ditchoom/socket/quic/DatagramOptions;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/quic/DatagramOptions;IILcom/ditchoom/socket/quic/DatagramOverflow;Lcom/ditchoom/socket/quic/DatagramMaxAge;Lcom/ditchoom/socket/quic/DatagramMaxAge;ILjava/lang/Object;)Lcom/ditchoom/socket/quic/DatagramOptions;
 	public fun equals (Ljava/lang/Object;)Z
+	public final fun getIncomingMaxAge ()Lcom/ditchoom/socket/quic/DatagramMaxAge;
+	public final fun getOutgoingMaxAge ()Lcom/ditchoom/socket/quic/DatagramMaxAge;
+	public final fun getOverflow ()Lcom/ditchoom/socket/quic/DatagramOverflow;
 	public final fun getRecvQueueLen ()I
 	public final fun getSendQueueLen ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/quic/DatagramOverflow {
+}
+
+public final class com/ditchoom/socket/quic/DatagramOverflow$EvictOldest : com/ditchoom/socket/quic/DatagramOverflow {
+	public static final field INSTANCE Lcom/ditchoom/socket/quic/DatagramOverflow$EvictOldest;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/quic/DatagramOverflow$RefuseNew : com/ditchoom/socket/quic/DatagramOverflow {
+	public static final field INSTANCE Lcom/ditchoom/socket/quic/DatagramOverflow$RefuseNew;
+	public fun equals (Ljava/lang/Object;)Z
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
 }
@@ -131,6 +175,64 @@ public final class com/ditchoom/socket/quic/DatagramReceiveResult$Received : com
 	public fun toString ()Ljava/lang/String;
 	public static fun toString-impl (Lcom/ditchoom/buffer/ReadBuffer;)Ljava/lang/String;
 	public final synthetic fun unbox-impl ()Lcom/ditchoom/buffer/ReadBuffer;
+}
+
+public abstract interface class com/ditchoom/socket/quic/DatagramRoomWait {
+	public abstract fun awaitRoom (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public abstract interface class com/ditchoom/socket/quic/DatagramSend {
+}
+
+public abstract interface class com/ditchoom/socket/quic/DatagramSend$NotSent : com/ditchoom/socket/quic/DatagramSend {
+}
+
+public final class com/ditchoom/socket/quic/DatagramSend$NotSent$QueueFull : com/ditchoom/socket/quic/DatagramSend$NotSent {
+	public static final field Companion Lcom/ditchoom/socket/quic/DatagramSend$NotSent$QueueFull$Companion;
+	public final fun awaitRoom (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/quic/DatagramSend$NotSent$QueueFull$Companion {
+	public final fun of (Lcom/ditchoom/socket/quic/DatagramRoomWait;)Lcom/ditchoom/socket/quic/DatagramSend$NotSent$QueueFull;
+}
+
+public final class com/ditchoom/socket/quic/DatagramSend$NotSent$TooLarge : com/ditchoom/socket/quic/DatagramSend$NotSent {
+	public fun <init> (I)V
+	public final fun component1 ()I
+	public final fun copy (I)Lcom/ditchoom/socket/quic/DatagramSend$NotSent$TooLarge;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/quic/DatagramSend$NotSent$TooLarge;IILjava/lang/Object;)Lcom/ditchoom/socket/quic/DatagramSend$NotSent$TooLarge;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getMaxBytes ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/quic/DatagramSend$NotSent$Unavailable : com/ditchoom/socket/quic/DatagramSend$NotSent {
+}
+
+public final class com/ditchoom/socket/quic/DatagramSend$NotSent$Unavailable$ConnectionEnded : com/ditchoom/socket/quic/DatagramSend$NotSent$Unavailable {
+	public fun <init> (Lcom/ditchoom/socket/quic/QuicConnectionEnd;)V
+	public final fun component1 ()Lcom/ditchoom/socket/quic/QuicConnectionEnd;
+	public final fun copy (Lcom/ditchoom/socket/quic/QuicConnectionEnd;)Lcom/ditchoom/socket/quic/DatagramSend$NotSent$Unavailable$ConnectionEnded;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/quic/DatagramSend$NotSent$Unavailable$ConnectionEnded;Lcom/ditchoom/socket/quic/QuicConnectionEnd;ILjava/lang/Object;)Lcom/ditchoom/socket/quic/DatagramSend$NotSent$Unavailable$ConnectionEnded;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getEnd ()Lcom/ditchoom/socket/quic/QuicConnectionEnd;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/quic/DatagramSend$NotSent$Unavailable$NotNegotiated : com/ditchoom/socket/quic/DatagramSend$NotSent$Unavailable {
+	public static final field INSTANCE Lcom/ditchoom/socket/quic/DatagramSend$NotSent$Unavailable$NotNegotiated;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/quic/DatagramSend$Sent : com/ditchoom/socket/quic/DatagramSend {
+	public static final field INSTANCE Lcom/ditchoom/socket/quic/DatagramSend$Sent;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
 }
 
 public final class com/ditchoom/socket/quic/DatagramStreamConflictPolicy : java/lang/Enum {
@@ -735,12 +837,18 @@ public final class com/ditchoom/socket/quic/PinnedRadioKt {
 	public static final fun requirePinnable (Lcom/ditchoom/socket/quic/EngineCapabilities;Lcom/ditchoom/socket/quic/QuicClientBinding;Lcom/ditchoom/socket/quic/QuicOptions;)V
 }
 
-public abstract interface class com/ditchoom/socket/quic/PinnedRadioRefusal {
+public abstract interface class com/ditchoom/socket/quic/PinnedRadioRefusal : com/ditchoom/socket/quic/QuicOptionRefusal {
+	public fun getOption ()Lcom/ditchoom/socket/quic/QuicOptionName;
+}
+
+public final class com/ditchoom/socket/quic/PinnedRadioRefusal$DefaultImpls {
+	public static fun getOption (Lcom/ditchoom/socket/quic/PinnedRadioRefusal;)Lcom/ditchoom/socket/quic/QuicOptionName;
 }
 
 public final class com/ditchoom/socket/quic/PinnedRadioRefusal$EngineCannotPin : com/ditchoom/socket/quic/PinnedRadioRefusal {
 	public static final field INSTANCE Lcom/ditchoom/socket/quic/PinnedRadioRefusal$EngineCannotPin;
 	public fun equals (Ljava/lang/Object;)Z
+	public fun getOption ()Lcom/ditchoom/socket/quic/QuicOptionName;
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
 }
@@ -748,14 +856,16 @@ public final class com/ditchoom/socket/quic/PinnedRadioRefusal$EngineCannotPin :
 public final class com/ditchoom/socket/quic/PinnedRadioRefusal$SharedPort : com/ditchoom/socket/quic/PinnedRadioRefusal {
 	public static final field INSTANCE Lcom/ditchoom/socket/quic/PinnedRadioRefusal$SharedPort;
 	public fun equals (Ljava/lang/Object;)Z
+	public fun getOption ()Lcom/ditchoom/socket/quic/QuicOptionName;
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
 }
 
-public final class com/ditchoom/socket/quic/PinnedRadioRefusedException : java/lang/UnsupportedOperationException {
+public final class com/ditchoom/socket/quic/PinnedRadioRefusedException : com/ditchoom/socket/quic/QuicOptionRefusedException {
 	public fun <init> (Lcom/ditchoom/socket/transport/NetworkKind$Radio;Lcom/ditchoom/socket/quic/PinnedRadioRefusal;)V
 	public final fun getRadio ()Lcom/ditchoom/socket/transport/NetworkKind$Radio;
 	public final fun getRefusal ()Lcom/ditchoom/socket/quic/PinnedRadioRefusal;
+	public fun getRefused ()Lcom/ditchoom/socket/quic/QuicOptionRefusal;
 }
 
 public abstract interface class com/ditchoom/socket/quic/PinnedRadioUnavailable {
@@ -805,6 +915,67 @@ public final class com/ditchoom/socket/quic/PinnedRadioUnavailableException : ja
 	public fun <init> (Lcom/ditchoom/socket/transport/NetworkKind$Radio;Lcom/ditchoom/socket/quic/PinnedRadioUnavailable;)V
 	public final fun getRadio ()Lcom/ditchoom/socket/transport/NetworkKind$Radio;
 	public final fun getReason ()Lcom/ditchoom/socket/quic/PinnedRadioUnavailable;
+}
+
+public abstract interface class com/ditchoom/socket/quic/QuicAccessDenial {
+	public abstract fun getAccess ()Lcom/ditchoom/socket/NetworkAccess;
+	public abstract fun getRemedy ()Lcom/ditchoom/socket/quic/QuicAccessRemedy;
+}
+
+public final class com/ditchoom/socket/quic/QuicAccessDenial$AndroidPermissionNotHeld : com/ditchoom/socket/quic/QuicAccessDenial$Reported {
+	public static final field INSTANCE Lcom/ditchoom/socket/quic/QuicAccessDenial$AndroidPermissionNotHeld;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getAccess ()Lcom/ditchoom/socket/NetworkAccess;
+	public fun getRemedy ()Lcom/ditchoom/socket/quic/QuicAccessRemedy;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/quic/QuicAccessDenial$AndroidSendsNotPermitted : com/ditchoom/socket/quic/QuicAccessDenial$Likely {
+	public static final field INSTANCE Lcom/ditchoom/socket/quic/QuicAccessDenial$AndroidSendsNotPermitted;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getAccess ()Lcom/ditchoom/socket/NetworkAccess;
+	public fun getRemedy ()Lcom/ditchoom/socket/quic/QuicAccessRemedy;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/quic/QuicAccessDenial$AppleSettings : com/ditchoom/socket/quic/QuicAccessDenial$Reported {
+	public fun <init> (Lcom/ditchoom/socket/NetworkAccess;)V
+	public final fun component1 ()Lcom/ditchoom/socket/NetworkAccess;
+	public final fun copy (Lcom/ditchoom/socket/NetworkAccess;)Lcom/ditchoom/socket/quic/QuicAccessDenial$AppleSettings;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/quic/QuicAccessDenial$AppleSettings;Lcom/ditchoom/socket/NetworkAccess;ILjava/lang/Object;)Lcom/ditchoom/socket/quic/QuicAccessDenial$AppleSettings;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getAccess ()Lcom/ditchoom/socket/NetworkAccess;
+	public fun getRemedy ()Lcom/ditchoom/socket/quic/QuicAccessRemedy;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/quic/QuicAccessDenial$Likely : com/ditchoom/socket/quic/QuicAccessDenial {
+}
+
+public final class com/ditchoom/socket/quic/QuicAccessDenial$MacosNoRouteOnLink : com/ditchoom/socket/quic/QuicAccessDenial$Likely {
+	public static final field INSTANCE Lcom/ditchoom/socket/quic/QuicAccessDenial$MacosNoRouteOnLink;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getAccess ()Lcom/ditchoom/socket/NetworkAccess;
+	public fun getRemedy ()Lcom/ditchoom/socket/quic/QuicAccessRemedy;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/quic/QuicAccessDenial$Reported : com/ditchoom/socket/quic/QuicAccessDenial {
+}
+
+public final class com/ditchoom/socket/quic/QuicAccessRemedy : java/lang/Enum {
+	public static final field AllowCellularDataInAppleSettings Lcom/ditchoom/socket/quic/QuicAccessRemedy;
+	public static final field AllowLocalNetworkInAppleSettings Lcom/ditchoom/socket/quic/QuicAccessRemedy;
+	public static final field AllowLocalNetworkInMacosSettings Lcom/ditchoom/socket/quic/QuicAccessRemedy;
+	public static final field AllowWifiDataInAppleSettings Lcom/ditchoom/socket/quic/QuicAccessRemedy;
+	public static final field RequestAndroidLocalNetworkPermission Lcom/ditchoom/socket/quic/QuicAccessRemedy;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Lcom/ditchoom/socket/quic/QuicAccessRemedy;
+	public static fun values ()[Lcom/ditchoom/socket/quic/QuicAccessRemedy;
 }
 
 public abstract interface class com/ditchoom/socket/quic/QuicActivePathStats {
@@ -1248,6 +1419,17 @@ public final class com/ditchoom/socket/quic/QuicConnection$DefaultImpls {
 public abstract interface class com/ditchoom/socket/quic/QuicConnectionEnd {
 }
 
+public final class com/ditchoom/socket/quic/QuicConnectionEnd$AccessDenied : com/ditchoom/socket/quic/QuicConnectionEnd {
+	public fun <init> (Lcom/ditchoom/socket/quic/QuicAccessDenial;)V
+	public final fun component1 ()Lcom/ditchoom/socket/quic/QuicAccessDenial;
+	public final fun copy (Lcom/ditchoom/socket/quic/QuicAccessDenial;)Lcom/ditchoom/socket/quic/QuicConnectionEnd$AccessDenied;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/quic/QuicConnectionEnd$AccessDenied;Lcom/ditchoom/socket/quic/QuicAccessDenial;ILjava/lang/Object;)Lcom/ditchoom/socket/quic/QuicConnectionEnd$AccessDenied;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getDenial ()Lcom/ditchoom/socket/quic/QuicAccessDenial;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
 public final class com/ditchoom/socket/quic/QuicConnectionEnd$ByLocal : com/ditchoom/socket/quic/QuicConnectionEnd {
 	public fun <init> (Lcom/ditchoom/socket/quic/QuicError;)V
 	public final fun component1 ()Lcom/ditchoom/socket/quic/QuicError;
@@ -1463,13 +1645,28 @@ public final class com/ditchoom/socket/quic/QuicConnectionState$Idle : com/ditch
 
 public final class com/ditchoom/socket/quic/QuicConnectionStats {
 	public fun <init> (JJJJJJJJJJJJILcom/ditchoom/socket/quic/QuicActivePathStats;)V
+	public fun <init> (JJJJJJJJJJJJILcom/ditchoom/socket/quic/QuicActivePathStats;Lcom/ditchoom/socket/quic/QuicDatagramCount;)V
+	public fun <init> (JJJJJJJJJJJJILcom/ditchoom/socket/quic/QuicActivePathStats;Lcom/ditchoom/socket/quic/QuicDatagramCount;Lcom/ditchoom/socket/quic/QuicDatagramCount;)V
+	public fun <init> (JJJJJJJJJJJJILcom/ditchoom/socket/quic/QuicActivePathStats;Lcom/ditchoom/socket/quic/QuicDatagramCount;Lcom/ditchoom/socket/quic/QuicDatagramCount;Lcom/ditchoom/socket/quic/QuicDatagramCount;)V
+	public fun <init> (JJJJJJJJJJJJILcom/ditchoom/socket/quic/QuicActivePathStats;Lcom/ditchoom/socket/quic/QuicDatagramCount;Lcom/ditchoom/socket/quic/QuicDatagramCount;Lcom/ditchoom/socket/quic/QuicDatagramCount;Lcom/ditchoom/socket/quic/QuicDatagramCount;)V
+	public fun <init> (JJJJJJJJJJJJILcom/ditchoom/socket/quic/QuicActivePathStats;Lcom/ditchoom/socket/quic/QuicDatagramCount;Lcom/ditchoom/socket/quic/QuicDatagramCount;Lcom/ditchoom/socket/quic/QuicDatagramCount;Lcom/ditchoom/socket/quic/QuicDatagramCount;Lcom/ditchoom/socket/quic/QuicDatagramCount;)V
+	public fun <init> (JJJJJJJJJJJJILcom/ditchoom/socket/quic/QuicActivePathStats;Lcom/ditchoom/socket/quic/QuicDatagramCount;Lcom/ditchoom/socket/quic/QuicDatagramCount;Lcom/ditchoom/socket/quic/QuicDatagramCount;Lcom/ditchoom/socket/quic/QuicDatagramCount;Lcom/ditchoom/socket/quic/QuicDatagramCount;Lcom/ditchoom/socket/quic/QuicDatagramCount;)V
+	public fun <init> (JJJJJJJJJJJJILcom/ditchoom/socket/quic/QuicActivePathStats;Lcom/ditchoom/socket/quic/QuicDatagramCount;Lcom/ditchoom/socket/quic/QuicDatagramCount;Lcom/ditchoom/socket/quic/QuicDatagramCount;Lcom/ditchoom/socket/quic/QuicDatagramCount;Lcom/ditchoom/socket/quic/QuicDatagramCount;Lcom/ditchoom/socket/quic/QuicDatagramCount;Lcom/ditchoom/socket/quic/QuicDatagramCount;)V
+	public synthetic fun <init> (JJJJJJJJJJJJILcom/ditchoom/socket/quic/QuicActivePathStats;Lcom/ditchoom/socket/quic/QuicDatagramCount;Lcom/ditchoom/socket/quic/QuicDatagramCount;Lcom/ditchoom/socket/quic/QuicDatagramCount;Lcom/ditchoom/socket/quic/QuicDatagramCount;Lcom/ditchoom/socket/quic/QuicDatagramCount;Lcom/ditchoom/socket/quic/QuicDatagramCount;Lcom/ditchoom/socket/quic/QuicDatagramCount;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun component1 ()J
 	public final fun component10 ()J
 	public final fun component11 ()J
 	public final fun component12 ()J
 	public final fun component13 ()I
 	public final fun component14 ()Lcom/ditchoom/socket/quic/QuicActivePathStats;
+	public final fun component15 ()Lcom/ditchoom/socket/quic/QuicDatagramCount;
+	public final fun component16 ()Lcom/ditchoom/socket/quic/QuicDatagramCount;
+	public final fun component17 ()Lcom/ditchoom/socket/quic/QuicDatagramCount;
+	public final fun component18 ()Lcom/ditchoom/socket/quic/QuicDatagramCount;
+	public final fun component19 ()Lcom/ditchoom/socket/quic/QuicDatagramCount;
 	public final fun component2 ()J
+	public final fun component20 ()Lcom/ditchoom/socket/quic/QuicDatagramCount;
+	public final fun component21 ()Lcom/ditchoom/socket/quic/QuicDatagramCount;
 	public final fun component3 ()J
 	public final fun component4 ()J
 	public final fun component5 ()J
@@ -1477,15 +1674,22 @@ public final class com/ditchoom/socket/quic/QuicConnectionStats {
 	public final fun component7 ()J
 	public final fun component8 ()J
 	public final fun component9 ()J
-	public final fun copy (JJJJJJJJJJJJILcom/ditchoom/socket/quic/QuicActivePathStats;)Lcom/ditchoom/socket/quic/QuicConnectionStats;
-	public static synthetic fun copy$default (Lcom/ditchoom/socket/quic/QuicConnectionStats;JJJJJJJJJJJJILcom/ditchoom/socket/quic/QuicActivePathStats;ILjava/lang/Object;)Lcom/ditchoom/socket/quic/QuicConnectionStats;
+	public final fun copy (JJJJJJJJJJJJILcom/ditchoom/socket/quic/QuicActivePathStats;Lcom/ditchoom/socket/quic/QuicDatagramCount;Lcom/ditchoom/socket/quic/QuicDatagramCount;Lcom/ditchoom/socket/quic/QuicDatagramCount;Lcom/ditchoom/socket/quic/QuicDatagramCount;Lcom/ditchoom/socket/quic/QuicDatagramCount;Lcom/ditchoom/socket/quic/QuicDatagramCount;Lcom/ditchoom/socket/quic/QuicDatagramCount;)Lcom/ditchoom/socket/quic/QuicConnectionStats;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/quic/QuicConnectionStats;JJJJJJJJJJJJILcom/ditchoom/socket/quic/QuicActivePathStats;Lcom/ditchoom/socket/quic/QuicDatagramCount;Lcom/ditchoom/socket/quic/QuicDatagramCount;Lcom/ditchoom/socket/quic/QuicDatagramCount;Lcom/ditchoom/socket/quic/QuicDatagramCount;Lcom/ditchoom/socket/quic/QuicDatagramCount;Lcom/ditchoom/socket/quic/QuicDatagramCount;Lcom/ditchoom/socket/quic/QuicDatagramCount;ILjava/lang/Object;)Lcom/ditchoom/socket/quic/QuicConnectionStats;
 	public fun equals (Ljava/lang/Object;)Z
 	public final fun getActivePath ()Lcom/ditchoom/socket/quic/QuicActivePathStats;
 	public final fun getBytesAcknowledged ()J
 	public final fun getBytesLost ()J
 	public final fun getBytesReceived ()J
 	public final fun getBytesSent ()J
+	public final fun getDatagramsDroppedAtClose ()Lcom/ditchoom/socket/quic/QuicDatagramCount;
+	public final fun getDatagramsDroppedReceiveQueue ()Lcom/ditchoom/socket/quic/QuicDatagramCount;
+	public final fun getDatagramsDroppedUnsendable ()Lcom/ditchoom/socket/quic/QuicDatagramCount;
+	public final fun getDatagramsEvicted ()Lcom/ditchoom/socket/quic/QuicDatagramCount;
+	public final fun getDatagramsExpiredIncoming ()Lcom/ditchoom/socket/quic/QuicDatagramCount;
+	public final fun getDatagramsExpiredOutgoing ()Lcom/ditchoom/socket/quic/QuicDatagramCount;
 	public final fun getDatagramsReceived ()J
+	public final fun getDatagramsRefusedQueueFull ()Lcom/ditchoom/socket/quic/QuicDatagramCount;
 	public final fun getDatagramsSent ()J
 	public final fun getPacketsLost ()J
 	public final fun getPacketsReceived ()J
@@ -1494,6 +1698,30 @@ public final class com/ditchoom/socket/quic/QuicConnectionStats {
 	public final fun getPacketsSpuriouslyLost ()J
 	public final fun getPaths ()I
 	public final fun getStreamBytesRetransmitted ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/quic/QuicDatagramCount {
+}
+
+public final class com/ditchoom/socket/quic/QuicDatagramCount$Counted : com/ditchoom/socket/quic/QuicDatagramCount {
+	public static final synthetic fun box-impl (J)Lcom/ditchoom/socket/quic/QuicDatagramCount$Counted;
+	public static fun constructor-impl (J)J
+	public fun equals (Ljava/lang/Object;)Z
+	public static fun equals-impl (JLjava/lang/Object;)Z
+	public static final fun equals-impl0 (JJ)Z
+	public final fun getDatagrams ()J
+	public fun hashCode ()I
+	public static fun hashCode-impl (J)I
+	public fun toString ()Ljava/lang/String;
+	public static fun toString-impl (J)Ljava/lang/String;
+	public final synthetic fun unbox-impl ()J
+}
+
+public final class com/ditchoom/socket/quic/QuicDatagramCount$NotCounted : com/ditchoom/socket/quic/QuicDatagramCount {
+	public static final field INSTANCE Lcom/ditchoom/socket/quic/QuicDatagramCount$NotCounted;
+	public fun equals (Ljava/lang/Object;)Z
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
 }
@@ -1996,6 +2224,72 @@ public final class com/ditchoom/socket/quic/QuicNativeMemoryRequiredException : 
 
 public final class com/ditchoom/socket/quic/QuicNativeMemoryRequiredException$Companion {
 	public final fun forBuffer (Lcom/ditchoom/socket/quic/QuicWriteTarget;Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/socket/quic/QuicCapabilities;)Lcom/ditchoom/socket/quic/QuicNativeMemoryRequiredException;
+}
+
+public final class com/ditchoom/socket/quic/QuicOptionName : java/lang/Enum {
+	public static final field Datagrams Lcom/ditchoom/socket/quic/QuicOptionName;
+	public static final field Migration Lcom/ditchoom/socket/quic/QuicOptionName;
+	public static final field StandbyLink Lcom/ditchoom/socket/quic/QuicOptionName;
+	public static final field Trace Lcom/ditchoom/socket/quic/QuicOptionName;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Lcom/ditchoom/socket/quic/QuicOptionName;
+	public static fun values ()[Lcom/ditchoom/socket/quic/QuicOptionName;
+}
+
+public final class com/ditchoom/socket/quic/QuicOptionNotHonouredException : com/ditchoom/socket/quic/QuicOptionRefusedException {
+	public fun <init> (Lcom/ditchoom/socket/quic/QuicOptionRefusal;)V
+	public fun getRefused ()Lcom/ditchoom/socket/quic/QuicOptionRefusal;
+}
+
+public abstract interface class com/ditchoom/socket/quic/QuicOptionRefusal {
+	public abstract fun getOption ()Lcom/ditchoom/socket/quic/QuicOptionName;
+}
+
+public final class com/ditchoom/socket/quic/QuicOptionRefusal$DatagramMaxAgeNotPositive : com/ditchoom/socket/quic/QuicOptionRefusal {
+	public synthetic fun <init> (JLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1-UwyO8pc ()J
+	public final fun copy-LRDsOJo (J)Lcom/ditchoom/socket/quic/QuicOptionRefusal$DatagramMaxAgeNotPositive;
+	public static synthetic fun copy-LRDsOJo$default (Lcom/ditchoom/socket/quic/QuicOptionRefusal$DatagramMaxAgeNotPositive;JILjava/lang/Object;)Lcom/ditchoom/socket/quic/QuicOptionRefusal$DatagramMaxAgeNotPositive;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getAge-UwyO8pc ()J
+	public fun getOption ()Lcom/ditchoom/socket/quic/QuicOptionName;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/quic/QuicOptionRefusal$DatagramSendQueueTooShort : com/ditchoom/socket/quic/QuicOptionRefusal {
+	public fun <init> (II)V
+	public final fun component1 ()I
+	public final fun component2 ()I
+	public final fun copy (II)Lcom/ditchoom/socket/quic/QuicOptionRefusal$DatagramSendQueueTooShort;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/quic/QuicOptionRefusal$DatagramSendQueueTooShort;IIILjava/lang/Object;)Lcom/ditchoom/socket/quic/QuicOptionRefusal$DatagramSendQueueTooShort;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getMinimum ()I
+	public fun getOption ()Lcom/ditchoom/socket/quic/QuicOptionName;
+	public final fun getSendQueueLen ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/quic/QuicOptionRefusal$QlogNotBudgeted : com/ditchoom/socket/quic/QuicOptionRefusal {
+	public static final field INSTANCE Lcom/ditchoom/socket/quic/QuicOptionRefusal$QlogNotBudgeted;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getOption ()Lcom/ditchoom/socket/quic/QuicOptionName;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/quic/QuicOptionRefusal$StandbyLinkNotHeld : com/ditchoom/socket/quic/QuicOptionRefusal {
+	public static final field INSTANCE Lcom/ditchoom/socket/quic/QuicOptionRefusal$StandbyLinkNotHeld;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun getOption ()Lcom/ditchoom/socket/quic/QuicOptionName;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract class com/ditchoom/socket/quic/QuicOptionRefusedException : java/lang/UnsupportedOperationException {
+	public synthetic fun <init> (Ljava/lang/String;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public abstract fun getRefused ()Lcom/ditchoom/socket/quic/QuicOptionRefusal;
 }
 
 public final class com/ditchoom/socket/quic/QuicOptions {
@@ -3064,6 +3358,30 @@ public final class com/ditchoom/socket/quic/trace/QlogClosed : java/lang/Enum {
 	public static fun values ()[Lcom/ditchoom/socket/quic/trace/QlogClosed;
 }
 
+public abstract interface class com/ditchoom/socket/quic/trace/QlogDeclaration {
+}
+
+public final class com/ditchoom/socket/quic/trace/QlogDeclaration$Budgeted : com/ditchoom/socket/quic/trace/QlogDeclaration {
+	public static final field INSTANCE Lcom/ditchoom/socket/quic/trace/QlogDeclaration$Budgeted;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/quic/trace/QlogDeclaration$NotBudgeted : com/ditchoom/socket/quic/trace/QlogDeclaration {
+	public static final field INSTANCE Lcom/ditchoom/socket/quic/trace/QlogDeclaration$NotBudgeted;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/quic/trace/QlogDeclaration$Undeclared : com/ditchoom/socket/quic/trace/QlogDeclaration {
+	public static final field INSTANCE Lcom/ditchoom/socket/quic/trace/QlogDeclaration$Undeclared;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
 public final class com/ditchoom/socket/quic/trace/QlogDirectory {
 	public fun <init> (Ljava/lang/String;Lcom/ditchoom/socket/quic/trace/QlogBudget;Lkotlin/jvm/functions/Function1;)V
 	public final fun adopt (Ljava/util/List;)V
@@ -3423,9 +3741,12 @@ public final class com/ditchoom/socket/quic/trace/QuicTraceCapture {
 	public static final field Companion Lcom/ditchoom/socket/quic/trace/QuicTraceCapture$Companion;
 	public fun <init> (Lcom/ditchoom/socket/testkit/trace/TraceSink;Z)V
 	public synthetic fun <init> (Lcom/ditchoom/socket/testkit/trace/TraceSink;ZILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun <init> (Lkotlin/jvm/functions/Function0;)V
 	public fun <init> (Lkotlin/jvm/functions/Function0;Z)V
-	public synthetic fun <init> (Lkotlin/jvm/functions/Function0;ZILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun <init> (Lkotlin/jvm/functions/Function0;ZLcom/ditchoom/socket/quic/trace/QlogDeclaration;)V
+	public synthetic fun <init> (Lkotlin/jvm/functions/Function0;ZLcom/ditchoom/socket/quic/trace/QlogDeclaration;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun getCaptureFor ()Lkotlin/jvm/functions/Function0;
+	public final fun getQlog ()Lcom/ditchoom/socket/quic/trace/QlogDeclaration;
 	public final fun getRecordNetworkObservations ()Z
 }
 

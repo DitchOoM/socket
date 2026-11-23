@@ -116,13 +116,13 @@ internal class Turn(
     ) {
         if (c.life.view() is Life.Over) {
             c.flight.datagramIn(now, bytes, 0, length)
-            return c.life.linger.late()
+            return c.life.linger.late(length)
         }
         traced(TraceSection.ConnReceive) {
             try {
                 c.feed(bytes, length, from)
                 c.slots.keepAlive.touched(now)
-                c.slots.datagrams.received()
+                c.slots.datagrams.received(now)
             } catch (failure: Exception) {
                 fail(now, failure)
             }
@@ -179,8 +179,8 @@ internal class Turn(
     /** Any thread: the ids this connection's peer retired, taken once. */
     fun idsRetired(): List<RetiredId> = c.slots.paths.idsRetired()
 
-    /** Any thread: the bytes one datagram may carry as of the connection's last turn, or 0. */
-    fun datagramMaxBytes(): Int = c.slots.datagrams.maxBytes()
+    /** Any thread: the connection's datagrams, for the queue a caller offers sends to. */
+    fun datagrams(): Datagrams = c.slots.datagrams
 
     /** Once the loop is quiet: where the connection's close stands at [now]. */
     fun lingerView(now: Nanos) = LingerView(now, c.life.view(), c.life.linger.wire(), c.timer.armed(now))
@@ -218,11 +218,11 @@ internal class Turn(
         now: Nanos,
         out: SendBatch,
     ): Collected {
-        when (c.handshakeStep(now, paths)) {
-            HandshakeStep.Handshaking, HandshakeStep.JustEstablished, HandshakeStep.Established -> Unit
-            HandshakeStep.DeadlinePassed -> {
-                val end = c.handshakeEnd(now, paths)
-                c.close(CloseChoice.Immediate(QuicError.NoError), end, now)
+        when (val served = c.handshakeStep(now, paths)) {
+            is HandshakeServe.Open -> Unit
+            is HandshakeServe.Over -> {
+                val end = c.handshakeEnd(served, now, paths)
+                c.closeHandshake(end, now)
                 finish(now, end)
                 return Collected.Everything
             }
@@ -252,7 +252,8 @@ internal class Turn(
                 is Life.Running, is Life.Over -> Unit
             }
         }
-        if (wrote == Wrote.ClockMismatch) finish(now, c.egress.mismatchEnd())
+        // A clock mismatch or a refused datagram is our own failure: the peer is told with INTERNAL_ERROR, as for any processing failure.
+        wrote.ends(c.egress, ours = { fail(now, it) }, refused = { finish(now, c.closeRefused(now)) })
         return wrote.collected()
     }
 

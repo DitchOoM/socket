@@ -540,6 +540,22 @@ JNIEXPORT jlong JNICALL JNI_FN(nConnDgramRecv)(
         (uint8_t *)(uintptr_t)buf, (size_t)buf_len);
 }
 
+/* Every queued datagram matches: dgram_purge_outgoing drops them all. */
+static bool purge_every_dgram(uint8_t *buf, size_t len) {
+    (void)buf;
+    (void)len;
+    return true;
+}
+
+/* Drops every datagram quiche's send queue holds; returns how many it held. */
+JNIEXPORT jlong JNICALL JNI_FN(nConnDgramPurgeOutgoing)(JNIEnv *env, jclass cls, jlong conn) {
+    (void)env; (void)cls;
+    quiche_conn *c = (quiche_conn *)(uintptr_t)conn;
+    ssize_t held = quiche_conn_dgram_send_queue_len(c);
+    quiche_conn_dgram_purge_outgoing(c, purge_every_dgram);
+    return (jlong)held;
+}
+
 JNIEXPORT jlong JNICALL JNI_FN(nConnDgramRecvFrontLen)(JNIEnv *env, jclass cls, jlong conn) {
     /* quiche FFI returns ssize_t -1 when the recv queue is empty, else the front datagram length. */
     return (jlong)quiche_conn_dgram_recv_front_len((quiche_conn *)(uintptr_t)conn);

@@ -5,8 +5,11 @@ internal sealed interface DatagramRefusal {
     /** Datagrams are off here, or the peer never advertised support for them. */
     data object NotNegotiated : DatagramRefusal
 
-    /** quiche's send queue is full; nothing was queued. */
+    /** The send queue is full; nothing was queued. */
     data object QueueFull : DatagramRefusal
+
+    /** Another receive of the connection's datagrams is under way: they have one receiver at a time. */
+    data object ReceiverBusy : DatagramRefusal
 
     /** quiche refused it with [code]. */
     class Quiche(
