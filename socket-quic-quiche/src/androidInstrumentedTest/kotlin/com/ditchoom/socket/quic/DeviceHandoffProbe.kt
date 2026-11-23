@@ -111,7 +111,7 @@ import kotlin.time.TimeSource
  * adb -s <serial> shell am instrument -w \
  *   -e class com.ditchoom.socket.quic.DeviceHandoffProbe \
  *   -e probeHost 192.0.2.1,2001:db8::1 -e probePort 44433 -e probeMinutes 12 \
- *   com.ditchoom.socket.quic.quiche.test/androidx.test.runner.AndroidJUnitRunner
+ *   com.ditchoom.socket.quic.quiche.test/com.ditchoom.socket.quic.HeapCheckedTestRunner
  * ```
  *
  * `probeHost` is a comma-separated list, one lane per host, all running at once: each lane keeps its
