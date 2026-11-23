@@ -1212,6 +1212,7 @@ object JniQuicheApi : QuicheApi {
     @JvmStatic
     private external fun nConnDgramRecvFrontLen(conn: Long): Long
 
+    @JvmStatic
     private external fun nConnDgramPurgeOutgoing(conn: Long): Long
 
     @FastNative
