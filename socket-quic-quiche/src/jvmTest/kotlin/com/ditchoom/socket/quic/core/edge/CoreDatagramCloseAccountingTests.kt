@@ -92,8 +92,8 @@ class CoreDatagramCloseAccountingTests {
     private companion object {
         const val DEPTH = 64
 
-        /** What the core's queue admits of [DEPTH]: the rest is quiche's hand-off of 32 and the door. */
-        const val QUEUED = DEPTH - 33
+        /** The sends of a round: under half of [DEPTH], so the first round is accepted whole. */
+        const val QUEUED = 31
         const val LARGE = 1000
         const val PREFIX = 2
     }

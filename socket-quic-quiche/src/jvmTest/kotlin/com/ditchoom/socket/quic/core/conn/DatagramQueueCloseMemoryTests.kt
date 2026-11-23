@@ -32,6 +32,7 @@ class DatagramQueueCloseMemoryTests {
         repeat(2) {
             val slot = queue.take() as DatagramSlot
             queue.done(slot)
+            queue.left(1)
         }
         // Two free slots keep memory. The next offer takes one, outgrows it, and blocks inside while its memory is made.
         factory.blockNextAllocation()

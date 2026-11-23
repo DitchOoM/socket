@@ -177,6 +177,7 @@ public final class com/ditchoom/socket/quic/JniQuicheApi : com/ditchoom/socket/q
 	public fun connDgramRecv-RTtnfzo (JJI)Lcom/ditchoom/socket/quic/StreamRecvResult;
 	public fun connDgramRecvStep-19tTNE0 (JJI)J
 	public fun connDgramSend-RTtnfzo (JJI)I
+	public fun connDgramSendQueueLen-ObL0uzk (J)I
 	public fun connDrainRetiredScids-RTtnfzo (JJI)I
 	public fun connEarlyDataReason-ObL0uzk (J)I
 	public fun connFree-ObL0uzk (J)V
@@ -700,6 +701,7 @@ public abstract interface class com/ditchoom/socket/quic/QuicheApi {
 	public abstract fun connDgramRecv-RTtnfzo (JJI)Lcom/ditchoom/socket/quic/StreamRecvResult;
 	public fun connDgramRecvStep-19tTNE0 (JJI)J
 	public abstract fun connDgramSend-RTtnfzo (JJI)I
+	public abstract fun connDgramSendQueueLen-ObL0uzk (J)I
 	public fun connDrainRetiredScids-RTtnfzo (JJI)I
 	public abstract fun connEarlyDataReason-ObL0uzk (J)I
 	public abstract fun connFree-ObL0uzk (J)V

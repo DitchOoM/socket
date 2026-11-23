@@ -185,12 +185,7 @@ private fun composed(
                     is DatagramRule.On ->
                         Datagrams.On(
                             DatagramBox(q, r.bound, r.incoming, memory.factory, counts),
-                            DatagramSender(
-                                q,
-                                DatagramQueue(r.queueBound(), r.overflow, memory.factory, clock, counts),
-                                r.outgoing,
-                                counts,
-                            ),
+                            r.sender(q, memory.factory, clock, counts),
                         )
                 },
             keepAlive =

@@ -1,4 +1,4 @@
-@file:OptIn(ExperimentalDatagramApi::class)
+@file:OptIn(ExperimentalDatagramApi::class, ExperimentalAtomicApi::class)
 
 package com.ditchoom.socket.quic.core.edge
 
@@ -17,10 +17,13 @@ import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.testing.coreTest
 import com.ditchoom.socket.quic.network
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeout
+import kotlin.concurrent.atomics.AtomicReference
+import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
@@ -170,6 +173,49 @@ class CoreDatagramTests {
                     )
                     assertFailsWith<TimeoutCancellationException> { withTimeout(QUIET) { channel.receive() } }
                 } finally {
+                    client.connection.close(QuicError.NoError)
+                }
+            }
+        }
+
+    @Test
+    fun aServerHandlerSendingWhileItsLoopIsBusyHasTheWholeSendQueue() =
+        coreTest("CoreDatagramTests.aServerHandlerSendingWhileItsLoopIsBusyHasTheWholeSendQueue") {
+            val small = on.copy(datagrams = DatagramOptions(sendQueueLen = SENT))
+            val stall = AtomicReference<Stall>(Stall.Off)
+            val go = CompletableDeferred<Unit>()
+            val refused = CompletableDeferred<List<Int>>()
+            withCoreServer(options = small, wrapIo = { StallingIo(it, stall) }, onConnection = { connection ->
+                val channel = connection.datagramChannel()
+                go.await()
+                val notSent = ArrayList<Int>()
+                try {
+                    stall.store(Stall.Armed)
+                    send(channel, payloadOf(SERVER_FIRST, 1))
+                    stall.awaitHolding(WAIT)
+                    // The server's loop is held in the write the first send woke, as a starved loop is: the rest queue.
+                    for (n in 2..SENT) {
+                        try {
+                            send(channel, payloadOf(SERVER_FIRST, n))
+                        } catch (full: QuicDatagramRefused) {
+                            notSent += n
+                        }
+                    }
+                } finally {
+                    stall.store(Stall.Released)
+                }
+                refused.complete(notSent)
+                delay(HOLD)
+            }) { server ->
+                val client = connectCore(server.port, loops = loops, options = small)
+                try {
+                    val channel = client.connection.datagramChannel()
+                    go.complete(Unit)
+                    assertEquals(emptyList(), withTimeout(WAIT) { refused.await() }, "no send of a send queue of $SENT was refused")
+                    val got = (1..SENT).map { receive(channel)[1].toInt() and 0xFF }
+                    assertEquals((1..SENT).toList(), got, "every datagram arrives, in order")
+                } finally {
+                    stall.store(Stall.Released)
                     client.connection.close(QuicError.NoError)
                 }
             }

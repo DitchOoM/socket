@@ -759,6 +759,8 @@ internal object CinteropQuicheApi : QuicheApi, QuicheRandomPin, QuicheClockPin {
         return held.toInt()
     }
 
+    override fun connDgramSendQueueLen(conn: QuicheConn): Int = quiche_conn_dgram_send_queue_len(conn.handle.toCPointer()!!).toInt()
+
     override fun hasReadableDgram(conn: QuicheConn): Boolean = quiche_conn_dgram_recv_front_len(conn.handle.toCPointer()!!) >= 0
 
     override fun connDgramMaxWritableLen(conn: QuicheConn): MaxDatagramSize {

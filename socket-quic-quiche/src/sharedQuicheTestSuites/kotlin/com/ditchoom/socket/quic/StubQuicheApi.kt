@@ -398,6 +398,8 @@ internal class StubQuicheApi(
 
     override fun connDgramPurgeOutgoing(conn: QuicheConn): Int = dgramSendQueueLen.also { dgramSendQueueLen = 0 }
 
+    override fun connDgramSendQueueLen(conn: QuicheConn): Int = dgramSendQueueLen
+
     @Volatile var hasReadableDgram: Boolean = false
 
     override fun hasReadableDgram(conn: QuicheConn) = hasReadableDgram
