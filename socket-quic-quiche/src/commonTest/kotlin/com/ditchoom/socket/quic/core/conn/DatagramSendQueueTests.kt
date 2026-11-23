@@ -29,17 +29,23 @@ import kotlin.test.assertTrue
 
 /**
  * A connection's datagram send queue and the sender that feeds quiche from its head, on a stub quiche that takes as
- * many datagrams as the test lets it: refusal and eviction at the high-water mark, the outgoing maximum age, the door,
- * and callers waiting for room, woken in order at the low-water mark.
+ * many datagrams as the test lets it and holds them until the test has it write: refusal and eviction at the high-water
+ * mark of the whole send path, the outgoing maximum age, the door, and callers waiting for room, woken in order at the
+ * low-water mark.
  */
 class DatagramSendQueueTests {
-    /** A quiche whose datagram queue takes [room] more datagrams; records the first byte of each. */
+    /** A quiche whose datagram queue takes [room] more datagrams and [holds] them until written; records the first byte of each. */
     private class DatagramQuiche(
         private val inner: StubQuicheApi = StubQuicheApi(),
     ) : QuicheApi by inner {
         var room = Int.MAX_VALUE
         var refusal = 0
+        var holds = 0
         val taken = ArrayList<List<Int>>()
+
+        override fun connDgramSendQueueLen(conn: QuicheConn): Int = holds
+
+        override fun connDgramPurgeOutgoing(conn: QuicheConn): Int = holds.also { holds = 0 }
 
         init {
             inner.dgramMaxWritableLen = MaxDatagramSize.Bytes(MAX)
@@ -53,6 +59,7 @@ class DatagramSendQueueTests {
             if (refusal != 0) return refusal
             if (room == 0) return DONE
             room--
+            holds++
             taken += List(bufLen) { UnsafeMemory.getByte(buf + it).toInt() and 0xFF }
             return bufLen
         }
@@ -62,18 +69,21 @@ class DatagramSendQueueTests {
     private val counts = ConnCounts()
     private val clock = VirtualClock()
 
+    /** The sender a connection builds for a send queue of [depth]. */
     private fun sender(
         depth: Int,
         overflow: Overflow = Overflow.RefuseNew,
         outgoing: AgeBound = AgeBound.Unbounded,
-    ): DatagramSender {
-        val q = QuicheConnRef(quiche, QuicheConn(1L))
-        return DatagramSender(
-            q,
-            DatagramQueue(depth, overflow, BufferFactory.network(), clock, counts),
-            outgoing,
-            counts,
-        ).also { it.readRoom() }
+    ): DatagramSender =
+        DatagramRule
+            .On(1, AgeBound.Unbounded, depth, overflow, outgoing)
+            .sender(QuicheConnRef(quiche, QuicheConn(1L)), BufferFactory.network(), clock, counts)
+            .also { it.readRoom() }
+
+    /** quiche writes [count] of the datagrams its queue holds into packets, and the connection is told it wrote. */
+    private fun DatagramSender.written(count: Int = quiche.holds) {
+        quiche.holds -= count
+        quicheWrote()
     }
 
     /** Offers a datagram of [bytes], one byte each. */
@@ -92,7 +102,35 @@ class DatagramSendQueueTests {
         assertEquals(4, sender.queue.size())
         sender.feed(clock.now())
         assertEquals(listOf(0, 1, 2, 3), firstBytes(), "the queued ones go, oldest first")
-        assertEquals(Offered.Queued, sender.offer(4), "and the queue takes more")
+        assertEquals(Offered.Full, sender.offer(9), "in quiche's queue they still hold their places")
+        sender.written()
+        sender.feed(clock.now())
+        assertEquals(Offered.Queued, sender.offer(4), "once quiche wrote them, the queue takes more")
+    }
+
+    @Test
+    fun aBurstBeforeTheConnectionFeedsIsTakenUpToTheWholeDepth() {
+        val sender = sender(depth = 8)
+        repeat(8) { assertEquals(Offered.Queued, sender.offer(it), "nothing is in quiche's queue or at the door: datagram $it has room") }
+        assertEquals(Offered.Full, sender.offer(9), "the ninth is past the depth")
+        assertEquals(8, sender.queue.size())
+    }
+
+    @Test
+    fun datagramsInQuichesQueueHoldTheirPlacesUntilItWritesThem() {
+        val sender = sender(depth = 8)
+        repeat(8) { sender.offer(it) }
+        quiche.room = 4
+        sender.feed(clock.now())
+        assertEquals(8, sender.queue.size(), "four in quiche's queue, one at the door, three queued")
+        assertEquals(Offered.Full, sender.offer(9), "the send path holds the depth")
+        sender.written(2)
+        quiche.room = 2
+        sender.feed(clock.now())
+        assertEquals(6, sender.queue.size(), "two written left; the door's and the next went to quiche, the one after waits at the door")
+        assertEquals(Offered.Queued, sender.offer(10))
+        assertEquals(Offered.Queued, sender.offer(11))
+        assertEquals(Offered.Full, sender.offer(12), "the depth again")
     }
 
     @Test
@@ -123,10 +161,10 @@ class DatagramSendQueueTests {
         quiche.room = 2
         assertEquals(Refill.Moved, sender.feed(clock.now()))
         assertEquals(listOf(0, 1), firstBytes())
-        assertEquals(2, sender.queue.size(), "the third waits at the door, outside the queue's bound")
+        assertEquals(5, sender.queue.size(), "two in quiche's queue, the third at the door, two queued: each holds its place")
         assertEquals(Refill.Nothing, sender.feed(clock.now()), "quiche is still full")
         quiche.room = Int.MAX_VALUE
-        sender.quicheWrote()
+        sender.written()
         sender.feed(clock.now())
         assertEquals(listOf(0, 1, 2, 3, 4), firstBytes(), "the door's datagram goes before the rest, in order")
         assertEquals(5L, sender.output)
@@ -165,13 +203,18 @@ class DatagramSendQueueTests {
             quiche.room = 1
             sender.feed(clock.now())
             yield()
-            assertEquals(6, sender.queue.size(), "one taken, the next at the door")
-            assertEquals(emptyList(), woken, "a free slot is not room: the queue is above its low-water mark")
+            assertEquals(8, sender.queue.size(), "one in quiche's queue, the next at the door")
+            assertEquals(emptyList(), woken, "a datagram handed to quiche is not room: the send path is full")
             quiche.room = 3
-            sender.quicheWrote()
+            sender.written()
             sender.feed(clock.now())
             yield()
-            assertEquals(3, sender.queue.size(), "the door's and two more went; the next waits at the door")
+            assertEquals(7, sender.queue.size(), "one written; the door's and two more in quiche's queue; the next at the door")
+            assertEquals(emptyList(), woken, "above the low-water mark")
+            sender.written()
+            sender.feed(clock.now())
+            yield()
+            assertEquals(4, sender.queue.size(), "three more written")
             assertEquals(listOf(0, 1, 2), woken, "at the low-water mark every waiter goes, in the order it began to wait")
             waiters.forEach { it.join() }
         }
@@ -185,6 +228,8 @@ class DatagramSendQueueTests {
             val waiters = List(3) { n -> wait(sender) { woken += n } }
             waiters[0].cancel()
             yield()
+            sender.feed(clock.now())
+            sender.written()
             sender.feed(clock.now())
             yield()
             assertEquals(listOf(1, 2), woken, "the cancelled first waiter is passed over and the others still go")
@@ -201,6 +246,8 @@ class DatagramSendQueueTests {
             val waiters = List(3) { n -> wait(sender, waits) { woken += n } }
             waiters[1].cancel()
             sender.withdraw(waits[1])
+            sender.feed(clock.now())
+            sender.written()
             sender.feed(clock.now())
             yield()
             assertEquals(listOf(0, 2), woken)
@@ -235,41 +282,42 @@ class DatagramSendQueueTests {
         }
 
     @Test
-    fun evictingWhileTheConnectionHoldsTheOldestEvictsOneAndNeverWaits() {
+    fun evictingWhileTheConnectionHoldsTheOldestEvictsTheOldestStillQueuedAndNeverWaits() {
         val sender = sender(depth = 4, overflow = Overflow.EvictOldest)
         repeat(4) { sender.offer(it) }
         val held = assertIs<DatagramSlot>(sender.queue.take(), "the connection holds the oldest, as it does while quiche copies it")
-        assertEquals(Offered.Queued, sender.offer(8), "the held datagram is outside the bound: a place is free")
-        assertEquals(0L, counts.datagramsEvicted)
-        assertEquals(Offered.Queued, sender.offer(9), "the full queue takes the new datagram at once")
+        assertEquals(Offered.Queued, sender.offer(8), "the full send path takes the new datagram at once")
         assertEquals(1L, counts.datagramsEvicted, "one eviction: the oldest the connection does not hold")
         sender.queue.done(held)
+        sender.queue.left(1)
         sender.feed(clock.now())
-        assertEquals(listOf(2, 3, 8, 9), firstBytes())
+        assertEquals(listOf(2, 3, 8), firstBytes())
     }
 
     @Test
-    fun anEvictingQueueOfOneTakesASendWhileTheConnectionHoldsItsDatagram() {
-        val sender = sender(depth = 1, overflow = Overflow.EvictOldest)
-        assertEquals(Offered.Queued, sender.offer(0))
-        val held = assertIs<DatagramSlot>(sender.queue.take())
-        assertEquals(Offered.Queued, sender.offer(1), "the held datagram, at the door or being copied, is outside the bound")
-        assertEquals(0L, counts.datagramsEvicted)
-        assertEquals(Offered.Queued, sender.offer(2), "a queue at its bound evicts its one queued datagram")
+    fun anEvictingQueueOfTheSmallestDepthWithItsPathFullEvictsItsOneQueuedDatagram() {
+        val sender = sender(depth = MIN_SEND_DEPTH, overflow = Overflow.EvictOldest)
+        repeat(MIN_SEND_DEPTH) { assertEquals(Offered.Queued, sender.offer(it)) }
+        // One in quiche's queue, one at the door: each holds its place.
+        val downstream = List(2) { assertIs<DatagramSlot>(sender.queue.take()) }
+        assertEquals(Offered.Queued, sender.offer(9), "the one still queued is evicted for the new one")
         assertEquals(1L, counts.datagramsEvicted)
-        assertEquals(1, sender.queue.size())
-        sender.queue.done(held)
+        assertEquals(MIN_SEND_DEPTH, sender.queue.size())
+        downstream.forEach { sender.queue.done(it) }
+        sender.queue.left(2)
     }
 
     @Test
-    fun aRefusingQueueCountsADatagramUntilTheConnectionTakesIt() {
+    fun aRefusingQueueCountsADatagramUntilItLeavesTheSendPath() {
         val sender = sender(depth = 4)
         repeat(4) { sender.offer(it) }
         assertEquals(Offered.Full, sender.offer(8), "four queued: the bound")
         val held = assertIs<DatagramSlot>(sender.queue.take())
-        assertEquals(Offered.Queued, sender.offer(9), "the taken one left the bound, so there is room, and no refusal is spurious")
-        assertEquals(Offered.Full, sender.offer(10), "and the bound holds again")
+        assertEquals(Offered.Full, sender.offer(9), "a taken datagram still holds its place")
         sender.queue.done(held)
+        sender.queue.left(1)
+        assertEquals(Offered.Queued, sender.offer(10), "once it left the send path there is room, and no refusal is spurious")
+        assertEquals(Offered.Full, sender.offer(11), "and the bound holds again")
     }
 
     @Test
@@ -281,9 +329,12 @@ class DatagramSendQueueTests {
             sender.feed(clock.now())
             val woken = ArrayList<Int>()
             val waiter = wait(sender) { woken += 0 }
-            // The queue falls to its low-water mark by a way other than this feed's own takes.
-            repeat(3) { sender.queue.done(assertIs<DatagramSlot>(sender.queue.take())) }
-            assertEquals(3, sender.queue.size())
+            // The send path falls to its low-water mark by a way other than this feed's own takes.
+            repeat(4) {
+                sender.queue.done(assertIs<DatagramSlot>(sender.queue.take()))
+                sender.queue.left(1)
+            }
+            assertEquals(4, sender.queue.size())
             assertEquals(Refill.Nothing, sender.feed(clock.now()), "quiche is full and has written nothing: it is not asked")
             yield()
             assertEquals(listOf(0), woken, "a feed that returns early still wakes the waiters of a low queue")
@@ -297,7 +348,10 @@ class DatagramSendQueueTests {
             repeat(8) { sender.offer(it) }
             val woken = ArrayList<Int>()
             val waiter = wait(sender) { woken += 0 }
-            repeat(5) { sender.queue.done(assertIs<DatagramSlot>(sender.queue.take())) }
+            repeat(5) {
+                sender.queue.done(assertIs<DatagramSlot>(sender.queue.take()))
+                sender.queue.left(1)
+            }
             sender.queue.close(ConnEnd.Released)
             sender.feed(clock.now())
             yield()
@@ -320,6 +374,7 @@ class DatagramSendQueueTests {
             sender.offer(it and 0xFF)
             clock.at = Nanos(clock.at.value + STEP)
             sender.feed(clock.now())
+            sender.written()
             sender.trim(clock.now())
         }
         val slots = assertIs<QueueParts.Made>(sender.queue.parts()).slots
@@ -332,10 +387,12 @@ class DatagramSendQueueTests {
         val sender = sender(depth = 256)
         repeat(256) { sender.offer(it and 0xFF) }
         sender.feed(clock.now())
+        sender.written()
         repeat(3) {
             clock.at = Nanos(clock.at.value + WINDOW)
             sender.offer(1)
             sender.feed(clock.now())
+            sender.written()
             sender.trim(clock.now())
         }
         val slots = assertIs<QueueParts.Made>(sender.queue.parts()).slots

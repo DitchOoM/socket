@@ -547,6 +547,12 @@ static bool purge_every_dgram(uint8_t *buf, size_t len) {
     return true;
 }
 
+/* The datagrams quiche's send queue holds, not yet written into a packet. */
+JNIEXPORT jlong JNICALL JNI_FN(nConnDgramSendQueueLen)(JNIEnv *env, jclass cls, jlong conn) {
+    (void)env; (void)cls;
+    return (jlong)quiche_conn_dgram_send_queue_len((quiche_conn *)(uintptr_t)conn);
+}
+
 /* Drops every datagram quiche's send queue holds; returns how many it held. */
 JNIEXPORT jlong JNICALL JNI_FN(nConnDgramPurgeOutgoing)(JNIEnv *env, jclass cls, jlong conn) {
     (void)env; (void)cls;

@@ -62,8 +62,9 @@ internal sealed interface QueueParts {
 
 /**
  * A connection's RFC 9221 send queue: any thread offers, and the connection takes from the head. At most [bound]
- * datagrams are admitted, counted from admission until the connection takes them; past it a new datagram is refused, or
- * under [Overflow.EvictOldest] the oldest queued one is dropped, counted, and its place goes to the new one. Each
+ * datagrams are held, counted from admission until the connection says they [left] the send path: one taken and at the
+ * door, or in quiche's queue, still holds its place. Past the bound a new datagram is refused, or under
+ * [Overflow.EvictOldest] the oldest queued one is dropped, counted, and its place goes to the new one. Each
  * datagram is copied into a slot borrowed, with its memory made, before it is admitted, so nothing is allocated or
  * evicted for a datagram that cannot be held; the slots and the ring are made at the first offer, so a connection that
  * never sends holds neither. Closed by the connection at its close point; its memory goes once no offer is inside.
@@ -80,7 +81,7 @@ internal class DatagramQueue(
 ) {
     private val parts = AtomicReference<QueueParts>(QueueParts.Unmade)
     private val life = AtomicReference<QueueLife>(QueueLife.Open)
-    private val admitted = AtomicInt(0)
+    private val held = AtomicInt(0)
 
     /** Offers inside, and the closed mark: whoever leaves a closed queue last, or closes an empty one, drops it. */
     private val inside = AtomicInt(0)
@@ -90,11 +91,11 @@ internal class DatagramQueue(
     /** The work that feeds this queue's datagrams to quiche; in at most one inbox at a time, by [wantsFeed]. */
     val feedWork = FeedWork(this)
 
-    /** Datagrams admitted at or below which senders waiting for room are woken. */
+    /** Datagrams held at or below which senders waiting for room are woken. */
     val lowWater: Int = bound / LOW_WATER_DIVISOR
 
-    /** Any thread: datagrams admitted and not yet taken; stale by the time it returns. */
-    fun size(): Int = admitted.load()
+    /** Any thread: datagrams admitted that have not [left]; stale by the time it returns. */
+    fun size(): Int = held.load()
 
     fun life(): QueueLife = life.load()
 
@@ -129,7 +130,7 @@ internal class DatagramQueue(
         payload: ReadBuffer,
         length: Int,
     ): Offered {
-        if (overflow == Overflow.RefuseNew && admitted.load() >= bound) return Offered.Full
+        if (overflow == Overflow.RefuseNew && held.load() >= bound) return Offered.Full
         val slot =
             when (val taken = made.slots.take()) {
                 is DatagramSlot -> taken
@@ -160,7 +161,7 @@ internal class DatagramQueue(
                 Put.Placed -> Unit
                 Put.Blocked -> {
                     made.slots.give(slot)
-                    if (admission == Admission.In) admitted.decrementAndFetch()
+                    if (admission == Admission.In) held.decrementAndFetch()
                 }
             }
         }
@@ -173,9 +174,9 @@ internal class DatagramQueue(
     private fun admit(made: QueueParts.Made): Admission {
         var tries = 0
         while (true) {
-            val seen = admitted.load()
+            val seen = held.load()
             if (seen < bound) {
-                if (admitted.compareAndSet(seen, seen + 1)) return Admission.In
+                if (held.compareAndSet(seen, seen + 1)) return Admission.In
                 continue
             }
             when (overflow) {
@@ -193,20 +194,19 @@ internal class DatagramQueue(
         }
     }
 
-    /** The connection: the oldest queued datagram, which is its own, outside the bound, until [done]. */
+    /** The connection: the oldest queued datagram, which is its own until [done]; it holds its place until it [left]. */
     fun take(): Head =
         when (val now = parts.load()) {
             is QueueParts.Unmade -> Head.Empty
-            is QueueParts.Made ->
-                now.ring.take().also { head ->
-                    when (head) {
-                        is DatagramSlot -> admitted.decrementAndFetch()
-                        is Head.Empty -> Unit
-                    }
-                }
+            is QueueParts.Made -> now.ring.take()
         }
 
-    /** The connection is done with [slot]'s datagram: it left, or was dropped; its slot is free again. */
+    /** The connection: [count] datagrams it took left the send path, sent or dropped; their places are free again. */
+    fun left(count: Int) {
+        held.addAndFetch(-count)
+    }
+
+    /** The connection is done with [slot]'s memory: quiche copied its datagram, or it was dropped; its slot is free again. */
     fun done(slot: DatagramSlot) =
         when (val now = parts.load()) {
             is QueueParts.Unmade -> Unit
@@ -260,7 +260,7 @@ internal class DatagramQueue(
                 while (true) {
                     when (now.ring.take()) {
                         is DatagramSlot -> {
-                            admitted.decrementAndFetch()
+                            held.decrementAndFetch()
                             counts.datagramDroppedAtClose()
                         }
                         is Head.Empty -> break

@@ -64,6 +64,50 @@ class CoreDatagramStatsTests {
     }
 
     @Test
+    fun aBurstWhileTheConnectionIsBusyIsTakenUpToTheWholeSendQueue() =
+        coreTest("CoreDatagramStatsTests.aBurstWhileTheConnectionIsBusyIsTakenUpToTheWholeSendQueue") {
+            val options = coreTestOptions.copy(datagrams = DatagramOptions(sendQueueLen = SEND_QUEUE))
+            val stall = AtomicReference<Stall>(Stall.Off)
+            val serverSide = CompletableDeferred<CoreConnection>()
+            withCoreServer(options = options, onConnection = { serverSide.complete(it) }) { server ->
+                val client = connectCore(server.port, loops = loops, options = options, wrapIo = { StallingIo(it, stall) })
+                try {
+                    val channel = client.connection.datagramChannel()
+                    stall.store(Stall.Armed)
+                    send(channel)
+                    stall.awaitHolding(WAIT)
+                    // The loop is held in the write the first send woke: nothing the burst queues reaches quiche meanwhile.
+                    // The first datagram still holds a place, or was already written into the held packet and left.
+                    var burst = 0L
+                    try {
+                        repeat(ATTEMPTS - 1) {
+                            try {
+                                send(channel)
+                                burst++
+                            } catch (full: QuicDatagramRefused) {
+                                assertIs<DatagramRefusal.QueueFull>(full.refusal)
+                            }
+                        }
+                    } finally {
+                        stall.store(Stall.Released)
+                    }
+                    assertTrue(
+                        burst in SEND_QUEUE - 1..SEND_QUEUE,
+                        "a send queue holding fewer than its depth refuses none: the burst got $burst of $SEND_QUEUE",
+                    )
+                    val accepted = burst + 1
+                    val receiving = withTimeout(WAIT) { serverSide.await() }
+                    withTimeout(WAIT) { readStatsUntil(receiving) { it.datagramsReceived == accepted } }
+                    val sent = withTimeout(WAIT) { readStatsUntil(client.connection) { it.datagramsSent == accepted } }
+                    assertEquals(QuicDatagramCount.Counted(ATTEMPTS - accepted), sent.datagramsRefusedQueueFull)
+                } finally {
+                    stall.store(Stall.Released)
+                    client.connection.close(QuicError.NoError)
+                }
+            }
+        }
+
+    @Test
     fun aSenderThatOverrunsItsQueueAndASlowReceiverAreCountedInTheirStats() =
         coreTest("CoreDatagramStatsTests.aSenderThatOverrunsItsQueueAndASlowReceiverAreCountedInTheirStats") {
             val options = coreTestOptions.copy(datagrams = DatagramOptions(recvQueueLen = RECV_QUEUE, sendQueueLen = SEND_QUEUE))

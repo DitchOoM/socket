@@ -136,6 +136,11 @@ internal class GuardedQuicheApi(
         return delegate.connDgramPurgeOutgoing(conn)
     }
 
+    override fun connDgramSendQueueLen(conn: QuicheConn): Int {
+        guard.assertOnLoop(LoopSite.Quiche)
+        return delegate.connDgramSendQueueLen(conn)
+    }
+
     override fun hasReadableDgram(conn: QuicheConn): Boolean {
         guard.assertOnLoop(LoopSite.Quiche)
         return delegate.hasReadableDgram(conn)

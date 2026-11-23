@@ -326,6 +326,9 @@ interface QuicheApi {
      */
     fun connDgramPurgeOutgoing(conn: QuicheConn): Int
 
+    /** The datagrams quiche's send queue holds, not yet written into a packet. (Wraps `dgram_send_queue_len`.) */
+    fun connDgramSendQueueLen(conn: QuicheConn): Int
+
     /** True when at least one datagram is queued for receive. (Wraps `dgram_recv_front_len`.) */
     fun hasReadableDgram(conn: QuicheConn): Boolean
 

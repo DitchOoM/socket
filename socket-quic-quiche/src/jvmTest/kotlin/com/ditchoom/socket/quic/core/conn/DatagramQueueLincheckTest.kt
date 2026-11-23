@@ -28,8 +28,8 @@ import kotlin.test.Test
 /**
  * [DatagramQueue]'s lock-free protocol, model checked as senders and the connection use it. Senders offer, refusing
  * ([offerRefuse0]..) or evicting ([offerEvict0]..), and hand the connection the queue's feed when [DatagramQueue.wantsFeed]
- * says so. The connection, one thread, takes the evicting queue's oldest and holds it ([takeHold]), lets it go
- * ([releaseHeld]) or takes and lets go at once ([takeRelease]); feeds the refusing queue through a [DatagramSender] whose
+ * says so. The connection, one thread, takes the evicting queue's oldest and holds it ([takeHold]), lets it leave the
+ * send path ([releaseHeld]) or takes and lets it leave at once ([takeRelease]); feeds the refusing queue through a [DatagramSender] whose
  * quiche takes one datagram at a time, so the next waits at the door ([feedOne]); parks a waiter for room ([awaitRoom]);
  * runs a handed feed ([runFeed]); trims both queues' memory ([trim]); and may [close].
  *
@@ -87,7 +87,10 @@ class DatagramQueueLincheckTest {
     @Operation(nonParallelGroup = "connection")
     fun releaseHeld() {
         when (val slot = held) {
-            is DatagramSlot -> evicting.done(slot)
+            is DatagramSlot -> {
+                evicting.done(slot)
+                evicting.left(1)
+            }
             is Head.Empty -> Unit
         }
         held = Head.Empty
@@ -98,7 +101,10 @@ class DatagramQueueLincheckTest {
     fun takeRelease() {
         if (closed == Closed.Yes) return
         when (val slot = takeFrom(evicting)) {
-            is DatagramSlot -> evicting.done(slot)
+            is DatagramSlot -> {
+                evicting.done(slot)
+                evicting.left(1)
+            }
             is Head.Empty -> Unit
         }
     }
@@ -223,6 +229,8 @@ class DatagramQueueLincheckTest {
         }
 
         override fun connDgramPurgeOutgoing(conn: QuicheConn): Int = 0
+
+        override fun connDgramSendQueueLen(conn: QuicheConn): Int = 0
     }
 
     /** Network buffers that count their frees; only a buffer's first free releases its memory. */

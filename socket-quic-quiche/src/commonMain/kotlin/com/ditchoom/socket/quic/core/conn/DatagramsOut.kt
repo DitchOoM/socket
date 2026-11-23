@@ -2,6 +2,7 @@
 
 package com.ditchoom.socket.quic.core.conn
 
+import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.socket.quic.NO_DATAGRAM_ROOM
 import com.ditchoom.socket.quic.QUICHE_ERR_INVALID_STATE
 import com.ditchoom.socket.quic.QuicheSendStop
@@ -14,6 +15,7 @@ import com.ditchoom.socket.quic.core.observe.ConnCounts
 import com.ditchoom.socket.quic.core.observe.Published
 import com.ditchoom.socket.quic.core.stream.Backlog
 import com.ditchoom.socket.quic.core.stream.QUICHE_ERR_DONE
+import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.time.Span
 import com.ditchoom.socket.quic.core.time.since
@@ -49,8 +51,12 @@ private sealed interface HandOff {
     ) : HandOff
 }
 
-/** Whether quiche's datagram queue was full when last asked, and has not written a packet since. */
-private enum class QuicheQueue { MayHaveRoom, Full }
+/**
+ * What is known of quiche's datagram queue: its length as last read or handed to since ([Counted]), that it wrote a packet
+ * since, which may have carried datagrams out of it ([Wrote]), or that it was full when last asked and has written
+ * nothing since ([Full]).
+ */
+private enum class QuicheQueue { Counted, Wrote, Full }
 
 /** Whether a connection's datagrams are negotiated. */
 internal enum class Negotiation { Negotiated, None }
@@ -72,12 +78,13 @@ internal class DatagramRefusedByQuiche(
 ) : Throwable()
 
 /**
- * A connection's RFC 9221 sends, inside it. The [queue] any thread offers to is bounded so that it, the door and quiche's
- * short hand-off behind them together hold at most the options' depth; it is fed into quiche from the head each time
- * the connection writes and each time the write runs dry. A datagram past the outgoing age at the head is dropped and
- * counted; the one quiche refused last for a full queue waits at the door, outside the queue's bound, and goes first
- * next time, still bound by the age. Callers waiting for room are woken in the order they began to wait once the queue
- * is at its low-water mark. The memory of slots nobody needed for a while is let go.
+ * A connection's RFC 9221 sends, inside it. The [queue] any thread offers to bounds every datagram on the send path at
+ * the options' depth: those queued, the one at the door, and those in quiche's short hand-off, which hold their places
+ * until quiche's queue no longer has them. It is fed into quiche from the head each time the connection writes and each
+ * time the write runs dry. A datagram past the outgoing age at the head is dropped and counted; the one quiche refused
+ * last for a full queue waits at the door and goes first next time, still bound by the age. Callers waiting for room
+ * are woken in the order they began to wait once the send path is at its low-water mark. The memory of slots nobody
+ * needed for a while is let go.
  */
 @Confined
 internal class DatagramSender(
@@ -89,7 +96,10 @@ internal class DatagramSender(
     private val room = AtomicInt(NO_DATAGRAM_ROOM)
     private val waiting = ArrayDeque<RoomWait>()
     private var door: Head = Head.Empty
-    private var quiche = QuicheQueue.MayHaveRoom
+    private var quiche = QuicheQueue.Counted
+
+    /** Datagrams handed to quiche that its queue held when last asked, or that were handed since. */
+    private var inQuiche = 0
     private var peak = 0
     private var lastPeak = 0
     private var window = Nanos(0L)
@@ -109,12 +119,12 @@ internal class DatagramSender(
     fun backlog(): Backlog =
         when (door) {
             is DatagramSlot -> Backlog.Waiting
-            is Head.Empty -> if (queue.size() > 0) Backlog.Waiting else Backlog.None
+            is Head.Empty -> if (queue.size() > inQuiche) Backlog.Waiting else Backlog.None
         }
 
     /** quiche wrote a packet, which may have carried datagrams out of its queue. */
     fun quicheWrote() {
-        quiche = QuicheQueue.MayHaveRoom
+        quiche = QuicheQueue.Wrote
     }
 
     /**
@@ -122,6 +132,7 @@ internal class DatagramSender(
      * quiche that was full and has written nothing since is not asked again.
      */
     fun feed(now: Nanos): Refill {
+        settle()
         wakeIfLow()
         if (queue.life() is QueueLife.Closed || quiche == QuicheQueue.Full) return Refill.Nothing
         peak = maxOf(peak, queue.size())
@@ -131,9 +142,9 @@ internal class DatagramSender(
             is DatagramSlot ->
                 when (val handed = handOff(held, now)) {
                     is HandOff.Took -> moved = Refill.Moved.also { leaveDoor(held) }
-                    is HandOff.Dropped -> leaveDoor(held)
+                    is HandOff.Dropped -> dropDoor(held)
                     is HandOff.Wait -> return moved.also { quiche = QuicheQueue.Full }
-                    is HandOff.Refused -> return Refill.Refused(handed.code).also { leaveDoor(held) }
+                    is HandOff.Refused -> return Refill.Refused(handed.code).also { dropDoor(held) }
                 }
         }
         while (true) {
@@ -144,13 +155,13 @@ internal class DatagramSender(
                 }
             when (val handed = handOff(slot, now)) {
                 is HandOff.Took -> moved = Refill.Moved.also { queue.done(slot) }
-                is HandOff.Dropped -> queue.done(slot)
+                is HandOff.Dropped -> drop(slot)
                 is HandOff.Wait -> {
                     door = slot
                     quiche = QuicheQueue.Full
                     break
                 }
-                is HandOff.Refused -> return Refill.Refused(handed.code).also { queue.done(slot) }
+                is HandOff.Refused -> return Refill.Refused(handed.code).also { drop(slot) }
             }
         }
         wakeIfLow()
@@ -185,11 +196,15 @@ internal class DatagramSender(
             is Head.Empty -> Unit
             is DatagramSlot -> {
                 counts.datagramDroppedAtClose()
-                leaveDoor(held)
+                dropDoor(held)
             }
         }
         when (queue.close(end)) {
-            Closing.Now -> counts.datagramsDroppedAtClose(q.api.connDgramPurgeOutgoing(q.handle))
+            Closing.Now -> {
+                counts.datagramsDroppedAtClose(q.api.connDgramPurgeOutgoing(q.handle))
+                queue.left(inQuiche)
+                inQuiche = 0
+            }
             Closing.Already -> Unit
         }
         while (waiting.isNotEmpty()) waiting.removeFirst().room()
@@ -198,6 +213,28 @@ internal class DatagramSender(
     private fun leaveDoor(slot: DatagramSlot) {
         door = Head.Empty
         queue.done(slot)
+    }
+
+    /** The door's datagram leaves the send path unsent. */
+    private fun dropDoor(slot: DatagramSlot) {
+        leaveDoor(slot)
+        queue.left(1)
+    }
+
+    /** A taken datagram leaves the send path unsent. */
+    private fun drop(slot: DatagramSlot) {
+        queue.done(slot)
+        queue.left(1)
+    }
+
+    /** After quiche wrote: frees the places of the datagrams its queue no longer holds, sent or dropped by quiche. */
+    private fun settle() {
+        if (quiche != QuicheQueue.Wrote) return
+        quiche = QuicheQueue.Counted
+        if (inQuiche == 0) return
+        val holds = q.api.connDgramSendQueueLen(q.handle).coerceIn(0, inQuiche)
+        queue.left(inQuiche - holds)
+        inQuiche = holds
     }
 
     private fun wakeIfLow() {
@@ -222,6 +259,7 @@ internal class DatagramSender(
         return when {
             sent >= 0 -> {
                 output++
+                inQuiche++
                 HandOff.Took
             }
             sent == QUICHE_ERR_DONE || sent == QUICHE_ERR_INVALID_STATE -> HandOff.Wait
@@ -239,6 +277,14 @@ internal class DatagramSender(
         const val MIN_KEPT = 4
     }
 }
+
+/** The sender of a connection whose datagrams go as this rule says: its queue bounds the whole send path at the rule's depth. */
+internal fun DatagramRule.On.sender(
+    q: QuicheConnRef,
+    factory: BufferFactory,
+    clock: LoopClock,
+    counts: ConnCounts,
+): DatagramSender = DatagramSender(q, DatagramQueue(sendBound, overflow, factory, clock, counts), outgoing, counts)
 
 /** The datagrams a write may feed: the connection's while it runs; past its close point none, and what waited is dropped. */
 internal fun ConnParts.datagramsToWrite(): Datagrams =

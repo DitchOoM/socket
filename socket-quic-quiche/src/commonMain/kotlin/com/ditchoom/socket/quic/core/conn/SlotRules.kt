@@ -116,16 +116,10 @@ internal fun DatagramRule.On.quicheHandOff(): Int {
 }
 
 /**
- * The datagrams the core's queue admits: the depth less quiche's hand-off and the one datagram the connection holds at
- * the door while quiche's queue is full, so together they hold at most [DatagramRule.On.sendBound]. A depth below
- * [MIN_SEND_DEPTH] leaves none, and is refused as an option.
+ * The smallest send depth: one datagram in quiche's hand-off, one at the door, and one in the core's queue, so an
+ * evicting queue whose path is full always has a queued datagram to evict.
  */
-internal fun DatagramRule.On.queueBound(): Int = sendBound - quicheHandOff() - DOOR
-
-/** The smallest send depth: one datagram in quiche's hand-off, one at the door, and one in the core's queue. */
 internal const val MIN_SEND_DEPTH = 3
-
-private const val DOOR = 1
 
 private const val SHORT_HAND_OFF = 4
 private const val LONG_HAND_OFF = 32

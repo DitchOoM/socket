@@ -66,7 +66,7 @@ class DatagramQueueConcurrencyTests {
         val buffer = datagram()
         repeat(DEPTH) { assertEquals(Offered.Queued, queue.offer(buffer, 0, buffer, SIZE)) }
         val held = assertIs<DatagramSlot>(queue.take())
-        assertEquals(Offered.Queued, queue.offer(buffer, 0, buffer, SIZE), "the held one is outside the bound: the queue is full again")
+        assertEquals(DEPTH, queue.size(), "the held one keeps its place: the send path is full")
         val answer = AtomicReference<Offered>()
         val done = CountDownLatch(1)
         thread {
@@ -105,6 +105,7 @@ class DatagramQueueConcurrencyTests {
             when (val slot = queue.take()) {
                 is DatagramSlot -> {
                     queue.done(slot)
+                    queue.left(1)
                     taken++
                 }
                 is Head.Empty -> Unit
@@ -167,6 +168,7 @@ class DatagramQueueConcurrencyTests {
                 // Held a moment, as the connection holds it while quiche copies it.
                 Thread.onSpinWait()
                 queue.done(slot)
+                queue.left(1)
                 taken++
             }
         }
