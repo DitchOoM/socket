@@ -129,12 +129,8 @@ internal class Turn(
         }
     }
 
-    /** Loop thread, with a caller inside: the datagram is copied into work for that caller. */
-    fun copy(
-        bytes: NativeBytes,
-        length: Int,
-        from: PathKey,
-    ): Copy = c.ingress.copy(bytes, length, from)
+    /** The loop's way in for datagrams: whether one goes to quiche now or is copied into work, and the copy. */
+    fun ingress(): Ingress = c.ingress
 
     /**
      * Inside, at [now]: the connection's deadline fell due. While unconfirmed, the handshake counts quiche's PTO expiries.
