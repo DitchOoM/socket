@@ -66,7 +66,7 @@ class PeerCertificateValidity private constructor(
  */
 val PEER_CERTIFICATE_CLOCK_SKEW_ALLOWANCE: Duration = 1.hours
 
-/** Whether this [QuicEngine] can mint a [PeerCertificate]; read it from [QuicEngine.peerCertificates]. */
+/** Whether this QUIC stack can mint a [PeerCertificate]; read it from `peerCertificates`. */
 sealed interface PeerCertificateSupport {
     /** The engine supplies the crypto; [mint] mints certificates. */
     class Available(
@@ -111,7 +111,7 @@ sealed interface PeerCertificateSupport {
  * A self-signed certificate meeting the W3C WebTransport `serverCertificateHashes` constraints — X.509 v3,
  * ECDSA P-256, validity at most 14 days — together with its private key, for a QUIC server that browsers
  * reach by hash instead of by CA. Minted by [PeerCertificateSupport.Available.mint]; served by
- * [QuicEngine.bind] (and the `withQuicServer` / `withHttp3Server` overloads that take one).
+ * `withQuicServer` (and the `withQuicServer` / `withHttp3Server` overloads that take one).
  *
  * Hand [hash] to the browser (`serverCertificateHashes: [{ algorithm: "sha-256", value }]`) through your
  * signalling channel. The certificate never renews itself: mint a successor before [renewAt] and publish
@@ -145,9 +145,10 @@ class PeerCertificate internal constructor(
 
     /**
      * Write the certificate and key as owner-only PEM files, run [block] with their paths, and delete them
-     * when it returns. Throws [PeerCertificateException] with [PeerCertificateFailure.Closed] after [close].
+     * when it returns: a server's bind reads them there. Throws [PeerCertificateException] with
+     * [PeerCertificateFailure.Closed] after [close].
      */
-    internal suspend fun <R> withPemFiles(block: suspend (QuicTlsConfig) -> R): R {
+    suspend fun <R> withPemFiles(block: suspend (QuicTlsConfig) -> R): R {
         borrow()
         try {
             return backend.withPemFiles(certificatePem, privateKeyPem, block)

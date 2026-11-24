@@ -14,7 +14,7 @@ import kotlin.native.Platform
  *    [ServerCertificateConstraintSupport.Enforced].
  *  - **tvOS and watchOS** report [ServerCertificateConstraintSupport.NoQuicEngine].
  *    `:socket-quic-quiche` registers no tvOS/watchOS target and `socket-quic-default` routes those
- *    families to `UnsupportedQuicEngine`, so `connect()` throws before any certificate exists: not even
+ *    families to a platform with no QUIC, so `connect()` throws before any certificate exists: not even
  *    the leaf hash is checked there, because no leaf is ever presented. Reporting `LeafHashOnly` would
  *    claim a pin check that nothing performs.
  *

@@ -73,7 +73,7 @@ abstract class ConcurrentRequestsTestSuite {
     private suspend fun manyConcurrentRequests(driverBufferFactory: BufferFactory) {
         val options =
             migrationSimOptions().copy(
-                flowControl = FlowControl(initialMaxStreamsBidi = STREAMS.toLong()),
+                incomingStreams = IncomingStreams.Accept(bidirectional = QuicStreamLimit(STREAMS.toUInt())),
             )
         withMigrationSim(simEnv(), seed = 3_001L, quicOptions = options, driverBufferFactory = driverBufferFactory) {
             val served = mutableListOf<String>()

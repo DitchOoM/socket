@@ -7,7 +7,7 @@ import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.buffer.managed
-import com.ditchoom.socket.quic.FlowControl
+import com.ditchoom.socket.quic.IncomingStreams
 import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicConnectionState
@@ -19,6 +19,7 @@ import com.ditchoom.socket.quic.QuicSessionTicket
 import com.ditchoom.socket.quic.QuicSessionTicketKeys
 import com.ditchoom.socket.quic.QuicSessionTicketState
 import com.ditchoom.socket.quic.QuicStreamId
+import com.ditchoom.socket.quic.QuicStreamLimit
 import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.QuicheConn
 import com.ditchoom.socket.quic.QuicheRecvInfo
@@ -57,7 +58,7 @@ class UniStreamVirtualTests {
         verifyPeer = false,
         idleTimeout = 30.seconds,
         enablePmtuDiscovery = false,
-        flowControl = FlowControl(initialMaxStreamsUni = uni),
+        incomingStreams = IncomingStreams.Accept(unidirectional = QuicStreamLimit(uni.toUInt())),
         streamOpenPolicy = open,
     )
 
@@ -212,7 +213,11 @@ class UniStreamVirtualTests {
         }
         val ticket = checkNotNull(issued)
         val seen = QuicheSeen()
-        VirtualPair.with(early.copy(flowControl = FlowControl(initialMaxStreamsUni = 0)), tls = tls, serverApi = seen::around) { pair ->
+        VirtualPair.with(
+            early.copy(incomingStreams = IncomingStreams.Accept(unidirectional = QuicStreamLimit(0u))),
+            tls = tls,
+            serverApi = seen::around,
+        ) { pair ->
             val resumption =
                 QuicResumption.ResumeWithEarlyData(ticket) {
                     val stream = openUniStream()

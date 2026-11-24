@@ -340,7 +340,7 @@ internal class LinuxQuicConnection(
     override val remoteAddress: SocketAddress,
     private val scope: CoroutineScope,
     private val onRelease: (() -> Unit)? = null,
-) : QuicEngineConnection,
+) : QuicScope,
     QuicheBackedConnection,
     CoroutineScope by scope {
     override val state: StateFlow<QuicConnectionState> = driver.state
@@ -448,6 +448,8 @@ internal class LinuxQuicConnection(
     override suspend fun closeWithError(errorCode: Long) = driverClose(QuicError.ApplicationError(errorCode))
 
     /** Full lifecycle teardown — the wrapper's `finally` calls this: driver close, then [onRelease]. */
+    override suspend fun stats(): QuicStatsRead = driver.publicStats()
+
     override suspend fun close(error: QuicError) {
         try {
             driverClose(error)

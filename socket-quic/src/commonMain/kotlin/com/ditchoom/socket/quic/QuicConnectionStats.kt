@@ -11,9 +11,6 @@ sealed interface QuicStatsRead {
 
     /** The connection had ended before the read reached it. */
     data object Ended : QuicStatsRead
-
-    /** The engine behind this connection does not report statistics. */
-    data object NotReported : QuicStatsRead
 }
 
 /**

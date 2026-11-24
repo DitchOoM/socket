@@ -6,72 +6,38 @@ import com.ditchoom.socket.candidatesFor
 import com.ditchoom.socket.connectRace
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
-import kotlin.time.Duration
 
-/**
- * A raced connect's two answers: the connection that won, and what became of every candidate.
- *
- * The race outcome travels **beside** the connection rather than on it. Wrapping the connection to
- * carry it would hide the backend's own type behind a decorator, and a consumer that reaches its driver
- * by `is`-check — which is how the trace tap and the migration wiring reach it — would silently stop
- * finding it.
- */
-class QuicRacedConnect(
-    val connection: QuicEngineConnection,
+/** A raced connect's two answers: the [connection] that won, and what became of every candidate. */
+class QuicRacedConnect<out C>(
+    val connection: C,
     val candidateRace: QuicCandidateRace,
 )
 
 /**
- * Open a QUIC connection to [peer], racing its candidate endpoints and keeping the first handshake
- * that completes.
+ * Connects to this peer by racing its candidate endpoints with [attempt], keeping the first that answers. [close]
+ * releases a connection that answered after the race was decided. A [QuicPeer.Named] is resolved through
+ * [TransportConfig.nameResolution]; candidates are paced by [TransportConfig.connectPacing], RFC 8305 section 5
+ * staggered by default. A failure ends the race when [quicConnectVerdict] calls it fatal.
  *
- * This is the client entry every other one funnels through — [withQuicConnection], `QuicTransport`,
- * and an application dialling a peer whose candidates it gathered itself. [QuicEngine.connect] to a
- * single endpoint stays the backend's job; the race, the resolution above it and the teardown of
- * every candidate that loses are the same on every backend and live here, so a backend cannot get
- * them subtly differently.
- *
- * Pacing comes from [TransportConfig.connectPacing]: RFC 8305 §5 staggered by default, and
- * [Simultaneous][com.ditchoom.socket.ConnectPacing.Simultaneous] for a peer-to-peer connect whose
- * first flights are also NAT punches.
- *
- * Extensions rather than members so no engine can override them: every engine races the same way, or
- * the guarantee that a losing candidate is torn down would be per-backend folklore.
+ * [attempt] connects to exactly one endpoint, and a failure or a cancellation of it must leave nothing behind.
  */
-suspend fun QuicEngine.connectRacing(
-    binding: QuicClientBinding,
-    peer: QuicPeer,
-    quicOptions: QuicOptions,
+suspend fun <C> QuicPeer.raceCandidates(
     transport: TransportConfig,
-    timeout: Duration,
-): QuicRacedConnect {
-    capabilities.requirePinnable(binding, quicOptions)
+    close: suspend (C) -> Unit,
+    attempt: suspend (QuicEndpoint) -> C,
+): QuicRacedConnect<C> {
     val candidates =
-        when (peer) {
-            is QuicPeer.Named ->
-                transport.nameResolution.candidatesFor(peer.hostname).map { QuicEndpoint(it, peer.port) }
-            is QuicPeer.Candidates -> peer.endpoints
+        when (this) {
+            is QuicPeer.Named -> transport.nameResolution.candidatesFor(hostname).map { QuicEndpoint(it, port) }
+            is QuicPeer.Candidates -> endpoints
         }
     if (candidates.size == 1) {
-        // Not a race, and not run as one: a single candidate through the racer would pay for a pacer
-        // and an exhaustion collector to decide something already decided.
+        // Not a race, and not run as one: a pacer and an exhaustion collector would decide what is decided.
         val only = candidates.single()
-        return QuicRacedConnect(
-            connect(binding, only, peer.serverName, quicOptions, transport, timeout),
-            QuicCandidateRace.Unopposed(only),
-        )
+        return QuicRacedConnect(attempt(only), QuicCandidateRace.Unopposed(only))
     }
-    return race(binding, candidates, peer.serverName, quicOptions, transport, timeout)
+    return race(candidates, transport, close, attempt)
 }
-
-/** [connectRacing] for a caller that wants the connection and not the reckoning. */
-suspend fun QuicEngine.connect(
-    binding: QuicClientBinding,
-    peer: QuicPeer,
-    quicOptions: QuicOptions,
-    transport: TransportConfig,
-    timeout: Duration,
-): QuicEngineConnection = connectRacing(binding, peer, quicOptions, transport, timeout).connection
 
 /**
  * What a failed QUIC connect attempt says about the peer's *other* candidates.
@@ -150,9 +116,9 @@ private object PeerIdentityAlert {
 private fun QuicError.isAboutThePeersIdentity(): Boolean = this is QuicError.CryptoError && tlsAlert in PeerIdentityAlert.codes
 
 /** One candidate's attempt, carrying the slot it has to report its own fate into. */
-private class Attempted(
+private class Attempted<C>(
     val index: Int,
-    val connection: QuicEngineConnection,
+    val connection: C,
 )
 
 /**
@@ -182,37 +148,29 @@ private sealed interface Fate {
     }
 }
 
-private suspend fun QuicEngine.race(
-    binding: QuicClientBinding,
+private suspend fun <C> race(
     candidates: List<QuicEndpoint>,
-    serverName: String,
-    quicOptions: QuicOptions,
     transport: TransportConfig,
-    timeout: Duration,
-): QuicRacedConnect {
-    // One slot per candidate, written only by that candidate's own attempt and read only after the race
-    // has joined every attempt — so this needs no lock and no atomic, and there is no slot two
-    // coroutines can disagree about.
+    close: suspend (C) -> Unit,
+    attempt: suspend (QuicEndpoint) -> C,
+): QuicRacedConnect<C> {
+    // One slot per candidate, written only by that candidate's own attempt and read only after the race has joined
+    // every attempt: no slot two coroutines can disagree about.
     val fates = MutableList<Fate>(candidates.size) { Fate.NeverAttempted }
     val winner =
         connectRace(
             candidates = candidates.indices.toList(),
             pacing = transport.connectPacing,
             verdict = ::quicConnectVerdict,
-            close = { late ->
+            close = { late: Attempted<C> ->
                 fates[late.index] = Fate.ClosedAsLate
-                late.connection.close()
+                close(late.connection)
             },
             attempt = { index ->
                 try {
-                    Attempted(
-                        index,
-                        connect(binding, candidates[index], serverName, quicOptions, transport, timeout),
-                    )
+                    Attempted(index, attempt(candidates[index]))
                 } catch (e: Throwable) {
-                    // A cancelled attempt did not fail: another candidate won while this one was still
-                    // handshaking, and its own teardown ran on the way out. Reporting that as a failure
-                    // would put a fabricated error in the outcome.
+                    // A cancelled attempt did not fail: another candidate won while this one was still handshaking.
                     fates[index] = if (currentCoroutineContext().isActive) Fate.HandshakeFailed(e) else Fate.Abandoned
                     throw e
                 }

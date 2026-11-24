@@ -1,6 +1,5 @@
 package com.ditchoom.socket.quic.core.edge
 
-import com.ditchoom.socket.quic.QuicAppErrorCode
 import com.ditchoom.socket.quic.QuicStreamId
 import com.ditchoom.socket.quic.core.conn.ConnWork
 import com.ditchoom.socket.quic.core.conn.Inside
@@ -35,9 +34,6 @@ internal sealed interface Finished {
         val failure: OpFailure,
     ) : Finished
 }
-
-/** The application error code our side's reset carries when a write that ended it stopped part way. */
-internal val FINISH_CUT_CODE = QuicAppErrorCode(0L)
 
 /** Inside: hands quiche our FIN alone; past the close point, or once the connection ended, nothing is sent. */
 internal fun StreamTable.finAlone(stream: QuicStreamId) {

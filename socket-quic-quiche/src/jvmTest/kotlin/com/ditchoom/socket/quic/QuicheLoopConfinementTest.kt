@@ -120,7 +120,7 @@ class QuicheLoopConfinementTest {
     }
 
     /** Every caller-visible accessor of a connection, read once. */
-    private suspend fun readEverything(connection: QuicEngineConnection) {
+    private suspend fun readEverything(connection: QuicScope) {
         connection.identity
         connection.state.value
         connection.unreadAtClose.value
@@ -145,7 +145,7 @@ class QuicheLoopConfinementTest {
 
     /** [readEverything] in a loop on another thread until cancelled; counts its rounds. */
     private fun CoroutineScope.hammer(
-        connection: QuicEngineConnection,
+        connection: QuicScope,
         rounds: AtomicLong,
     ): Job =
         launch(Dispatchers.Default) {
@@ -171,7 +171,7 @@ class QuicheLoopConfinementTest {
                     val serverJob =
                         launch {
                             server.connections {
-                                val serverHammer = hammers.hammer(this as QuicEngineConnection, serverRounds)
+                                val serverHammer = hammers.hammer(this as QuicScope, serverRounds)
                                 try {
                                     val stream = acceptStream()
                                     while (true) {
@@ -193,7 +193,7 @@ class QuicheLoopConfinementTest {
                             api = confinement.api,
                             tuning = tuning,
                         ) {
-                            val clientHammer = hammers.hammer(this as QuicEngineConnection, clientRounds)
+                            val clientHammer = hammers.hammer(this as QuicScope, clientRounds)
                             val stream = openStream()
                             repeat(ECHOES) { i -> stream.echo("before-$i") }
                             assertIs<MigrationResult.Succeeded>(migrate(MigrationTarget.LocalAddress("127.0.0.1")))

@@ -84,7 +84,7 @@ class CallerInPlaceTests {
                         openStream().writeFully(bytes(payload), 10.seconds)
                     },
                 ) { port ->
-                    val client = connectCore(port, loops = loops)
+                    val client = connectCore(port, loops = loops, options = acceptingClientOptions)
                     val holder = HoldWork()
                     val held = holdAsCaller(client.conn, holder)
                     try {

@@ -79,7 +79,15 @@ internal class CoreSendStream(
 
     /** The block that owned this stream returned: a direction still open is finished. */
     suspend fun complete() {
-        if (verdict.load() is Verdict.Writing && half.isOpen()) finish()
+        if (plainState() == PlainState.Open) finish()
+    }
+
+    /** Whether this direction is still open: not finished, reset or failed. */
+    fun plainState(): PlainState = if (verdict.load() is Verdict.Writing && half.isOpen()) PlainState.Open else PlainState.Done
+
+    /** Its block ended with this direction open: it is reset with [QuicAbortCodes.writeCut]. */
+    fun cut() {
+        if (plainState() == PlainState.Open) half.reset(codes.writeCut)
     }
 
     private suspend fun finished(

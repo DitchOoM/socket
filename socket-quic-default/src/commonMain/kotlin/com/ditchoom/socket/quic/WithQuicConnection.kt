@@ -23,9 +23,9 @@ import kotlin.time.Duration.Companion.seconds
  * resources are released.
  *
  * This is the client-facing entry point and it owns the lifecycle: it asks the
- * platform's [QuicEngine][defaultQuicEngine] to [connect][QuicEngine.connect],
+ * platform's legacy QUIC stack to connect,
  * runs [block], and closes the connection in a `finally`. The engine is a
- * constructor, not a factory the caller babysits — the returned [QuicEngineConnection]
+ * constructor, not a factory the caller babysits — the [QuicScope]
  * never escapes this scope, so there is nothing to leak on a dropped error path.
  * The scope-only block boundary remains the lifecycle.
  *
@@ -109,7 +109,7 @@ suspend fun <R> withQuicConnection(
     var established = false
     try {
         return withTimeout(timeout) {
-            val raced = defaultQuicEngine.connectRacing(binding, peer, quicOptions, connectionOptions, timeout)
+            val raced = legacyRacedConnect(binding, peer, quicOptions, connectionOptions, timeout)
             val connection = raced.connection
             established = true
             try {
@@ -132,6 +132,20 @@ suspend fun <R> withQuicConnection(
             "QUIC handshake did not complete within $timeout",
             cause = e,
         )
+    }
+}
+
+/** A legacy connect to [peer], its candidates raced; a pinned radio the stack cannot pin is refused first. */
+internal suspend fun legacyRacedConnect(
+    binding: QuicClientBinding,
+    peer: QuicPeer,
+    options: QuicOptions,
+    transport: TransportConfig,
+    timeout: Duration,
+): QuicRacedConnect<QuicScope> {
+    legacyCapabilities.requirePinnable(binding, options)
+    return peer.raceCandidates(transport, close = { late: QuicScope -> late.close() }) { endpoint ->
+        legacyConnect(binding, endpoint, peer.serverName, options, transport, timeout)
     }
 }
 

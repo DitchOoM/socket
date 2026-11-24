@@ -4,7 +4,7 @@ import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.WriteBuffer
 
 /**
- * The platform half of [PeerCertificate] generation, supplied by a [QuicEngine] through
+ * The platform half of [PeerCertificate] generation, supplied by a QUIC stack through
  * [PeerCertificateSupport.Available]: key generation, signing, SHA-256, and handing PEM material to the
  * engine's TLS stack. Everything that makes the result a valid W3C `serverCertificateHashes` certificate
  * (the X.509 encoding, the P-256 algorithm identifiers, the validity bound) is common code and cannot be

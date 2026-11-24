@@ -1,16 +1,5 @@
 # Current violations of scripts/EntryPointIsolationCheck.java: <file><TAB><4.x symbol>.
 # Remove an entry when its reference is gone. The check fails on a stale entry and on any unlisted violation.
-socket-quic-default/src/commonJvmMain/kotlin/com/ditchoom/socket/quic/DefaultQuicEngine.commonJvm.kt	QuicEngine
-socket-quic-default/src/commonJvmMain/kotlin/com/ditchoom/socket/quic/DefaultQuicEngine.commonJvm.kt	QuicheEngine
-socket-quic-default/src/commonMain/kotlin/com/ditchoom/socket/quic/DefaultQuicEngine.kt	QuicEngine
-socket-quic-default/src/commonMain/kotlin/com/ditchoom/socket/quic/QuicTransport.kt	QuicEngine
-socket-quic-default/src/jsMain/kotlin/com/ditchoom/socket/quic/DefaultQuicEngine.js.kt	QuicEngine
-socket-quic-default/src/jsMain/kotlin/com/ditchoom/socket/quic/DefaultQuicEngine.js.kt	UnsupportedQuicEngine
-socket-quic-default/src/linuxMain/kotlin/com/ditchoom/socket/quic/DefaultQuicEngine.linux.kt	QuicEngine
-socket-quic-default/src/linuxMain/kotlin/com/ditchoom/socket/quic/DefaultQuicEngine.linux.kt	QuicheEngine
-socket-quic-default/src/quicheAppleMain/kotlin/com/ditchoom/socket/quic/DefaultQuicEngine.quicheApple.kt	QuicEngine
-socket-quic-default/src/quicheAppleMain/kotlin/com/ditchoom/socket/quic/DefaultQuicEngine.quicheApple.kt	QuicheEngine
-socket-quic-default/src/unsupportedAppleMain/kotlin/com/ditchoom/socket/quic/DefaultQuicEngine.unsupportedApple.kt	QuicEngine
-socket-quic-default/src/unsupportedAppleMain/kotlin/com/ditchoom/socket/quic/DefaultQuicEngine.unsupportedApple.kt	UnsupportedQuicEngine
-socket-quic-default/src/wasmJsMain/kotlin/com/ditchoom/socket/quic/DefaultQuicEngine.wasmJs.kt	QuicEngine
-socket-quic-default/src/wasmJsMain/kotlin/com/ditchoom/socket/quic/DefaultQuicEngine.wasmJs.kt	UnsupportedQuicEngine
+socket-quic-default/src/commonJvmMain/kotlin/com/ditchoom/socket/quic/QuicStack.commonJvm.kt	QuicheEngine
+socket-quic-default/src/linuxMain/kotlin/com/ditchoom/socket/quic/QuicStack.linux.kt	QuicheEngine
+socket-quic-default/src/quicheAppleMain/kotlin/com/ditchoom/socket/quic/QuicStack.quicheApple.kt	QuicheEngine

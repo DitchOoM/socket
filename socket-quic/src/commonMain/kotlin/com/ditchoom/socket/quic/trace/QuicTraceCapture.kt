@@ -27,7 +27,7 @@ import com.ditchoom.socket.testkit.trace.TraceSink as NeutralTraceSink
  * *same* sink to every connection (log-sink semantics), fine for one connection or for aggregate
  * diagnostics but not for per-connection replay.
  *
- * A server [bind][com.ditchoom.socket.quic.QuicEngine.bind] invokes [captureFor] **once per accepted
+ * A server bind invokes [captureFor] **once per accepted
  * connection**, so each accepted connection records onto its own sink — per-connection, independently
  * replayable server traces (this is what makes deterministic *server* replay possible). Return a
  * fresh capture per call, exactly as for the client; a factory that hands back one shared sink (the
@@ -49,13 +49,13 @@ import com.ditchoom.socket.testkit.trace.TraceSink as NeutralTraceSink
  * @property recordNetworkObservations record the connection's network observations (NET / NET_CAP) into
  *   the trace alongside its QUIC traffic. The monitor recorded is **the connection's own** — the one
  *   [com.ditchoom.socket.quic.QuicOptions.networkMonitor] resolves — so a captured trace, an automatic
- *   migration, and [com.ditchoom.socket.quic.QuicEngineConnection.networkAtClose] all describe the same
+ *   migration, and [com.ditchoom.socket.quic.QuicScope.networkAtClose] all describe the same
  *   observation stream. A second, independent monitor field here would let a caller hand two fields
  *   two different monitors and get a trace that indexed a stream nothing else had seen.
  *
  *   A plain `Boolean` because that is the whole truth here: *which* monitor is a separate, already-typed
  *   decision ([com.ditchoom.socket.quic.NetworkMonitorSource]), and this only says whether to write it
- *   down. Ignored on a server [bind][com.ditchoom.socket.quic.QuicEngine.bind] — a server has no local
+ *   down. Ignored on a server bind — a server has no local
  *   client network path to observe. Liveness (LIVENESS) is captured separately via
  *   `QuicTraceRecorder.wrap`, wired at the transport seam that drives probes
  *   ([com.ditchoom.socket.transport.Liveness]) — that seam lives above the engine.

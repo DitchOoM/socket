@@ -11,10 +11,12 @@ import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.socket.quic.FlowControl
+import com.ditchoom.socket.quic.IncomingStreams
 import com.ditchoom.socket.quic.MigrationPolicy
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicOptions
+import com.ditchoom.socket.quic.QuicStreamLimit
 import com.ditchoom.socket.quic.ScopedReadResult
 import com.ditchoom.socket.quic.core.conn.MismatchResponse
 import com.ditchoom.socket.quic.core.edge.coreConnect
@@ -222,8 +224,8 @@ class CoreRemoteLoad {
                         initialMaxData = 64L * 1024 * 1024,
                         initialMaxStreamDataBidiLocal = 16L * 1024 * 1024,
                         initialMaxStreamDataBidiRemote = 16L * 1024 * 1024,
-                        initialMaxStreamsBidi = 1_000_000,
                     ),
+                incomingStreams = IncomingStreams.Accept(bidirectional = QuicStreamLimit(1_000_000u)),
             )
     }
 }

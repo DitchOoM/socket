@@ -145,11 +145,17 @@ sealed interface StreamWrite {
 }
 
 /**
- * Which streams a connection lets its peer open, chosen at connect and at serve. A client refuses by default and a
- * server accepts.
+ * Which streams a connection lets its peer open, set in [QuicOptions.incomingStreams]: the one source of the stream
+ * limits an endpoint advertises (RFC 9000 `initial_max_streams_bidi` and `_uni`).
  */
 sealed interface IncomingStreams {
-    /** The peer is told it may open no stream, so none arrives and nothing is held. */
+    /**
+     * [Refuse] on a client and [Accept] with its defaults on a server: the default. The legacy `QuicScope` entry points
+     * read it as [Accept] on both sides.
+     */
+    data object ByRole : IncomingStreams
+
+    /** The peer is told it may open no stream: both limits are advertised as zero, so none arrives and nothing is held. */
     data object Refuse : IncomingStreams
 
     /**
@@ -185,4 +191,14 @@ class QuicAbortCodes(
     val brokenFrame: QuicAppErrorCode = QuicAppErrorCode(0x1L),
     /** A receiving direction its handler returned from before reading it to the end. */
     val leftUnread: QuicAppErrorCode = QuicAppErrorCode(0x0L),
-)
+) {
+    override fun equals(other: Any?): Boolean =
+        other is QuicAbortCodes &&
+            handlerFailed == other.handlerFailed &&
+            writeCut == other.writeCut &&
+            brokenFrame == other.brokenFrame &&
+            leftUnread == other.leftUnread
+
+    override fun hashCode(): Int =
+        ((handlerFailed.hashCode() * 31 + writeCut.hashCode()) * 31 + brokenFrame.hashCode()) * 31 + leftUnread.hashCode()
+}

@@ -247,6 +247,8 @@ class CoreOptionRefusalTests {
                 "handshakePolicy",
                 "udpBatching",
                 "sessionStore",
+                "incomingStreams",
+                "abortCodes",
             )
         val inert = setOf("datagramStreamConflictPolicy", "appleAllowOversizedServerCert")
         val declared =

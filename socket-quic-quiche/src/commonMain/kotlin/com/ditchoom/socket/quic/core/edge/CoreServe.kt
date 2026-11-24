@@ -31,6 +31,7 @@ import com.ditchoom.socket.quic.core.udp.SocketBuffers
 import com.ditchoom.socket.quic.core.udp.SocketReport
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.ChannelResult
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.consumeAsFlow
 import kotlinx.coroutines.withContext
@@ -72,6 +73,9 @@ internal class CoreServer(
      * established in.
      */
     suspend fun accept(): CoreConnection = accepted.receive()
+
+    /** The next established connection, or the channel's closed result once the server stopped. */
+    suspend fun next(): ChannelResult<CoreConnection> = accepted.receiveCatching()
 
     fun connections(): Flow<CoreConnection> = accepted.consumeAsFlow()
 

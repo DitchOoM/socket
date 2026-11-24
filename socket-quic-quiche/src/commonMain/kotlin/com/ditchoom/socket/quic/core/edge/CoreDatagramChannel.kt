@@ -1,4 +1,4 @@
-@file:OptIn(ExperimentalDatagramApi::class, ExperimentalAtomicApi::class, QuicEngineSpi::class)
+@file:OptIn(ExperimentalDatagramApi::class, ExperimentalAtomicApi::class)
 
 package com.ditchoom.socket.quic.core.edge
 
@@ -22,8 +22,8 @@ import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicCloseReason
 import com.ditchoom.socket.quic.QuicConnectionEnd
 import com.ditchoom.socket.quic.QuicDatagramRefused
+import com.ditchoom.socket.quic.QuicDatagramSender
 import com.ditchoom.socket.quic.QuicDatagramTooLarge
-import com.ditchoom.socket.quic.QuicEngineSpi
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.closeReason
 import com.ditchoom.socket.quic.core.conn.CallerPlace
@@ -88,9 +88,10 @@ internal class CoreDatagramChannel(
     private val edge: EdgeState,
     private val factory: BufferFactory,
     override val peer: SocketAddress,
-) : ConnectedDatagramChannel {
+) : ConnectedDatagramChannel,
+    QuicDatagramSender {
     private val receiving = AtomicInt(FREE)
-    private val full = DatagramSend.NotSent.QueueFull.of(DatagramRoomWait { awaitRoom() })
+    private val full = DatagramSend.NotSent.QueueFull(DatagramRoomWait { awaitRoom() })
 
     override val isOpen: Boolean get() = edge.end() is EdgeEnd.Open
 
@@ -102,13 +103,13 @@ internal class CoreDatagramChannel(
     override val maxWritableSize: Int get() = conn.datagrams().maxBytes()
 
     /** Queues [payload]'s remaining bytes as one datagram; [payload] is the caller's again, unmoved, when this returns. */
-    fun send(payload: ReadBuffer): DatagramSend = queue(payload, 0, payload)
+    override fun send(payload: ReadBuffer): DatagramSend = queue(payload, 0, payload)
 
     /**
      * Queues [prefix]'s remaining bytes then [payload]'s as one datagram, joined in the one copy into the queue; a
      * [DatagramSend.NotSent.TooLarge] reports the room left for [payload].
      */
-    fun send(
+    override fun send(
         prefix: ReadBuffer,
         payload: ReadBuffer,
     ): DatagramSend = queue(prefix, prefix.remaining(), payload)

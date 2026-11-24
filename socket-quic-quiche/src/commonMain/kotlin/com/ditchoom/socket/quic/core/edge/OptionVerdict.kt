@@ -7,6 +7,7 @@ import com.ditchoom.socket.quic.DatagramOptions
 import com.ditchoom.socket.quic.DatagramOverflow
 import com.ditchoom.socket.quic.HandshakePacing
 import com.ditchoom.socket.quic.HandshakePolicy
+import com.ditchoom.socket.quic.IncomingStreams
 import com.ditchoom.socket.quic.MigrationPolicy
 import com.ditchoom.socket.quic.NetworkMonitorSource
 import com.ditchoom.socket.quic.Pacing
@@ -126,6 +127,9 @@ private fun transportVerdict(options: QuicOptions): OptionVerdict {
     }
     when (options.appleTrustSource) {
         is AppleTrustSource.SystemTrustStore, is AppleTrustSource.BundledMozillaRoots -> Unit
+    }
+    when (options.incomingStreams) {
+        is IncomingStreams.ByRole, is IncomingStreams.Refuse, is IncomingStreams.Accept -> Unit
     }
     return options.datagrams?.let { datagramVerdict(it) } ?: OptionVerdict.Honoured
 }

@@ -10,6 +10,7 @@ import com.ditchoom.socket.quic.QuicConnection
 import com.ditchoom.socket.quic.QuicConnectionEnd
 import com.ditchoom.socket.quic.QuicConnectionIdentity
 import com.ditchoom.socket.quic.QuicConnectionLife
+import com.ditchoom.socket.quic.QuicDatagramSender
 import com.ditchoom.socket.quic.QuicHandshakeFacts
 import com.ditchoom.socket.quic.QuicIncomingStream
 import com.ditchoom.socket.quic.QuicSendStream
@@ -23,6 +24,7 @@ import com.ditchoom.socket.quic.core.life.DrainUntil
 import com.ditchoom.socket.quic.core.sched.HandlerSite
 import com.ditchoom.socket.quic.core.stream.StreamKind
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
@@ -33,10 +35,10 @@ import kotlin.time.Duration.Companion.days
  * This connection as the public [QuicConnection], once its handshake completed; a connection that ended since is handed
  * out all the same. Raises the end of a connection whose handshake never completed.
  */
-internal suspend fun CoreConnection.public(codes: QuicAbortCodes = QuicAbortCodes()): QuicConnection {
+internal suspend fun CoreConnection.public(): CoreQuicConnection {
     established()
     val settled = edge.handshake.filterIsInstance<HandshakeRecord.Settled>().first()
-    return CoreQuicConnection(this, QuicHandshakeFacts(settled.negotiatedAlpn, settled.resumption), codes)
+    return CoreQuicConnection(this, QuicHandshakeFacts(settled.negotiatedAlpn, settled.resumption, settled.leaf), codes)
 }
 
 /** A [CoreConnection] as the public [QuicConnection]: its streams in their public shapes, and its outcomes as values. */
@@ -47,8 +49,31 @@ internal class CoreQuicConnection(
 ) : QuicConnection {
     private val streams = PublicStreams(core, codes)
 
+    /** The streams opened in the plain form, which the connection's block cuts when it ends. */
+    private val plain = PlainStreams()
+
     override val identity: QuicConnectionIdentity get() = core.identity
     override val bufferFactory: BufferFactory get() = core.bufferFactory
+    override val datagrams: QuicDatagramSender get() = core.coreDatagrams
+
+    /**
+     * Runs [block] as this connection's block. When it ends, the plain-form streams still open are cut, and the
+     * connection closes: gracefully after a return, at once after a throw or a cancellation.
+     */
+    suspend fun <R> asBlock(block: suspend (QuicConnection) -> R): R {
+        var returned = Returned.No
+        try {
+            return block(this).also { returned = Returned.Yes }
+        } finally {
+            withContext(NonCancellable) {
+                plain.blockEnded()
+                when (returned) {
+                    Returned.Yes -> close(QuicCloseChoice.Graceful())
+                    Returned.No -> close(QuicCloseChoice.Immediate())
+                }
+            }
+        }
+    }
 
     override fun life(): QuicConnectionLife =
         when (val end = core.end()) {
@@ -63,7 +88,7 @@ internal class CoreQuicConnection(
                 .end,
         )
 
-    override suspend fun openStream(): StreamOpen<QuicStream> = bidirectional()
+    override suspend fun openStream(): StreamOpen<QuicStream> = bidirectional().also { it.fold(plain::opened) { } }
 
     override suspend fun <R> openStream(block: suspend (QuicStream) -> R): StreamOpen<R> =
         placed {
@@ -75,7 +100,7 @@ internal class CoreQuicConnection(
             )
         }
 
-    override suspend fun openSendStream(): StreamOpen<QuicSendStream> = sendOnly()
+    override suspend fun openSendStream(): StreamOpen<QuicSendStream> = sendOnly().also { it.fold(plain::opened) { } }
 
     override suspend fun <R> openSendStream(block: suspend (QuicSendStream) -> R): StreamOpen<R> =
         placed {

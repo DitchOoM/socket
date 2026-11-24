@@ -3,7 +3,7 @@ package com.ditchoom.socket.quic.core.edge
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.ReadPolicy
-import com.ditchoom.socket.quic.FlowControl
+import com.ditchoom.socket.quic.IncomingStreams
 import com.ditchoom.socket.quic.QuicAbortCodes
 import com.ditchoom.socket.quic.QuicAppErrorCode
 import com.ditchoom.socket.quic.QuicCloseChoice
@@ -15,6 +15,7 @@ import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicIncomingStream
 import com.ditchoom.socket.quic.QuicReceiveStream
 import com.ditchoom.socket.quic.QuicStream
+import com.ditchoom.socket.quic.QuicStreamLimit
 import com.ditchoom.socket.quic.QuicStreamsAlreadyHandledException
 import com.ditchoom.socket.quic.ScopedRead
 import com.ditchoom.socket.quic.StreamOpen
@@ -132,8 +133,8 @@ class CorePublicSurfaceTests {
     fun aHandlerThatThrowsResetsItsStreamWithTheApplicationsCodeAndTheConnectionGoesOn() =
         coreTest("CorePublicSurfaceTests.aHandlerThatThrowsResetsItsStreamWithTheApplicationsCodeAndTheConnectionGoesOn") {
             val codes = QuicAbortCodes(handlerFailed = QuicAppErrorCode(HANDLER_CODE))
-            withCoreServer(onConnection = { core ->
-                core.public(codes).handleStreams { incoming ->
+            withCoreServer(options = coreTestOptions.copy(abortCodes = codes), onConnection = { core ->
+                core.public().handleStreams { incoming ->
                     when (incoming.id.id) {
                         0L -> throw IllegalStateException("the first stream's handler fails")
                         else -> echo(incoming)
@@ -227,7 +228,7 @@ class CorePublicSurfaceTests {
     @Test
     fun anOpenWhoseBoundPassesAtThePeersStreamLimitIsAValueAndTheConnectionGoesOn() =
         coreTest("CorePublicSurfaceTests.anOpenWhoseBoundPassesAtThePeersStreamLimitIsAValueAndTheConnectionGoesOn") {
-            val oneStream = coreTestOptions.copy(flowControl = FlowControl(initialMaxStreamsBidi = 1))
+            val oneStream = coreTestOptions.copy(incomingStreams = IncomingStreams.Accept(bidirectional = QuicStreamLimit(1u)))
             val bounded = coreTestOptions.copy(streamOpenPolicy = StreamOpenPolicy.Bounded(200.milliseconds))
             withCoreServer(options = oneStream, onConnection = { core -> core.public().handleStreams(::echo) }) { server ->
                 val client = connectCore(server.port, loops = loops, options = bounded).connection.public()

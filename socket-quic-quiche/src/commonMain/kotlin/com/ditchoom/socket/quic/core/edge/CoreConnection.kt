@@ -9,16 +9,17 @@ import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.socket.quic.HandshakeRecord
+import com.ditchoom.socket.quic.QuicAbortCodes
 import com.ditchoom.socket.quic.QuicAppErrorCode
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicCapabilities
 import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicConnectionIdentity
 import com.ditchoom.socket.quic.QuicConnectionState
-import com.ditchoom.socket.quic.QuicEngineConnection
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicPathState
 import com.ditchoom.socket.quic.QuicResumptionOutcome
+import com.ditchoom.socket.quic.QuicScope
 import com.ditchoom.socket.quic.QuicSessionTicketState
 import com.ditchoom.socket.quic.QuicStatsRead
 import com.ditchoom.socket.quic.QuicStreamId
@@ -50,9 +51,10 @@ import kotlin.coroutines.CoroutineContext
 import kotlin.time.Duration
 
 /**
- * A [QuicEngineConnection] on the run-to-completion core. Every call becomes work inside the connection and suspends until
- * the connection has done it; nothing here blocks a thread. A caller on a main dispatcher leaves its work for the loop;
- * any other caller runs it in place when the connection is free.
+ * A connection on the run-to-completion core, as the legacy [QuicScope] and through [public] as a public connection.
+ * Every call becomes work inside the connection and suspends until the connection has done it; nothing here blocks a
+ * thread. A caller on a main dispatcher leaves its work for the loop; any other caller runs it in place when the
+ * connection is free.
  */
 internal class CoreConnection(
     private val conn: Conn,
@@ -66,7 +68,9 @@ internal class CoreConnection(
     private val openBound: Duration,
     scope: CoroutineScope,
     internal val handlers: HandlerSeat,
-) : QuicEngineConnection,
+    /** The codes the library resets a stream with on the application's behalf. */
+    internal val codes: QuicAbortCodes,
+) : QuicScope,
     CoroutineScope by scope {
     override val state: StateFlow<QuicConnectionState> = edge.state
     override val unreadAtClose: StateFlow<QuicUnreadAtClose> = edge.unread
@@ -133,13 +137,13 @@ internal class CoreConnection(
     /** Opens the next bidirectional stream as one carrying values of [T] framed by [codec]. */
     internal suspend fun <T : Any> openTypedStream(
         codec: Codec<T>,
-        config: TypedStreamConfig = TypedStreamConfig(),
+        config: TypedStreamConfig = TypedStreamConfig(malformedFrameCode = codes.brokenFrame),
     ): TypedQuicStream<T> = typed(open(StreamKind.Bidirectional), codec, config)
 
     /** Accepts the next stream the peer opened as one carrying values of [T] framed by [codec]. */
     internal suspend fun <T : Any> acceptTypedStream(
         codec: Codec<T>,
-        config: TypedStreamConfig = TypedStreamConfig(),
+        config: TypedStreamConfig = TypedStreamConfig(malformedFrameCode = codes.brokenFrame),
     ): TypedQuicStream<T> =
         typed(
             QuicStreamId(

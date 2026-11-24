@@ -4,13 +4,14 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
-import com.ditchoom.socket.quic.FlowControl
+import com.ditchoom.socket.quic.IncomingStreams
 import com.ditchoom.socket.quic.QuicAppErrorCode
 import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicStreamAbort
 import com.ditchoom.socket.quic.QuicStreamException
 import com.ditchoom.socket.quic.QuicStreamId
+import com.ditchoom.socket.quic.QuicStreamLimit
 import com.ditchoom.socket.quic.QuicStreamSide
 import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.QuicheConn
@@ -40,7 +41,7 @@ class UniStreamLifeVirtualTests {
             verifyPeer = false,
             idleTimeout = 30.seconds,
             enablePmtuDiscovery = false,
-            flowControl = FlowControl(initialMaxStreamsUni = uni),
+            incomingStreams = IncomingStreams.Accept(unidirectional = QuicStreamLimit(uni.toUInt())),
             streamOpenPolicy = StreamOpenPolicy.Bounded(1.hours),
         )
 

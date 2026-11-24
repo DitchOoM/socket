@@ -2,7 +2,6 @@
 
 package com.ditchoom.socket.quic
 
-import com.ditchoom.socket.TransportConfig
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
@@ -18,8 +17,6 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotEquals
 import kotlin.test.fail
-import kotlin.time.Duration
-import kotlin.time.Duration.Companion.seconds
 
 /** The Apple/Linux PEM hand-off: regular files, mode 0600, present during the bind and gone after it. */
 class PosixPemFilesTest {
@@ -29,8 +26,8 @@ class PosixPemFilesTest {
             val engine = peerCertificates as? PeerCertificateSupport.Available ?: fail("peerCertificates=$peerCertificates")
             engine.mint().use { certificate ->
                 val seen = mutableListOf<String>()
-                val inspecting =
-                    FilesOnlyEngine { tls ->
+                val inspecting: (QuicTlsConfig) -> Unit =
+                    { tls ->
                         for (path in listOf(tls.certChainPath, tls.privKeyPath)) {
                             seen += path
                             memScoped {
@@ -44,39 +41,16 @@ class PosixPemFilesTest {
                     }
                 runBlocking {
                     assertFailsWith<BindInspected> {
-                        inspecting.bind(QuicPortBinding.Own(0, null), certificate, QuicOptions(alpnProtocols = listOf("test")), 1.seconds)
+                        certificate.withPemFiles { tls ->
+                            inspecting(tls)
+                            throw BindInspected()
+                        }
                     }
                 }
                 assertEquals(2, seen.size, "the engine was never handed the PEM files")
                 for (path in seen) assertNotEquals(0, access(path, F_OK), "$path survived the bind")
             }
         }
-
-    /** Runs [inspect] on the files [QuicEngine.bind] is handed, then aborts the bind. */
-    private class FilesOnlyEngine(
-        private val inspect: (QuicTlsConfig) -> Unit,
-    ) : QuicEngine {
-        override val capabilities = EngineCapabilities(supportsMigration = false, supportsDatagrams = false, supportsServer = true)
-
-        override suspend fun connect(
-            binding: QuicClientBinding,
-            endpoint: QuicEndpoint,
-            serverName: String,
-            quicOptions: QuicOptions,
-            transport: TransportConfig,
-            timeout: Duration,
-        ): QuicEngineConnection = throw UnsupportedOperationException("bind-only test engine")
-
-        override suspend fun bind(
-            binding: QuicPortBinding,
-            tlsConfig: QuicTlsConfig,
-            quicOptions: QuicOptions,
-            timeout: Duration,
-        ): QuicServer {
-            inspect(tlsConfig)
-            throw BindInspected()
-        }
-    }
 
     private class BindInspected : Exception()
 }

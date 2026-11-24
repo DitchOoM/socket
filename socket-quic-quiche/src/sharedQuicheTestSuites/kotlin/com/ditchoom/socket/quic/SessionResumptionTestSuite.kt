@@ -464,7 +464,7 @@ abstract class SessionResumptionTestSuite {
             wrapTestBody {
                 val limited =
                     acceptsEarlyData.copy(
-                        flowControl = acceptsEarlyData.flowControl.copy(initialMaxStreamsBidi = EARLY_STREAM_LIMIT),
+                        incomingStreams = IncomingStreams.Accept(bidirectional = QuicStreamLimit(EARLY_STREAM_LIMIT.toUInt())),
                     )
                 withQuicServer(port = 0, tlsConfig = testTlsConfig(), quicOptions = limited) {
                     val seen = Channel<ServerSeen>(Channel.UNLIMITED)

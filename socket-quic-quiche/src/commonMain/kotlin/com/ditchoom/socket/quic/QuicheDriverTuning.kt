@@ -34,7 +34,7 @@ import kotlin.time.Instant
  *    construction**. Default `{ null }` (zero cost). When it returns a recorder, that driver wraps
  *    its `UdpChannel`s in the recording decorator, mirrors state/pathState/close-error transitions
  *    into the trace, and polls path-stats on its timer wake. It is a *factory* (not one shared
- *    recorder) so a server [bind][com.ditchoom.socket.quic.QuicEngine.bind] mints a **fresh**
+ *    recorder) so a server bind mints a **fresh**
  *    recorder — and therefore a fresh `TraceSink` — for each accepted connection: one connection per
  *    sink, so each accepted connection's trace stays independently replayable (the v1 grammar carries
  *    no connection id). A client `connect` builds exactly one driver, so its factory returns the one
@@ -49,7 +49,7 @@ internal class QuicheDriverTuning(
     val captureFactory: () -> TraceCapture = { TraceCapture.Off },
     /**
      * The client connection's resolved [com.ditchoom.socket.NetworkMonitor] observation, threaded to the
-     * driver so it can latch [QuicEngineConnection.networkAtClose] on the close transition. Default
+     * driver so it can latch [QuicScope.networkAtClose] on the close transition. Default
      * [ConnectionNetworkObservation.Unobserved] — a server bind or a test double watches no network, and
      * says so with a value rather than with `null`.
      *

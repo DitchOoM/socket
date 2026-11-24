@@ -149,7 +149,7 @@ sealed interface QuicError : DatagramCloseReason {
 
     /**
      * The handshake did not complete within the establishment [bound] the caller gave — the `timeout` of
-     * `QuicEngine.connect` / `withQuicConnection` — and this endpoint abandoned it.
+     * `connectQuic` / `withQuicConnection` — and this endpoint abandoned it.
      *
      * A *local* decision with no transport [code] (-1), exactly like [IdleTimeout], and kept distinct from
      * it because a different timer fired. [IdleTimeout] is QUIC's own idle timer (RFC 9000 §10.1): quiche

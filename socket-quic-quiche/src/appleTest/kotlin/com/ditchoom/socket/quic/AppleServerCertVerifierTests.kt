@@ -6,6 +6,14 @@ package com.ditchoom.socket.quic
  * the self-signed chain before the verifier is asked.
  */
 class AppleServerCertVerifierTests : ServerCertVerifierTestSuite() {
+    override suspend fun connectOneCandidate(
+        endpoint: QuicEndpoint,
+        serverName: String,
+        options: QuicOptions,
+        transport: com.ditchoom.socket.TransportConfig,
+        timeout: kotlin.time.Duration,
+    ): QuicScope = QuicheEngine.connect(QuicClientBinding.OwnSocket, endpoint, serverName, options, transport, timeout)
+
     override fun twoCertificateChainTlsConfig() =
         QuicTlsConfig(
             certChainPath = AppleTestCerts.requireGenerated("two-cert-chain.crt"),

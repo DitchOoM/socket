@@ -4,14 +4,14 @@ import com.ditchoom.socket.TransportConfig
 import kotlin.time.Duration
 
 /**
- * Linux/native [QuicEngine] backed by Cloudflare quiche (K/N cinterop) over io_uring UDP. The
+ * Linux/native QUIC stack backed by Cloudflare quiche (K/N cinterop) over io_uring UDP. The
  * `withQuicConnection` / `withQuicServer` wrappers (in `:socket-quic-default`) own the lifecycle;
  * this engine just builds + establishes.
  *
  * Public SPI: `:socket-quic-default` names this as the Linux `defaultQuicEngine` actual.
  */
-object QuicheEngine : QuicEngine {
-    override val capabilities: EngineCapabilities =
+object QuicheEngine {
+    val capabilities: EngineCapabilities =
         EngineCapabilities(
             supportsMigration = true,
             supportsDatagrams = true,
@@ -21,16 +21,16 @@ object QuicheEngine : QuicEngine {
             supportsSharedPort = true,
         )
 
-    override val peerCertificates: PeerCertificateSupport = PeerCertificateSupport.Available(BoringSslPeerCertificateBackend)
+    val peerCertificates: PeerCertificateSupport = PeerCertificateSupport.Available(BoringSslPeerCertificateBackend)
 
-    override suspend fun connect(
+    suspend fun connect(
         binding: QuicClientBinding,
         endpoint: QuicEndpoint,
         serverName: String,
         quicOptions: QuicOptions,
         transport: TransportConfig,
         timeout: Duration,
-    ): QuicEngineConnection {
+    ): QuicScope {
         capabilities.requirePinnable(binding, quicOptions)
         // Opt-in capture (QuicOptions.trace): record QUIC traffic via the driver seam, then tap the
         // client's NetworkMonitor into the same recorder. Off (trace == null) → tuning is the default.
@@ -59,7 +59,7 @@ object QuicheEngine : QuicEngine {
         return connection
     }
 
-    override suspend fun bind(
+    suspend fun bind(
         binding: QuicPortBinding,
         tlsConfig: QuicTlsConfig,
         quicOptions: QuicOptions,
@@ -73,4 +73,12 @@ object QuicheEngine : QuicEngine {
                 traceRecorderFor(quicOptions)
             }),
         )
+
+    /** [bind] presenting [certificate], written to PEM files only while the bind reads them. */
+    suspend fun bind(
+        binding: QuicPortBinding,
+        certificate: PeerCertificate,
+        quicOptions: QuicOptions,
+        timeout: Duration,
+    ): QuicServer = certificate.withPemFiles { tls -> bind(binding, tls, quicOptions, timeout) }
 }

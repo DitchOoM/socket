@@ -4,11 +4,13 @@ import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.quic.FlowControl
+import com.ditchoom.socket.quic.IncomingStreams
 import com.ditchoom.socket.quic.JniQuicheApi
 import com.ditchoom.socket.quic.MigrationPolicy
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicScope
+import com.ditchoom.socket.quic.QuicStreamLimit
 import com.ditchoom.socket.quic.QuicTlsConfig
 import com.ditchoom.socket.quic.loadQuicheApi
 import com.ditchoom.socket.quic.withQuicConnection
@@ -94,8 +96,8 @@ internal class QuicLoopback : AutoCloseable {
                         initialMaxData = 64L * 1024 * 1024,
                         initialMaxStreamDataBidiLocal = 16L * 1024 * 1024,
                         initialMaxStreamDataBidiRemote = 16L * 1024 * 1024,
-                        initialMaxStreamsBidi = 1_000_000,
                     ),
+                incomingStreams = IncomingStreams.Accept(bidirectional = QuicStreamLimit(1_000_000u)),
             )
 
         internal fun tlsConfig(): QuicTlsConfig {
