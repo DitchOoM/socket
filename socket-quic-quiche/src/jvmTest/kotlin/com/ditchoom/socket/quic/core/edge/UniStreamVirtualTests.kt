@@ -195,9 +195,11 @@ class UniStreamVirtualTests {
 
     /**
      * A client resuming with a ticket from a server that allowed unidirectional streams opens one in 0-RTT; the server it
-     * reaches allows none. The server hands quiche the datagram, and quiche refuses it with STREAM_LIMIT_ERROR as its
-     * local error; every write quiche is then asked for that connection fails with CRYPTO_FAIL, so no CONNECTION_CLOSE
-     * leaves and the client's connection ends at its handshake bound. The test below is the control.
+     * reaches allows none. That server rejects the 0-RTT, its limits not being the ticket's (RFC 9000 section 7.4.1); the
+     * stream quiche's client keeps from the rejected 0-RTT reaches it in 1-RTT, which it refuses with STREAM_LIMIT_ERROR,
+     * and the close it sends ends the client's connection. Before, the server accepted the 0-RTT under lower limits, a
+     * violation of section 7.4.1, quiche failed every write with CRYPTO_FAIL, and the client waited out its handshake
+     * bound. The test below is the control.
      */
     @Test
     fun aPeerThatOpensAUniStreamPastALimitOfZeroIsRefusedAsAStreamLimitError() {
@@ -225,9 +227,8 @@ class UniStreamVirtualTests {
             assertEquals(2L, pair.server.counts.accepted, "the server accepted the first client and the resuming one")
             assertEquals(QUICHE_ERR_STREAM_LIMIT, seen.recvs.first(), "quiche refused the first datagram's stream")
             assertEquals(QuicError.StreamLimitError, seen.localError)
-            assertTrue(seen.sends.isNotEmpty() && seen.sends.all { it == QUICHE_ERR_CRYPTO_FAIL }, "quiche wrote nothing: ${seen.sends}")
-            assertEquals(0, pair.sentBy(End.Server, since).size)
-            assertIs<ConnEnd.HandshakeTimedOut>(assertIs<EdgeEnd.Ended>(client.connection.end()).end)
+            val end = assertIs<EdgeEnd.Ended>(client.connection.end()).end
+            assertEquals(QuicError.StreamLimitError, assertIs<ConnEnd.ByPeer>(end, "the server closed: $end; sent ${seen.sends}").error)
         }
     }
 

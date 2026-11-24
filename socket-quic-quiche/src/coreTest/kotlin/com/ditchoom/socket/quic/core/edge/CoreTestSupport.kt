@@ -7,6 +7,7 @@ import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicOptions
+import com.ditchoom.socket.quic.QuicSessionStore
 import com.ditchoom.socket.quic.ScopedReadResult
 import com.ditchoom.socket.quic.core.conn.ClientTokens
 import com.ditchoom.socket.quic.core.conn.FlightSize
@@ -45,7 +46,8 @@ internal suspend fun connectCore(
         host = host,
         port = port,
         serverName = "localhost",
-        options = options,
+        // A test's own store stays; the process's default would offer another test's ticket on a reused port.
+        options = if (options.sessionStore === QuicSessionStore.Default) options.copy(sessionStore = QuicSessionStore.NotKept) else options,
         factory = factory,
         api = api,
         timeout = 10.seconds,

@@ -6,6 +6,9 @@
 # Needs GH_TOKEN (actions: read) and the Actions environment (GITHUB_REPOSITORY, GITHUB_RUN_ID).
 #
 # Fails at once when the producing job ended without the artifact, and after the timeout.
+#
+# An artifact counts once its upload is finalized, which is when it gets its digest: the listing shows it as soon as
+# the upload starts, and a download in that window answers "Artifact not found".
 set -euo pipefail
 
 NAME="${1:?usage: await-artifact.sh <name> <producer> <timeout-minutes>}"
@@ -16,7 +19,7 @@ run="repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
 deadline=$((SECONDS + TIMEOUT_MIN * 60))
 polls=0
 while :; do
-  count=$(gh api "$run/artifacts?name=$NAME" --jq '.total_count' 2>/dev/null || echo 0)
+  count=$(gh api "$run/artifacts?name=$NAME" --jq '[.artifacts[] | select((.digest // "") != "")] | length' 2>/dev/null || echo 0)
   if [ "$count" -gt 0 ]; then
     echo "$NAME is in this run after ${SECONDS}s"
     exit 0
@@ -26,7 +29,7 @@ while :; do
     ended=$(gh api --paginate "$run/jobs?per_page=100" \
       --jq ".jobs[] | select(.name | contains(\"$PRODUCER\")) | select(.status == \"completed\") | .conclusion" 2>/dev/null || true)
     if [ -n "$ended" ]; then
-      count=$(gh api "$run/artifacts?name=$NAME" --jq '.total_count' 2>/dev/null || echo 0)
+      count=$(gh api "$run/artifacts?name=$NAME" --jq '[.artifacts[] | select((.digest // "") != "")] | length' 2>/dev/null || echo 0)
       [ "$count" -gt 0 ] && { echo "$NAME is in this run after ${SECONDS}s"; exit 0; }
       echo "::error::$PRODUCER ended ($ended) without uploading $NAME"
       exit 1
