@@ -425,9 +425,10 @@ class CoreWorkCountAllocationTests {
         /**
          * A bulk transfer's counts per MiB follow how many datagrams each wake finds, which the host's load decides: one tree
          * measured io-sends of 385 (macOS CI), 1,950 (an M-series laptop), 1,130 and then 2,487 (Windows CI) per MiB. No
-         * margin holds that, so they are trended only; what must stay zero, a fresh pool buffer or a one-off deadline, is gated.
+         * margin holds that, so they are trended only. A one-off deadline must stay at zero and is gated; a fresh pool buffer is
+         * not: the counted transfer can hold one buffer more at once than the warm-up did (Linux CI, callers in place).
          */
-        val BULK_ZERO = setOf(Metric.DeadlinesMade, Metric.PoolMisses)
+        val BULK_ZERO = setOf(Metric.DeadlinesMade)
         val BULK_EACH = Metric.entries.associateWith { if (it in BULK_ZERO) Gate.AtMost(LEAST_MARGIN) else Gate.TrendOnly }
         val BULK = Gates(BULK_EACH, BULK_EACH)
 
