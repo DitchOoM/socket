@@ -69,8 +69,8 @@ interface QuicConnection {
     /** The connection's counters and its active path's estimates. Nothing is counted for it while nobody asks. */
     suspend fun stats(): QuicStatsRead
 
-    /** The sending side of the connection's RFC 9221 datagrams. */
-    val datagrams: QuicDatagramSender
+    /** The connection's RFC 9221 datagrams, both ways. */
+    val datagrams: QuicDatagrams
 }
 
 /**
@@ -89,6 +89,34 @@ interface QuicDatagramSender {
         prefix: ReadBuffer,
         payload: ReadBuffer,
     ): DatagramSend
+}
+
+/**
+ * A connection's RFC 9221 datagrams: [send] as [QuicDatagramSender] says, and [receive] in batches. A datagram is never
+ * retransmitted, and one that arrives while the receive queue is full is dropped and counted.
+ */
+interface QuicDatagrams : QuicDatagramSender {
+    /**
+     * Suspends until a datagram arrived, then runs [block] once with every datagram the connection holds, read in place
+     * in its receive queue, and answers what it made of them. One receive runs at a time: another while it runs answers
+     * [DatagramReceive.NotReceived.ReceiverBusy]. The batch is valid only inside [block]. A receive cancelled before
+     * the batch is taken takes nothing.
+     */
+    suspend fun <R> receive(block: (QuicDatagramBatch) -> R): DatagramReceive<R>
+
+    /**
+     * Receives batch after batch, [each] datagram in turn on the thread the receive resumed on, until no datagram will
+     * arrive, and answers why; it holds the receiver throughout. The buffer [each] sees is valid only during that call.
+     */
+    suspend fun receiveEach(each: (ReadBuffer) -> Unit): DatagramReceive.NotReceived {
+        val take: (QuicDatagramBatch) -> Unit = { batch -> batch.forEach(each) }
+        while (true) {
+            when (val received = receive(take)) {
+                is DatagramReceive.Batch -> Unit
+                is DatagramReceive.NotReceived -> return received
+            }
+        }
+    }
 }
 
 /** What a connection's completed handshake settled. */

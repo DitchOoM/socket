@@ -100,7 +100,7 @@ class CoreDatagramSendTests {
         val got = async(start = CoroutineStart.UNDISPATCHED) { connection.coreDatagrams.receiveDatagram() }
         pair.runFor(pair.oneWay * 2)
         return when (val received = if (got.isCompleted) got.await() else null.also { got.cancel() }) {
-            is DatagramReceive.Received -> 1L.also { received.buffer.freeIfNeeded() }
+            is SingleDatagramReceive.Received -> 1L.also { received.buffer.freeIfNeeded() }
             else -> 0L
         }
     }
@@ -111,7 +111,7 @@ class CoreDatagramSendTests {
             pair.accept()
             val channel = pair.client.connection.coreDatagrams
             assertSame(DatagramSend.NotSent.Unavailable.NotNegotiated, channel.send(payloadOf(SMALL)))
-            assertSame(DatagramReceive.NotReceived.Unavailable.NotNegotiated, channel.receiveDatagram())
+            assertSame(SingleDatagramReceive.NotReceived.Unavailable.NotNegotiated, channel.receiveDatagram())
         }
 
     @Test
@@ -147,7 +147,7 @@ class CoreDatagramSendTests {
             val serverSide = pair.accept()
             val server = serverSide.coreDatagrams
             val first = async(start = CoroutineStart.UNDISPATCHED) { server.receiveDatagram() }
-            assertSame(DatagramReceive.NotReceived.ReceiverBusy, server.receiveDatagram())
+            assertSame(SingleDatagramReceive.NotReceived.ReceiverBusy, server.receiveDatagram())
             val refusal = assertFailsWith<QuicDatagramRefused> { serverSide.datagramChannel().receive() }
             assertIs<DatagramRefusal.ReceiverBusy>(refusal.refusal)
             assertSame(
@@ -156,13 +156,13 @@ class CoreDatagramSendTests {
                     .send(payloadOf(SMALL)),
             )
             pair.runUntil { first.isCompleted }
-            assertIs<DatagramReceive.Received>(first.await()).buffer.freeIfNeeded()
+            assertIs<SingleDatagramReceive.Received>(first.await()).buffer.freeIfNeeded()
             val next = async(start = CoroutineStart.UNDISPATCHED) { server.receiveDatagram() }
             assertTrue(next.isActive, "once the first receive returned, another may wait")
             pair.client.connection.coreDatagrams
                 .send(payloadOf(SMALL))
             pair.runUntil { next.isCompleted }
-            assertIs<DatagramReceive.Received>(next.await()).buffer.freeIfNeeded()
+            assertIs<SingleDatagramReceive.Received>(next.await()).buffer.freeIfNeeded()
         }
 
     @Test
@@ -176,7 +176,7 @@ class CoreDatagramSendTests {
             pair.runFor(pair.oneWay * 2)
             val got = async(start = CoroutineStart.UNDISPATCHED) { serverSide.coreDatagrams.receiveDatagram() }
             pair.runUntil { got.isCompleted }
-            val buffer = assertIs<DatagramReceive.Received>(got.await()).buffer
+            val buffer = assertIs<SingleDatagramReceive.Received>(got.await()).buffer
             assertEquals(FRESH.toByte(), buffer.readByte(), "the stale datagrams were passed over for the fresh one")
             buffer.freeIfNeeded()
             val stats = statsOf(pair, serverSide)
@@ -252,7 +252,7 @@ class CoreDatagramSendTests {
                     pair.runFor(pair.oneWay)
                     break
                 }
-                assertIs<DatagramReceive.Received>(got.await()).buffer.freeIfNeeded()
+                assertIs<SingleDatagramReceive.Received>(got.await()).buffer.freeIfNeeded()
                 delivered++
             }
             val receiver = statsOf(pair, serverSide)

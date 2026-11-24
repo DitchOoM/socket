@@ -10,7 +10,7 @@ import com.ditchoom.socket.quic.QuicConnection
 import com.ditchoom.socket.quic.QuicConnectionEnd
 import com.ditchoom.socket.quic.QuicConnectionIdentity
 import com.ditchoom.socket.quic.QuicConnectionLife
-import com.ditchoom.socket.quic.QuicDatagramSender
+import com.ditchoom.socket.quic.QuicDatagrams
 import com.ditchoom.socket.quic.QuicHandshakeFacts
 import com.ditchoom.socket.quic.QuicIncomingStream
 import com.ditchoom.socket.quic.QuicSendStream
@@ -55,7 +55,7 @@ internal class CoreQuicConnection(
 
     override val identity: QuicConnectionIdentity get() = core.identity
     override val bufferFactory: BufferFactory get() = core.bufferFactory
-    override val datagrams: QuicDatagramSender get() = core.coreDatagrams
+    override val datagrams: QuicDatagrams get() = core.coreDatagrams
 
     /**
      * Runs [block] as this connection's block. When it ends, the plain-form streams still open are cut, and the

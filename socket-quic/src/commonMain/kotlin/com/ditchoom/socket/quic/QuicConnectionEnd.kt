@@ -184,6 +184,11 @@ sealed interface QuicSocketFault {
         val thrown: Throwable,
     ) : QuicSocketFault
 
+    /** No socket could be opened at the address asked for; [thrown] is why: the address is in use, or not this host's. */
+    class OpenRefused(
+        val thrown: Throwable,
+    ) : QuicSocketFault
+
     /** [count] unnamed errors in a row with no datagram taken in between; [thrown] is the last. */
     class Repeated(
         val count: Int,

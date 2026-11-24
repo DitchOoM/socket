@@ -383,6 +383,7 @@ public class CoreDefaultsCheck {
         SEAMS.put("ConnWork", "conn");
         SEAMS.put("Waiter", "stream");
         SEAMS.put("DatagramWaiter", "conn");
+        SEAMS.put("BatchWaiter", "conn");
         SEAMS.put("ConnSink", "conn");
         SEAMS.put("Pooled", "pool");
     }

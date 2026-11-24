@@ -54,12 +54,14 @@ interface QuicScope : CoroutineScope {
      * The ALPN protocol negotiated during this connection's TLS 1.3 handshake (RFC 7301), derived from
      * [QuicConnectionState.Established]. On the server it is the demultiplexing key when one listener offers several
      * protocols (see [connectionsByAlpn]).
+     *
+     * @throws QuicNotEstablishedException outside [QuicConnectionState.Established].
      */
     val negotiatedAlpn: String
         get() =
             when (val s = state.value) {
                 is QuicConnectionState.Established -> s.negotiatedAlpn
-                else -> error("negotiatedAlpn is only available while the connection is established (state: $s)")
+                else -> throw QuicNotEstablishedException(s)
             }
 
     /**
@@ -309,3 +311,8 @@ interface QuicScope : CoroutineScope {
 }
 
 private const val RESUMPTION_UNAVAILABLE = "resumption is only available while the connection is established"
+
+/** A handshake fact read from a connection that is not established: [state] is where it stands. */
+class QuicNotEstablishedException(
+    val state: QuicConnectionState,
+) : IllegalStateException()
