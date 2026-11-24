@@ -17,6 +17,7 @@ import com.ditchoom.socket.quic.core.conn.Datagrams
 import com.ditchoom.socket.quic.core.conn.Inside
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.loop.LoopSet
+import com.ditchoom.socket.quic.core.testing.ProcessCpuSampler
 import com.ditchoom.socket.quic.core.testing.Stall
 import com.ditchoom.socket.quic.core.testing.StallProbe
 import com.ditchoom.socket.quic.core.testing.withDescriptorsAbove127
@@ -76,7 +77,8 @@ class DatagramBatchReceiveCountsTests {
         flooded(Reader.Each) { flood ->
             println("[dgram drop] drops ${flood.dropped} of ${flood.received}; ${flood.evidence()}")
             assertTrue(flood.received > 0, "the flood delivered nothing")
-            assertEquals(0L, flood.dropped, "datagrams the receive queue dropped of ${flood.received}; ${flood.evidence()}")
+            val processes = if (flood.dropped == 0L) "" else "\nprocesses at the failure:\n${ProcessCpuSampler.topNow()}"
+            assertEquals(0L, flood.dropped, "datagrams the receive queue dropped of ${flood.received}; ${flood.evidence()}$processes")
         }
 
     private class Flood(
