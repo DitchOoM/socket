@@ -881,8 +881,8 @@ project(":socket-quic-quiche") {
     }
     // Gates that time the core against the wall clock (the datagram drop gate's full-speed reader, the lost-wakeup and
     // deadline tests) run in a JVM of their own after every other Test task in the build: no thread a thousand earlier
-    // tests left behind, no other worker JVM, competes for the runner's 3 vCPUs. Without the CI-only recv_info guard,
-    // like coreAllocationTest: its map lookup per datagram is a cost the production path does not pay.
+    // tests left behind, no other worker JVM, competes for the runner's 3 vCPUs. OpDeadlineAllocationTests matches the
+    // names but stays in coreAllocationTest: an allocation gate runs without the CI-only recv_info guard.
     val timingSensitive =
         listOf(
             "com.ditchoom.socket.quic.core.edge.DatagramBatchReceiveCountsTests",
@@ -970,20 +970,20 @@ project(":socket-quic-quiche") {
             doFirst { environment(jvmTestTask.environment - "QUIC_RECVINFO_GUARD") }
             // Assertions turn on coroutine debug mode, which names each coroutine's thread per step: not the production path.
             systemProperty("kotlinx.coroutines.debug", "off")
-            filter {
-                includeTestsMatching("com.ditchoom.socket.quic.core.*AllocationTests")
-                timingSensitive.forEach(::excludeTestsMatching)
-            }
+            filter { includeTestsMatching("com.ditchoom.socket.quic.core.*AllocationTests") }
         }
+        // jvmTest's own conditions, recv_info guard included; the allocation gates among the names stay in coreAllocationTest.
         tasks.named<Test>("timingSensitiveTest") {
             testClassesDirs = jvmTestTask.testClassesDirs
             classpath = files(Callable { jvmTestTask.classpath })
             javaLauncher.set(jvmTestTask.javaLauncher)
             jvmArgumentProviders.add(CommandLineArgumentProvider { jvmTestTask.jvmArgs.orEmpty() })
             systemProperties(jvmTestTask.systemProperties)
-            doFirst { environment(jvmTestTask.environment - "QUIC_RECVINFO_GUARD") }
-            systemProperty("kotlinx.coroutines.debug", "off")
-            filter { timingSensitive.forEach(::includeTestsMatching) }
+            doFirst { environment(jvmTestTask.environment) }
+            filter {
+                timingSensitive.forEach(::includeTestsMatching)
+                excludeTestsMatching("com.ditchoom.socket.quic.core.*AllocationTests")
+            }
         }
         tasks.named<Test>("jvmTest") {
             filter {
