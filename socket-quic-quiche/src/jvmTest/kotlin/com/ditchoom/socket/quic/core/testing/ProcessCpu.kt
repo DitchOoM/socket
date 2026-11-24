@@ -145,7 +145,7 @@ class ProcessCpuSampler private constructor(
                         ppid = fields[1].toIntOrNull() ?: return@mapNotNull null,
                         percent = fields[2].toDoubleOrNull() ?: return@mapNotNull null,
                         rssKb = fields[3].toLongOrNull() ?: return@mapNotNull null,
-                        cpuMillis = cpuMillisOf(fields[4]) ?: return@mapNotNull null,
+                        cpuMillis = procCpuMillis(fields[0]) ?: cpuMillisOf(fields[4]) ?: return@mapNotNull null,
                         command = fields[5],
                     )
                 }
@@ -167,5 +167,30 @@ class ProcessCpuSampler private constructor(
         }
 
         private val WHITESPACE = Regex("\\s+")
+
+        /** Linux clock ticks per second, the unit of `/proc/<pid>/stat`'s CPU times. */
+        private val TICKS_PER_SECOND =
+            runCatching {
+                ProcessBuilder("getconf", "CLK_TCK")
+                    .start()
+                    .inputStream
+                    .bufferedReader()
+                    .readText()
+                    .trim()
+                    .toLong()
+            }.getOrDefault(100L)
+
+        /**
+         * A Linux process's user plus system CPU from `/proc/<pid>/stat`, to the clock tick: Linux `ps` prints whole
+         * seconds, which reads a 600 ms burst as nothing. Absent where there is no `/proc` (macOS) or the process ended.
+         */
+        private fun procCpuMillis(pid: String): Long? {
+            val stat = runCatching { java.io.File("/proc/$pid/stat").readText() }.getOrNull() ?: return null
+            // The fields after the parenthesised command: state is the 1st, utime the 12th, stime the 13th.
+            val fields = stat.substringAfterLast(')').trim().split(' ')
+            val user = fields.getOrNull(11)?.toLongOrNull() ?: return null
+            val system = fields.getOrNull(12)?.toLongOrNull() ?: return null
+            return (user + system) * 1_000 / TICKS_PER_SECOND
+        }
     }
 }
