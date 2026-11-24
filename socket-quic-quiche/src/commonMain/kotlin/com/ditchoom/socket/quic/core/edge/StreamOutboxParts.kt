@@ -122,21 +122,34 @@ internal fun SendRefusal.end(): ConnEnd =
     }
 
 /** Told on the loop when a stream's send queue handed quiche bytes: the stream's receiver, holding a reply it could not send. */
-internal interface RoomListener {
-    fun roomMade()
-}
+internal sealed interface RoomListener
 
 /** A send queue no receiver listens to. */
-internal object NoRoomListener : RoomListener {
-    override fun roomMade() = Unit
-}
+internal object NoRoomListener : RoomListener
+
+internal fun RoomListener.roomMade() =
+    when (this) {
+        is StreamInbox -> roomMade()
+        is NoRoomListener -> Unit
+    }
 
 /** What a receive direction listens to for send room: its stream's send queue, or nothing on a receive-only stream. */
-internal interface RoomSource {
-    fun listen(room: RoomListener)
-}
+internal sealed interface RoomSource
 
 /** A receive-only stream: no send queue makes room. */
-internal object NoRoomSource : RoomSource {
-    override fun listen(room: RoomListener) = Unit
-}
+internal object NoRoomSource : RoomSource
+
+internal fun RoomSource.listen(room: RoomListener) =
+    when (this) {
+        is StreamOutbox -> listen(room)
+        is NoRoomSource -> Unit
+    }
+
+internal const val OUTBOX_IDLE = 0
+internal const val OUTBOX_SCHEDULED = 1
+
+/** The bytes one stream queues at most: past them a send is told [StreamSend.NotSent.WindowFull]. */
+internal const val OUTBOX_CAPACITY = 65_536
+
+/** The room a waiting sender is woken for. */
+internal const val OUTBOX_LOW_WATER = OUTBOX_CAPACITY / 4

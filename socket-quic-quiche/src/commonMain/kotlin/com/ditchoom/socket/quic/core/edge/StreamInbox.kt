@@ -202,7 +202,7 @@ internal class StreamInbox(
     }
 
     /** The stream's send queue made room: held bytes a stalled receiver could not reply to are offered again. */
-    override fun roomMade() {
+    fun roomMade() {
         if (stalled.compareAndSet(STALLED, MOVING)) connection.handToLoop(again)
     }
 

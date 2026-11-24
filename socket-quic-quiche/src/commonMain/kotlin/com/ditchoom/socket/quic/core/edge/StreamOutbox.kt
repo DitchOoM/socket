@@ -38,7 +38,7 @@ import kotlin.time.Duration
 /**
  * A stream's send queue: [trySend] copies bytes in from any thread and returns at once; the loop hands them to quiche
  * in order as the peer's flow control and the congestion window allow, then our FIN when it was asked for. One sender
- * and the loop: the sender owns the tail, the loop the head. Bounded: [CAPACITY] bytes at most wait here.
+ * and the loop: the sender owns the tail, the loop the head. Bounded: [OUTBOX_CAPACITY] bytes at most wait here.
  */
 @Queue
 internal class StreamOutbox(
@@ -49,14 +49,14 @@ internal class StreamOutbox(
     private val ring = AtomicReference<OutboxRing>(OutboxRing.None)
     private val head = AtomicLong(0L)
     private val tail = AtomicLong(0L)
-    private val scheduled = AtomicInt(IDLE)
+    private val scheduled = AtomicInt(OUTBOX_IDLE)
     private val parked = AtomicReference<OutboxParked>(OutboxParked.Nobody)
     private val feed = Feed()
     private val listener = AtomicReference<RoomListener>(NoRoomListener)
     private val full = StreamSend.NotSent.WindowFull(StreamRoomWait { awaitRoom(it) })
 
     /** The stream's receiver, told each time the loop hands quiche queued bytes. */
-    override fun listen(room: RoomListener) = listener.store(room)
+    fun listen(room: RoomListener) = listener.store(room)
 
     // ---- the sender ----
 
@@ -70,11 +70,11 @@ internal class StreamOutbox(
         if (bytes.remaining() == 0) return StreamSend.Sent
         val memory = memory()
         val queued = tail.load()
-        val room = CAPACITY - (queued - head.load()).toInt()
+        val room = OUTBOX_CAPACITY - (queued - head.load()).toInt()
         val taking = minOf(room, bytes.remaining())
         if (taking > 0) {
-            val at = (queued % CAPACITY).toInt()
-            val first = minOf(taking, CAPACITY - at)
+            val at = (queued % OUTBOX_CAPACITY).toInt()
+            val first = minOf(taking, OUTBOX_CAPACITY - at)
             copyIntoRing(bytes, memory.buffer, at, first)
             if (taking > first) copyIntoRing(bytes, memory.buffer, 0, taking - first)
             tail.store(queued + taking)
@@ -151,16 +151,16 @@ internal class StreamOutbox(
 
     /** What a wait for [wants] answers now, if it need not wait. */
     private fun ready(wants: OutboxWants): OutboxReadiness =
-        readiness(state.load(), wants, CAPACITY - (tail.load() - head.load()) >= LOW_WATER)
+        readiness(state.load(), wants, OUTBOX_CAPACITY - (tail.load() - head.load()) >= OUTBOX_LOW_WATER)
 
     private fun memory(): OutboxRing.Held =
         when (val now = ring.load()) {
             is OutboxRing.Held -> now
-            is OutboxRing.None -> ringOf(connection.bufferFactory, CAPACITY).also { ring.store(it) }
+            is OutboxRing.None -> ringOf(connection.bufferFactory, OUTBOX_CAPACITY).also { ring.store(it) }
         }
 
     private fun schedule() {
-        if (scheduled.compareAndSet(IDLE, SCHEDULED)) connection.handToLoop(feed)
+        if (scheduled.compareAndSet(OUTBOX_IDLE, OUTBOX_SCHEDULED)) connection.handToLoop(feed)
     }
 
     /** Any thread: answers the sender's wait if what it waits for is there. */
@@ -180,7 +180,7 @@ internal class StreamOutbox(
         ConnWork(),
         Waiter {
         override fun run(inside: Inside) {
-            scheduled.store(IDLE)
+            scheduled.store(OUTBOX_IDLE)
             when (drain(inside.streams)) {
                 Retry.Again -> inside.streams.entry(stream).parkWriter(this)
                 Retry.Settled -> Unit
@@ -226,8 +226,8 @@ internal class StreamOutbox(
                         is OutboxRing.Held -> now
                         is OutboxRing.None -> return Retry.Settled
                     }
-                val at = (sent % CAPACITY).toInt()
-                val length = minOf(waiting, CAPACITY - at)
+                val at = (sent % OUTBOX_CAPACITY).toInt()
+                val length = minOf(waiting, OUTBOX_CAPACITY - at)
                 val last = finishing && length == waiting
                 val step = send.send(stream, memory.address + at, length, if (last) WriteEnd.Finish else WriteEnd.More)
                 val code = step.code()
@@ -288,16 +288,5 @@ internal class StreamOutbox(
             }
         }
         wake()
-    }
-
-    private companion object {
-        const val IDLE = 0
-        const val SCHEDULED = 1
-
-        /** The bytes one stream queues at most: past them a send is told [StreamSend.NotSent.WindowFull]. */
-        const val CAPACITY = 65_536
-
-        /** The room a waiting sender is woken for. */
-        const val LOW_WATER = CAPACITY / 4
     }
 }
