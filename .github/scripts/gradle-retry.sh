@@ -24,6 +24,9 @@
 set -uo pipefail
 
 attempts="${GRADLE_RETRY_ATTEMPTS:-3}"
+# The Gradle to run: the wrapper by default. A job that runs the runner's own `gradle` (setup-gradle's, with
+# no wrapper distribution to download) names it here, so its build is retried the same way.
+gradle_command="${GRADLE_RETRY_COMMAND:-./gradlew}"
 # X's last: BSD mktemp (macOS) only replaces trailing X's.
 log="$(mktemp "${RUNNER_TEMP:-/tmp}/gradle-retry.log.XXXXXX")"
 trap 'rm -f "$log"' EXIT
@@ -96,7 +99,7 @@ show_cached_plugin_entries() {
 }
 
 for i in $(seq 1 "$attempts"); do
-  if ./gradlew "$@" ${extra[@]+"${extra[@]}"} 2>&1 | tee "$log"; then
+  if "$gradle_command" "$@" ${extra[@]+"${extra[@]}"} 2>&1 | tee "$log"; then
     exit 0
   fi
   # Folded once: piping into `grep -q` under pipefail fails the pipeline when grep exits before awk
