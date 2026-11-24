@@ -666,10 +666,22 @@ jobs:
           producer: "quiche natives (Linux/Android/Windows)"
           github-token: ${{ github.token }}
       - name: Download Windows quiche native lib
+        id: windows-natives-download
+        continue-on-error: true
         uses: actions/download-artifact@v8
         with:
           name: quiche-windows-natives
           path: socket-quic-quiche/libs/quiche/windows-x64/lib
+      # See .github/scripts/artifact-download-retry.sh: the action answered "Artifact not found" 5 s after
+      # await-artifact saw the artifact finalized (run 45455922692), the service lagging its own listing.
+      - name: Retry the Windows quiche native lib download
+        if: steps.windows-natives-download.outcome == 'failure'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          "$GITHUB_WORKSPACE/.github/scripts/artifact-download-retry.sh" \
+            quiche-windows-natives socket-quic-quiche/libs/quiche/windows-x64/lib
       # The download above can succeed with an artifact that is empty or wrong (`if-no-files-found:
       # ignore` on the producer side means "upload nothing" is a possible shape), so assert the file
       # itself before handing the run to Gradle — a `Could not find quiche_jni.dll` deep inside a
