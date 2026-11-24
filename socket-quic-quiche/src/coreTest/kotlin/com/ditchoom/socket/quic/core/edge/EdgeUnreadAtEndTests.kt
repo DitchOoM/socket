@@ -59,7 +59,7 @@ class EdgeUnreadAtEndTests {
     private companion object {
         const val ALPN = 32
         val STREAM = QuicStreamId(1L)
-        val NOTHING_HELD = HeldReads(emptyMap(), emptySet())
+        val NOTHING_HELD = HeldReads(emptyMap(), emptyMap())
         val BY_PEER = ConnEnd.ByPeer(QuicError.NoError)
         val NOT_ASKED = CloseOutcome.NotAsked
     }
