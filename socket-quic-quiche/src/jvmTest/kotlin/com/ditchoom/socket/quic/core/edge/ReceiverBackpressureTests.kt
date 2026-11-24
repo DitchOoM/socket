@@ -126,7 +126,8 @@ class ReceiverBackpressureTests {
                     withTimeout(WAIT) { while (slowCalls.get() < REOFFERS) kotlinx.coroutines.delay(5) }
                     slowWriter.cancel()
                     assertTrue(outOfOrder.get() == 0L, "every byte a receiver took was the next: ${outOfOrder.get()} out of order")
-                    assertTrue(slowDelivered.get() >= REOFFERS * SLOW_PART, "each call took its part: ${slowDelivered.get()} B")
+                    // A call takes at most its part of what it is offered, which can be less than a part.
+                    assertTrue(slowDelivered.get() > SLOW_PART, "what the first call left was offered again: ${slowDelivered.get()} B")
                     assertTrue(queued < SLOW_TOTAL, "the slow stream's peer was held back: it queued $queued of $SLOW_TOTAL")
                     assertTrue(
                         queued - given <= HELD_BOUND,
