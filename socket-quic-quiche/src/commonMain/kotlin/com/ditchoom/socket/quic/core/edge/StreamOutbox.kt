@@ -60,27 +60,35 @@ internal class StreamOutbox(
 
     // ---- the sender ----
 
-    fun trySend(bytes: ReadBuffer): StreamSend {
+    fun trySend(bytes: ReadBuffer): StreamSend = queue(bytes, WriteEnd.More)
+
+    /** [trySend] of [lastBytes] that asks for our FIN in the same step, so the loop hands quiche both at once. */
+    fun tryFinish(lastBytes: ReadBuffer): StreamSend = queue(lastBytes, WriteEnd.Finish)
+
+    /**
+     * Copies what fits of [bytes] in. With [WriteEnd.Finish] and all fitting, the FIN is asked for before the bytes are
+     * published: the loop reads the tail before the state, so it never sees the last bytes without their FIN.
+     */
+    private fun queue(
+        bytes: ReadBuffer,
+        end: WriteEnd,
+    ): StreamSend {
         noteEnd()
         when (val now = state.load()) {
             is OutboxState.Open -> Unit
             is OutboxState.FinishAsked, is OutboxState.FinTaken, is OutboxState.ResetHere -> return StreamSend.NotSent.Finished
             is OutboxState.Over -> return now.why
         }
-        if (bytes.remaining() == 0) return StreamSend.Sent
-        val memory = memory()
+        if (bytes.remaining() == 0) return if (end == WriteEnd.Finish) tryFinish() else StreamSend.Sent
         val queued = tail.load()
-        val room = OUTBOX_CAPACITY - (queued - head.load()).toInt()
-        val taking = minOf(room, bytes.remaining())
-        if (taking > 0) {
-            val at = (queued % OUTBOX_CAPACITY).toInt()
-            val first = minOf(taking, OUTBOX_CAPACITY - at)
-            copyIntoRing(bytes, memory.buffer, at, first)
-            if (taking > first) copyIntoRing(bytes, memory.buffer, 0, taking - first)
-            tail.store(queued + taking)
-            schedule()
-        }
-        return if (bytes.remaining() == 0) StreamSend.Sent else full
+        val taking = minOf(OUTBOX_CAPACITY - (queued - head.load()).toInt(), bytes.remaining())
+        if (taking == 0) return full
+        val all = taking == bytes.remaining()
+        memory().copyIn(bytes, queued, taking)
+        if (all && end == WriteEnd.Finish) state.compareAndSet(OutboxState.Open, OutboxState.FinishAsked)
+        tail.store(queued + taking)
+        schedule()
+        return if (all) StreamSend.Sent else full
     }
 
     fun tryFinish(): StreamSend {
@@ -107,8 +115,7 @@ internal class StreamOutbox(
     /** This side resets the direction: what waits in the queue is dropped. */
     fun resetHere() {
         while (true) {
-            val now = state.load()
-            when (now) {
+            when (val now = state.load()) {
                 is OutboxState.Open, is OutboxState.FinishAsked -> if (state.compareAndSet(now, OutboxState.ResetHere)) break
                 is OutboxState.FinTaken, is OutboxState.ResetHere, is OutboxState.Over -> return
             }

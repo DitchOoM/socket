@@ -261,6 +261,7 @@ abstract interface com.ditchoom.socket.quic/QuicSendStream { // com.ditchoom.soc
 
     abstract fun reset(com.ditchoom.socket.quic/QuicAppErrorCode) // com.ditchoom.socket.quic/QuicSendStream.reset|reset(com.ditchoom.socket.quic.QuicAppErrorCode){}[0]
     abstract fun tryFinish(): com.ditchoom.socket.quic/StreamSend // com.ditchoom.socket.quic/QuicSendStream.tryFinish|tryFinish(){}[0]
+    abstract fun tryFinish(com.ditchoom.buffer/ReadBuffer): com.ditchoom.socket.quic/StreamSend // com.ditchoom.socket.quic/QuicSendStream.tryFinish|tryFinish(com.ditchoom.buffer.ReadBuffer){}[0]
     abstract fun trySend(com.ditchoom.buffer/ReadBuffer): com.ditchoom.socket.quic/StreamSend // com.ditchoom.socket.quic/QuicSendStream.trySend|trySend(com.ditchoom.buffer.ReadBuffer){}[0]
     abstract suspend fun finish(): com.ditchoom.socket.quic/StreamWrite // com.ditchoom.socket.quic/QuicSendStream.finish|finish(){}[0]
     abstract suspend fun write(com.ditchoom.buffer/ReadBuffer, com.ditchoom.buffer.flow/WritePolicy = ...): com.ditchoom.socket.quic/StreamWrite // com.ditchoom.socket.quic/QuicSendStream.write|write(com.ditchoom.buffer.ReadBuffer;com.ditchoom.buffer.flow.WritePolicy){}[0]

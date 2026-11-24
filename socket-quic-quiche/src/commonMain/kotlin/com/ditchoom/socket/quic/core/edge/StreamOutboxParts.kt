@@ -65,6 +65,18 @@ internal sealed interface OutboxRing {
     ) : OutboxRing
 }
 
+/** Copies [taking] bytes of [bytes] into the ring at the queue's [queued] count, wrapping at its end. */
+internal fun OutboxRing.Held.copyIn(
+    bytes: ReadBuffer,
+    queued: Long,
+    taking: Int,
+) {
+    val at = (queued % OUTBOX_CAPACITY).toInt()
+    val first = minOf(taking, OUTBOX_CAPACITY - at)
+    copyIntoRing(bytes, buffer, at, first)
+    if (taking > first) copyIntoRing(bytes, buffer, 0, taking - first)
+}
+
 /** Copies [length] bytes of [from] to [into] at [at], moving [from] past them; [into]'s position is the sender's own. */
 internal fun copyIntoRing(
     from: ReadBuffer,

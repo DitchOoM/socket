@@ -14,6 +14,7 @@ import com.ditchoom.socket.quic.StreamRoom
 import com.ditchoom.socket.quic.StreamSend
 import com.ditchoom.socket.quic.StreamWrite
 import com.ditchoom.socket.quic.core.observe.Published
+import com.ditchoom.socket.quic.core.stream.WriteEnd
 import kotlin.concurrent.atomics.AtomicReference
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 
@@ -48,9 +49,18 @@ internal class CoreSendStream(
 
     override fun tryFinish(): StreamSend = outbox.tryFinish()
 
+    override fun tryFinish(lastBytes: ReadBuffer): StreamSend = outbox.tryFinish(lastBytes)
+
     override suspend fun write(
         buffer: ReadBuffer,
         policy: WritePolicy,
+    ): StreamWrite = queued(buffer, policy, WriteEnd.More)
+
+    /** Queues all of [buffer], waiting for room as it must; with [WriteEnd.Finish] our FIN goes in the step that queues its last bytes. */
+    private suspend fun queued(
+        buffer: ReadBuffer,
+        policy: WritePolicy,
+        end: WriteEnd,
     ): StreamWrite {
         when (val now = verdict.load()) {
             is Verdict.Failed -> return now.why
@@ -58,7 +68,12 @@ internal class CoreSendStream(
         }
         val start = buffer.position()
         while (true) {
-            when (val sent = outbox.trySend(buffer)) {
+            val sent =
+                when (end) {
+                    WriteEnd.More -> outbox.trySend(buffer)
+                    WriteEnd.Finish -> outbox.tryFinish(buffer)
+                }
+            when (sent) {
                 is StreamSend.Sent -> return StreamWrite.Written
                 is StreamSend.NotSent.Finished -> closed()
                 is StreamSend.NotSent.PeerStopped, is StreamSend.NotSent.ConnectionEnded -> return failed(sent, start, buffer)
@@ -76,7 +91,7 @@ internal class CoreSendStream(
         buffer: ReadBuffer,
         policy: WritePolicy,
     ): StreamWrite {
-        val written = write(buffer, policy)
+        val written = queued(buffer, policy, WriteEnd.Finish)
         if (written !is StreamWrite.Written) return written
         return finished(policy)
     }

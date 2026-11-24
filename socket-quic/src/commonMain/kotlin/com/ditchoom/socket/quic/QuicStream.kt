@@ -66,6 +66,13 @@ interface QuicSendStream {
 
     /** Queues our FIN after the bytes queued before it, and returns at once, as [trySend] does. */
     fun tryFinish(): StreamSend
+
+    /**
+     * [trySend] of the stream's [lastBytes] with our FIN: when all of them fit, the FIN is queued in the same step, so it
+     * leaves with them, in their packet. When only some fit, the FIN is not queued: the answer is
+     * [StreamSend.NotSent.WindowFull] and the call is made again with the rest. [writeAndFinish] is this in a loop.
+     */
+    fun tryFinish(lastBytes: ReadBuffer): StreamSend
 }
 
 /**

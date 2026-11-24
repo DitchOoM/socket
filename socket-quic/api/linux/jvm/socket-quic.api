@@ -2848,6 +2848,7 @@ public abstract interface class com/ditchoom/socket/quic/QuicSendStream {
 	public abstract fun getWritePolicy ()Lcom/ditchoom/buffer/flow/WritePolicy;
 	public abstract fun reset-yOLykP8 (J)V
 	public abstract fun tryFinish ()Lcom/ditchoom/socket/quic/StreamSend;
+	public abstract fun tryFinish (Lcom/ditchoom/buffer/ReadBuffer;)Lcom/ditchoom/socket/quic/StreamSend;
 	public abstract fun trySend (Lcom/ditchoom/buffer/ReadBuffer;)Lcom/ditchoom/socket/quic/StreamSend;
 	public abstract fun write (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/flow/WritePolicy;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public static synthetic fun write$default (Lcom/ditchoom/socket/quic/QuicSendStream;Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/flow/WritePolicy;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
