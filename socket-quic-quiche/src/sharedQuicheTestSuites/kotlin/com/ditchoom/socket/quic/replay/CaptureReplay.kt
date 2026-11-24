@@ -704,7 +704,7 @@ private class CaptureReplay(
                 }
                 // quiche's timeout runs once, as the core's does: what it re-arms overdue fires after its probes are sent.
                 else -> {
-                    pair.runTimeout(ours)
+                    if (timerAt(ours) > now + TIMER_PRECISION) pair.bringTimerForward(ours) else pair.runTimeout(ours)
                     writeWhenCaptured()
                     // The timeout's turn holds an action of ours: what it made is written once that is performed.
                     if (ourWork == OurEndpoint.Busy) return
@@ -778,6 +778,12 @@ private class CaptureReplay(
      * When our endpoint's next timer fires: when it falls due, or when the capture's host next ran a timer from then on;
      * never on the capture when its host ran none from then on. A firing within [TIMER_PRECISION] before it is the one the
      * capture's timer fired at, a hair before the replay's is due.
+     *
+     * When the replay's timer falls due past the last recorded firing, it is brought forward to the next one still ahead:
+     * the core records a firing only when quiche's own timer was due, so the capture's was due then. The replay's estimate of the path
+     * stands on recorded times, and quiche subtracts the peer's ACK delay from an RTT sample only when the sample is at
+     * least the minimum RTT plus that delay (RFC 9002 §5.3): a delay within microseconds of that edge, which recorded times
+     * cannot settle, moves the PTO by the whole delay.
      */
     private fun ourTimerFires(): Duration {
         val due = timerAt(ours)
@@ -785,7 +791,9 @@ private class CaptureReplay(
             OurTimers.WhenDue -> due
             is OurTimers.AsRecorded -> {
                 // The recording holds every timer its host ran: one that ran none after this fell due ran none at all.
-                val next = timers.firings.firstOrNull { it >= due - TIMER_PRECISION } ?: return Duration.INFINITE
+                val next =
+                    timers.firings.firstOrNull { it >= due - TIMER_PRECISION }
+                        ?: return timers.firings.firstOrNull { it > now && due.isFinite() } ?: Duration.INFINITE
                 val fires = maxOf(due, next)
                 val missed = timers.firings.lastOrNull { it < due - TIMER_PRECISION }
                 if (due.isFinite() && missed != null && fires > due) timersThatMissed += TimerMissed(due, missed, fires)
