@@ -57,6 +57,15 @@ merged="$(cat "$tmp/merged.json")"
 expect "merge keeps the sha" "$merged" '"sha": "abcdef1234567890"'
 expect "merge keeps the run" "$merged" '"run": "77"'
 expect "merge keeps a record" "$merged" '"metric": "loop-bytes"'
+expect "a module's own build dir is no lane" "$merged" '"lane": ""'
+# Two lanes on one runtime (Windows plain and JFR) stay two numbers.
+mkdir -p "$tmp/lanes/plain" "$tmp/lanes/jfr"
+record "A.one" "clock-reads" 21.8 24 >"$tmp/lanes/plain/A.jsonl"
+record "A.one" "clock-reads" 22.0 24 >"$tmp/lanes/jfr/A.jsonl"
+python3 "$script" merge --out "$tmp/lanes.json" "$tmp/lanes" >/dev/null
+out="$(python3 "$script" compare --current "$tmp/lanes.json" --history-dir "$tmp/none-yet")"
+expect "two lanes compared apart" "$out" "0 flagged, 2 without history, 2 compared"
+expect "a lane is shown" "$out" "| A.one clock-reads | Linux amd64 JDK 21 JniQuicheApi native (jfr) |"
 
 # A flat series: nothing flagged, exit 0 even in fail mode.
 mkdir -p "$tmp/flat"

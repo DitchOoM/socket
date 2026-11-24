@@ -5,14 +5,15 @@ The gates themselves (coreAllocationTest) fail a run only past their own margin;
 through, a rise smaller than its margin that the next change adds to.
 
   perf-trend.py merge --out perf-gates.json <dir>...
-      Joins every build/perf-gates/*.jsonl under <dir> (one JSON record per gated number, written by the tests'
-      PerfGates) into one file with this run's git SHA (GITHUB_SHA, else `git rev-parse HEAD`) and run id.
+      Joins every *.jsonl under <dir> (one JSON record per gated number, written by the tests' PerfGates) into one
+      file with this run's git SHA (GITHUB_SHA, else `git rev-parse HEAD`) and run id. A record under a directory of
+      <dir> (an artifact name: two CI legs can share a runtime) carries that name as its lane.
 
   perf-trend.py compare --current perf-gates.json (--history-dir DIR | --repo OWNER/NAME --branch B)
                         [--workflow review.yaml] [--artifact perf-gates] [--runs 10]
                         [--fraction 0.05] [--absolute 0.05] [--min-history 3] [--mode warn|fail]
                         [--summary FILE]
-      Compares each number with the median of the same number (same test, metric, OS, arch, JDK, backend, stack)
+      Compares each number with the median of the same number (same test, metric, OS, arch, JDK, backend, stack, lane)
       in the last --runs successful runs of --workflow on --branch, whose --artifact it fetches with `gh api`, or
       in the perf-gates*.json files of --history-dir. A number is flagged when it rose above that median by more
       than --fraction of it AND by more than --absolute: both, so a count near zero does not flag on one call in
@@ -30,7 +31,7 @@ import subprocess
 import sys
 import zipfile
 
-KEY_FIELDS = ("test", "metric", "os", "arch", "jdk", "backend", "stack")
+KEY_FIELDS = ("test", "metric", "os", "arch", "jdk", "backend", "stack", "lane")
 
 
 def key_of(record):
@@ -38,8 +39,9 @@ def key_of(record):
 
 
 def label_of(key):
-    test, metric, os_name, arch, jdk, backend, stack = key
-    return f"{test} {metric}", f"{os_name} {arch} JDK {jdk} {backend} {stack}"
+    test, metric, os_name, arch, jdk, backend, stack, lane = key
+    where = f"{os_name} {arch} JDK {jdk} {backend} {stack}"
+    return f"{test} {metric}", f"{where} ({lane})" if lane else where
 
 
 def merge(args):
@@ -50,13 +52,21 @@ def merge(args):
                 for line in lines:
                     line = line.strip()
                     if line:
-                        records.append(json.loads(line))
+                        record = json.loads(line)
+                        record.setdefault("lane", lane_of(root, path))
+                        records.append(record)
     sha = os.environ.get("GITHUB_SHA") or git_head()
     merged = {"sha": sha, "run": os.environ.get("GITHUB_RUN_ID", ""), "records": records}
     with open(args.out, "w") as out:
         json.dump(merged, out, indent=1)
     print(f"perf-trend: merged {len(records)} gated numbers at {sha[:12]} into {args.out}")
     return 0
+
+
+def lane_of(root, path):
+    """The CI lane a record came from: the first directory under [root], which is its artifact's name."""
+    parts = os.path.relpath(path, root).split(os.sep)
+    return parts[0] if len(parts) > 1 and parts[0] != "build" else ""
 
 
 def git_head():

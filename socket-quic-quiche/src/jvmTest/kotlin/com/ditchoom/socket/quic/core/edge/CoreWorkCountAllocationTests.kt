@@ -55,7 +55,7 @@ import kotlin.time.Duration.Companion.seconds
  * The counts are averages over many echoes on loopback: how many turns, datagrams and ACKs an echo takes is the
  * scheduler's, so a count is a fraction that repeats to within a few percent, not an integer. Each operation runs under
  * both [SendRule]s, whichever this host defaults to, and each gate is the highest value measured under that rule plus the
- * margin [ECHO_MARGIN] or [BULK_MARGIN] states; a count no margin holds is [Gate.TrendOnly]. A failed gate prints every count and the
+ * margin [ECHO_MARGIN] states; a count no margin holds is [Gate.TrendOnly] (see [BULK_EACH]). A failed gate prints every count and the
  * callers of the counted calls, sampled over a short extra run. Named `*AllocationTests` so `coreAllocationTest` runs
  * it: on the production QuicheApi, whose clock libquiche can be pinned to the loop's, not on jvmTest's guarded one.
  *
@@ -401,15 +401,6 @@ class CoreWorkCountAllocationTests {
         const val ECHO_MARGIN = 0.10
         const val LEAST_MARGIN = 0.05
 
-        /** A bulk transfer's counts follow how the scheduler batches its datagrams, up to a fifth apart between runs. */
-        const val BULK_MARGIN = 0.20
-
-        /**
-         * A bulk transfer's deadline moves: 1.1 to 12.1 per MiB on macOS and 3.3 to 9.8 on Linux across runs of one tree, as ACK
-         * and PTO deadlines happen to fall earlier than the armed one. No margin holds that, so it is trended only.
-         */
-        val BULK_TREND_ONLY = setOf(Metric.DeadlineMoves)
-
         /**
          * The highest of every run measured, in the order of [Metric]: sends, receives, waits, timer re-arms, deadline moves,
          * re-arms taken, deadlines made, clock reads, pool acquires, releases, misses. The loop sending: macOS arm64, JDK 21,
@@ -430,24 +421,25 @@ class CoreWorkCountAllocationTests {
                 gates(ECHO_MARGIN, LEAST_MARGIN, 1.992, 3.809, 2.694, 2.886, 0.018, 0.018, 0.0, 17.453, 1.0, 1.0, 0.0),
                 gates(ECHO_MARGIN, LEAST_MARGIN, 1.990, 3.738, 2.614, 2.830, 0.014, 0.012, 0.0, 17.192, 1.0, 1.0, 0.0),
             )
-        val BULK_BY_LOOP = doubleArrayOf(1_949.6, 4_009.4, 2_185.4, 3_483.4, 12.125, 3_921.3, 0.0, 20_866.1, 1_151.1, 1_151.1, 0.0)
-        val BULK_IN_PLACE = doubleArrayOf(2_054.1, 4_248.0, 2_070.1, 4_293.1, 5.3, 2_921.4, 0.0, 20_501.8, 1_184.2, 1_184.2, 0.0)
-        val BULK =
-            Gates(
-                gates(BULK_MARGIN, LEAST_MARGIN, *BULK_BY_LOOP, trendOnly = BULK_TREND_ONLY),
-                gates(BULK_MARGIN, LEAST_MARGIN, *BULK_IN_PLACE, trendOnly = BULK_TREND_ONLY),
-            )
+
+        /**
+         * A bulk transfer's counts per MiB follow how many datagrams each wake finds, which the host's load decides: one tree
+         * measured io-sends of 385 (macOS CI), 1,950 (an M-series laptop), 1,130 and then 2,487 (Windows CI) per MiB. No
+         * margin holds that, so they are trended only; what must stay zero, a fresh pool buffer or a one-off deadline, is gated.
+         */
+        val BULK_ZERO = setOf(Metric.DeadlinesMade, Metric.PoolMisses)
+        val BULK_EACH = Metric.entries.associateWith { if (it in BULK_ZERO) Gate.AtMost(LEAST_MARGIN) else Gate.TrendOnly }
+        val BULK = Gates(BULK_EACH, BULK_EACH)
 
         fun gates(
             margin: Double,
             least: Double,
             vararg measured: Double,
-            trendOnly: Set<Metric> = emptySet(),
         ): Map<Metric, Gate> {
             check(measured.size == Metric.entries.size) { "one measured value per metric" }
             return Metric.entries.associateWith { m ->
                 val value = measured[m.ordinal]
-                if (m in trendOnly) Gate.TrendOnly else Gate.AtMost(maxOf(value * (1 + margin), value + least))
+                Gate.AtMost(maxOf(value * (1 + margin), value + least))
             }
         }
     }
