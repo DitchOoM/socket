@@ -1,0 +1,48 @@
+name: QUIC interop peer pins
+
+# Re-pins the interop gate's runner commit and peer images (test-harness/quic-interop/peer-images.json) to what the
+# quic-interop-runner names today, on a pull request of its own, so a peer's new image is judged by one gate run
+# that changes nothing else. A pull request opened with GITHUB_TOKEN starts no workflow: close and reopen it (or
+# push to it) to run the gate on the new pins.
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: quic-interop-peer-pins
+  cancel-in-progress: false
+
+jobs:
+  repin:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Resolve today's runner commit and image digests
+        run: |
+          git clone https://github.com/quic-interop/quic-interop-runner.git /tmp/runner
+          python3 .github/scripts/quic-interop-pins.py resolve test-harness/quic-interop/peer-images.json /tmp/runner
+      - name: Open a pull request when a pin moved
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- test-harness/quic-interop/peer-images.json; then
+            echo "Every pin is current."
+            exit 0
+          fi
+          git diff --stat
+          branch="chore/interop-peer-pins-$(date -u +%Y%m%d)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git commit -am "ci(interop): re-pin the runner and peer images to today's digests"
+          git push origin "$branch"
+          gh pr create --base main --head "$branch" --label skip-release \
+            --title "ci(interop): re-pin the runner and peer images to today's digests" \
+            --body "Weekly re-pin by quic-interop-peer-pins.yaml. The diff names each peer whose image moved; the interop gate on this pull request judges the new images alone. Reopen the pull request to start the gate (a GITHUB_TOKEN pull request starts no workflow)."

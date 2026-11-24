@@ -198,11 +198,16 @@ jobs:
             "$(cat /tmp/tshark-debs/VERSION)") echo "tshark $installed from the wireshark-dev PPA" ;;
             *) echo "::error title=tshark is not the PPA's::installed $installed; the rebind cells need the PPA's dissector"; exit 1 ;;
           esac
-          git clone --depth 1 https://github.com/quic-interop/quic-interop-runner.git /tmp/runner
+          # The runner and every peer image are pinned (test-harness/quic-interop/peer-images.json): a peer's new
+          # :latest is a pull request of its own (quic-interop-peer-pins.yaml), never a change inside a gate run.
+          pins="$GITHUB_WORKSPACE/test-harness/quic-interop/peer-images.json"
+          git clone https://github.com/quic-interop/quic-interop-runner.git /tmp/runner
+          git -C /tmp/runner checkout --quiet "$(jq -r .runner "$pins")"
           pip install -r /tmp/runner/requirements.txt
           # Without this the runner dies about once in ten runs on a tshark that exited normally.
           python3 "$GITHUB_WORKSPACE/.github/scripts/patch-pyshark-reap.py"
           cd /tmp/runner
+          python3 "$GITHUB_WORKSPACE/.github/scripts/quic-interop-pins.py" apply "$pins" /tmp/runner
           FILE=implementations_quic.json
           [ -f "$FILE" ] || FILE=implementations.json
           jq --arg img "$IMAGE" '. + {"ditchoom": {"image": $img, "url": "https://github.com/DitchOoM/socket", "role": "both"}}' \

@@ -1,0 +1,28 @@
+{
+  "comment": "The quic-interop-runner commit and every peer image the interop gate runs, pinned by digest, so a peer's new :latest cannot change a gate run (haproxy-qns:latest broke every haproxy cell on 2026-11-24). .github/workflows/quic-interop-peer-pins.yaml re-resolves them weekly on a pull request of its own; .github/scripts/quic-interop-pins.py apply writes them into the runner's checkout.",
+  "runner": "ee53e50e1ed33b7871bf67bdb0a7de7d173dd8bb",
+  "compose": {
+    "iperf": {"tag": "martenseemann/quic-interop-iperf-endpoint:latest", "digest": "sha256:cb50cc8019d45d9cad5faecbe46a3c21dd5e871949819a5175423755a9045106"},
+    "simulator": {"tag": "martenseemann/quic-network-simulator:latest", "digest": "sha256:c23d82a55caffe681b1bdae65d4d30d23e1283141a414a7f02ee56cf15f9c6b9"}
+  },
+  "images": {
+    "aioquic": {"tag": "aiortc/aioquic-qns:latest", "digest": "sha256:7bbb98f626cd542c9f79882684b6e8b9d98e60755bae979a79472e32644128dd"},
+    "chrome": {"tag": "martenseemann/chrome-quic-interop-runner", "digest": "sha256:5f0762811a21631d656a8e321e577538e1a0ef8541967f7db346a8eadbf1491a"},
+    "go-x-net": {"tag": "us-central1-docker.pkg.dev/golang-interop-testing/quic/go-x-net:latest", "digest": "sha256:d18fa4cfbd84bd43768bce72af9569ad8e56c47a91e31a26f8ae283bab0536a2"},
+    "haproxy": {"tag": "haproxytech/haproxy-qns:latest", "digest": "sha256:fb04f23cd75e15e2215930816361cbacd2888e671560c966d0b93ea7763ec19b"},
+    "kwik": {"tag": "peterdoornbosch/kwik_n_flupke-interop", "digest": "sha256:1d594db1758b2e7df0d25a0cfc6158d459f6128163e67124c2331721b1353016"},
+    "lsquic": {"tag": "litespeedtech/lsquic-qir:latest", "digest": "sha256:7819190d3b19ac4f1a9b85d994fdc3a6de900973376d1c7dad345641c3fb28c8"},
+    "msquic": {"tag": "ghcr.io/microsoft/msquic/qns:main", "digest": "sha256:b7f5a40608ab8df06572b9f641a4500b73d14318dac46baf042e9e4fc2a73e84"},
+    "mvfst": {"tag": "ghcr.io/meta/proxygen/mvfst-interop:latest", "digest": "sha256:3f26b956becdfa3a2b9f244116cb1b428efc01a83bd3b3a00a5dd5c0d9f6fd17"},
+    "neqo": {"tag": "ghcr.io/mozilla/neqo-qns:latest", "digest": "sha256:a42a72c3d9695ae50e4d4522f12b16e35f864718d59751fc23d6b61afd990301"},
+    "nginx": {"tag": "ghcr.io/nginx/nginx-quic-qns:latest", "digest": "sha256:834b72250f10fca76288dbed38848f28f05056ea66e6aca85a8248d35b749048"},
+    "ngtcp2": {"tag": "ghcr.io/ngtcp2/ngtcp2-interop:latest", "digest": "sha256:d471d08b3fc19cd800fb352452493a1b5e2ce8ac3fbf5c021224ddb752f58c80"},
+    "picoquic": {"tag": "privateoctopus/picoquic:latest", "digest": "sha256:4d1da8e8557cbe526fda8ea7741ff9278aafb7f7c37d3f96a3e38441cfd9ccce"},
+    "quic-go": {"tag": "martenseemann/quic-go-interop:latest", "digest": "sha256:18abd02fc4d98aa5ecda2ad53e0bbdfaeefd63bd4b19338a8d4d5b058048d912"},
+    "quiche": {"tag": "cloudflare/quiche-qns:latest", "digest": "sha256:1f166042ed5b5a402963c8ea60fe9414b85d59bff93587c591310d32f1fa7a6a"},
+    "quinn": {"tag": "stammw/quinn-interop:latest", "digest": "sha256:5205c84e200ef1a999be602ed6eeec9a216f25ce27d5eac690fa1540ec73f355"},
+    "rama": {"tag": "glendc/rama-quic-interop:edge", "digest": "sha256:2d477fc0ea68ab195d3eee655fa43d7048d6aeec9e0193eb29acf799dc09ee72"},
+    "s2n-quic": {"tag": "ghcr.io/aws/s2n-quic/s2n-quic-qns:latest", "digest": "sha256:8c54e80a9d95aa10decd496d22b68d0f3958730a5e9e97eed4eae84e5f4d138b"},
+    "xquic": {"tag": "ghcr.io/alibaba/xquic/xquic-interop:latest", "digest": "sha256:d996b00af51bcc10d1148f4ae3973c4af73d6e7c215a7e54d3edcd5ce4bb46d1"}
+  }
+}
