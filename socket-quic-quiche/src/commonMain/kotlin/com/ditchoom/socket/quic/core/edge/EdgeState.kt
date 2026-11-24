@@ -7,9 +7,9 @@ import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.socket.quic.EarlyDataAcceptance
 import com.ditchoom.socket.quic.HandlerStart
 import com.ditchoom.socket.quic.HandshakeRecord
+import com.ditchoom.socket.quic.LeafCert
 import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicConnectionState
-import com.ditchoom.socket.quic.QuicPeerLeaf
 import com.ditchoom.socket.quic.QuicSessionTicket
 import com.ditchoom.socket.quic.QuicSessionTicketState
 import com.ditchoom.socket.quic.QuicStreamId
@@ -120,7 +120,7 @@ internal class EdgeState(
 
     override fun earlyData(report: EarlyReport) {
         val alpn = alpnOf(report.alpnLength)
-        handshake.value = HandshakeRecord.Settled(alpn, report.resumption, QuicPeerLeaf.NotPresented)
+        handshake.value = HandshakeRecord.Settled(alpn, report.resumption, LeafCert.NotPresented)
         earlyData.value = EarlyDataAcceptance.Accepted(alpn, report.resumption)
         start.value = HandlerStart.Now
     }
