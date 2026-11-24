@@ -334,27 +334,33 @@ class CoreWorkCountAllocationTests {
         const val ECHO_MARGIN = 0.10
         const val LEAST_MARGIN = 0.05
 
-        /** A bulk transfer's counts follow how the scheduler batches its datagrams: they repeat to within 7%, so a fifth. */
+        /**
+         * A bulk transfer's counts follow how the scheduler batches its datagrams: they repeat to within 7%, so a fifth,
+         * and at least one event per MiB: a rare event (deadline moves, 18 to 33 per transfer over 15 runs) swings more.
+         */
         const val BULK_MARGIN = 0.20
+        const val BULK_LEAST_MARGIN = 1.0
 
         /**
          * The highest of every run measured on macOS arm64 (JDK 21, JNI and FFM, native and JDK stacks), in the order of
          * [Metric]: sends, receives, waits, timer re-arms, deadline moves, re-arms taken, deadlines made, clock reads,
          * pool acquires, releases, misses.
          */
-        val ONE_STREAM = gates(ECHO_MARGIN, 2.000, 3.946, 3.391, 3.956, 0.004, 2.004, 0.0, 21.805, 1.0, 1.0, 0.0)
-        val NEW_STREAM = gates(ECHO_MARGIN, 4.021, 7.968, 7.888, 8.976, 0.011, 4.011, 0.0, 47.927, 1.0, 1.0, 0.0)
-        val DATAGRAM = gates(ECHO_MARGIN, 1.992, 3.809, 2.694, 2.886, 0.003, 0.003, 0.0, 17.453, 1.0, 1.0, 0.0)
-        val BULK = gates(BULK_MARGIN, 1_949.6, 4_009.4, 2_185.4, 3_483.4, 1.688, 3_921.3, 0.0, 20_866.1, 1_151.1, 1_151.1, 0.0)
+        val ONE_STREAM = gates(ECHO_MARGIN, LEAST_MARGIN, 2.000, 3.946, 3.391, 3.956, 0.004, 2.004, 0.0, 21.805, 1.0, 1.0, 0.0)
+        val NEW_STREAM = gates(ECHO_MARGIN, LEAST_MARGIN, 4.021, 7.968, 7.888, 8.976, 0.011, 4.011, 0.0, 47.927, 1.0, 1.0, 0.0)
+        val DATAGRAM = gates(ECHO_MARGIN, LEAST_MARGIN, 1.992, 3.809, 2.694, 2.886, 0.003, 0.003, 0.0, 17.453, 1.0, 1.0, 0.0)
+        val BULK_MEASURED = doubleArrayOf(1_949.6, 4_009.4, 2_185.4, 3_483.4, 2.063, 3_921.3, 0.0, 20_866.1, 1_151.1, 1_151.1, 0.0)
+        val BULK = gates(BULK_MARGIN, BULK_LEAST_MARGIN, *BULK_MEASURED)
 
         fun gates(
             margin: Double,
+            least: Double,
             vararg measured: Double,
         ): Map<Metric, Double> {
             check(measured.size == Metric.entries.size) { "one measured value per metric" }
             return Metric.entries.associateWith { m ->
                 val value = measured[m.ordinal]
-                maxOf(value * (1 + margin), value + LEAST_MARGIN)
+                maxOf(value * (1 + margin), value + least)
             }
         }
     }
