@@ -7,6 +7,11 @@
 # Run at the start and the end of each JVM test step, so a stall in between can be weighed against the host:
 # a reader starved on 3 vCPUs, a host that paused the VM (Linux shows it as steal time), or neither.
 # The file goes in build/jvm-logs/ beside the safepoint and GC logs, so a failure's artifact carries all three.
+# The busiest processes are listed too: a load average is runnable threads inside this VM, so on a CI runner the
+# CPUs may be held by this job's own Gradle daemons and workers.
+#
+# `start` with a file also starts a sampler that appends `mid` facts every RUNNER_FACTS_PERIOD seconds (60) during
+# the step; `end` stops it.
 #
 # Never fails the job: a fact the host cannot report prints as "unknown".
 set -uo pipefail
@@ -55,12 +60,28 @@ facts() {
       [ -r /proc/stat ] && echo "steal: $(awk '/^cpu / { print $9 }' /proc/stat) ticks since boot"
       ;;
   esac
+  if command -v ps >/dev/null 2>&1; then
+    echo "busiest processes (pid ppid %cpu rssKB cputime command):"
+    ps -A -o pid=,ppid=,%cpu=,rss=,time=,comm= 2>/dev/null | sort -k3 -nr | head -n 12 | sed 's/^ */  /'
+  fi
   return 0
 }
+
+pidfile="${RUNNER_TEMP:-/tmp}/runner-facts-sampler.pid"
+if [ "$label" = end ] && [ -s "$pidfile" ]; then
+  kill "$(cat "$pidfile")" 2>/dev/null
+  rm -f "$pidfile"
+fi
 
 out="$(facts)"
 echo "$out"
 if [ -n "$file" ]; then
   mkdir -p "$(dirname "$file")" 2>/dev/null && echo "$out" >>"$file" || echo "runner-facts: could not write $file"
+  if [ "$label" = start ]; then
+    script="$0"
+    ( while sleep "${RUNNER_FACTS_PERIOD:-60}"; do bash "$script" mid "$file" >/dev/null; done ) >/dev/null 2>&1 &
+    echo "$!" >"$pidfile"
+    disown 2>/dev/null || true
+  fi
 fi
 exit 0

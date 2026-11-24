@@ -13,7 +13,8 @@ import kotlin.io.path.readLines
  * Watches one thread while armed, then explains a stall of it: a daemon samples the thread's CPU time and state about
  * every millisecond, with the depth of the queue that feeds it and the process's CPU time, and every [RUNNABLE_EVERY]
  * samples counts the RUNNABLE threads. [Recording.explain] adds the pauses this worker's safepoint log (the root build's
- * `-Xlog:safepoint`) shows overlapping the stall. Every read is safepoint-free, so the probe cannot cause what it finds.
+ * `-Xlog:safepoint`) shows overlapping the stall, and what every process on the machine used around it ([ProcessCpuSampler]).
+ * Every read is safepoint-free, so the probe cannot cause what it finds.
  */
 class StallProbe private constructor(
     private val target: Thread,
@@ -43,6 +44,7 @@ class StallProbe private constructor(
     private var count = 0
     private val stopping = AtomicBoolean()
     private val sampler = Thread(::sample, "stall-probe").apply { isDaemon = true }
+    private val ps = ProcessCpuSampler.start(PS_PERIOD_MILLIS)
 
     private fun sample() {
         // Thread.threadId() is JDK 19+, and a CI lane runs the tests on a JDK 17 launcher.
@@ -75,11 +77,13 @@ class StallProbe private constructor(
     fun stop(): Recording {
         stopping.set(true)
         sampler.join()
-        return Recording()
+        return Recording(ps.stop())
     }
 
     /** What the probe sampled, from its start to [stop]. */
-    inner class Recording internal constructor() {
+    inner class Recording internal constructor(
+        private val processes: ProcessCpuSampler.Recording,
+    ) {
         /**
          * The stall from [fromNanos] to [toNanos] (`System.nanoTime` instants): the samples inside it, and the
          * safepoints that overlap it. CPU is counted between the first and last samples inside, so the work either
@@ -110,6 +114,7 @@ class StallProbe private constructor(
                 processCpuMicros = (processCpu[span.second] - processCpu[span.first]) / 1_000,
                 samplerLongestMicros = ((first + 1)..last).maxOfOrNull { at[it] - at[it - 1] }?.div(1_000) ?: 0,
                 safepoints = safepointsOverlapping(uptimeMicros(fromNanos), uptimeMicros(toNanos)),
+                processes = processes.across(fromNanos, toNanos),
             )
         }
 
@@ -123,6 +128,9 @@ class StallProbe private constructor(
         private const val CAPACITY = 32_768
         private const val PERIOD_NANOS = 1_000_000L
         private const val RUNNABLE_EVERY = 10
+
+        /** `ps` costs a fork on a machine that may be short of CPU: twice a second is enough to name the busiest. */
+        private const val PS_PERIOD_MILLIS = 500L
 
         /** Starts watching [target], fed by [queue]. */
         fun start(
@@ -218,10 +226,11 @@ class Stall(
     val processCpuMicros: Long,
     val samplerLongestMicros: Long,
     val safepoints: Safepoints,
+    val processes: Processes,
 ) {
     override fun toString() =
         "stall of ${windowMicros / 1_000.0} ms ($samples samples over ${sampledMicros / 1_000.0} ms): " +
             "reader CPU ${targetCpuMicros / 1_000.0} ms, states $states (mostly $dominant), queue depth up to $maxQueueDepth; " +
             "RUNNABLE threads up to $maxRunnable on $cores cores, process CPU ${processCpuMicros / 1_000.0} ms; " +
-            "probe's longest wait ${samplerLongestMicros / 1_000.0} ms; $safepoints"
+            "probe's longest wait ${samplerLongestMicros / 1_000.0} ms; $safepoints; $processes"
 }

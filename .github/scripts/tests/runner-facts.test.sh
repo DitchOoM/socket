@@ -23,7 +23,7 @@ stub() { # <dir> <name> <body>
 # A PATH of the stubs plus only the basics the script itself needs, so the host's own tools cannot answer.
 basics="$tmp/basics"
 mkdir -p "$basics"
-for tool in bash awk head date mkdir dirname cat grep sed; do
+for tool in bash awk head date mkdir dirname cat grep sed sort sleep kill rm; do
   p="$(command -v "$tool" 2>/dev/null)" && ln -s "$p" "$basics/$tool"
 done
 
@@ -78,6 +78,23 @@ PATH="$mac:$basics" bash "$script" start "$tmp/logs/runner-facts.txt" >/dev/null
 PATH="$mac:$basics" bash "$script" end "$tmp/logs/runner-facts.txt" >/dev/null
 expect "start and end both land in the file" "$(grep -c '^runner facts' "$tmp/logs/runner-facts.txt")" 2
 expect "an unwritable file does not fail the step" "$(PATH="$mac:$basics" bash "$script" start /dev/null/x >/dev/null; echo $?)" 0
+
+# The busiest processes come from ps, busiest first.
+stub "$mac" ps 'printf "  101     1   3.0  1000  0:01.00 /usr/bin/idle\n  202     1  95.5  9000  9:59.00 /opt/java/bin/java\n"'
+out="$(PATH="$mac:$basics" bash "$script" start)"
+contains "the busiest processes are listed" "$out" "busiest processes"
+expect "the busiest process comes first" "$(grep -A1 'busiest processes' <<<"$out" | tail -1 | awk '{ print $1 }')" 202
+
+# start with a file samples mid-step until end.
+: >"$tmp/mid.txt"
+RUNNER_TEMP="$tmp" RUNNER_FACTS_PERIOD=1 PATH="$mac:$basics" bash "$script" start "$tmp/mid.txt" >/dev/null
+sleep 3
+RUNNER_TEMP="$tmp" PATH="$mac:$basics" bash "$script" end "$tmp/mid.txt" >/dev/null
+mids="$(grep -c '^runner facts (mid)' "$tmp/mid.txt")"
+expect "start samples mid-step" "$([ "$mids" -ge 1 ] && echo yes)" yes
+sleep 2
+expect "end stops the sampler" "$(grep -c '^runner facts (mid)' "$tmp/mid.txt")" "$mids"
+expect "end clears the pid file" "$([ -e "$tmp/runner-facts-sampler.pid" ] && echo left || echo cleared)" cleared
 
 echo "---"
 echo "runner-facts: $pass passed, $fail failed"
