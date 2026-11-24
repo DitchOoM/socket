@@ -23,6 +23,7 @@ import com.ditchoom.socket.quic.core.life.CloseOutcome
 import com.ditchoom.socket.quic.core.life.DrainUntil
 import com.ditchoom.socket.quic.core.sched.HandlerSite
 import com.ditchoom.socket.quic.core.stream.StreamKind
+import com.ditchoom.socket.quic.toPublic
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.filterIsInstance
@@ -38,7 +39,7 @@ import kotlin.time.Duration.Companion.days
 internal suspend fun CoreConnection.public(): CoreQuicConnection {
     established()
     val settled = edge.handshake.filterIsInstance<HandshakeRecord.Settled>().first()
-    return CoreQuicConnection(this, QuicHandshakeFacts(settled.negotiatedAlpn, settled.resumption, settled.leaf), codes)
+    return CoreQuicConnection(this, QuicHandshakeFacts(settled.negotiatedAlpn, settled.resumption, settled.leaf.toPublic()), codes)
 }
 
 /** A [CoreConnection] as the public [QuicConnection]: its streams in their public shapes, and its outcomes as values. */

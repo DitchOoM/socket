@@ -3163,7 +3163,7 @@ class QuicheDriver(
                     readNegotiatedAlpn(),
                     QuicEarlyDataReason.outcome(role, sessionOffer, api.connIsResumed(conn), api.connEarlyDataReason(conn)),
                 )
-            handshakeLatch.value = HandshakeRecord.Settled(established.negotiatedAlpn, established.resumption, QuicPeerLeaf.NotPresented)
+            handshakeLatch.value = HandshakeRecord.Settled(established.negotiatedAlpn, established.resumption, LeafCert.NotPresented)
             _state.value = established
             handshakeSettled.complete(HandshakeSettled.Confirmed(established.resumption))
             qlogEstablished()

@@ -3,12 +3,12 @@ package com.ditchoom.socket.quic.core.edge
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.socket.quic.HandlerStart
 import com.ditchoom.socket.quic.HandshakeRecord
+import com.ditchoom.socket.quic.LeafCert
 import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicCloseReason
 import com.ditchoom.socket.quic.QuicConnectionState
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicFullHandshakeReason
-import com.ditchoom.socket.quic.QuicPeerLeaf
 import com.ditchoom.socket.quic.QuicResumptionOutcome
 import com.ditchoom.socket.quic.core.conn.HandshakeFacts
 import com.ditchoom.socket.quic.core.conn.HandshakeFate
@@ -54,7 +54,7 @@ class EdgeEndOrderTests {
     @Test
     fun anEndThatCarriesACompletedHandshakeStartsItsHandlerAndKeepsWhatTheHandshakeSettled() {
         val edge = EdgeState(BufferFactory.network().allocate(ALPN), TraceCapture.Off, TicketHome.NotKept, ChainHome.NotKept)
-        val facts = HandshakeFacts("test", NOT_OFFERED, QuicPeerLeaf.NotPresented)
+        val facts = HandshakeFacts("test", NOT_OFFERED, LeafCert.NotPresented)
         val end = ConnEnd.ByPeer(QuicError.ApplicationError(7L))
         edge.ended(end, HeldReads(emptyMap(), emptySet()), CloseOutcome.NotAsked, HandshakeFate.Completed(facts))
         assertEquals<HandlerStart>(HandlerStart.Now, edge.start.value, "a server offers a connection whose handshake completed")

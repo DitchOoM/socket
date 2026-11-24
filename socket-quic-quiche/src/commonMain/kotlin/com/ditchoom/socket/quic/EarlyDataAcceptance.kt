@@ -26,7 +26,7 @@ internal sealed interface HandshakeRecord {
     data class Settled(
         val negotiatedAlpn: String,
         val resumption: QuicResumptionOutcome,
-        val leaf: QuicPeerLeaf,
+        val leaf: LeafCert,
     ) : HandshakeRecord
 }
 
