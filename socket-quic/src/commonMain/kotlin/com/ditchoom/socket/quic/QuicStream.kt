@@ -54,6 +54,134 @@ interface QuicSendStream {
 
     /** Abandons this direction with [code] (RESET_STREAM): the peer may never read what was written. Once only. */
     fun reset(code: QuicAppErrorCode)
+
+    /**
+     * Queues as much of [bytes] as the stream's send queue has room for, and returns at once: never suspends, never
+     * blocks, and is safe from any thread, a [QuicStreamReceiver]'s callback included. [bytes] moves past what was taken
+     * and stays the caller's; the queue holds a copy. [write] is this in a loop with [StreamSend.NotSent.WindowFull.awaitRoom].
+     *
+     * One sender at a time: sends from two threads at once may interleave their bytes.
+     */
+    fun trySend(bytes: ReadBuffer): StreamSend
+
+    /** Queues our FIN after the bytes queued before it, and returns at once, as [trySend] does. */
+    fun tryFinish(): StreamSend
+}
+
+/**
+ * What a [QuicSendStream.trySend] or [QuicSendStream.tryFinish] came to. Each is made once per stream, so a sender that
+ * is told again and again allocates nothing; only [NotSent.WindowFull.awaitRoom] suspends.
+ *
+ * ```
+ * when (val r = send.trySend(bytes)) {
+ *     StreamSend.Sent -> Unit
+ *     is StreamSend.NotSent.WindowFull -> r.awaitRoom()   // bytes moved past what was taken; send the rest after
+ *     is StreamSend.NotSent.Over -> stop(r)               // Finished, PeerStopped or ConnectionEnded
+ * }
+ * ```
+ */
+sealed interface StreamSend {
+    /** Every byte was queued, in order after the bytes queued before them, or the FIN was. */
+    data object Sent : StreamSend
+
+    sealed interface NotSent : StreamSend {
+        /**
+         * The send queue had room for part of the bytes or for none: the buffer moved past what was taken. Wait with
+         * [awaitRoom] and send the rest, or stop. The queue empties as the peer's flow control and the congestion
+         * window let the connection send.
+         */
+        class WindowFull(
+            private val room: StreamRoomWait,
+        ) : NotSent {
+            /**
+             * Suspends until the send queue has room again, the direction is over, or [policy]'s deadline passes. A
+             * passed deadline leaves the direction open: what was queued still goes.
+             */
+            suspend fun awaitRoom(policy: WritePolicy = WritePolicy.UntilClosed): StreamRoom = room.awaitRoom(policy)
+        }
+
+        /** The direction is over: nothing more is queued, ever. */
+        sealed interface Over : NotSent
+
+        /** This side ended the direction: it finished or reset it. */
+        data object Finished : Over
+
+        /** The peer asked this side to stop sending, with [code] (STOP_SENDING). */
+        class PeerStopped(
+            val code: QuicAppErrorCode,
+        ) : Over {
+            override fun toString(): String = "PeerStopped($code)"
+        }
+
+        /** The connection ended, or passed its close point, with [end]. */
+        class ConnectionEnded(
+            val end: QuicConnectionEnd,
+        ) : Over {
+            override fun toString(): String = "ConnectionEnded($end)"
+        }
+    }
+}
+
+/** What [StreamSend.NotSent.WindowFull.awaitRoom] came to. */
+sealed interface StreamRoom {
+    /** The send queue has room: send again. */
+    data object Room : StreamRoom
+
+    /** The deadline passed first; the direction is still open. */
+    data object DeadlinePassed : StreamRoom
+
+    /** The direction is over, as [why] says. */
+    class Over(
+        val why: StreamSend.NotSent.Over,
+    ) : StreamRoom {
+        override fun toString(): String = "Over($why)"
+    }
+}
+
+/** How a stream waits for room in its send queue; what [StreamSend.NotSent.WindowFull.awaitRoom] calls. */
+fun interface StreamRoomWait {
+    suspend fun awaitRoom(policy: WritePolicy): StreamRoom
+}
+
+/**
+ * Receives a stream's bytes without suspending, registered once with [QuicReceiveStream.receive]. The library calls it
+ * on the connection's handler lane: never on the network loop, never on two threads at once, and never at the same time
+ * as another handler of the same connection.
+ *
+ * The bytes [onBytes] is given are lent: they are the stream's own receive buffer, valid only until [onBytes] returns.
+ * Copy or decode what must outlive the call. Reply from inside with [QuicSendStream.trySend], which does not suspend.
+ *
+ * Blocking in [onBytes] holds the stream back, not the network: the stream reads nothing more until [onBytes] returns,
+ * so its flow-control window stays shut and the peer can send only what the window already allows. It also holds the
+ * connection's handler lane, so the connection's other handlers wait; handlers of other connections do not.
+ */
+interface QuicStreamReceiver {
+    /** The stream's next bytes, everything that arrived since the last call. Lent: valid until this returns. */
+    fun onBytes(bytes: ReadBuffer)
+
+    /** No more bytes will come, as [end] says. Called once, last; not called after [QuicReceiveStream.stop]. */
+    fun onEnd(end: ScopedRead.End)
+}
+
+/** What [QuicReceiveStream.receive] came to. */
+sealed interface StreamReceive {
+    /** The receiver is called for every byte from here on. */
+    data object Receiving : StreamReceive
+
+    sealed interface NotReceiving : StreamReceive {
+        /** A read or another receiver has the stream: a stream has one reader at a time. */
+        data object AlreadyReading : NotReceiving
+
+        /** An early stream not marked replay-safe, before the handshake is confirmed: call [QuicReceiveStream.markReplaySafe] or wait. */
+        data object NotReplaySafe : NotReceiving
+
+        /** The stream gives no more, as [end] says. */
+        class Ended(
+            val end: ScopedRead.End,
+        ) : NotReceiving {
+            override fun toString(): String = "Ended($end)"
+        }
+    }
 }
 
 /** The receiving direction of a stream. Every call suspends, never blocks a thread, and is safe from a main thread. */
@@ -86,6 +214,13 @@ interface QuicReceiveStream : QuicIncomingStream {
 
     /** Reads no more and tells the peer to stop sending, with [code] (STOP_SENDING). Once only. */
     fun stop(code: QuicAppErrorCode)
+
+    /**
+     * Hands every byte of this stream from here on to [receiver], on the connection's handler lane, with no suspension:
+     * see [QuicStreamReceiver] for which thread calls it, how long its bytes live and what blocking in it does. Once per
+     * stream; a stream with a receiver takes no [read]. Safe from any thread.
+     */
+    fun receive(receiver: QuicStreamReceiver): StreamReceive
 }
 
 /**

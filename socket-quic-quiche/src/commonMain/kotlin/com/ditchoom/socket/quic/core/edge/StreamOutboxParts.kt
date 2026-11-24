@@ -1,0 +1,122 @@
+package com.ditchoom.socket.quic.core.edge
+
+import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.PlatformBuffer
+import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.socket.quic.QuicCloseCircumstance
+import com.ditchoom.socket.quic.StreamRoom
+import com.ditchoom.socket.quic.StreamSend
+import com.ditchoom.socket.quic.core.life.ConnEnd
+import com.ditchoom.socket.quic.core.stream.SendRefusal
+import com.ditchoom.socket.quic.core.udp.NativeBytes
+import com.ditchoom.socket.quic.core.udp.ReadAddress
+import kotlinx.coroutines.CancellableContinuation
+
+/** Where a stream's send direction stands for its outbox. */
+internal sealed interface OutboxState {
+    data object Open : OutboxState
+
+    /** Our FIN is queued behind the bytes before it. */
+    data object FinishAsked : OutboxState
+
+    /** quiche took our FIN. */
+    data object FinTaken : OutboxState
+
+    /** This side reset the direction. */
+    data object ResetHere : OutboxState
+
+    /** The peer stopped the direction, or the connection ended it. */
+    class Over(
+        val why: StreamSend.NotSent.Over,
+    ) : OutboxState
+}
+
+/** What a sender waits for: room in the queue, or our FIN taken by quiche. */
+internal enum class OutboxWants { Room, FinTaken }
+
+/** The one sender's wait, if it waits. */
+internal sealed interface OutboxParked {
+    data object Nobody : OutboxParked
+
+    class Waiting(
+        val caller: CancellableContinuation<StreamRoom>,
+        val wants: OutboxWants,
+    ) : OutboxParked
+}
+
+/** Whether a wait is answered now, and with what. */
+internal sealed interface OutboxReadiness {
+    data object NotYet : OutboxReadiness
+
+    class Now(
+        val room: StreamRoom,
+    ) : OutboxReadiness
+}
+
+internal val OUTBOX_ROOM_NOW = OutboxReadiness.Now(StreamRoom.Room)
+
+/** The queue's memory: made on the first send, so a stream that sends nothing holds none. */
+internal sealed interface OutboxRing {
+    data object None : OutboxRing
+
+    class Held(
+        val buffer: PlatformBuffer,
+        val address: Long,
+    ) : OutboxRing
+}
+
+/** Copies [length] bytes of [from] to [into] at [at], moving [from] past them; [into]'s position is the sender's own. */
+internal fun copyIntoRing(
+    from: ReadBuffer,
+    into: PlatformBuffer,
+    at: Int,
+    length: Int,
+) {
+    val limit = from.limit()
+    from.setLimit(from.position() + length)
+    into.position(at)
+    into.setLimit(at + length)
+    into.write(from)
+    from.setLimit(limit)
+}
+
+/** What a wait for [wants] answers in [state], with [roomy] whether the queue is down to its low-water mark. */
+internal fun readiness(
+    state: OutboxState,
+    wants: OutboxWants,
+    roomy: Boolean,
+): OutboxReadiness =
+    when (state) {
+        is OutboxState.Over -> OutboxReadiness.Now(StreamRoom.Over(state.why))
+        is OutboxState.ResetHere -> OutboxReadiness.Now(StreamRoom.Over(StreamSend.NotSent.Finished))
+        is OutboxState.FinTaken -> OUTBOX_ROOM_NOW
+        is OutboxState.Open, is OutboxState.FinishAsked ->
+            when (wants) {
+                OutboxWants.Room -> if (roomy) OUTBOX_ROOM_NOW else OutboxReadiness.NotYet
+                OutboxWants.FinTaken -> OutboxReadiness.NotYet
+            }
+    }
+
+/** A queue's memory of [capacity] bytes from [factory], which the connect checked makes memory with an address. */
+internal fun ringOf(
+    factory: BufferFactory,
+    capacity: Int,
+): OutboxRing.Held {
+    val buffer = factory.allocate(capacity)
+    val address =
+        when (val at = NativeBytes.addressOf(buffer)) {
+            is ReadAddress.At -> at.address
+            is ReadAddress.NotAddressable -> {
+                buffer.freeNativeMemory()
+                raise(Raised.FactoryNotNative(buffer), QuicCloseCircumstance.Ended)
+            }
+        }
+    return OutboxRing.Held(buffer, address)
+}
+
+/** The end a refused send reports. */
+internal fun SendRefusal.end(): ConnEnd =
+    when (this) {
+        is SendRefusal.PastClose -> end
+        is SendRefusal.Ended -> end
+    }
