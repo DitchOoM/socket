@@ -24,6 +24,7 @@ import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.testing.coreTest
 import com.ditchoom.socket.quic.getOrElse
 import com.ditchoom.socket.quic.network
+import com.ditchoom.socket.quic.read
 import com.ditchoom.socket.quic.readEach
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart

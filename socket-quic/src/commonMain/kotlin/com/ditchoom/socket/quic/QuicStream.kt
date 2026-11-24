@@ -3,6 +3,7 @@ package com.ditchoom.socket.quic
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.WritePolicy
+import com.ditchoom.buffer.freeIfNeeded
 import kotlin.jvm.JvmInline
 
 /**
@@ -71,18 +72,14 @@ interface QuicReceiveStream : QuicIncomingStream {
     fun markReplaySafe()
 
     /**
-     * Waits for the stream's next bytes and runs [block] on them. The buffer is the stream's and is valid only while
-     * [block] runs: copy or decode what must outlive it. Bytes [block] leaves unread are dropped.
-     *
-     * A stream has one reader at a time. On a [QuicStreamOrigin.Early] stream not marked replay-safe, the first read
-     * waits for the handshake to be confirmed.
+     * The core [read] is inlined over; an application calls [read]. Waits for the stream's next bytes and answers
+     * either the [ReadBuffer] they are in, which [read] frees once its block returns, or the [ScopedRead.NoData] that
+     * says why none came. It answers one of the two as a plain reference, not as a [ScopedRead], because Kotlin boxes
+     * a value class returned across a suspension: that would be an object per read.
      *
      * @throws QuicStreamClosedException after [stop].
      */
-    suspend fun <R> read(
-        policy: ReadPolicy = readPolicy,
-        block: suspend (ReadBuffer) -> R,
-    ): ScopedRead<R>
+    suspend fun readNext(policy: ReadPolicy): Any
 
     /** Reads no more and tells the peer to stop sending, with [code] (STOP_SENDING). Once only. */
     fun stop(code: QuicAppErrorCode)
@@ -104,8 +101,33 @@ interface QuicStream : QuicIncomingStream {
     operator fun component2(): QuicReceiveStream = receive
 }
 
+/**
+ * Waits for the stream's next bytes and runs [block] on them. The buffer is the stream's and is valid only while
+ * [block] runs: copy or decode what must outlive it. Bytes [block] leaves unread are dropped. Inline, so [block] is
+ * no object and its result is not boxed; [block] may suspend.
+ *
+ * A stream has one reader at a time. On a [QuicStreamOrigin.Early] stream not marked replay-safe, the first read
+ * waits for the handshake to be confirmed.
+ *
+ * @throws QuicStreamClosedException after [QuicReceiveStream.stop].
+ */
+suspend inline fun <R> QuicReceiveStream.read(
+    policy: ReadPolicy = readPolicy,
+    block: (ReadBuffer) -> R,
+): ScopedRead<R> =
+    ScopedRead<ReadBuffer>(readNext(policy)).fold(
+        { bytes ->
+            try {
+                ScopedRead.data(block(bytes))
+            } finally {
+                bytes.freeIfNeeded()
+            }
+        },
+        { ScopedRead.noData(it) },
+    )
+
 /** Runs [block] on each chunk of the stream until a read has no bytes, and returns why it had none. */
-suspend fun QuicReceiveStream.readEach(block: suspend (ReadBuffer) -> Unit): ScopedRead.NoData {
+suspend inline fun QuicReceiveStream.readEach(block: (ReadBuffer) -> Unit): ScopedRead.NoData {
     while (true) {
         read(block = block).fold({ }, { return it })
     }

@@ -2,7 +2,6 @@ package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
-import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.ReadPolicy
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
@@ -80,16 +79,13 @@ class ScopedReadTests {
 
         override fun markReplaySafe() = Unit
 
-        override suspend fun <R> read(
-            policy: ReadPolicy,
-            block: suspend (ReadBuffer) -> R,
-        ): ScopedRead<R> {
-            if (chunks == 0) return ScopedRead.noData(then)
+        override suspend fun readNext(policy: ReadPolicy): Any {
+            if (chunks == 0) return then
             chunks--
             val buffer = BufferFactory.Default.allocate(CHUNK)
             buffer.writeBytes(ByteArray(CHUNK))
             buffer.resetForRead()
-            return ScopedRead.data(block(buffer))
+            return buffer
         }
 
         override fun stop(code: QuicAppErrorCode) = Unit

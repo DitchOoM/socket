@@ -22,7 +22,7 @@ import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.time.Duration
 
 /** Where a caller's sending on a stream stands. */
-internal enum class Sending {
+private enum class Sending {
     Open,
 
     /** A write that ends this half is out: whether it ended it is known once it answers. */
@@ -36,7 +36,7 @@ internal enum class Sending {
 }
 
 /** Where a caller's receiving on a stream stands. */
-internal enum class Receiving { Open, Closed }
+private enum class Receiving { Open, Closed }
 
 /** What [ReceiveHalf.stop] did: told the peer to stop now, or found the half closed already. */
 internal enum class Stopping { Now, Already }
@@ -51,7 +51,7 @@ internal class SendHalf(
     val id: QuicStreamId,
     val writePolicy: WritePolicy,
 ) {
-    internal val use = AtomicReference(Sending.Open)
+    private val use = AtomicReference(Sending.Open)
 
     /** Whether this half still takes bytes: neither finished nor reset. */
     fun isOpen(): Boolean = use.load() == Sending.Open
@@ -93,7 +93,7 @@ internal class SendHalf(
         buffer: ReadBuffer,
         deadline: Duration,
     ): WriteAnswer {
-        if (use.load() != Sending.Open) raise(Raised.StreamClosed(id, QuicStreamSide.Write), QuicCloseCircumstance.Ended)
+        writable()
         val address = addressOf(buffer)
         if (buffer.remaining() == 0) return WriteAnswer.Written
         return connection.submitted(id, WriteSource.Bytes(buffer, address, WriteEnd.More), deadline).settled()
@@ -118,9 +118,7 @@ internal class SendHalf(
         source: WriteSource,
         deadline: Duration,
     ): WriteAnswer {
-        if (!use.compareAndSet(Sending.Open, Sending.Finishing)) {
-            raise(Raised.StreamClosed(id, QuicStreamSide.Write), QuicCloseCircumstance.Ended)
-        }
+        startFinishing()
         val op = connection.submitted(id, source, deadline)
         try {
             return op.settled()
@@ -151,6 +149,18 @@ internal class SendHalf(
             return op.finishAnswer()
         } finally {
             settled(op.fin())
+        }
+    }
+
+    /** A write may go: this half is open, else the write raises. */
+    internal fun writable() {
+        if (use.load() != Sending.Open) raise(Raised.StreamClosed(id, QuicStreamSide.Write), QuicCloseCircumstance.Ended)
+    }
+
+    /** A finishing write may go: this half moves from open to finishing, else the write raises. */
+    internal fun startFinishing() {
+        if (!use.compareAndSet(Sending.Open, Sending.Finishing)) {
+            raise(Raised.StreamClosed(id, QuicStreamSide.Write), QuicCloseCircumstance.Ended)
         }
     }
 
@@ -192,7 +202,7 @@ internal class ReceiveHalf(
     val id: QuicStreamId,
     val readPolicy: ReadPolicy,
 ) {
-    internal val use = AtomicReference(Receiving.Open)
+    private val use = AtomicReference(Receiving.Open)
     internal val streamReads = StreamReads()
 
     fun isOpen(): Boolean = use.load() == Receiving.Open
@@ -204,8 +214,13 @@ internal class ReceiveHalf(
 
     /** One [read] with its answer as a value. Inline, so the public stream's read is the one suspend frame. */
     suspend inline fun take(deadline: Duration): ReadAnswer {
-        if (use.load() == Receiving.Closed) raise(Raised.StreamClosed(id, QuicStreamSide.Read), QuicCloseCircumstance.Ended)
+        readable()
         return connection.reading(id, deadline, streamReads, currentCoroutineContext()).taken()
+    }
+
+    /** A read may go: this half is open, else the read raises. */
+    internal fun readable() {
+        if (use.load() == Receiving.Closed) raise(Raised.StreamClosed(id, QuicStreamSide.Read), QuicCloseCircumstance.Ended)
     }
 
     /** Reads no more: what still arrives is dropped, and the peer is not told to stop. */

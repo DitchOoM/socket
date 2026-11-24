@@ -2,9 +2,7 @@
 
 package com.ditchoom.socket.quic.core.edge
 
-import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.ReadPolicy
-import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.quic.QuicAbortCodes
 import com.ditchoom.socket.quic.QuicAppErrorCode
 import com.ditchoom.socket.quic.QuicConnectionState
@@ -67,10 +65,7 @@ internal class CoreReceiveStream(
         reading.compareAndSet(Reading.Gated, Reading.Open)
     }
 
-    override suspend fun <R> read(
-        policy: ReadPolicy,
-        block: suspend (ReadBuffer) -> R,
-    ): ScopedRead<R> {
+    override suspend fun readNext(policy: ReadPolicy): Any {
         when (reading.load()) {
             is Reading.Gated ->
                 when (val end = confirmed()) {
@@ -84,7 +79,7 @@ internal class CoreReceiveStream(
             is Reading.Open, is Reading.AtEnd -> Unit
         }
         return when (val answer = half.take(deadlineOf(policy))) {
-            is ReadAnswer.Data -> scoped(answer, block)
+            is ReadAnswer.Data -> answer.buffer
             is ReadAnswer.End -> ended(ScopedRead.End.PeerFinished)
             is ReadAnswer.Reset -> ended(ScopedRead.End.PeerReset(answer.code))
             is ReadAnswer.Failed -> noBytes(answer)
@@ -110,26 +105,15 @@ internal class CoreReceiveStream(
         return connection.end()
     }
 
-    private suspend inline fun <R> scoped(
-        data: ReadAnswer.Data,
-        block: suspend (ReadBuffer) -> R,
-    ): ScopedRead<R> {
-        try {
-            return ScopedRead.data(block(data.buffer))
-        } finally {
-            data.buffer.freeIfNeeded()
-        }
-    }
-
-    private fun ended(end: ScopedRead.End): ScopedRead<Nothing> {
+    private fun ended(end: ScopedRead.End): ScopedRead.End {
         reading.store(Reading.AtEnd)
-        return ScopedRead.noData(end)
+        return end
     }
 
     /** What a failed read is to its caller: a passed deadline or the connection's end as a value, or a misuse, which raises. */
-    private fun noBytes(answer: ReadAnswer.Failed): ScopedRead<Nothing> =
+    private fun noBytes(answer: ReadAnswer.Failed): ScopedRead.NoData =
         when (val failure = answer.failure) {
-            is OpFailure.DeadlinePassed -> ScopedRead.noData(ScopedRead.DeadlinePassed)
+            is OpFailure.DeadlinePassed -> ScopedRead.DeadlinePassed
             is Raised.ConnEnded -> ended(ScopedRead.End.ConnectionEnded(publicEndOf(failure.end)))
             is Raised.PastClose -> ended(ScopedRead.End.ConnectionEnded(publicEndOf(failure.end)))
             is Raised.WriteRefused, is Raised.ReadRefused, is Raised.Thrown, is Raised.Typed, is Raised.StreamClosed,
