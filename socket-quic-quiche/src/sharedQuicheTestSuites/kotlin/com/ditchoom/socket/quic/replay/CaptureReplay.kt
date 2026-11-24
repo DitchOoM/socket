@@ -1,12 +1,14 @@
 package com.ditchoom.socket.quic.replay
 
 import com.ditchoom.socket.quic.FlowControl
+import com.ditchoom.socket.quic.IncomingStreams
 import com.ditchoom.socket.quic.MigrationPolicy
 import com.ditchoom.socket.quic.MigrationSimEnv
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicRole
 import com.ditchoom.socket.quic.QuicStreamId
+import com.ditchoom.socket.quic.QuicStreamLimit
 import com.ditchoom.socket.quic.QuicheConn
 import com.ditchoom.socket.quic.QuichePairByHand
 import com.ditchoom.socket.quic.migrationSimOptions
@@ -283,9 +285,8 @@ private fun TransportSetup.toOptions(alpn: String): QuicOptions =
                 initialMaxStreamDataBidiLocal = maxStreamDataBidiLocal,
                 initialMaxStreamDataBidiRemote = maxStreamDataBidiRemote,
                 initialMaxStreamDataUni = maxStreamDataUni,
-                initialMaxStreamsBidi = maxStreamsBidi,
-                initialMaxStreamsUni = maxStreamsUni,
             ),
+        incomingStreams = IncomingStreams.Accept(QuicStreamLimit(maxStreamsBidi.toUInt()), QuicStreamLimit(maxStreamsUni.toUInt())),
     )
 
 private class CaptureReplay(

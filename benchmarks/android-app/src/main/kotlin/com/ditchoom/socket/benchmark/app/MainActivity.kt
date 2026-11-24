@@ -14,10 +14,11 @@ import com.ditchoom.socket.ClientSocket
 import com.ditchoom.socket.ServerSocket
 import com.ditchoom.socket.allocate
 import com.ditchoom.socket.connect
-import com.ditchoom.socket.quic.FlowControl
+import com.ditchoom.socket.quic.IncomingStreams
 import com.ditchoom.socket.quic.MigrationPolicy
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicOptions
+import com.ditchoom.socket.quic.QuicStreamLimit
 import com.ditchoom.socket.quic.QuicTlsConfig
 import com.ditchoom.socket.quic.withQuicConnection
 import com.ditchoom.socket.quic.withQuicServer
@@ -198,7 +199,7 @@ class MainActivity : Activity() {
                 verifyPeer = false,
                 idleTimeout = 30.seconds,
                 migration = MigrationPolicy.Forbidden,
-                flowControl = FlowControl(initialMaxStreamsBidi = 1_000),
+                incomingStreams = IncomingStreams.Accept(bidirectional = QuicStreamLimit(1_000u)),
             )
     }
 }

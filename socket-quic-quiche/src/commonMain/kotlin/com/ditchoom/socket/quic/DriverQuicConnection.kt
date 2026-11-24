@@ -23,7 +23,7 @@ internal class DriverQuicConnection(
     override val bufferFactory: BufferFactory,
     override val remoteAddress: SocketAddress,
     connectionScope: CoroutineScope,
-) : QuicEngineConnection,
+) : QuicScope,
     QuicheBackedConnection,
     CoroutineScope by connectionScope {
     override val state: StateFlow<QuicConnectionState> = driver.state
@@ -109,7 +109,7 @@ internal class DriverQuicConnection(
      * [MigrationCapability.ServerConnection] and would answer the same; overriding here means a server
      * connection never has to reach the driver to learn it.
      *
-     * ([networkAtClose] is deliberately left at the [QuicEngineConnection] default: a server has no local
+     * ([networkAtClose] is deliberately left at the [QuicScope] default: a server has no local
      * client network path to correlate against, which is the same reason the connectivity tap is never
      * wired from `bind`.)
      */

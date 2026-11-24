@@ -1,7 +1,7 @@
 package com.ditchoom.socket.quic
 
 /**
- * JS has no QUIC engine at all — `defaultQuicEngine` is an `UnsupportedQuicEngine` (quiche has no
+ * JS has no QUIC engine at all — it has no QUIC stack (quiche has no
  * JS/wasm build; the browser has no raw UDP, and while Node's `dgram` does give `:socket-udp` a real
  * datagram backend, no QUIC stack is wired on top of it). `connect()` therefore throws before any
  * certificate is presented and [QuicOptions.serverCertificateHashes] is never consulted.

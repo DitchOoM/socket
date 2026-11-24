@@ -35,7 +35,7 @@ class CoreUniStreamTests {
                 sendAll(reply, got)
                 awaitCancellation()
             }) { server ->
-                val client = connectCore(server.port, loops = loops)
+                val client = connectCore(server.port, loops = loops, options = acceptingClientOptions)
                 val request = client.connection.halves.openSendOnly()
                 assertEquals(2L, request.id.id, "the client's first unidirectional stream")
                 sendAll(request, payload())

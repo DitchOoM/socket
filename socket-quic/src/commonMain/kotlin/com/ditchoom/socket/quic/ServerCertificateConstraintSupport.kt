@@ -16,7 +16,7 @@ package com.ditchoom.socket.quic
  *  - [Enforced] — JVM/Android (`java.security`), Linux (BoringSSL), macOS and iOS (the shared structural
  *    DER walk in `:socket-quic-quiche`'s commonMain, held to a differential test against `java.security`).
  *  - [LeafHashOnly] — **none**; see its own doc.
- *  - [NoQuicEngine] — tvOS/watchOS and JS/wasmJs, which route to `UnsupportedQuicEngine`.
+ *  - [NoQuicEngine] — tvOS/watchOS and JS/wasmJs, which route to a platform with no QUIC.
  */
 sealed interface ServerCertificateConstraintSupport {
     /**
@@ -36,7 +36,7 @@ sealed interface ServerCertificateConstraintSupport {
      * [NoQuicEngine], not this. It is kept because the state is genuinely reachable in the backend
      * contract — `:socket-quic-quiche`'s `verifyServerCertificateHashes` takes a nullable
      * `parseLeafFields`, so a future backend there can deliberately be hash-only, and any third-party
-     * [QuicEngine] is free to check the hash and nothing else — and because a type that cannot express
+     * QUIC stack is free to check the hash and nothing else — and because a type that cannot express
      * that would force such a backend to misreport itself as one of the other two.
      */
     data object LeafHashOnly : ServerCertificateConstraintSupport
@@ -44,7 +44,7 @@ sealed interface ServerCertificateConstraintSupport {
     /**
      * There is **no QUIC engine on this platform**, so no pin of any kind is enforced — not the leaf hash
      * and not the W3C constraints — because no connection can be established in the first place:
-     * `connect()`/`bind()` throw [UnsupportedOperationException] from `UnsupportedQuicEngine` before any
+     * `connect()`/`bind()` throw [UnsupportedOperationException] from a platform with no QUIC before any
      * certificate exists to check. [QuicOptions.serverCertificateHashes] is inert here.
      *
      * Producers: tvOS/watchOS (quiche has no Tier-3 Apple target) and JS/wasmJs (no quiche build for

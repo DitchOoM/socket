@@ -22,7 +22,7 @@ import kotlinx.coroutines.withTimeout
 
 /**
  * The Layer-2 multiplexed QUIC transport (RFC_UNIFIED_ESTABLISHMENT.md §3.2): establishes a held
- * [QuicEngineConnection] over which the caller opens many streams and datagrams.
+ * [QuicScope] over which the caller opens many streams and datagrams.
  *
  * This is the held ↔ scoped duality's one home for QUIC. `withQuicConnection { }` is the scoped form;
  * this is the held form, and [use][com.ditchoom.socket.transport.use] gives the scoped ergonomic over
@@ -35,27 +35,28 @@ import kotlinx.coroutines.withTimeout
  * }   // both streams force-closed and the connection torn down here
  * ```
  *
- * [engine] defaults to the platform [defaultQuicEngine]; pass an explicit engine to override the
- * backend (the Ktor `HttpClient(engine)` model).
  */
-class QuicSessionTransport(
+class QuicSessionTransport internal constructor(
     private val quicOptions: QuicOptions,
-    private val engine: QuicEngine = defaultQuicEngine,
-) : SessionTransport<QuicEngineConnection> {
+    /** Opens one raced connection; a test hands in its own. */
+    private val connector: LegacyConnector,
+) : SessionTransport<QuicScope> {
+    constructor(quicOptions: QuicOptions) : this(quicOptions, ::legacyRacedConnect)
+
     override suspend fun establish(
         hostname: String,
         port: Int,
         config: TransportConfig,
-    ): QuicEngineConnection =
+    ): QuicScope =
         try {
             withTimeout(config.connectTimeout) {
-                engine.connect(
+                connector(
                     QuicClientBinding.OwnSocket,
                     QuicPeer.Named(hostname, port),
                     quicOptions,
                     config,
                     config.connectTimeout,
-                )
+                ).connection
             }
         } catch (e: TimeoutCancellationException) {
             throw SocketTimeoutException(
@@ -66,7 +67,7 @@ class QuicSessionTransport(
             )
         }
 
-    override suspend fun close(session: QuicEngineConnection) = session.close()
+    override suspend fun close(session: QuicScope) = session.close()
 }
 
 /**
@@ -99,14 +100,16 @@ class QuicSessionTransport(
  * [QuicCloseException] (a [SocketClosedException]); establishment timeouts become [SocketTimeoutException].
  *
  * [quicOptions] carries the ALPN identifying the application protocol (required — QUIC has no default
- * ALPN); [engine] defaults to [defaultQuicEngine].
+ * ALPN).
  */
-class QuicTransport(
+class QuicTransport internal constructor(
     private val quicOptions: QuicOptions,
-    engine: QuicEngine = defaultQuicEngine,
+    connector: LegacyConnector,
 ) : Transport,
     MultiplexingTransport {
-    private val session = QuicSessionTransport(quicOptions, engine)
+    constructor(quicOptions: QuicOptions) : this(quicOptions, ::legacyRacedConnect)
+
+    private val session = QuicSessionTransport(quicOptions, connector)
 
     override val family: TransportFamily get() = TransportFamily.Udp
 
@@ -175,3 +178,7 @@ class QuicTransport(
             }
     }
 }
+
+/** How a transport opens one raced legacy connection. */
+internal typealias LegacyConnector =
+    suspend (QuicClientBinding, QuicPeer, QuicOptions, TransportConfig, kotlin.time.Duration) -> QuicRacedConnect<QuicScope>

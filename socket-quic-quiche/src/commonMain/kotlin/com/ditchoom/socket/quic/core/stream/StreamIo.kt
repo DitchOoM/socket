@@ -20,6 +20,8 @@ internal enum class ShutdownSide { Read, Write }
 @Confined
 internal class StreamIo(
     private val q: QuicheConnRef,
+    /** The code our side is reset with when a write that ends it stops part way. */
+    val cutCode: QuicAppErrorCode,
 ) {
     /** Monotonic: sends that gave quiche bytes or a FIN, and shutdowns, each something the peer will be sent. */
     var output = 0L

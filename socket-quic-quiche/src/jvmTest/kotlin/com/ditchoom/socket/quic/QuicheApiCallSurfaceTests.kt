@@ -91,7 +91,7 @@ class QuicheApiCallSurfaceTests {
                     val params = assertIs<PeerTransportParams.Negotiated>(api.connPeerTransportParams(pair.client))
                     assertEquals(77_000L, params.maxIdleTimeoutMillis, "server max_idle_timeout")
                     assertEquals(options.flowControl.initialMaxData, params.initialMaxData, "server initial_max_data")
-                    assertEquals(options.flowControl.initialMaxStreamsBidi, params.initialMaxStreamsBidi, "server initial_max_streams_bidi")
+                    assertEquals(QuicStreamLimit.Default.streams.toLong(), params.initialMaxStreamsBidi, "server initial_max_streams_bidi")
                     assertEquals(options.activeConnectionIdLimit, params.activeConnIdLimit, "server active_connection_id_limit")
                     assertEquals(false, params.disableActiveMigration, "Manual migration policy permits migration")
                     assertEquals(-1L, params.maxDatagramFrameSize, "datagrams are off")

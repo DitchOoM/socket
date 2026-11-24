@@ -67,7 +67,7 @@ class HandshakeOutcomeSurvivesPeerCloseTests {
                                 stream.writeFully(text("hello"), 5.seconds)
                                 stream.shutdownSend()
                                 // The reply is unread, so the block outlives the server's close.
-                                val connection = this as QuicEngineConnection
+                                val connection = this as QuicScope
                                 withTimeout(10.seconds) { connection.state.first { it is QuicConnectionState.Closed } }
                                 resumption to negotiatedAlpn
                             }

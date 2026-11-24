@@ -10,7 +10,7 @@ import kotlin.test.assertTrue
 
 /**
  * Unit tests for [connectionsByAlpn] (routing semantics) and [QuicScope.negotiatedAlpn]
- * (the state-derived default on [QuicEngineConnection]) over in-memory fakes. The end-to-end
+ * (the state-derived default on [QuicScope]) over in-memory fakes. The end-to-end
  * proof — two protocols negotiated over real TLS on one UDP port — lives in the shared
  * `QuicServerTestSuite.alpnDemux_twoProtocolsShareOneListener` loopback test.
  */

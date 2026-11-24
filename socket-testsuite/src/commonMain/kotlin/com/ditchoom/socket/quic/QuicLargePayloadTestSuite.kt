@@ -60,8 +60,8 @@ abstract class QuicLargePayloadTestSuite {
                     initialMaxStreamDataBidiLocal = STREAM_WINDOW,
                     initialMaxStreamDataBidiRemote = STREAM_WINDOW,
                     initialMaxStreamDataUni = STREAM_WINDOW,
-                    initialMaxStreamsBidi = 64,
                 ),
+            incomingStreams = IncomingStreams.Accept(bidirectional = QuicStreamLimit(64u)),
         )
 
     /**

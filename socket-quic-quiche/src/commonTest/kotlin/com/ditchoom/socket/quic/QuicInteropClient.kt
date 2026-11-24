@@ -8,6 +8,8 @@ import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.HostResolver
 import com.ditchoom.socket.Resolution
+import com.ditchoom.socket.quic.IncomingStreams
+import com.ditchoom.socket.quic.QuicStreamLimit
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.TimeoutCancellationException
@@ -139,8 +141,8 @@ internal fun interopBaseOptions(streams: InteropStreamLimit = InteropStreamLimit
                 initialMaxData = 64L * 1024 * 1024,
                 initialMaxStreamDataBidiLocal = 16L * 1024 * 1024,
                 initialMaxStreamDataBidiRemote = 16L * 1024 * 1024,
-                initialMaxStreamsBidi = streams.initialMaxStreamsBidi,
             ),
+        incomingStreams = IncomingStreams.Accept(bidirectional = QuicStreamLimit(streams.initialMaxStreamsBidi.toUInt())),
     )
 
 /** The bidirectional stream limit this endpoint advertises; the server's comes from `SERVER_PARAMS`. */

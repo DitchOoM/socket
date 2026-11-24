@@ -107,10 +107,6 @@ data class FlowControl(
     val initialMaxStreamDataBidiRemote: Long = 1_048_576,
     /** Max data on a unidirectional stream (bytes). */
     val initialMaxStreamDataUni: Long = 1_048_576,
-    /** Maximum concurrent bidirectional streams the peer may open. */
-    val initialMaxStreamsBidi: Long = 100,
-    /** Maximum concurrent unidirectional streams the peer may open. */
-    val initialMaxStreamsUni: Long = 100,
     /**
      * The ceiling the connection-level receive window auto-tunes up to (bytes). The window starts at
      * [initialMaxData] and grows only while the peer keeps it full, so this is memory a connection can
@@ -130,8 +126,6 @@ data class FlowControl(
         require(initialMaxStreamDataBidiLocal >= 0) { "initialMaxStreamDataBidiLocal must be non-negative" }
         require(initialMaxStreamDataBidiRemote >= 0) { "initialMaxStreamDataBidiRemote must be non-negative" }
         require(initialMaxStreamDataUni >= 0) { "initialMaxStreamDataUni must be non-negative" }
-        require(initialMaxStreamsBidi >= 0) { "initialMaxStreamsBidi must be non-negative" }
-        require(initialMaxStreamsUni >= 0) { "initialMaxStreamsUni must be non-negative" }
         require(maxConnectionWindow > 0) { "maxConnectionWindow must be positive" }
         require(maxStreamWindow > 0) { "maxStreamWindow must be positive" }
     }
@@ -300,7 +294,7 @@ data class QuicOptions(
     val migration: MigrationPolicy = MigrationPolicy.Automatic,
     /**
      * Which [com.ditchoom.socket.NetworkMonitor] this connection observes — for
-     * [MigrationPolicy.Automatic], for [QuicEngineConnection.networkAtClose], and for the trace's NET/NET_CAP
+     * [MigrationPolicy.Automatic], for [QuicScope.networkAtClose], and for the trace's NET/NET_CAP
      * lines when [trace] asks for them. Resolved **once per connection** and shared by all three, so the
      * observation sequence they report indexes one stream rather than three unrelated ones.
      *
@@ -493,6 +487,10 @@ data class QuicOptions(
      * process's memory by default; [QuicSessionStore.NotKept] opts out. Ignored for the server role.
      */
     val sessionStore: QuicSessionStore = QuicSessionStore.Default,
+    /** Which streams the peer may open, and how many of each at once: the stream limits this endpoint advertises. */
+    val incomingStreams: IncomingStreams = IncomingStreams.ByRole,
+    /** The application error codes the library resets a stream with when it must do so itself. */
+    val abortCodes: QuicAbortCodes = QuicAbortCodes(),
 ) {
     init {
         require(alpnProtocols.isNotEmpty()) { "QUIC requires at least one ALPN protocol" }

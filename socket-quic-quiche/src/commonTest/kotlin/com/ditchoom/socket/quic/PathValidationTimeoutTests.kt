@@ -182,7 +182,7 @@ class PathValidationTimeoutTests {
                 driverContext = EmptyCoroutineContext,
             )
 
-        /** Ask the driver to migrate, exactly as every platform `QuicEngineConnection.migrate` does. */
+        /** Ask the driver to migrate, exactly as every platform `QuicScope.migrate` does. */
         suspend fun migrate(): CompletableDeferred<MigrationResult> {
             val deferred = CompletableDeferred<MigrationResult>()
             driver.commands.send(QuicheCmd.Migrate(MigrationTarget.FreshLocalEndpoint, deferred))
@@ -409,7 +409,7 @@ class PathValidationTimeoutTests {
      * which forbids a quiet period). That await is only safe if `migrate()` is bounded. With a hung probe
      * it is not, and a second network transition — 23 of them on the real walk — produces nothing at all.
      *
-     * Driven through a [QuicEngineConnection] whose `migrate` is the three platforms' byte-identical body, so
+     * Driven through a [QuicScope] whose `migrate` is the three platforms' byte-identical body, so
      * the bound really is inherited from the driver rather than added here.
      */
     @Test
@@ -467,7 +467,7 @@ class PathValidationTimeoutTests {
         }
 
     /**
-     * A [QuicEngineConnection] over a real [QuicheDriver], carrying the same `migrate` body all three platform
+     * A [QuicScope] over a real [QuicheDriver], carrying the same `migrate` body all three platform
      * connections have (send [QuicheCmd.Migrate], `await()` the deferred with no timeout of its own).
      * Copied rather than shared because the three real ones live in platform source sets this common test
      * cannot see — and because the point of the test is that the bound comes from the *driver*.
@@ -475,9 +475,11 @@ class PathValidationTimeoutTests {
     private class DriverBackedConnection(
         private val driver: QuicheDriver,
         dispatcher: CoroutineContext,
-    ) : QuicEngineConnection {
+    ) : QuicScope {
         private val job = SupervisorJob()
         override val coroutineContext: CoroutineContext = dispatcher + job
+
+        override suspend fun stats(): QuicStatsRead = driver.publicStats()
 
         var migrateCalls = 0
             private set

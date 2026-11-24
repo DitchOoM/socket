@@ -220,8 +220,8 @@ internal class WriteOp(
      */
     private fun cut(table: StreamTable) {
         if (source !is WriteSource.Bytes || source.end == WriteEnd.More || fin != Fin.Open || taken() == 0) return
-        table.io.shutdown(stream, ShutdownSide.Write, FINISH_CUT_CODE.value)
-        table.sendEnded(stream, Side.Reset(FINISH_CUT_CODE))
+        table.io.shutdown(stream, ShutdownSide.Write, table.io.cutCode.value)
+        table.sendEnded(stream, Side.Reset(table.io.cutCode))
         fin = Fin.Cut
     }
 

@@ -130,7 +130,7 @@ internal class CountsSeen(
 internal fun QuicStatsRead.withDatagramCounts(counts: ConnCounts): QuicStatsRead =
     when (this) {
         is QuicStatsRead.Read -> QuicStatsRead.Read(stats.dropping(dropsOf(counts)))
-        is QuicStatsRead.Ended, is QuicStatsRead.NotReported -> this
+        is QuicStatsRead.Ended -> this
     }
 
 private fun dropsOf(counts: ConnCounts) =

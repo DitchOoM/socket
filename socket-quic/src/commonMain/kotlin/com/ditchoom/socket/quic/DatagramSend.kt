@@ -1,5 +1,3 @@
-@file:OptIn(QuicEngineSpi::class)
-
 package com.ditchoom.socket.quic
 
 import kotlin.time.Duration
@@ -26,7 +24,7 @@ sealed interface DatagramSend {
     sealed interface NotSent : DatagramSend {
         /**
          * The send queue had no place for the datagram: wait with [awaitRoom] and send again, or drop the datagram. One
-         * per channel, made by the engine.
+         * per channel, made by the connection.
          *
          * Under [DatagramOverflow.RefuseNew] the queue is at its high-water mark. Under [DatagramOverflow.EvictOldest] a
          * send from one thread at a time is never refused; with sends from several threads at once it is refused only
@@ -34,7 +32,7 @@ sealed interface DatagramSend {
          * still copying their datagrams, with none queued to evict; more sends copying at once than the engine keeps
          * spare memory slots for (64); or the queue's next cell still being emptied by the connection.
          */
-        class QueueFull private constructor(
+        class QueueFull(
             private val room: DatagramRoomWait,
         ) : NotSent {
             /**
@@ -43,12 +41,6 @@ sealed interface DatagramSend {
              * nothing, when the queue is already that low.
              */
             suspend fun awaitRoom() = room.awaitRoom()
-
-            companion object {
-                /** The [QueueFull] of the channel whose room [room] waits for. */
-                @QuicEngineSpi
-                fun of(room: DatagramRoomWait): QueueFull = QueueFull(room)
-            }
         }
 
         /** This datagram can never go as it is: [maxBytes] is the largest payload one datagram carries now. Split it. */
@@ -69,8 +61,7 @@ sealed interface DatagramSend {
     }
 }
 
-/** How an engine waits for room in a channel's send queue; what [DatagramSend.NotSent.QueueFull.awaitRoom] calls. */
-@QuicEngineSpi
+/** How a channel waits for room in its send queue; what [DatagramSend.NotSent.QueueFull.awaitRoom] calls. */
 fun interface DatagramRoomWait {
     suspend fun awaitRoom()
 }

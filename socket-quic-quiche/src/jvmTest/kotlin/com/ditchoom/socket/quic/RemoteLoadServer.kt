@@ -39,8 +39,8 @@ fun main(args: Array<String>) {
                     initialMaxData = 64L * 1024 * 1024,
                     initialMaxStreamDataBidiLocal = 16L * 1024 * 1024,
                     initialMaxStreamDataBidiRemote = 16L * 1024 * 1024,
-                    initialMaxStreamsBidi = 1_000_000,
                 ),
+            incomingStreams = IncomingStreams.Accept(bidirectional = QuicStreamLimit(1_000_000u)),
         )
     val options = if (args.size > 3) base.copy(trace = perConnectionCapture(File(args[3]))) else base
     runBlocking(Dispatchers.IO) {

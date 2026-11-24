@@ -88,6 +88,21 @@ private class FakeQuicScope(
     private val job = Job(parent.coroutineContext[Job])
     override val coroutineContext = parent.coroutineContext + job
     override val bufferFactory: BufferFactory = BufferFactory.Default
+
+    override val state: kotlinx.coroutines.flow.StateFlow<QuicConnectionState> =
+        kotlinx.coroutines.flow.MutableStateFlow(QuicConnectionState.Established("h3"))
+    override val unreadAtClose: kotlinx.coroutines.flow.StateFlow<QuicUnreadAtClose> =
+        kotlinx.coroutines.flow.MutableStateFlow(QuicUnreadAtClose.ConnectionOpen)
+    override val identity: QuicConnectionIdentity =
+        QuicConnectionIdentity(QuicSessionId("fake"), QuicWireConnectionId.Known("fake"))
+    override val capabilities: QuicCapabilities = QuicCapabilities.None
+
+    override suspend fun stats(): QuicStatsRead = QuicStatsRead.Ended
+
+    override suspend fun close(error: QuicError) {
+        job.cancel()
+    }
+
     private val incomingChannel = Channel<QuicByteStream>(Channel.UNLIMITED)
 
     init {

@@ -1,6 +1,7 @@
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.ReadBuffer
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
@@ -67,6 +68,27 @@ interface QuicConnection {
 
     /** The connection's counters and its active path's estimates. Nothing is counted for it while nobody asks. */
     suspend fun stats(): QuicStatsRead
+
+    /** The sending side of the connection's RFC 9221 datagrams. */
+    val datagrams: QuicDatagramSender
+}
+
+/**
+ * Sends a connection's RFC 9221 datagrams. A send never suspends and never throws: it copies the datagram into the
+ * connection's send queue, or answers why not. A datagram is never retransmitted.
+ */
+interface QuicDatagramSender {
+    /** Queues [payload]'s remaining bytes as one datagram; [payload] is the caller's again, unmoved, when this returns. */
+    fun send(payload: ReadBuffer): DatagramSend
+
+    /**
+     * Queues [prefix]'s remaining bytes then [payload]'s as one datagram, joined in the one copy into the queue; a
+     * [DatagramSend.NotSent.TooLarge] reports the room left for [payload].
+     */
+    fun send(
+        prefix: ReadBuffer,
+        payload: ReadBuffer,
+    ): DatagramSend
 }
 
 /** What a connection's completed handshake settled. */
@@ -75,7 +97,22 @@ class QuicHandshakeFacts(
     val negotiatedAlpn: String,
     /** How the handshake used a session ticket. */
     val resumption: QuicResumptionOutcome,
+    /** The certificate the peer presented, by the SHA-256 of its leaf. */
+    val peerLeaf: QuicPeerLeaf,
 )
+
+/** The leaf certificate a connection's peer presented in its handshake. */
+sealed interface QuicPeerLeaf {
+    /** The peer presented a certificate; [sha256] is the SHA-256 of its leaf's DER encoding. */
+    class Presented(
+        val sha256: CertificateHash,
+    ) : QuicPeerLeaf {
+        override fun toString(): String = "Presented($sha256)"
+    }
+
+    /** The peer presented none: a client asked for no certificate, or quiche could not hand it over. */
+    data object NotPresented : QuicPeerLeaf
+}
 
 /** Whether a connection is open, or how it ended. */
 sealed interface QuicConnectionLife {

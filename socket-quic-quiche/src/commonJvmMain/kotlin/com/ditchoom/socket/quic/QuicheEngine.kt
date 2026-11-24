@@ -8,15 +8,15 @@ import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.Duration
 
 /**
- * JVM/Android [QuicEngine] backed by Cloudflare quiche (JNI on JDK 17–20, FFM on JDK 21+, selected
+ * JVM/Android QUIC stack backed by Cloudflare quiche (JNI on JDK 17–20, FFM on JDK 21+, selected
  * by [loadQuicheApi]) over NIO [java.nio.channels.DatagramChannel]. The `withQuicConnection` /
  * `withQuicServer` wrappers (in `:socket-quic-default`) own the lifecycle; this engine just builds
  * + establishes.
  *
  * Public SPI: `:socket-quic-default` names this as the JVM/Android `defaultQuicEngine` actual.
  */
-object QuicheEngine : QuicEngine {
-    override val capabilities: EngineCapabilities =
+object QuicheEngine {
+    val capabilities: EngineCapabilities =
         EngineCapabilities(
             supportsMigration = true,
             supportsDatagrams = true,
@@ -27,21 +27,21 @@ object QuicheEngine : QuicEngine {
             pinnableRadios = platformPinnableRadios,
         )
 
-    override val peerCertificates: PeerCertificateSupport = PeerCertificateSupport.Available(JcaPeerCertificateBackend)
+    val peerCertificates: PeerCertificateSupport = PeerCertificateSupport.Available(JcaPeerCertificateBackend)
 
     /**
      * Establishment runs on [Dispatchers.IO], never on the caller's thread, which may be a UI thread:
      * the first connection in a process extracts and loads the native library, and every connection
      * may start the platform network monitor, read the platform trust store and write a CA bundle file.
      */
-    override suspend fun connect(
+    suspend fun connect(
         binding: QuicClientBinding,
         endpoint: QuicEndpoint,
         serverName: String,
         quicOptions: QuicOptions,
         transport: TransportConfig,
         timeout: Duration,
-    ): QuicEngineConnection =
+    ): QuicScope =
         offTheCallersThread(release = { it.close() }) {
             establish(binding, endpoint, serverName, quicOptions, transport, timeout)
         }
@@ -53,7 +53,7 @@ object QuicheEngine : QuicEngine {
         quicOptions: QuicOptions,
         transport: TransportConfig,
         timeout: Duration,
-    ): QuicEngineConnection {
+    ): QuicScope {
         capabilities.requirePinnable(binding, quicOptions)
         // Opt-in capture (QuicOptions.trace): record QUIC traffic via the driver seam, then tap the
         // client's NetworkMonitor into the same recorder. Off (trace == null) → tuning is the default.
@@ -91,7 +91,7 @@ object QuicheEngine : QuicEngine {
     }
 
     /** On [Dispatchers.IO] for the reasons [connect] is, plus the certificate and key file reads. */
-    override suspend fun bind(
+    suspend fun bind(
         binding: QuicPortBinding,
         tlsConfig: QuicTlsConfig,
         quicOptions: QuicOptions,
@@ -109,12 +109,17 @@ object QuicheEngine : QuicEngine {
         }
 
     /** On [Dispatchers.IO]: the certificate is written to PEM files for the bind to read. */
-    override suspend fun bind(
+    suspend fun bind(
         binding: QuicPortBinding,
         certificate: PeerCertificate,
         quicOptions: QuicOptions,
         timeout: Duration,
-    ): QuicServer = offTheCallersThread(release = { it.close() }) { super.bind(binding, certificate, quicOptions, timeout) }
+    ): QuicServer =
+        offTheCallersThread(release = { it.close() }) {
+            certificate.withPemFiles { tls ->
+                bind(binding, tls, quicOptions, timeout)
+            }
+        }
 }
 
 /**

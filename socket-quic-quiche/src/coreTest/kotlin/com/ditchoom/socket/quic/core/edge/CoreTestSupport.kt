@@ -5,6 +5,7 @@ import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.flow.writeFully
+import com.ditchoom.socket.quic.IncomingStreams
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.ScopedReadResult
@@ -26,6 +27,9 @@ import kotlin.time.Duration.Companion.seconds
 
 /** The options every core test connects with. */
 internal val coreTestOptions = QuicOptions(alpnProtocols = listOf("test"), verifyPeer = false, idleTimeout = 10.seconds)
+
+/** [coreTestOptions] for a client whose server opens streams to it: a client refuses them by default. */
+internal val acceptingClientOptions = coreTestOptions.copy(incomingStreams = IncomingStreams.Accept())
 
 /** The prefix of the loop threads' names, as [coreConnect] starts them. */
 internal const val LOOP_THREAD = "quic-core-client"

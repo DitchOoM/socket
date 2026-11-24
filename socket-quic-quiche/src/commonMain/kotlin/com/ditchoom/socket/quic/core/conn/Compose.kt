@@ -198,8 +198,8 @@ private fun composed(
         ConnParts(
             role = side.role(),
             life = ConnLife(q, Linger(memory.factory, counts), rules.close),
-            handshake = Handshake(q, rules.handshake, clock.now().value, memory.alpn, side.chainSource()),
-            streams = StreamTable(q, StreamIo(q), side.role(), memory.shared.drains),
+            handshake = Handshake(q, rules.handshake, clock.now().value, memory.alpn, side.chainSource(), memory.factory),
+            streams = StreamTable(q, StreamIo(q, rules.writeCut), side.role(), memory.shared.drains),
             timer = ConnTimer(q, port, WakeSink()),
             ingress = Ingress(q, memory.shared, memory.factory, counts, turnClock),
             egress = Egress(q, counts, turnClock),
@@ -216,7 +216,7 @@ private fun composed(
                     is ConnSide.Client -> side.access
                     is ConnSide.Server -> SendsAccess.NeverDenied
                 },
-            endHold = EndHold(StreamIo(q), memory.factory),
+            endHold = EndHold(StreamIo(q, rules.writeCut), memory.factory),
         )
     return Conn(Turn(parts, turnClock, port), port, socket, turnClock, loopEntrant, counts)
 }

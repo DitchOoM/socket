@@ -78,6 +78,7 @@ internal class ClientParts(
                     datagramRuleOf(w.options),
                     keepAliveRuleOf(w.options),
                     mismatch = w.mismatch,
+                    writeCut = w.options.abortCodes.writeCut,
                 ),
             q = QuicheConnRef(w.api, w.handle),
             side =
@@ -140,6 +141,7 @@ internal class ClientParts(
             w.options.streamOpenPolicy.toDeadline(),
             w.scope,
             HandlerSeat(w.running.handlers.pool(::poolContained), loop.handlers, identity.session),
+            w.options.abortCodes,
         )
 
     private val endpoint = Endpoint(socketIo.ref, io, socket, Route.Fixed(conn, SharedBatch(w.running.out)), released, w.readiness)

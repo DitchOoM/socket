@@ -231,6 +231,7 @@ internal class ServerSetup(
                     earlyDataRuleOf(options),
                     config.ack,
                     mismatch,
+                    options.abortCodes.writeCut,
                 ),
                 factory,
                 config.flight,

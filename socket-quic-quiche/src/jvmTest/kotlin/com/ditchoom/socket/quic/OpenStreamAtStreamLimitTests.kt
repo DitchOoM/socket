@@ -218,7 +218,11 @@ class OpenStreamAtStreamLimitTests {
             val options =
                 semanticSimOptions(idleTimeout = 10.seconds).let {
                     it.copy(
-                        flowControl = it.flowControl.copy(initialMaxStreamsBidi = STREAM_LIMIT, initialMaxStreamsUni = uniLimit),
+                        incomingStreams =
+                            IncomingStreams.Accept(
+                                QuicStreamLimit(STREAM_LIMIT.toUInt()),
+                                QuicStreamLimit(uniLimit.toUInt()),
+                            ),
                         streamOpenPolicy = policy,
                     )
                 }

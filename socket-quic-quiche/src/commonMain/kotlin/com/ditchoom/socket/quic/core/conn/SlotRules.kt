@@ -1,6 +1,7 @@
 package com.ditchoom.socket.quic.core.conn
 
 import com.ditchoom.socket.quic.LinkClass
+import com.ditchoom.socket.quic.QuicAppErrorCode
 import com.ditchoom.socket.quic.core.life.CloseChoice
 import com.ditchoom.socket.quic.core.life.DrainUntil
 import com.ditchoom.socket.quic.core.time.Nanos
@@ -169,6 +170,8 @@ internal class SlotRules(
     val datagrams: DatagramRule = DatagramRule.Off,
     val keepAlive: KeepAliveRule = KeepAliveRule.Off,
     val earlyData: EarlyDataRule = EarlyDataRule.Refused,
+    /** The code our side of a stream is reset with when a write that ends it stops part way. */
+    val writeCut: QuicAppErrorCode = QuicAppErrorCode(0L),
 ) {
     companion object {
         /**
@@ -197,6 +200,7 @@ internal class SlotRules(
             earlyData: EarlyDataRule = EarlyDataRule.Refused,
             ack: AckRule = AckRule.UntilPassEnds,
             mismatch: MismatchResponse = MismatchResponse.Unpaced,
+            writeCut: QuicAppErrorCode = QuicAppErrorCode(0L),
         ) = SlotRules(
             PacingRule.ByQuiche(allowanceNanos = waits.nanos, mismatch = mismatch),
             ack,
@@ -205,6 +209,7 @@ internal class SlotRules(
             datagrams,
             keepAlive,
             earlyData,
+            writeCut,
         )
     }
 }

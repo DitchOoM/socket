@@ -5,6 +5,7 @@ import com.ditchoom.buffer.use
 import com.ditchoom.socket.quic.ApiQuicConfigCalls
 import com.ditchoom.socket.quic.QuicConfigCalls
 import com.ditchoom.socket.quic.QuicOptions
+import com.ditchoom.socket.quic.QuicRole
 import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.QuicheConfig
 import com.ditchoom.socket.quic.clientAlpnOffer
@@ -69,7 +70,7 @@ internal fun clientConfigPlan(
     handshake: HandshakeRule,
 ): ClientConfigPlan {
     val recording = RecordedCalls()
-    applyClientOptions(options.forQuiche(), recording)
+    applyClientOptions(options.forQuiche(QuicRole.Client), recording)
     return ClientConfigPlan(recording.calls(), clientAlpnOffer(options), options.trustedCaCertificatesPem, handshake.priorNanos())
 }
 
@@ -83,7 +84,7 @@ internal fun buildClientConfig(
     val config = api.configNew(QUIC_V1)
     return runCatching {
         encodeAlpnList(clientAlpnOffer(options), factory).use { api.configSetApplicationProtos(config, addressOf(it), it.remaining()) }
-        applyClientOptions(options.forQuiche(), ApiQuicConfigCalls(api, config))
+        applyClientOptions(options.forQuiche(QuicRole.Client), ApiQuicConfigCalls(api, config))
         handshake.applyTo(api, config)
         loadTrustAnchors(api, config, options, factory)
         config

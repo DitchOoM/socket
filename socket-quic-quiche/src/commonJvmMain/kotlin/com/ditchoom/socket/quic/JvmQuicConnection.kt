@@ -19,7 +19,7 @@ import kotlin.time.Duration
 /**
  * JVM QUIC connection backed by [QuicheDriver].
  *
- * Implements [QuicEngineConnection] (the engine-SPI return type) which extends [QuicScope] (public).
+ * Implements [QuicScope] (the engine-SPI return type) which extends [QuicScope] (public).
  * Users only see [QuicScope] inside the [withQuicConnection] block.
  *
  * [onRelease] is the per-connection lifecycle teardown the engine wires in (cancel the connection
@@ -35,7 +35,7 @@ internal class JvmQuicConnection(
     /** Where the primary path came from: whether this connection owns a factory that can open more. */
     internal val pathOrigin: ClientPathOrigin,
     private val onRelease: (() -> Unit)? = null,
-) : QuicEngineConnection,
+) : QuicScope,
     QuicheBackedConnection,
     CoroutineScope by scope {
     override val state: StateFlow<QuicConnectionState> = driver.state
@@ -161,7 +161,7 @@ internal class JvmQuicConnection(
     /**
      * Application-coded close (RFC 9000 §19.19), user-callable from inside the block. Driver-only —
      * the lifecycle teardown ([onRelease]) runs later when the [withQuicConnection] wrapper calls
-     * [close] after the block returns. Overrides the [QuicEngineConnection] default (which would route
+     * [close] after the block returns. Overrides the [QuicScope] default (which would route
      * through [close] and prematurely tear down the running scope).
      */
     override suspend fun closeWithError(errorCode: Long) = driverClose(QuicError.ApplicationError(errorCode))
@@ -171,6 +171,8 @@ internal class JvmQuicConnection(
      * block returns: driver close, then [onRelease] (scope cancel + UDP close + config free).
      * Idempotent; a no-op once already torn down (e.g. after a mid-block [closeWithError]).
      */
+    override suspend fun stats(): QuicStatsRead = driver.publicStats()
+
     override suspend fun close(error: QuicError) {
         if (!closed.compareAndSet(false, true)) return
         try {
