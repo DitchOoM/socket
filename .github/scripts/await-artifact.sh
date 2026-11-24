@@ -19,7 +19,7 @@ run="repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
 deadline=$((SECONDS + TIMEOUT_MIN * 60))
 polls=0
 while :; do
-  count=$(gh api "$run/artifacts?name=$NAME" --jq '[.artifacts[] | select(.digest != null)] | length' 2>/dev/null || echo 0)
+  count=$(gh api "$run/artifacts?name=$NAME" --jq '[.artifacts[] | select((.digest // "") != "")] | length' 2>/dev/null || echo 0)
   if [ "$count" -gt 0 ]; then
     echo "$NAME is in this run after ${SECONDS}s"
     exit 0
@@ -29,7 +29,7 @@ while :; do
     ended=$(gh api --paginate "$run/jobs?per_page=100" \
       --jq ".jobs[] | select(.name | contains(\"$PRODUCER\")) | select(.status == \"completed\") | .conclusion" 2>/dev/null || true)
     if [ -n "$ended" ]; then
-      count=$(gh api "$run/artifacts?name=$NAME" --jq '[.artifacts[] | select(.digest != null)] | length' 2>/dev/null || echo 0)
+      count=$(gh api "$run/artifacts?name=$NAME" --jq '[.artifacts[] | select((.digest // "") != "")] | length' 2>/dev/null || echo 0)
       [ "$count" -gt 0 ] && { echo "$NAME is in this run after ${SECONDS}s"; exit 0; }
       echo "::error::$PRODUCER ended ($ended) without uploading $NAME"
       exit 1
