@@ -27,7 +27,6 @@ import java.util.concurrent.TimeUnit
 import kotlin.coroutines.Continuation
 import kotlin.coroutines.startCoroutine
 import kotlin.test.Test
-import kotlin.test.assertTrue
 import kotlin.test.fail
 import kotlin.time.Duration.Companion.seconds
 
@@ -58,6 +57,89 @@ class PublicPathAllocationTests {
     fun theInternalPathsEchoesAreReportedBesideThem() {
         measure(InternalOneStream, loopGate = Int.MAX_VALUE, callerGate = Int.MAX_VALUE)
         measure(InternalNewStream, loopGate = Int.MAX_VALUE, callerGate = Int.MAX_VALUE)
+    }
+
+    /**
+     * Every object the caller's thread allocates in [BREAKDOWN_ECHOES] echoes of [path], by class and the call that made
+     * it, per echo. Exact only without TLABs (`-PallocTestJvmArgs=-XX:-UseTLAB`), where JFR records every allocation as
+     * an outside-TLAB event; a run with TLABs answers how to get it instead. Printed when a gate fails.
+     */
+    private fun breakdownOf(path: Path): String {
+        val tlab =
+            ManagementFactory
+                .getPlatformMXBean(com.sun.management.HotSpotDiagnosticMXBean::class.java)
+                .getVMOption("UseTLAB")
+                .value
+        if (tlab == "true") return "rerun with -PallocTestJvmArgs=-XX:-UseTLAB for every object this echo allocates"
+        val out = StringBuilder()
+        runBlocking {
+            CoreQuicAllocationTests().withClosingEchoServer { port ->
+                val client = connectCore(port, factory = BufferFactory.network())
+                val dispatcher = CountingDispatcher(CALLER_THREAD)
+                val payload =
+                    BufferFactory.network().allocate(PAYLOAD).apply {
+                        repeat(PAYLOAD) { writeByte(it.toByte()) }
+                        resetForRead()
+                    }
+                val done = CompletableFuture<kotlin.Result<Pair<java.nio.file.Path, Long>>>()
+                suspend {
+                    path.prepare(client)
+                    repeat(WARM_UP) { path.echo(payload) }
+                    val threads = ManagementFactory.getThreadMXBean() as com.sun.management.ThreadMXBean
+                    val me = Thread.currentThread().id
+                    val recording = jdk.jfr.Recording()
+                    recording.enable("jdk.ObjectAllocationOutsideTLAB").withStackTrace()
+                    recording.start()
+                    val before = threads.getThreadAllocatedBytes(me)
+                    repeat(BREAKDOWN_ECHOES) { path.echo(payload) }
+                    val bytes = threads.getThreadAllocatedBytes(me) - before
+                    recording.stop()
+                    val dump =
+                        java.nio.file.Files
+                            .createTempFile("breakdown", ".jfr")
+                    recording.dump(dump)
+                    dump to bytes
+                }.startCoroutine(Continuation(dispatcher + Job()) { done.complete(it) })
+                val (dump, bytes) = done.get(120, TimeUnit.SECONDS).getOrThrow()
+                client.connection.close(QuicError.NoError)
+                dispatcher.close()
+                val rows = HashMap<String, LongArray>()
+                jdk.jfr.consumer.RecordingFile
+                    .readAllEvents(dump)
+                    .filter { it.eventType.name == "jdk.ObjectAllocationOutsideTLAB" && it.thread?.javaName == CALLER_THREAD }
+                    .forEach { e ->
+                        val frames = e.stackTrace?.frames.orEmpty()
+                        val site =
+                            frames
+                                .map { "${it.method.type.name.substringAfterLast('.')}.${it.method.name}" }
+                                .firstOrNull { !it.startsWith("Dispatched") && !it.contains("intercepted") } ?: "?"
+                        val chain =
+                            frames
+                                .take(
+                                    4,
+                                ).joinToString(" < ") { "${it.method.type.name.substringAfterLast('.')}.${it.method.name}" }
+                        val key = "${e.getClass("objectClass").name} | $site | $chain"
+                        val row = rows.getOrPut(key) { LongArray(2) }
+                        row[0]++
+                        row[1] += e.getLong("allocationSize")
+                    }
+                java.nio.file.Files
+                    .delete(dump)
+                val total = rows.values.sumOf { it[1] }
+                out.append(
+                    "%s: counter %.1f B/echo, events %.1f B/echo over %d echoes (count and B per echo | class | made by | stack)\n".format(
+                        path.label,
+                        bytes.toDouble() / BREAKDOWN_ECHOES,
+                        total.toDouble() / BREAKDOWN_ECHOES,
+                        BREAKDOWN_ECHOES,
+                    ),
+                )
+                rows.entries.sortedByDescending { it.value[1] }.forEach { (k, v) ->
+                    out.append("  %.2f, %.1f | %s\n".format(v[0].toDouble() / BREAKDOWN_ECHOES, v[1].toDouble() / BREAKDOWN_ECHOES, k))
+                }
+            }
+        }
+        return out.toString()
     }
 
     /** One echo from the caller's side, on the connection's internal or public shape. */
@@ -155,11 +237,12 @@ class PublicPathAllocationTests {
                     println(line)
                     client.connection.close(QuicError.NoError)
                     dispatcher.close()
-                    assertTrue(
-                        report.loop <= loopGate && report.caller <= callerGate,
-                        "%s: loop %.1f B/echo (gate %d), caller %.1f B/echo (gate %d)\n%s"
-                            .format(path.label, report.loop, loopGate, report.caller, callerGate, report.where),
-                    )
+                    if (report.loop > loopGate || report.caller > callerGate) {
+                        fail(
+                            "%s: loop %.1f B/echo (gate %d), caller %.1f B/echo (gate %d)\n%s\nevery object:\n%s"
+                                .format(path.label, report.loop, loopGate, report.caller, callerGate, report.where, breakdownOf(path)),
+                        )
+                    }
                 }
             }
         }
@@ -243,6 +326,7 @@ class PublicPathAllocationTests {
         const val PAYLOAD = 64
         const val WARM_UP = 5_000
         const val MEASURED = 20_000
+        const val BREAKDOWN_ECHOES = 500
     }
 }
 
