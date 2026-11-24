@@ -209,11 +209,13 @@ internal class CoreConnection(
     }
 
     /** [open] with a refused open as a value. */
-    internal suspend fun opened(kind: StreamKind): OpenSettled {
-        val open = OpenOp(kind, openBound, deadlines, conn)
-        conn.submit(open, placeOf(currentCoroutineContext()))
-        return open.settled()
-    }
+    internal suspend fun opened(kind: StreamKind): OpenSettled = opening(kind, currentCoroutineContext()).settled()
+
+    /** An open of a stream of [kind] handed to the connection for a caller in [caller]; the caller takes the answer. */
+    internal fun opening(
+        kind: StreamKind,
+        caller: CoroutineContext,
+    ): OpenOp = OpenOp(kind, openBound, deadlines, conn).also { conn.submit(it, placeOf(caller)) }
 
     /** Read inside the connection when asked; nothing is counted for it otherwise. */
     override suspend fun stats(): QuicStatsRead =
@@ -246,15 +248,13 @@ internal class CoreConnection(
         return op.answer()
     }
 
-    internal suspend fun taken(
+    /** A read handed to the connection for a caller in [caller]; the caller takes the answer. */
+    internal fun reading(
         stream: QuicStreamId,
         deadline: Duration,
         streamReads: StreamReads,
-    ): ReadAnswer {
-        val op = ReadOp(stream, deadline, deadlines, conn, edge, bufferFactory, streamReads)
-        conn.submit(op, placeOf(currentCoroutineContext()))
-        return op.taken()
-    }
+        caller: CoroutineContext,
+    ): ReadOp = ReadOp(stream, deadline, deadlines, conn, edge, bufferFactory, streamReads).also { conn.submit(it, placeOf(caller)) }
 
     /** A write handed to the connection; its caller takes the answer. */
     internal suspend fun submitted(

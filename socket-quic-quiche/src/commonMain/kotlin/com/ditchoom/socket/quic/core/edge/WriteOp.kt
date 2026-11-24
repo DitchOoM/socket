@@ -60,11 +60,11 @@ internal class WriteOp(
     private val bound: Duration,
     private val deadlines: OpDeadlines,
     private val conn: Conn,
-    private val caller: CoroutineContext,
+    internal val caller: CoroutineContext,
 ) : ConnWork(),
     Waiter,
     Bounded {
-    private val hand = Hand<WriteAnswer>()
+    internal val hand = Hand<WriteAnswer>()
     private var lease: Lease = Lease.None
     private var fin = Fin.Open
 
@@ -84,10 +84,13 @@ internal class WriteOp(
     suspend fun answer(): BytesWritten = resultOf(hand.await(caller) { withdraw() })
 
     /** The cancelling thread: the connection takes the write back from inside, and answers it there. */
-    private fun withdraw() = conn.submit(Withdraw(), CallerPlace.HandToLoop)
+    internal fun withdraw() = conn.submit(Withdraw(), CallerPlace.HandToLoop)
 
-    /** The write's own answer, for a caller that reports it as a value; a cancelled caller raises as [answer] does. */
-    suspend fun settled(): WriteAnswer {
+    /**
+     * The write's own answer, for a caller that reports it as a value; a cancelled caller raises as [answer] does.
+     * Inline, so it runs in its caller's suspend frame and makes none of its own.
+     */
+    suspend inline fun settled(): WriteAnswer {
         val answer = hand.await(caller) { withdraw() }
         return if (caller.isActive && answer !is WriteAnswer.Cancelled) answer else raiseCancelled(caller)
     }

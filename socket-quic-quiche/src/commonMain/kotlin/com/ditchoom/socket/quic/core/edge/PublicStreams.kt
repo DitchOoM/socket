@@ -110,7 +110,7 @@ internal class CoreReceiveStream(
         return connection.end()
     }
 
-    private suspend fun <R> scoped(
+    private suspend inline fun <R> scoped(
         data: ReadAnswer.Data,
         block: suspend (ReadBuffer) -> R,
     ): ScopedRead<R> {

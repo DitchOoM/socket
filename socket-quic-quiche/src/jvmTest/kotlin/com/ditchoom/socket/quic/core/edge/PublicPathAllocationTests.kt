@@ -38,11 +38,12 @@ import kotlin.time.Duration.Companion.seconds
  * loop's and the caller's exact per-thread counters; resumes are the caller dispatcher's dispatches, each one a
  * continuation the loop resumed. The internal rows are printed only; the public rows are gated.
  *
- * Measured on JDK 21, macOS: caller 992 B per echo on one stream (internal 912) and 2,528 B per new-stream echo
- * (internal 2,392), 2 and 5 resumes, the loop under 1 B. The public path's extra bytes are its wrappers: the
- * `CoreSendStream.write` and `CoreReceiveStream.read` suspend frames, the read's block and its boxed `ScopedRead`, and per
- * new stream the `CoreBidiStream`, its two halves and their state cells, and the boxed `StreamOpen`. Each gate sits about
- * 5 % over its measurement.
+ * Measured on JDK 21, macOS, as exact object counts (a heap histogram of all objects around 1,000 echoes): caller 904 B
+ * per echo on one stream (internal 912) and 2,240 B per new-stream echo (internal 2,392), 2 and 5 resumes, the loop
+ * under 1 B. Each public call is one suspend frame: the settled calls beneath it are inline. What the public shape
+ * still adds is its signature's: the read's block and its boxed result, the boxed `ScopedRead` per read and `StreamOpen`
+ * per open, and per new stream the `CoreBidiStream`, its two direction wrappers and their state cells. Each gate sits
+ * about 5 % over its measurement.
  */
 class PublicPathAllocationTests {
     @Test
@@ -237,8 +238,8 @@ class PublicPathAllocationTests {
         const val LOOP_GATE = 8
         const val JDK_LOOP_GATE_ONE = 130
         const val JDK_LOOP_GATE_NEW = 260
-        const val PUBLIC_CALLER_GATE_ONE = 1_050
-        const val PUBLIC_CALLER_GATE_NEW = 2_650
+        const val PUBLIC_CALLER_GATE_ONE = 950
+        const val PUBLIC_CALLER_GATE_NEW = 2_350
         const val PAYLOAD = 64
         const val WARM_UP = 5_000
         const val MEASURED = 20_000
