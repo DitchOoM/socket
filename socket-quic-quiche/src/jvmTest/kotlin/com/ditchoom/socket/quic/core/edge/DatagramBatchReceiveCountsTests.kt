@@ -11,8 +11,8 @@ import com.ditchoom.socket.quic.core.conn.ConnWork
 import com.ditchoom.socket.quic.core.conn.Datagrams
 import com.ditchoom.socket.quic.core.conn.Inside
 import com.ditchoom.socket.quic.core.life.ConnEnd
+import com.ditchoom.socket.quic.core.testing.Explanation
 import com.ditchoom.socket.quic.core.testing.ProcessCpuSampler
-import com.ditchoom.socket.quic.core.testing.Stall
 import com.ditchoom.socket.quic.core.testing.StallProbe
 import com.ditchoom.socket.quic.core.testing.withDescriptorsAbove127
 import com.ditchoom.socket.quic.skipOnMissingNativeLib
@@ -76,7 +76,7 @@ class DatagramBatchReceiveCountsTests {
         val pressure: Pressure,
         val gcCount: Long,
         val gcMillis: Long,
-        val stall: Stall,
+        val stall: Explanation,
     ) {
         /** What a dropping run's failure says: how long the reader waited at most, and how hard the queue was pressed. */
         fun evidence() =
