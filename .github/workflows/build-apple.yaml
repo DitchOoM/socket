@@ -739,7 +739,7 @@ jobs:
           artifact-name: jfr-ring-macos-jvm-${{ matrix.backend.slug }}
 
       - name: Upload test reports (on failure)
-        if: ${{ failure() || cancelled() }}
+        if: always()  # THROWAWAY classification branch: keep a passing run's probe numbers
         continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
