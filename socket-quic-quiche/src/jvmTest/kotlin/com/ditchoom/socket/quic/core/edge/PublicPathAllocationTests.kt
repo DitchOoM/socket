@@ -222,11 +222,11 @@ class PublicPathAllocationTests {
         const val NEW_STREAMS = 2_000
 
         // Gates, a little over what JDK 21 on macOS measured (two runs): per echo 617-631 B on the caller, 0 on the loop;
-        // per new stream 2,802 B on the caller (its open most of it), 60-61 B on the loop; per download read 490 B, 0.
+        // per new stream 2,802 B on the caller (its open most of it), 60-67 B on the loop (67 B when the whole task runs); per download read 490 B, 0.
         const val ECHO_CALLER_GATE = 680.0
         const val ECHO_LOOP_GATE = 8.0
         const val NEW_CALLER_GATE = 2_950.0
-        const val NEW_LOOP_GATE = 70.0
+        const val NEW_LOOP_GATE = 76.0
         const val DOWNLOAD_CALLER_GATE = 520.0
         const val DOWNLOAD_LOOP_GATE = 8.0
 
