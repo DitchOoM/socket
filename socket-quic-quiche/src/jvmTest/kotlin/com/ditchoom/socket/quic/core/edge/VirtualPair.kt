@@ -7,6 +7,8 @@ import com.ditchoom.buffer.unwrapFully
 import com.ditchoom.socket.quic.LinkClass
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicOptions
+import com.ditchoom.socket.quic.QuicSessionMemory
+import com.ditchoom.socket.quic.QuicSessionStore
 import com.ditchoom.socket.quic.QuicTlsConfig
 import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.QuicheConn
@@ -326,7 +328,7 @@ internal class VirtualPair private constructor(
                 pair.client =
                     replayClient(
                         clientApi(pair.CountingClientApi(api)),
-                        options,
+                        pair.isolated(options),
                         BufferFactory.Default,
                         pair.Socket(End.Client),
                         pair.clock,
@@ -371,7 +373,7 @@ internal class VirtualPair private constructor(
         client =
             replayClient(
                 wrapApi(CountingClientApi(api)),
-                options,
+                isolated(options),
                 BufferFactory.Default,
                 Socket(End.Client),
                 clock,
@@ -400,6 +402,13 @@ internal class VirtualPair private constructor(
         server = replayServer(api, options, BufferFactory.Default, Socket(End.Server), clock, coreTlsConfig())
         serverKey = InetSocketAddress(LOCALHOST, server.port).toPathKey()
     }
+
+    /** Tickets this pair's clients keep and offer: the pair's own, so none from another test's server on a reused port. */
+    private val sessions = QuicSessionMemory()
+
+    /** [options] with the process's default session store made this pair's own; a test's own store stays. */
+    fun isolated(options: QuicOptions): QuicOptions =
+        if (options.sessionStore === QuicSessionStore.Default) options.copy(sessionStore = QuicSessionStore.InMemory(sessions)) else options
 
     /** The server's accepted connection: it is offered from a thread of the server's own, so awaited on the wall clock. */
     suspend fun accept(): CoreConnection = withTimeout(10.seconds) { server.accept() }

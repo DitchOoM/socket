@@ -410,6 +410,9 @@ fun downloadQuicheSource(
     // NEW_TOKEN on both sides (RFC 9000 §8.1.3): a client keeps and sends tokens, a server sends them and lifts the
     // anti-amplification limit for a client that presented a valid one. Idempotent, fails loudly on drift. See the KDoc.
     patchQuicheNewTokenFfi(sourceDir)
+    // A resumed client takes the peer's stream limits from the handshake, not the larger of them and the ticket's, unless
+    // its early data was accepted (RFC 9000 §7.4.1). Idempotent, fails loudly on drift. See the KDoc.
+    patchQuicheResumedStreamLimitsFromTheHandshake(sourceDir)
 
     // Name the patch set this tree now carries. The tree outlives the run (CI caches it with a
     // prefix fallback), so a reader that compiles it outside these tasks checks this stamp rather
@@ -2737,6 +2740,111 @@ fun patchQuicheProbeReplacesLeftPath(sourceDir: File) {
 }
 
 /**
+ * quiche applies the transport parameters a session ticket remembers when a client offers the ticket, then the server's
+ * handshake parameters through `update_peer_max_streams_bidi/uni`, which keep the larger value: a client that resumed
+ * with a ticket from a server that granted more streams opened more than the server it reached grants. RFC 9000 §7.4.1:
+ * the remembered values serve 0-RTT only, the client uses the new ones when the server rejects 0-RTT, and a server that
+ * accepts it must not reduce them, so with 0-RTT accepted the larger value is the new one. The other parameters quiche
+ * applies from a ticket are assigned from the handshake's already: `initial_max_data`, the stream data limits (new
+ * streams read `peer_transport_params`), `active_connection_id_limit` and `max_datagram_frame_size`.
+ */
+fun patchQuicheResumedStreamLimitsFromTheHandshake(sourceDir: File) {
+    val marker = "socket-resumed-stream-limits-from-the-handshake"
+    val libRs = sourceDir.resolve("quiche/src/lib.rs")
+    val streamRs = sourceDir.resolve("quiche/src/stream/mod.rs")
+    if (!libRs.exists() || !streamRs.exists()) return
+    if (libRs.readText().contains(marker)) return
+
+    fun replaceOnce(
+        file: File,
+        anchor: String,
+        replacement: String,
+    ) {
+        val text = file.readText()
+        if (text.split(anchor).size != 2) {
+            throw GradleException(
+                "$marker: `${anchor.trim().take(80)}` not found exactly once in ${file.name}: a quiche bump moved it. " +
+                    "Re-fit patchQuicheResumedStreamLimitsFromTheHandshake, or delete it if quiche applies the handshake's limits.",
+            )
+        }
+        file.writeText(text.replace(anchor, replacement))
+    }
+
+    replaceOnce(
+        streamRs,
+        "    pub fn update_peer_max_streams_uni(&mut self, v: u64) {\n",
+        """
+        |    // $marker: the peer's stream limits as its handshake parameters state them.
+        |    pub fn socket_set_peer_max_streams(&mut self, bidi: u64, uni: u64) {
+        |        self.peer_max_streams_bidi = bidi;
+        |        self.peer_max_streams_uni = uni;
+        |    }
+        |
+        |    pub fn update_peer_max_streams_uni(&mut self, v: u64) {
+        |
+        """.trimMargin(),
+    )
+    replaceOnce(
+        libRs,
+        "        self.process_peer_transport_params(peer_params)?;\n\n        self.parsed_peer_transport_params = true;\n",
+        """
+        |        // $marker: the handshake's stream limits replace a ticket's unless 0-RTT was accepted.
+        |        let socket_limits = (peer_params.initial_max_streams_bidi, peer_params.initial_max_streams_uni);
+        |        self.process_peer_transport_params(peer_params)?;
+        |        if self.handshake.early_data_reason() != SOCKET_EARLY_DATA_ACCEPTED {
+        |            self.streams.socket_set_peer_max_streams(socket_limits.0, socket_limits.1);
+        |        }
+        |
+        |        self.parsed_peer_transport_params = true;
+        |
+        """.trimMargin(),
+    )
+    // The server's early-data context carries the limits 0-RTT relies on, where quiche set the constant "quiche": a ticket
+    // issued under other limits then has its 0-RTT rejected (RFC 9001 §4.6.2), so a server never accepts 0-RTT with
+    // limits lower than the ones the client remembers (RFC 9000 §7.4.1).
+    replaceOnce(
+        libRs,
+        "    fn encode_transport_params(&mut self) -> Result<()> {\n        self.handshake.set_quic_transport_params(\n" +
+            "            &self.local_transport_params,\n            self.is_server,\n        )\n    }\n",
+        """
+        |    fn encode_transport_params(&mut self) -> Result<()> {
+        |        if self.is_server {
+        |            // $marker: the limits a client's 0-RTT relies on, in the early-data context.
+        |            let p = &self.local_transport_params;
+        |            let mut context = b"quiche".to_vec();
+        |            for v in [
+        |                p.initial_max_data,
+        |                p.initial_max_stream_data_bidi_local,
+        |                p.initial_max_stream_data_bidi_remote,
+        |                p.initial_max_stream_data_uni,
+        |                p.initial_max_streams_bidi,
+        |                p.initial_max_streams_uni,
+        |                p.active_conn_id_limit,
+        |                p.max_datagram_frame_size.map_or(0, |d| d + 1),
+        |            ] {
+        |                context.extend_from_slice(&v.to_be_bytes());
+        |            }
+        |            self.handshake.set_quic_early_data_context(&context)?;
+        |        }
+        |        self.handshake.set_quic_transport_params(
+        |            &self.local_transport_params,
+        |            self.is_server,
+        |        )
+        |    }
+        |
+        """.trimMargin(),
+    )
+    libRs.appendText(
+        """
+        |
+        |// $marker: BoringSSL's `ssl_early_data_accepted`.
+        |const SOCKET_EARLY_DATA_ACCEPTED: u32 = 2;
+        |
+        """.trimMargin(),
+    )
+}
+
+/**
  * NEW_TOKEN (RFC 9000 §8.1.3, §19.7) on both sides, with the token's format and crypto left to the application.
  * quiche 0.30 parses and checks the frame (non-empty, 1-RTT only, never from a client) but a client drops it ("TODO:
  * implement stateless retry"), a server never sends one, and the C API can neither put a token in a client's Initial
@@ -2754,6 +2862,7 @@ fun patchQuicheProbeReplacesLeftPath(sourceDir: File) {
  * Marker-guarded and loud in both directions: a re-run returns, a moved anchor throws, and an upstream that exports
  * any of the four throws, telling you to delete this patch.
  */
+
 fun patchQuicheNewTokenFfi(sourceDir: File) {
     val marker = "socket-new-token"
     val src = sourceDir.resolve("quiche/src")
