@@ -80,7 +80,9 @@ jobs:
         working-directory: /tmp/qns
         run: |
           docker build -t "$IMAGE:${HAPROXY_COMMIT:0:8}" .
-          version=$(docker run --rm --entrypoint /usr/local/sbin/haproxy "$IMAGE:${HAPROXY_COMMIT:0:8}" -v | head -1)
+          # The image's run_endpoint.sh sets LD_LIBRARY_PATH=/usr/local/lib for the quictls libraries; the check does too.
+          version=$(docker run --rm -e LD_LIBRARY_PATH=/usr/local/lib --entrypoint /usr/local/sbin/haproxy \
+            "$IMAGE:${HAPROXY_COMMIT:0:8}" -v | head -1)
           echo "$version"
           case "$version" in
             *"$HAPROXY_COMMIT"*) ;;
