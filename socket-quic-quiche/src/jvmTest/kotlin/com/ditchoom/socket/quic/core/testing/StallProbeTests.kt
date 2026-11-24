@@ -13,7 +13,7 @@ import kotlin.test.assertTrue
 /** [StallProbe] names what a stalled thread was doing: two stalls of known cause, each attributed to it. */
 class StallProbeTests {
     @Test
-    fun aReaderAsleepFor20MsIsTimedWaitingWithNoCpuAndNoSafepoint() {
+    fun aReaderAsleepFor20MsIsTimedWaitingWithNoCpuAndNotHeldBySafepoints() {
         val slept = CompletableFuture<LongArray>()
         val reader =
             Thread({
@@ -31,7 +31,9 @@ class StallProbeTests {
         assertEquals(Thread.State.TIMED_WAITING, stall.dominant, "$stall")
         assertTrue(stall.targetCpuMicros < stall.windowMicros / 4, "the sleeper used CPU: $stall")
         val safepoints = assertIs<Safepoints.Logged>(stall.safepoints, "$stall")
-        assertTrue(safepoints.overlapMicros < 1_000, "a safepoint covered the sleep: $stall")
+        // The JVM may still pause during the sleep (a G1 remark took 10 ms of a 72 ms sleep on a loaded macOS runner):
+        // what the probe must not do is blame the sleep on it.
+        assertTrue(safepoints.overlapMicros < stall.windowMicros / 2, "safepoints covered half the sleep: $stall")
     }
 
     @Test
