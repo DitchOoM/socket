@@ -75,6 +75,9 @@ internal class DatagramBox(
     private val lentOut = ArrayDeque<Queued>()
     private var batch: BatchWait = BatchWait.None
 
+    /** How hard arrivals pressed on the queue, for a receiver that drops. */
+    val pressure = DatagramPressure()
+
     /** Answers [waiter] with the oldest datagram held that is still fresh at [now] or quiche's next, else parks it until one arrives. */
     fun receive(
         waiter: DatagramWaiter,
@@ -232,10 +235,12 @@ internal class DatagramBox(
         if (queued.size >= bound) {
             queued.removeFirst()
             counts.datagramOverflowed()
+            pressure.dropped(now)
         } else {
             spare.removeFirst()
         }
         queued.addLast(slot)
+        pressure.queued(queued.size)
         return Kept.One
     }
 
