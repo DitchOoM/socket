@@ -66,6 +66,8 @@ on:
 permissions:
   contents: read
   actions: read
+  # The held haproxy image is a private package of this organisation (ghcr.io/ditchoom/haproxy-qns).
+  packages: read
 
 env:
   ORG_GRADLE_PROJECT_version: ${{ inputs.version }}
@@ -164,6 +166,10 @@ jobs:
           set -euo pipefail
           zstd -dc /tmp/quic-interop-image.tar.zst | docker load
           sudo modprobe ip6table_filter
+
+      # A held peer image (peer-images.json) is a private package of this organisation; the job's token reads it.
+      - name: Log in to GHCR for held peer images
+        run: echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
       - uses: actions/download-artifact@v8
         with:

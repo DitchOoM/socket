@@ -564,6 +564,11 @@ jobs:
   # quiche patch is tested by the pull request that changes it. They start with the run and wait only for
   # the natives artifacts (await-natives), not for the rest of build-linux and build-apple.
   quic-interop:
+    # packages: read pulls the held haproxy image (test-harness/quic-interop/peer-images.json) from GHCR.
+    permissions:
+      contents: read
+      actions: read
+      packages: read
     uses: ./.github/workflows/quic-interop-gate.yaml
     with:
       version: "0.0.0-interop"
