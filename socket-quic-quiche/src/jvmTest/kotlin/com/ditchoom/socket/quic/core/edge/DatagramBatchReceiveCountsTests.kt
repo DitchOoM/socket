@@ -10,10 +10,17 @@ import com.ditchoom.socket.quic.QuicDatagramBatch
 import com.ditchoom.socket.quic.QuicDatagrams
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicStatsRead
+import com.ditchoom.socket.quic.core.conn.CallerPlace
+import com.ditchoom.socket.quic.core.conn.Conn
+import com.ditchoom.socket.quic.core.conn.ConnWork
+import com.ditchoom.socket.quic.core.conn.Datagrams
+import com.ditchoom.socket.quic.core.conn.Inside
+import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.testing.withDescriptorsAbove127
 import com.ditchoom.socket.quic.network
 import com.ditchoom.socket.quic.skipOnMissingNativeLib
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
@@ -66,7 +73,7 @@ class DatagramBatchReceiveCountsTests {
     fun aFullSpeedReaderLosesNoDatagramToTheReceiveQueue() =
         flooded(Reader.Each) { flood ->
             assertTrue(flood.received > 0, "the flood delivered nothing")
-            assertEquals(0L, flood.dropped, "datagrams the receive queue dropped of ${flood.received}")
+            assertEquals(0L, flood.dropped, "datagrams the receive queue dropped of ${flood.received}; ${flood.evidence()}")
         }
 
     private class Flood(
@@ -75,7 +82,16 @@ class DatagramBatchReceiveCountsTests {
         val resumes: Long,
         val received: Long,
         val dropped: Long,
+        val longestGapNanos: Long,
+        val pressure: Pressure,
+        val gcCount: Long,
+        val gcMillis: Long,
     ) {
+        /** What a dropping run's failure says: how long the reader waited at most, and how hard the queue was pressed. */
+        fun evidence() =
+            "longest gap between reader runs ${longestGapNanos / 1_000} us; queue high water ${pressure.highWater}; " +
+                "reads that dropped ${pressure.droppingReads}; GC $gcCount collections, $gcMillis ms"
+
         fun bytesPer() = callerBytes.toDouble() / delivered
 
         fun resumesPer() = resumes.toDouble() / delivered
@@ -158,9 +174,14 @@ class DatagramBatchReceiveCountsTests {
                         val bytesFrom = threads.getThreadAllocatedBytes(readerId)
                         val resumesFrom = readerThread.dispatches.get()
                         val deliveredFrom = delivered.get()
+                        val pressureFrom = pressureOf(core)
+                        val gcFrom = gcTotals()
+                        readerThread.resetGap()
                         flood(sending, payload, FLOOD_MS)
                         settle(delivered)
                         val after = statsOf(core)
+                        val pressureTo = pressureOf(core)
+                        val gcTo = gcTotals()
                         val flood =
                             Flood(
                                 delivered = delivered.get() - deliveredFrom,
@@ -168,6 +189,10 @@ class DatagramBatchReceiveCountsTests {
                                 resumes = readerThread.dispatches.get() - resumesFrom,
                                 received = after.datagramsReceived - before.datagramsReceived,
                                 dropped = after.datagramDrops.receiveQueue - before.datagramDrops.receiveQueue,
+                                longestGapNanos = readerThread.longestGap.get(),
+                                pressure = Pressure(pressureTo.highWater, pressureTo.droppingReads - pressureFrom.droppingReads),
+                                gcCount = gcTo.first - gcFrom.first,
+                                gcMillis = gcTo.second - gcFrom.second,
                             )
                         client.connection.close(QuicError.NoError)
                         assertIs<DatagramReceive.NotReceived.Unavailable.ConnectionEnded>(ended.get(10, TimeUnit.SECONDS).getOrThrow())
@@ -208,6 +233,39 @@ class DatagramBatchReceiveCountsTests {
         }
     }
 
+    private class Pressure(
+        val highWater: Int,
+        val droppingReads: Int,
+    )
+
+    /** The server connection's receive-queue pressure, read inside it. */
+    private suspend fun pressureOf(connection: CoreConnection): Pressure {
+        val conn = CONN_FIELD.get(connection) as Conn
+        val read = CompletableDeferred<Pressure>()
+        conn.submit(
+            object : ConnWork() {
+                override fun run(inside: Inside) {
+                    when (val datagrams = inside.datagrams) {
+                        is Datagrams.On -> read.complete(Pressure(datagrams.box.pressure.highWater, datagrams.box.pressure.droppingReads))
+                        is Datagrams.Off -> read.complete(Pressure(0, 0))
+                    }
+                }
+
+                override fun gone(end: ConnEnd) {
+                    read.complete(Pressure(0, 0))
+                }
+            },
+            CallerPlace.HandToLoop,
+        )
+        return withTimeout(10.seconds) { read.await() }
+    }
+
+    /** Collections and milliseconds collecting, over every collector, so far. */
+    private fun gcTotals(): Pair<Long, Long> {
+        val collectors = ManagementFactory.getGarbageCollectorMXBeans()
+        return collectors.sumOf { maxOf(it.collectionCount, 0L) } to collectors.sumOf { maxOf(it.collectionTime, 0L) }
+    }
+
     private suspend fun statsOf(connection: CoreConnection): QuicConnectionStats = assertIs<QuicStatsRead.Read>(connection.stats()).stats
 
     private fun payloadOf(size: Int) =
@@ -217,6 +275,7 @@ class DatagramBatchReceiveCountsTests {
         }
 
     private companion object {
+        val CONN_FIELD = CoreConnection::class.java.getDeclaredField("conn").apply { isAccessible = true }
         val ON = coreTestOptions.copy(datagrams = DatagramOptions())
         const val FLOOD_BYTES = 1000
         const val WARM_UP_MS = 500L
@@ -240,12 +299,26 @@ private class ResumeCountingDispatcher(
     private val inner = ArrayQueueDispatcher(name)
     val dispatches = AtomicLong()
 
+    /** The longest wait, in nanoseconds, between one run of the reader and the next, since [resetGap]. */
+    val longestGap = AtomicLong()
+    private val lastRun = AtomicLong()
+
     override fun dispatch(
         context: CoroutineContext,
         block: Runnable,
     ) {
         dispatches.incrementAndGet()
-        inner.dispatch(context, block)
+        inner.dispatch(context) {
+            val now = System.nanoTime()
+            val last = lastRun.getAndSet(now)
+            if (last != 0L && now - last > longestGap.get()) longestGap.set(now - last)
+            block.run()
+        }
+    }
+
+    fun resetGap() {
+        lastRun.set(0L)
+        longestGap.set(0L)
     }
 
     fun threadId(): Long =

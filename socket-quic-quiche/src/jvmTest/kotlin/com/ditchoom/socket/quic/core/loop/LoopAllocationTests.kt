@@ -51,7 +51,7 @@ class LoopAllocationTests {
                     val server = DatagramChannel.open().bind(InetSocketAddress("127.0.0.1", 0))
                     server.configureBlocking(false)
                     client.connect(server.localAddress)
-                    val nio = NioEcho(server, client.localAddress as InetSocketAddress, "core-loop-alloc")
+                    val nio = NioEcho(server, client.localAddress as InetSocketAddress, LOOP_NAME)
                     Running(nio.loop, nio.thread)
                 }
                 Stack.Native -> {
@@ -90,12 +90,13 @@ class LoopAllocationTests {
                 .createTempFile("core-loop", ".jfr")
         recording.dump(dump)
         val sites = HashMap<String, Long>()
-        allocationSamples(dump) { it == "core-loop-alloc" }.forEach { e ->
+        allocationSamples(dump) { it == LOOP_NAME }.forEach { e ->
             val frames =
                 e.stackTrace?.frames.orEmpty().take(6).joinToString(" < ") {
                     "${it.method.type.name.substringAfterLast('.')}.${it.method.name}"
                 }
-            sites.merge("${e.getClass("objectClass").name} @ $frames", e.getLong("weight"), Long::plus)
+            // Which thread of that name: the echo's own loop thread is [echo.thread]'s id.
+            sites.merge("[tid ${e.thread?.javaThreadId}] ${e.getClass("objectClass").name} @ $frames", e.getLong("weight"), Long::plus)
         }
         val whereFrom =
             sites.entries
@@ -118,13 +119,24 @@ class LoopAllocationTests {
         )
         when (stack) {
             Stack.Native -> {
-                assertTrue(sites.isEmpty(), "the loop thread allocated on the native stack:\n%s".format(whereFrom))
+                assertTrue(
+                    sites.isEmpty(),
+                    "the loop thread (tid ${echo.thread.id}) allocated on the native stack; live threads of its name: %s\n%s"
+                        .format(
+                            Thread
+                                .getAllStackTraces()
+                                .keys
+                                .filter { it.name == LOOP_NAME }
+                                .map { it.id },
+                            whereFrom,
+                        ),
+                )
                 assertTrue(perEcho < 1.0, "the loop thread allocated %.1f bytes per echoed datagram:\n%s".format(perEcho, whereFrom))
                 return
             }
             Stack.Jdk -> Unit
         }
-        val notTheSelectorsBoxing = sites.keys.filterNot { it.startsWith(BOXED_KEY) && it.contains(SELECTOR_FRAME) }
+        val notTheSelectorsBoxing = sites.keys.filterNot { it.substringAfter("] ").startsWith(BOXED_KEY) && it.contains(SELECTOR_FRAME) }
         assertTrue(
             notTheSelectorsBoxing.isEmpty(),
             "the loop thread allocated at a site other than the JDK selector's boxing:\n%s".format(whereFrom),
@@ -144,12 +156,12 @@ class LoopAllocationTests {
      */
     private fun nativeEchoAbove127(): NativeEcho {
         val low = ArrayList<NativeEcho>()
-        var echo = NativeEcho("core-loop-alloc")
+        var echo = NativeEcho(LOOP_NAME)
         while (echo.descriptor <= 127) {
             System.err.println("LoopAllocationTests: the echo socket took freed descriptor ${echo.descriptor}; opening another")
             low += echo
             assertTrue(low.size < LOW_DESCRIPTOR_RETRIES, "the echo socket took a descriptor at or below 127 $LOW_DESCRIPTOR_RETRIES times")
-            echo = NativeEcho("core-loop-alloc")
+            echo = NativeEcho(LOOP_NAME)
         }
         low.forEach { spare ->
             spare.start(InetSocketAddress("127.0.0.1", DISCARD_PORT))
@@ -162,6 +174,7 @@ class LoopAllocationTests {
     }
 
     private companion object {
+        const val LOOP_NAME = "core-loop-alloc"
         const val LOW_DESCRIPTOR_RETRIES = 16
         const val DISCARD_PORT = 9
         const val BOXED_INTEGER_BYTES = 16
