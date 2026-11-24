@@ -971,6 +971,12 @@ jobs:
           lane: linux-checks
           restored-exact: ${{ steps.pr_bc.outputs.exact-hit }}
 
+      # The runner's cores, memory, load and VM type at both ends of the test step, beside the JVM logs
+      # (see .github/scripts/runner-facts.sh), so a stall in between can be weighed against the host.
+      - name: Runner facts (start)
+        continue-on-error: true
+        shell: bash
+        run: bash .github/scripts/runner-facts.sh start build/jvm-logs/runner-facts.txt
       - name: Run checks and tests
         timeout-minutes: 45
         env:
@@ -1099,6 +1105,11 @@ jobs:
           fi
           exit "$RC"
 
+      - name: Runner facts (end)
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: bash .github/scripts/runner-facts.sh end build/jvm-logs/runner-facts.txt
       - name: Upload hang thread-dump (if any)
         if: always()
         uses: actions/upload-artifact@v7
@@ -1284,6 +1295,7 @@ jobs:
             **/build/reports/tests/
             **/build/test-results/
             **/build/core-flight/
+            **/build/jvm-logs/
             **/hs_err_pid*.log
             **/replay_pid*.log
             /tmp/cores/core.*
@@ -1526,6 +1538,12 @@ jobs:
           mode: start
           enabled: ${{ matrix.leg.jfr }}
 
+      # The runner's cores, memory, load and VM type at both ends of the test step, beside the JVM logs
+      # (see .github/scripts/runner-facts.sh), so a stall in between can be weighed against the host.
+      - name: Runner facts (start)
+        continue-on-error: true
+        shell: bash
+        run: bash .github/scripts/runner-facts.sh start build/jvm-logs/runner-facts.txt
       # The quiche_conn_recv SIGABRT that previously required continue-on-error
       # was a JVM-side sockaddr lifetime bug (DirectByteBuffer Cleaner freeing
       # the buffer that quiche_recv_info held a raw pointer to); fixed in 5e55a5f.
@@ -1598,6 +1616,11 @@ jobs:
               --continue --no-configuration-cache ${{ inputs.gradle-args }}
           fi
 
+      - name: Runner facts (end)
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: bash .github/scripts/runner-facts.sh end build/jvm-logs/runner-facts.txt
       - name: Runner health
         if: ${{ always() }}
         continue-on-error: true
@@ -1775,6 +1798,7 @@ jobs:
             **/build/reports/tests/
             **/build/test-results/
             **/build/core-flight/
+            **/build/jvm-logs/
             **/hs_err_pid*.log
             **/replay_pid*.log
             /tmp/cores/core.*
@@ -1836,6 +1860,12 @@ jobs:
       - name: Start QPACK differential oracle (ls-qpack)
         run: socket-http3/qpack-diff/run-qpack-diff.sh start
 
+      # The runner's cores, memory, load and VM type at both ends of the test step, beside the JVM logs
+      # (see .github/scripts/runner-facts.sh), so a stall in between can be weighed against the host.
+      - name: Runner facts (start)
+        continue-on-error: true
+        shell: bash
+        run: bash .github/scripts/runner-facts.sh start build/jvm-logs/runner-facts.txt
       # -PquicEchoAllArches=true: harnessUp dependsOn quicEchoJar, which stages both Linux arches into
       # the quic-echo image, exactly as in checks-tests. -PlinuxTargets=false: JVM-only, as in
       # quiche-jvm. :socket-quic-quiche is absent from the list on purpose (see the job header).
@@ -1861,6 +1891,11 @@ jobs:
             --continue --no-configuration-cache ${{ inputs.gradle-args }} 2>&1 | tee /tmp/gradle-jdk21.log
           exit "${PIPESTATUS[0]}"
 
+      - name: Runner facts (end)
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: bash .github/scripts/runner-facts.sh end build/jvm-logs/runner-facts.txt
       # The permanent proof that this job ran on 21. The root build script logs the launcher it
       # resolved for every jvmTest task and fails a task whose launcher is not the requested one; here
       # the log must name every module this job asked for, each on a 21.x runtime, and no task may
@@ -1895,6 +1930,7 @@ jobs:
             **/build/reports/tests/
             **/build/test-results/
             **/build/core-flight/
+            **/build/jvm-logs/
             **/hs_err_pid*.log
             **/replay_pid*.log
           retention-days: 90
@@ -2666,6 +2702,12 @@ jobs:
           .github/scripts/gradle-retry.sh :socket-quic-quiche:jvmTestClasses :socket-quic-quiche:stageQuicheNativeResources \
             -PquicMallocCheck --no-daemon --no-configuration-cache ${{ inputs.gradle-args }}
 
+      # The runner's cores, memory, load and VM type at both ends of the test step, beside the JVM logs
+      # (see .github/scripts/runner-facts.sh), so a stall in between can be weighed against the host.
+      - name: Runner facts (start)
+        continue-on-error: true
+        shell: bash
+        run: bash .github/scripts/runner-facts.sh start build/jvm-logs/runner-facts.txt
       # ⚠️ 24, not 8: this is the most deadline-heavy lane in the workflow (QuicConcurrencySoakTests
       # + StaleConnectionDiagnosticTests) and QUIC_TEST_TIME_SCALE=3 triples every `.scaled` budget
       # it waits on. A step timeout CANCELS the step, so tripping this lid yields a truncated test
@@ -2690,6 +2732,11 @@ jobs:
             --tests "com.ditchoom.socket.quic.StaleConnectionDiagnosticTests" \
             --no-configuration-cache ${{ inputs.gradle-args }}
 
+      - name: Runner facts (end)
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: bash .github/scripts/runner-facts.sh end build/jvm-logs/runner-facts.txt
       # Native-crash post-mortem: if the worker dumped a core, load it in gdb and print
       # every thread's backtrace into the live log AND a file. With the JNI shim built
       # frame-pointer-preserving and only `--strip-debug`'d (function symbols kept), these
@@ -2749,6 +2796,7 @@ jobs:
             **/build/reports/tests/
             **/build/test-results/
             **/build/core-flight/
+            **/build/jvm-logs/
             **/hs_err_pid*.log
             **/replay_pid*.log
             /tmp/cores/core.*

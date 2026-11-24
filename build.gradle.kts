@@ -1117,6 +1117,37 @@ allprojects {
     }
 }
 
+// Every JVM test worker logs its safepoints and collections to build/jvm-logs/, size-capped, so a stall can be
+// explained afterwards: a pause covering it, or none. CI uploads the directory with a failed run's reports, and
+// StallProbe (socket-quic-quiche's jvmTest) reads its own worker's safepoint log. `-PjvmLogs=false` turns it off.
+// The path is relative to the worker's directory: -Xlog splits its option on ':', so a Windows drive letter breaks it.
+val jvmLogs =
+    providers.gradleProperty("jvmLogs").orElse("true").get().let {
+        it.toBooleanStrictOrNull() ?: error("-PjvmLogs must be true or false, got '$it'")
+    }
+if (jvmLogs) {
+    allprojects {
+        tasks.withType<Test>().configureEach {
+            val logs = layout.buildDirectory.dir("jvm-logs")
+            val worker = this
+            doFirst { logs.get().asFile.mkdirs() }
+            jvmArgumentProviders.add(
+                CommandLineArgumentProvider {
+                    val dir =
+                        worker.workingDir
+                            .toPath()
+                            .relativize(logs.get().asFile.toPath())
+                            .toString()
+                            .replace('\\', '/')
+                    listOf("safepoint*", "gc*").map { tags ->
+                        "-Xlog:$tags:file=$dir/${tags.trimEnd('*')}-%p.log:uptime,level,tags:filecount=2,filesize=4m"
+                    }
+                },
+            )
+        }
+    }
+}
+
 // ─── -PjvmTestLauncher=<n>: every module's jvmTest runs on a JDK <n> launcher ──────────────────
 //
 // The build and the toolchain stay on JDK 21 (the FFM bindings are compiled with it); only the forked

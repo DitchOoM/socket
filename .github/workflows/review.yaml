@@ -698,8 +698,19 @@ jobs:
         with:
           mode: start
           enabled: ${{ matrix.jfr }}
+      # The runner's cores, memory, load and VM type at both ends of the test step, beside the JVM logs
+      # (see .github/scripts/runner-facts.sh), so a stall in between can be weighed against the host.
+      - name: Runner facts (start)
+        continue-on-error: true
+        shell: bash
+        run: bash .github/scripts/runner-facts.sh start build/jvm-logs/runner-facts.txt
       - name: Run JVM tests
         run: ./gradlew :jvmTest :socket-quic-quiche:jvmTest --no-configuration-cache ${{ matrix.args }}
+      - name: Runner facts (end)
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: bash .github/scripts/runner-facts.sh end build/jvm-logs/runner-facts.txt
       # The job log carries only pass/fail per test; a skip's [TEST-SKIPPED] marker and a test's own
       # diagnostics live in the XML's system-out, which is otherwise lost with the runner.
       - name: Upload Windows test results
@@ -711,6 +722,8 @@ jobs:
             build/test-results/jvmTest
             socket-quic-quiche/build/test-results/jvmTest
             socket-quic-quiche/build/core-flight
+            build/jvm-logs
+            socket-quic-quiche/build/jvm-logs
           if-no-files-found: warn
       - name: Flight recorder ring (on failure)
         if: ${{ (failure() || cancelled()) && matrix.jfr == 'true' }}
