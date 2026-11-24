@@ -15,15 +15,17 @@ import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.HopLimit
 import com.ditchoom.buffer.flow.LocalAddress
 import com.ditchoom.buffer.flow.SocketAddress
+import com.ditchoom.socket.quic.DatagramReceive
 import com.ditchoom.socket.quic.DatagramRefusal
 import com.ditchoom.socket.quic.DatagramRoomWait
 import com.ditchoom.socket.quic.DatagramSend
 import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicCloseReason
 import com.ditchoom.socket.quic.QuicConnectionEnd
+import com.ditchoom.socket.quic.QuicDatagramBatch
 import com.ditchoom.socket.quic.QuicDatagramRefused
-import com.ditchoom.socket.quic.QuicDatagramSender
 import com.ditchoom.socket.quic.QuicDatagramTooLarge
+import com.ditchoom.socket.quic.QuicDatagrams
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.closeReason
 import com.ditchoom.socket.quic.core.conn.CallerPlace
@@ -52,14 +54,14 @@ import kotlin.concurrent.atomics.AtomicInt
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 
 /** What one datagram receive of the core came to, grouped as a send's is. */
-internal sealed interface DatagramReceive {
+internal sealed interface SingleDatagramReceive {
     /** A datagram arrived in [buffer], which is the caller's from here on. */
     class Received(
         val buffer: PlatformBuffer,
-    ) : DatagramReceive
+    ) : SingleDatagramReceive
 
     /** No datagram was received. */
-    sealed interface NotReceived : DatagramReceive {
+    sealed interface NotReceived : SingleDatagramReceive {
         /** Another receive of this connection is under way: its datagrams have one receiver at a time. */
         data object ReceiverBusy : NotReceived
 
@@ -89,8 +91,8 @@ internal class CoreDatagramChannel(
     private val factory: BufferFactory,
     override val peer: SocketAddress,
 ) : ConnectedDatagramChannel,
-    QuicDatagramSender {
-    private val receiving = AtomicInt(FREE)
+    QuicDatagrams {
+    private val receiving = AtomicInt(RECEIVER_FREE)
     private val full = DatagramSend.NotSent.QueueFull(DatagramRoomWait { awaitRoom() })
 
     override val isOpen: Boolean get() = edge.end() is EdgeEnd.Open
@@ -199,21 +201,27 @@ internal class CoreDatagramChannel(
 
     private fun refused(why: Exception): Nothing = raise(Raised.Thrown(why), QuicCloseCircumstance.Ended)
 
-    /** The next datagram, or why none comes; a second receive while one is under way is [DatagramReceive.NotReceived.ReceiverBusy]. */
-    suspend fun receiveDatagram(): DatagramReceive {
+    /** The next datagram, or why none comes; a second receive while one is under way is [SingleDatagramReceive.NotReceived.ReceiverBusy]. */
+    suspend fun receiveDatagram(): SingleDatagramReceive {
         when (conn.datagrams()) {
-            is Datagrams.Off -> return DatagramReceive.NotReceived.Unavailable.NotNegotiated
+            is Datagrams.Off -> return SingleDatagramReceive.NotReceived.Unavailable.NotNegotiated
             is Datagrams.On -> Unit
         }
-        if (!receiving.compareAndSet(FREE, TAKEN)) return DatagramReceive.NotReceived.ReceiverBusy
+        if (!receiving.compareAndSet(RECEIVER_FREE, RECEIVER_TAKEN)) return SingleDatagramReceive.NotReceived.ReceiverBusy
         try {
             return received()
         } finally {
-            receiving.store(FREE)
+            receiving.store(RECEIVER_FREE)
         }
     }
 
-    private suspend fun received(): DatagramReceive {
+    private val batches = BatchReceives(connection, conn, receiving)
+
+    override suspend fun <R> receive(block: (QuicDatagramBatch) -> R): DatagramReceive<R> = batches.once(block)
+
+    override suspend fun receiveEach(each: (ReadBuffer) -> Unit): DatagramReceive.NotReceived = batches.each(each)
+
+    private suspend fun received(): SingleDatagramReceive {
         val context = currentCoroutineContext()
         val buffer = factory.allocate(DATAGRAM_ROOM)
         buffer.position(0)
@@ -229,8 +237,8 @@ internal class CoreDatagramChannel(
         val op = DatagramReceiveOp(ReceiveAnswer.Arrived(buffer), address, DATAGRAM_ROOM, conn, context)
         conn.submit(op, connection.placeOf(context))
         return when (val answer = op.answer()) {
-            is ReceiveAnswer.Arrived -> DatagramReceive.Received(answer.buffer)
-            is ReceiveAnswer.Ended -> DatagramReceive.NotReceived.Unavailable.ConnectionEnded(publicEndOf(answer.end))
+            is ReceiveAnswer.Arrived -> SingleDatagramReceive.Received(answer.buffer)
+            is ReceiveAnswer.Ended -> SingleDatagramReceive.NotReceived.Unavailable.ConnectionEnded(publicEndOf(answer.end))
             is ReceiveAnswer.Failed -> raiseFailure(answer.failure, answer.during)
             is ReceiveAnswer.Cancelled -> raiseCancelled(context)
         }
@@ -238,11 +246,11 @@ internal class CoreDatagramChannel(
 
     override suspend fun receive(): DatagramReadResult =
         when (val received = receiveDatagram()) {
-            is DatagramReceive.Received ->
+            is SingleDatagramReceive.Received ->
                 DatagramReadResult.Received(Datagram(received.buffer, peer, Ecn.Unknown, LocalAddress.Unknown, HopLimit.Unknown))
-            is DatagramReceive.NotReceived.Unavailable.ConnectionEnded -> DatagramReadResult.Closed(closedBy(received.end))
-            is DatagramReceive.NotReceived.Unavailable.NotNegotiated -> refused(QuicDatagramRefused(DatagramRefusal.NotNegotiated))
-            is DatagramReceive.NotReceived.ReceiverBusy -> refused(QuicDatagramRefused(DatagramRefusal.ReceiverBusy))
+            is SingleDatagramReceive.NotReceived.Unavailable.ConnectionEnded -> DatagramReadResult.Closed(closedBy(received.end))
+            is SingleDatagramReceive.NotReceived.Unavailable.NotNegotiated -> refused(QuicDatagramRefused(DatagramRefusal.NotNegotiated))
+            is SingleDatagramReceive.NotReceived.ReceiverBusy -> refused(QuicDatagramRefused(DatagramRefusal.ReceiverBusy))
         }
 
     /** How [end] reads as the error a closed datagram flow reports: a close with no error of its own is [QuicError.NoError]. */
@@ -255,9 +263,4 @@ internal class CoreDatagramChannel(
 
     /** The connection owns the datagram flow's lifecycle; closing the channel alone does nothing. */
     override fun close() = Unit
-
-    private companion object {
-        const val FREE = 0
-        const val TAKEN = 1
-    }
 }

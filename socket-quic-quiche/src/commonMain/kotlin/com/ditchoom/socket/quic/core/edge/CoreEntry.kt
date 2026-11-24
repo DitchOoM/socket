@@ -4,10 +4,8 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.quic.QuicCloseChoice
 import com.ditchoom.socket.quic.QuicConnect
-import com.ditchoom.socket.quic.QuicConnection
 import com.ditchoom.socket.quic.QuicEndpoint
 import com.ditchoom.socket.quic.QuicError
-import com.ditchoom.socket.quic.QuicListener
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicPeer
 import com.ditchoom.socket.quic.QuicServe
@@ -18,7 +16,6 @@ import com.ditchoom.socket.quic.resolveStreamReadPolicy
 import com.ditchoom.socket.quic.resolveStreamWritePolicy
 import com.ditchoom.socket.quic.toPathKey
 import com.ditchoom.socket.udp.UdpSocket
-import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import kotlin.time.Duration
 
@@ -50,20 +47,6 @@ internal suspend fun connectOnTheCore(
         )
     return QuicConnect.Connected(raced.connection, raced.candidateRace)
 }
-
-/** [connectOnTheCore], then [block] as the connection's block; see [CoreQuicConnection.asBlock]. */
-internal suspend fun <R> connectOnTheCore(
-    peer: QuicPeer,
-    options: QuicOptions,
-    transport: TransportConfig,
-    timeout: Duration,
-    factory: BufferFactory,
-    block: suspend (QuicConnection) -> R,
-): QuicConnect<R> =
-    when (val connected = connectOnTheCore(peer, options, transport, timeout, factory)) {
-        is QuicConnect.Refused -> connected
-        is QuicConnect.Connected -> QuicConnect.Connected(connected.value.asBlock(block), connected.race)
-    }
 
 /** One core connect to [endpoint], handed out once its handshake completed; a cancelled attempt leaves nothing open. */
 private suspend fun connectOne(
@@ -125,24 +108,3 @@ internal suspend fun serveOnTheCore(
         )
     return QuicServe.Serving(CoreListener(server))
 }
-
-/** [serveOnTheCore], then [block] with the listener, which closes when [block] ends. */
-internal suspend fun <R> serveOnTheCore(
-    port: Int,
-    host: String,
-    tls: QuicTlsConfig,
-    options: QuicOptions,
-    factory: BufferFactory,
-    block: suspend (QuicListener) -> R,
-): QuicServe<R> =
-    when (val serving = serveOnTheCore(port, host, tls, options, factory)) {
-        is QuicServe.Refused -> serving
-        is QuicServe.Serving -> {
-            val listener = serving.value
-            try {
-                QuicServe.Serving(block(listener))
-            } finally {
-                withContext(NonCancellable) { listener.close() }
-            }
-        }
-    }

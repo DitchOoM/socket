@@ -17,7 +17,9 @@ import com.ditchoom.socket.quic.QuicCandidateRace
 import com.ditchoom.socket.quic.QuicCloseChoice
 import com.ditchoom.socket.quic.QuicConnect
 import com.ditchoom.socket.quic.QuicConnection
+import com.ditchoom.socket.quic.QuicConnectionEnd
 import com.ditchoom.socket.quic.QuicEndpoint
+import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicIncomingStream
 import com.ditchoom.socket.quic.QuicListener
 import com.ditchoom.socket.quic.QuicOptions
@@ -26,6 +28,7 @@ import com.ditchoom.socket.quic.QuicPeerLeaf
 import com.ditchoom.socket.quic.QuicReceiveStream
 import com.ditchoom.socket.quic.QuicRefusal
 import com.ditchoom.socket.quic.QuicServe
+import com.ditchoom.socket.quic.QuicSocketFault
 import com.ditchoom.socket.quic.QuicStream
 import com.ditchoom.socket.quic.ScopedRead
 import com.ditchoom.socket.quic.StandbyLink
@@ -40,6 +43,7 @@ import com.ditchoom.socket.quic.network
 import com.ditchoom.socket.quic.readEach
 import com.ditchoom.socket.quic.serveQuicOnCore
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
@@ -229,14 +233,21 @@ class CoreEntryTests {
     fun theBlocksEndResetsItsPlainStreamsAndLeavesFinishedOnesAlone() =
         coreTest("CoreEntryTests.theBlocksEndResetsItsPlainStreamsAndLeavesFinishedOnesAlone") {
             serving(serverOptions) { listener ->
-                val ends = CompletableDeferred<List<ScopedRead.NoData>>()
+                // Each server reader is parked on its next read before the block ends, so the FIN and the reset reach a
+                // waiting read ahead of the close that follows them.
+                val reading = Channel<Unit>(Channel.UNLIMITED)
+                val ends = Channel<ScopedRead.NoData>(Channel.UNLIMITED)
                 val serving =
                     launch {
                         listener.handleConnections { server ->
-                            val seen = ArrayList<ScopedRead.NoData>()
                             server.handleStreams { incoming ->
-                                val end = receiveOf(incoming).readEach { }
-                                synchronizedAdd(seen, end, ends)
+                                var first = true
+                                val end =
+                                    receiveOf(incoming).readEach {
+                                        if (first) reading.send(Unit)
+                                        first = false
+                                    }
+                                ends.send(end)
                             }
                         }
                     }
@@ -251,11 +262,13 @@ class CoreEntryTests {
                         val (open, _) = client.openStream().orFail()
                         assertIs<StreamWrite.Written>(open.write(bytes(payload())))
                         val (finished, _) = client.openStream().orFail()
+                        assertIs<StreamWrite.Written>(finished.write(bytes(payload())))
+                        withTimeout(WAIT) { repeat(2) { reading.receive() } }
                         assertIs<StreamWrite.Written>(finished.writeAndFinish(bytes(payload())))
                         "returned"
                     }
                 assertEquals("returned", assertIs<QuicConnect.Connected<String>>(ran).value)
-                val seen = withTimeout(WAIT) { ends.await() }
+                val seen = withTimeout(WAIT) { List(2) { ends.receive() } }
                 assertTrue(ScopedRead.End.PeerFinished in seen, "the finished stream ends as it was finished: $seen")
                 val reset = seen.filterIsInstance<ScopedRead.End.PeerReset>().single()
                 assertEquals(QuicAppErrorCode(CUT_CODE), reset.code, "the open plain stream is reset with the write-cut code")
@@ -310,6 +323,61 @@ class CoreEntryTests {
                 assertIs<DatagramSend.Sent>(client.datagrams.send(bytes(payload(16))))
                 client.close(QuicCloseChoice.Immediate())
             }
+        }
+
+    @Test
+    fun aHandshakeThePeerRefusesIsAFailedValueWithTheEnd() =
+        coreTest("CoreEntryTests.aHandshakeThePeerRefusesIsAFailedValueWithTheEnd") {
+            serving(serverOptions.copy(alpnProtocols = listOf("other"))) { listener ->
+                val failed = assertIs<QuicConnect.Failed>(connect(listener.port, clientOptions))
+                val end = assertIs<QuicConnectionEnd.ByPeer>(failed.end, "the server refused the protocol: ${failed.end}")
+                assertEquals<QuicError>(QuicError.CryptoError(ALERT_NO_APPLICATION_PROTOCOL), end.error)
+            }
+            mint().use { pinned ->
+                mint().use { served ->
+                    withMintedCoreServer(served, onConnection = { }) { port ->
+                        val failed =
+                            assertIs<QuicConnect.Failed>(connect(port, clientOptions.copy(serverCertificateHashes = listOf(pinned.hash))))
+                        assertEquals<QuicConnectionEnd>(QuicConnectionEnd.ByLocal(QuicError.CryptoError(ALERT_BAD_CERTIFICATE)), failed.end)
+                    }
+                }
+            }
+        }
+
+    @Test
+    fun aListenerWhosePortIsTakenIsAFailedValue() =
+        coreTest("CoreEntryTests.aListenerWhosePortIsTakenIsAFailedValue") {
+            serving(serverOptions) { listener ->
+                val taken = serveQuicOnCore(listener.port, LOOPBACK, platformTlsConfig(), serverOptions)
+                val failed = assertIs<QuicServe.Failed>(taken)
+                assertIs<QuicSocketFault.OpenRefused>(failed.fault)
+            }
+        }
+
+    @Test
+    fun aListenerOnTheDualStackWildcardIsReachedOverBothFamilies() =
+        coreTest("CoreEntryTests.aListenerOnTheDualStackWildcardIsReachedOverBothFamilies") {
+            val served =
+                serveQuicOnCore(0, "::", platformTlsConfig(), serverOptions) { listener ->
+                    val serving = launch { listener.handleConnections { it.handleStreams(::echo) } }
+                    for (address in listOf(ResolvedAddress(LOOPBACK, IpFamily.V4), ResolvedAddress("::1", IpFamily.V6))) {
+                        val endpoint = QuicEndpoint(address, listener.port)
+                        val client =
+                            connectQuicOnCore(QuicPeer.Candidates(listOf(endpoint), "localhost"), clientOptions, TransportConfig(), WAIT)
+                                .getOrElse { throw AssertionError("$address did not reach the dual-stack listener: $it") }
+                        val reply =
+                            client
+                                .openStream { (send, receive) ->
+                                    send.writeAndFinish(bytes(payload()))
+                                    collect(receive)
+                                }.orFail()
+                        assertContentEquals(payload(), reply, "echoed over $address")
+                        client.close(QuicCloseChoice.Immediate())
+                    }
+                    serving.cancel()
+                }
+            assertIs<QuicServe.Serving<Unit>>(served)
+            Unit
         }
 
     private var lastListener: QuicListener? = null
@@ -371,18 +439,10 @@ class CoreEntryTests {
         const val WINDOW = 4_096
         const val CUT_CODE = 0x99L
         const val BROKEN_CODE = 0x5BL
+        const val ALERT_NO_APPLICATION_PROTOCOL = 120
+        const val ALERT_BAD_CERTIFICATE = 42
         val WAIT = 10.seconds
         val clientOptions = QuicOptions(alpnProtocols = listOf("test"), verifyPeer = false, idleTimeout = 10.seconds)
         val serverOptions = clientOptions
     }
-}
-
-/** Adds [end] to [seen], completing [all] once two streams have ended; handlers of one connection never run at once. */
-private fun synchronizedAdd(
-    seen: MutableList<ScopedRead.NoData>,
-    end: ScopedRead.NoData,
-    all: CompletableDeferred<List<ScopedRead.NoData>>,
-) {
-    seen += end
-    if (seen.size == 2) all.complete(seen.toList())
 }

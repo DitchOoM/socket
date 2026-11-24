@@ -1,9 +1,8 @@
 package com.ditchoom.socket.quic
 
 /**
- * What a connect came to: the connection, or for the block form what the block made of it, with how the race over
- * the peer's candidates went; or why the connect was refused before any socket opened. A handshake that fails is the
- * connection's end, raised as [QuicCloseException].
+ * What a connect came to: the connection, or for the block form what the block made of it, with how the race over the
+ * peer's candidates went; or why there is no connection. No outcome of a connect is an exception.
  */
 sealed interface QuicConnect<out T> {
     /** The handshake completed with the candidate [race] names; [value] is the connection, or the block's value. */
@@ -14,22 +13,42 @@ sealed interface QuicConnect<out T> {
         override fun toString(): String = "Connected($value, $race)"
     }
 
+    /** Why there is no connection. */
+    sealed interface NotConnected : QuicConnect<Nothing>
+
     /** Nothing was opened: [refusal] says which option value cannot be honoured here. */
     class Refused(
         val refusal: QuicRefusal,
-    ) : QuicConnect<Nothing> {
+    ) : NotConnected {
         override fun toString(): String = "Refused($refusal)"
+    }
+
+    /**
+     * No candidate's handshake completed: [end] is how the last one attempted ended. A server certificate the check
+     * refused ends as the CONNECTION_CLOSE sent for it; a name with no address, or no route to any, as
+     * [QuicConnectionEnd.NoUsablePath].
+     */
+    class Failed(
+        val end: QuicConnectionEnd,
+    ) : NotConnected {
+        override fun toString(): String = "Failed($end)"
     }
 }
 
-/** The connection or the block's value, or what [onRefused] makes of the refusal; [onRefused] may leave instead. */
-inline fun <R, T : R> QuicConnect<T>.getOrElse(onRefused: (QuicRefusal) -> R): R =
+/** [connected] of the connection or the block's value, or [notConnected] of why there is none. */
+inline fun <T, X> QuicConnect<T>.fold(
+    connected: (T) -> X,
+    notConnected: (QuicConnect.NotConnected) -> X,
+): X =
     when (this) {
-        is QuicConnect.Connected -> value
-        is QuicConnect.Refused -> onRefused(refusal)
+        is QuicConnect.Connected -> connected(value)
+        is QuicConnect.NotConnected -> notConnected(this)
     }
 
-/** What a serve came to: the listener, or for the block form the block's value; or why it was refused before any socket opened. */
+/** The connection or the block's value, or what [onNotConnected] makes of why there is none; it may leave instead. */
+inline fun <R, T : R> QuicConnect<T>.getOrElse(onNotConnected: (QuicConnect.NotConnected) -> R): R = fold({ it }, onNotConnected)
+
+/** What a serve came to: the listener, or for the block form the block's value; or why nothing is served. */
 sealed interface QuicServe<out T> {
     class Serving<out T>(
         val value: T,
@@ -37,20 +56,36 @@ sealed interface QuicServe<out T> {
         override fun toString(): String = "Serving($value)"
     }
 
+    /** Why nothing is served. */
+    sealed interface NotServing : QuicServe<Nothing>
+
     /** Nothing was opened: [refusal] says which option value cannot be honoured here. */
     class Refused(
         val refusal: QuicRefusal,
-    ) : QuicServe<Nothing> {
+    ) : NotServing {
         override fun toString(): String = "Refused($refusal)"
+    }
+
+    /** The listener's socket could not be opened as [fault] says: the address is in use, say, or not this host's. */
+    class Failed(
+        val fault: QuicSocketFault,
+    ) : NotServing {
+        override fun toString(): String = "Failed($fault)"
     }
 }
 
-/** The listener or the block's value, or what [onRefused] makes of the refusal; [onRefused] may leave instead. */
-inline fun <R, T : R> QuicServe<T>.getOrElse(onRefused: (QuicRefusal) -> R): R =
+/** [serving] of the listener or the block's value, or [notServing] of why nothing is served. */
+inline fun <T, X> QuicServe<T>.fold(
+    serving: (T) -> X,
+    notServing: (QuicServe.NotServing) -> X,
+): X =
     when (this) {
-        is QuicServe.Serving -> value
-        is QuicServe.Refused -> onRefused(refusal)
+        is QuicServe.Serving -> serving(value)
+        is QuicServe.NotServing -> notServing(this)
     }
+
+/** The listener or the block's value, or what [onNotServing] makes of why nothing is served; it may leave instead. */
+inline fun <R, T : R> QuicServe<T>.getOrElse(onNotServing: (QuicServe.NotServing) -> R): R = fold({ it }, onNotServing)
 
 /**
  * A bound QUIC server. Every call suspends, never blocks a thread, and is safe from a main thread.

@@ -166,8 +166,8 @@ class CoreDatagramFlowTests {
     private suspend fun drain(connection: CoreConnection) {
         while (true) {
             when (val got = connection.coreDatagrams.receiveDatagram()) {
-                is DatagramReceive.Received -> got.buffer.freeIfNeeded()
-                is DatagramReceive.NotReceived -> return
+                is SingleDatagramReceive.Received -> got.buffer.freeIfNeeded()
+                is SingleDatagramReceive.NotReceived -> return
             }
         }
     }

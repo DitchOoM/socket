@@ -51,7 +51,8 @@ class AlpnDemuxTests {
     fun negotiatedAlpn_throwsWhenNotEstablished() =
         runQuicTest {
             val conn = MockQuicConnection(initialState = QuicConnectionState.Handshaking)
-            assertFailsWith<IllegalStateException> { conn.negotiatedAlpn }
+            val thrown = assertFailsWith<QuicNotEstablishedException> { conn.negotiatedAlpn }
+            kotlin.test.assertEquals<QuicConnectionState>(QuicConnectionState.Handshaking, thrown.state)
         }
 
     @Test

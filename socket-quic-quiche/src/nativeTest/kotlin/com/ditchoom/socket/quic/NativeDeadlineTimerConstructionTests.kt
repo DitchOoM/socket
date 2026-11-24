@@ -12,16 +12,21 @@ import kotlin.native.runtime.GC
 import kotlin.native.runtime.NativeRuntimeApi
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.time.Duration.Companion.minutes
 
 /** [NativeDeadlineTimer]'s construction under contention. Each platform family supplies [peakResidentBytes]. */
 abstract class NativeDeadlineTimerConstructionTests {
     /** The process's peak resident set, in bytes (`ru_maxrss`). */
     abstract fun peakResidentBytes(): Long
 
-    /** The timer thread reads the timer's fields from its first pass, so it must not start before every one is set. */
+    /**
+     * The timer thread reads the timer's fields from its first pass, so it must not start before every one is set.
+     * [HANG_BOUND] only catches a hang: the 19,200 constructions and 9,600 collections take 37 to 54 s on the Linux
+     * ARM64 runner, which runTest's default minute leaves too little room for.
+     */
     @Test
     fun aNewTimersThreadNeverSeesItHalfBuilt() =
-        runTest {
+        runTest(timeout = HANG_BOUND) {
             withContext(Dispatchers.Default) {
                 // More builder threads than cores, so a builder is often descheduled mid-construction while its new
                 // thread makes its first pass. Each timer is closed, which waits for its thread, before the next, so
@@ -69,5 +74,6 @@ abstract class NativeDeadlineTimerConstructionTests {
         const val COLLECT_EVERY = 2
         const val MAX_GROWTH_BYTES = 512L * 1024 * 1024
         const val WITHIN_BOUND = 0L
+        val HANG_BOUND = 5.minutes
     }
 }
