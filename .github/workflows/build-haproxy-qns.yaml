@@ -1,0 +1,115 @@
+name: Build haproxy-qns (pinned)
+
+# haproxytech/haproxy-qns:latest moved on 2026-11-24 to a haproxy build that exits at start in the interop runner:
+# haproxy 62c0c84b81 turns set-dumpable on under -d, the qns image runs -d, and the failed core-limit raise is fatal
+# (run 45399057151). This builds the same image from pinned inputs at haproxy 5118dd42, the last build that passed,
+# and pushes it to ghcr.io/ditchoom/haproxy-qns for peer-images.json to name by digest.
+#
+# Every input is pinned: the haproxy-qns repository, haproxy, quictls (the image's default TLS library), and the
+# ubuntu, golang and quic-network-simulator-endpoint images by digest. The Ubuntu packages apt installs are not.
+# The inputs are recorded as image labels and in the job summary.
+#
+# Runs only on workflow_dispatch, and pushes only then. A build-only run of this file passed on PR #1047
+# (run 45420064960, haproxy 5118dd42).
+on:
+  workflow_dispatch:
+
+env:
+  QNS_COMMIT: 09bee6cb10059efbbdf77b78796b308a9ec17697
+  HAPROXY_COMMIT: 5118dd42805d7fd847afb083e60c985156426be0
+  QUICTLS_COMMIT: 6d6e737a473eba179ea9b666a7bc2e3873c1c5c7
+  UBUNTU: ubuntu:20.04@sha256:8feb4d8ca5354def3d8fce243717141ce31e2c428701f6682bd2fafe15388214
+  GOLANG: golang@sha256:87f49b77a7b6a99ad7dc656be010ae453322459dd2ed902ac177649a302bc101
+  ENDPOINT: martenseemann/quic-network-simulator-endpoint@sha256:3b2b9e6fa317da238c8140a7b6d2bf8d4d45a8464b873eecac3ff2a32520b71a
+  IMAGE: ghcr.io/ditchoom/haproxy-qns
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out haproxy-qns at its pinned commit
+        run: |
+          git clone https://github.com/haproxytech/haproxy-qns.git /tmp/qns
+          git -C /tmp/qns checkout --quiet "$QNS_COMMIT"
+
+      - name: Pin the Dockerfile's inputs
+        working-directory: /tmp/qns
+        run: |
+          python3 - <<'EOF'
+          import os
+          path = "Dockerfile"
+          text = open(path).read()
+          env = os.environ
+          swaps = [
+              ("FROM ubuntu:20.04 AS", f"FROM {env['UBUNTU']} AS", 2),
+              ("COPY --from=golang:latest ", f"COPY --from={env['GOLANG']} ", 1),
+              ("FROM martenseemann/quic-network-simulator-endpoint:latest", f"FROM {env['ENDPOINT']}", 1),
+              ("git clone --depth 1 -b OpenSSL_1_1_1s+quic https://github.com/quictls/openssl.git && cd /openssl && ",
+               f"git clone -b OpenSSL_1_1_1s+quic https://github.com/quictls/openssl.git && cd /openssl && git checkout {env['QUICTLS_COMMIT']} && ", 1),
+              ("ADD https://api.github.com/repos/haproxy/haproxy/git/refs/heads/quic-interop version.json\n", "", 1),
+              ("git clone --depth 1 -b quic-interop https://github.com/haproxy/haproxy.git haproxy \\\n  && cd /haproxy \\\n",
+               f"git clone https://github.com/haproxy/haproxy.git haproxy \\\n  && cd /haproxy \\\n  && git checkout {env['HAPROXY_COMMIT']} \\\n", 1),
+          ]
+          for old, new, count in swaps:
+              found = text.count(old)
+              if found != count:
+                  raise SystemExit(f"the Dockerfile has {found} of {old!r}, expected {count}: re-pin against haproxy-qns {env['QNS_COMMIT']}")
+              text = text.replace(old, new)
+          labels = {
+              "org.opencontainers.image.source": "https://github.com/DitchOoM/socket/blob/main/.github/workflows/build-haproxy-qns.yaml",
+              "com.ditchoom.qns.haproxy-qns-commit": env["QNS_COMMIT"],
+              "com.ditchoom.qns.haproxy-commit": env["HAPROXY_COMMIT"],
+              "com.ditchoom.qns.quictls-commit": env["QUICTLS_COMMIT"],
+              "com.ditchoom.qns.ubuntu": env["UBUNTU"],
+              "com.ditchoom.qns.golang": env["GOLANG"],
+              "com.ditchoom.qns.endpoint": env["ENDPOINT"],
+          }
+          text += "\n" + "".join(f'LABEL {k}="{v}"\n' for k, v in labels.items())
+          open(path, "w").write(text)
+          EOF
+          git diff --stat
+
+      - name: Build
+        working-directory: /tmp/qns
+        run: |
+          docker build -t "$IMAGE:${HAPROXY_COMMIT:0:8}" .
+          # The image's run_endpoint.sh sets LD_LIBRARY_PATH=/usr/local/lib for the quictls libraries; the check does too.
+          version=$(docker run --rm -e LD_LIBRARY_PATH=/usr/local/lib --entrypoint /usr/local/sbin/haproxy \
+            "$IMAGE:${HAPROXY_COMMIT:0:8}" -v | head -1)
+          echo "$version"
+          case "$version" in
+            *"$HAPROXY_COMMIT"*) ;;
+            *) echo "::error::the built haproxy is not $HAPROXY_COMMIT: $version"; exit 1 ;;
+          esac
+
+      - name: Log in to GHCR
+        if: github.event_name == 'workflow_dispatch'
+        run: echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Push
+        id: push
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          docker push "$IMAGE:${HAPROXY_COMMIT:0:8}"
+          digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE:${HAPROXY_COMMIT:0:8}")
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## haproxy-qns, pinned"
+            echo "| input | value |"
+            echo "|---|---|"
+            echo "| haproxy-qns | \`$QNS_COMMIT\` |"
+            echo "| haproxy | \`$HAPROXY_COMMIT\` |"
+            echo "| quictls (OpenSSL_1_1_1s+quic) | \`$QUICTLS_COMMIT\` |"
+            echo "| ubuntu | \`$UBUNTU\` |"
+            echo "| golang | \`$GOLANG\` |"
+            echo "| endpoint base | \`$ENDPOINT\` |"
+            echo "| pushed | \`${{ steps.push.outputs.digest || 'not pushed (build only)' }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
