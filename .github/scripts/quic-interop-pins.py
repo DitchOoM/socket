@@ -6,7 +6,9 @@
   resolve <pins.json> <runner dir>  re-resolves every tag of the runner's implementations file and docker-compose.yml
                                     to its registry digest and rewrites pins.json with them and the checkout's commit
 
-apply fails on a peer the runner offers that pins.json does not name, so a new peer is pinned before it runs.
+apply fails on a peer the runner offers that pins.json does not name, so a new peer is pinned before it runs. A pin
+with a "held" entry ({"image": <ref@digest>, "why": ...}) runs that image instead of the runner's, and resolve leaves
+it as it is: a held peer is re-pinned by hand once its upstream is fixed.
 """
 import json
 import os
@@ -51,7 +53,8 @@ def apply(pins_path, runner):
         pin = pins["images"][name]
         if entry["image"] != pin["tag"]:
             sys.exit(f"{name}: the runner names {entry['image']}, the pin was resolved from {pin['tag']}")
-        entry["image"] = pinned(pin["tag"], pin["digest"])
+        # A held peer runs an image of our own build in place of the runner's, until its upstream is fixed.
+        entry["image"] = pin["held"]["image"] if "held" in pin else pinned(pin["tag"], pin["digest"])
     json.dump(impl, open(path, "w"), indent=2)
     compose_path = os.path.join(runner, "docker-compose.yml")
     compose = open(compose_path).read()
@@ -101,7 +104,10 @@ def resolve(pins_path, runner):
     pins = json.load(open(pins_path))
     impl = json.load(open(implementations_file(runner)))
     pins["runner"] = subprocess.run(["git", "-C", runner, "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
-    pins["images"] = {name: {"tag": entry["image"], "digest": digest(entry["image"])} for name, entry in sorted(impl.items())}
+    held = {name: pin for name, pin in pins["images"].items() if "held" in pin}
+    pins["images"] = {
+        name: held.get(name) or {"tag": entry["image"], "digest": digest(entry["image"])} for name, entry in sorted(impl.items())
+    }
     pins["compose"] = {
         key: {"tag": f"{image}:latest", "digest": digest(f"{image}:latest")} for key, image in sorted(COMPOSE_IMAGES.items())
     }
