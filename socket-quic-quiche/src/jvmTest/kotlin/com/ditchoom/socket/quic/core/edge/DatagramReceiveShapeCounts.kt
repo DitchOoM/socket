@@ -30,6 +30,7 @@ import com.ditchoom.socket.quic.network
 import com.ditchoom.socket.quic.skipOnMissingNativeLib
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
@@ -65,7 +66,13 @@ class DatagramReceiveShapeCounts {
     @AfterTest
     fun closeLoops() = loops.close()
 
-    /** A way to receive datagrams on [channel]: answers how many were delivered, 0 once none will come. */
+    /**
+     * Where the flood's reader runs: on a thread of its own, resumed by a dispatch, or unconfined, resumed in place on
+     * the loop (no dispatch, so its resumes are not counted).
+     */
+    private enum class Placement { OwnThread, Unconfined }
+
+    /** A way to receive datagrams: answers how many were delivered, 0 once none will come. */
     private sealed interface Shape {
         val label: String
 
@@ -140,7 +147,11 @@ class DatagramReceiveShapeCounts {
                     val accepted = Channel<CoreConnection>(Channel.UNLIMITED)
                     withCoreServer(options = ON, onConnection = { accepted.send(it) }) { server ->
                         val payload = payloadOf(FLOOD_BYTES)
-                        for (make in listOf<(CoreConnection) -> Shape>({ Suspending(it.coreDatagrams) }, { Batched(BatchReceiver(it)) })) {
+                        for ((make, placement) in listOf<Pair<(CoreConnection) -> Shape, Placement>>(
+                            { c: CoreConnection -> Suspending(c.coreDatagrams) } to Placement.OwnThread,
+                            { c: CoreConnection -> Batched(BatchReceiver(c)) } to Placement.OwnThread,
+                            { c: CoreConnection -> Suspending(c.coreDatagrams) } to Placement.Unconfined,
+                        )) {
                             val client = connectCore(server.port, loops = loops, factory = BufferFactory.network(), options = ON)
                             val sending = client.connection.coreDatagrams
                             // The first datagram makes the server's connection; the receiver starts once it is handed over.
@@ -157,11 +168,23 @@ class DatagramReceiveShapeCounts {
                                     if (got == 0) break
                                     delivered.addAndGet(got.toLong())
                                 }
-                            }.startCoroutine(Continuation(dispatcher + Job()) { ended.complete(it) })
+                            }.startCoroutine(
+                                Continuation(
+                                    when (placement) {
+                                        Placement.OwnThread -> dispatcher
+                                        Placement.Unconfined -> Dispatchers.Unconfined
+                                    } + Job(),
+                                ) { ended.complete(it) },
+                            )
                             flood(sending, payload, FLOOD_WARM_UP_MS)
                             settle(delivered)
                             val loopId = threadId(SERVER_LOOP_THREAD)
-                            val callerId = dispatcher.threadId()
+                            // Unconfined, the loop resumes the reader in place: the reader's thread is the loop's.
+                            val callerId =
+                                when (placement) {
+                                    Placement.OwnThread -> dispatcher.threadId()
+                                    Placement.Unconfined -> loopId
+                                }
                             val before = statsOf(receiving)
                             val counters = Counters(loopId, callerId, dispatcher)
                             val deliveredBefore = delivered.get()
@@ -176,16 +199,17 @@ class DatagramReceiveShapeCounts {
                             val wire = (after.packetsSent + after.packetsReceived - before.packetsSent - before.packetsReceived).toDouble()
                             report(
                                 "flood 1000 B",
-                                shape.label,
+                                "${shape.label}, $placement",
                                 row,
                                 got,
                                 wire / got,
-                                "%.4f (%d of %d, load1 %.2f, %.0f delivered/s)".format(
+                                "%.4f (%d of %d, load1 %.2f, %.0f delivered/s) | %s".format(
                                     dropped.toDouble() / received,
                                     dropped,
                                     received,
                                     load,
                                     got * 1000.0 / FLOOD_MS,
+                                    row.cpu(got),
                                 ),
                             )
                             client.connection.close(QuicError.NoError)
@@ -231,24 +255,44 @@ class DatagramReceiveShapeCounts {
         val loop: Long,
         val caller: Long,
         val dispatches: Long,
-    )
+        val loopCpu: Long,
+        val callerCpu: Long,
+        val wall: Long,
+    ) {
+        /** The CPU each thread spent per [datagrams], in ns, and its share of the wall time. */
+        fun cpu(datagrams: Long) =
+            "loop cpu %.0f ns/op (%.2f of wall), reader cpu %.0f ns/op (%.2f of wall)".format(
+                loopCpu.toDouble() / datagrams,
+                loopCpu.toDouble() / wall,
+                callerCpu.toDouble() / datagrams,
+                callerCpu.toDouble() / wall,
+            )
+    }
 
-    /** The two threads' allocation counters and the caller's dispatches, from when it is made. */
+    /** The two threads' allocation and CPU counters and the caller's dispatches, from when it is made. */
     private class Counters(
         private val loop: Long,
         private val caller: Long,
-        private val dispatcher: CountingDispatcher,
+        private val dispatches: () -> Long,
     ) {
+        constructor(loop: Long, caller: Long, dispatcher: CountingDispatcher) : this(loop, caller, { dispatcher.dispatches.get() })
+
         private val threads = ManagementFactory.getThreadMXBean() as com.sun.management.ThreadMXBean
         private val loopFrom = threads.getThreadAllocatedBytes(loop)
         private val callerFrom = threads.getThreadAllocatedBytes(caller)
-        private val dispatchesFrom = dispatcher.dispatches.get()
+        private val dispatchesFrom = dispatches()
+        private val loopCpuFrom = threads.getThreadCpuTime(loop)
+        private val callerCpuFrom = threads.getThreadCpuTime(caller)
+        private val wallFrom = System.nanoTime()
 
         fun since() =
             Row(
                 threads.getThreadAllocatedBytes(loop) - loopFrom,
                 threads.getThreadAllocatedBytes(caller) - callerFrom,
-                dispatcher.dispatches.get() - dispatchesFrom,
+                dispatches() - dispatchesFrom,
+                threads.getThreadCpuTime(loop) - loopCpuFrom,
+                threads.getThreadCpuTime(caller) - callerCpuFrom,
+                System.nanoTime() - wallFrom,
             )
     }
 
