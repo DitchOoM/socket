@@ -215,9 +215,12 @@ interface QuicReceiveStream : QuicIncomingStream {
      * [block] runs: copy or decode what must outlive it. Bytes [block] leaves unread are dropped.
      *
      * A stream has one reader at a time. On a [QuicStreamOrigin.Early] stream not marked replay-safe, the first read
-     * waits for the handshake to be confirmed.
+     * waits for the handshake to be confirmed. While no read waits, nothing is read off the stream, so the peer is held
+     * back by flow control until the next read.
      *
      * @throws QuicStreamClosedException after [stop].
+     * @throws QuicStreamReadException with [QuicStreamReadError.ReadInProgress] for a read made while another is out,
+     *   its block included.
      */
     suspend fun <R> read(
         policy: ReadPolicy = readPolicy,

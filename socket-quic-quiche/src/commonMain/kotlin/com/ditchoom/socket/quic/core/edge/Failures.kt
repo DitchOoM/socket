@@ -90,6 +90,11 @@ internal sealed interface Raised : OpFailure {
         val side: QuicStreamSide,
     ) : Raised
 
+    /** A read came while another read of the stream was still out: a stream has one reader at a time. */
+    class ReadInProgress(
+        val stream: QuicStreamId,
+    ) : Raised
+
     /** A call on a direction a unidirectional stream does not have: a read of a send-only one, a write of a receive-only one. */
     class NoSuchDirection(
         val stream: QuicStreamId,
@@ -221,6 +226,7 @@ private fun exceptionOf(
             )
         is Raised.Thrown -> failure.exception
         is Raised.StreamClosed -> QuicStreamClosedException(failure.stream.id, failure.side)
+        is Raised.ReadInProgress -> QuicStreamReadException(failure.stream.id, QuicStreamReadError.ReadInProgress)
         is Raised.NoSuchDirection -> QuicStreamDirectionAbsent(failure.stream.id, failure.side)
         is Raised.Typed -> QuicTypedStreamException(failure.stream.id, failure.failure)
         is Raised.NotNative ->
@@ -250,19 +256,6 @@ internal fun closeOf(
     end: ConnEnd,
     during: QuicCloseCircumstance,
 ): QuicCloseException = QuicCloseException(end = publicEndOf(end), circumstance = end.circumstance(during))
-
-private fun ConnEnd.circumstance(during: QuicCloseCircumstance): QuicCloseCircumstance =
-    when (this) {
-        is ConnEnd.ProcessingFailed -> QuicCloseCircumstance.ProcessingFailed
-        is ConnEnd.LoopFailed -> QuicCloseCircumstance.LoopThreadFailed
-        is ConnEnd.CallerFailed -> QuicCloseCircumstance.CallerThreadFailed
-        is ConnEnd.Released -> QuicCloseCircumstance.Released
-        is ConnEnd.ByPeer, is ConnEnd.ByLocal, is ConnEnd.IdleTimeout, is ConnEnd.HandshakeTimedOut,
-        is ConnEnd.HandshakeSendRefused, is ConnEnd.AccessDenied,
-        is ConnEnd.SocketFailed, is ConnEnd.LoopStopped, is ConnEnd.ServerClosed, is ConnEnd.NoErrorRecorded,
-        is ConnEnd.NetworkLost, is ConnEnd.LocalAddressGone, is ConnEnd.ServerClosedUnsettled, is ConnEnd.NoUsablePath,
-        -> during
-    }
 
 /** The same exception a 4.x stream deadline raises, built where it is thrown from, so callers see one type. */
 private fun <T> CancellableContinuation<T>.timeOut(bound: Duration) {

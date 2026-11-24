@@ -3237,6 +3237,13 @@ public final class com/ditchoom/socket/quic/QuicStreamReadError$Quiche : com/dit
 	public fun toString ()Ljava/lang/String;
 }
 
+public final class com/ditchoom/socket/quic/QuicStreamReadError$ReadInProgress : com/ditchoom/socket/quic/QuicStreamReadError {
+	public static final field INSTANCE Lcom/ditchoom/socket/quic/QuicStreamReadError$ReadInProgress;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
 public final class com/ditchoom/socket/quic/QuicStreamReadException : java/lang/Exception {
 	public fun <init> (JLcom/ditchoom/socket/quic/QuicStreamReadError;)V
 	public fun <init> (JLcom/ditchoom/socket/quic/QuicStreamReadError;Ljava/lang/String;)V

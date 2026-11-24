@@ -37,12 +37,31 @@ private sealed interface Reading {
 
     data object Open : Reading
 
-    /** A read answered that the stream gives no more. */
-    data object AtEnd : Reading
+    /** Reads, one at a time, through the stream's [inbox]. */
+    class Reads(
+        val inbox: ReadInbox,
+    ) : Reading
+
+    /** A read answered that the stream gives no more: [end], which every read after answers too. */
+    class AtEnd(
+        val end: ScopedRead.End,
+    ) : Reading
+
+    companion object {
+        /** The end most streams meet, made once. */
+        val FINISHED = AtEnd(ScopedRead.End.PeerFinished)
+    }
 
     /** A receiver has the stream for good: no read is taken. */
     data object Receiver : Reading
 }
+
+/** Where reading stands once a read met [end]. */
+private fun atEnd(end: ScopedRead.End): Reading.AtEnd =
+    when (end) {
+        is ScopedRead.End.PeerFinished -> Reading.FINISHED
+        is ScopedRead.End.PeerReset, is ScopedRead.End.ConnectionEnded -> Reading.AtEnd(end)
+    }
 
 /** A [ReceiveHalf] as the public [QuicReceiveStream]: every outcome of a read is a value. */
 @Published
@@ -79,30 +98,64 @@ internal class CoreReceiveStream(
         policy: ReadPolicy,
         block: suspend (ReadBuffer) -> R,
     ): ScopedRead<R> {
-        when (reading.load()) {
-            is Reading.Gated ->
-                when (val end = confirmed()) {
-                    is EdgeEnd.Open -> markReplaySafe()
-                    is EdgeEnd.Ended ->
-                        when (end.handshake) {
-                            is HandshakeFate.Completed -> markReplaySafe()
-                            is HandshakeFate.NotCompleted -> return ended(ScopedRead.End.ConnectionEnded(publicEndOf(end.end)))
-                        }
+        val inbox =
+            when (val now = reading.load()) {
+                is Reading.Reads -> now.inbox
+                is Reading.AtEnd -> return ScopedRead.noData(now.end)
+                is Reading.Receiver -> raise(Raised.StreamClosed(id, QuicStreamSide.Read), QuicCloseCircumstance.Ended)
+                is Reading.Open -> inboxFrom(now)
+                is Reading.Gated ->
+                    when (val end = confirmed()) {
+                        is EdgeEnd.Open -> inboxFrom(now)
+                        is EdgeEnd.Ended ->
+                            when (end.handshake) {
+                                is HandshakeFate.Completed -> inboxFrom(now)
+                                is HandshakeFate.NotCompleted -> return ended(ScopedRead.End.ConnectionEnded(publicEndOf(end.end)))
+                            }
+                    }
+            }
+        if (!half.isOpen()) raise(Raised.StreamClosed(id, QuicStreamSide.Read), QuicCloseCircumstance.Ended)
+        val place = connection.placeOf(currentCoroutineContext())
+        return when (val next = inbox.next(deadlineOf(policy), place)) {
+            is ReadNext.Lent ->
+                try {
+                    ScopedRead.data(block(next.bytes))
+                } finally {
+                    inbox.returned()
                 }
-            is Reading.Open, is Reading.AtEnd -> Unit
-            is Reading.Receiver -> raise(Raised.StreamClosed(id, QuicStreamSide.Read), QuicCloseCircumstance.Ended)
+            is ReadNext.Held ->
+                try {
+                    ScopedRead.data(block(next.bytes))
+                } finally {
+                    next.bytes.freeIfNeeded()
+                    connection.edge.returned(id)
+                }
+            is ReadNext.Ended -> ended(next.end)
+            is ReadNext.DeadlinePassed -> ScopedRead.noData(ScopedRead.DeadlinePassed)
+            is ReadNext.Closed -> raise(Raised.StreamClosed(id, QuicStreamSide.Read), QuicCloseCircumstance.Ended)
+            is ReadNext.Busy -> raise(Raised.ReadInProgress(id), QuicCloseCircumstance.Ended)
+            is ReadNext.Refused -> raise(next.failure, QuicCloseCircumstance.Ended)
         }
-        return when (val answer = half.take(deadlineOf(policy))) {
-            is ReadAnswer.Data -> scoped(answer, block)
-            is ReadAnswer.End -> ended(ScopedRead.End.PeerFinished)
-            is ReadAnswer.Reset -> ended(ScopedRead.End.PeerReset(answer.code))
-            is ReadAnswer.Failed -> noBytes(answer)
-            is ReadAnswer.Cancelled -> raiseCancelled(currentCoroutineContext())
+    }
+
+    /** The stream's inbox, made by its first read and kept until the stream is let go. */
+    private fun inboxFrom(from: Reading): ReadInbox {
+        val made = ReadInbox(connection, id)
+        if (reading.compareAndSet(from, Reading.Reads(made))) return made
+        made.discard()
+        return when (val now = reading.load()) {
+            is Reading.Reads -> now.inbox
+            is Reading.Gated, is Reading.Open, is Reading.AtEnd, is Reading.Receiver ->
+                raise(Raised.StreamClosed(id, QuicStreamSide.Read), QuicCloseCircumstance.Ended)
         }
     }
 
     override fun stop(code: QuicAppErrorCode) {
         half.stop(code)
+        when (val now = reading.load()) {
+            is Reading.Reads -> now.inbox.letGo()
+            is Reading.Gated, is Reading.Open, is Reading.AtEnd, is Reading.Receiver -> Unit
+        }
     }
 
     override fun receive(receiver: QuicStreamReceiver): StreamReceive {
@@ -115,7 +168,7 @@ internal class CoreReceiveStream(
                         is QuicConnectionState.Idle, is QuicConnectionState.Handshaking, is QuicConnectionState.Draining ->
                             return StreamReceive.NotReceiving.NotReplaySafe
                     }
-                is Reading.Open -> now
+                is Reading.Open, is Reading.Reads -> now
             }
         if (!half.isOpen()) return StreamReceive.NotReceiving.AlreadyReading
         val lane =
@@ -126,6 +179,11 @@ internal class CoreReceiveStream(
         if (!reading.compareAndSet(from, Reading.Receiver)) {
             connection.handlers.left()
             return StreamReceive.NotReceiving.AlreadyReading
+        }
+        // Reads went through the stream's read inbox: it lets go, and no bytes are lost, since it holds none unlent.
+        when (from) {
+            is Reading.Reads -> from.inbox.letGo()
+            is Reading.Gated, is Reading.Open, is Reading.AtEnd, is Reading.Receiver -> Unit
         }
         val inbox = StreamInbox(connection, id, lane, receiver, codes.handlerFailed)
         replies.listen(inbox)
@@ -142,9 +200,13 @@ internal class CoreReceiveStream(
 
     /** The block that owned this stream returned: a direction not read to its end is stopped. */
     fun complete() {
-        when (reading.load()) {
+        when (val now = reading.load()) {
             is Reading.AtEnd, is Reading.Receiver -> Unit
             is Reading.Gated, is Reading.Open -> half.stop(codes.leftUnread)
+            is Reading.Reads -> {
+                half.stop(codes.leftUnread)
+                now.inbox.letGo()
+            }
         }
     }
 
@@ -152,7 +214,7 @@ internal class CoreReceiveStream(
     fun readState(): PlainState =
         when (reading.load()) {
             is Reading.AtEnd, is Reading.Receiver -> PlainState.Done
-            is Reading.Gated, is Reading.Open -> PlainState.Open
+            is Reading.Gated, is Reading.Open, is Reading.Reads -> PlainState.Open
         }
 
     /** How the connection stands once the handshake an early stream waits for completed, or the connection ended. */
@@ -161,34 +223,14 @@ internal class CoreReceiveStream(
         return connection.end()
     }
 
-    private suspend fun <R> scoped(
-        data: ReadAnswer.Data,
-        block: suspend (ReadBuffer) -> R,
-    ): ScopedRead<R> {
-        try {
-            return ScopedRead.data(block(data.buffer))
-        } finally {
-            data.buffer.freeIfNeeded()
-        }
-    }
-
+    /** A read met the stream's [end]: every read after answers it too. A receiver that took the stream keeps it. */
     private fun ended(end: ScopedRead.End): ScopedRead<Nothing> {
-        reading.store(Reading.AtEnd)
+        when (val now = reading.load()) {
+            is Reading.Gated, is Reading.Open, is Reading.Reads -> reading.compareAndSet(now, atEnd(end))
+            is Reading.AtEnd, is Reading.Receiver -> Unit
+        }
         return ScopedRead.noData(end)
     }
-
-    /** What a failed read is to its caller: a passed deadline or the connection's end as a value, or a misuse, which raises. */
-    private fun noBytes(answer: ReadAnswer.Failed): ScopedRead<Nothing> =
-        when (val failure = answer.failure) {
-            is OpFailure.DeadlinePassed -> ScopedRead.noData(ScopedRead.DeadlinePassed)
-            is Raised.ConnEnded -> ended(ScopedRead.End.ConnectionEnded(publicEndOf(failure.end)))
-            is Raised.PastClose -> ended(ScopedRead.End.ConnectionEnded(publicEndOf(failure.end)))
-            is Raised.WriteRefused, is Raised.ReadRefused, is Raised.Thrown, is Raised.Typed, is Raised.StreamClosed,
-            is Raised.NoSuchDirection, is Raised.NotNative, is Raised.FactoryNotNative, is Raised.RouteUnresolved,
-            is Raised.LoopsClosed, is Raised.StreamsHandled, is Raised.SocketRefused, is Raised.SpecLayoutRefused,
-            is Raised.NetworkRefused, is Raised.AccessDenied, is Raised.ChainRefused,
-            -> raise(failure, answer.during)
-        }
 }
 
 /** A [BidiStream] as the public [QuicStream]: its two directions. */

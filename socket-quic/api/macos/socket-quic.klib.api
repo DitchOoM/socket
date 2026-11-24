@@ -3146,6 +3146,12 @@ sealed interface com.ditchoom.socket.quic/QuicStreamReadError { // com.ditchoom.
         final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicStreamReadError.InvalidStreamState.hashCode|hashCode(){}[0]
         final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicStreamReadError.InvalidStreamState.toString|toString(){}[0]
     }
+
+    final object ReadInProgress : com.ditchoom.socket.quic/QuicStreamReadError { // com.ditchoom.socket.quic/QuicStreamReadError.ReadInProgress|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicStreamReadError.ReadInProgress.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicStreamReadError.ReadInProgress.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicStreamReadError.ReadInProgress.toString|toString(){}[0]
+    }
 }
 
 sealed interface com.ditchoom.socket.quic/QuicStreamSide { // com.ditchoom.socket.quic/QuicStreamSide|null[0]
