@@ -3,6 +3,7 @@ import org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget
 import java.net.URI
 import java.security.MessageDigest
 import java.util.concurrent.Callable
+import java.util.concurrent.atomic.AtomicLong
 
 plugins {
     alias(libs.plugins.kotlin.multiplatform)
@@ -878,6 +879,51 @@ project(":socket-quic-quiche") {
             showStandardStreams = true
         }
     }
+    // Gates that time the core against the wall clock (the datagram drop gate's full-speed reader, the lost-wakeup and
+    // deadline tests) run in a JVM of their own after every other Test task in the build: no thread a thousand earlier
+    // tests left behind, no other worker JVM, competes for the runner's 3 vCPUs. Without the CI-only recv_info guard,
+    // like coreAllocationTest: its map lookup per datagram is a cost the production path does not pay.
+    val timingSensitive =
+        listOf(
+            "com.ditchoom.socket.quic.core.edge.DatagramBatchReceiveCountsTests",
+            "com.ditchoom.socket.quic.LostCpuWakeupTests",
+            "*Deadline*Tests",
+            "*Wakeup*Tests",
+        )
+    tasks.register<Test>("timingSensitiveTest") {
+        description = "Runs the wall-clock timing gates alone, after every other Test task"
+        group = "verification"
+        dependsOn("compileTestKotlinJvm", "prepareQuicheNativeLib", "stageQuicheNativeResources")
+        maxParallelForks = 1
+        mustRunAfter(rootProject.allprojects.map { p -> p.tasks.withType<Test>().matching { it.name != name || p != project } })
+        testLogging {
+            events("passed", "skipped", "failed")
+            exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+            showStandardStreams = true
+        }
+        // A filter that stops matching (a renamed class) must fail here, not leave a green task that ran nothing.
+        val ran = AtomicLong()
+        addTestListener(
+            object : TestListener {
+                override fun beforeSuite(suite: TestDescriptor) = Unit
+
+                override fun beforeTest(testDescriptor: TestDescriptor) = Unit
+
+                override fun afterTest(
+                    testDescriptor: TestDescriptor,
+                    result: TestResult,
+                ) = Unit
+
+                override fun afterSuite(
+                    suite: TestDescriptor,
+                    result: TestResult,
+                ) {
+                    if (suite.parent == null) ran.set(result.testCount)
+                }
+            },
+        )
+        doLast { check(ran.get() > 0) { "timingSensitiveTest ran no test: its filter matches no class" } }
+    }
     afterEvaluate {
         dependencies.add("jvmTestImplementation", libs.lincheck)
         dependencies.add(
@@ -897,7 +943,7 @@ project(":socket-quic-quiche") {
         }
         dependencies.add("jvmTestImplementation", "org.junit.vintage:junit-vintage-engine:5.11.4")
         dependencies.add("jvmTestImplementation", "org.junit.platform:junit-platform-launcher:1.11.4")
-        for (name in listOf("jvmTest", "lincheckTest", "mainThreadSafetyTest", "coreAllocationTest")) {
+        for (name in listOf("jvmTest", "lincheckTest", "mainThreadSafetyTest", "coreAllocationTest", "timingSensitiveTest")) {
             tasks.named<Test>(name) { useJUnitPlatform() }
         }
         val jvmTestTask = tasks.named<Test>("jvmTest").get()
@@ -924,16 +970,30 @@ project(":socket-quic-quiche") {
             doFirst { environment(jvmTestTask.environment - "QUIC_RECVINFO_GUARD") }
             // Assertions turn on coroutine debug mode, which names each coroutine's thread per step: not the production path.
             systemProperty("kotlinx.coroutines.debug", "off")
-            filter { includeTestsMatching("com.ditchoom.socket.quic.core.*AllocationTests") }
+            filter {
+                includeTestsMatching("com.ditchoom.socket.quic.core.*AllocationTests")
+                timingSensitive.forEach(::excludeTestsMatching)
+            }
+        }
+        tasks.named<Test>("timingSensitiveTest") {
+            testClassesDirs = jvmTestTask.testClassesDirs
+            classpath = files(Callable { jvmTestTask.classpath })
+            javaLauncher.set(jvmTestTask.javaLauncher)
+            jvmArgumentProviders.add(CommandLineArgumentProvider { jvmTestTask.jvmArgs.orEmpty() })
+            systemProperties(jvmTestTask.systemProperties)
+            doFirst { environment(jvmTestTask.environment - "QUIC_RECVINFO_GUARD") }
+            systemProperty("kotlinx.coroutines.debug", "off")
+            filter { timingSensitive.forEach(::includeTestsMatching) }
         }
         tasks.named<Test>("jvmTest") {
             filter {
                 excludeTestsMatching("*Lincheck*")
                 excludeTestsMatching("*MainThreadSafety*")
                 excludeTestsMatching("com.ditchoom.socket.quic.core.*AllocationTests")
+                timingSensitive.forEach(::excludeTestsMatching)
                 isFailOnNoMatchingTests = false
             }
-            finalizedBy("coreAllocationTest")
+            finalizedBy("coreAllocationTest", "timingSensitiveTest")
         }
     }
 }
