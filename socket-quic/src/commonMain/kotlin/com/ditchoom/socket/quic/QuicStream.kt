@@ -156,7 +156,12 @@ fun interface StreamRoomWait {
  * connection's handler lane, so the connection's other handlers wait; handlers of other connections do not.
  */
 interface QuicStreamReceiver {
-    /** The stream's next bytes, everything that arrived since the last call. Lent: valid until this returns. */
+    /**
+     * The stream's next bytes: what an earlier call left, then everything that arrived since. Lent: valid until this
+     * returns. Take what you can by reading [bytes] forward; its position when this returns says how much was taken.
+     * The rest is offered again: at once when this call took some, else with the next bytes that arrive or once the
+     * stream's own send queue makes room. Until the rest is taken, the peer is held back by flow control.
+     */
     fun onBytes(bytes: ReadBuffer)
 
     /** No more bytes will come, as [end] says. Called once, last; not called after [QuicReceiveStream.stop]. */

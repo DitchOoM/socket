@@ -51,6 +51,7 @@ internal class CoreReceiveStream(
     private val half: ReceiveHalf,
     arrival: Arrival,
     private val codes: QuicAbortCodes,
+    private val replies: RoomSource,
 ) : QuicReceiveStream,
     CoreIncoming {
     private val reading =
@@ -126,7 +127,9 @@ internal class CoreReceiveStream(
             connection.handlers.left()
             return StreamReceive.NotReceiving.AlreadyReading
         }
-        connection.handToLoop(StreamInbox(connection, id, lane, receiver, codes.handlerFailed))
+        val inbox = StreamInbox(connection, id, lane, receiver, codes.handlerFailed)
+        replies.listen(inbox)
+        connection.handToLoop(inbox)
         return StreamReceive.Receiving
     }
 
@@ -229,11 +232,14 @@ internal class PublicStreams(
     fun both(
         stream: BidiStream,
         arrival: Arrival,
-    ) = CoreBidiStream(CoreSendStream(connection, stream.send, codes), CoreReceiveStream(connection, stream.receive, arrival, codes))
+    ): CoreBidiStream {
+        val send = CoreSendStream(connection, stream.send, codes)
+        return CoreBidiStream(send, CoreReceiveStream(connection, stream.receive, arrival, codes, send.outbox))
+    }
 
     fun incoming(stream: IncomingStream): CoreIncoming =
         when (stream) {
             is IncomingStream.Bidirectional -> both(stream.stream, stream.arrival)
-            is IncomingStream.ReceiveOnly -> CoreReceiveStream(connection, stream.receive, stream.arrival, codes)
+            is IncomingStream.ReceiveOnly -> CoreReceiveStream(connection, stream.receive, stream.arrival, codes, NoRoomSource)
         }
 }

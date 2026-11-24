@@ -124,6 +124,7 @@ class ReceiverAllocationTests {
 
         override fun onBytes(bytes: ReadBuffer) {
             got += bytes.remaining()
+            bytes.position(bytes.limit())
             while (got >= ECHO) {
                 got -= ECHO
                 val n = echoes.incrementAndGet().toInt()
@@ -148,6 +149,7 @@ class ReceiverAllocationTests {
         override fun onBytes(bytes: ReadBuffer) {
             calls++
             this.bytes += bytes.remaining()
+            bytes.position(bytes.limit())
             if (calls == warm) from = Counters(callerThread = NO_THREAD)
         }
 
@@ -160,7 +162,9 @@ class ReceiverAllocationTests {
     private class Ended : QuicStreamReceiver {
         val end = CompletableDeferred<ScopedRead.End>()
 
-        override fun onBytes(bytes: ReadBuffer) = Unit
+        override fun onBytes(bytes: ReadBuffer) {
+            bytes.position(bytes.limit())
+        }
 
         override fun onEnd(end: ScopedRead.End) {
             this.end.complete(end)

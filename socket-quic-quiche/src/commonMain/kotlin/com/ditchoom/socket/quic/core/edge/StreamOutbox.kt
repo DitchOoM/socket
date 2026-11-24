@@ -44,7 +44,7 @@ import kotlin.time.Duration
 internal class StreamOutbox(
     private val connection: CoreConnection,
     private val stream: QuicStreamId,
-) {
+) : RoomSource {
     private val state = AtomicReference<OutboxState>(OutboxState.Open)
     private val ring = AtomicReference<OutboxRing>(OutboxRing.None)
     private val head = AtomicLong(0L)
@@ -52,7 +52,11 @@ internal class StreamOutbox(
     private val scheduled = AtomicInt(IDLE)
     private val parked = AtomicReference<OutboxParked>(OutboxParked.Nobody)
     private val feed = Feed()
+    private val listener = AtomicReference<RoomListener>(NoRoomListener)
     private val full = StreamSend.NotSent.WindowFull(StreamRoomWait { awaitRoom(it) })
+
+    /** The stream's receiver, told each time the loop hands quiche queued bytes. */
+    override fun listen(room: RoomListener) = listener.store(room)
 
     // ---- the sender ----
 
@@ -231,6 +235,7 @@ internal class StreamOutbox(
                     code > 0 -> {
                         head.store(sent + code)
                         wake()
+                        listener.load().roomMade()
                         if (last && code == length) return finTaken(table)
                         if (code < length) return blocked(table)
                     }

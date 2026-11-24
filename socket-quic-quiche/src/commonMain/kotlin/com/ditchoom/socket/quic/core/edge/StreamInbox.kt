@@ -41,6 +41,11 @@ private enum class InboxReturned { No, Yes }
  * until the receiver returned. So a receiver slow to return keeps the stream's flow-control window shut, and the bytes
  * held for it are bounded by the window and this buffer. The lane gives the stream back to the loop after each call.
  *
+ * A receiver takes what it can, as the buffer's position says; the rest stays in the buffer and is offered again,
+ * first in the next call: at once when the receiver took some, else with the next bytes that arrive or once the
+ * stream's own send queue makes room (a reply the queue could not take). Until the held bytes are taken, the buffer's
+ * room is what the loop reads into, so a receiver that takes nothing holds the peer back.
+ *
  * The loop owns the buffer while no delivery is out, the lane while one is; the hand-offs between them order the two.
  */
 @Queue
@@ -51,7 +56,8 @@ internal class StreamInbox(
     private val receiver: QuicStreamReceiver,
     private val failedCode: com.ditchoom.socket.quic.QuicAppErrorCode,
 ) : ConnWork(),
-    Waiter {
+    Waiter,
+    RoomListener {
     private val lent = connection.bufferFactory.allocate(LENT_ROOM)
     private val address =
         when (val at = NativeBytes.addressOf(lent)) {
@@ -63,7 +69,12 @@ internal class StreamInbox(
         }
     private val out = AtomicInt(IDLE)
 
-    /** Written by the loop before a delivery goes to the lane, read by the lane in it. */
+    /** Whether the last call took none of what it was offered: held bytes then wait for new bytes or send room. */
+    private val stalled = AtomicInt(MOVING)
+
+    /** Written by the loop before a delivery goes to the lane, and by the lane in it; the hand-offs order the two. */
+    private var start = 0
+    private var held = 0
     private var length = 0
     private var ending: InboxEnding = InboxEnding.Not
     private val deliver = Runnable { deliverOnLane() }
@@ -81,14 +92,14 @@ internal class StreamInbox(
 
     override fun retry(table: StreamTable): Retry = drain(table)
 
-    /** Reads what quiche holds into the buffer and hands it to the lane, unless a delivery is still out. */
+    /** Reads what quiche holds after the held bytes and hands both to the lane, unless a delivery is still out. */
     private fun drain(table: StreamTable): Retry {
         if (out.load() == OUT) return Retry.Again
-        length = 0
-        ending = InboxEnding.Not
-        while (LENT_ROOM - length > 0) {
+        if (start > 0 && start + held > LENT_ROOM - LENT_ROOM / 4) compact()
+        var end = start + held
+        while (ending is InboxEnding.Not && LENT_ROOM - end > 0) {
             val read =
-                table.io.recv(stream, address + length, LENT_ROOM - length).fold(
+                table.io.recv(stream, address + end, LENT_ROOM - end).fold(
                     more = { it },
                     last = { read ->
                         table.entry(stream).finished()
@@ -111,19 +122,35 @@ internal class StreamInbox(
                         0
                     },
                 )
-            length += read
-            if (read == 0 || ending !is InboxEnding.Not) break
+            end += read
+            if (read == 0) break
         }
+        val fresh = end - start - held
+        length = held + fresh
         val ended = ending !is InboxEnding.Not
-        if (length > 0 || ended) {
+        val moving = stalled.load() == MOVING
+        if (fresh > 0 || (ended && held == 0) || (moving && (held > 0 || ended))) {
             out.store(OUT)
             lane.dispatch(HandlerSite.Unnamed, deliver)
         }
         return if (ended) Retry.Settled else Retry.Again
     }
 
+    /** Moves the held bytes to the buffer's start, so the room after them is whole again. */
+    private fun compact() {
+        lent.setLimit(LENT_ROOM)
+        for (i in 0 until held) {
+            val b = lent.get(start + i)
+            lent.position(i)
+            lent.writeByte(b)
+        }
+        start = 0
+    }
+
     override fun connectionEnded(end: ConnEnd) {
         if (out.load() == OUT) return
+        start = 0
+        held = 0
         length = 0
         ending = InboxEnding.With(ScopedRead.End.ConnectionEnded(publicEndOf(end)))
         out.store(OUT)
@@ -134,11 +161,14 @@ internal class StreamInbox(
 
     // ---- the lane ----
 
-    /** Hands the receiver what the loop read, then the end if it came, else gives the stream back to the loop. */
+    /**
+     * Hands the receiver what the loop read after what it held, keeps what the receiver left, then the end once nothing
+     * is held, else gives the stream back to the loop.
+     */
     private fun deliverOnLane() {
         if (length > 0) {
-            lent.position(0)
-            lent.setLimit(length)
+            lent.setLimit(start + length)
+            lent.position(start)
             var returned = InboxReturned.No
             try {
                 receiver.onBytes(lent)
@@ -153,17 +183,27 @@ internal class StreamInbox(
                     }
                 }
             }
+            val taken = (lent.position() - start).coerceIn(0, length)
+            held = length - taken
+            start = if (held == 0) 0 else start + taken
+            stalled.store(if (taken == 0 && held > 0) STALLED else MOVING)
         }
         when (val now = ending) {
-            is InboxEnding.With -> {
-                receiver.onEnd(now.end)
-                letGo()
-            }
-            is InboxEnding.Not -> {
-                out.store(IDLE)
-                connection.handToLoop(again)
-            }
+            is InboxEnding.With ->
+                if (held == 0) {
+                    receiver.onEnd(now.end)
+                    return letGo()
+                }
+            is InboxEnding.Not -> Unit
         }
+        out.store(IDLE)
+        // A receiver that took none waits for new bytes, which wake the parked reader, or for send room ([roomMade]).
+        if (stalled.load() == MOVING) connection.handToLoop(again)
+    }
+
+    /** The stream's send queue made room: held bytes a stalled receiver could not reply to are offered again. */
+    override fun roomMade() {
+        if (stalled.compareAndSet(STALLED, MOVING)) connection.handToLoop(again)
     }
 
     private fun letGo() {
@@ -187,6 +227,8 @@ internal class StreamInbox(
     private companion object {
         const val IDLE = 0
         const val OUT = 1
+        const val MOVING = 0
+        const val STALLED = 1
 
         /** The stream's receive buffer: what one call is lent at most. */
         const val LENT_ROOM = 65_536

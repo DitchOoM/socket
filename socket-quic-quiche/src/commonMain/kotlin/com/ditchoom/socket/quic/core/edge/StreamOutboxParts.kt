@@ -120,3 +120,23 @@ internal fun SendRefusal.end(): ConnEnd =
         is SendRefusal.PastClose -> end
         is SendRefusal.Ended -> end
     }
+
+/** Told on the loop when a stream's send queue handed quiche bytes: the stream's receiver, holding a reply it could not send. */
+internal interface RoomListener {
+    fun roomMade()
+}
+
+/** A send queue no receiver listens to. */
+internal object NoRoomListener : RoomListener {
+    override fun roomMade() = Unit
+}
+
+/** What a receive direction listens to for send room: its stream's send queue, or nothing on a receive-only stream. */
+internal interface RoomSource {
+    fun listen(room: RoomListener)
+}
+
+/** A receive-only stream: no send queue makes room. */
+internal object NoRoomSource : RoomSource {
+    override fun listen(room: RoomListener) = Unit
+}

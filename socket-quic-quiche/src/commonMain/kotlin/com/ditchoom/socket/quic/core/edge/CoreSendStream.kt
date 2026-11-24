@@ -37,7 +37,8 @@ internal class CoreSendStream(
     private val half: SendHalf,
     private val codes: QuicAbortCodes,
 ) : QuicSendStream {
-    private val outbox = StreamOutbox(connection, half.id)
+    /** The stream's send queue; its receive direction listens to it for room. */
+    val outbox = StreamOutbox(connection, half.id)
     private val verdict = AtomicReference<Verdict>(Verdict.Writing)
 
     override val id: QuicStreamId get() = half.id

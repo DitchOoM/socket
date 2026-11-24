@@ -23,6 +23,8 @@ import com.ditchoom.socket.quic.getOrElse
 import com.ditchoom.socket.quic.network
 import com.ditchoom.socket.quic.readEach
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import kotlin.test.AfterTest
 import kotlin.test.Test
@@ -95,6 +97,65 @@ class CoreReceiverTests {
                 assertIs<StreamWrite.Written>(send.finish())
                 assertSame<ScopedRead.NoData>(ScopedRead.End.PeerFinished, withTimeout(WAIT) { receive.readEach { } })
                 assertEquals(false, refused.isCompleted, "every reply fit: ${if (refused.isCompleted) refused.await() else ""}")
+                client.close()
+            }
+        }
+
+    @Test
+    fun aReplyLargerThanTheSendQueueIsTakenInPartsAndArrivesWhole() =
+        coreTest("CoreReceiverTests.aReplyLargerThanTheSendQueueIsTakenInPartsAndArrivesWhole") {
+            val partial = CompletableDeferred<Unit>()
+            withCoreServer(onConnection = { core ->
+                core.public().handleStreams { incoming ->
+                    val stream = incoming as QuicStream
+                    val ended = CompletableDeferred<ScopedRead.End>()
+                    // The reply is the bytes themselves: trySend takes what the send queue has room for, and the
+                    // receiver leaves the rest, which is offered again once the queue made room.
+                    val echo =
+                        object : QuicStreamReceiver {
+                            override fun onBytes(bytes: ReadBuffer) {
+                                stream.send.trySend(bytes)
+                                if (bytes.remaining() > 0) partial.complete(Unit)
+                            }
+
+                            override fun onEnd(end: ScopedRead.End) {
+                                stream.send.tryFinish()
+                                ended.complete(end)
+                            }
+                        }
+                    stream.receive.receive(echo)
+                    ended.await()
+                }
+            }) { server ->
+                val client = connect(server.port)
+                val (send, receive) = client.openStream().orFail()
+                coroutineScope {
+                    launch {
+                        val chunk = BufferFactory.network().allocate(LARGE_CHUNK)
+                        var at = 0
+                        while (at < LARGE) {
+                            chunk.resetForWrite()
+                            repeat(LARGE_CHUNK) { chunk.writeByte(((at + it) % PATTERN).toByte()) }
+                            chunk.resetForRead()
+                            assertIs<StreamWrite.Written>(send.write(chunk))
+                            at += LARGE_CHUNK
+                        }
+                        assertIs<StreamWrite.Written>(send.finish())
+                    }
+                    var got = 0
+                    val end =
+                        withTimeout(LONG_WAIT) {
+                            receive.readEach { bytes ->
+                                while (bytes.remaining() > 0) {
+                                    assertEquals((got % PATTERN).toByte(), bytes.readByte(), "byte $got")
+                                    got++
+                                }
+                            }
+                        }
+                    assertSame<ScopedRead.NoData>(ScopedRead.End.PeerFinished, end)
+                    assertEquals(LARGE, got)
+                }
+                assertEquals(true, partial.isCompleted, "the receiver left part of a call for the next")
                 client.close()
             }
         }
@@ -222,9 +283,13 @@ class CoreReceiverTests {
     private companion object {
         const val BIG = 1_048_576
         const val MESSAGE = 1_000
+        const val LARGE = 4 * 1_048_576
+        const val LARGE_CHUNK = 16_384
+        const val PATTERN = 251
         const val ROUNDS = 100
         const val STOP_CODE = 0x42L
         const val CLOSE_CODE = 0x77L
         val WAIT = 10.seconds
+        val LONG_WAIT = 60.seconds
     }
 }

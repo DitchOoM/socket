@@ -34,17 +34,26 @@ class ReceiverBackpressureTests {
     @AfterTest
     fun closeLoops() = loops.close()
 
-    /** One server-side receiver: counts what it is given, blocking [blockMs] in each call. */
+    /**
+     * One server-side receiver: takes at most [part] bytes of each call, checking each is the next of the pattern the
+     * client wrote, and blocks [blockMs] in each call. What it leaves is offered again.
+     */
     private class Upload(
         private val delivered: AtomicLong,
         private val calls: AtomicLong,
         private val blockMs: Long,
+        private val part: Int,
+        private val outOfOrder: AtomicLong,
     ) : QuicStreamReceiver {
         val end = CompletableDeferred<ScopedRead.End>()
 
         override fun onBytes(bytes: ReadBuffer) {
             calls.incrementAndGet()
-            delivered.addAndGet(bytes.remaining().toLong())
+            val taking = minOf(part, bytes.remaining())
+            repeat(taking) {
+                val at = delivered.getAndIncrement()
+                if (bytes.readByte() != (at % PATTERN).toByte()) outOfOrder.incrementAndGet()
+            }
             if (blockMs > 0) Thread.sleep(blockMs)
         }
 
@@ -61,19 +70,18 @@ class ReceiverBackpressureTests {
                 val slowCalls = AtomicLong()
                 val fastDelivered = AtomicLong()
                 val fastCalls = AtomicLong()
+                val outOfOrder = AtomicLong()
                 withCoreServer(onConnection = { core ->
                     core.public().handleStreams { incoming ->
                         val stream = incoming as QuicStream
                         // The first byte names the stream's receiver: S blocks in every call, anything else does not.
-                        val (first, rest) =
-                            stream.receive.read { it.get(it.position()) to (it.remaining() - 1) }.getOrElse { return@handleStreams }
+                        // The first byte names the receiver; it is read alone, so the pattern starts with the next.
+                        val first = stream.receive.read { it.readByte() }.getOrElse { return@handleStreams }
                         val upload =
                             if (first == SLOW) {
-                                slowDelivered.addAndGet(rest.toLong())
-                                Upload(slowDelivered, slowCalls, BLOCK_MS)
+                                Upload(slowDelivered, slowCalls, BLOCK_MS, SLOW_PART, outOfOrder)
                             } else {
-                                fastDelivered.addAndGet(rest.toLong())
-                                Upload(fastDelivered, fastCalls, 0)
+                                Upload(fastDelivered, fastCalls, 0, Int.MAX_VALUE, outOfOrder)
                             }
                         stream.receive.receive(upload)
                         upload.end.await()
@@ -87,23 +95,22 @@ class ReceiverBackpressureTests {
                     val chunk = BufferFactory.network().allocate(CHUNK)
                     val slowWriter =
                         launch(Dispatchers.Default) {
+                            // The marker goes alone, acknowledged by the server's first read, so the pattern starts after it.
                             slowStream.send.write(byteOf(SLOW))
+                            kotlinx.coroutines.delay(MARKER_ALONE_MS)
                             val mine = BufferFactory.network().allocate(CHUNK)
                             while (slowQueued.get() < SLOW_TOTAL) {
-                                mine.resetForWrite()
-                                mine.position(CHUNK)
-                                mine.resetForRead()
+                                pattern(mine, slowQueued.get())
                                 if (slowStream.send.write(mine) !== StreamWrite.Written) return@launch
                                 slowQueued.addAndGet(CHUNK.toLong())
                             }
                         }
                     // The neighbour uploads everything while the slow receiver blocks in its calls.
                     fastStream.send.write(byteOf(FAST))
+                    kotlinx.coroutines.delay(MARKER_ALONE_MS)
                     var sent = 0L
                     while (sent < FAST_TOTAL) {
-                        chunk.resetForWrite()
-                        chunk.position(CHUNK)
-                        chunk.resetForRead()
+                        pattern(chunk, sent)
                         if (fastStream.send.write(chunk) !== StreamWrite.Written) fail("the neighbour's write failed")
                         sent += CHUNK
                     }
@@ -115,7 +122,11 @@ class ReceiverBackpressureTests {
                         "[receiver backpressure] neighbour: %d B in %d calls, done; slow: peer queued %d B, receiver given %d B in %d calls (%d ms each), held back %d B"
                             .format(fastDelivered.get(), fastCalls.get(), queued, given, slowCalls.get(), BLOCK_MS, queued - given),
                     )
+                    // What the slow receiver left in each call is offered again: its calls go on, each taking the next part.
+                    withTimeout(WAIT) { while (slowCalls.get() < REOFFERS) kotlinx.coroutines.delay(5) }
                     slowWriter.cancel()
+                    assertTrue(outOfOrder.get() == 0L, "every byte a receiver took was the next: ${outOfOrder.get()} out of order")
+                    assertTrue(slowDelivered.get() >= REOFFERS * SLOW_PART, "each call took its part: ${slowDelivered.get()} B")
                     assertTrue(queued < SLOW_TOTAL, "the slow stream's peer was held back: it queued $queued of $SLOW_TOTAL")
                     assertTrue(
                         queued - given <= HELD_BOUND,
@@ -131,6 +142,12 @@ class ReceiverBackpressureTests {
         const val SLOW: Byte = 'S'.code.toByte()
         const val FAST: Byte = 'F'.code.toByte()
         const val BLOCK_MS = 50L
+        const val PATTERN = 251
+
+        /** The slow receiver takes this much of each call and leaves the rest. */
+        const val SLOW_PART = 4_096
+        const val MARKER_ALONE_MS = 100L
+        const val REOFFERS = 5L
         const val CHUNK = 16_384
         const val SLOW_TOTAL = 64L * 1_048_576
         const val FAST_TOTAL = 8L * 1_048_576
@@ -141,6 +158,16 @@ class ReceiverBackpressureTests {
          */
         const val HELD_BOUND = 2L * 1_048_576 + 3L * 65_536
         val WAIT = 60.seconds
+
+        /** Fills [buffer] with the pattern from [offset]: byte i of the stream is i mod [PATTERN]. */
+        fun pattern(
+            buffer: com.ditchoom.buffer.PlatformBuffer,
+            offset: Long,
+        ) {
+            buffer.resetForWrite()
+            repeat(CHUNK) { buffer.writeByte(((offset + it) % PATTERN).toByte()) }
+            buffer.resetForRead()
+        }
 
         fun byteOf(value: Byte) =
             BufferFactory.network().allocate(1).apply {
