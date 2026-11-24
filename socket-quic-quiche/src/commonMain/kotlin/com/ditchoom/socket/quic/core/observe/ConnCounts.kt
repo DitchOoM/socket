@@ -6,6 +6,9 @@ import com.ditchoom.socket.quic.QuicStatsRead
 
 /** What a connection did with the threads and datagrams that reached it: any thread counts, tests read. */
 internal class ConnCounts {
+    /** What its timer did: counted only by whoever is inside, so plain fields; a test reads them between operations. */
+    val timer = TimerCounts()
+
     private val entered = Counter()
     private val busy = Counter()
     private val handed = Counter()

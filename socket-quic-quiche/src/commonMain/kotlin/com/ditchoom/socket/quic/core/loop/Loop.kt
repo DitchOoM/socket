@@ -63,7 +63,8 @@ internal class Loop(
     val id: Int,
     val name: String,
     private val poller: Poller,
-    private val clock: LoopClock,
+    /** The loop's time, which its connections read too. */
+    val clock: LoopClock,
     private val receive: ReceiveBatch,
     /** What the loop frees when it stops: its receive memory. */
     private val freeOnStop: Runnable,

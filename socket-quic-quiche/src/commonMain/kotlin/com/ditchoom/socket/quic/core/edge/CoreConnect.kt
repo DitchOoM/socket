@@ -251,6 +251,7 @@ private suspend fun OnSetupLane.connectOnLane(
                     flight,
                     handshake,
                     access.sendsAccess(peerKey),
+                    clock = running.loop.clock,
                     readiness = socket.readiness(),
                     offer = offer,
                     tickets = plan.home,

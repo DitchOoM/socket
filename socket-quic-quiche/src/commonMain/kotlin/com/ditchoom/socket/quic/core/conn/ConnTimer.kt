@@ -4,6 +4,7 @@ import com.ditchoom.socket.quic.NO_TIMEOUT_NANOS
 import com.ditchoom.socket.quic.Rearmable
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.observe.Confined
+import com.ditchoom.socket.quic.core.observe.TimerCounts
 import com.ditchoom.socket.quic.core.sched.LoopPort
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.time.WakeSink
@@ -34,6 +35,7 @@ internal class ConnTimer(
     private val q: QuicheConnRef,
     private val port: LoopPort,
     val sink: WakeSink,
+    private val counts: TimerCounts = TimerCounts(),
 ) {
     private var deadline: TimerDeadline = TimerDeadline.Unmade
 
@@ -42,6 +44,7 @@ internal class ConnTimer(
         now: Nanos,
         fire: Runnable,
     ) {
+        counts.rearmed()
         val wait = q.api.connTimeoutNanos(q.handle)
         val asked = sink.state()
         val offered = sink.earliest()
@@ -53,6 +56,7 @@ internal class ConnTimer(
             }
         val made = made(fire)
         if (made.wanted().fold(none = { false }, at = { it <= due.value })) return
+        counts.moved()
         port.arm(made, due)
     }
 
@@ -67,6 +71,7 @@ internal class ConnTimer(
         }
         val made = made(fire)
         if (made.wanted().fold(none = { false }, at = { it == due.value })) return
+        counts.moved()
         port.arm(made, due)
     }
 

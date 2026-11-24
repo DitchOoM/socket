@@ -754,6 +754,18 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+      # Every gated count and allocation, whatever the outcome: perf-trend.py (review.yaml's perf-trend job) compares
+      # them with earlier runs. Written by the tests' PerfGates; absent when coreAllocationTest did not run.
+      - name: Upload perf gates
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: perf-gates-apple-${{ matrix.backend.slug }}
+          path: socket-quic-quiche/build/perf-gates/
+          retention-days: 30
+          if-no-files-found: ignore
+
   # ── Stage 2c: link the macosArm64 test binaries for the integration job ──────────────────────
   link:
     name: "Link macosArm64 test binaries"

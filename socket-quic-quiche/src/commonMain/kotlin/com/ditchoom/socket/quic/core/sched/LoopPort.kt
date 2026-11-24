@@ -114,6 +114,12 @@ internal class LoopPort(
         rearmables.fireDue(now.value)
     }
 
+    /** Any thread. One-off deadlines made so far: each is one arming ([arm], [node]). */
+    fun deadlinesMade(): Long = deadlines.madeTotal
+
+    /** Loop thread, or a test between operations. Re-armings of [Rearmable] deadlines the loop has taken so far. */
+    fun rearmsTaken(): Long = rearmables.postsTaken
+
     /** Loop thread. Runs every item submitted before this call, oldest first; returns how many. */
     fun runWork(): Int = inbox.drain(runner)
 

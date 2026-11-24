@@ -136,6 +136,11 @@ internal class Rearmables {
     @LoopOnly
     private var orders = 0L
 
+    /** Loop thread: posts taken off the inbox so far, each one or more re-armings of a deadline; a test reads it. */
+    @LoopOnly
+    var postsTaken = 0L
+        private set
+
     /** Any thread: a deadline that runs [action], not armed. */
     fun make(action: DeadlineFired): Rearmable = Rearmable(this, action)
 
@@ -192,6 +197,7 @@ internal class Rearmables {
             val following = chain.next
             chain.next = PostLink.End
             chain.taken()
+            postsTaken++
             place(chain)
             chain = following
         }
