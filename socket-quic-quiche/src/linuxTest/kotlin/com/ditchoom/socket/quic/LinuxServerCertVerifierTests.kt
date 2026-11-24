@@ -22,8 +22,7 @@ class LinuxServerCertVerifierTests : ServerCertVerifierTestSuite() {
         options: QuicOptions,
         transport: com.ditchoom.socket.TransportConfig,
         timeout: kotlin.time.Duration,
-    ): QuicScope =
-        QuicheEngine.connect(QuicClientBinding.OwnSocket, endpoint, serverName, options, transport, timeout)
+    ): QuicScope = QuicheEngine.connect(QuicClientBinding.OwnSocket, endpoint, serverName, options, transport, timeout)
 
     private fun certPath(name: String): String {
         val candidates = listOf("testcerts/$name", "socket-quic-quiche/testcerts/$name")
