@@ -90,19 +90,20 @@ internal class HeldStream(
 }
 
 /**
- * What a connection held for its readers when it ended, by stream, and the streams that were still [live] then: a read
- * of a stream nothing was held for reads its end when the stream was already spent, as before the end, and meets the
- * close when it was live. Built once inside at the end, immutable after; any thread reads it.
+ * What a connection held for its readers when it ended, by stream, and what a read of each stream still [live] then
+ * takes when nothing was held for it: the close for a receiving side still open, else the end that side already had,
+ * its FIN or its reset, as before the end. A stream already spent reads its end. Built once inside at the end,
+ * immutable after; any thread reads it.
  */
 internal class HeldReads(
     private val held: Map<Long, HeldStream>,
-    private val live: Set<Long>,
+    private val live: Map<Long, HeldTake>,
 ) {
     /** The streams that still owe their reader something. */
     fun owing(): Set<QuicStreamId> = held.filterValues { it.owed() == Owed.Yes }.keys.mapTo(HashSet()) { QuicStreamId(it) }
 
     fun take(stream: QuicStreamId): HeldTake {
-        val one = held.getOrElse(stream.id) { return if (stream.id in live) HeldTake.Closed else HeldTake.Finished }
+        val one = held.getOrElse(stream.id) { return live.getOrElse(stream.id) { HeldTake.Finished } }
         return one.take()
     }
 

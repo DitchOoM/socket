@@ -233,21 +233,14 @@ class CoreEntryTests {
     fun theBlocksEndResetsItsPlainStreamsAndLeavesFinishedOnesAlone() =
         coreTest("CoreEntryTests.theBlocksEndResetsItsPlainStreamsAndLeavesFinishedOnesAlone") {
             serving(serverOptions) { listener ->
-                // Each server reader is parked on its next read before the block ends, so the FIN and the reset reach a
-                // waiting read ahead of the close that follows them.
-                val reading = Channel<Unit>(Channel.UNLIMITED)
-                val ends = Channel<ScopedRead.NoData>(Channel.UNLIMITED)
+                val ends = CompletableDeferred<List<ScopedRead.NoData>>()
                 val serving =
                     launch {
                         listener.handleConnections { server ->
+                            val seen = ArrayList<ScopedRead.NoData>()
                             server.handleStreams { incoming ->
-                                var first = true
-                                val end =
-                                    receiveOf(incoming).readEach {
-                                        if (first) reading.send(Unit)
-                                        first = false
-                                    }
-                                ends.send(end)
+                                val end = receiveOf(incoming).readEach { }
+                                synchronizedAdd(seen, end, ends)
                             }
                         }
                     }
@@ -262,16 +255,52 @@ class CoreEntryTests {
                         val (open, _) = client.openStream().orFail()
                         assertIs<StreamWrite.Written>(open.write(bytes(payload())))
                         val (finished, _) = client.openStream().orFail()
-                        assertIs<StreamWrite.Written>(finished.write(bytes(payload())))
-                        withTimeout(WAIT) { repeat(2) { reading.receive() } }
                         assertIs<StreamWrite.Written>(finished.writeAndFinish(bytes(payload())))
                         "returned"
                     }
                 assertEquals("returned", assertIs<QuicConnect.Connected<String>>(ran).value)
-                val seen = withTimeout(WAIT) { List(2) { ends.receive() } }
+                val seen = withTimeout(WAIT) { ends.await() }
                 assertTrue(ScopedRead.End.PeerFinished in seen, "the finished stream ends as it was finished: $seen")
                 val reset = seen.filterIsInstance<ScopedRead.End.PeerReset>().single()
                 assertEquals(QuicAppErrorCode(CUT_CODE), reset.code, "the open plain stream is reset with the write-cut code")
+                serving.cancel()
+            }
+        }
+
+    @Test
+    fun aStreamFinishedBeforeAGracefulCloseIsReadToItsFinAfterTheClose() =
+        coreTest("CoreEntryTests.aStreamFinishedBeforeAGracefulCloseIsReadToItsFinAfterTheClose") {
+            serving(serverOptions) { listener ->
+                val ends = Channel<String>(Channel.UNLIMITED)
+                val serving =
+                    launch {
+                        listener.handleConnections { server ->
+                            server.handleStreams { incoming ->
+                                // The reader starts only once the client's close ended the connection.
+                                server.awaitEnd()
+                                var bytes = 0
+                                val end = receiveOf(incoming).readEach { bytes += it.remaining() }
+                                ends.send("$bytes $end")
+                            }
+                        }
+                    }
+                repeat(ROUNDS) {
+                    val ran =
+                        connectQuicOnCore(
+                            QuicPeer.Candidates(listOf(local(listener.port)), "localhost"),
+                            clientOptions,
+                            TransportConfig(),
+                            WAIT,
+                        ) { client ->
+                            val (open, _) = client.openStream().orFail()
+                            assertIs<StreamWrite.Written>(open.write(bytes(payload())))
+                            val (finished, _) = client.openStream().orFail()
+                            assertIs<StreamWrite.Written>(finished.writeAndFinish(bytes(payload())))
+                        }
+                    assertIs<QuicConnect.Connected<Unit>>(ran)
+                    val seen = withTimeout(WAIT) { List(2) { ends.receive() } }
+                    assertTrue("${payload().size} ${ScopedRead.End.PeerFinished}" in seen, "round $it: $seen")
+                }
                 serving.cancel()
             }
         }
@@ -439,10 +468,21 @@ class CoreEntryTests {
         const val WINDOW = 4_096
         const val CUT_CODE = 0x99L
         const val BROKEN_CODE = 0x5BL
+        const val ROUNDS = 20
         const val ALERT_NO_APPLICATION_PROTOCOL = 120
         const val ALERT_BAD_CERTIFICATE = 42
         val WAIT = 10.seconds
         val clientOptions = QuicOptions(alpnProtocols = listOf("test"), verifyPeer = false, idleTimeout = 10.seconds)
         val serverOptions = clientOptions
     }
+}
+
+/** Adds [end] to [seen], completing [all] once two streams have ended; handlers of one connection never run at once. */
+private fun synchronizedAdd(
+    seen: MutableList<ScopedRead.NoData>,
+    end: ScopedRead.NoData,
+    all: CompletableDeferred<List<ScopedRead.NoData>>,
+) {
+    seen += end
+    if (seen.size == 2) all.complete(seen.toList())
 }

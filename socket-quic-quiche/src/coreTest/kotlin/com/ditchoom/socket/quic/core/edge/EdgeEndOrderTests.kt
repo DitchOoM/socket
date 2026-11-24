@@ -45,7 +45,7 @@ class EdgeEndOrderTests {
                     }
                 }
             val end = ConnEnd.ByLocal(QuicError.NoError)
-            edge.ended(end, HeldReads(emptyMap(), emptySet()), CloseOutcome.NotAsked, HandshakeFate.NotCompleted)
+            edge.ended(end, HeldReads(emptyMap(), emptyMap()), CloseOutcome.NotAsked, HandshakeFate.NotCompleted)
             val seen = assertIs<Seen.Failed>(accept.await())
             assertEquals<QuicCloseReason>(QuicCloseReason.ByLocal(QuicError.NoError), seen.reason)
             assertEquals<QuicConnectionState>(QuicConnectionState.Closed(seen.reason), seen.state)
@@ -56,7 +56,7 @@ class EdgeEndOrderTests {
         val edge = EdgeState(BufferFactory.network().allocate(ALPN), TraceCapture.Off, TicketHome.NotKept, ChainHome.NotKept)
         val facts = HandshakeFacts("test", NOT_OFFERED, LeafCert.NotPresented)
         val end = ConnEnd.ByPeer(QuicError.ApplicationError(7L))
-        edge.ended(end, HeldReads(emptyMap(), emptySet()), CloseOutcome.NotAsked, HandshakeFate.Completed(facts))
+        edge.ended(end, HeldReads(emptyMap(), emptyMap()), CloseOutcome.NotAsked, HandshakeFate.Completed(facts))
         assertEquals<HandlerStart>(HandlerStart.Now, edge.start.value, "a server offers a connection whose handshake completed")
         assertEquals("test", assertIs<HandshakeRecord.Settled>(edge.handshake.value).negotiatedAlpn)
     }
@@ -65,7 +65,7 @@ class EdgeEndOrderTests {
     fun anEndThatCarriesNoCompletedHandshakeStartsNoHandler() {
         val edge = EdgeState(BufferFactory.network().allocate(ALPN), TraceCapture.Off, TicketHome.NotKept, ChainHome.NotKept)
         val end = ConnEnd.ByPeer(QuicError.ApplicationError(7L))
-        edge.ended(end, HeldReads(emptyMap(), emptySet()), CloseOutcome.NotAsked, HandshakeFate.NotCompleted)
+        edge.ended(end, HeldReads(emptyMap(), emptyMap()), CloseOutcome.NotAsked, HandshakeFate.NotCompleted)
         assertEquals<HandlerStart>(HandlerStart.Never, edge.start.value)
     }
 

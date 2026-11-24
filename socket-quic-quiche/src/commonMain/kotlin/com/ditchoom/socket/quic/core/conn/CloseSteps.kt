@@ -115,10 +115,10 @@ internal enum class HoldAtEnd { ReadOut, LiveOnly }
  */
 internal fun ConnParts.heldAtEnd(how: HoldAtEnd): HeldReads {
     val held = HashMap<Long, HeldStream>()
-    val live = HashSet<Long>()
+    val live = HashMap<Long, HeldTake>()
     val readOut = how == HoldAtEnd.ReadOut && handshake.reached() == Progress.Established
     streams.forEachEntry { entry ->
-        live.add(entry.id.id)
+        live[entry.id.id] = afterTheEnd(entry.received)
         if (readOut && entry.received is Side.Open) {
             val one = endHold.stream(entry.id)
             if (one.owed() == Owed.Yes) held[entry.id.id] = one
@@ -126,6 +126,17 @@ internal fun ConnParts.heldAtEnd(how: HoldAtEnd): HeldReads {
     }
     return HeldReads(held, live)
 }
+
+/**
+ * What a read of a live stream with nothing held takes after the end, by how its receiving side stood: a FIN or a reset
+ * the stream's last read already took the bytes before, as before the end; the close otherwise.
+ */
+private fun afterTheEnd(received: Side): HeldTake =
+    when (received) {
+        is Side.Finished -> HeldTake.Finished
+        is Side.Reset -> HeldTake.Reset(received.code)
+        is Side.Open, is Side.Stopped, is Side.Refused, is Side.Abandoned, is Side.NotPart -> HeldTake.Closed
+    }
 
 /** At the end: a client's unused ticket goes back, and the end goes into the flight recording. */
 internal fun ConnParts.recordEnd(
