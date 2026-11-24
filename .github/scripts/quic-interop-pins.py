@@ -6,10 +6,7 @@
   resolve <pins.json> <runner dir>  re-resolves every tag of the runner's implementations file and docker-compose.yml
                                     to its registry digest and rewrites pins.json with them and the checkout's commit
 
-apply fails on a peer the runner offers that pins.json does not name, so a new peer is pinned before it runs. It also
-gives the server and client containers an unlimited core size: haproxy since 62c0c84b81 turns `set-dumpable` on under
-`-d`, which its qns image runs with, and exits when it cannot raise the core limit, which a container without
-CAP_SYS_RESOURCE can only do when docker already set the hard limit (run 45399057151: every haproxy cell).
+apply fails on a peer the runner offers that pins.json does not name, so a new peer is pinned before it runs.
 """
 import json
 import os
@@ -25,8 +22,6 @@ ACCEPT = ", ".join([
 ])
 # The images docker-compose.yml names itself, by the key their pin has in pins.json.
 COMPOSE_IMAGES = {"simulator": "martenseemann/quic-network-simulator", "iperf": "martenseemann/quic-interop-iperf-endpoint"}
-MEMLOCK = "      memlock: 67108864\n"
-CORE = "      core: -1\n"
 
 
 def implementations_file(runner):
@@ -65,9 +60,6 @@ def apply(pins_path, runner):
         if f"image: {image}\n" not in compose:
             sys.exit(f"docker-compose.yml no longer names {image}")
         compose = compose.replace(f"image: {image}\n", f"image: {pinned(pin['tag'], pin['digest'])}\n")
-    if compose.count(MEMLOCK) != 2:
-        sys.exit("docker-compose.yml's server and client ulimits are not where this expects them")
-    compose = compose.replace(MEMLOCK, MEMLOCK + CORE)
     open(compose_path, "w").write(compose)
     for name in sorted(impl):
         print(f"{name}: {impl[name]['image']}")
