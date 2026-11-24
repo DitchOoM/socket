@@ -5,14 +5,20 @@ import com.ditchoom.socket.quic.core.testing.NioEcho
 import com.ditchoom.socket.quic.core.testing.allocationSamples
 import com.ditchoom.socket.quic.core.testing.assumeNativeStack
 import com.ditchoom.socket.quic.core.testing.withDescriptorsAbove127
+import com.ditchoom.socket.quic.core.time.LoopClock
+import com.ditchoom.socket.quic.core.time.MonotonicClock
+import com.ditchoom.socket.quic.core.time.Nanos
 import java.lang.management.ManagementFactory
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.nio.channels.DatagramChannel
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.milliseconds
 
 /**
  * What the loop thread allocates per datagram it receives and sends, measured with the JVM's per-thread allocation
@@ -34,6 +40,79 @@ class LoopAllocationTests {
     fun onTheNativeStackTheLoopAllocatesNothingPerEchoedDatagram() {
         assumeNativeStack()
         withDescriptorsAbove127 { measure(Stack.Native) }
+    }
+
+    /**
+     * quiche stamps one datagram [HOLD] past the turn's clock reading, as it does when the loop stalls more than the
+     * pacing allowance between the two (CI, Apple FFM and JNI: a `ConnTimer` lambda on the echo's loop thread). The
+     * connection holds its sending and arms its deadline for the first time, mid-traffic; that arming allocates nothing.
+     * A first echo runs the same hold so that every class on its path is loaded before the measured one.
+     */
+    @Test
+    fun onTheNativeStackAConnectionsFirstPacingHoldAllocatesNothing() {
+        assumeNativeStack()
+        heldEcho(AheadOnce(), HeldRun.LoadsClasses)
+        heldEcho(AheadOnce(), HeldRun.Measured)
+    }
+
+    private enum class HeldRun { LoadsClasses, Measured }
+
+    /** A stamp clock that reads one datagram [HOLD] ahead, once [hold] is called; every other one on the loop's clock. */
+    private class AheadOnce : LoopClock {
+        private val state = AtomicInteger(OFF)
+
+        fun hold() = state.set(ARMED)
+
+        fun held(): Boolean = state.get() == SPENT
+
+        override fun now(): Nanos =
+            if (state.compareAndSet(ARMED, SPENT)) Nanos(MonotonicClock.now().value + HOLD.inWholeNanoseconds) else MonotonicClock.now()
+
+        private companion object {
+            const val OFF = 0
+            const val ARMED = 1
+            const val SPENT = 2
+        }
+    }
+
+    private fun heldEcho(
+        stamp: AheadOnce,
+        run: HeldRun,
+    ) {
+        val client = DatagramChannel.open()
+        val echo = NativeEcho(HELD_NAME, stamp = stamp)
+        client.connect(echo.address)
+        echo.start(client.localAddress as InetSocketAddress)
+        val threads = ManagementFactory.getThreadMXBean() as com.sun.management.ThreadMXBean
+        val out = ByteBuffer.allocateDirect(1200)
+        val back = ByteBuffer.allocateDirect(1500)
+
+        fun echoes(times: Int) =
+            repeat(times) {
+                out.clear()
+                client.write(out)
+                back.clear()
+                client.read(back)
+            }
+        try {
+            echoes(WARM_UP)
+            val before = threads.getThreadAllocatedBytes(echo.thread.id)
+            stamp.hold()
+            echoes(HELD_WINDOW)
+            val allocated = threads.getThreadAllocatedBytes(echo.thread.id) - before
+            assertTrue(stamp.held(), "quiche stamped a datagram ahead in the window")
+            when (run) {
+                HeldRun.LoadsClasses -> Unit
+                HeldRun.Measured ->
+                    assertEquals(0L, allocated, "the loop thread allocated over a window with the connection's first pacing hold")
+            }
+        } finally {
+            val closed = CompletableFuture<Unit>()
+            echo.loop.close { closed.complete(Unit) }
+            closed.get(5, TimeUnit.SECONDS)
+            echo.thread.join(5_000)
+            client.close()
+        }
     }
 
     private enum class Stack { Jdk, Native }
@@ -175,6 +254,9 @@ class LoopAllocationTests {
 
     private companion object {
         const val LOOP_NAME = "core-loop-alloc"
+        const val HELD_NAME = "core-loop-held"
+        const val HELD_WINDOW = 2_000
+        val HOLD = 3.milliseconds
         const val LOW_DESCRIPTOR_RETRIES = 16
         const val DISCARD_PORT = 9
         const val BOXED_INTEGER_BYTES = 16

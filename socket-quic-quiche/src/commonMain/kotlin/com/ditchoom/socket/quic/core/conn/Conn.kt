@@ -56,6 +56,10 @@ internal class Conn(
     private val serverClose = ServerCloseCell()
     private var hold = LoopHold.Out
 
+    init {
+        turn.makeTimer(onTimer)
+    }
+
     /** Any thread: whether the connection has ended, and how. */
     fun life(): Life = turn.life()
 
