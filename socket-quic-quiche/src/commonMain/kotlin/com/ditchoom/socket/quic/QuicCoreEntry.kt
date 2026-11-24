@@ -83,10 +83,13 @@ private suspend fun served(
 ): QuicServe<QuicListener> =
     try {
         serveOnTheCore(port, host, tls, options, BufferFactory.network())
-    } catch (refused: NativeSocketRefusal) {
-        QuicServe.Failed(QuicSocketFault.OpenRefused(refused))
     } catch (refused: QuicRefusedException) {
         QuicServe.Refused(refused.refusal)
+    } catch (thrown: Exception) {
+        when (socketOpenRefusalOf(thrown)) {
+            SocketOpenRefusal.Refused -> QuicServe.Failed(QuicSocketFault.OpenRefused(thrown))
+            SocketOpenRefusal.NotARefusal -> throw thrown
+        }
     }
 
 private const val DUAL_STACK_WILDCARD = "::"
@@ -140,6 +143,9 @@ private suspend fun connected(
         QuicConnect.Failed(QuicConnectionEnd.NoUsablePath)
     } catch (unpinned: PinnedRadioUnavailableException) {
         QuicConnect.Failed(QuicConnectionEnd.NoUsablePath)
-    } catch (refused: NativeSocketRefusal) {
-        QuicConnect.Failed(QuicConnectionEnd.SocketFailed(QuicSocketFault.OpenRefused(refused)))
+    } catch (thrown: Exception) {
+        when (socketOpenRefusalOf(thrown)) {
+            SocketOpenRefusal.Refused -> QuicConnect.Failed(QuicConnectionEnd.SocketFailed(QuicSocketFault.OpenRefused(thrown)))
+            SocketOpenRefusal.NotARefusal -> throw thrown
+        }
     }
