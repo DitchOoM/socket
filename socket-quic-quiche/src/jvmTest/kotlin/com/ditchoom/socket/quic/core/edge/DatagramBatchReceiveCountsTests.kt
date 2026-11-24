@@ -17,6 +17,8 @@ import com.ditchoom.socket.quic.core.conn.Datagrams
 import com.ditchoom.socket.quic.core.conn.Inside
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.loop.LoopSet
+import com.ditchoom.socket.quic.core.testing.Stall
+import com.ditchoom.socket.quic.core.testing.StallProbe
 import com.ditchoom.socket.quic.core.testing.withDescriptorsAbove127
 import com.ditchoom.socket.quic.network
 import com.ditchoom.socket.quic.skipOnMissingNativeLib
@@ -72,6 +74,7 @@ class DatagramBatchReceiveCountsTests {
     @Test
     fun aFullSpeedReaderLosesNoDatagramToTheReceiveQueue() =
         flooded(Reader.Each) { flood ->
+            println("[dgram drop] drops ${flood.dropped} of ${flood.received}; ${flood.evidence()}")
             assertTrue(flood.received > 0, "the flood delivered nothing")
             assertEquals(0L, flood.dropped, "datagrams the receive queue dropped of ${flood.received}; ${flood.evidence()}")
         }
@@ -86,11 +89,12 @@ class DatagramBatchReceiveCountsTests {
         val pressure: Pressure,
         val gcCount: Long,
         val gcMillis: Long,
+        val stall: Stall,
     ) {
         /** What a dropping run's failure says: how long the reader waited at most, and how hard the queue was pressed. */
         fun evidence() =
             "longest gap between reader runs ${longestGapNanos / 1_000} us; queue high water ${pressure.highWater}; " +
-                "reads that dropped ${pressure.droppingReads}; GC $gcCount collections, $gcMillis ms"
+                "reads that dropped ${pressure.droppingReads}; GC $gcCount collections, $gcMillis ms; longest gap's $stall"
 
         fun bytesPer() = callerBytes.toDouble() / delivered
 
@@ -177,8 +181,10 @@ class DatagramBatchReceiveCountsTests {
                         val pressureFrom = pressureOf(core)
                         val gcFrom = gcTotals()
                         readerThread.resetGap()
+                        val probe = StallProbe.start(readerThread.thread, StallProbe.Queue.Depth { readerThread.depth })
                         flood(sending, payload, FLOOD_MS)
                         settle(delivered)
+                        val recording = probe.stop()
                         val after = statsOf(core)
                         val pressureTo = pressureOf(core)
                         val gcTo = gcTotals()
@@ -193,6 +199,10 @@ class DatagramBatchReceiveCountsTests {
                                 pressure = Pressure(pressureTo.highWater, pressureTo.droppingReads - pressureFrom.droppingReads),
                                 gcCount = gcTo.first - gcFrom.first,
                                 gcMillis = gcTo.second - gcFrom.second,
+                                stall =
+                                    readerThread.longestGapEnd.get().let { end ->
+                                        recording.explain(end - readerThread.longestGap.get(), end)
+                                    },
                             )
                         client.connection.close(QuicError.NoError)
                         assertIs<DatagramReceive.NotReceived.Unavailable.ConnectionEnded>(ended.get(10, TimeUnit.SECONDS).getOrThrow())
@@ -301,7 +311,14 @@ private class ResumeCountingDispatcher(
 
     /** The longest wait, in nanoseconds, between one run of the reader and the next, since [resetGap]. */
     val longestGap = AtomicLong()
+
+    /** When the [longestGap] ended, as a `System.nanoTime` instant. */
+    val longestGapEnd = AtomicLong()
     private val lastRun = AtomicLong()
+
+    /** The reader's thread, and how many resumes wait for it. */
+    val thread: Thread get() = inner.thread
+    val depth: Int get() = inner.depth
 
     override fun dispatch(
         context: CoroutineContext,
@@ -311,7 +328,10 @@ private class ResumeCountingDispatcher(
         inner.dispatch(context) {
             val now = System.nanoTime()
             val last = lastRun.getAndSet(now)
-            if (last != 0L && now - last > longestGap.get()) longestGap.set(now - last)
+            if (last != 0L && now - last > longestGap.get()) {
+                longestGap.set(now - last)
+                longestGapEnd.set(now)
+            }
             block.run()
         }
     }
@@ -319,6 +339,7 @@ private class ResumeCountingDispatcher(
     fun resetGap() {
         lastRun.set(0L)
         longestGap.set(0L)
+        longestGapEnd.set(0L)
     }
 
     fun threadId(): Long =
