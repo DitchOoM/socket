@@ -4,6 +4,8 @@ import java.lang.management.ManagementFactory
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.locks.LockSupport
 import kotlin.io.path.name
@@ -42,7 +44,9 @@ class StallProbe private constructor(
     /** RUNNABLE threads at a sample, or -1 between the samples that count them. */
     private val runnable = IntArray(CAPACITY)
     private var count = 0
+    private var stoppedAt = 0L
     private val stopping = AtomicBoolean()
+    private val sampling = CountDownLatch(1)
     private val sampler = Thread(::sample, "stall-probe").apply { isDaemon = true }
     private val ps = ProcessCpuSampler.start(PS_PERIOD_MILLIS)
 
@@ -69,6 +73,7 @@ class StallProbe private constructor(
                     -1
                 }
             count = i + 1
+            if (i == 0) sampling.countDown()
             LockSupport.parkNanos(PERIOD_NANOS)
         }
     }
@@ -77,6 +82,7 @@ class StallProbe private constructor(
     fun stop(): Recording {
         stopping.set(true)
         sampler.join()
+        stoppedAt = System.nanoTime()
         return Recording(ps.stop())
     }
 
@@ -86,35 +92,49 @@ class StallProbe private constructor(
     ) {
         /**
          * The stall from [fromNanos] to [toNanos] (`System.nanoTime` instants): the samples inside it, and the
-         * safepoints that overlap it. CPU is counted between the first and last samples inside, so the work either
-         * side of the stall stays out; with under two inside (the probe was frozen too), between the two around it.
+         * safepoints that overlap it. The thread's state and CPU need [MIN_SAMPLES] inside, counted between the first
+         * and last of them so the work either side of the stall stays out; with fewer, the safepoints and processes are
+         * still reported, as [Explanation.TooFewSamples].
          */
         fun explain(
             fromNanos: Long,
             toNanos: Long,
-        ): Stall {
-            check(count > 1) { "the probe took $count samples" }
-            val first = (0 until count).lastOrNull { at[it] <= fromNanos } ?: 0
-            val last = (first until count).firstOrNull { at[it] >= toNanos } ?: (count - 1)
-            val inside = (first..last).filter { at[it] in fromNanos..toNanos }
-            val span = if (inside.size >= 2) inside.first() to inside.last() else first to last
-            val seen = inside.ifEmpty { listOf(first, last) }
-            val states = seen.groupingBy { Thread.State.entries[state[it]] }.eachCount()
+        ): Explanation {
+            val safepoints = safepointsOverlapping(uptimeMicros(fromNanos), uptimeMicros(toNanos))
+            val around = processes.across(fromNanos, toNanos)
+            val inside = (0 until count).filter { at[it] in fromNanos..toNanos }
+            if (inside.size < MIN_SAMPLES) {
+                // The probe's own longest silence over its whole run, from its start to its stop.
+                val instants = listOf(nanosAtStart) + (0 until count).map { at[it] } + listOf(stoppedAt)
+                return Explanation.TooFewSamples(
+                    windowMicros = (toNanos - fromNanos) / 1_000,
+                    samples = inside.size,
+                    samplesInAll = count,
+                    probeLongestWaitMicros = instants.zipWithNext { a, b -> b - a }.max() / 1_000,
+                    safepoints = safepoints,
+                    processes = around,
+                )
+            }
+            val first = inside.first()
+            val last = inside.last()
+            val states = inside.groupingBy { Thread.State.entries[state[it]] }.eachCount()
             val counted = (first..last).map { runnable[it] }.filter { it >= 0 }
-            return Stall(
-                windowMicros = (toNanos - fromNanos) / 1_000,
-                sampledMicros = (at[span.second] - at[span.first]) / 1_000,
-                samples = inside.size,
-                targetCpuMicros = (cpu[span.second] - cpu[span.first]) / 1_000,
-                states = states,
-                dominant = states.maxBy { it.value }.key,
-                maxQueueDepth = seen.maxOf { depth[it] },
-                maxRunnable = counted.maxOrNull() ?: runnableNear(first),
-                cores = Runtime.getRuntime().availableProcessors(),
-                processCpuMicros = (processCpu[span.second] - processCpu[span.first]) / 1_000,
-                samplerLongestMicros = ((first + 1)..last).maxOfOrNull { at[it] - at[it - 1] }?.div(1_000) ?: 0,
-                safepoints = safepointsOverlapping(uptimeMicros(fromNanos), uptimeMicros(toNanos)),
-                processes = processes.across(fromNanos, toNanos),
+            return Explanation.Attributed(
+                Stall(
+                    windowMicros = (toNanos - fromNanos) / 1_000,
+                    sampledMicros = (at[last] - at[first]) / 1_000,
+                    samples = inside.size,
+                    targetCpuMicros = (cpu[last] - cpu[first]) / 1_000,
+                    states = states,
+                    dominant = states.maxBy { it.value }.key,
+                    maxQueueDepth = inside.maxOf { depth[it] },
+                    maxRunnable = counted.maxOrNull() ?: runnableNear(first),
+                    cores = Runtime.getRuntime().availableProcessors(),
+                    processCpuMicros = (processCpu[last] - processCpu[first]) / 1_000,
+                    samplerLongestMicros = ((first + 1)..last).maxOfOrNull { at[it] - at[it - 1] }?.div(1_000) ?: 0,
+                    safepoints = safepoints,
+                    processes = around,
+                ),
             )
         }
 
@@ -129,14 +149,24 @@ class StallProbe private constructor(
         private const val PERIOD_NANOS = 1_000_000L
         private const val RUNNABLE_EVERY = 10
 
+        /** Samples inside a stall that its thread's state and CPU need: two, for a CPU difference between them. */
+        const val MIN_SAMPLES = 2
+
         /** `ps` costs a fork on a machine that may be short of CPU: twice a second is enough to name the busiest. */
         private const val PS_PERIOD_MILLIS = 500L
 
-        /** Starts watching [target], fed by [queue]. */
+        /**
+         * Starts watching [target], fed by [queue], and returns once the first sample is taken (or after ten seconds of
+         * a sampler that never ran), so a window the caller opens next is one the probe is already sampling.
+         */
         fun start(
             target: Thread,
             queue: Queue,
-        ): StallProbe = StallProbe(target, queue).also { it.sampler.start() }
+        ): StallProbe =
+            StallProbe(target, queue).also {
+                it.sampler.start()
+                it.sampling.await(10, TimeUnit.SECONDS)
+            }
 
         /** `[1.234s][info][safepoint     ] Safepoint "ThreadDump", ... Total: 336917 ns`, logged as the pause ends. */
         private val SAFEPOINT = Regex("""^\[(\d+)\.(\d+)s]\[info\s*]\[safepoint\s*] Safepoint "([^"]+)",.* Total: (\d+) ns""")
@@ -206,6 +236,39 @@ sealed interface Safepoints {
         val overlapMicros = overlapMicrosByOperation.values.sum()
 
         override fun toString() = "safepoints ${overlapMicros / 1_000.0} ms overlapping $overlapMicrosByOperation"
+    }
+}
+
+/** A stall's explanation: the watched thread's part in it, or too few samples inside it to say. */
+sealed interface Explanation {
+    val safepoints: Safepoints
+    val processes: Processes
+
+    class Attributed(
+        val stall: Stall,
+    ) : Explanation {
+        override val safepoints get() = stall.safepoints
+        override val processes get() = stall.processes
+
+        override fun toString() = "$stall"
+    }
+
+    /**
+     * The probe took [samples] inside the window ([StallProbe.MIN_SAMPLES] needed), [samplesInAll] over its run, and was
+     * itself unscheduled for up to [probeLongestWaitMicros]: the runner did not run it often enough to watch the stall.
+     */
+    class TooFewSamples(
+        val windowMicros: Long,
+        val samples: Int,
+        val samplesInAll: Int,
+        val probeLongestWaitMicros: Long,
+        override val safepoints: Safepoints,
+        override val processes: Processes,
+    ) : Explanation {
+        override fun toString() =
+            "too few samples to attribute a stall of ${windowMicros / 1_000.0} ms: $samples inside it " +
+                "(${StallProbe.MIN_SAMPLES} needed), $samplesInAll in all, the probe unscheduled for up to " +
+                "${probeLongestWaitMicros / 1_000.0} ms; $safepoints; $processes"
     }
 }
 

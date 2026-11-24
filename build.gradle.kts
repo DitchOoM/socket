@@ -887,6 +887,9 @@ project(":socket-quic-quiche") {
         listOf(
             "com.ditchoom.socket.quic.core.edge.DatagramBatchReceiveCountsTests",
             "com.ditchoom.socket.quic.LostCpuWakeupTests",
+            // The stall probe's own tests time a sleep, a spin and full collections against its 1 ms sampler.
+            "com.ditchoom.socket.quic.core.testing.StallProbeTests",
+            "com.ditchoom.socket.quic.core.testing.ProcessCpuTests",
             "*Deadline*Tests",
             "*Wakeup*Tests",
         )
