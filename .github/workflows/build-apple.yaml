@@ -557,6 +557,7 @@ jobs:
             **/build/reports/tests/
             **/build/test-results/
             **/build/core-flight/
+            **/build/jvm-logs/
             build/reports/ktlint/
           retention-days: 7
           if-no-files-found: ignore
@@ -684,6 +685,12 @@ jobs:
           mode: start
           enabled: ${{ matrix.backend.jfr }}
 
+      # The runner's cores, memory, load and VM type at both ends of the test step, beside the JVM logs
+      # (see .github/scripts/runner-facts.sh), so a stall in between can be weighed against the host.
+      - name: Runner facts (start)
+        continue-on-error: true
+        shell: bash
+        run: bash .github/scripts/runner-facts.sh start build/jvm-logs/runner-facts.txt
       # Only executes tests. Its output also goes through gradle-test-progress.py, which keeps a
       # time-stamped copy so a run that reaches the limit is reported as still progressing (last test
       # event seconds old) or silent (a test that never ended); see apple-failure-capture.sh.
@@ -699,6 +706,11 @@ jobs:
             --no-configuration-cache ${{ inputs.gradle-args }} 2>&1 |
             python3 -I .github/scripts/gradle-test-progress.py stamp "$RUNNER_TEMP/gradle-test-step.log"
 
+      - name: Runner facts (end)
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: bash .github/scripts/runner-facts.sh end build/jvm-logs/runner-facts.txt
       # This lane builds its own natives, so a `native-library-unavailable` skip here means the
       # artifact plumbing broke — the case that used to erase ~38 test classes from a green run.
       - uses: ./.github/actions/skip-inventory
@@ -736,6 +748,7 @@ jobs:
             **/build/reports/tests/
             **/build/test-results/
             **/build/core-flight/
+            **/build/jvm-logs/
             **/hs_err_pid*.log
             **/replay_pid*.log
           retention-days: 7
