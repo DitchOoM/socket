@@ -92,7 +92,10 @@ internal class Endpoint(
         }
     }
 
-    /** Reads until drained or [MAX_PER_PASS]; a read's datagrams go to quiche at one [clock] reading taken after it returns. */
+    /**
+     * Reads until drained or until one more batch could take it past [MAX_PER_PASS]; a read's datagrams go to quiche at
+     * one [clock] reading taken after it returns.
+     */
     private fun receiveWaiting(
         batch: ReceiveBatch,
         counts: LoopCounts,
@@ -100,7 +103,7 @@ internal class Endpoint(
     ) {
         if (input == ReceiveInput.Drained && readiness == Readiness.Polled) return
         var taken = 0
-        while (taken < MAX_PER_PASS) {
+        while (taken + batch.limits.maxDatagrams <= MAX_PER_PASS) {
             when (val got = traced(TraceSection.ReceiveBatch) { io.receive(batch) }) {
                 is ReceiveBatchResult.Got, is ReceiveBatchResult.GotWithBacklog -> {
                     input = if (got is ReceiveBatchResult.GotWithBacklog) ReceiveInput.Backlog else ReceiveInput.Maybe
@@ -294,7 +297,11 @@ internal class Endpoint(
     }
 
     private companion object {
-        /** Bounds one socket's receiving per pass so deadlines and work are not starved by a flood. */
+        /**
+         * Bounds one socket's receiving per pass so deadlines and work are not starved by a flood. A batch receive waiting
+         * for the loop is lent its connection's queue when the pass serves it, after the reads, so the bound is the
+         * default receive queue's depth: a pass never reads more than the queue holds.
+         */
         const val MAX_PER_PASS = 1024
     }
 }
