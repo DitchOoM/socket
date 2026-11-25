@@ -140,7 +140,8 @@ internal class ReadInbox(
                         -> Unit
                     }
                 }
-                Retry.Settled -> inside.streams.collect(entry)
+                // A read parked on an earlier run is still the entry's reader: it leaves, so the spent entry goes.
+                Retry.Settled -> inside.streams.unpark(stream, this)
             }
         }
     }

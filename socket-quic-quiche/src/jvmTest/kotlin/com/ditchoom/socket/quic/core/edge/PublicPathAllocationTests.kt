@@ -531,7 +531,9 @@ class PublicPathAllocationTests {
 
         // The alpha01 shapes, a little over what JDK 21 on macOS measured: per echo 463-479 B on the caller, 0 on the
         // loop; per new stream 2,844-2,880 B on the caller (its open and the inbox its first read makes), 34-37 B on the
-        // loop (a wake of the parked writeAndFinish allocates nothing there); per download read 352-360 B, 0.
+        // loop; per download read 352-360 B, 0. A new stream's loop bytes: 24 B, the buffer pool's node for the released
+        // send buffer, and up to 16 B, kotlinx's `Removed` marker when the loop wakes a writeAndFinish that parked (how
+        // often one parks is timing). A spent stream's table entry is reused, so the table does not grow.
         const val ECHO_CALLER_GATE = 520.0
         const val ECHO_LOOP_GATE = 8.0
         const val NEW_CALLER_GATE = 2_950.0

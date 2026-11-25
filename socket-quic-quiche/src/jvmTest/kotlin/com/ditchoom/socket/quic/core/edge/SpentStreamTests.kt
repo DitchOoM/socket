@@ -5,11 +5,15 @@ import com.ditchoom.buffer.flow.HalfCloseable
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.quic.QuicError
+import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.StreamWrite
 import com.ditchoom.socket.quic.core.conn.CallerPlace
 import com.ditchoom.socket.quic.core.conn.ConnWork
 import com.ditchoom.socket.quic.core.conn.Inside
 import com.ditchoom.socket.quic.core.life.ConnEnd
+import com.ditchoom.socket.quic.getOrElse
 import com.ditchoom.socket.quic.network
+import com.ditchoom.socket.quic.read
 import com.ditchoom.socket.quic.skipOnMissingNativeLib
 import kotlinx.coroutines.runBlocking
 import java.util.concurrent.CompletableFuture
@@ -43,6 +47,39 @@ class SpentStreamTests {
                         (stream as HalfCloseable).shutdownSend()
                         if (stream.read(10.seconds) !== ReadResult.End) fail("the echo did not end")
                         assertSame(ReadResult.End, stream.read(10.seconds), "a read after the end")
+                    }
+                    val live = LiveProbe()
+                    client.conn.submit(live, CallerPlace.HandToLoop)
+                    val count = live.count.get(10, TimeUnit.SECONDS)
+                    assertTrue(count <= 1, "$count of $STREAMS finished streams still hold an entry")
+                    client.connection.close(QuicError.NoError)
+                }
+            }
+        }
+
+    /**
+     * The public shape: `writeAndFinish`, then scoped reads to the peer's FIN. A read that parked once and later met the
+     * FIN while parked again is spent too.
+     */
+    @Test
+    fun publicStreamsWrittenAndFinishedThenReadToTheirEndLeaveTheTable() =
+        runBlocking {
+            skipOnMissingNativeLib(SpentStreamTests::class) {
+                CoreQuicAllocationTests().withClosingEchoServer { port ->
+                    val client = connectCore(port, factory = BufferFactory.network())
+                    val connection = client.connection.public()
+                    val payload = BufferFactory.network().allocate(PAYLOAD).apply { repeat(PAYLOAD) { writeByte(1) } }
+                    repeat(STREAMS) {
+                        val (send, receive) = connection.openStream().getOrElse { fail("not opened: $it") }
+                        payload.resetForRead()
+                        if (send.writeAndFinish(payload) !== StreamWrite.Written) fail("the request was not written")
+                        while (true) {
+                            when (val read = receive.read { it.position(it.limit()) }.fold({ Unit }, { it })) {
+                                is ScopedRead.End.PeerFinished -> break
+                                is Unit -> Unit
+                                else -> fail("the echo ended with $read")
+                            }
+                        }
                     }
                     val live = LiveProbe()
                     client.conn.submit(live, CallerPlace.HandToLoop)
