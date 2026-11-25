@@ -49,6 +49,10 @@ internal class ConditionReplay(
     private val seed: Long = 1L,
     /** How many of the first datagrams the server sends to the client's moved address are lost. */
     private val loseToMoved: Int = 0,
+    /** What the client's application does once the connection is up. */
+    private val workload: Workload = Workload.Echo,
+    /** When a NAT in front of the client rebinds it to a new port ([ConditionLink.rebind]), on the script's clock. */
+    private val rebinds: List<Duration> = emptyList(),
 ) {
     private val clock = VirtualClock(Nanos(ORIGIN))
     private val factory = BufferFactory.Default
@@ -59,6 +63,9 @@ internal class ConditionReplay(
 
     /** When the client saw its handshake complete, once. */
     private val established = ArrayList<Long>(1)
+
+    /** When each download of [Workload.Download] was read to its end. */
+    private val downloaded = ArrayList<Long>(1)
 
     fun run(): Replayed =
         runBlocking {
@@ -96,10 +103,15 @@ internal class ConditionReplay(
             { link.client },
         )
         val accepted = CompletableDeferred<Unit>()
-        val serverApp = launch { echoBack(server, accepted) }
+        val serverApp =
+            when (val w = workload) {
+                Workload.Echo -> launch { echoBack(server, accepted) }
+                is Workload.Download -> launch { serveDownload(server, accepted, w.bytes) }
+            }
         var clientApp: AppStart = AppStart.Waiting
         val events = conditions.os.sortedBy { it.at }
         var nextEvent = 0
+        var nextRebind = 0
         val end = ORIGIN + conditions.runFor.inWholeNanoseconds
         var now = ORIGIN
         var finish: Finish = Finish.Lived
@@ -109,8 +121,18 @@ internal class ConditionReplay(
             while (nextEvent < events.size && ORIGIN + events[nextEvent].at.inWholeNanoseconds <= now) {
                 apply(events[nextEvent++], monitor, link)
             }
+            while (nextRebind < rebinds.size && ORIGIN + rebinds[nextRebind].inWholeNanoseconds <= now) {
+                link.rebind()
+                nextRebind++
+            }
             sleep.wake(now)
-            clientApp = clientApp.next(now, client.connection.state.value, accepted) { launch { echo(client) } }
+            clientApp =
+                clientApp.next(now, client.connection.state.value, accepted) {
+                    when (val w = workload) {
+                        Workload.Echo -> launch { echo(client) }
+                        is Workload.Download -> launch { download(client, w.bytes) }
+                    }
+                }
             if (established.isEmpty() && client.connection.state.value is QuicConnectionState.Established) established += now
             val loopsDue = settle(now, link, server.loop, client.loop, monitor)
             when (val ended = client.connection.end()) {
@@ -127,7 +149,8 @@ internal class ConditionReplay(
             if (now >= end) break
             val eventDue = if (nextEvent < events.size) ORIGIN + events[nextEvent].at.inWholeNanoseconds else Long.MAX_VALUE
             val dumpDue = if (link.moves > 0) nextDump else Long.MAX_VALUE
-            val due = minOf(loopsDue, link.nextArrival(), eventDue, sleep.due(), clientApp.due(), dumpDue, end)
+            val rebindDue = if (nextRebind < rebinds.size) ORIGIN + rebinds[nextRebind].inWholeNanoseconds else Long.MAX_VALUE
+            val due = minOf(loopsDue, link.nextArrival(), eventDue, sleep.due(), clientApp.due(), dumpDue, rebindDue, end)
             now = maxOf(now + MIN_STEP, due)
         }
         clientApp.cancel()
@@ -152,6 +175,7 @@ internal class ConditionReplay(
             link.serverSizes.toList(),
             established.map { (it - ORIGIN).nanoseconds },
             marks.sortedBy { it.at },
+            downloaded.map { (it - ORIGIN).nanoseconds },
         )
     }
 
@@ -231,6 +255,52 @@ internal class ConditionReplay(
             }
         } catch (ended: Exception) {
             // The connection ended under the echo: the outcome says how.
+            steps++
+        }
+    }
+
+    /** One request of [PROBE_ECHO_BYTES] out, then [bytes] read back on the same stream; when the last arrived is kept. */
+    private suspend fun download(
+        client: ReplayClient,
+        bytes: Int,
+    ) {
+        try {
+            val stream = client.connection.openStream()
+            val request = factory.allocate(PROBE_ECHO_BYTES).apply { repeat(PROBE_ECHO_BYTES) { writeByte(it.toByte()) } }
+            request.resetForRead()
+            stream.writeFully(request, REPLAY_DEADLINE)
+            var got = 0
+            while (got < bytes) {
+                val read = stream.read(REPLAY_DEADLINE) { got += it.readByteArray(it.remaining()).size }
+                if (read !is ScopedReadResult.Data<*>) return
+                steps++
+            }
+            downloaded += clock.at.value
+            steps++
+        } catch (ended: Exception) {
+            steps++
+        }
+    }
+
+    /** Reads the client's request, then writes [bytes] back. */
+    private suspend fun serveDownload(
+        server: CoreServer,
+        accepted: CompletableDeferred<Unit>,
+        bytes: Int,
+    ) {
+        try {
+            val connection = server.accept()
+            accepted.complete(Unit)
+            val stream = connection.acceptStream()
+            var got = 0
+            while (got < PROBE_ECHO_BYTES) {
+                if (stream.read(REPLAY_DEADLINE) { got += it.readByteArray(it.remaining()).size } !is ScopedReadResult.Data<*>) return
+            }
+            val response = factory.allocate(bytes).apply { repeat(bytes) { writeByte(it.toByte()) } }
+            response.resetForRead()
+            stream.writeFully(response, REPLAY_DEADLINE)
+            steps++
+        } catch (ended: Exception) {
             steps++
         }
     }
