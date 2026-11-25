@@ -2,7 +2,9 @@ package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
+import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.ReadPolicy
+import com.ditchoom.buffer.freeIfNeeded
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -87,6 +89,8 @@ class ScopedReadTests {
             buffer.resetForRead()
             return buffer
         }
+
+        override fun readDone(bytes: ReadBuffer) = bytes.freeIfNeeded()
 
         override fun stop(code: QuicAppErrorCode) = Unit
 

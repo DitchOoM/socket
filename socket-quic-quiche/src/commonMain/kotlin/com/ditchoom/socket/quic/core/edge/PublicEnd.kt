@@ -89,3 +89,17 @@ internal fun endedWith(
     end: ConnEnd,
     during: QuicCloseCircumstance,
 ): Throwable = closeOf(end, during)
+
+/** The circumstance a close names: the failure that ended the connection, else what its caller was [during]. */
+internal fun ConnEnd.circumstance(during: QuicCloseCircumstance): QuicCloseCircumstance =
+    when (this) {
+        is ConnEnd.ProcessingFailed -> QuicCloseCircumstance.ProcessingFailed
+        is ConnEnd.LoopFailed -> QuicCloseCircumstance.LoopThreadFailed
+        is ConnEnd.CallerFailed -> QuicCloseCircumstance.CallerThreadFailed
+        is ConnEnd.Released -> QuicCloseCircumstance.Released
+        is ConnEnd.ByPeer, is ConnEnd.ByLocal, is ConnEnd.IdleTimeout, is ConnEnd.HandshakeTimedOut,
+        is ConnEnd.HandshakeSendRefused, is ConnEnd.AccessDenied,
+        is ConnEnd.SocketFailed, is ConnEnd.LoopStopped, is ConnEnd.ServerClosed, is ConnEnd.NoErrorRecorded,
+        is ConnEnd.NetworkLost, is ConnEnd.LocalAddressGone, is ConnEnd.ServerClosedUnsettled, is ConnEnd.NoUsablePath,
+        -> during
+    }

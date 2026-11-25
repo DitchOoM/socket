@@ -2597,6 +2597,7 @@ public abstract interface class com/ditchoom/socket/quic/QuicReceiveStream : com
 	public abstract fun getOrigin ()Lcom/ditchoom/socket/quic/QuicStreamOrigin;
 	public abstract fun getReadPolicy ()Lcom/ditchoom/buffer/flow/ReadPolicy;
 	public abstract fun markReplaySafe ()V
+	public abstract fun readDone (Lcom/ditchoom/buffer/ReadBuffer;)V
 	public abstract fun readNext (Lcom/ditchoom/buffer/flow/ReadPolicy;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public abstract fun receive (Lcom/ditchoom/socket/quic/QuicStreamReceiver;)Lcom/ditchoom/socket/quic/StreamReceive;
 	public abstract fun stop-yOLykP8 (J)V
@@ -3230,6 +3231,13 @@ public final class com/ditchoom/socket/quic/QuicStreamReadError$Quiche : com/dit
 	public static synthetic fun copy$default (Lcom/ditchoom/socket/quic/QuicStreamReadError$Quiche;IILjava/lang/Object;)Lcom/ditchoom/socket/quic/QuicStreamReadError$Quiche;
 	public fun equals (Ljava/lang/Object;)Z
 	public final fun getCode ()I
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/quic/QuicStreamReadError$ReadInProgress : com/ditchoom/socket/quic/QuicStreamReadError {
+	public static final field INSTANCE Lcom/ditchoom/socket/quic/QuicStreamReadError$ReadInProgress;
+	public fun equals (Ljava/lang/Object;)Z
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
 }

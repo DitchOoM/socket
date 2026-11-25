@@ -209,6 +209,7 @@ abstract interface com.ditchoom.socket.quic/QuicReceiveStream : com.ditchoom.soc
         abstract fun <get-readPolicy>(): com.ditchoom.buffer.flow/ReadPolicy // com.ditchoom.socket.quic/QuicReceiveStream.readPolicy.<get-readPolicy>|<get-readPolicy>(){}[0]
 
     abstract fun markReplaySafe() // com.ditchoom.socket.quic/QuicReceiveStream.markReplaySafe|markReplaySafe(){}[0]
+    abstract fun readDone(com.ditchoom.buffer/ReadBuffer) // com.ditchoom.socket.quic/QuicReceiveStream.readDone|readDone(com.ditchoom.buffer.ReadBuffer){}[0]
     abstract fun receive(com.ditchoom.socket.quic/QuicStreamReceiver): com.ditchoom.socket.quic/StreamReceive // com.ditchoom.socket.quic/QuicReceiveStream.receive|receive(com.ditchoom.socket.quic.QuicStreamReceiver){}[0]
     abstract fun stop(com.ditchoom.socket.quic/QuicAppErrorCode) // com.ditchoom.socket.quic/QuicReceiveStream.stop|stop(com.ditchoom.socket.quic.QuicAppErrorCode){}[0]
     abstract suspend fun readNext(com.ditchoom.buffer.flow/ReadPolicy): kotlin/Any // com.ditchoom.socket.quic/QuicReceiveStream.readNext|readNext(com.ditchoom.buffer.flow.ReadPolicy){}[0]
@@ -3145,6 +3146,12 @@ sealed interface com.ditchoom.socket.quic/QuicStreamReadError { // com.ditchoom.
         final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicStreamReadError.InvalidStreamState.equals|equals(kotlin.Any?){}[0]
         final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicStreamReadError.InvalidStreamState.hashCode|hashCode(){}[0]
         final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicStreamReadError.InvalidStreamState.toString|toString(){}[0]
+    }
+
+    final object ReadInProgress : com.ditchoom.socket.quic/QuicStreamReadError { // com.ditchoom.socket.quic/QuicStreamReadError.ReadInProgress|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicStreamReadError.ReadInProgress.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicStreamReadError.ReadInProgress.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicStreamReadError.ReadInProgress.toString|toString(){}[0]
     }
 }
 

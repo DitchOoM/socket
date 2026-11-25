@@ -188,6 +188,12 @@ internal class CoreConnection(
     /** Any thread: [work] runs inside, on the loop: a stream's send queue or receiver handing the stream back. */
     internal fun handToLoop(work: ConnWork) = conn.submit(work, CallerPlace.HandToLoop)
 
+    /** Hands [work] to the connection from a caller at [place]: run in place when the caller may enter. */
+    internal fun submit(
+        work: ConnWork,
+        place: CallerPlace,
+    ) = conn.submit(work, place)
+
     /** The caller closed [stream] without reading it to the end: what still arrives is dropped. */
     internal fun abandon(stream: QuicStreamId) {
         edge.letGo(stream)

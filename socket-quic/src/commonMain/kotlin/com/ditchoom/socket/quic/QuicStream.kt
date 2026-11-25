@@ -3,7 +3,6 @@ package com.ditchoom.socket.quic
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.WritePolicy
-import com.ditchoom.buffer.freeIfNeeded
 import kotlin.jvm.JvmInline
 
 /**
@@ -213,13 +212,18 @@ interface QuicReceiveStream : QuicIncomingStream {
 
     /**
      * The core [read] is inlined over; an application calls [read]. Waits for the stream's next bytes and answers
-     * either the [ReadBuffer] they are in, which [read] frees once its block returns, or the [ScopedRead.NoData] that
-     * says why none came. It answers one of the two as a plain reference, not as a [ScopedRead], because Kotlin boxes
-     * a value class returned across a suspension: that would be an object per read.
+     * either the [ReadBuffer] they are in, which [read] hands to [readDone] once its block returns, or the
+     * [ScopedRead.NoData] that says why none came. It answers one of the two as a plain reference, not as a
+     * [ScopedRead], because Kotlin boxes a value class returned across a suspension: that would be an object per read.
      *
      * @throws QuicStreamClosedException after [stop].
+     * @throws QuicStreamReadException with [QuicStreamReadError.ReadInProgress] for a read made while another is out,
+     *   its block included.
      */
     suspend fun readNext(policy: ReadPolicy): Any
+
+    /** The core [read] is inlined over: [read]'s block is done with [bytes], which [readNext] answered. */
+    fun readDone(bytes: ReadBuffer)
 
     /** Reads no more and tells the peer to stop sending, with [code] (STOP_SENDING). Once only. */
     fun stop(code: QuicAppErrorCode)
@@ -254,9 +258,12 @@ interface QuicStream : QuicIncomingStream {
  * no object and its result is not boxed; [block] may suspend.
  *
  * A stream has one reader at a time. On a [QuicStreamOrigin.Early] stream not marked replay-safe, the first read
- * waits for the handshake to be confirmed.
+ * waits for the handshake to be confirmed. While no read waits, nothing is read off the stream, so the peer is held
+ * back by flow control until the next read.
  *
  * @throws QuicStreamClosedException after [QuicReceiveStream.stop].
+ * @throws QuicStreamReadException with [QuicStreamReadError.ReadInProgress] for a read made while another is out,
+ *   its block included.
  */
 suspend inline fun <R> QuicReceiveStream.read(
     policy: ReadPolicy = readPolicy,
@@ -267,7 +274,7 @@ suspend inline fun <R> QuicReceiveStream.read(
             try {
                 ScopedRead.data(block(bytes))
             } finally {
-                bytes.freeIfNeeded()
+                readDone(bytes)
             }
         },
         { ScopedRead.noData(it) },
