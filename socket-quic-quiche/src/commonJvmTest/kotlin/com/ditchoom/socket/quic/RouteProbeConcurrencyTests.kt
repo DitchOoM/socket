@@ -143,7 +143,8 @@ class RouteProbeConcurrencyTests {
                 assertEquals(
                     emptyList(),
                     lost,
-                    "$host: ${lost.size} of ${outcomes.size} probes failed: " + lost.take(3).joinToString { it.reason.describe() },
+                    "$host: ${lost.size} of ${outcomes.size} probes failed: " + lost.take(3).joinToString { it.reason.describe() } +
+                        lost.take(1).joinToString { it.refusalTrace() },
                 )
             }
         }
@@ -179,8 +180,15 @@ class RouteProbeConcurrencyTests {
                 emptyList(),
                 lost,
                 "${lost.size} of ${outcomes.size} route probes lost their draw (#547): " +
-                    lost.take(3).joinToString { it.reason.describe() },
+                    lost.take(3).joinToString { it.reason.describe() } + lost.take(1).joinToString { it.refusalTrace() },
             )
+        }
+
+    /** The first refusal's whole chain, the JDK's exception and the `Net` frame that raised it included. */
+    private fun RouteSource.Unresolved.refusalTrace(): String =
+        when (reason) {
+            is RouteProbeFailure.ProbeRefused -> "\n" + reason.cause.stackTraceToString()
+            is RouteProbeFailure.SourceAddressUnknown, is RouteProbeFailure.SourceAddressUnnamed -> ""
         }
 
     /** Refuses the first [refusals] probes with [refusal], then serves. */
