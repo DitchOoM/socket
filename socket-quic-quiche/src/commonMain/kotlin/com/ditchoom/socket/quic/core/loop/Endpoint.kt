@@ -298,10 +298,10 @@ internal class Endpoint(
 
     private companion object {
         /**
-         * Bounds one socket's receiving per pass so deadlines and work are not starved by a flood. A batch receive waiting
-         * for the loop is lent its connection's queue when the pass serves it, after the reads, so the bound is the
-         * default receive queue's depth: a pass never reads more than the queue holds.
+         * Bounds one socket's receiving per pass so deadlines and work are not starved by a flood. A batch receive is lent
+         * its connection's queue when a pass serves it, after the reads, and one that asks again too late for a serve is
+         * lent at the next: half the default receive queue's 1024, so two passes' reads fit in it.
          */
-        const val MAX_PER_PASS = 1024
+        const val MAX_PER_PASS = 512
     }
 }
