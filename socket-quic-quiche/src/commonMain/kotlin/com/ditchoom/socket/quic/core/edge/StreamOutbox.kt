@@ -26,6 +26,7 @@ import com.ditchoom.socket.quic.core.stream.WriteEnd
 import com.ditchoom.socket.quic.core.stream.code
 import com.ditchoom.socket.quic.core.stream.peer
 import com.ditchoom.socket.quic.core.stream.sender
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.concurrent.atomics.AtomicInt
@@ -144,17 +145,28 @@ internal class StreamOutbox(
         return withTimeoutOrNull(deadline) { park(wants) } ?: StreamRoom.DeadlinePassed
     }
 
-    private suspend fun park(wants: OutboxWants): StreamRoom =
-        suspendCancellableCoroutine { caller ->
-            val waiting = OutboxParked.Waiting(caller, wants)
-            parked.store(waiting)
-            caller.invokeOnCancellation { parked.compareAndSet(waiting, OutboxParked.Nobody) }
-            // The loop may have made room between the first look and the park: look again, and take the wake back if so.
-            when (val now = ready(wants)) {
-                is OutboxReadiness.Now -> if (parked.compareAndSet(waiting, OutboxParked.Nobody)) caller.resume(now.room)
-                is OutboxReadiness.NotYet -> Unit
+    /**
+     * A cancelled wait installs no cancellation handler (one makes every resume allocate on the waking thread, the
+     * loop's): it withdraws its park on its way out, and a wake that meets it cancelled is dropped.
+     */
+    private suspend fun park(wants: OutboxWants): StreamRoom {
+        var mine: OutboxParked = OutboxParked.Nobody
+        try {
+            return suspendCancellableCoroutine { caller ->
+                val waiting = OutboxParked.Waiting(caller, wants)
+                mine = waiting
+                parked.store(waiting)
+                // The loop may have made room between the first look and the park: look again, and take the wake back if so.
+                when (val now = ready(wants)) {
+                    is OutboxReadiness.Now -> if (parked.compareAndSet(waiting, OutboxParked.Nobody)) caller.resume(now.room)
+                    is OutboxReadiness.NotYet -> Unit
+                }
             }
+        } catch (cancelled: CancellationException) {
+            parked.compareAndSet(mine, OutboxParked.Nobody)
+            throw cancelled
         }
+    }
 
     /** What a wait for [wants] answers now, if it need not wait. */
     private fun ready(wants: OutboxWants): OutboxReadiness =
