@@ -583,10 +583,20 @@ private class CaptureReplay(
      * them sooner would move every timer armed from them. When the capture's next step is a datagram of ours, our endpoint
      * writes at its time; when it is more input, our endpoint takes that first, as the capture's did before it sent
      * anything. Meanwhile the network and the peer go on, and our endpoint's timers wait for its work, as a busy one's do.
+     *
+     * A recorded timer that fires before that write ran in the same work, after the read and before the write: the
+     * capture's endpoint wrote nothing between, so what it wrote holds both the answer and what the timeout made.
      */
     private fun answer() {
         when (val next = schedule.steps.drop(stepNext).firstOrNull { !(it is Step.PeerSent && it.fate == Fate.Lost) }) {
             is Step.OursSent -> {
+                val fires = recordedTimerFires()
+                if (fires < next.at) {
+                    if (fires > now) background(fires, endpoint = OurEndpoint.Busy)
+                    if (phase != Phase.OnCapture || end != ConnectionEnd.Open) return free()
+                    fireOurTimer()
+                    if (ourWork == OurEndpoint.Busy) return
+                }
                 if (next.at > now) background(next.at, endpoint = OurEndpoint.Busy)
                 free()
             }
@@ -616,6 +626,19 @@ private class CaptureReplay(
         if (firings.any { it > now + TIMER_PRECISION && it < next.at }) return
         if (actions == 0) background(next.at, endpoint = OurEndpoint.Busy) else ourWork = OurEndpoint.Busy
     }
+
+    /** quiche's timeout runs once, as the core's does: what it re-arms overdue fires after its probes are sent. */
+    private fun fireOurTimer() {
+        if (timerAt(ours) > now + TIMER_PRECISION) pair.bringTimerForward(ours) else pair.runTimeout(ours)
+        writeWhenCaptured()
+    }
+
+    /** When our endpoint's next timer fires on a capture whose host's firings are recorded; never, on one whose are not. */
+    private fun recordedTimerFires(): Duration =
+        when (schedule.ourTimers) {
+            OurTimers.WhenDue -> Duration.INFINITE
+            is OurTimers.AsRecorded -> ourTimerFires()
+        }
 
     /** Our endpoint's work is done: its timers run again and what it wrote is taken. */
     private fun free() {
@@ -704,8 +727,7 @@ private class CaptureReplay(
                 }
                 // quiche's timeout runs once, as the core's does: what it re-arms overdue fires after its probes are sent.
                 else -> {
-                    if (timerAt(ours) > now + TIMER_PRECISION) pair.bringTimerForward(ours) else pair.runTimeout(ours)
-                    writeWhenCaptured()
+                    fireOurTimer()
                     // The timeout's turn holds an action of ours: what it made is written once that is performed.
                     if (ourWork == OurEndpoint.Busy) return
                 }
