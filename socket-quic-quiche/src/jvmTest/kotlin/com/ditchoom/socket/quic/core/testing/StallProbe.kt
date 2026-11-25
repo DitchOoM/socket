@@ -293,7 +293,7 @@ class Stall(
 ) {
     override fun toString() =
         "stall of ${windowMicros / 1_000.0} ms ($samples samples over ${sampledMicros / 1_000.0} ms): " +
-            "reader CPU ${targetCpuMicros / 1_000.0} ms, states $states (mostly $dominant), queue depth up to $maxQueueDepth; " +
+            "reader CPU ${targetCpuMicros / 1_000.0} ms, states $states (mostly $dominant), tasks queued for it up to $maxQueueDepth; " +
             "RUNNABLE threads up to $maxRunnable on $cores cores, process CPU ${processCpuMicros / 1_000.0} ms; " +
             "probe's longest wait ${samplerLongestMicros / 1_000.0} ms; $safepoints; $processes"
 }

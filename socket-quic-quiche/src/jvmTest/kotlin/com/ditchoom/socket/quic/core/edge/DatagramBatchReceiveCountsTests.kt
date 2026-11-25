@@ -81,7 +81,8 @@ class DatagramBatchReceiveCountsTests {
         /** What a dropping run's failure says: how long the reader waited at most, and how hard the queue was pressed. */
         fun evidence() =
             "longest gap between reader runs ${longestGapNanos / 1_000} us; queue high water ${pressure.highWater}; " +
-                "reads that dropped ${pressure.droppingReads}; GC $gcCount collections, $gcMillis ms; longest gap's $stall"
+                "reads that dropped ${pressure.droppingReads}; most kept since a lend at a drop ${pressure.keptSinceLendAtDrop} " +
+                "(a pass reads up to $PASS_READS); GC $gcCount collections, $gcMillis ms; longest gap's $stall"
 
         fun bytesPer() = callerBytes.toDouble() / delivered
 
@@ -168,6 +169,7 @@ class DatagramBatchReceiveCountsTests {
                             val pressureFrom = pressureOf(core)
                             val gcFrom = gcTotals()
                             readerThread.resetGap()
+                            // The reader's dispatcher queue: resumes the loop handed the reader that it has not yet run.
                             val probe = StallProbe.start(readerThread.thread, StallProbe.Queue.Depth { readerThread.depth })
                             sender.flood(FLOOD_MS)
                             settle(delivered)
@@ -183,7 +185,12 @@ class DatagramBatchReceiveCountsTests {
                                     received = after.datagramsReceived - before.datagramsReceived,
                                     dropped = after.datagramDrops.receiveQueue - before.datagramDrops.receiveQueue,
                                     longestGapNanos = readerThread.longestGap.get(),
-                                    pressure = Pressure(pressureTo.highWater, pressureTo.droppingReads - pressureFrom.droppingReads),
+                                    pressure =
+                                        Pressure(
+                                            pressureTo.highWater,
+                                            pressureTo.droppingReads - pressureFrom.droppingReads,
+                                            pressureTo.keptSinceLendAtDrop,
+                                        ),
                                     gcCount = gcTo.first - gcFrom.first,
                                     gcMillis = gcTo.second - gcFrom.second,
                                     stall =
@@ -213,9 +220,11 @@ class DatagramBatchReceiveCountsTests {
         }
     }
 
+    /** What a connection's receive queue reported of its pressure, read inside it. */
     private class Pressure(
         val highWater: Int,
         val droppingReads: Int,
+        val keptSinceLendAtDrop: Int,
     )
 
     /** The server connection's receive-queue pressure, read inside it. */
@@ -226,13 +235,14 @@ class DatagramBatchReceiveCountsTests {
             object : ConnWork() {
                 override fun run(inside: Inside) {
                     when (val datagrams = inside.datagrams) {
-                        is Datagrams.On -> read.complete(Pressure(datagrams.box.pressure.highWater, datagrams.box.pressure.droppingReads))
-                        is Datagrams.Off -> read.complete(Pressure(0, 0))
+                        is Datagrams.On ->
+                            datagrams.box.pressure.let { read.complete(Pressure(it.highWater, it.droppingReads, it.keptSinceLendAtDrop)) }
+                        is Datagrams.Off -> read.complete(Pressure(0, 0, 0))
                     }
                 }
 
                 override fun gone(end: ConnEnd) {
-                    read.complete(Pressure(0, 0))
+                    read.complete(Pressure(0, 0, 0))
                 }
             },
             CallerPlace.HandToLoop,
@@ -253,6 +263,9 @@ class DatagramBatchReceiveCountsTests {
         val ON = DatagramFloodChild.OPTIONS
         const val WARM_UP_MS = 500L
         const val FLOOD_MS = 2_500L
+
+        /** The loop's bound on one socket's reads in a pass: a drop kept within it was the loop's, past it the reader's. */
+        const val PASS_READS = 512
 
         /**
          * D5.8's batched shape measured 8.5 B; the receive measures 4.7 to 5.6 B by [QuicDatagrams.receiveEach] and 8.8 to

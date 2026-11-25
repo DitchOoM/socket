@@ -131,7 +131,10 @@ internal class DatagramBox(
                 }
             }
         }
-        if (lentOut.isNotEmpty()) return Receipt.Delivered
+        if (lentOut.isNotEmpty()) {
+            pressure.lent()
+            return Receipt.Delivered
+        }
         batch = BatchWait.Parked(into)
         return Receipt.Parked
     }
