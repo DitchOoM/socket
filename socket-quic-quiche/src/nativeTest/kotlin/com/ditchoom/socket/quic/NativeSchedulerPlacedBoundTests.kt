@@ -21,8 +21,14 @@ class NativeSchedulerPlacedBoundTests {
                 repeat(BOUNDS) { withStreamDeadline(30.seconds) { } }
             }
             val held = queue.size - before
-            assertTrue(held < BOUNDS / 10, "$BOUNDS bounds placed on the caller's scheduler left $held nodes counted on the shared timer's queue")
-            assertTrue(!queue.needsSweep() || before > 0, "the shared timer's queue asks for a sweep with only caller-scheduled bounds behind it")
+            assertTrue(
+                held < BOUNDS / 10,
+                "$BOUNDS bounds placed on the caller's scheduler left $held nodes counted on the shared timer's queue",
+            )
+            assertTrue(
+                !queue.needsSweep() || before > 0,
+                "the shared timer's queue asks for a sweep with only caller-scheduled bounds behind it",
+            )
         }
 
     private companion object {
