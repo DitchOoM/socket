@@ -666,10 +666,22 @@ jobs:
           producer: "quiche natives (Linux/Android/Windows)"
           github-token: ${{ github.token }}
       - name: Download Windows quiche native lib
+        id: windows-natives-download
+        continue-on-error: true
         uses: actions/download-artifact@v8
         with:
           name: quiche-windows-natives
           path: socket-quic-quiche/libs/quiche/windows-x64/lib
+      # See .github/scripts/artifact-download-retry.sh: the action answered "Artifact not found" 5 s after
+      # await-artifact saw the artifact finalized (run 45455922692), the service lagging its own listing.
+      - name: Retry the Windows quiche native lib download
+        if: steps.windows-natives-download.outcome == 'failure'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          "$GITHUB_WORKSPACE/.github/scripts/artifact-download-retry.sh" \
+            quiche-windows-natives socket-quic-quiche/libs/quiche/windows-x64/lib
       # The download above can succeed with an artifact that is empty or wrong (`if-no-files-found:
       # ignore` on the producer side means "upload nothing" is a possible shape), so assert the file
       # itself before handing the run to Gradle — a `Could not find quiche_jni.dll` deep inside a
@@ -698,8 +710,19 @@ jobs:
         with:
           mode: start
           enabled: ${{ matrix.jfr }}
+      # The runner's cores, memory, load and VM type at both ends of the test step, beside the JVM logs
+      # (see .github/scripts/runner-facts.sh), so a stall in between can be weighed against the host.
+      - name: Runner facts (start)
+        continue-on-error: true
+        shell: bash
+        run: bash .github/scripts/runner-facts.sh start build/jvm-logs/runner-facts.txt
       - name: Run JVM tests
         run: ./gradlew :jvmTest :socket-quic-quiche:jvmTest --no-configuration-cache ${{ matrix.args }}
+      - name: Runner facts (end)
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: bash .github/scripts/runner-facts.sh end build/jvm-logs/runner-facts.txt
       # The job log carries only pass/fail per test; a skip's [TEST-SKIPPED] marker and a test's own
       # diagnostics live in the XML's system-out, which is otherwise lost with the runner.
       - name: Upload Windows test results
@@ -711,6 +734,8 @@ jobs:
             build/test-results/jvmTest
             socket-quic-quiche/build/test-results/jvmTest
             socket-quic-quiche/build/core-flight
+            build/jvm-logs
+            socket-quic-quiche/build/jvm-logs
           if-no-files-found: warn
       - name: Flight recorder ring (on failure)
         if: ${{ (failure() || cancelled()) && matrix.jfr == 'true' }}

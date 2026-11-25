@@ -16,6 +16,7 @@ import kotlinx.coroutines.test.runTest
 import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
@@ -66,6 +67,22 @@ abstract class ConcurrentRequestsTestSuite {
                                 "the bound is $PEAK_DRIVER_BYTES",
                         )
                     }
+                }
+            }
+        }
+
+    /**
+     * A bound on a stream read or write runs on the sim's virtual time, like every other wait in the sim. On
+     * the wall clock a bound is never reached before the connection's virtual idle timeout, and a slow host
+     * that outlasts a write's bound cancels that request's coroutine with nobody to report it.
+     */
+    @Test
+    fun aStreamBoundInTheSimExpiresOnVirtualTimeBeforeTheConnectionIdles() =
+        runTest {
+            wrapTestBody {
+                withMigrationSim(simEnv(), seed = 3_002L, quicOptions = migrationSimOptions(idleTimeout = IDLE_TIMEOUT)) {
+                    val stream = client.openStream()
+                    assertFailsWith<TimeoutCancellationException> { stream.read(IDLE_TIMEOUT / 4) }
                 }
             }
         }
@@ -169,6 +186,7 @@ abstract class ConcurrentRequestsTestSuite {
     private companion object {
         const val STREAMS = 1000
         val READ_BOUND = 30.seconds
+        val IDLE_TIMEOUT = 120.seconds
 
         /** Room for the datagram and send buffers of two connections, a few read buffers, and a short chunk per stream. */
         const val PEAK_DRIVER_BYTES = 4L * 1024 * 1024

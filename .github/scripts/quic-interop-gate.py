@@ -30,6 +30,8 @@ expectation is NEW. REGRESSION, NEW and MISSING always fail the gate; STALE fail
 
 Subcommands:
   retry <expectations> <direction> <peer> <runner.json>   tests to run once more: expected to pass, did not
+  ran <runner.json>                                       exits 1 when every test was skipped (the runner found the
+                                                          peer not compliant): the cell did not run, so it is no result
   judge <expectations> <results-dir> [--stale=warn|fail] [--record=<file>]
 """
 import enum
@@ -968,6 +970,15 @@ def cmd_retry(args):
     return 0
 
 
+def cmd_ran(args):
+    (results_path,) = args
+    actual = list(runner_results(results_path).values())
+    if any(r != "skipped" for r in actual):
+        return 0
+    print(f"no test ran: {len(actual)} of {len(actual)} skipped")
+    return 1
+
+
 def retry_results(results_dir, direction, peer):
     """{test: result} of the one retry the cell's job ran, empty when it ran none."""
     path = os.path.join(results_dir, f"{direction}__{peer}.retry")
@@ -1163,10 +1174,10 @@ def cmd_judge(args):
 
 
 def main(argv):
-    if len(argv) < 2 or argv[1] not in ("retry", "judge"):
+    if len(argv) < 2 or argv[1] not in ("retry", "ran", "judge"):
         print(__doc__, file=sys.stderr)
         return 2
-    return {"retry": cmd_retry, "judge": cmd_judge}[argv[1]](argv[2:])
+    return {"retry": cmd_retry, "ran": cmd_ran, "judge": cmd_judge}[argv[1]](argv[2:])
 
 
 if __name__ == "__main__":

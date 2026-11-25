@@ -29,6 +29,7 @@ import java.time.Instant
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.Continuation
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.startCoroutine
@@ -312,14 +313,26 @@ internal class ArrayQueueDispatcher(
     name: String,
 ) : CoroutineDispatcher() {
     private val queue = ArrayBlockingQueue<Runnable>(QUEUE)
-    private val thread =
+
+    /** Tasks dispatched and not yet taken, counted beside the queue so a probe reads it without taking the queue's lock. */
+    private val queued = AtomicInteger()
+
+    /** The one thread the tasks run on. */
+    val thread =
         Thread({
             try {
-                while (true) queue.take().run()
+                while (true) {
+                    val task = queue.take()
+                    queued.decrementAndGet()
+                    task.run()
+                }
             } catch (_: InterruptedException) {
                 // closed
             }
         }, name).apply { isDaemon = true }
+
+    /** How many tasks wait for [thread]. */
+    val depth: Int get() = queued.get()
 
     init {
         thread.start()
@@ -328,7 +341,10 @@ internal class ArrayQueueDispatcher(
     override fun dispatch(
         context: CoroutineContext,
         block: Runnable,
-    ) = queue.put(block)
+    ) {
+        queued.incrementAndGet()
+        queue.put(block)
+    }
 
     fun close() = thread.interrupt()
 

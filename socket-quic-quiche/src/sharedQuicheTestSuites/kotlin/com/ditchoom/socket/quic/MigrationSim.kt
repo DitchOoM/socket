@@ -20,8 +20,10 @@ import com.ditchoom.socket.udp.SocketAddressCodec
 import com.ditchoom.socket.udp.UdpSocket
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.DisposableHandle
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.ClosedSendChannelException
@@ -35,6 +37,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestCoroutineScheduler
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.random.Random
 import kotlin.time.Duration
@@ -946,20 +949,28 @@ internal suspend fun <R> withMigrationSim(
                     simCapture,
                     simStandbyPaths(standby, pipe, clientAddresses, client),
                 )
-                MigrationSimScope(
-                    client,
-                    server,
-                    clientDriver,
-                    serverDriver,
-                    pipe,
-                    api,
-                    clientConn,
-                    serverConn,
-                    clientAudit,
-                    serverAudit,
-                    serverIngress,
-                    factory,
-                ).block()
+                val bounds: CoroutineContext =
+                    if (scheduler == null) {
+                        EmptyCoroutineContext
+                    } else {
+                        StreamDeadlineScheduling(VirtualStreamDeadlines(simScope))
+                    }
+                withContext(bounds) {
+                    MigrationSimScope(
+                        client,
+                        server,
+                        clientDriver,
+                        serverDriver,
+                        pipe,
+                        api,
+                        clientConn,
+                        serverConn,
+                        clientAudit,
+                        serverAudit,
+                        serverIngress,
+                        factory,
+                    ).block()
+                }
             } finally {
                 withContext(NonCancellable) {
                     pump.cancel()
@@ -1031,3 +1042,23 @@ private fun simStandbyPaths(
             }
         }
     }
+
+/**
+ * Stream read and write bounds on [scope]'s dispatcher, so under `runTest` they run on the same virtual time as
+ * every other wait in the sim instead of on the platform's wall-clock deadline timer.
+ */
+private class VirtualStreamDeadlines(
+    private val scope: CoroutineScope,
+) : StreamDeadlineScheduler {
+    override fun schedule(
+        millis: Long,
+        action: Runnable,
+    ): DisposableHandle {
+        val pending =
+            scope.launch {
+                delay(millis)
+                action.run()
+            }
+        return DisposableHandle { pending.cancel() }
+    }
+}
