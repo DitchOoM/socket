@@ -12,6 +12,7 @@ import com.ditchoom.socket.quic.DatagramOptions
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.core.ready.NetStack
 import com.ditchoom.socket.quic.core.ready.netStackOfThisRuntime
+import com.ditchoom.socket.quic.core.testing.PerfGates
 import com.ditchoom.socket.quic.core.testing.withDescriptorsAbove127
 import com.ditchoom.socket.quic.network
 import com.ditchoom.socket.quic.skipOnMissingNativeLib
@@ -55,6 +56,9 @@ class CoreDatagramAllocationTests {
                                 is NetStack.Native -> LOOP_GATE
                                 is NetStack.Jdk -> JDK_LOOP_GATE
                             }
+                        val owner = CoreDatagramAllocationTests::class.java
+                        PerfGates.record(owner, "datagram-echo", "loop-bytes", loop, loopGate.toDouble(), "B-per-echo")
+                        PerfGates.record(owner, "datagram-echo", "caller-bytes", caller, CALLER_GATE.toDouble(), "B-per-echo")
                         assertTrue(loop <= loopGate, "loop thread: %.1f B/datagram echo (gate %d)".format(loop, loopGate))
                         assertTrue(caller <= CALLER_GATE, "caller thread: %.1f B/datagram echo (gate %d)".format(caller, CALLER_GATE))
                     }

@@ -11,6 +11,7 @@ import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.ScopedReadResult
 import com.ditchoom.socket.quic.core.ready.NetStack
 import com.ditchoom.socket.quic.core.ready.netStackOfThisRuntime
+import com.ditchoom.socket.quic.core.testing.PerfGates
 import com.ditchoom.socket.quic.core.testing.allocationSamples
 import com.ditchoom.socket.quic.core.testing.withDescriptorsAbove127
 import com.ditchoom.socket.quic.network
@@ -138,6 +139,23 @@ class CoreQuicAllocationTests {
                                 report.caller,
                                 report.where,
                             ),
+                    )
+                    val test = name.replace(' ', '-')
+                    PerfGates.record(
+                        CoreQuicAllocationTests::class.java,
+                        test,
+                        "loop-bytes",
+                        report.loop,
+                        loopGate.toDouble(),
+                        "B-per-echo",
+                    )
+                    PerfGates.record(
+                        CoreQuicAllocationTests::class.java,
+                        test,
+                        "caller-bytes",
+                        report.caller,
+                        callerGate.toDouble(),
+                        "B-per-echo",
                     )
                     client.connection.close(QuicError.NoError)
                     dispatcher.close()

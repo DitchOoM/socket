@@ -1807,6 +1807,18 @@ jobs:
           retention-days: 90
           if-no-files-found: ignore
 
+      # Every gated count and allocation, whatever the outcome: perf-trend.py (review.yaml's perf-trend job) compares
+      # them with earlier runs. Written by the tests' PerfGates; absent when coreAllocationTest did not run.
+      - name: Upload perf gates
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: perf-gates-linux-${{ strategy.job-index }}
+          path: socket-quic-quiche/build/perf-gates/
+          retention-days: 30
+          if-no-files-found: ignore
+
   # ── Stage 2b'': every other module's JVM suite, on a JDK 21 launcher ─────────────────────────────
   # checks-tests runs these jvmTest tasks on JDK 25, the JDK a consumer of the multi-release jar is most
   # likely on. This job keeps the JDK 21 launcher covered (quiche-jvm's JDK 17 leg covers the JNI base),

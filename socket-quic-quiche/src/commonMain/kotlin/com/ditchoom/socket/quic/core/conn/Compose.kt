@@ -200,7 +200,7 @@ private fun composed(
             life = ConnLife(q, Linger(memory.factory, counts), rules.close),
             handshake = Handshake(q, rules.handshake, clock.now().value, memory.alpn, side.chainSource(), memory.factory),
             streams = StreamTable(q, StreamIo(q, rules.writeCut), side.role(), memory.shared.drains),
-            timer = ConnTimer(q, port, WakeSink()),
+            timer = ConnTimer(q, port, WakeSink(), counts.timer),
             ingress = Ingress(q, memory.shared, memory.factory, counts, turnClock),
             egress = Egress(q, counts, turnClock),
             release = Release(q),
