@@ -39,6 +39,11 @@ internal class ConnTimer(
 ) {
     private var deadline: TimerDeadline = TimerDeadline.Unmade
 
+    /** A serve ended with the connection open, and may re-arm next. */
+    fun served() {
+        counts.served()
+    }
+
     /** Re-arms after a turn at [now]; [fire] runs on the loop when the deadline falls due. */
     fun rearm(
         now: Nanos,

@@ -46,14 +46,18 @@ import kotlin.time.Duration.Companion.seconds
 
 /**
  * The work the core client does per operation on its hot paths, counted exactly where it crosses one of the core's own
- * seams, after warm-up: CPU proxies that an allocation gate does not see. Per operation it counts the network calls
- * (batch sends and receives on the socket's `DatagramBatchIo`, and the loop's waits in its poller), the timer work (turns
- * that re-armed the connection's timer, re-arms that moved its loop deadline, re-arms the loop took, and one-off
- * deadlines made), the clock readings of the loop's `LoopClock`, which the connection reads too, and the buffers taken
- * from and given back to the factory's pool. libquiche's own clock reads and the kernel's system calls are not counted.
+ * seams, after warm-up: CPU proxies that an allocation gate does not see. It counts the network calls (batch sends and
+ * receives on the socket's `DatagramBatchIo`, and the loop's waits in its poller), the loop's passes and the
+ * connection's serves, the timer work (turns that re-armed the connection's timer, re-arms that moved its loop
+ * deadline, re-arms the loop took, and one-off deadlines made), the clock readings of the loop's `LoopClock`, which the
+ * connection reads too, and the buffers taken from and given back to the factory's pool. libquiche's own clock reads
+ * and the kernel's system calls are not counted.
  *
- * The counts are averages over many echoes on loopback: how many turns, datagrams and ACKs an echo takes is the
- * scheduler's, so a count is a fraction that repeats to within a few percent, not an integer. Each operation runs under
+ * The counts are averages over many echoes on loopback. An echo's events are fixed (its datagrams in and out, the work
+ * a caller hands the loop), but how many loop passes and connection serves they spread over is the scheduler's: events
+ * that land within one pass share it, and a loaded host shares fewer. So a count that each pass makes (socket reads,
+ * waits, clock readings) is gated per [Per.Pass], the timer's re-arms per [Per.Serve], and the passes and serves
+ * themselves per operation only where an echo's events never share one (see [SHARED_TURNS]). Each operation runs under
  * both [SendRule]s, whichever this host defaults to, and each gate is the highest value measured under that rule plus the
  * margin [ECHO_MARGIN] states; a count no margin holds is [Gate.TrendOnly] (see [BULK_EACH]). A failed gate prints every count and the
  * callers of the counted calls, sampled over a short extra run. Named `*AllocationTests` so `coreAllocationTest` runs
@@ -204,6 +208,8 @@ class CoreWorkCountAllocationTests {
             mapOf(
                 Metric.Sends to seams.sends.value(),
                 Metric.Receives to seams.receives.value(),
+                Metric.Passes to client.loop.counts.passes,
+                Metric.Serves to client.conn.counts.timer.serves,
                 Metric.Waits to client.loop.counts.waits,
                 Metric.TimerRearms to client.conn.counts.timer.rearms,
                 Metric.DeadlineMoves to client.conn.counts.timer.moves,
@@ -238,16 +244,27 @@ class CoreWorkCountAllocationTests {
         val before = Snapshot(client, seams)
         repeat(measured) { once() }
         val after = Snapshot(client, seams)
-        val perOp = Metric.entries.associateWith { (after.values.getValue(it) - before.values.getValue(it)).toDouble() / measured }
+        val delta = Metric.entries.associateWith { after.values.getValue(it) - before.values.getValue(it) }
+        val perOp =
+            Metric.entries.associateWith { m ->
+                val over =
+                    when (m.per) {
+                        Per.Op -> measured.toLong()
+                        Per.Pass -> delta.getValue(Metric.Passes)
+                        Per.Serve -> delta.getValue(Metric.Serves)
+                    }
+                delta.getValue(m).toDouble() / maxOf(1L, over)
+            }
         seams.attribute(Attribution.On)
         repeat(attributed(measured)) { once() }
         seams.attribute(Attribution.Off)
         val per = attributed(measured)
         val table =
             Metric.entries.joinToString("\n") { m ->
-                "  %-15s %8.3f / op (%s)%s".format(
+                "  %-15s %8.3f / %-5s (%s)%s".format(
                     m.label,
                     perOp.getValue(m),
+                    m.per.unit,
                     gates.getValue(m),
                     over(gates.getValue(m), perOp.getValue(m)),
                 )
@@ -266,7 +283,7 @@ class CoreWorkCountAllocationTests {
                 it.label,
                 perOp.getValue(it),
                 gates.getValue(it).limit(),
-                "per-op",
+                "per-${it.per.unit}",
             )
         }
         val over = Metric.entries.filter { over(gates.getValue(it), perOp.getValue(it)).isNotEmpty() }
@@ -369,20 +386,36 @@ class CoreWorkCountAllocationTests {
             }
     }
 
+    /** What a count is divided by: the operations, the loop's passes in them, or the connection's serves in them. */
+    private enum class Per(
+        val unit: String,
+    ) {
+        Op("op"),
+        Pass("pass"),
+        Serve("serve"),
+    }
+
     private enum class Metric(
         val label: String,
+        val per: Per,
     ) {
-        Sends("io-sends"),
-        Receives("io-receives"),
-        Waits("poll-waits"),
-        TimerRearms("timer-rearms"),
-        DeadlineMoves("deadline-moves"),
-        RearmsTaken("rearms-taken"),
-        DeadlinesMade("deadlines-made"),
-        ClockReads("clock-reads"),
-        PoolAcquires("pool-acquires"),
-        PoolReleases("pool-releases"),
-        PoolMisses("pool-misses"),
+        Sends("io-sends", Per.Op),
+        Receives("io-receives", Per.Pass),
+        Passes("loop-passes", Per.Op),
+        Serves("conn-serves", Per.Op),
+
+        /** At most one a pass: how many passes find their input already waiting is the scheduler's. */
+        Waits("poll-waits", Per.Pass),
+
+        /** At most one a serve: how many serves an echo's events spread over is the scheduler's. */
+        TimerRearms("timer-rearms", Per.Serve),
+        DeadlineMoves("deadline-moves", Per.Op),
+        RearmsTaken("rearms-taken", Per.Op),
+        DeadlinesMade("deadlines-made", Per.Op),
+        ClockReads("clock-reads", Per.Pass),
+        PoolAcquires("pool-acquires", Per.Op),
+        PoolReleases("pool-releases", Per.Op),
+        PoolMisses("pool-misses", Per.Op),
     }
 
     private companion object {
@@ -401,25 +434,33 @@ class CoreWorkCountAllocationTests {
         const val ECHO_MARGIN = 0.10
         const val LEAST_MARGIN = 0.05
 
+        /** Each pass and serve of an echo is its own: the passes and serves per operation are gated. */
+        val NONE_TREND = emptySet<Metric>()
+
+        /** A datagram echo's two arrivals share a pass, or do not, as the host's load has it: 2.6 to 3.3 serves an echo. */
+        val SHARED_TURNS = setOf(Metric.Passes, Metric.Serves)
+
         /**
-         * The highest of every run measured, in the order of [Metric]: sends, receives, waits, timer re-arms, deadline moves,
-         * re-arms taken, deadlines made, clock reads, pool acquires, releases, misses. The loop sending: macOS arm64, JDK 21,
-         * JNI and FFM, native and JDK stacks, and macOS CI. Callers in place: those, Linux x64 CI (JDK 17, 21, 25; JNI, FFM) and Windows CI.
+         * The highest of every run measured, in the order of [Metric]: sends, receives a pass, passes, serves, waits a pass,
+         * timer re-arms a serve, deadline moves, re-arms taken, deadlines made, clock reads a pass, pool acquires, releases,
+         * misses. The per-op counts: macOS arm64, JDK 21, JNI and FFM, native and JDK stacks, and macOS CI, the loop sending;
+         * those, Linux x64 CI (JDK 17, 21, 25; JNI, FFM) and Windows CI, callers in place. The per-pass and per-serve counts,
+         * and the passes and serves: macOS arm64, JDK 21, JNI and FFM, idle and with every core busy.
          */
         val ONE_STREAM =
             Gates(
-                gates(ECHO_MARGIN, LEAST_MARGIN, 2.000, 3.946, 3.391, 3.956, 0.018, 2.004, 0.0, 21.805, 1.0, 1.0, 0.0),
-                gates(ECHO_MARGIN, LEAST_MARGIN, 2.000, 3.983, 1.987, 3.986, 0.021, 2.003, 0.0, 17.947, 1.0, 1.0, 0.0),
+                gates(NONE_TREND, 2.000, 0.999, 3.968, 4.959, 0.977, 0.798, 0.018, 2.005, 0.0, 5.547, 1.0, 1.0, 0.0),
+                gates(NONE_TREND, 2.000, 2.070, 1.997, 4.996, 1.000, 0.800, 0.021, 2.005, 0.0, 9.429, 1.0, 1.0, 0.0),
             )
         val NEW_STREAM =
             Gates(
-                gates(ECHO_MARGIN, LEAST_MARGIN, 4.021, 7.968, 7.888, 8.976, 0.059, 4.011, 0.0, 47.927, 1.0, 1.0, 0.0),
-                gates(ECHO_MARGIN, LEAST_MARGIN, 4.021, 7.987, 3.998, 8.994, 0.050, 4.008, 0.0, 37.988, 1.0, 1.0, 0.0),
+                gates(NONE_TREND, 4.021, 0.889, 8.994, 10.990, 0.980, 0.818, 0.059, 4.014, 0.0, 5.346, 1.0, 1.0, 0.0),
+                gates(NONE_TREND, 4.021, 2.019, 3.995, 10.993, 1.000, 0.818, 0.050, 4.015, 0.0, 9.634, 1.0, 1.0, 0.0),
             )
         val DATAGRAM =
             Gates(
-                gates(ECHO_MARGIN, LEAST_MARGIN, 1.992, 3.809, 2.694, 2.886, 0.018, 0.018, 0.0, 17.453, 1.0, 1.0, 0.0),
-                gates(ECHO_MARGIN, LEAST_MARGIN, 1.990, 3.738, 2.614, 2.830, 0.014, 0.012, 0.0, 17.192, 1.0, 1.0, 0.0),
+                gates(SHARED_TURNS, 1.993, 1.369, 2.982, 3.005, 0.937, 1.000, 0.018, 0.018, 0.0, 6.192, 1.0, 1.0, 0.0),
+                gates(SHARED_TURNS, 2.000, 1.338, 2.996, 3.298, 0.999, 1.000, 0.014, 0.012, 0.0, 6.346, 1.0, 1.0, 0.0),
             )
 
         /**
@@ -432,15 +473,15 @@ class CoreWorkCountAllocationTests {
         val BULK_EACH = Metric.entries.associateWith { if (it in BULK_ZERO) Gate.AtMost(LEAST_MARGIN) else Gate.TrendOnly }
         val BULK = Gates(BULK_EACH, BULK_EACH)
 
+        /** Each count's gate: [trend] trended only, every other the [measured] value plus [ECHO_MARGIN], at least [LEAST_MARGIN]. */
         fun gates(
-            margin: Double,
-            least: Double,
+            trend: Set<Metric>,
             vararg measured: Double,
         ): Map<Metric, Gate> {
             check(measured.size == Metric.entries.size) { "one measured value per metric" }
             return Metric.entries.associateWith { m ->
                 val value = measured[m.ordinal]
-                Gate.AtMost(maxOf(value * (1 + margin), value + least))
+                if (m in trend) Gate.TrendOnly else Gate.AtMost(maxOf(value * (1 + ECHO_MARGIN), value + LEAST_MARGIN))
             }
         }
     }
