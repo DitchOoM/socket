@@ -166,6 +166,7 @@ public final class com/ditchoom/socket/quic/JniQuicheApi : com/ditchoom/socket/q
 	public fun configSetMaxStreamWindow-656eFbI (JJ)V
 	public fun configSetTicketKey-ZPdP-6U (JJI)I
 	public fun configVerifyPeer-656eFbI (JZ)V
+	public fun connActivePathProbes-ObL0uzk (J)J
 	public fun connActivePathRttNanos-ObL0uzk (J)J
 	public fun connActiveScids-ObL0uzk (J)I
 	public fun connApplicationProto-RTtnfzo (JJI)I
@@ -697,6 +698,7 @@ public abstract interface class com/ditchoom/socket/quic/QuicheApi {
 	public abstract fun configSetMaxStreamWindow-656eFbI (JJ)V
 	public abstract fun configSetTicketKey-ZPdP-6U (JJI)I
 	public abstract fun configVerifyPeer-656eFbI (JZ)V
+	public fun connActivePathProbes-ObL0uzk (J)J
 	public fun connActivePathRttNanos-ObL0uzk (J)J
 	public fun connActiveScids-ObL0uzk (J)I
 	public fun connApplicationProto-RTtnfzo (JJI)I
@@ -798,6 +800,7 @@ public abstract interface class com/ditchoom/socket/quic/QuicheApi {
 public final class com/ditchoom/socket/quic/QuicheApi$DefaultImpls {
 	public static fun clearThreadVirtualTime (Lcom/ditchoom/socket/quic/QuicheApi;)V
 	public static fun configLogKeys-N7TAlBc (Lcom/ditchoom/socket/quic/QuicheApi;J)V
+	public static fun connActivePathProbes-ObL0uzk (Lcom/ditchoom/socket/quic/QuicheApi;J)J
 	public static fun connActivePathRttNanos-ObL0uzk (Lcom/ditchoom/socket/quic/QuicheApi;J)J
 	public static fun connActiveScids-ObL0uzk (Lcom/ditchoom/socket/quic/QuicheApi;J)I
 	public static fun connApplicationProto-RTtnfzo (Lcom/ditchoom/socket/quic/QuicheApi;JJI)I

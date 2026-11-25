@@ -65,7 +65,16 @@ internal class Replayed(
     val established: List<Duration>,
     /** The path marks of the client's flight recording, on the recording's own clock. */
     val pathMarks: List<PathMarkAt>,
+    /** When each [Workload.Download] was read to its end, on the script's clock. */
+    val downloaded: List<Duration> = emptyList(),
+    /** What the client's silence watch said of its path, each change with when, on the script's clock. */
+    val news: List<PathMarkAt> = emptyList(),
+    /** When each datagram reached the client's socket, on the script's clock. */
+    val clientArrivals: List<Duration> = emptyList(),
 ) {
+    /** When the client's path was declared silent, on the script's clock. */
+    fun silentAt(): List<Duration> = news.filter { it.phase == "Silent" }.map { it.at }
+
     /** How long the first move took from its socket moving to its migration, or nothing if it never migrated. */
     fun moveToMigrated(): Duration? {
         val moved = pathMarks.firstOrNull { it.phase == "Moved" } ?: return null
@@ -81,6 +90,22 @@ internal class Replayed(
     fun describe(): String =
         "${conditions.name}: $outcome, reopens=$reopens, moves=$moves, usable again ${conditions.usableAgain()}, " +
             "last echoes ${echoes.takeLast(LAST_ECHOES)}"
+}
+
+/** What the replayed client's application does once its connection is up. */
+internal sealed interface Workload {
+    /** The walk probe's echo, every [Conditions.echoEvery]. */
+    data object Echo : Workload
+
+    /** One request, then [bytes] from the server on the same stream, read while nothing of the client's is in flight. */
+    data class Download(
+        val bytes: Int,
+    ) : Workload
+
+    /** [PROBE_ECHO_BYTES] written every [every], never waiting for an answer and never reading; the server drops them. */
+    data class Writes(
+        val every: Duration,
+    ) : Workload
 }
 
 /** A path mark of the client's flight recording: its [phase] and when, on the recording's clock. */

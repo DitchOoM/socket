@@ -16,6 +16,7 @@ import com.ditchoom.socket.quic.core.conn.SendsAccess
 import com.ditchoom.socket.quic.core.conn.TokenHome
 import com.ditchoom.socket.quic.core.loop.Readiness
 import com.ditchoom.socket.quic.core.loop.RunningLoop
+import com.ditchoom.socket.quic.core.path.Silence
 import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.MonotonicClock
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
@@ -62,4 +63,6 @@ internal class ClientWiring(
     val mismatch: MismatchResponse = MismatchResponse.Unpaced,
     /** The connection's trace: the connect makes it once, to judge its options before any socket opens. */
     val capture: TraceCapture = traceRecorderFor(options),
+    /** Whether the connection judges its path's silence ([silenceOf]). */
+    val silence: Silence,
 )

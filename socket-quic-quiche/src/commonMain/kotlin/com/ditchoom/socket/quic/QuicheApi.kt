@@ -1109,7 +1109,37 @@ interface QuicheApi {
             if (stats.active) return stats.rtt.inWholeNanoseconds
         }
     }
+
+    /**
+     * The connection's active path as one Long: its index in quiche's path table in the top 16 bits and its
+     * `total_pto_count` in the low 48 ([activePathProbesOf]), or [NO_ACTIVE_PATH] when no path is active. The real
+     * backends allocate nothing; this default, for test doubles, reads [connPathStats]. Same threading contract as
+     * [connStats].
+     */
+    fun connActivePathProbes(conn: QuicheConn): Long {
+        var index = 0L
+        while (true) {
+            val stats = connPathStats(conn, index) ?: return NO_ACTIVE_PATH
+            if (stats.active) return activePathProbesOf(index, stats.totalPtoCount)
+            index++
+        }
+    }
 }
+
+/** What [QuicheApi.connActivePathProbes] answers when no path is active. */
+internal const val NO_ACTIVE_PATH = -1L
+
+/** The low 48 bits of [QuicheApi.connActivePathProbes]: the active path's PTO expiries. */
+internal const val ACTIVE_PATH_PROBES_MASK = 0xFFFF_FFFF_FFFFL
+
+/** The shift that puts the active path's index in the top 16 bits of [QuicheApi.connActivePathProbes]. */
+internal const val ACTIVE_PATH_INDEX_SHIFT = 48
+
+/** [QuicheApi.connActivePathProbes]'s packing of the active path at [index] with [probes] PTO expiries. */
+internal fun activePathProbesOf(
+    index: Long,
+    probes: Long,
+): Long = (index shl ACTIVE_PATH_INDEX_SHIFT) or (probes and ACTIVE_PATH_PROBES_MASK)
 
 /** What [QuicheApi.connActivePathRttNanos] answers when the connection has no active path. */
 const val NO_RTT_NANOS = -1L

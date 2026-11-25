@@ -54,12 +54,12 @@ internal fun QuicheConnRef.addressIs(
 }
 
 /** One path event quiche reported: what happened and, for the event's addresses, where they are read from. */
-internal sealed interface PathNews {
-    data object Drained : PathNews
+internal sealed interface EventNext {
+    data object Drained : EventNext
 
     class Event(
         val type: QuichePathEventType,
-    ) : PathNews
+    ) : EventNext
 }
 
 /** A connection's path-event memory: none until it has a path to follow. */
@@ -96,10 +96,10 @@ internal class EventScratch private constructor(
     val peer: Long get() = bytes.address + PEER
 
     /** The next event quiche holds for [q], consumed. */
-    fun next(q: QuicheConnRef): PathNews {
+    fun next(q: QuicheConnRef): EventNext {
         val at = bytes.address
         val type = q.api.connPathEventNext(q.handle, at + LOCAL, at + LOCAL_LENGTH, at + PEER, at + PEER_LENGTH)
-        return if (type == null) PathNews.Drained else PathNews.Event(type)
+        return if (type == null) EventNext.Drained else EventNext.Event(type)
     }
 
     fun free() = bytes.free()

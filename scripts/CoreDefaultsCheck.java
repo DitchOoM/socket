@@ -434,12 +434,12 @@ public class CoreDefaultsCheck {
             + "|configSetMaxConnectionWindow|configSetMaxStreamWindow", List.of("stream/FlowWindows"));
         QUICHE_OWNERS.put("connStreamSend|connStreamRecvStep|connStreamShutdown|connStreamCapacity", List.of("stream/StreamIo"));
         QUICHE_OWNERS.put("connProbePath|connMigrate|connMigrateSource|connNewScid|connRetireDcid|connRequeuePath|connPathEventNext|connPathStats"
-            + "|recvInfoNew|sendInfoNew", List.of("path/Paths"));
+            + "|connActivePathProbes|recvInfoNew|sendInfoNew", List.of("path/Paths"));
         QUICHE_OWNERS.put("connSetSession|connSession|connIsResumed|connIsInEarlyData|connEarlyDataReason", List.of("conn/Resumption"));
         QUICHE_OWNERS.put("connSetToken|connTakeNewToken", List.of("conn/Resumption", "conn/TokenKeeping"));
         QUICHE_OWNERS.put("connSendNewToken|connSetPeerAddressValidated", List.of("demux/Stateless"));
         QUICHE_OWNERS.put("connDgramSend|connDgramRecv|connDgramRecvStep|connDgramMaxWritableLen|connDgramMaxWritableBytes|hasReadableDgram", List.of("conn/Datagrams"));
-        QUICHE_OWNERS.put("connSendAckEliciting", List.of("conn/KeepAlive"));
+        QUICHE_OWNERS.put("connSendAckEliciting", List.of("conn/KeepAlive", "path/PathsSilence"));
         QUICHE_OWNERS.put("headerInfo", List.of("demux/Demux"));
         QUICHE_OWNERS.put("accept", List.of("demux/Admission"));
         QUICHE_OWNERS.put("negotiateVersion", List.of("demux/Stateless"));
@@ -1101,6 +1101,7 @@ public class CoreDefaultsCheck {
         // Q quiche ownership
         planted("Q", "conn/Turn.kt", "fun f() { api.connClose(handle, e) }");
         planted("Q", "conn/Egress.kt", "fun f() { api.connRecv(q, a) }");
+        planted("Q", "conn/Turn.kt", "fun f() { q.api.connActivePathProbes(q.handle) }");
         planted("Q", "conn/Turn.kt", "fun f() { quicheApi.accept(config, h) }");
         clean("Q", "loop/Loop.kt", "fun f() { onReady.accept(key) }");
         clean("Q", "life/ConnLife.kt", "fun f() { api.connClose(handle, e) }");

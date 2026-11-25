@@ -567,4 +567,9 @@ internal class GuardedQuicheApi(
         guard.assertOnLoop(LoopSite.Quiche)
         return delegate.connActivePathRttNanos(conn)
     }
+
+    override fun connActivePathProbes(conn: QuicheConn): Long {
+        guard.assertOnLoop(LoopSite.Quiche)
+        return delegate.connActivePathProbes(conn)
+    }
 }

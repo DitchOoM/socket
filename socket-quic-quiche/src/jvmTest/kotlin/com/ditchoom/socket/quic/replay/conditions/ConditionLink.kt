@@ -86,6 +86,10 @@ internal class ConditionLink(
     var moves = 0
         private set
 
+    /** How many times a NAT in front of the client rebound it to a new port ([rebind]). */
+    var rebinds = 0
+        private set
+
     /** When the client sent each datagram, in nanoseconds from the script's start. */
     val clientSends = ArrayList<Long>()
 
@@ -98,8 +102,20 @@ internal class ConditionLink(
     /** The size of each datagram the server sent, in order. */
     val serverSizes = ArrayList<Int>()
 
+    /** When each datagram reached the client's socket, in nanoseconds from the script's start. */
+    val clientArrivals = ArrayList<Long>()
+
     val clientIo: DatagramBatchIo = End(Side.Client)
     val serverIo: DatagramBatchIo = End(Side.Server)
+
+    /**
+     * A NAT in front of the client maps it to a new port, its socket unchanged: the server sees the client's next
+     * datagrams come from there, and what it sent, or sends, to the old port is lost.
+     */
+    fun rebind() {
+        rebinds++
+        client = client.copy(port = client.port + 1)
+    }
 
     /** The next arrival's time, or [Long.MAX_VALUE]. */
     fun nextArrival(): Long = if (inFlight.isEmpty()) Long.MAX_VALUE else inFlight.peek().arrives
@@ -112,6 +128,7 @@ internal class ConditionLink(
             if (windowAt(datagram.arrives) is LinkWindow.Outage) continue
             if (datagram.to == Side.Client && (clientSocketDead() || datagram.client != client)) continue
             val from = if (datagram.to == Side.Client) server else datagram.client
+            if (datagram.to == Side.Client) clientArrivals += datagram.arrives - origin
             waiting.getValue(datagram.to).addLast(Waiting(from, datagram.bytes))
         }
     }

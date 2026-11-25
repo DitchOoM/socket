@@ -901,6 +901,8 @@ object JniQuicheApi : QuicheApi {
         return NO_RTT_NANOS
     }
 
+    override fun connActivePathProbes(conn: QuicheConn): Long = nConnActivePathProbes(conn.handle)
+
     private const val QUICHE_ERR_DONE = -1L
 
     /** What `quiche_pin_monotonic_time_nanos` returns when it pinned. */
@@ -1298,6 +1300,8 @@ object JniQuicheApi : QuicheApi {
     @JvmStatic private external fun nConnSendAckEliciting(conn: Long): Long
 
     @JvmStatic private external fun nConnProbeNow(conn: Long): Long
+
+    @JvmStatic private external fun nConnActivePathProbes(conn: Long): Long
 
     @JvmStatic private external fun nConnRequeuePath(
         conn: Long,

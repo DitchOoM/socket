@@ -34,6 +34,7 @@ internal class ClientPaths(
     private val random: Random,
     private val free: (QuicheRecvInfo, Made) -> Unit,
     mover: (PathKey, RttPrior) -> Unit,
+    val silence: PathSilence,
 ) {
     private val toPeer = Outgoing.To(first.target)
     private val fixed = Sorting.Fixed(toPeer)

@@ -175,8 +175,8 @@ internal class ServerPaths(
         while (true) {
             val type =
                 when (val news = scratch.next(q)) {
-                    is PathNews.Event -> news.type
-                    is PathNews.Drained -> return
+                    is EventNext.Event -> news.type
+                    is EventNext.Drained -> return
                 }
             val settles =
                 type == QuichePathEventType.Validated || type == QuichePathEventType.FailedValidation || type == QuichePathEventType.Closed

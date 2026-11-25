@@ -39,6 +39,13 @@ internal enum class PathMark {
 
     /** The client's socket was wanted on another address and waits where it is for a spare id from the peer. */
     Held,
+
+    /** The active path stopped answering ([com.ditchoom.socket.quic.core.path.PathNews.Silent]), or answered again. */
+    Silent,
+    Answering,
+
+    /** A read waited on a quiet path with nothing in flight: the client sent one PING (the awaiting-peer probe). */
+    Pinged,
 }
 
 /** Why a connection dropped a datagram, as its flight recording names it: a trace line `DROP <type> <detail>`. */

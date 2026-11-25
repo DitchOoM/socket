@@ -39,19 +39,40 @@ internal sealed interface Side {
     data object NotPart : Ended
 }
 
+/** How many of a connection's streams have a reader parked: a read waiting on the peer. */
+@Confined
+internal class ParkedReads {
+    var waiting = 0
+        private set
+
+    fun parked() {
+        waiting++
+    }
+
+    fun left() {
+        waiting--
+    }
+}
+
 /**
  * One stream, of [shape]: its parked reader and writer, and how far each side got; a direction the shape takes no part
- * in is over from the start. Reused for a later stream once this one is spent, so a new stream allocates no entry.
+ * in is over from the start. A parked reader is counted in [reads]. Reused for a later stream once this one is spent,
+ * so a new stream allocates no entry.
  */
 @Confined
 internal class StreamEntry(
     id: QuicStreamId,
     shape: StreamShape,
+    private val reads: ParkedReads,
 ) {
     var id: QuicStreamId = id
         private set
     var reader: Waiter = Nobody
-        private set
+        private set(now) {
+            if (field === Nobody && now !== Nobody) reads.parked()
+            if (field !== Nobody && now === Nobody) reads.left()
+            field = now
+        }
     var writer: Waiter = Nobody
         private set
     var received: Side = shape.receiving()

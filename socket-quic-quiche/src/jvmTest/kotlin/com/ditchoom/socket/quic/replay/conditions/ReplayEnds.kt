@@ -54,6 +54,7 @@ import com.ditchoom.socket.quic.core.loop.Readiness
 import com.ditchoom.socket.quic.core.loop.RunningLoop
 import com.ditchoom.socket.quic.core.loop.SpareMade
 import com.ditchoom.socket.quic.core.loop.jdkViewsOf
+import com.ditchoom.socket.quic.core.path.Silence
 import com.ditchoom.socket.quic.core.pool.FixedPool
 import com.ditchoom.socket.quic.core.pool.MemoryHold
 import com.ditchoom.socket.quic.core.ready.jdkStackOfThisRuntime
@@ -248,6 +249,8 @@ internal fun replayClient(
             planned.kept,
             plan.tokens,
             MismatchResponse.Fail,
+            // The scripted monitor's network changes, and the replay migrates: the path's silence is judged.
+            silence = Silence.On,
         )
     val parts = ClientParts(wiring, peer, localAddress)
     val connection =

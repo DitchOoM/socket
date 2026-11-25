@@ -21,19 +21,23 @@ import com.ditchoom.socket.quic.core.udp.NativeBytes
 
 // What every role's paths answer, asked the same way: each is one `when` over the slot.
 
-/** What quiche is told about a datagram that came from [from]. */
-internal fun Paths.recvFrom(from: PathKey): RecvFrom =
+/** What quiche is told about a datagram that came from [from] at [now]; a client's path answered then. */
+internal fun Paths.recvFrom(
+    from: PathKey,
+    now: Nanos,
+): RecvFrom =
     when (this) {
-        is Paths.Client -> paths.recvFrom()
+        is Paths.Client -> paths.recvFrom().also { paths.silence.answered(now) }
         is Paths.Server -> paths.recvInfo(from)
     }
 
-/** Hands quiche the datagram of [length] bytes at the start of [bytes] that came [from], unless no path takes it. */
+/** Hands quiche the datagram of [length] bytes at the start of [bytes] that came [from] at [now], unless no path takes it. */
 internal fun ConnParts.feed(
     bytes: NativeBytes,
     length: Int,
     from: PathKey,
-) = when (val info = slots.paths.recvFrom(from)) {
+    now: Nanos,
+) = when (val info = slots.paths.recvFrom(from, now)) {
     is RecvFrom.Info -> {
         slots.ack.received()
         life.heard()
@@ -98,23 +102,25 @@ internal fun Paths.stats(): QuicStatsRead =
         is Paths.Server -> paths.stats()
     }
 
-/** The connection is established: each role hands out, or asks the loop for, the ids a move needs. */
+/** The connection is established: each role hands out, or asks the loop for, the ids a move needs; a client's watch reads its baseline. */
 internal fun Paths.established() =
     when (this) {
         is Paths.Client -> {
             paths.established()
-            Unit
+            paths.silence.baseline()
         }
         is Paths.Server -> paths.established()
     }
 
 /**
  * Inside, each serve: reads the paths' news. A client that just migrated has quiche send its probes on the new path
- * at once, so what the old path lost is resent now rather than at its next timer.
+ * at once, so what the old path lost is resent now rather than at its next timer. A client's silence watch is served
+ * first ([watchSilence]).
  */
 internal fun ConnParts.stepPaths(now: Nanos): PathStep =
     when (val paths = slots.paths) {
         is Paths.Client -> {
+            watchSilence(now, paths.paths.silence)
             val step = paths.paths.step(now)
             if (step != PathStep.Steady) slots.ack.mustWrite()
             when (step) {
@@ -235,12 +241,20 @@ internal fun Paths.issue(spare: List<SpareId>) =
         is Paths.Server -> paths.issue(spare)
     }
 
-/** Offers the wake times of the paths: a client whose move found no path is probed again when its retry falls due. */
-internal fun Paths.offerWake(sink: WakeSink) =
-    when (this) {
-        is Paths.Client -> paths.offerWake(sink)
-        is Paths.Server -> Unit
+/**
+ * Offers the wake times of the paths: a client whose move found no path is probed again when its retry falls due, and
+ * its silence watch wakes for its probe and its verdicts while [readers] reads wait.
+ */
+internal fun Paths.offerWake(
+    sink: WakeSink,
+    readers: Int,
+) = when (this) {
+    is Paths.Client -> {
+        paths.offerWake(sink)
+        paths.silence.offerWake(sink, readers)
     }
+    is Paths.Server -> Unit
+}
 
 /** Whether a client's socket is moving, or a server's peer is on more than one address. */
 internal enum class PathCalm { Settled, Moving }

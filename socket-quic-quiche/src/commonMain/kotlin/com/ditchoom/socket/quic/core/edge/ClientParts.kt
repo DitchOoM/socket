@@ -21,6 +21,8 @@ import com.ditchoom.socket.quic.core.loop.Route
 import com.ditchoom.socket.quic.core.loop.SharedBatch
 import com.ditchoom.socket.quic.core.loop.SocketDiedNotice
 import com.ditchoom.socket.quic.core.observe.ConnCounts
+import com.ditchoom.socket.quic.core.path.PathNewsCell
+import com.ditchoom.socket.quic.core.path.SilenceRule
 import com.ditchoom.socket.quic.core.pool.Hold
 import com.ditchoom.socket.quic.core.sched.Entrant
 import com.ditchoom.socket.quic.core.sched.SendPort
@@ -68,6 +70,9 @@ internal class ClientParts(
     /** The server's certificates the handshake copies for the connect's check. */
     val chain = KeptChain()
     private val edge = EdgeState(alpn.owner, capture, w.tickets, ChainHome.Kept(chain))
+
+    /** What the connection's silence watch says of its path. */
+    val news = PathNewsCell()
     val conn: Conn =
         buildConn(
             rules =
@@ -91,6 +96,7 @@ internal class ClientParts(
                     { bind, prior -> loop.move(endpoint, bind, prior) },
                     w.access,
                     chainSourceOf(w.options, w.memory.factory()),
+                    SilenceRule(w.silence, probeCapOf(w.options), news),
                 ),
             address =
                 ConnAddress(
