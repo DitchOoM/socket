@@ -1383,6 +1383,16 @@ class FfmQuicheApi private constructor(
         return NO_RTT_NANOS
     }
 
+    override fun connActivePathProbes(conn: QuicheConn): Long {
+        val out = outParams.get().pathStats
+        var index = 0L
+        while (HotCalls.hConnPathStats.invokeExact(conn.handle, index, out.address()) as Int >= 0) {
+            if (out.get(JAVA_BOOLEAN, 280)) return activePathProbesOf(index, out.get(JAVA_LONG, 320))
+            index++
+        }
+        return NO_ACTIVE_PATH
+    }
+
     companion object {
         /**
          * One immortal global-scope segment spanning the whole address space (`NULL.reinterpret(MAX)`), so

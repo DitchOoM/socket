@@ -472,6 +472,22 @@ JNIEXPORT jint JNICALL JNI_FN(nConnPathStats)(
 }
 
 /*
+ * nConnActivePathProbes: the active path's index in the top 16 bits and its total_pto_count in the low 48, packed in
+ * one jlong (QuicheApi.connActivePathProbes), or -1 when no path is active. One crossing and no Java array, so a
+ * timer wake that samples the path allocates nothing on either side.
+ */
+JNIEXPORT jlong JNICALL JNI_FN(nConnActivePathProbes)(JNIEnv *env, jclass cls, jlong conn) {
+    quiche_path_stats stats;
+    for (size_t index = 0;; index++) {
+        memset(&stats, 0, sizeof(stats));
+        if (quiche_conn_path_stats((const quiche_conn *)(uintptr_t)conn, index, &stats) < 0) return (jlong)-1;
+        if (stats.active) {
+            return (jlong)(((uint64_t)index << 48) | ((uint64_t)stats.total_pto_count & 0xFFFFFFFFFFFFULL));
+        }
+    }
+}
+
+/*
  * nConnPeerTransportParams slots (13), in quiche_transport_params declaration order:
  *   peer_max_idle_timeout, peer_max_udp_payload_size, peer_initial_max_data,
  *   peer_initial_max_stream_data_bidi_local, peer_initial_max_stream_data_bidi_remote,

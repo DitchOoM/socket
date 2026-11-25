@@ -1449,6 +1449,17 @@ internal object CinteropQuicheApi : QuicheApi, QuicheRandomPin, QuicheClockPin {
             NO_RTT_NANOS
         }
 
+    override fun connActivePathProbes(conn: QuicheConn): Long =
+        memScoped {
+            val out = alloc<quiche_path_stats>()
+            var index = 0L
+            while (quiche_conn_path_stats(conn.handle.toCPointer()!!, index.convert(), out.ptr) >= 0) {
+                if (out.active) return@memScoped activePathProbesOf(index, out.total_pto_count.toLong())
+                index++
+            }
+            NO_ACTIVE_PATH
+        }
+
     private const val QUICHE_ERR_DONE = -1
 
     /** What `quiche_pin_monotonic_time_nanos` returns when it pinned. */
