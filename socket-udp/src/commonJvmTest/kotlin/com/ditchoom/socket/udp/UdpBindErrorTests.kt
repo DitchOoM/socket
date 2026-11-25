@@ -33,7 +33,7 @@ class UdpBindErrorTests {
             val refused = runCatching { UdpSocket.bind("127.0.0.1", port).also { opened += it } }.exceptionOrNull()
 
             val bindFailure = assertIs<UdpBindException>(refused, "a refused bind must be typed; got $refused")
-            assertEquals(UdpBindError.AddressInUse(ERRNO_NOT_SURFACED), bindFailure.error)
+            assertEquals(UdpBindError.AddressInUse(hostErrno(linux = 98, darwin = 48, windows = 10048)), bindFailure.error)
             assertEquals("127.0.0.1", bindFailure.host)
             assertEquals(port, bindFailure.port)
         }
@@ -45,7 +45,26 @@ class UdpBindErrorTests {
             val refused = runCatching { UdpSocket.bind("192.0.2.1", 0).also { opened += it } }.exceptionOrNull()
 
             val bindFailure = assertIs<UdpBindException>(refused, "a refused bind must be typed; got $refused")
-            assertEquals(UdpBindError.LocalAddressUnavailable(ERRNO_NOT_SURFACED), bindFailure.error)
+            assertEquals(UdpBindError.LocalAddressUnavailable(hostErrno(linux = 99, darwin = 49, windows = 10049)), bindFailure.error)
+        }
+
+    /**
+     * A refused connect names the errno the host's kernel returned, as [UdpConnectError]'s number: the
+     * JDK hands over only its phrase, and the phrase renders exactly one errno.
+     */
+    @Test
+    fun aRefusedConnectCarriesTheHostsErrno() =
+        runBlocking {
+            val held = UdpSocket.connect("127.0.0.1", DISCARD_PORT, "127.0.0.1", 0)
+            try {
+                val port = held.localAddress.orNull()?.port ?: error("the held socket reports no local port")
+                val refused =
+                    runCatching { UdpSocket.connect("127.0.0.1", DISCARD_PORT, "127.0.0.1", port).also { it.close() } }.exceptionOrNull()
+                val failure = assertIs<UdpConnectException>(refused, "a refused connect must be typed; got $refused")
+                assertEquals(UdpConnectError.AddressInUse(hostErrno(linux = 98, darwin = 48, windows = 10048)), failure.error)
+            } finally {
+                held.close()
+            }
         }
 
     /**
@@ -56,13 +75,32 @@ class UdpBindErrorTests {
     @Test
     fun aConnectsBindExceptionForAnUnavailableAddressIsNotAddressInUse() {
         assertEquals(
-            UdpConnectError.LocalAddressUnavailable(ERRNO_NOT_SURFACED),
-            jvmConnectErrorOf(BindException("Can't assign requested address")),
+            UdpConnectError.LocalAddressUnavailable(49),
+            jvmConnectErrorOf(BindException("Can't assign requested address"), HostErrnos.Darwin),
         )
         assertEquals(
-            UdpConnectError.LocalAddressUnavailable(ERRNO_NOT_SURFACED),
-            jvmConnectErrorOf(BindException("Cannot assign requested address")),
+            UdpConnectError.LocalAddressUnavailable(99),
+            jvmConnectErrorOf(BindException("Cannot assign requested address"), HostErrnos.Linux),
         )
-        assertEquals(UdpConnectError.AddressInUse(ERRNO_NOT_SURFACED), jvmConnectErrorOf(BindException("Address already in use")))
+        assertEquals(UdpConnectError.AddressInUse(98), jvmConnectErrorOf(BindException("Address already in use"), HostErrnos.Linux))
+    }
+
+    private companion object {
+        /** RFC 863 discard: a connected UDP socket sends nothing, so the port is only named. */
+        const val DISCARD_PORT = 9
+
+        /** The number this host's kernel gives one errno. */
+        fun hostErrno(
+            linux: Int,
+            darwin: Int,
+            windows: Int,
+        ): Int {
+            val os = System.getProperty("os.name").orEmpty()
+            return when {
+                os.startsWith("Windows") -> windows
+                os.startsWith("Mac") -> darwin
+                else -> linux
+            }
+        }
     }
 }
