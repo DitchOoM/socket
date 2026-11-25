@@ -4,24 +4,36 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.socket.InternetAccess
+import com.ditchoom.socket.NetworkMonitor
+import com.ditchoom.socket.NetworkState
+import com.ditchoom.socket.quic.MigrationPolicy
+import com.ditchoom.socket.quic.NetworkMonitorSource
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.core.edge.connectCore
+import com.ditchoom.socket.quic.core.edge.coreTestOptions
+import com.ditchoom.socket.quic.core.edge.public
 import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.testing.CrossingCount
 import com.ditchoom.socket.quic.core.testing.platformQuicheApi
 import com.ditchoom.socket.quic.core.testing.withDescriptorsAbove127
 import com.ditchoom.socket.quic.network
+import com.ditchoom.socket.transport.NetworkId
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.Rule
 import kotlin.test.AfterTest
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlin.test.fail
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -47,6 +59,53 @@ class CoreNativeCrossingTests {
 
     @Test
     fun sixtyFourConnectionsEchoCrossIntoQuicheAFewTimesPerEcho() = measure(connections = 64, measured = 200)
+
+    /**
+     * An idle client whose idle timeout ends it fires quiche's timer at least once, and each firing reads its active
+     * path's probes once: the echoes' law for `connActivePathProbes`, met by a run that always fires the timer.
+     */
+    @Test
+    fun aClientsTimerFiringReadsItsActivePathOnce() =
+        runBlocking {
+            val count = CrossingCount(platformQuicheApi())
+            withCoreEchoServer(factory = BufferFactory.network()) { server ->
+                val client =
+                    connectCore(
+                        server.port,
+                        loops = loops,
+                        api = count.api,
+                        options =
+                            coreTestOptions.copy(
+                                idleTimeout = IDLE_TIMEOUT,
+                                migration = MigrationPolicy.Automatic,
+                                networkMonitor = NetworkMonitorSource.Supplied(ChangeableNetwork()),
+                            ),
+                    )
+                val stream = client.connection.openStream()
+                // The echo has the handshake established, so the watch's baseline read lands before counting starts.
+                roundTrip(stream, payload())
+                count.start()
+                withTimeout(10.seconds) { client.connection.public().awaitEnd() }
+                count.stop()
+                val c = count.byFunction().toMap()
+                val fired = c["connOnTimeout"] ?: 0L
+                assertTrue(fired > 0, "the idle timeout ended the client without its timer firing:\n%s".format(count.report(1)))
+                assertEquals(
+                    fired,
+                    c["connActivePathProbes"] ?: 0L,
+                    "reads of the active path per timer firing:\n%s".format(count.report(1)),
+                )
+                val broken = Laws.broken(c, echoes = 0, slack = SLACK_PER_CONNECTION)
+                assertTrue(broken.isEmpty(), "crossings out of line with the work done: %s\n%s".format(broken, count.report(1)))
+            }
+        }
+
+    /** A monitor whose network can change, so a client under [MigrationPolicy.Automatic] judges its path's silence. */
+    private class ChangeableNetwork : NetworkMonitor {
+        override val state = MutableStateFlow<NetworkState>(NetworkState.Routable(NetworkId.Unidentified, InternetAccess.Unobserved))
+
+        override fun close() = Unit
+    }
 
     private fun measure(
         connections: Int,
@@ -112,6 +171,7 @@ class CoreNativeCrossingTests {
 
     private companion object {
         const val PAYLOAD = 1_024
+        val IDLE_TIMEOUT = 300.milliseconds
         const val WARM_UP = 300
 
         /** Counting starts and stops while work is in flight: a count is off by a few per connection and by 2 % of the echoes. */
