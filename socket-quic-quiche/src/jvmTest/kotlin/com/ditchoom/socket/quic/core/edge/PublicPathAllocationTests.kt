@@ -2,15 +2,20 @@ package com.ditchoom.socket.quic.core.edge
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.PlatformBuffer
+import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.HalfCloseable
 import com.ditchoom.buffer.flow.ReadResult
+import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicConnection
 import com.ditchoom.socket.quic.QuicError
+import com.ditchoom.socket.quic.QuicReceiveStream
 import com.ditchoom.socket.quic.QuicStream
 import com.ditchoom.socket.quic.ScopedRead
 import com.ditchoom.socket.quic.StreamWrite
+import com.ditchoom.socket.quic.core.loop.LoopSet
+import com.ditchoom.socket.quic.core.testing.JDK_BOXED_HANDLES_PER_OP
 import com.ditchoom.socket.quic.core.testing.allocationSamples
 import com.ditchoom.socket.quic.core.testing.loopGateOfThisStack
 import com.ditchoom.socket.quic.core.testing.withDescriptorsAbove127
@@ -26,38 +31,122 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.Continuation
 import kotlin.coroutines.startCoroutine
+import kotlin.test.AfterTest
 import kotlin.test.Test
+import kotlin.test.assertTrue
 import kotlin.test.fail
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * What a 64-byte echo costs the core client through the public 5.0 surface ([QuicConnection.openStream], `StreamOpen`,
- * [com.ditchoom.socket.quic.QuicSendStream.write] and the scoped [com.ditchoom.socket.quic.QuicReceiveStream.read])
- * against the internal path [CoreQuicAllocationTests] gates, over the same server, in the same run. Bytes are the
- * loop's and the caller's exact per-thread counters; resumes are the caller dispatcher's dispatches, each one a
- * continuation the loop resumed. The internal rows are printed only; the public rows are gated.
- *
- * Measured on JDK 21, macOS, by the threads' allocation counters: caller 840 B
- * per echo on one stream (internal 912) and 2,136 B per new-stream echo (internal 2,392), 2 and 5 resumes, the loop
- * under 1 B. Each public call is one suspend frame, and a read is inlined over `QuicReceiveStream.readNext`, so its block
- * is no object and neither its result nor the `ScopedRead` is boxed. What the public shape still adds is the boxed
- * `StreamOpen` per open, and per new stream the `CoreBidiStream`, its two direction wrappers and their state cells.
- * Each gate sits about 5 % over its measurement.
+ * What the public 5.0 path costs, by the client's loop and caller threads' exact allocation counters, over a core
+ * server. A 64-byte echo through [QuicConnection.openStream], `StreamOpen`, [com.ditchoom.socket.quic.QuicSendStream.write]
+ * and the scoped [com.ditchoom.socket.quic.QuicReceiveStream.read] is measured against the internal path
+ * [CoreQuicAllocationTests] gates, in the same run (the internal rows are printed only), with the caller dispatcher's
+ * resumes. The shapes alpha01 ships are gated per operation: an echo on one stream, a new stream per echo with
+ * `writeAndFinish`, and a 16 MiB download read by suspend reads.
  */
 class PublicPathAllocationTests {
+    private val loops = LoopSet(1)
+
+    @AfterTest
+    fun closeLoops() = loops.close()
+
+    /** Takes every byte it is lent and counts them. */
+    private class Take {
+        var bytes = 0L
+
+        fun all(buffer: ReadBuffer) {
+            bytes += buffer.remaining()
+            buffer.position(buffer.limit())
+        }
+    }
+
     @Test
     fun anEchoOnOneStreamThroughThePublicPathAllocatesNoMoreThanItsGate() =
         measure(PublicOneStream, loopGate = loopGateOfThisStack(LOOP_GATE, JDK_LOOP_GATE_ONE), callerGate = PUBLIC_CALLER_GATE_ONE)
 
     @Test
     fun anEchoOnANewStreamThroughThePublicPathAllocatesNoMoreThanItsGate() =
-        measure(PublicNewStream, loopGate = loopGateOfThisStack(LOOP_GATE, JDK_LOOP_GATE_NEW), callerGate = PUBLIC_CALLER_GATE_NEW)
+        measure(PublicNewStream, loopGate = loopGateOfThisStack(LOOP_GATE_NEW, JDK_LOOP_GATE_NEW), callerGate = PUBLIC_CALLER_GATE_NEW)
 
     @Test
     fun theInternalPathsEchoesAreReportedBesideThem() {
         measure(InternalOneStream, loopGate = Int.MAX_VALUE, callerGate = Int.MAX_VALUE)
         measure(InternalNewStream, loopGate = Int.MAX_VALUE, callerGate = Int.MAX_VALUE)
     }
+
+    @Test
+    fun anEchoOnOneStreamWithTheSuspendReadAndTheQueuedWrite() =
+        measured { port ->
+            val connection = connect(port)
+            val (send, receive) = connection.openStream().getOrElse { fail("not opened: $it") }
+            val payload = payloadOf(ECHO)
+            val take = Take()
+
+            suspend fun one() {
+                payload.position(0)
+                if (send.write(payload) !== StreamWrite.Written) fail("the ping was not written")
+                val until = take.bytes + ECHO
+                while (take.bytes < until) readOrFail(receive, take)
+            }
+            repeat(ECHO_WARM_UP) { one() }
+            val from = Counters(Thread.currentThread().id)
+            repeat(ECHOES) { one() }
+            val row = from.per(ECHOES.toLong())
+            report("echo 64 B on one stream, write then suspend reads of the reply, per echo", row)
+            send.finish()
+            row.gate(ECHO_CALLER_GATE, ECHO_LOOP_GATE)
+        }
+
+    @Test
+    fun aNewStreamPerEchoWithTheSuspendReadAndTheQueuedWrite() =
+        measured { port ->
+            val connection = connect(port)
+            val payload = payloadOf(ECHO)
+            val take = Take()
+
+            suspend fun one() {
+                val (send, receive) = connection.openStream().getOrElse { fail("not opened: $it") }
+                payload.position(0)
+                if (send.writeAndFinish(payload) !== StreamWrite.Written) fail("the request was not written")
+                while (true) {
+                    when (val read = receive.read { take.all(it) }.fold({ Unit }, { it })) {
+                        is ScopedRead.End.PeerFinished -> return
+                        is Unit -> Unit
+                        else -> fail("the echo ended with $read")
+                    }
+                }
+            }
+            repeat(NEW_WARM_UP) { one() }
+            val from = Counters(Thread.currentThread().id)
+            repeat(NEW_STREAMS) { one() }
+            val row = from.per(NEW_STREAMS.toLong())
+            report("new stream per echo (open, writeAndFinish, suspend reads to the end), per stream", row)
+            row.gate(NEW_CALLER_GATE, NEW_LOOP_GATE)
+        }
+
+    @Test
+    fun aDownloadReadWithTheSuspendRead() =
+        measured { port ->
+            val connection = connect(port)
+            val (send, receive) = connection.openStream().getOrElse { fail("not opened: $it") }
+            if (send.writeAndFinish(byteOf(DOWNLOAD)) !== StreamWrite.Written) fail("the request was not written")
+            val take = Take()
+            var reads = 0L
+            while (take.bytes < WARM_BYTES) {
+                readOrFail(receive, take)
+                reads++
+            }
+            val from = Counters(Thread.currentThread().id)
+            val warmReads = reads
+            while (take.bytes < TOTAL) {
+                readOrFail(receive, take)
+                reads++
+            }
+            val row = from.per(reads - warmReads)
+            report("16 MiB one way, per suspend read (${reads - warmReads} reads)", row)
+            row.gate(DOWNLOAD_CALLER_GATE, DOWNLOAD_LOOP_GATE)
+        }
 
     /**
      * Every object the caller's thread allocates in [BREAKDOWN_ECHOES] echoes of [path], by class and the call that made
@@ -316,17 +405,151 @@ class PublicPathAllocationTests {
         val where: String,
     )
 
+    private suspend fun readOrFail(
+        receive: QuicReceiveStream,
+        take: Take,
+    ) {
+        receive.read { take.all(it) }.getOrElse { fail("the stream ended after ${take.bytes} B: $it") }
+    }
+
+    private fun measured(body: suspend (Int) -> Unit) =
+        runBlocking {
+            withDescriptorsAbove127 {
+                skipOnMissingNativeLib(PublicPathAllocationTests::class) {
+                    withCoreServer(onConnection = { serveRawStreams(it) }) { server -> body(server.port) }
+                }
+            }
+        }
+
+    private suspend fun connect(port: Int): QuicConnection =
+        connectCore(port, loops = loops, factory = BufferFactory.network()).connection.public()
+
+    /** A stream whose first read is the single byte [DOWNLOAD] gets [TOTAL] bytes back; any other is echoed until its FIN. */
+    private suspend fun serveRawStreams(connection: CoreConnection) {
+        val chunk = payloadOf(CHUNK)
+        connection.handleStreams { stream ->
+            when (val first = stream.read(10.seconds)) {
+                is ReadResult.Data -> {
+                    val buffer = first.buffer
+                    if (buffer.remaining() == 1 && buffer.get(buffer.position()) == DOWNLOAD) {
+                        buffer.freeIfNeeded()
+                        repeat((TOTAL / CHUNK).toInt()) {
+                            chunk.position(0)
+                            stream.writeFully(chunk, 10.seconds)
+                        }
+                    } else {
+                        stream.writeFully(buffer, 10.seconds)
+                        buffer.freeIfNeeded()
+                        while (true) {
+                            when (val next = stream.read(10.seconds)) {
+                                is ReadResult.Data -> {
+                                    stream.writeFully(next.buffer, 10.seconds)
+                                    next.buffer.freeIfNeeded()
+                                }
+                                else -> break
+                            }
+                        }
+                    }
+                }
+                else -> Unit
+            }
+            stream.close()
+        }
+    }
+
+    private class Row(
+        val caller: Double,
+        val loop: Double,
+    ) {
+        fun gate(
+            callerGate: Double,
+            loopGate: Double,
+        ) = assertTrue(
+            caller <= callerGate && loop <= stackLoopGate(loopGate),
+            "caller %.1f B/op (gate %.0f), loop %.1f (gate %.0f)".format(caller, callerGate, loop, stackLoopGate(loopGate)),
+        )
+    }
+
+    /** The client's loop and caller threads' allocation counters from when it is made. */
+    private class Counters(
+        private val callerThread: Long,
+    ) {
+        private val mx = ManagementFactory.getThreadMXBean() as com.sun.management.ThreadMXBean
+        private val loop =
+            Thread
+                .getAllStackTraces()
+                .keys
+                .filter { it.name.startsWith(CLIENT_LOOP) && !it.name.startsWith(CLIENT_LANE) }
+                .map { it.id }
+        private val loopFrom = loop.sumOf { mx.getThreadAllocatedBytes(it) }
+        private val callerFrom = mx.getThreadAllocatedBytes(callerThread)
+
+        fun per(ops: Long): Row {
+            val n = ops.toDouble()
+            return Row(
+                (mx.getThreadAllocatedBytes(callerThread) - callerFrom) / n,
+                (loop.sumOf { mx.getThreadAllocatedBytes(it) } - loopFrom) / n,
+            )
+        }
+    }
+
+    private fun report(
+        what: String,
+        row: Row,
+    ) = println("[public path allocation] %s: caller %.1f B/op, loop %.1f B/op".format(what, row.caller, row.loop))
+
     private companion object {
         const val CALLER_THREAD = "public-path-caller"
-        const val LOOP_GATE = 8
-        const val JDK_LOOP_GATE_ONE = 130
-        const val JDK_LOOP_GATE_NEW = 260
-        const val PUBLIC_CALLER_GATE_ONE = 880
-        const val PUBLIC_CALLER_GATE_NEW = 2_240
+        const val CLIENT_LOOP = "quic-core-client"
+        const val CLIENT_LANE = "quic-core-client-handler"
+        const val DOWNLOAD: Byte = 'D'.code.toByte()
         const val PAYLOAD = 64
         const val WARM_UP = 5_000
         const val MEASURED = 20_000
         const val BREAKDOWN_ECHOES = 500
+        const val ECHO = 64
+        const val CHUNK = 1024
+        const val TOTAL = 16L * 1_048_576
+        const val WARM_BYTES = 2L * 1_048_576
+        const val ECHO_WARM_UP = 2_000
+        const val ECHOES = 5_000
+        const val NEW_WARM_UP = 500
+        const val NEW_STREAMS = 2_000
+
+        // Public against internal, about 5 % over what JDK 21 on macOS measured: per echo on one stream 360-488 B on the
+        // caller (internal 912), 1 resume, the loop under 1 B; per new-stream echo 2,605-2,742 B (internal 2,392), 3.6-4
+        // resumes (internal 5), 34-39 B on the loop. A read is inlined over `QuicReceiveStream.readNext`, so its block is
+        // no object and neither its result nor the `ScopedRead` is boxed; a write copies into the stream's send queue.
+        // What a new stream adds is the boxed `StreamOpen`, the `CoreBidiStream`, its two direction wrappers and their
+        // state cells, and the stream's send queue and read inbox; on the loop, the parked writeAndFinish's wake.
+        const val LOOP_GATE = 8
+        const val LOOP_GATE_NEW = 44
+        const val JDK_LOOP_GATE_ONE = 130
+        const val JDK_LOOP_GATE_NEW = 260
+        const val PUBLIC_CALLER_GATE_ONE = 520
+        const val PUBLIC_CALLER_GATE_NEW = 2_880
+
+        // The alpha01 shapes, a little over what JDK 21 on macOS measured (two runs): per echo 617-631 B on the caller,
+        // 0 on the loop; per new stream 2,802 B on the caller (its open most of it), 35-37 B on the loop (a wake of the
+        // parked writeAndFinish allocates nothing there); per download read 490 B, 0.
+        const val ECHO_CALLER_GATE = 680.0
+        const val ECHO_LOOP_GATE = 8.0
+        const val NEW_CALLER_GATE = 2_950.0
+        const val NEW_LOOP_GATE = 44.0
+        const val DOWNLOAD_CALLER_GATE = 520.0
+        const val DOWNLOAD_LOOP_GATE = 8.0
+
+        fun payloadOf(size: Int) =
+            BufferFactory.network().allocate(size).apply {
+                repeat(size) { writeByte(it.toByte()) }
+                resetForRead()
+            }
+
+        fun byteOf(value: Byte) =
+            BufferFactory.network().allocate(1).apply {
+                writeByte(value)
+                resetForRead()
+            }
     }
 }
 
@@ -356,3 +579,6 @@ private suspend fun publicRoundTrip(
         received += stream.receive.read { it.remaining() }.getOrElse { fail("the echo ended early: $it") }
     }
 }
+
+/** [native] on the native stack; on the JDK stack (Windows) it also allows the selector's boxed handles. */
+private fun stackLoopGate(native: Double): Double = loopGateOfThisStack(native, native + JDK_BOXED_HANDLES_PER_OP)

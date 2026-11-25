@@ -40,6 +40,7 @@ import com.ditchoom.socket.quic.core.testing.coreTest
 import com.ditchoom.socket.quic.core.testing.platformTlsConfig
 import com.ditchoom.socket.quic.getOrElse
 import com.ditchoom.socket.quic.network
+import com.ditchoom.socket.quic.read
 import com.ditchoom.socket.quic.readEach
 import com.ditchoom.socket.quic.serveQuicOnCore
 import kotlinx.coroutines.CompletableDeferred

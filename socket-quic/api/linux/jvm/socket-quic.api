@@ -2598,6 +2598,7 @@ public abstract interface class com/ditchoom/socket/quic/QuicReceiveStream : com
 	public abstract fun getReadPolicy ()Lcom/ditchoom/buffer/flow/ReadPolicy;
 	public abstract fun markReplaySafe ()V
 	public abstract fun readNext (Lcom/ditchoom/buffer/flow/ReadPolicy;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public abstract fun receive (Lcom/ditchoom/socket/quic/QuicStreamReceiver;)Lcom/ditchoom/socket/quic/StreamReceive;
 	public abstract fun stop-yOLykP8 (J)V
 }
 
@@ -2841,6 +2842,9 @@ public abstract interface class com/ditchoom/socket/quic/QuicSendStream {
 	public abstract fun getId-2h5TKLY ()J
 	public abstract fun getWritePolicy ()Lcom/ditchoom/buffer/flow/WritePolicy;
 	public abstract fun reset-yOLykP8 (J)V
+	public abstract fun tryFinish ()Lcom/ditchoom/socket/quic/StreamSend;
+	public abstract fun tryFinish (Lcom/ditchoom/buffer/ReadBuffer;)Lcom/ditchoom/socket/quic/StreamSend;
+	public abstract fun trySend (Lcom/ditchoom/buffer/ReadBuffer;)Lcom/ditchoom/socket/quic/StreamSend;
 	public abstract fun write (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/flow/WritePolicy;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public static synthetic fun write$default (Lcom/ditchoom/socket/quic/QuicSendStream;Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/flow/WritePolicy;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
 	public abstract fun writeAndFinish (Lcom/ditchoom/buffer/ReadBuffer;Lcom/ditchoom/buffer/flow/WritePolicy;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
@@ -3237,6 +3241,11 @@ public final class com/ditchoom/socket/quic/QuicStreamReadException : java/lang/
 	public final fun getStreamId ()J
 }
 
+public abstract interface class com/ditchoom/socket/quic/QuicStreamReceiver {
+	public abstract fun onBytes (Lcom/ditchoom/buffer/ReadBuffer;)V
+	public abstract fun onEnd (Lcom/ditchoom/socket/quic/ScopedRead$End;)V
+}
+
 public abstract interface class com/ditchoom/socket/quic/QuicStreamSide {
 }
 
@@ -3621,6 +3630,107 @@ public final class com/ditchoom/socket/quic/StreamOpenPolicy$UntilClosed : com/d
 	public fun equals (Ljava/lang/Object;)Z
 	public fun hashCode ()I
 	public fun toDeadline-UwyO8pc ()J
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/quic/StreamReceive {
+}
+
+public abstract interface class com/ditchoom/socket/quic/StreamReceive$NotReceiving : com/ditchoom/socket/quic/StreamReceive {
+}
+
+public final class com/ditchoom/socket/quic/StreamReceive$NotReceiving$AlreadyReading : com/ditchoom/socket/quic/StreamReceive$NotReceiving {
+	public static final field INSTANCE Lcom/ditchoom/socket/quic/StreamReceive$NotReceiving$AlreadyReading;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/quic/StreamReceive$NotReceiving$Ended : com/ditchoom/socket/quic/StreamReceive$NotReceiving {
+	public fun <init> (Lcom/ditchoom/socket/quic/ScopedRead$End;)V
+	public final fun getEnd ()Lcom/ditchoom/socket/quic/ScopedRead$End;
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/quic/StreamReceive$NotReceiving$NotReplaySafe : com/ditchoom/socket/quic/StreamReceive$NotReceiving {
+	public static final field INSTANCE Lcom/ditchoom/socket/quic/StreamReceive$NotReceiving$NotReplaySafe;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/quic/StreamReceive$Receiving : com/ditchoom/socket/quic/StreamReceive {
+	public static final field INSTANCE Lcom/ditchoom/socket/quic/StreamReceive$Receiving;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/quic/StreamRoom {
+}
+
+public final class com/ditchoom/socket/quic/StreamRoom$DeadlinePassed : com/ditchoom/socket/quic/StreamRoom {
+	public static final field INSTANCE Lcom/ditchoom/socket/quic/StreamRoom$DeadlinePassed;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/quic/StreamRoom$Over : com/ditchoom/socket/quic/StreamRoom {
+	public fun <init> (Lcom/ditchoom/socket/quic/StreamSend$NotSent$Over;)V
+	public final fun getWhy ()Lcom/ditchoom/socket/quic/StreamSend$NotSent$Over;
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/quic/StreamRoom$Room : com/ditchoom/socket/quic/StreamRoom {
+	public static final field INSTANCE Lcom/ditchoom/socket/quic/StreamRoom$Room;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/quic/StreamRoomWait {
+	public abstract fun awaitRoom (Lcom/ditchoom/buffer/flow/WritePolicy;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public abstract interface class com/ditchoom/socket/quic/StreamSend {
+}
+
+public abstract interface class com/ditchoom/socket/quic/StreamSend$NotSent : com/ditchoom/socket/quic/StreamSend {
+}
+
+public final class com/ditchoom/socket/quic/StreamSend$NotSent$ConnectionEnded : com/ditchoom/socket/quic/StreamSend$NotSent$Over {
+	public fun <init> (Lcom/ditchoom/socket/quic/QuicConnectionEnd;)V
+	public final fun getEnd ()Lcom/ditchoom/socket/quic/QuicConnectionEnd;
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/quic/StreamSend$NotSent$Finished : com/ditchoom/socket/quic/StreamSend$NotSent$Over {
+	public static final field INSTANCE Lcom/ditchoom/socket/quic/StreamSend$NotSent$Finished;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/quic/StreamSend$NotSent$Over : com/ditchoom/socket/quic/StreamSend$NotSent {
+}
+
+public final class com/ditchoom/socket/quic/StreamSend$NotSent$PeerStopped : com/ditchoom/socket/quic/StreamSend$NotSent$Over {
+	public synthetic fun <init> (JLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun getCode-sdY0TRY ()J
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/quic/StreamSend$NotSent$WindowFull : com/ditchoom/socket/quic/StreamSend$NotSent {
+	public fun <init> (Lcom/ditchoom/socket/quic/StreamRoomWait;)V
+	public final fun awaitRoom (Lcom/ditchoom/buffer/flow/WritePolicy;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun awaitRoom$default (Lcom/ditchoom/socket/quic/StreamSend$NotSent$WindowFull;Lcom/ditchoom/buffer/flow/WritePolicy;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+}
+
+public final class com/ditchoom/socket/quic/StreamSend$Sent : com/ditchoom/socket/quic/StreamSend {
+	public static final field INSTANCE Lcom/ditchoom/socket/quic/StreamSend$Sent;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
 }
 

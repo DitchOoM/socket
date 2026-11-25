@@ -5,14 +5,20 @@ package com.ditchoom.socket.quic.core.edge
 import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.socket.quic.QuicAbortCodes
 import com.ditchoom.socket.quic.QuicAppErrorCode
+import com.ditchoom.socket.quic.QuicCloseCircumstance
+import com.ditchoom.socket.quic.QuicConnectionEnd
 import com.ditchoom.socket.quic.QuicConnectionState
 import com.ditchoom.socket.quic.QuicReceiveStream
 import com.ditchoom.socket.quic.QuicStream
 import com.ditchoom.socket.quic.QuicStreamId
 import com.ditchoom.socket.quic.QuicStreamOrigin
+import com.ditchoom.socket.quic.QuicStreamReceiver
+import com.ditchoom.socket.quic.QuicStreamSide
 import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.StreamReceive
 import com.ditchoom.socket.quic.core.conn.Arrival
 import com.ditchoom.socket.quic.core.conn.HandshakeFate
+import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.observe.Published
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.first
@@ -31,6 +37,9 @@ private sealed interface Reading {
 
     /** A read answered that the stream gives no more. */
     data object AtEnd : Reading
+
+    /** A receiver has the stream for good: no read is taken. */
+    data object Receiver : Reading
 }
 
 /** A [ReceiveHalf] as the public [QuicReceiveStream]: every outcome of a read is a value. */
@@ -40,6 +49,7 @@ internal class CoreReceiveStream(
     private val half: ReceiveHalf,
     arrival: Arrival,
     private val codes: QuicAbortCodes,
+    private val replies: RoomSource,
 ) : QuicReceiveStream,
     CoreIncoming {
     private val reading =
@@ -75,6 +85,7 @@ internal class CoreReceiveStream(
                         }
                 }
             is Reading.Open, is Reading.AtEnd -> Unit
+            is Reading.Receiver -> raise(Raised.StreamClosed(id, QuicStreamSide.Read), QuicCloseCircumstance.Ended)
         }
         return when (val answer = half.take(deadlineOf(policy))) {
             is ReadAnswer.Data -> answer.buffer
@@ -89,16 +100,55 @@ internal class CoreReceiveStream(
         half.stop(code)
     }
 
+    override fun receive(receiver: QuicStreamReceiver): StreamReceive {
+        val from =
+            when (val now = reading.load()) {
+                is Reading.AtEnd, is Reading.Receiver -> return StreamReceive.NotReceiving.AlreadyReading
+                is Reading.Gated ->
+                    when (connection.state.value) {
+                        is QuicConnectionState.Established, is QuicConnectionState.Closed -> now
+                        is QuicConnectionState.Idle, is QuicConnectionState.Handshaking, is QuicConnectionState.Draining ->
+                            return StreamReceive.NotReceiving.NotReplaySafe
+                    }
+                is Reading.Open -> now
+            }
+        if (!half.isOpen()) return StreamReceive.NotReceiving.AlreadyReading
+        val lane =
+            when (val entry = connection.handlers.enter()) {
+                is LaneEntry.Entered -> entry.lane
+                is LaneEntry.Refused -> return StreamReceive.NotReceiving.Ended(ScopedRead.End.ConnectionEnded(endNow()))
+            }
+        if (!reading.compareAndSet(from, Reading.Receiver)) {
+            connection.handlers.left()
+            return StreamReceive.NotReceiving.AlreadyReading
+        }
+        val inbox = StreamInbox(connection, id, lane, receiver, codes.handlerFailed)
+        replies.listen(inbox)
+        connection.handToLoop(inbox)
+        return StreamReceive.Receiving
+    }
+
+    /** The connection's end as of now, for a stream that can take no receiver because the endpoint stopped. */
+    private fun endNow(): QuicConnectionEnd =
+        when (val end = connection.end()) {
+            is EdgeEnd.Ended -> publicEndOf(end.end)
+            is EdgeEnd.Open -> publicEndOf(ConnEnd.Released)
+        }
+
     /** The block that owned this stream returned: a direction not read to its end is stopped. */
     fun complete() {
         when (reading.load()) {
-            is Reading.AtEnd -> Unit
+            is Reading.AtEnd, is Reading.Receiver -> Unit
             is Reading.Gated, is Reading.Open -> half.stop(codes.leftUnread)
         }
     }
 
     /** Whether a read has answered that the stream gives no more. */
-    fun readState(): PlainState = if (reading.load() is Reading.AtEnd) PlainState.Done else PlainState.Open
+    fun readState(): PlainState =
+        when (reading.load()) {
+            is Reading.AtEnd, is Reading.Receiver -> PlainState.Done
+            is Reading.Gated, is Reading.Open -> PlainState.Open
+        }
 
     /** How the connection stands once the handshake an early stream waits for completed, or the connection ended. */
     private suspend fun confirmed(): EdgeEnd {
@@ -161,16 +211,19 @@ internal class PublicStreams(
     private val connection: CoreConnection,
     private val codes: QuicAbortCodes,
 ) {
-    fun sending(half: SendHalf) = CoreSendStream(half, codes)
+    fun sending(half: SendHalf) = CoreSendStream(connection, half, codes)
 
     fun both(
         stream: BidiStream,
         arrival: Arrival,
-    ) = CoreBidiStream(CoreSendStream(stream.send, codes), CoreReceiveStream(connection, stream.receive, arrival, codes))
+    ): CoreBidiStream {
+        val send = CoreSendStream(connection, stream.send, codes)
+        return CoreBidiStream(send, CoreReceiveStream(connection, stream.receive, arrival, codes, send.outbox))
+    }
 
     fun incoming(stream: IncomingStream): CoreIncoming =
         when (stream) {
             is IncomingStream.Bidirectional -> both(stream.stream, stream.arrival)
-            is IncomingStream.ReceiveOnly -> CoreReceiveStream(connection, stream.receive, stream.arrival, codes)
+            is IncomingStream.ReceiveOnly -> CoreReceiveStream(connection, stream.receive, stream.arrival, codes, NoRoomSource)
         }
 }

@@ -6,12 +6,15 @@ import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.socket.quic.QuicAbortCodes
 import com.ditchoom.socket.quic.QuicAppErrorCode
+import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicSendStream
 import com.ditchoom.socket.quic.QuicStreamId
+import com.ditchoom.socket.quic.QuicStreamSide
+import com.ditchoom.socket.quic.StreamRoom
+import com.ditchoom.socket.quic.StreamSend
 import com.ditchoom.socket.quic.StreamWrite
 import com.ditchoom.socket.quic.core.observe.Published
-import com.ditchoom.socket.quic.core.stream.QUICHE_ERR_STREAM_STOPPED
-import kotlinx.coroutines.currentCoroutineContext
+import com.ditchoom.socket.quic.core.stream.WriteEnd
 import kotlin.concurrent.atomics.AtomicReference
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 
@@ -19,63 +22,110 @@ import kotlin.concurrent.atomics.ExperimentalAtomicApi
 private sealed interface Verdict {
     data object Writing : Verdict
 
-    data object Finished : Verdict
-
     class Failed(
         val why: StreamWrite.NotWritten,
     ) : Verdict
 }
 
-/** A [SendHalf] as the public [QuicSendStream]: every outcome of a write is a value, and a failure stays. */
+/**
+ * A [SendHalf] as the public [QuicSendStream]: one mechanism, the stream's [StreamOutbox]. [trySend] and [tryFinish]
+ * queue without suspending; [write], [writeAndFinish] and [finish] are them in a loop with the outbox's waits. Every
+ * outcome of a write is a value, and a failure stays.
+ */
 @Published
 internal class CoreSendStream(
+    connection: CoreConnection,
     private val half: SendHalf,
     private val codes: QuicAbortCodes,
 ) : QuicSendStream {
+    /** The stream's send queue; its receive direction listens to it for room. */
+    val outbox = StreamOutbox(connection, half.id)
     private val verdict = AtomicReference<Verdict>(Verdict.Writing)
 
     override val id: QuicStreamId get() = half.id
     override val writePolicy: WritePolicy get() = half.writePolicy
 
+    override fun trySend(bytes: ReadBuffer): StreamSend = outbox.trySend(bytes)
+
+    override fun tryFinish(): StreamSend = outbox.tryFinish()
+
+    override fun tryFinish(lastBytes: ReadBuffer): StreamSend = outbox.tryFinish(lastBytes)
+
     override suspend fun write(
         buffer: ReadBuffer,
         policy: WritePolicy,
+    ): StreamWrite = queued(buffer, policy, WriteEnd.More)
+
+    /** Queues all of [buffer], waiting for room as it must; with [WriteEnd.Finish] our FIN goes in the step that queues its last bytes. */
+    private suspend fun queued(
+        buffer: ReadBuffer,
+        policy: WritePolicy,
+        end: WriteEnd,
     ): StreamWrite {
         when (val now = verdict.load()) {
             is Verdict.Failed -> return now.why
-            is Verdict.Writing, is Verdict.Finished -> Unit
+            is Verdict.Writing -> Unit
         }
         val start = buffer.position()
-        while (buffer.remaining() > 0) {
-            when (val answer = half.writeSettled(buffer, deadlineOf(policy))) {
-                is WriteAnswer.Written -> Unit
-                is WriteAnswer.Failed -> return failed(answer, buffer.position() - start)
-                is WriteAnswer.Cancelled -> raiseCancelled(currentCoroutineContext())
+        while (true) {
+            val sent =
+                when (end) {
+                    WriteEnd.More -> outbox.trySend(buffer)
+                    WriteEnd.Finish -> outbox.tryFinish(buffer)
+                }
+            when (sent) {
+                is StreamSend.Sent -> return StreamWrite.Written
+                is StreamSend.NotSent.Finished -> closed()
+                is StreamSend.NotSent.PeerStopped, is StreamSend.NotSent.ConnectionEnded -> return failed(sent, start, buffer)
+                is StreamSend.NotSent.WindowFull ->
+                    when (val room = outbox.awaitRoom(policy)) {
+                        is StreamRoom.Room -> Unit
+                        is StreamRoom.DeadlinePassed -> return cut(buffer.position() - start)
+                        is StreamRoom.Over -> return over(room.why, start, buffer)
+                    }
             }
         }
-        return StreamWrite.Written
     }
 
     override suspend fun writeAndFinish(
         buffer: ReadBuffer,
         policy: WritePolicy,
     ): StreamWrite {
-        when (val now = verdict.load()) {
-            is Verdict.Failed -> return now.why
-            is Verdict.Writing, is Verdict.Finished -> Unit
-        }
-        val start = buffer.position()
-        return finished(half.finishSettled(buffer, deadlineOf(policy)), buffer.position() - start)
+        val written = queued(buffer, policy, WriteEnd.Finish)
+        if (written !is StreamWrite.Written) return written
+        return finished(policy)
     }
 
-    override suspend fun finish(): StreamWrite =
+    override suspend fun finish(): StreamWrite {
         when (val now = verdict.load()) {
-            is Verdict.Failed -> now.why
-            is Verdict.Finished -> StreamWrite.Written
-            is Verdict.Writing -> finished(half.finSettled(), 0)
+            is Verdict.Failed -> return now.why
+            is Verdict.Writing -> Unit
         }
+        return finished(writePolicy)
+    }
 
-    override fun reset(code: QuicAppErrorCode) = half.reset(code)
+    /** Asks for our FIN, if it was not asked for, and waits until quiche took it. */
+    private suspend fun finished(policy: WritePolicy): StreamWrite {
+        when (val asked = outbox.tryFinish()) {
+            is StreamSend.Sent, is StreamSend.NotSent.Finished -> Unit
+            is StreamSend.NotSent.PeerStopped, is StreamSend.NotSent.ConnectionEnded -> return notWritten(asked, 0)
+            is StreamSend.NotSent.WindowFull -> Unit
+        }
+        return when (val taken = outbox.awaitFinTaken(policy)) {
+            is StreamRoom.Room -> StreamWrite.Written
+            is StreamRoom.DeadlinePassed -> cut(0)
+            is StreamRoom.Over ->
+                when (val why = taken.why) {
+                    is StreamSend.NotSent.Finished -> StreamWrite.Written
+                    is StreamSend.NotSent.PeerStopped, is StreamSend.NotSent.ConnectionEnded -> notWritten(why, 0)
+                }
+        }
+    }
+
+    override fun reset(code: QuicAppErrorCode) {
+        outbox.resetHere()
+        half.reset(code)
+    }
 
     /** The block that owned this stream returned: a direction still open is finished. */
     suspend fun complete() {
@@ -83,63 +133,58 @@ internal class CoreSendStream(
     }
 
     /** Whether this direction is still open: not finished, reset or failed. */
-    fun plainState(): PlainState = if (verdict.load() is Verdict.Writing && half.isOpen()) PlainState.Open else PlainState.Done
+    fun plainState(): PlainState = if (verdict.load() is Verdict.Writing && outbox.isOpen()) PlainState.Open else PlainState.Done
 
     /** Its block ended with this direction open: it is reset with [QuicAbortCodes.writeCut]. */
     fun cut() {
-        if (plainState() == PlainState.Open) half.reset(codes.writeCut)
+        if (plainState() == PlainState.Open) reset(codes.writeCut)
     }
 
-    private suspend fun finished(
-        answer: WriteAnswer,
-        taken: Int,
-    ): StreamWrite =
-        when (answer) {
-            is WriteAnswer.Written -> {
-                verdict.compareAndSet(Verdict.Writing, Verdict.Finished)
-                StreamWrite.Written
-            }
-            is WriteAnswer.Failed -> failed(answer, taken)
-            is WriteAnswer.Cancelled -> raiseCancelled(currentCoroutineContext())
-        }
+    /** A write after our FIN or reset is a misuse, as it was before the outbox. */
+    private fun closed(): Nothing = raise(Raised.StreamClosed(id, QuicStreamSide.Write), QuicCloseCircumstance.Ended)
 
-    /** The first failure ends the direction and stays; a write the deadline cut is reset, so the peer reads no part as the whole. */
-    private fun failed(
-        answer: WriteAnswer.Failed,
-        taken: Int,
-    ): StreamWrite.NotWritten {
-        val why = notWritten(answer, taken)
-        if (!verdict.compareAndSet(Verdict.Writing, Verdict.Failed(why))) {
-            when (val first = verdict.load()) {
-                is Verdict.Failed -> return first.why
-                is Verdict.Writing, is Verdict.Finished -> Unit
-            }
-        }
-        when (why) {
-            is StreamWrite.NotWritten.DeadlinePassed -> half.reset(codes.writeCut)
-            is StreamWrite.NotWritten.PeerStopped, is StreamWrite.NotWritten.ConnectionEnded -> Unit
-        }
+    /** The deadline passed with [taken] bytes queued: the direction is reset, so the peer reads no part as the whole. */
+    private fun cut(taken: Int): StreamWrite.NotWritten {
+        val why = StreamWrite.NotWritten.DeadlinePassed(taken.toLong())
+        if (!verdict.compareAndSet(Verdict.Writing, Verdict.Failed(why))) return stays()
+        reset(codes.writeCut)
         return why
     }
-}
 
-/** What a failed write is to its caller: one of the public outcomes, or a misuse, which raises. */
-private fun notWritten(
-    answer: WriteAnswer.Failed,
-    taken: Int,
-): StreamWrite.NotWritten =
-    when (val failure = answer.failure) {
-        is OpFailure.DeadlinePassed -> StreamWrite.NotWritten.DeadlinePassed(taken.toLong())
-        is Raised.ConnEnded -> StreamWrite.NotWritten.ConnectionEnded(publicEndOf(failure.end))
-        is Raised.PastClose -> StreamWrite.NotWritten.ConnectionEnded(publicEndOf(failure.end))
-        is Raised.WriteRefused ->
-            when (failure.code) {
-                QUICHE_ERR_STREAM_STOPPED -> StreamWrite.NotWritten.PeerStopped(failure.peer)
-                else -> raise(failure, answer.during)
+    private fun over(
+        why: StreamSend.NotSent.Over,
+        start: Int,
+        buffer: ReadBuffer,
+    ): StreamWrite =
+        when (why) {
+            is StreamSend.NotSent.Finished -> closed()
+            is StreamSend.NotSent.PeerStopped, is StreamSend.NotSent.ConnectionEnded -> failed(why, start, buffer)
+        }
+
+    private fun failed(
+        why: StreamSend.NotSent.Over,
+        start: Int,
+        buffer: ReadBuffer,
+    ): StreamWrite.NotWritten = notWritten(why, buffer.position() - start)
+
+    /** The first failure ends the direction and stays. */
+    private fun notWritten(
+        why: StreamSend.NotSent.Over,
+        taken: Int,
+    ): StreamWrite.NotWritten {
+        val failure =
+            when (why) {
+                is StreamSend.NotSent.PeerStopped -> StreamWrite.NotWritten.PeerStopped(why.code)
+                is StreamSend.NotSent.ConnectionEnded -> StreamWrite.NotWritten.ConnectionEnded(why.end)
+                is StreamSend.NotSent.Finished -> closed()
             }
-        is Raised.ReadRefused, is Raised.Thrown, is Raised.Typed, is Raised.StreamClosed, is Raised.NoSuchDirection,
-        is Raised.NotNative, is Raised.FactoryNotNative, is Raised.RouteUnresolved, is Raised.LoopsClosed,
-        is Raised.StreamsHandled, is Raised.SocketRefused, is Raised.SpecLayoutRefused, is Raised.NetworkRefused,
-        is Raised.AccessDenied, is Raised.ChainRefused,
-        -> raise(failure, answer.during)
+        return if (verdict.compareAndSet(Verdict.Writing, Verdict.Failed(failure))) failure else stays()
     }
+
+    /** The failure that ended the direction first. */
+    private fun stays(): StreamWrite.NotWritten =
+        when (val first = verdict.load()) {
+            is Verdict.Failed -> first.why
+            is Verdict.Writing -> raise(Raised.StreamClosed(id, QuicStreamSide.Write), QuicCloseCircumstance.Ended)
+        }
+}

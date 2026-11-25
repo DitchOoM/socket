@@ -26,6 +26,7 @@ import com.ditchoom.socket.quic.QuicStreamId
 import com.ditchoom.socket.quic.QuicUnreadAtClose
 import com.ditchoom.socket.quic.core.conn.CallerPlace
 import com.ditchoom.socket.quic.core.conn.Conn
+import com.ditchoom.socket.quic.core.conn.ConnWork
 import com.ditchoom.socket.quic.core.conn.HandshakeFate
 import com.ditchoom.socket.quic.core.conn.NetworkChange
 import com.ditchoom.socket.quic.core.conn.NetworkWork
@@ -183,6 +184,9 @@ internal class CoreConnection(
 
     /** Hands quiche [stream]'s FIN alone, from inside the connection, for a stream closed while a write ending it gave up. */
     internal fun finishAlone(stream: QuicStreamId) = conn.submit(FinWork(stream), CallerPlace.HandToLoop)
+
+    /** Any thread: [work] runs inside, on the loop: a stream's send queue or receiver handing the stream back. */
+    internal fun handToLoop(work: ConnWork) = conn.submit(work, CallerPlace.HandToLoop)
 
     /** The caller closed [stream] without reading it to the end: what still arrives is dropped. */
     internal fun abandon(stream: QuicStreamId) {

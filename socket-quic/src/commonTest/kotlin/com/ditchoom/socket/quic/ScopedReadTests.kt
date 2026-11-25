@@ -89,6 +89,8 @@ class ScopedReadTests {
         }
 
         override fun stop(code: QuicAppErrorCode) = Unit
+
+        override fun receive(receiver: QuicStreamReceiver): StreamReceive = StreamReceive.NotReceiving.AlreadyReading
     }
 
     private companion object {
