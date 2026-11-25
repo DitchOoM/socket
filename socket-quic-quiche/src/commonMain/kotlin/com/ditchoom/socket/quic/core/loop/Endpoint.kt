@@ -92,10 +92,7 @@ internal class Endpoint(
         }
     }
 
-    /**
-     * Reads until drained or until one more batch could take it past [MAX_PER_PASS]; a read's datagrams go to quiche at
-     * one [clock] reading taken after it returns.
-     */
+    /** Reads until drained or a batch more could pass [MAX_PER_PASS]; a read's datagrams reach quiche at one [clock] reading. */
     private fun receiveWaiting(
         batch: ReceiveBatch,
         counts: LoopCounts,
@@ -297,11 +294,7 @@ internal class Endpoint(
     }
 
     private companion object {
-        /**
-         * Bounds one socket's receiving per pass so deadlines and work are not starved by a flood. A batch receive is lent
-         * its connection's queue when a pass serves it, after the reads, and one that asks again too late for a serve is
-         * lent at the next: half the default receive queue's 1024, so two passes' reads fit in it.
-         */
+        /** Per socket and pass, so a flood starves no deadline: half a default receive queue, which holds two passes' reads. */
         const val MAX_PER_PASS = 512
     }
 }
