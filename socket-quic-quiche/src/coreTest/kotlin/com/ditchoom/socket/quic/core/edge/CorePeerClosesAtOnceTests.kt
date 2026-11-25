@@ -7,6 +7,7 @@ import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.socket.CertificateHashPinningException
 import com.ditchoom.socket.ServerCertificateRejectedException
 import com.ditchoom.socket.ServerCertificateRejection
+import com.ditchoom.socket.quic.PeerCertificate
 import com.ditchoom.socket.quic.PlatformChainTrust
 import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicCloseReason
@@ -23,6 +24,7 @@ import com.ditchoom.socket.quic.core.testing.coreTest
 import com.ditchoom.socket.quic.network
 import com.ditchoom.socket.quic.platformChainTrust
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeout
@@ -37,6 +39,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeSource
 
 /**
  * A server that closes the moment its handshake completes, over a real loopback socket on every platform: the connect
@@ -166,22 +169,43 @@ class CorePeerClosesAtOnceTests {
     fun aServerThePlatformStoreRefusesAfterTheHandshakeFailsTheConnectWhenItClosedAtOnce() =
         coreTest("CorePeerClosesAtOnceTests.aServerThePlatformStoreRefusesAfterTheHandshakeFailsTheConnectWhenItClosedAtOnce") {
             val storeChecks = coreTestOptions.copy(verifyPeer = true)
-            when (platformChainTrust(storeChecks)) {
-                // Only where the platform's store checks after the handshake (Apple's SecTrust on iOS, tvOS, watchOS).
-                is PlatformChainTrust.InHandshake -> return@coreTest
-                is PlatformChainTrust.AfterHandshake -> Unit
-            }
+            val store =
+                when (val trust = platformChainTrust(storeChecks)) {
+                    // Only where the platform's store checks after the handshake (Apple's SecTrust on iOS, tvOS, watchOS).
+                    is PlatformChainTrust.InHandshake -> return@coreTest
+                    is PlatformChainTrust.AfterHandshake -> trust
+                }
             mint().use { served ->
                 withMintedCoreServer(served, onConnection = { it.close(QuicError.ApplicationError(APP_CODE)) }) { port ->
                     val refused =
-                        assertFailsWith<ServerCertificateRejectedException> { connectCore(port, loops = loops, options = storeChecks) }
+                        try {
+                            assertFailsWith<ServerCertificateRejectedException> { connectCore(port, loops = loops, options = storeChecks) }
+                        } catch (failed: AssertionError) {
+                            throw AssertionError("${failed.message}; ${storeAlone(store, served)}", failed)
+                        }
                     assertIs<ServerCertificateRejection.UntrustedBySystem>(refused.rejection, "a minted certificate no store trusts")
                 }
             }
         }
 
+    /** How long the platform's store takes over [served]'s chain on its own, outside any connect: a failure's evidence. */
+    private suspend fun storeAlone(
+        store: PlatformChainTrust.AfterHandshake,
+        served: PeerCertificate,
+    ): String {
+        val started = TimeSource.Monotonic.markNow()
+        return try {
+            val verdict = withTimeout(STORE_ALONE_WITHIN) { store.evaluate(LOOPBACK, listOf(served.der())) }
+            "the store alone answered the same chain $verdict in ${started.elapsedNow()}"
+        } catch (_: TimeoutCancellationException) {
+            "the store alone had not answered the same chain within $STORE_ALONE_WITHIN"
+        }
+    }
+
     private companion object {
         const val APP_CODE = 0x2AL
+        const val LOOPBACK = "127.0.0.1"
         val CLOSE_LANDS = 300.milliseconds
+        val STORE_ALONE_WITHIN = 20.seconds
     }
 }

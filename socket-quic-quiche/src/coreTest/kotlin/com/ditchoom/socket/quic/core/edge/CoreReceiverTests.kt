@@ -24,6 +24,7 @@ import com.ditchoom.socket.quic.network
 import com.ditchoom.socket.quic.read
 import com.ditchoom.socket.quic.readEach
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
@@ -34,6 +35,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.test.assertSame
+import kotlin.test.fail
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -143,6 +145,13 @@ class CoreReceiverTests {
                         }
                         assertIs<StreamWrite.Written>(send.finish())
                     }
+                    // Unread, the reply fills this stream's window and then the server's send queue: the receiver must
+                    // take a call in parts before anything is read.
+                    try {
+                        withTimeout(LONG_WAIT) { partial.await() }
+                    } catch (_: TimeoutCancellationException) {
+                        fail("the receiver never left part of a call for the next")
+                    }
                     var got = 0
                     val end =
                         withTimeout(LONG_WAIT) {
@@ -156,7 +165,6 @@ class CoreReceiverTests {
                     assertSame<ScopedRead.NoData>(ScopedRead.End.PeerFinished, end)
                     assertEquals(LARGE, got)
                 }
-                assertEquals(true, partial.isCompleted, "the receiver left part of a call for the next")
                 client.close()
             }
         }

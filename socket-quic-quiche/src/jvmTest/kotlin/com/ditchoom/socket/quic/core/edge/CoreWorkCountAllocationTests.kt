@@ -445,7 +445,8 @@ class CoreWorkCountAllocationTests {
          * timer re-arms a serve, deadline moves, re-arms taken, deadlines made, clock reads a pass, pool acquires, releases,
          * misses. The per-op counts: macOS arm64, JDK 21, JNI and FFM, native and JDK stacks, and macOS CI, the loop sending;
          * those, Linux x64 CI (JDK 17, 21, 25; JNI, FFM) and Windows CI, callers in place. The per-pass and per-serve counts,
-         * and the passes and serves: macOS arm64, JDK 21, JNI and FFM, idle and with every core busy.
+         * and the passes and serves: macOS arm64, JDK 21, JNI and FFM, idle and with every core busy; the datagram echo's
+         * receives and clock reads a pass, Windows CI too, where its two arrivals share more passes.
          */
         val ONE_STREAM =
             Gates(
@@ -459,8 +460,8 @@ class CoreWorkCountAllocationTests {
             )
         val DATAGRAM =
             Gates(
-                gates(SHARED_TURNS, 1.993, 1.369, 2.982, 3.005, 0.937, 1.000, 0.018, 0.018, 0.0, 6.192, 1.0, 1.0, 0.0),
-                gates(SHARED_TURNS, 2.000, 1.338, 2.996, 3.298, 0.999, 1.000, 0.014, 0.012, 0.0, 6.346, 1.0, 1.0, 0.0),
+                gates(SHARED_TURNS, 1.993, 1.540, 2.982, 3.005, 0.937, 1.000, 0.018, 0.018, 0.0, 7.103, 1.0, 1.0, 0.0),
+                gates(SHARED_TURNS, 2.000, 1.549, 2.996, 3.298, 0.999, 1.000, 0.014, 0.012, 0.0, 7.129, 1.0, 1.0, 0.0),
             )
 
         /**

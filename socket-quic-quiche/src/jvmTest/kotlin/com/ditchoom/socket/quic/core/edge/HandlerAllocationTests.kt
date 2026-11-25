@@ -246,7 +246,12 @@ class HandlerAllocationTests {
                 e.stackTrace
                     ?.frames
                     .orEmpty()
-                    .take(5)
+                    .dropWhile { frame ->
+                        LINKAGE_PACKAGES.any {
+                            frame.method.type.name
+                                .startsWith(it)
+                        }
+                    }.take(5)
                     .joinToString(" < ") { "${it.method.type.name.substringAfterLast('.')}.${it.method.name}" }
             sites.merge("${e.getClass("objectClass").name} @ $frames", e.getLong("weight"), Long::plus)
         }
@@ -260,6 +265,9 @@ class HandlerAllocationTests {
 
     private companion object {
         const val WARM_CONNECTIONS = 50
+
+        /** The JDK's class-linking frames: a site skips them, so a lambda first linked while measured names its caller. */
+        val LINKAGE_PACKAGES = listOf("jdk.internal.", "java.lang.invoke.", "sun.invoke.", "java.lang.Class")
         val POOL_TYPES =
             listOf("HandlerPool", "HandlerLane", "StepRing", "LaneRing", "LoopFeed", "HandlerOutbox", "PoolReports", "PoolWorker")
         const val WARM_UP = 2_000
