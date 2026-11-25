@@ -2,10 +2,12 @@ package com.ditchoom.socket.quic.core.conn
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.PlatformBuffer
+import com.ditchoom.socket.quic.LeafCert
 import com.ditchoom.socket.quic.MAX_CERT_CAPACITY
 import com.ditchoom.socket.quic.MAX_CHAIN_LENGTH
 import com.ditchoom.socket.quic.PeerCertPosition
 import com.ditchoom.socket.quic.QuicResumptionOutcome
+import com.ditchoom.socket.quic.copiedLeaf
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 import com.ditchoom.socket.quic.core.udp.ReadAddress
@@ -20,12 +22,13 @@ internal sealed interface HandshakeFate {
 }
 
 /**
- * What a completed handshake settled, read out of quiche once, inside, when it completed: the negotiated ALPN and how
- * it used a session ticket. Immutable; any thread reads it, the connection ended or not.
+ * What a completed handshake settled, read out of quiche once, inside, when it completed: the negotiated ALPN, how it
+ * used a session ticket, and the peer's leaf certificate. Immutable; any thread reads it, the connection ended or not.
  */
 internal class HandshakeFacts(
     val alpn: String,
     val resumption: QuicResumptionOutcome,
+    val leaf: LeafCert,
 )
 
 /**
@@ -94,6 +97,9 @@ internal sealed interface PeerChain {
         fun release() {
             for (certificate in certificates) certificate.freeNativeMemory()
         }
+
+        /** A copy of the leaf, the first certificate; the chain holds one. */
+        fun leaf(): LeafCert = copiedLeaf(certificates[0])
     }
 
     /** The chain could not be copied whole, as [gap] says; nothing of it is kept. */
@@ -156,4 +162,36 @@ private fun copyInto(
         certificate.setLimit(length)
     }
     return PeerChain.Copied(kept.toList())
+}
+
+/**
+ * Inside, once, at completion: a copy of the peer's leaf certificate, from [chain] when it was copied and from
+ * quiche otherwise. A peer that presented none, a client of a server here, is [LeafCert.NotPresented].
+ */
+internal fun peerLeafOf(
+    chain: PeerChain,
+    q: QuicheConnRef,
+    probe: NativeBytes,
+    factory: BufferFactory,
+): LeafCert {
+    when (chain) {
+        is PeerChain.Copied -> if (chain.size() > 0) return chain.leaf()
+        is PeerChain.NotCopied, is PeerChain.Incomplete -> Unit
+    }
+    val length = q.api.connPeerCertChainAt(q.handle, 0, probe.address, 0)
+    if (length <= 0) return LeafCert.NotPresented
+    val der = factory.allocate(length)
+    try {
+        val read =
+            when (val at = NativeBytes.addressOf(der)) {
+                is ReadAddress.NotAddressable -> 0
+                is ReadAddress.At -> q.api.connPeerCertChainAt(q.handle, 0, at.address, length)
+            }
+        if (read != length) return LeafCert.NotPresented
+        der.position(0)
+        der.setLimit(length)
+        return copiedLeaf(der)
+    } finally {
+        der.freeNativeMemory()
+    }
 }

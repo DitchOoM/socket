@@ -36,56 +36,60 @@ private val NeverIssuedTicket: StateFlow<QuicSessionTicketState> = MutableStateF
  * - If the connection dies (peer close, timeout), the block is cancelled.
  * - Streams not explicitly [closed][QuicByteStream.close] are force-closed when the scope ends.
  *
- * There is no `close()` method — the block boundary IS the lifecycle.
- * There is no connection state to check — if you're in the block, it's established, or (a server that
- * accepted 0-RTT) its handshake is far enough along to serve: see [QuicStreamOrigin].
+ * The block boundary is the lifecycle: the runner calls [close] when the block ends. Inside the block the connection
+ * is established, or (a server that accepted 0-RTT) its handshake is far enough along to serve: see [QuicStreamOrigin].
  */
 interface QuicScope : CoroutineScope {
+    /** The connection's lifecycle state. */
+    val state: StateFlow<QuicConnectionState>
+
     /**
-     * The ALPN protocol negotiated during this connection's TLS 1.3 handshake (RFC 7301). QUIC
-     * mandates ALPN, so an established connection always has exactly one negotiated protocol —
-     * one of the entries the local endpoint offered in [QuicOptions.alpnProtocols].
+     * What this connection still holds for its application once [state] is [QuicConnectionState.Closed]: see
+     * [QuicUnreadAtClose]. Settled before [state] reads Closed. [runUntilClosed] keeps a block running on a dead
+     * connection until this reaches [QuicUnreadAtClose.AllRead].
+     */
+    val unreadAtClose: StateFlow<QuicUnreadAtClose>
+
+    /**
+     * The ALPN protocol negotiated during this connection's TLS 1.3 handshake (RFC 7301), derived from
+     * [QuicConnectionState.Established]. On the server it is the demultiplexing key when one listener offers several
+     * protocols (see [connectionsByAlpn]).
      *
-     * Inside a [withQuicConnection] / [QuicServer.connections] block the connection is established
-     * by contract, so this is always readable there. On the server it is the demultiplexing key
-     * when one listener offers several protocols (see [connectionsByAlpn]): route the accepted
-     * connection to the stack that speaks what the client negotiated.
-     *
-     * Defaults to [UnsupportedOperationException] for scope implementations that cannot know the
-     * negotiated protocol; [QuicEngineConnection] overrides it by deriving from
-     * [QuicConnectionState.Established], which every driver-backed platform populates.
+     * @throws QuicNotEstablishedException outside [QuicConnectionState.Established].
      */
     val negotiatedAlpn: String
-        get() = throw UnsupportedOperationException("Negotiated ALPN is not available on this platform")
+        get() =
+            when (val s = state.value) {
+                is QuicConnectionState.Established -> s.negotiatedAlpn
+                else -> throw QuicNotEstablishedException(s)
+            }
 
     /**
-     * Which connection this is — the stable session id plus the current wire CID.
-     *
-     * Declared here, not only on [QuicEngineConnection], because this is the receiver user code actually has
-     * inside a `withQuicConnection { }` / `QuicServer.connections { }` block. Identity that a caller
-     * cannot reach from where they write their log line is identity that does not exist; the first test
-     * written against it caught exactly that.
-     *
-     * Defaults to throwing for scope implementations with no connection behind them, matching
-     * [negotiatedAlpn]. [QuicEngineConnection] redeclares it abstract, so every real backend must answer.
+     * Which connection this is: the stable session id plus the current wire CID. Readable after [state] reaches
+     * [QuicConnectionState.Closed], from any thread, as the identity the connection had when it closed.
      */
     val identity: QuicConnectionIdentity
-        get() = throw UnsupportedOperationException("Connection identity is not available on this platform")
 
     /**
-     * What the network was doing, for correlating this connection against a
-     * [com.ditchoom.socket.NetworkMonitor]. See [QuicEngineConnection.networkAtClose].
+     * What the network was doing, for correlating this connection against a [com.ditchoom.socket.NetworkMonitor]: the
+     * current observation while the connection is live, frozen at the value observed when it reached
+     * [QuicConnectionState.Closed]. [NetworkAtClose.NotObserved] for a connection nothing observes, a server-accepted
+     * one among them.
      */
     val networkAtClose: NetworkAtClose get() = NetworkAtClose.NotObserved
 
     /**
-     * How this connection's handshake used a session ticket: whether one was offered, whether the server
-     * resumed it, and whether 0-RTT was accepted. Settled by the time user code runs in a scope block.
-     *
-     * Defaults to a full handshake with no ticket offered — the truthful answer for a scope with no
-     * handshake behind it. [QuicEngineConnection] derives it from [QuicConnectionState.Established].
+     * How this connection's handshake used a session ticket: whether one was offered, whether the server resumed it,
+     * and whether 0-RTT was accepted. Derived from [QuicConnectionState.Established].
      */
-    val resumption: QuicResumptionOutcome get() = QuicResumptionOutcome.FullHandshake(QuicFullHandshakeReason.NoTicketOffered)
+    val resumption: QuicResumptionOutcome
+        get() =
+            when (val s = state.value) {
+                is QuicConnectionState.Established -> s.resumption
+                is QuicConnectionState.Closed -> throw QuicCloseException(s.reason, RESUMPTION_UNAVAILABLE)
+                QuicConnectionState.Idle, QuicConnectionState.Handshaking, QuicConnectionState.Draining ->
+                    throw QuicCloseException(QuicCloseReason.Unspecified, "$RESUMPTION_UNAVAILABLE (state: $s)")
+            }
 
     /**
      * The newest session ticket the server has issued on this connection, to offer on a later one
@@ -98,10 +102,8 @@ interface QuicScope : CoroutineScope {
      * The connection's counters and active-path estimates, read by the connection and handed back as one immutable
      * value. Suspends until the connection answers; never blocks a thread, and is safe from a main thread. Nothing is
      * counted for it while nobody asks.
-     *
-     * Defaults to [QuicStatsRead.NotReported], the answer for a scope with no engine behind it.
      */
-    suspend fun stats(): QuicStatsRead = QuicStatsRead.NotReported
+    suspend fun stats(): QuicStatsRead
 
     /**
      * The [BufferFactory] this connection allocates from — the one passed via
@@ -127,12 +129,8 @@ interface QuicScope : CoroutineScope {
      * pool, a portable helper written against `BufferFactory.Default`) and needs to know whether that
      * is acceptable here. See [QuicCapabilities.requiresNativeMemoryBuffers] for the contract and the
      * typed rejection ([QuicNativeMemoryRequiredException]) a violation produces.
-     *
-     * Defaults to throwing for scope implementations with no connection behind them, matching
-     * [identity]. [QuicEngineConnection] redeclares it abstract, so every real backend must answer.
      */
     val capabilities: QuicCapabilities
-        get() = throw UnsupportedOperationException("Connection capabilities are not available on this platform")
 
     /**
      * Open a new locally-initiated bidirectional stream. Caller should close() when done (sends FIN).
@@ -171,11 +169,11 @@ interface QuicScope : CoroutineScope {
      * (which sends a NO_ERROR close), this lets a layered protocol surface a violation to the peer
      * with its own error code — e.g. an HTTP/3 error code (RFC 9114 §8.1). After it returns the
      * connection is closed and the scope block unwinds.
-     *
-     * Defaults to [UnsupportedOperationException]; quiche-backed connections override it.
      */
-    suspend fun closeWithError(errorCode: Long): Unit =
-        throw UnsupportedOperationException("Application-coded connection close is not supported on this platform")
+    suspend fun closeWithError(errorCode: Long) = close(QuicError.ApplicationError(errorCode))
+
+    /** Closes the connection with [error]. The runner that owns the scope calls it when the block ends. */
+    suspend fun close(error: QuicError = QuicError.NoError)
 
     /**
      * Actively migrate the connection to a new local path (RFC 9000 §9). The driver opens a UDP socket
@@ -311,3 +309,10 @@ interface QuicScope : CoroutineScope {
             else -> MaxDatagramSize.Bytes(bytes)
         }
 }
+
+private const val RESUMPTION_UNAVAILABLE = "resumption is only available while the connection is established"
+
+/** A handshake fact read from a connection that is not established: [state] is where it stands. */
+class QuicNotEstablishedException(
+    val state: QuicConnectionState,
+) : IllegalStateException()

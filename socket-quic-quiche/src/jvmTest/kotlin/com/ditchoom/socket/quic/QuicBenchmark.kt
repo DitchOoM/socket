@@ -58,8 +58,8 @@ fun main(args: Array<String>) {
                     initialMaxData = 64L * 1024 * 1024,
                     initialMaxStreamDataBidiLocal = 16L * 1024 * 1024,
                     initialMaxStreamDataBidiRemote = 16L * 1024 * 1024,
-                    initialMaxStreamsBidi = 10_000,
                 ),
+            incomingStreams = IncomingStreams.Accept(bidirectional = QuicStreamLimit(10_000u)),
         )
     val results =
         runBlocking(Dispatchers.IO) {

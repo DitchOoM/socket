@@ -34,18 +34,29 @@ abstract class NativeStreamDeadlineWakeupTests {
         }
     }
 
+    /**
+     * The bounds go on a timer of their own, the one [withStreamDeadline] arms on [NativeDeadlineTimer.Shared] built
+     * alike: the shared timer also serves every 4.x driver still alive in the process, whose deadlines it passes for
+     * too (CI macOS: 38 passes, with earlier tests' connections in the same test binary; 2 to 4 locally, idle or with
+     * every core busy).
+     */
     @Test
     fun completedBoundsOnTheCallersDispatcherWakeNoTimerThread() =
         runQuicTest(timeout = 60.seconds) {
-            repeat(50) { withStreamDeadline(30.seconds) { } }
-            settle()
-            val before = NativeDeadlineTimer.Shared.passes.value
-            repeat(OPERATIONS * 10) { withStreamDeadline(30.seconds) { 1 } }
-            val wakes = NativeDeadlineTimer.Shared.passes.value - before
-            assertTrue(
-                wakes <= AT_MOST,
-                "${OPERATIONS * 10} completed bounds made the timer thread pass over its queue $wakes times; at most $AT_MOST were expected",
-            )
+            val timer = NativeDeadlineTimer()
+            try {
+                repeat(50) { withDeadlineOn(timer, 30.seconds) { } }
+                while (!timer.isParked) delay(1.milliseconds)
+                val before = timer.passes.value
+                repeat(OPERATIONS * 10) { withDeadlineOn(timer, 30.seconds) { 1 } }
+                val wakes = timer.passes.value - before
+                assertTrue(
+                    wakes <= AT_MOST,
+                    "${OPERATIONS * 10} completed bounds made the timer thread pass over its queue $wakes times; at most $AT_MOST were expected",
+                )
+            } finally {
+                timer.close()
+            }
         }
 
     @Test

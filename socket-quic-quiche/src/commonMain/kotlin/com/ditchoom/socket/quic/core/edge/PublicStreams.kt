@@ -8,7 +8,6 @@ import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.quic.QuicAbortCodes
 import com.ditchoom.socket.quic.QuicAppErrorCode
 import com.ditchoom.socket.quic.QuicConnectionState
-import com.ditchoom.socket.quic.QuicEngineSpi
 import com.ditchoom.socket.quic.QuicReceiveStream
 import com.ditchoom.socket.quic.QuicStream
 import com.ditchoom.socket.quic.QuicStreamId
@@ -56,7 +55,6 @@ internal class CoreReceiveStream(
     override val id: QuicStreamId get() = half.id
     override val readPolicy: ReadPolicy get() = half.readPolicy
 
-    @OptIn(QuicEngineSpi::class)
     override val origin: QuicStreamOrigin =
         when (arrival) {
             Arrival.Confirmed -> QuicStreamOrigin.Confirmed
@@ -104,6 +102,9 @@ internal class CoreReceiveStream(
         }
     }
 
+    /** Whether a read has answered that the stream gives no more. */
+    fun readState(): PlainState = if (reading.load() is Reading.AtEnd) PlainState.Done else PlainState.Open
+
     /** How the connection stands once the handshake an early stream waits for completed, or the connection ended. */
     private suspend fun confirmed(): EdgeEnd {
         connection.state.first { it is QuicConnectionState.Established || it is QuicConnectionState.Closed }
@@ -147,6 +148,16 @@ internal class CoreBidiStream(
 ) : QuicStream,
     CoreIncoming {
     override val id: QuicStreamId get() = send.id
+
+    /** Open while either direction is. */
+    fun plainState(): PlainState =
+        if (send.plainState() == PlainState.Open || receive.readState() == PlainState.Open) PlainState.Open else PlainState.Done
+
+    /** Its block ended: an open sending direction is reset, a receiving one not read to its end is stopped. */
+    fun cut() {
+        send.cut()
+        receive.complete()
+    }
 
     /** The block that owned this stream returned. */
     suspend fun complete() {

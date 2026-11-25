@@ -18,8 +18,8 @@ import java.util.stream.Stream;
  *     java scripts/EntryPointIsolationCheck.java --selftest
  *
  * The 4.x stack is every public top-level type of :socket-quic-quiche's main source sets outside package
- * `com.ditchoom.socket.quic.core`, plus the public QuicEngine surface of :socket-quic (QuicEngine, QuicEngineSpi,
- * UnsupportedQuicEngine). The entry-point modules are :socket-quic-default, :socket-http3,
+ * `com.ditchoom.socket.quic.core`, plus the names of the removed engine interface (QuicEngine, QuicEngineSpi,
+ * UnsupportedQuicEngine), which :socket-quic may not declare again. The entry-point modules are :socket-quic-default, :socket-http3,
  * :socket-webtransport and :socket-testsuite; their main source sets may not mention any of those names, and may not
  * mention package `quic.core` at all. Everything in package `quic.core` must be `internal` or `private`.
  *
@@ -119,8 +119,8 @@ public class EntryPointIsolationCheck {
                 if (Pattern.compile("\\b(?:class|object|interface)\\s+" + name + "\\b").matcher(stripped(file)).find()) declaredEngineSurface.add(name);
             }
         }
-        for (String name : QUIC_ENGINE_SURFACE) {
-            if (!declaredEngineSurface.contains(name)) failures.add("QUIC engine surface name " + name + " is no longer declared in socket-quic; update the list");
+        for (String name : declaredEngineSurface) {
+            failures.add("socket-quic declares " + name + " again: the engine interface was removed");
         }
 
         Map<String, Violation> found = new TreeMap<>();
@@ -221,7 +221,7 @@ public class EntryPointIsolationCheck {
         write(root, QUICHE + "/src/commonMain/kotlin/com/ditchoom/socket/quic/core/Core.kt",
             "package com.ditchoom.socket.quic.core\ninternal class CoreThing\n");
         write(root, "socket-quic/src/commonMain/kotlin/com/ditchoom/socket/quic/Api.kt",
-            "interface QuicEngine\nannotation class QuicEngineSpi\nclass UnsupportedQuicEngine\n");
+            "interface QuicConnection\n");
         String clean = "package p\n// LegacyEngine in a comment\nval s = \"LegacyEngine\"\nclass Mine { val h = HiddenThing }\n";
         write(root, "socket-quic-default/src/commonMain/kotlin/Clean.kt", clean);
         expect(root, Set.of(), 0, "clean tree passes");
@@ -240,6 +240,10 @@ public class EntryPointIsolationCheck {
         write(root, "socket-webtransport/src/commonMain/kotlin/Spi.kt", "@QuicEngineSpi\nval x = 1\n");
         expect(root, Set.of(), 1, "engine surface name fails");
         Files.delete(root.resolve("socket-webtransport/src/commonMain/kotlin/Spi.kt"));
+
+        write(root, "socket-quic/src/commonMain/kotlin/com/ditchoom/socket/quic/Engine.kt", "interface QuicEngine\n");
+        expect(root, Set.of(), 1, "declaring the removed engine interface again fails");
+        Files.delete(root.resolve("socket-quic/src/commonMain/kotlin/com/ditchoom/socket/quic/Engine.kt"));
 
         write(root, QUICHE + "/src/jvmMain/kotlin/com/ditchoom/socket/quic/core/Open.kt", "package x\nclass Leaky\n");
         expect(root, Set.of(), 1, "public declaration in core fails");

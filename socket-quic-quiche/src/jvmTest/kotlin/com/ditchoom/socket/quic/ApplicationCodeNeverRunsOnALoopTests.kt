@@ -90,7 +90,7 @@ class ApplicationCodeNeverRunsOnALoopTests {
                             connections {
                                 probe.note("server handler start")
                                 launch { probe.note("server connection-scope launch") }
-                                (this as QuicEngineConnection).state.first { it is QuicConnectionState.Established }
+                                (this as QuicScope).state.first { it is QuicConnectionState.Established }
                                 probe.note("server after state collect")
                                 val stream = acceptStream()
                                 probe.note("server after acceptStream")

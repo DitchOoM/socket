@@ -49,7 +49,7 @@ sealed interface QuicUnreadAtClose {
  * last of what the connection held makes possible on a multi-threaded dispatcher: the value was
  * produced, and only its delivery raced the close. When the connection dies first — the peer closed
  * it, it idled out, the transport failed — [block] is cancelled once nothing the connection received is
- * left to read ([QuicEngineConnection.unreadAtClose] reaching [QuicUnreadAtClose.AllRead]), so a reply that
+ * left to read ([QuicScope.unreadAtClose] reaching [QuicUnreadAtClose.AllRead]), so a reply that
  * landed in the same flight as the peer's close is still delivered; and once it has unwound this throws
  * a [QuicCloseException] carrying the close's [QuicCloseReason]. Anything [block] throws itself
  * propagates unchanged, and a cancellation of the caller stays a cancellation.
@@ -61,9 +61,9 @@ sealed interface QuicUnreadAtClose {
  * A close this application made itself ([QuicScope.closeWithError]) is not the connection dying: the
  * block that asked for it is not cancelled, and unwinds on its own with whatever it has to report.
  */
-suspend fun <R> QuicEngineConnection.runUntilClosed(
+suspend fun <R> QuicScope.runUntilClosed(
     linger: Duration,
-    block: suspend QuicEngineConnection.() -> R,
+    block: suspend QuicScope.() -> R,
 ): R {
     val diedFirst = CompletableDeferred<QuicCloseException>()
     val returned = CompletableDeferred<R>()

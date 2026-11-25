@@ -125,8 +125,8 @@ class CoreCloseTests {
             connection.close(QuicError.NoError)
         }) { server ->
             // The loop takes its own memory from the factory of the first connection placed on it: not the tracked one.
-            connectCore(server.port, loops = loops).connection.close(QuicError.NoError)
-            val client = connectCore(server.port, loops = loops, factory = tracked)
+            connectCore(server.port, loops = loops, options = acceptingClientOptions).connection.close(QuicError.NoError)
+            val client = connectCore(server.port, loops = loops, options = acceptingClientOptions, factory = tracked)
             assertTrue(eventually(within = 10.seconds) { client.connection.end() is EdgeEnd.Ended }, "the server's close arrived")
             val stream = client.connection.acceptStream()
             if (read) {

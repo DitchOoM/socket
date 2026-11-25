@@ -43,6 +43,9 @@ internal class Turn(
 
     fun push(work: ConnWork): Pushed = c.inbox.push(work)
 
+    /** Makes the connection's deadline with [fire], before it is ever armed. */
+    fun makeTimer(fire: Runnable) = c.timer.make(fire)
+
     fun requestRelease(then: Runnable) = c.release.request(then)
 
     /** Any thread: the connection's life as published. */

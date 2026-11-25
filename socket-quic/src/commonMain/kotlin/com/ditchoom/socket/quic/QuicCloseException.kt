@@ -190,6 +190,7 @@ private fun QuicConnectionEnd.thrownForTrace(): Throwable? =
                 is QuicSocketFault.Repeated -> fault.thrown
                 is QuicSocketFault.ReopenRefused -> fault.thrown
                 is QuicSocketFault.MoveRefused -> fault.thrown
+                is QuicSocketFault.OpenRefused -> fault.thrown
                 is QuicSocketFault.Closed -> null
             }
         is QuicConnectionEnd.ByPeer, is QuicConnectionEnd.ByLocal, is QuicConnectionEnd.IdleTimeout,

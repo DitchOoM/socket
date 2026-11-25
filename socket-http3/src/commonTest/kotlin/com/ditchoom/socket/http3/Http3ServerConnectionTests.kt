@@ -32,10 +32,17 @@ import com.ditchoom.socket.http3.codec.QpackEncoderInstructionCodec
 import com.ditchoom.socket.http3.codec.QpackFieldSectionCodec
 import com.ditchoom.socket.http3.codec.QpackHeaderField
 import com.ditchoom.socket.quic.QuicByteStream
+import com.ditchoom.socket.quic.QuicCapabilities
 import com.ditchoom.socket.quic.QuicCloseReason
+import com.ditchoom.socket.quic.QuicConnectionIdentity
+import com.ditchoom.socket.quic.QuicConnectionState
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicScope
+import com.ditchoom.socket.quic.QuicSessionId
+import com.ditchoom.socket.quic.QuicStatsRead
 import com.ditchoom.socket.quic.QuicStreamId
+import com.ditchoom.socket.quic.QuicUnreadAtClose
+import com.ditchoom.socket.quic.QuicWireConnectionId
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -226,6 +233,21 @@ class Http3ServerConnectionTests {
     ) : QuicScope,
         CoroutineScope by delegate {
         override val bufferFactory: BufferFactory = BufferFactory.Default
+
+        override val state: kotlinx.coroutines.flow.StateFlow<QuicConnectionState> =
+            kotlinx.coroutines.flow.MutableStateFlow(QuicConnectionState.Established("h3"))
+        override val unreadAtClose: kotlinx.coroutines.flow.StateFlow<QuicUnreadAtClose> =
+            kotlinx.coroutines.flow.MutableStateFlow(QuicUnreadAtClose.ConnectionOpen)
+        override val identity: QuicConnectionIdentity =
+            QuicConnectionIdentity(QuicSessionId("fake"), QuicWireConnectionId.Known("fake"))
+        override val capabilities: QuicCapabilities = QuicCapabilities.None
+
+        override suspend fun stats(): QuicStatsRead = QuicStatsRead.Ended
+
+        override suspend fun close(error: QuicError) {
+            closeErrorCode.complete(0L)
+        }
+
         val closeErrorCode = CompletableDeferred<Long>()
 
         override suspend fun openUniStream(): QuicByteStream = outgoing.removeFirst()

@@ -7,6 +7,14 @@ import java.io.File
 /** Android member of [ServerCertVerifierTestSuite]. */
 @RunWith(AndroidJUnit4::class)
 class AndroidServerCertVerifierTests : ServerCertVerifierTestSuite() {
+    override suspend fun connectOneCandidate(
+        endpoint: QuicEndpoint,
+        serverName: String,
+        options: QuicOptions,
+        transport: com.ditchoom.socket.TransportConfig,
+        timeout: kotlin.time.Duration,
+    ): QuicScope = QuicheEngine.connect(QuicClientBinding.OwnSocket, endpoint, serverName, options, transport, timeout)
+
     override fun twoCertificateChainTlsConfig() =
         QuicTlsConfig(certChainPath = AndroidTestCerts.path("two-cert-chain.crt"), privKeyPath = AndroidTestCerts.path("cert.key"))
 

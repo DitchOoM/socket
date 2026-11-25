@@ -23,7 +23,7 @@ import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TimeSource
 
 /**
- * A core connection's [com.ditchoom.socket.quic.QuicEngineConnection.unreadAtClose] tracks the connection: open while it is,
+ * A core connection's [com.ditchoom.socket.quic.QuicScope.unreadAtClose] tracks the connection: open while it is,
  * and settled once it ends, so `runUntilClosed` cancels a block on a connection the peer closed promptly instead of
  * waiting out its linger.
  */
@@ -69,7 +69,7 @@ class CoreUnreadAtCloseTests {
                 )
                 connection.close(QuicError.NoError)
             }) { server ->
-                val client = connectCore(server.port, loops = loops)
+                val client = connectCore(server.port, loops = loops, options = acceptingClientOptions)
                 val connection = client.connection
                 var replied = -1
                 val began = TimeSource.Monotonic.markNow()

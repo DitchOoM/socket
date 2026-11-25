@@ -64,7 +64,7 @@ internal suspend fun verifyServerAfterHandshake(
 private val CLOSED_BELOW: suspend () -> Unit = {}
 
 /** What a refused server's CONNECTION_CLOSE carries: the TLS alert for a certificate refusal, no error otherwise. */
-private fun closingErrorOf(refused: Throwable): QuicError =
+internal fun closingErrorOf(refused: Throwable): QuicError =
     when (refused) {
         is CertificateHashPinningException -> QuicError.CryptoError(TLS_BAD_CERTIFICATE)
         is ServerCertificateRejectedException ->

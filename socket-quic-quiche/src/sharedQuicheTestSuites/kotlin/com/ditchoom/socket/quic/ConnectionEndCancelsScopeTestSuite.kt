@@ -52,7 +52,7 @@ abstract class ConnectionEndCancelsScopeTestSuite {
         val ended = CompletableDeferred<Throwable>()
 
         suspend fun park(scope: QuicScope): Nothing {
-            entered.complete((scope as QuicEngineConnection).state)
+            entered.complete((scope as QuicScope).state)
             try {
                 awaitCancellation()
             } catch (e: Throwable) {
@@ -148,7 +148,7 @@ abstract class ConnectionEndCancelsScopeTestSuite {
                     try {
                         val result =
                             withQuicConnection("127.0.0.1", port, options) {
-                                val state = (this as QuicEngineConnection).state
+                                val state = (this as QuicScope).state
                                 closeWithError(APPLICATION_CLOSE_CODE)
                                 val closed = withTimeout(closeBound) { state.first { it is QuicConnectionState.Closed } }
                                 // Time for a watcher that saw the same Closed to cancel this block, were it to.
@@ -233,7 +233,7 @@ abstract class ConnectionEndCancelsScopeTestSuite {
                         val reply =
                             try {
                                 withQuicConnection("127.0.0.1", port, options) {
-                                    val connection = this as QuicEngineConnection
+                                    val connection = this as QuicScope
                                     unread = { connection.unreadAtClose.value }
                                     val stream = openStream()
                                     step = "writing the request"
@@ -277,7 +277,7 @@ abstract class ConnectionEndCancelsScopeTestSuite {
                     val serverJob =
                         launch {
                             connections {
-                                val connection = this as QuicEngineConnection
+                                val connection = this as QuicScope
                                 var step = "accepting the stream"
                                 try {
                                     val stream = acceptStream()
@@ -356,7 +356,7 @@ abstract class ConnectionEndCancelsScopeTestSuite {
                             outcome.complete(
                                 runCatching {
                                     withQuicConnection("127.0.0.1", port, clientOptions) {
-                                        val connection = this as QuicEngineConnection
+                                        val connection = this as QuicScope
                                         launch {
                                             connection.state.first { it is QuicConnectionState.Closed }
                                             unreadWhenClosed.complete(connection.unreadAtClose.value)

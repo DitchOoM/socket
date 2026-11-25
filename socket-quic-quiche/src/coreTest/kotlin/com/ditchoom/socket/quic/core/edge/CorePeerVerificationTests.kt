@@ -11,13 +11,7 @@ import com.ditchoom.socket.quic.PeerCertificate
 import com.ditchoom.socket.quic.PeerCertificateSupport
 import com.ditchoom.socket.quic.QuicCloseReason
 import com.ditchoom.socket.quic.QuicConnectionState
-import com.ditchoom.socket.quic.QuicEngine
 import com.ditchoom.socket.quic.QuicError
-import com.ditchoom.socket.quic.QuicOptions
-import com.ditchoom.socket.quic.QuicPortBinding
-import com.ditchoom.socket.quic.QuicScope
-import com.ditchoom.socket.quic.QuicServer
-import com.ditchoom.socket.quic.QuicTlsConfig
 import com.ditchoom.socket.quic.QuicheEngine
 import com.ditchoom.socket.quic.ServerCertVerdict
 import com.ditchoom.socket.quic.ServerCertVerifier
@@ -37,7 +31,6 @@ import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import kotlin.test.fail
-import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -181,48 +174,12 @@ internal fun bytesOf(buffer: com.ditchoom.buffer.ReadBuffer): ByteArray {
 
 /**
  * Serves [certificate] from a core server for the length of [body], which gets its port. The certificate's key exists
- * as files only while a [QuicEngine.bind] taking a [QuicTlsConfig] runs, which is where the core server loads it.
+ * as files only while the core server loads it.
  */
 internal suspend fun withMintedCoreServer(
     certificate: PeerCertificate,
     onConnection: suspend kotlinx.coroutines.CoroutineScope.(CoreConnection) -> Unit,
     body: suspend (port: Int) -> Unit,
 ) {
-    val engine = CoreServingEngine(onConnection, body)
-    engine.bind(QuicPortBinding.Own(0, "127.0.0.1"), certificate, coreTestOptions, 10.seconds)
-    engine.outcome.getOrThrow()
-}
-
-/** An engine whose bind runs a core server and the test's body inside it, while the minted key's files exist. */
-private class CoreServingEngine(
-    private val onConnection: suspend kotlinx.coroutines.CoroutineScope.(CoreConnection) -> Unit,
-    private val body: suspend (port: Int) -> Unit,
-) : QuicEngine by QuicheEngine {
-    var outcome: Result<Unit> = Result.failure(IllegalStateException("bind never ran"))
-
-    override suspend fun bind(
-        binding: QuicPortBinding,
-        certificate: PeerCertificate,
-        quicOptions: QuicOptions,
-        timeout: Duration,
-    ): QuicServer = super<QuicEngine>.bind(binding, certificate, quicOptions, timeout)
-
-    override suspend fun bind(
-        binding: QuicPortBinding,
-        tlsConfig: QuicTlsConfig,
-        quicOptions: QuicOptions,
-        timeout: Duration,
-    ): QuicServer {
-        outcome = runCatching { withCoreServer(tls = tlsConfig, onConnection = onConnection) { server -> body(server.port) } }
-        return NoServer
-    }
-}
-
-/** What [CoreServingEngine.bind] returns: the core server it ran has already closed. */
-private object NoServer : QuicServer {
-    override val port: Int = 0
-
-    override suspend fun connections(handler: suspend QuicScope.() -> Unit) = Unit
-
-    override suspend fun close() = Unit
+    certificate.withPemFiles { tls -> withCoreServer(tls = tls, onConnection = onConnection) { server -> body(server.port) } }
 }

@@ -14,7 +14,7 @@ import kotlin.time.Duration.Companion.nanoseconds
 /** Whether quiche's own timer has fallen due. */
 internal enum class TimerDue { Due, NotYet }
 
-/** The connection's deadline: made by the first arming, with the action every arming runs, and re-armed in place after. */
+/** The connection's deadline: made once, with the action every arming runs, and re-armed in place after. */
 private sealed interface TimerDeadline {
     data object Unmade : TimerDeadline
 
@@ -70,7 +70,15 @@ internal class ConnTimer(
         port.arm(made, due)
     }
 
-    /** The deadline, made on the first arming with [fire]: a connection's every arming passes the same action. */
+    /**
+     * Makes the deadline with [fire], the action of the connection's every arming, when the connection is built: a
+     * first arming made on the loop mid-traffic (a pacing hold) would allocate there.
+     */
+    fun make(fire: Runnable) {
+        made(fire)
+    }
+
+    /** The deadline, made by [make] or else by the first arming, with [fire]. */
     private fun made(fire: Runnable): Rearmable =
         when (val d = deadline) {
             is TimerDeadline.Made -> d.deadline

@@ -11,7 +11,6 @@ import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.socket.quic.QuicAppErrorCode
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicCloseCircumstance
-import com.ditchoom.socket.quic.QuicEngineSpi
 import com.ditchoom.socket.quic.QuicStreamId
 import com.ditchoom.socket.quic.QuicStreamOrigin
 import com.ditchoom.socket.quic.QuicStreamSide
@@ -171,7 +170,6 @@ internal class StreamHalves(
 
     private fun both(id: QuicStreamId) = BidiStream(SendHalf(connection, id, writePolicy), ReceiveHalf(connection, id, readPolicy))
 
-    @OptIn(QuicEngineSpi::class)
     private fun originOf(arrival: Arrival): QuicStreamOrigin =
         when (arrival) {
             Arrival.Confirmed -> QuicStreamOrigin.Confirmed

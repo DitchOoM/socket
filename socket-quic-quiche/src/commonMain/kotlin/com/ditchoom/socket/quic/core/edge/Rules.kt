@@ -4,10 +4,12 @@ import com.ditchoom.socket.quic.DatagramMaxAge
 import com.ditchoom.socket.quic.DatagramOverflow
 import com.ditchoom.socket.quic.HandshakePacing
 import com.ditchoom.socket.quic.HandshakePolicy
+import com.ditchoom.socket.quic.IncomingStreams
 import com.ditchoom.socket.quic.LinkClass
 import com.ditchoom.socket.quic.QuicCloseLinger
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicOptions
+import com.ditchoom.socket.quic.QuicRole
 import com.ditchoom.socket.quic.RttPrior
 import com.ditchoom.socket.quic.core.conn.AgeBound
 import com.ditchoom.socket.quic.core.conn.DatagramRule
@@ -70,18 +72,37 @@ private fun overflowOf(overflow: DatagramOverflow): Overflow =
     }
 
 /**
- * The options a core endpoint configures quiche with. The core's own queues are the ones its options bound: quiche's
- * send queue is the short hand-off behind the core's ([quicheHandOff]), and its receive queue holds every datagram one
- * packet can carry, which the core takes out after each packet, so quiche never drops one uncounted.
+ * The options a core endpoint of [role] configures quiche with. The core's own queues are the ones its options bound:
+ * quiche's send queue is the short hand-off behind the core's ([quicheHandOff]), and its receive queue holds every
+ * datagram one packet can carry, which the core takes out after each packet, so quiche never drops one uncounted. Its
+ * [QuicOptions.incomingStreams] is the role's own choice: [IncomingStreams.ByRole] refuses on a client and accepts on a
+ * server.
  */
-internal fun QuicOptions.forQuiche(): QuicOptions =
-    when (val rule = datagramRuleOf(this)) {
-        is DatagramRule.Off -> this
+internal fun QuicOptions.forQuiche(role: QuicRole): QuicOptions {
+    val incoming = incomingStreamsOf(incomingStreams, role)
+    return when (val rule = datagramRuleOf(this)) {
+        is DatagramRule.Off -> copy(incomingStreams = incoming)
         is DatagramRule.On ->
             copy(
+                incomingStreams = incoming,
                 datagrams =
                     datagrams?.copy(sendQueueLen = rule.quicheHandOff(), recvQueueLen = QUICHE_DATAGRAMS_PER_PACKET),
             )
+    }
+}
+
+/** What [choice] advertises on a core endpoint of [role]. */
+internal fun incomingStreamsOf(
+    choice: IncomingStreams,
+    role: QuicRole,
+): IncomingStreams =
+    when (choice) {
+        is IncomingStreams.Refuse, is IncomingStreams.Accept -> choice
+        is IncomingStreams.ByRole ->
+            when (role) {
+                QuicRole.Client -> IncomingStreams.Refuse
+                QuicRole.Server -> IncomingStreams.Accept()
+            }
     }
 
 /** More DATAGRAM frames than one packet can carry: each empty one takes two bytes. */

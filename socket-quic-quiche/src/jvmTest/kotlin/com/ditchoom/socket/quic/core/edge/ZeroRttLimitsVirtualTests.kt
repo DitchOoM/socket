@@ -5,7 +5,7 @@ import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.ReadBuffer
 import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.managed
-import com.ditchoom.socket.quic.FlowControl
+import com.ditchoom.socket.quic.IncomingStreams
 import com.ditchoom.socket.quic.QuicConnectionState
 import com.ditchoom.socket.quic.QuicEarlyDataOutcome
 import com.ditchoom.socket.quic.QuicOptions
@@ -15,6 +15,7 @@ import com.ditchoom.socket.quic.QuicSessionStore
 import com.ditchoom.socket.quic.QuicSessionTicket
 import com.ditchoom.socket.quic.QuicSessionTicketKeys
 import com.ditchoom.socket.quic.QuicSessionTicketState
+import com.ditchoom.socket.quic.QuicStreamLimit
 import kotlinx.coroutines.launch
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -37,7 +38,7 @@ class ZeroRttLimitsVirtualTests {
             enablePmtuDiscovery = false,
             enableEarlyData = true,
             sessionStore = QuicSessionStore.NotKept,
-            flowControl = FlowControl(initialMaxStreamsUni = uni),
+            incomingStreams = IncomingStreams.Accept(unidirectional = QuicStreamLimit(uni.toUInt())),
         )
 
     private val tls = coreTlsConfig().copy(sessionTicketKeys = QuicSessionTicketKeys.Shared(keyMaterial()))

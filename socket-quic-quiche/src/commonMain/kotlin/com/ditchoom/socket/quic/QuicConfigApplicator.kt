@@ -150,8 +150,21 @@ internal fun applyQuicOptions(
     calls.setInitialMaxStreamDataBidiLocal(fc.initialMaxStreamDataBidiLocal)
     calls.setInitialMaxStreamDataBidiRemote(fc.initialMaxStreamDataBidiRemote)
     calls.setInitialMaxStreamDataUni(fc.initialMaxStreamDataUni)
-    calls.setInitialMaxStreamsBidi(fc.initialMaxStreamsBidi)
-    calls.setInitialMaxStreamsUni(fc.initialMaxStreamsUni)
+    when (val incoming = options.incomingStreams) {
+        is IncomingStreams.Refuse -> {
+            calls.setInitialMaxStreamsBidi(0L)
+            calls.setInitialMaxStreamsUni(0L)
+        }
+        is IncomingStreams.Accept -> {
+            calls.setInitialMaxStreamsBidi(incoming.bidirectional.streams.toLong())
+            calls.setInitialMaxStreamsUni(incoming.unidirectional.streams.toLong())
+        }
+        // The legacy QuicScope stacks accept on both sides; the core resolves it by role before it gets here.
+        is IncomingStreams.ByRole -> {
+            calls.setInitialMaxStreamsBidi(QuicStreamLimit.Default.streams.toLong())
+            calls.setInitialMaxStreamsUni(QuicStreamLimit.Default.streams.toLong())
+        }
+    }
     calls.setMaxConnectionWindow(fc.maxConnectionWindow)
     calls.setMaxStreamWindow(fc.maxStreamWindow)
 

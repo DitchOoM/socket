@@ -97,7 +97,7 @@ class QuicAutoMigrationTests {
 
     /** Notes this connection's state and path state as they change, and quiche's spare ids and paths each second. */
     private fun QuicScope.capturedInto(capture: FailureCapture) {
-        (this as? QuicEngineConnection)?.let { connection -> launch { connection.state.collect { capture.note("client state $it") } } }
+        (this as? QuicScope)?.let { connection -> launch { connection.state.collect { capture.note("client state $it") } } }
         launch { pathState.collect { capture.note("client path $it") } }
         val driver = (this as? QuicheBackedConnection)?.quicheDriver ?: return capture.note("no driver behind $this")
         launch {

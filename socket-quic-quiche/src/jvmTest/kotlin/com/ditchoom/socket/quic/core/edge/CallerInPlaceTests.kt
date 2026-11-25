@@ -59,14 +59,14 @@ class CallerInPlaceTests {
                     val enteredInPlace = client.conn.counts.enteredInPlace
                     val sendsByThread = io.sendsByThread()
                     val onCallers = sendsByThread.filterKeys { it.startsWith("DefaultDispatcher") }.values.sum()
-                    println(
+                    val breakdown =
                         "[core in-place] $ECHOES echoes of $ECHO_BYTES B: caller-caused loop wakes=$wakes, in-place sends=$inPlace, " +
                             "caller entries=$enteredInPlace, left for holder=${client.conn.counts.leftForHolder}, " +
                             "handed to loop=${client.conn.counts.handedToLoop}, deferred=${client.loop.callerCounts.sendsDeferred}, " +
-                            "sends by thread=$sendsByThread",
-                    )
+                            "sends by thread=$sendsByThread"
+                    println(breakdown)
                     assertTrue(inPlace > 0 && onCallers > 0, "callers sent in place: $sendsByThread")
-                    assertTrue(wakes < ECHOES / 2, "the loop was woken $wakes times by callers over $ECHOES echoes")
+                    assertTrue(wakes < ECHOES / 2, "the loop was woken $wakes times by callers over $ECHOES echoes; $breakdown")
                     connection.close(QuicError.NoError)
                 }
             }
@@ -84,7 +84,7 @@ class CallerInPlaceTests {
                         openStream().writeFully(bytes(payload), 10.seconds)
                     },
                 ) { port ->
-                    val client = connectCore(port, loops = loops)
+                    val client = connectCore(port, loops = loops, options = acceptingClientOptions)
                     val holder = HoldWork()
                     val held = holdAsCaller(client.conn, holder)
                     try {

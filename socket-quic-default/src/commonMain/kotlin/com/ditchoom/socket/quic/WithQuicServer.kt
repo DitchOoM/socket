@@ -10,7 +10,7 @@ import kotlin.time.Duration.Companion.seconds
  * drivers destroyed, all handler coroutines cancelled.
  *
  * This is the server-facing entry point and it owns the lifecycle: it asks the
- * platform's [QuicEngine][defaultQuicEngine] to [bind][QuicEngine.bind],
+ * platform's legacy QUIC stack to bind,
  * runs [block], and closes the server in a `finally`. The engine is a constructor,
  * not a factory the caller babysits — the returned [QuicServer] never escapes this
  * scope. The scope-only block boundary remains the lifecycle.
@@ -60,7 +60,7 @@ suspend fun <R> withQuicServer(
     timeout: Duration = 15.seconds,
     block: suspend QuicServer.() -> R,
 ): R {
-    val server = defaultQuicEngine.bind(binding, tlsConfig, quicOptions, timeout)
+    val server = legacyBind(binding, tlsConfig, quicOptions, timeout)
     return try {
         server.block()
     } finally {
@@ -72,11 +72,11 @@ suspend fun <R> withQuicServer(
  * Whether this platform's default engine can mint a [PeerCertificate] — the self-signed, ≤14-day ECDSA
  * P-256 certificate a browser accepts through WebTransport `serverCertificateHashes`.
  */
-val peerCertificates: PeerCertificateSupport get() = defaultQuicEngine.peerCertificates
+val peerCertificates: PeerCertificateSupport get() = legacyPeerCertificates
 
 /**
  * [withQuicServer] presenting a generated [certificate] instead of PEM files. Its private key touches disk
- * only while the server binds (see [QuicEngine.bind]); hand [PeerCertificate.hash] to clients that pin it.
+ * only while the server binds; hand [PeerCertificate.hash] to clients that pin it.
  */
 suspend fun <R> withQuicServer(
     port: Int = 0,
@@ -95,7 +95,7 @@ suspend fun <R> withQuicServer(
     timeout: Duration = 15.seconds,
     block: suspend QuicServer.() -> R,
 ): R {
-    val server = defaultQuicEngine.bind(binding, certificate, quicOptions, timeout)
+    val server = legacyBind(binding, certificate, quicOptions, timeout)
     return try {
         server.block()
     } finally {

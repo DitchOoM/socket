@@ -81,7 +81,7 @@ class QuicConnectRaceTests {
     private class Dialled(
         val endpoint: QuicEndpoint,
         private val delegate: MockQuicConnection = MockQuicConnection(),
-    ) : QuicEngineConnection by delegate {
+    ) : QuicScope by delegate {
         var closeCalls = 0
             private set
 
@@ -92,16 +92,13 @@ class QuicConnectRaceTests {
     }
 
     /**
-     * A [QuicEngine] whose single-endpoint connect answers from [answers], recording when each first
+     * An engine whose single-endpoint connect answers from [answers], recording when each first
      * flight left, which identity it was dialled for, and every connection it minted.
      */
     private class ScriptedEngine(
         private val scope: TestScope,
         private val answers: Map<QuicEndpoint, Answer>,
-    ) : QuicEngine {
-        override val capabilities =
-            EngineCapabilities(supportsMigration = false, supportsDatagrams = false, supportsServer = false)
-
+    ) {
         val startedAt = ArrayList<Long>()
         val dialled = ArrayList<QuicEndpoint>()
         val identities = ArrayList<String>()
@@ -110,14 +107,23 @@ class QuicConnectRaceTests {
         /** Connections the engine minted that nothing has closed — zero except the winner, always. */
         fun open(): List<QuicEndpoint> = minted.filter { it.closeCalls == 0 }.map { it.endpoint }
 
-        override suspend fun connect(
+        /** The racer over this engine's single-endpoint connect. */
+        suspend fun connectRacing(
             binding: QuicClientBinding,
-            endpoint: QuicEndpoint,
-            serverName: String,
+            peer: QuicPeer,
             quicOptions: QuicOptions,
             transport: TransportConfig,
             timeout: Duration,
-        ): QuicEngineConnection {
+        ): QuicRacedConnect<QuicScope> =
+            peer.raceCandidates(transport, close = { late: QuicScope -> late.close() }) { endpoint ->
+                connect(endpoint, peer.serverName, quicOptions)
+            }
+
+        private suspend fun connect(
+            endpoint: QuicEndpoint,
+            serverName: String,
+            quicOptions: QuicOptions,
+        ): QuicScope {
             startedAt += scope.testScheduler.currentTime
             dialled += endpoint
             identities += serverName
@@ -145,13 +151,6 @@ class QuicConnectRaceTests {
             }
             return Dialled(endpoint).also { minted += it }
         }
-
-        override suspend fun bind(
-            binding: QuicPortBinding,
-            tlsConfig: QuicTlsConfig,
-            quicOptions: QuicOptions,
-            timeout: Duration,
-        ): QuicServer = throw UnsupportedOperationException("the racer never binds")
     }
 
     private val options = QuicOptions(alpnProtocols = listOf("race"))
@@ -160,7 +159,7 @@ class QuicConnectRaceTests {
         vararg script: Pair<QuicEndpoint, Answer>,
         pacing: ConnectPacing = ConnectPacing.Staggered.RECOMMENDED,
         serverName: String = "peer.example",
-    ): Pair<QuicRacedConnect, ScriptedEngine> {
+    ): Pair<QuicRacedConnect<QuicScope>, ScriptedEngine> {
         val engine = ScriptedEngine(this, script.toMap())
         val peer = QuicPeer.Candidates(script.map { it.first }, serverName)
         return engine.connectRacing(
@@ -174,7 +173,7 @@ class QuicConnectRaceTests {
 
     private fun assertNothingLeaked(
         engine: ScriptedEngine,
-        winner: QuicRacedConnect,
+        winner: QuicRacedConnect<QuicScope>,
     ) {
         val expected = listOf((winner.candidateRace as QuicCandidateRace.Raced).winner)
         assertEquals(

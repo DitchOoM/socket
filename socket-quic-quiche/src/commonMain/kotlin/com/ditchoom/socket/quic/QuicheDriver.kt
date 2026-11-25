@@ -315,7 +315,7 @@ class QuicheDriver(
             if (api.connStreamDataUnacknowledged(conn)) SentStreamData.AwaitingAcknowledgement else SentStreamData.Acknowledged
     }
 
-    /** [QuicEngineConnection.unreadAtClose] for every connection this driver backs; settled in [transitionToClosed]. */
+    /** [QuicScope.unreadAtClose] for every connection this driver backs; settled in [transitionToClosed]. */
     val unreadAtClose: StateFlow<QuicUnreadAtClose> = _unreadAtClose
 
     /**
@@ -3122,7 +3122,6 @@ class QuicheDriver(
      * A stream the peer opens on a server whose handshake is still in progress arrived in 0-RTT: the
      * client's 1-RTT packets cannot be read before the server's handshake completes.
      */
-    @OptIn(QuicEngineSpi::class)
     private fun originOfPeerStream(): QuicStreamOrigin =
         when (role) {
             QuicRole.Client -> QuicStreamOrigin.Confirmed
@@ -3164,7 +3163,7 @@ class QuicheDriver(
                     readNegotiatedAlpn(),
                     QuicEarlyDataReason.outcome(role, sessionOffer, api.connIsResumed(conn), api.connEarlyDataReason(conn)),
                 )
-            handshakeLatch.value = HandshakeRecord.Settled(established.negotiatedAlpn, established.resumption)
+            handshakeLatch.value = HandshakeRecord.Settled(established.negotiatedAlpn, established.resumption, LeafCert.NotPresented)
             _state.value = established
             handshakeSettled.complete(HandshakeSettled.Confirmed(established.resumption))
             qlogEstablished()
@@ -3203,7 +3202,7 @@ class QuicheDriver(
     /**
      * The handshake's negotiated ALPN protocol (`quiche_conn_application_proto`), read once at the
      * Handshaking→Established edge and published in [QuicConnectionState.Established] — the value
-     * behind [QuicEngineConnection.negotiatedAlpn] and the server-side ALPN demux (`connectionsByAlpn`).
+     * behind [QuicScope.negotiatedAlpn] and the server-side ALPN demux (`connectionsByAlpn`).
      * Empty when the backend does not expose it (a [QuicheApi] test double using the interface
      * default). RFC 7301 caps an identifier at 255 bytes, so one fixed allocation never re-tries.
      */

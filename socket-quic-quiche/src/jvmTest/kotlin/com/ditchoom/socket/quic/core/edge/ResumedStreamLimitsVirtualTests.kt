@@ -1,11 +1,12 @@
 package com.ditchoom.socket.quic.core.edge
 
-import com.ditchoom.socket.quic.FlowControl
+import com.ditchoom.socket.quic.IncomingStreams
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicSessionKey
 import com.ditchoom.socket.quic.QuicSessionMemory
 import com.ditchoom.socket.quic.QuicSessionStore
 import com.ditchoom.socket.quic.QuicSessionTicketState
+import com.ditchoom.socket.quic.QuicStreamLimit
 import com.ditchoom.socket.quic.StreamOpenPolicy
 import kotlinx.coroutines.launch
 import kotlin.test.Test
@@ -26,7 +27,7 @@ class ResumedStreamLimitsVirtualTests {
             verifyPeer = false,
             idleTimeout = 30.seconds,
             enablePmtuDiscovery = false,
-            flowControl = FlowControl(initialMaxStreamsUni = uni),
+            incomingStreams = IncomingStreams.Accept(unidirectional = QuicStreamLimit(uni.toUInt())),
             streamOpenPolicy = StreamOpenPolicy.Bounded(1.hours),
             // The process's own memory, which the default store keeps tickets in: the pair keeps tickets of its own
             // only for the default store itself.

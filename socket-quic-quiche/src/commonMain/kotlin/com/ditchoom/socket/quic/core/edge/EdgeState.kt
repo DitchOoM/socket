@@ -7,6 +7,7 @@ import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.socket.quic.EarlyDataAcceptance
 import com.ditchoom.socket.quic.HandlerStart
 import com.ditchoom.socket.quic.HandshakeRecord
+import com.ditchoom.socket.quic.LeafCert
 import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicConnectionState
 import com.ditchoom.socket.quic.QuicSessionTicket
@@ -119,7 +120,7 @@ internal class EdgeState(
 
     override fun earlyData(report: EarlyReport) {
         val alpn = alpnOf(report.alpnLength)
-        handshake.value = HandshakeRecord.Settled(alpn, report.resumption)
+        handshake.value = HandshakeRecord.Settled(alpn, report.resumption, LeafCert.NotPresented)
         earlyData.value = EarlyDataAcceptance.Accepted(alpn, report.resumption)
         start.value = HandlerStart.Now
     }
@@ -236,7 +237,7 @@ internal class EdgeState(
 
     /** What the handshake settled is kept: the same facts, from the report or from the end. */
     private fun settled(facts: HandshakeFacts) {
-        handshake.value = HandshakeRecord.Settled(facts.alpn, facts.resumption)
+        handshake.value = HandshakeRecord.Settled(facts.alpn, facts.resumption, facts.leaf)
     }
 
     /** A handler starts for a connection whose handshake completed, whatever ended it after. */

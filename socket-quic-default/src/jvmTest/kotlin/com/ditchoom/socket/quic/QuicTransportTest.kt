@@ -40,7 +40,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 /**
- * Unit tests for [QuicTransport] / [QuicSessionTransport] against an injected fake [QuicEngine] —
+ * Unit tests for [QuicTransport] / [QuicSessionTransport] against an injected fake connector —
  * no real QUIC, no libquiche. Verifies the single-stream projection (RFC_UNIFIED_ESTABLISHMENT.md
  * §3.3): one stream over a connection, closing the stream tears the connection down, and stream
  * aborts surface on the unified [SocketClosedException] family (RFC §6.1).
@@ -52,7 +52,7 @@ class QuicTransportTest {
     fun connect_projectsOneStream_roundTrips() =
         runBlocking {
             val engine = FakeQuicEngine()
-            val stream = QuicTransport(opts, engine).connect("example.com", 443, literalResolution)
+            val stream = QuicTransport(opts, engine.connector).connect("example.com", 443, literalResolution)
 
             assertEquals(
                 QuicClientBinding.OwnSocket,
@@ -78,7 +78,7 @@ class QuicTransportTest {
     fun connect_streamReset_mapsToConnectionReset() =
         runBlocking {
             val engine = FakeQuicEngine(openStreamDelegate = ThrowingByteStream())
-            val stream = QuicTransport(opts, engine).connect("example.com", 443, literalResolution)
+            val stream = QuicTransport(opts, engine.connector).connect("example.com", 443, literalResolution)
 
             val e =
                 assertFailsWith<SocketClosedException.ConnectionReset> {
@@ -93,7 +93,7 @@ class QuicTransportTest {
 
     @Test
     fun quicTransport_isBothSingleStreamAndMultiplexing() {
-        val t = QuicTransport(opts, FakeQuicEngine())
+        val t = QuicTransport(opts, FakeQuicEngine().connector)
         // Dual-SPI front door: a library holds a Transport and reaches mux by is-check, no stub.
         assertTrue(t is Transport)
         assertTrue(t is MultiplexingTransport)
@@ -104,7 +104,7 @@ class QuicTransportTest {
         runBlocking {
             val engine = FakeQuicEngine()
             val out =
-                QuicTransport(opts, engine).withMux("h", 443, MuxStringCodec, config = literalResolution) {
+                QuicTransport(opts, engine.connector).withMux("h", 443, MuxStringCodec, config = literalResolution) {
                     // this: StreamMux<String> — agnostic multiplex surface, same code would run over WT.
                     val conn = openBidirectional()
                     conn.send("ping")
@@ -119,7 +119,7 @@ class QuicTransportTest {
         runBlocking {
             val engine = FakeQuicEngine()
             val opened =
-                QuicSessionTransport(opts, engine).use("h", 443, literalResolution) { scope ->
+                QuicSessionTransport(opts, engine.connector).use("h", 443, literalResolution) { scope ->
                     scope.openStream()
                     "done"
                 }
@@ -141,34 +141,22 @@ class QuicTransportTest {
 
     private class FakeQuicEngine(
         private val openStreamDelegate: ByteStream? = null,
-    ) : QuicEngine {
+    ) {
         var connection: FakeQuicConnection? = null
         var lastBinding: QuicClientBinding? = null
-        override val capabilities = EngineCapabilities(supportsServer = false, supportsDatagrams = false, supportsMigration = false)
 
-        override suspend fun connect(
-            binding: QuicClientBinding,
-            endpoint: QuicEndpoint,
-            serverName: String,
-            quicOptions: QuicOptions,
-            transport: TransportConfig,
-            timeout: kotlin.time.Duration,
-        ): QuicEngineConnection {
-            lastBinding = binding
-            return FakeQuicConnection(openStreamDelegate).also { connection = it }
+        /** Dials the one candidate of a literal name: the transport under test is what is being asked about. */
+        val connector: LegacyConnector = { binding, peer, _, transport, _ ->
+            peer.raceCandidates(transport, close = { late: QuicScope -> late.close() }) {
+                lastBinding = binding
+                FakeQuicConnection(openStreamDelegate).also { connection = it }
+            }
         }
-
-        override suspend fun bind(
-            binding: QuicPortBinding,
-            tlsConfig: QuicTlsConfig,
-            quicOptions: QuicOptions,
-            timeout: kotlin.time.Duration,
-        ): QuicServer = throw UnsupportedOperationException("fake")
     }
 
     private class FakeQuicConnection(
         private val openStreamDelegate: ByteStream?,
-    ) : QuicEngineConnection {
+    ) : QuicScope {
         private val job = SupervisorJob()
         override val coroutineContext: CoroutineContext = job + Dispatchers.Default
         override val bufferFactory: BufferFactory = BufferFactory.Default
@@ -200,6 +188,8 @@ class QuicTransportTest {
         }
 
         override suspend fun acceptStream(): QuicByteStream = throw UnsupportedOperationException("fake")
+
+        override suspend fun stats(): QuicStatsRead = QuicStatsRead.Ended
 
         override fun streams(): Flow<QuicByteStream> = emptyFlow()
 

@@ -1,5 +1,6 @@
 package com.ditchoom.socket.quic.core.conn
 
+import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
 import com.ditchoom.socket.quic.PtoCeiling
 import com.ditchoom.socket.quic.QuicResumptionOutcome
@@ -58,6 +59,8 @@ internal class Handshake(
     private val startedNanos: Long,
     private val alpn: NativeBytes,
     private val chain: ChainSource,
+    /** The memory the peer's leaf certificate is read into, to be hashed. */
+    private val factory: BufferFactory,
 ) {
     private val pending = Phase.Pending()
     private var phase: Phase = pending
@@ -177,11 +180,12 @@ internal class Handshake(
         val sample = sampleOf(read)
         val probes = probesOf(read)
         val took = now.value - startedNanos
-        val facts = HandshakeFacts(alpnText(), resumption)
+        val peerChain = peerChainOf(chain, q, alpn)
+        val facts = HandshakeFacts(alpnText(), resumption, peerLeafOf(peerChain, q, alpn, factory))
         return ConnectReport(
             handshakeNanos = took,
             facts = facts,
-            chain = peerChainOf(chain, q, alpn),
+            chain = peerChain,
             firstSample = sample,
             priorNanos = rule.priorNanos(),
             link = rule.link,

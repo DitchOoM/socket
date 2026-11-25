@@ -151,16 +151,19 @@ private fun publicPathOf(path: QuicPathStats): QuicActivePathStats =
 /** A connection whose datagram drops nothing counted. */
 internal val NO_DATAGRAM_DROPS = QuicDatagramDrops(0, 0, 0, 0, 0, 0, 0)
 
+/** The counters of a binding without the stats call. */
+private val UNBOUND_STATS = QuicConnStats(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+
 /**
- * Reads [conn]'s statistics as the public type, with [drops] as its datagram drops: [QuicStatsRead.NotReported] on a
- * backend without the stats FFI.
+ * Reads [conn]'s statistics as the public type, with [drops] as its datagram drops. A binding without the stats call, a
+ * test double, reads as all zero.
  */
 internal fun QuicheApi.readStats(
     conn: QuicheConn,
     drops: QuicDatagramDrops = NO_DATAGRAM_DROPS,
 ): QuicStatsRead =
     when (val stats = connStats(conn)) {
-        null -> QuicStatsRead.NotReported
+        null -> QuicStatsRead.Read(publicStatsOf(UNBOUND_STATS, readActivePath(conn), drops))
         else -> QuicStatsRead.Read(publicStatsOf(stats, readActivePath(conn), drops))
     }
 

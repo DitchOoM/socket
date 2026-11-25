@@ -857,6 +857,44 @@ class CoreRecordingReplayTests {
             )
         }
 
+    /**
+     * A kept CI recording (macOS JDK 21 FFM, PR 1053) whose client lost its payload and ran quiche's timeout at 35.03 ms,
+     * its last recorded firing, to probe; the replay's quiche, its RTT estimated from recorded times, was due at 37.30 ms
+     * and so never ran it: the ACK delay of its second sample sat 72 µs past the edge of RFC 9002's subtraction. The
+     * replay brings its timer forward to the recorded firing and follows the recording whole.
+     */
+    @Test
+    fun aTimerTheRecordingRanBeforeTheReplaysFellDueRunsAtTheRecordedFiring() =
+        replayTest("aTimerTheRecordingRanBeforeTheReplaysFellDueRunsAtTheRecordedFiring") {
+            assertFollowedWholeTwice(
+                scheduleOf(
+                    Recorded(
+                        keptRecording("timer-fired-before-replay-due.client.trace"),
+                        keptRecording("timer-fired-before-replay-due.server.trace"),
+                        1,
+                    ),
+                ),
+            )
+        }
+
+    /**
+     * A kept CI recording (macOS JDK 21 FFM) of a slow client on the lossy link: its payload (datagram 2) was lost and it
+     * retransmitted at 206.75 ms, when quiche's timeout ran. The replay follows it whole.
+     */
+    @Test
+    fun aSlowClientsRetransmitAfterALostPayloadIsFollowedWholeByItsReplayTwice() =
+        replayTest("aSlowClientsRetransmitAfterALostPayloadIsFollowedWholeByItsReplayTwice") {
+            assertFollowedWholeTwice(
+                scheduleOf(
+                    Recorded(
+                        keptRecording("slow-client-lossy-retransmit.client.trace"),
+                        keptRecording("slow-client-lossy-retransmit.server.trace"),
+                        1,
+                    ),
+                ),
+            )
+        }
+
     private fun keptRecording(name: String): List<TraceEvent> =
         TraceEvent.parseAll(
             assertNotNull(this::class.java.classLoader.getResource("replay-recordings/$name"), "no kept recording $name").readText(),

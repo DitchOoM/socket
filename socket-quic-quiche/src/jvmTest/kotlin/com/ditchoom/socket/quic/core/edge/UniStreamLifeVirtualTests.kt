@@ -4,18 +4,20 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
-import com.ditchoom.socket.quic.FlowControl
+import com.ditchoom.socket.quic.IncomingStreams
 import com.ditchoom.socket.quic.QuicAppErrorCode
 import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicStreamAbort
 import com.ditchoom.socket.quic.QuicStreamException
 import com.ditchoom.socket.quic.QuicStreamId
+import com.ditchoom.socket.quic.QuicStreamLimit
 import com.ditchoom.socket.quic.QuicStreamSide
 import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.QuicheConn
 import com.ditchoom.socket.quic.StreamOpenPolicy
 import com.ditchoom.socket.quic.StreamSendStep
+import com.ditchoom.socket.quic.core.conn.FlightTail
 import com.ditchoom.socket.quic.core.conn.StallView
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -40,7 +42,7 @@ class UniStreamLifeVirtualTests {
             verifyPeer = false,
             idleTimeout = 30.seconds,
             enablePmtuDiscovery = false,
-            flowControl = FlowControl(initialMaxStreamsUni = uni),
+            incomingStreams = IncomingStreams.Accept(unidirectional = QuicStreamLimit(uni.toUInt())),
             streamOpenPolicy = StreamOpenPolicy.Bounded(1.hours),
         )
 
@@ -94,9 +96,11 @@ class UniStreamLifeVirtualTests {
             val client = pair.client.connection
             drainEveryReceiveOnly(server)
             val first = opened(pair) { client.halves.openSendOnly() }
-            val waiting = launch { runCatching { client.halves.openSendOnly() } }
+            var outcome: Result<SendHalf>? = null
+            val waiting = launch { outcome = runCatching { client.halves.openSendOnly() } }
             pair.runFor(1.seconds)
-            assertEquals(1, view(pair, client).opensWaiting)
+            val seen = view(pair, client)
+            assertEquals(1, seen.opensWaiting, "the second open waits; it came to ${outcome.describe()}, ${seen.describe()}")
             waiting.cancel()
             pair.runUntil { waiting.isCompleted }
             assertEquals(0, view(pair, client).opensWaiting, "the cancelled open left its lane")
@@ -280,6 +284,22 @@ class UniStreamLifeVirtualTests {
                 else -> return r
             }
         }
+    }
+
+    private fun Result<SendHalf>?.describe(): String =
+        when {
+            this == null -> "no answer"
+            isSuccess -> "stream ${getOrThrow().id}"
+            else -> "a failure: ${exceptionOrNull()}"
+        }
+
+    private fun StallView.describe(): String {
+        val last =
+            when (val tail = flight) {
+                FlightTail.Empty -> "none"
+                is FlightTail.Last -> "${tail.kind} ${tail.ago} ago"
+            }
+        return "live streams $liveStreams, last flight record $last"
     }
 
     private fun bytes() =

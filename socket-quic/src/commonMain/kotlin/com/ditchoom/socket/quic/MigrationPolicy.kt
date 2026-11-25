@@ -81,7 +81,7 @@ sealed interface MigrationPolicy {
 
 /**
  * Which [NetworkMonitor] a connection observes — for [MigrationPolicy.Automatic], for
- * [QuicEngineConnection.networkAtClose], and (when [com.ditchoom.socket.quic.trace.QuicTraceCapture]
+ * [QuicScope.networkAtClose], and (when [com.ditchoom.socket.quic.trace.QuicTraceCapture]
  * asks) for the trace's NET/NET_CAP lines. One monitor per connection, resolved once at connect and
  * shared by all three, so the observation sequence they report indexes the same stream.
  *

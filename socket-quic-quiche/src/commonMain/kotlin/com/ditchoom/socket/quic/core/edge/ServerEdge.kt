@@ -86,6 +86,7 @@ internal class ServerEdge(
                 options.streamOpenPolicy.toDeadline(),
                 scope,
                 seat,
+                options.abortCodes,
             )
         // Offered once established, or once its 0-RTT is accepted; a connection that ends first is never offered. The
         // decision is seen on the loop, with no hop; only then does the connection get its lane, and the offer itself runs

@@ -576,6 +576,13 @@ public final class com/ditchoom/socket/quic/QuicConnStats {
 	public fun toString ()Ljava/lang/String;
 }
 
+public final class com/ditchoom/socket/quic/QuicCoreEntryKt {
+	public static final fun connectQuicOnCore-gwCluXo (Lcom/ditchoom/socket/quic/QuicPeer;Lcom/ditchoom/socket/quic/QuicOptions;Lcom/ditchoom/socket/TransportConfig;JLkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static final fun connectQuicOnCore-zkXUZaI (Lcom/ditchoom/socket/quic/QuicPeer;Lcom/ditchoom/socket/quic/QuicOptions;Lcom/ditchoom/socket/TransportConfig;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static final fun serveQuicOnCore (ILjava/lang/String;Lcom/ditchoom/socket/quic/QuicTlsConfig;Lcom/ditchoom/socket/quic/QuicOptions;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static final fun serveQuicOnCore (ILjava/lang/String;Lcom/ditchoom/socket/quic/QuicTlsConfig;Lcom/ditchoom/socket/quic/QuicOptions;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
 public final class com/ditchoom/socket/quic/QuicPathStats {
 	public synthetic fun <init> (JZJJJJJJJJJJJJJJJJLkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun component1 ()J
@@ -1020,16 +1027,13 @@ public final class com/ditchoom/socket/quic/QuicheDriver$Companion {
 	public final fun getCapabilities ()Lcom/ditchoom/socket/quic/QuicCapabilities;
 }
 
-public final class com/ditchoom/socket/quic/QuicheEngine : com/ditchoom/socket/quic/QuicEngine {
+public final class com/ditchoom/socket/quic/QuicheEngine {
 	public static final field INSTANCE Lcom/ditchoom/socket/quic/QuicheEngine;
-	public fun bind-myKFqkg (ILjava/lang/String;Lcom/ditchoom/socket/quic/QuicTlsConfig;Lcom/ditchoom/socket/quic/QuicOptions;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
-	public fun bind-zkXUZaI (Lcom/ditchoom/socket/quic/QuicPortBinding;Lcom/ditchoom/socket/quic/PeerCertificate;Lcom/ditchoom/socket/quic/QuicOptions;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
-	public fun bind-zkXUZaI (Lcom/ditchoom/socket/quic/QuicPortBinding;Lcom/ditchoom/socket/quic/QuicTlsConfig;Lcom/ditchoom/socket/quic/QuicOptions;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
-	public fun connect-myKFqkg (Ljava/lang/String;ILcom/ditchoom/socket/quic/QuicOptions;Lcom/ditchoom/socket/TransportConfig;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
-	public fun connect-x2RqbK4 (Lcom/ditchoom/socket/quic/QuicClientBinding;Lcom/ditchoom/socket/quic/QuicEndpoint;Ljava/lang/String;Lcom/ditchoom/socket/quic/QuicOptions;Lcom/ditchoom/socket/TransportConfig;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
-	public fun connect-x2RqbK4 (Lcom/ditchoom/socket/quic/QuicClientBinding;Ljava/lang/String;ILcom/ditchoom/socket/quic/QuicOptions;Lcom/ditchoom/socket/TransportConfig;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
-	public fun getCapabilities ()Lcom/ditchoom/socket/quic/EngineCapabilities;
-	public fun getPeerCertificates ()Lcom/ditchoom/socket/quic/PeerCertificateSupport;
+	public final fun bind-zkXUZaI (Lcom/ditchoom/socket/quic/QuicPortBinding;Lcom/ditchoom/socket/quic/PeerCertificate;Lcom/ditchoom/socket/quic/QuicOptions;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun bind-zkXUZaI (Lcom/ditchoom/socket/quic/QuicPortBinding;Lcom/ditchoom/socket/quic/QuicTlsConfig;Lcom/ditchoom/socket/quic/QuicOptions;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun connect-x2RqbK4 (Lcom/ditchoom/socket/quic/QuicClientBinding;Lcom/ditchoom/socket/quic/QuicEndpoint;Ljava/lang/String;Lcom/ditchoom/socket/quic/QuicOptions;Lcom/ditchoom/socket/TransportConfig;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun getCapabilities ()Lcom/ditchoom/socket/quic/EngineCapabilities;
+	public final fun getPeerCertificates ()Lcom/ditchoom/socket/quic/PeerCertificateSupport;
 }
 
 public abstract interface class com/ditchoom/socket/quic/QuicheMemory {

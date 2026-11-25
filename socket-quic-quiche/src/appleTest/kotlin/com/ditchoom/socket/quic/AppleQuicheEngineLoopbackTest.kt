@@ -56,7 +56,7 @@ class AppleQuicheEngineLoopbackTest {
                 // (`Channel.UNLIMITED`) from the moment of bind — so the client below cannot arrive "too
                 // early" for `connections { … }`; the handler simply starts later.
 
-                val conn = QuicheEngine.connect("127.0.0.1", port, opts, TransportConfig(), 15.seconds)
+                val conn = connectRaced("127.0.0.1", port, opts)
                 try {
                     val stream = conn.openStream()
                     val sendBuf = BufferFactory.deterministic().allocate(11)
@@ -82,4 +82,18 @@ class AppleQuicheEngineLoopbackTest {
                 server.close()
             }
         }
+}
+
+/** A legacy connect to [host]:[port], its candidates raced; a radio the stack cannot pin is refused first. */
+private suspend fun connectRaced(
+    host: String,
+    port: Int,
+    options: QuicOptions,
+): QuicScope {
+    QuicheEngine.capabilities.requirePinnable(QuicClientBinding.OwnSocket, options)
+    return QuicPeer
+        .Named(host, port)
+        .raceCandidates(TransportConfig(), close = { late: QuicScope -> late.close() }) { endpoint ->
+            QuicheEngine.connect(QuicClientBinding.OwnSocket, endpoint, host, options, TransportConfig(), 15.seconds)
+        }.connection
 }

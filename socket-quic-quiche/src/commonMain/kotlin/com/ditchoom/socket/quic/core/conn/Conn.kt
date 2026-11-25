@@ -52,7 +52,7 @@ internal class Conn(
     private val timerQueued = AtomicInt(IDLE)
     private val serve = ServeConn(this)
     private val timerWork = TimerWork(this)
-    private val onTimer = Runnable { timerFired() }
+    private val onTimer = Runnable { timerFired() }.also(turn::makeTimer)
     private val serverClose = ServerCloseCell()
     private var hold = LoopHold.Out
 

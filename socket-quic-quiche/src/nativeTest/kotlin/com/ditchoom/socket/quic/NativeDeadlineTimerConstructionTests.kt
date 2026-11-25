@@ -29,18 +29,22 @@ abstract class NativeDeadlineTimerConstructionTests {
                 val builders = newFixedThreadPoolContext(BUILDERS, "timer-builders")
                 val peakAtStart = peakResidentBytes()
                 val grewBy = AtomicLong(WITHIN_BOUND)
+                val built = AtomicLong(0)
                 try {
                     withContext(builders) {
                         repeat(BUILDERS) {
                             launch {
-                                for (built in 1..CONSTRUCTIONS) {
-                                    if (grewBy.value != WITHIN_BOUND) break
+                                repeat(CONSTRUCTIONS) {
+                                    if (grewBy.value != WITHIN_BOUND) return@launch
                                     val timer = NativeDeadlineTimer()
                                     timer.close()
-                                    if (built % COLLECT_EVERY != 0) continue
+                                    if (built.incrementAndGet() % COLLECT_EVERY != 0L) return@repeat
                                     // A thread that has ended keeps its allocator pages until the next collection,
                                     // and in a test binary every new thread fills several by registering every test
-                                    // suite. Ending threads does not start a collection, so this test asks for one.
+                                    // suite. Ending threads does not start a collection, so this test asks for one,
+                                    // once per [COLLECT_EVERY] timers across the builders: a collection stops every
+                                    // thread, and one per builder's every second timer made 9 600 of them, two thirds of
+                                    // the test's time.
                                     GC.collect()
                                     val growth = peakResidentBytes() - peakAtStart
                                     if (growth > MAX_GROWTH_BYTES) grewBy.compareAndSet(WITHIN_BOUND, growth)
@@ -66,7 +70,13 @@ abstract class NativeDeadlineTimerConstructionTests {
     private companion object {
         const val BUILDERS = 64
         const val CONSTRUCTIONS = 300
-        const val COLLECT_EVERY = 2
+
+        /**
+         * Timers built, across the builders, per collection: 2 400 collections. A collection after every second timer of
+         * each builder made 9 600, and the test took 15 s on macOS and 37 to 54 s on the Linux ARM64 runner; this takes
+         * 3.4 s on macOS, with the peak resident set 203 MiB up against 160 MiB before.
+         */
+        const val COLLECT_EVERY = 8L
         const val MAX_GROWTH_BYTES = 512L * 1024 * 1024
         const val WITHIN_BOUND = 0L
     }
