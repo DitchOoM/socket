@@ -1518,6 +1518,12 @@ jobs:
               -keystore "$JAVA_HOME/lib/security/cacerts" \
               -storepass changeit -noprompt
 
+      # The restored Gradle cache serves every plugin this build requests without a repository, judged
+      # with the network closed and the cache's "not found" answers expired (plugins-from-cache.sh).
+      - name: Resolve the build's plugins from the Gradle cache with the network closed
+        timeout-minutes: 5
+        run: .github/scripts/plugins-from-cache.sh ${{ matrix.leg.args }} -PlinuxTargets=false ${{ inputs.gradle-args }}
+
       # Everything the tests need that is not test execution: every JVM module's main and test classes
       # and the staged quiche natives. Its own limit keeps a slow runner's compile time out of the test
       # step's budget; the test step reruns the same tasks and finds them up to date. The core-dump leg

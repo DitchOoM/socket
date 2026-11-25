@@ -22,12 +22,48 @@ pluginManagement {
     // there would rebuild every native cache on CI for nothing.
     val kotlinxBenchmarkVersion = providers.gradleProperty("kotlinxBenchmarkVersion").get()
     val androidxBenchmarkVersion = providers.gradleProperty("androidxBenchmarkVersion").get()
+    // The module that implements each plugin this build requests. A plugin resolves straight from its
+    // module, never through its marker: a marker's POM names a jar that does not exist, Gradle keeps
+    // that "not found" answer for only 24 hours, and so every build on a Gradle cache older than a day
+    // asks the repository for the jar again; for a plugin the portal forwards to Maven Central
+    // (maven-publish, KSP, boringssl-provision), Central answers that request, 429 included.
+    // .github/scripts/plugins-from-cache.sh checks that the build's plugins resolve with the network closed.
+    val pluginModules =
+        mapOf(
+            "org.gradle.toolchains.foojay-resolver-convention" to "org.gradle.toolchains:foojay-resolver",
+            "com.gradle.develocity" to "com.gradle:develocity-gradle-plugin",
+            "org.jetbrains.kotlin.multiplatform" to "org.jetbrains.kotlin:kotlin-gradle-plugin",
+            "org.jetbrains.kotlin.jvm" to "org.jetbrains.kotlin:kotlin-gradle-plugin",
+            "com.android.library" to "com.android.tools.build:gradle",
+            "com.android.application" to "com.android.tools.build:gradle",
+            "com.android.test" to "com.android.tools.build:gradle",
+            "org.jlleitschuh.gradle.ktlint" to "org.jlleitschuh.gradle:ktlint-gradle",
+            "com.vanniktech.maven.publish" to "com.vanniktech:gradle-maven-publish-plugin",
+            "org.jetbrains.dokka" to "org.jetbrains.dokka:dokka-gradle-plugin",
+            "com.google.devtools.ksp" to "com.google.devtools.ksp:symbol-processing-gradle-plugin",
+            "com.ditchoom.boringssl.provision" to "com.ditchoom.boringssl:boringssl-provision",
+            "org.jetbrains.kotlinx.benchmark" to "org.jetbrains.kotlinx:kotlinx-benchmark-plugin",
+            "androidx.benchmark" to "androidx.benchmark:benchmark-gradle-plugin",
+            "androidx.baselineprofile" to "androidx.benchmark:benchmark-baseline-profile-gradle-plugin",
+        )
     resolutionStrategy {
         eachPlugin {
-            when (requested.id.id) {
-                "com.ditchoom.boringssl.provision" -> useVersion(provisionVersion)
-                "org.jetbrains.kotlinx.benchmark" -> useVersion(kotlinxBenchmarkVersion)
-                "androidx.benchmark", "androidx.baselineprofile" -> useVersion(androidxBenchmarkVersion)
+            val id = requested.id.id
+            val version =
+                when (id) {
+                    "com.ditchoom.boringssl.provision" -> provisionVersion
+                    "org.jetbrains.kotlinx.benchmark" -> kotlinxBenchmarkVersion
+                    "androidx.benchmark", "androidx.baselineprofile" -> androidxBenchmarkVersion
+                    else -> requested.version
+                }
+            // A request without a version is a core plugin or one already on the classpath: nothing to resolve.
+            if (version != null) {
+                val module =
+                    pluginModules[id]
+                        ?: throw GradleException(
+                            "Plugin '$id' has no entry in settings.gradle.kts pluginModules; add the module its marker names.",
+                        )
+                useModule("$module:$version")
             }
         }
     }
