@@ -249,8 +249,28 @@ jobs:
             # run.py exits non-zero when a test fails, and this step runs under `bash -e`.
             rc=0
             python3 run.py "$@" -t "$t" -l "$logs" -j "$json" -d 2>&1 | tee "$log" || rc=$?
-            [ -s "$json" ] || runner_crash "$logs" "$json" "$rc" "$log"
+            if [ ! -s "$json" ]; then
+              runner_crash "$logs" "$json" "$rc" "$log"
+            elif ! why=$(python3 "$gate" ran "$json"); then
+              # The runner skips every test of a peer it found "not compliant", an image it could not pull
+              # included, and exits 0: no verdict is the cell not running, which fails it here, at its source.
+              echo "::error title=interop cell did not run::$(basename "$json"): $why"
+              not_run+=("$(basename "$json")")
+            fi
           }
+          not_run=()
+          # The runner pulls through docker compose with no retry, so one DNS timeout on the runner VM reads as a
+          # peer that is not compliant. Every image a cell needs is pulled first, each with its own retries.
+          impl=implementations_quic.json
+          [ -f "$impl" ] || impl=implementations.json
+          peer_image=$(jq -er --arg p "$PEER" '.[$p].image' "$impl")
+          for img in "$peer_image" $(grep -oE '^\s*image: *[^$[:space:]]+' docker-compose.yml | awk '{print $2}' | sort -u); do
+            for attempt in 1 2 3 4; do
+              docker pull --quiet "$img" && break
+              [ "$attempt" = 4 ] && { echo "::error title=peer image did not pull::$img, after $attempt attempts"; exit 1; }
+              sleep $((attempt * 15))
+            done
+          done
           case "$DIRECTION" in
             our-client) roles=(-c ditchoom -s "$PEER") ;;
             our-server) roles=(-s ditchoom -c "$PEER") ;;
@@ -309,6 +329,7 @@ jobs:
             fi
           done > "$results/${DIRECTION}__${PEER}.reasons.txt" || true
           ls -la "$results"
+          [ "${#not_run[@]}" -eq 0 ] || { echo "::error::no test ran in: ${not_run[*]}"; exit 1; }
 
       - uses: actions/upload-artifact@v7
         if: ${{ !cancelled() }}
