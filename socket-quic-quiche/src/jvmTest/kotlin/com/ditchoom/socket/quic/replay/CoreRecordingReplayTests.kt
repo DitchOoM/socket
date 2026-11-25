@@ -877,6 +877,24 @@ class CoreRecordingReplayTests {
             )
         }
 
+    /**
+     * A kept CI recording (macOS JDK 21 FFM) of a slow client on the lossy link: its payload (datagram 2) was lost and it
+     * retransmitted at 206.75 ms, when quiche's timeout ran. The replay follows it whole.
+     */
+    @Test
+    fun aSlowClientsRetransmitAfterALostPayloadIsFollowedWholeByItsReplayTwice() =
+        replayTest("aSlowClientsRetransmitAfterALostPayloadIsFollowedWholeByItsReplayTwice") {
+            assertFollowedWholeTwice(
+                scheduleOf(
+                    Recorded(
+                        keptRecording("slow-client-lossy-retransmit.client.trace"),
+                        keptRecording("slow-client-lossy-retransmit.server.trace"),
+                        1,
+                    ),
+                ),
+            )
+        }
+
     private fun keptRecording(name: String): List<TraceEvent> =
         TraceEvent.parseAll(
             assertNotNull(this::class.java.classLoader.getResource("replay-recordings/$name"), "no kept recording $name").readText(),
