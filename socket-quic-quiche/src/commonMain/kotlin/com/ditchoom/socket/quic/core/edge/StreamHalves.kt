@@ -16,6 +16,7 @@ import com.ditchoom.socket.quic.core.observe.Published
 import com.ditchoom.socket.quic.core.stream.WriteEnd
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 import com.ditchoom.socket.quic.core.udp.ReadAddress
+import kotlinx.coroutines.currentCoroutineContext
 import kotlin.concurrent.atomics.AtomicReference
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.time.Duration
@@ -46,7 +47,7 @@ internal enum class Stopping { Now, Already }
  */
 @Published
 internal class SendHalf(
-    private val connection: CoreConnection,
+    internal val connection: CoreConnection,
     val id: QuicStreamId,
     val writePolicy: WritePolicy,
 ) {
@@ -84,19 +85,22 @@ internal class SendHalf(
         return finishing(source, deadline)
     }
 
-    /** One [write] with its answer as a value: [buffer] moved past what quiche took. */
-    suspend fun writeSettled(
+    /**
+     * One [write] with its answer as a value: [buffer] moved past what quiche took. This and the other settled calls
+     * are inline, so the public stream's call is the one suspend frame.
+     */
+    suspend inline fun writeSettled(
         buffer: ReadBuffer,
         deadline: Duration,
     ): WriteAnswer {
-        if (use.load() != Sending.Open) raise(Raised.StreamClosed(id, QuicStreamSide.Write), QuicCloseCircumstance.Ended)
+        writable()
         val address = addressOf(buffer)
         if (buffer.remaining() == 0) return WriteAnswer.Written
         return connection.submitted(id, WriteSource.Bytes(buffer, address, WriteEnd.More), deadline).settled()
     }
 
     /** [writeAndFinish] with its answer as a value. */
-    suspend fun finishSettled(
+    suspend inline fun finishSettled(
         buffer: ReadBuffer,
         deadline: Duration,
     ): WriteAnswer {
@@ -108,15 +112,13 @@ internal class SendHalf(
     }
 
     /** Our FIN alone, with its answer as a value. */
-    suspend fun finSettled(): WriteAnswer = finishingSettled(WriteSource.FinOnly, deadlineOf(writePolicy))
+    suspend inline fun finSettled(): WriteAnswer = finishingSettled(WriteSource.FinOnly, deadlineOf(writePolicy))
 
-    private suspend fun finishingSettled(
+    internal suspend inline fun finishingSettled(
         source: WriteSource,
         deadline: Duration,
     ): WriteAnswer {
-        if (!use.compareAndSet(Sending.Open, Sending.Finishing)) {
-            raise(Raised.StreamClosed(id, QuicStreamSide.Write), QuicCloseCircumstance.Ended)
-        }
+        startFinishing()
         val op = connection.submitted(id, source, deadline)
         try {
             return op.settled()
@@ -150,8 +152,20 @@ internal class SendHalf(
         }
     }
 
+    /** A write may go: this half is open, else the write raises. */
+    internal fun writable() {
+        if (use.load() != Sending.Open) raise(Raised.StreamClosed(id, QuicStreamSide.Write), QuicCloseCircumstance.Ended)
+    }
+
+    /** A finishing write may go: this half moves from open to finishing, else the write raises. */
+    internal fun startFinishing() {
+        if (!use.compareAndSet(Sending.Open, Sending.Finishing)) {
+            raise(Raised.StreamClosed(id, QuicStreamSide.Write), QuicCloseCircumstance.Ended)
+        }
+    }
+
     /** This half after a finishing write answered; a [finish] that came meanwhile left the FIN to it, which goes now. */
-    private fun settled(fin: Fin) {
+    internal fun settled(fin: Fin) {
         val after =
             when (fin) {
                 Fin.Taken -> Sending.Finished
@@ -166,7 +180,7 @@ internal class SendHalf(
         }
     }
 
-    private fun addressOf(buffer: ReadBuffer): Long =
+    internal fun addressOf(buffer: ReadBuffer): Long =
         when (val at = NativeBytes.addressOf(buffer)) {
             is ReadAddress.At -> at.address
             is ReadAddress.NotAddressable -> raise(Raised.NotNative(id, buffer), QuicCloseCircumstance.Ended)
@@ -184,12 +198,12 @@ internal class SendHalf(
  */
 @Published
 internal class ReceiveHalf(
-    private val connection: CoreConnection,
+    internal val connection: CoreConnection,
     val id: QuicStreamId,
     val readPolicy: ReadPolicy,
 ) {
     private val use = AtomicReference(Receiving.Open)
-    private val streamReads = StreamReads()
+    internal val streamReads = StreamReads()
 
     fun isOpen(): Boolean = use.load() == Receiving.Open
 
@@ -198,10 +212,15 @@ internal class ReceiveHalf(
         return connection.read(id, deadline, streamReads)
     }
 
-    /** One [read] with its answer as a value. */
-    suspend fun take(deadline: Duration): ReadAnswer {
+    /** One [read] with its answer as a value. Inline, so the public stream's read is the one suspend frame. */
+    suspend inline fun take(deadline: Duration): ReadAnswer {
+        readable()
+        return connection.reading(id, deadline, streamReads, currentCoroutineContext()).taken()
+    }
+
+    /** A read may go: this half is open, else the read raises. */
+    internal fun readable() {
         if (use.load() == Receiving.Closed) raise(Raised.StreamClosed(id, QuicStreamSide.Read), QuicCloseCircumstance.Ended)
-        return connection.taken(id, deadline, streamReads)
     }
 
     /** Reads no more: what still arrives is dropped, and the peer is not told to stop. */

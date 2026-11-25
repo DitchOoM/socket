@@ -411,9 +411,13 @@ jobs:
           restore-keys: |
             gradle-macos-kn-
             gradle-macos-
+      # Retried on a transient repository answer only (.github/scripts/gradle-retry.sh): what the restored
+      # cache lacks comes from Central, which answered 429 for two plugin-classpath jars in job 138223363838.
       - name: Apple K/N link gate (macosArm64 + iosSimulatorArm64)
+        env:
+          GRADLE_RETRY_COMMAND: gradle
         run: |
-          gradle -p .ci/consumer-smoke macosArm64TestBinaries iosSimulatorArm64TestBinaries \
+          .github/scripts/gradle-retry.sh -p .ci/consumer-smoke macosArm64TestBinaries iosSimulatorArm64TestBinaries \
             -PsocketVersion="${RESOLVED_VERSION}" \
             -PmavenRepoPath=/tmp/maven-local-merged \
             --no-daemon
@@ -560,6 +564,11 @@ jobs:
   # quiche patch is tested by the pull request that changes it. They start with the run and wait only for
   # the natives artifacts (await-natives), not for the rest of build-linux and build-apple.
   quic-interop:
+    # packages: read pulls the held haproxy image (test-harness/quic-interop/peer-images.json) from GHCR.
+    permissions:
+      contents: read
+      actions: read
+      packages: read
     uses: ./.github/workflows/quic-interop-gate.yaml
     with:
       version: "0.0.0-interop"

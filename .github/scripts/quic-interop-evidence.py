@@ -46,6 +46,7 @@ import sys
 EXIT_LINE = re.compile(r"\b(client|server|sim) exited with code (\d+)")
 HANDSHAKES = re.compile(r"Expected (\d+) handshakes\. Got: (\d+)")
 TIME_LIMIT = re.compile(r"took longer than (\d+)s")
+UNANSWERED_PATH_CHALLENGE = re.compile(r"PATH_CHALLENGE without a PATH_RESPONSE: \[(.*)\]")
 NO_PATH_CHALLENGE = re.compile(r"First server packet on new path .* did not contain a PATH_CHALLENGE frame")
 EMPTY_DOWNLOAD = re.compile(r"doesn't match\. Original: \d+ bytes, downloaded: 0 bytes")
 SIM_DATAGRAM = re.compile(r"\b(Forwarding|Corrupting|Dropping) \d+ bytes [\d.]+:(\d+) -> ([\d.]+):(\d+)")
@@ -121,6 +122,8 @@ def connection_facts(path, side):
         "longest_wait_in_flight_ms": 0.0,
         "fin_sent_streams": 0,
         "peer_resets": [],
+        "path_challenges_rx": 0,
+        "path_responses_tx": 0,
     }
     remainder = peer_bidi_remainder(side)
     first_rx, first_tx, fin_sent, copies = {}, {}, set(), {}
@@ -166,6 +169,8 @@ def connection_facts(path, side):
                     initial_crypto.append((offset, offset + length))
                 elif frame.get("frame_type") == "handshake_done":
                     facts.setdefault("handshake_done_rx_ms", at)
+                elif frame.get("frame_type") == "path_challenge":
+                    facts["path_challenges_rx"] += 1
                 elif frame.get("frame_type") == "ack" and space == "1RTT" and "first_stream_ack_ms" not in facts:
                     if any(acked(frame.get("acked_ranges") or [], n) for n in stream_packets):
                         facts["first_stream_ack_ms"] = at
@@ -199,6 +204,8 @@ def connection_facts(path, side):
             for frame in data.get("frames") or []:
                 if frame.get("frame_type") == "handshake_done":
                     facts.setdefault("handshake_done_sent_ms", at)
+                if frame.get("frame_type") == "path_response":
+                    facts["path_responses_tx"] += 1
                 if frame.get("frame_type") == "stream":
                     stream_id = int(frame.get("stream_id", 0))
                     first_tx.setdefault(stream_id, at)
@@ -731,6 +738,9 @@ def runner_output(output_txt, side):
                     runner["server_first_packets_without_path_challenge"] = (
                         runner.get("server_first_packets_without_path_challenge", 0) + 1
                     )
+                m = UNANSWERED_PATH_CHALLENGE.search(line)
+                if m:
+                    runner["unanswered_path_challenges"] = len([c for c in m.group(1).split(",") if c.strip()])
                 if EMPTY_DOWNLOAD.search(line):
                     runner["empty_downloads"] = runner.get("empty_downloads", 0) + 1
                 droplist_from_peer += SIM_DROPLIST.findall(line).count(PEER_ADDRESS[side])

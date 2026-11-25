@@ -973,6 +973,9 @@ project(":socket-quic-quiche") {
             doFirst { environment(jvmTestTask.environment - "QUIC_RECVINFO_GUARD") }
             // Assertions turn on coroutine debug mode, which names each coroutine's thread per step: not the production path.
             systemProperty("kotlinx.coroutines.debug", "off")
+            // Extra JVM flags for a diagnostic run, e.g. -PallocTestJvmArgs=-XX:-UseTLAB for an exact per-object breakdown
+            // or -PallocTestJvmArgs=-XX:-DoEscapeAnalysis to see what the JIT removes.
+            providers.gradleProperty("allocTestJvmArgs").orNull?.let { extra -> jvmArgs(extra.split(" ")) }
             filter { includeTestsMatching("com.ditchoom.socket.quic.core.*AllocationTests") }
         }
         // jvmTest's own conditions, recv_info guard included; the allocation gates among the names stay in coreAllocationTest.

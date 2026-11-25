@@ -53,7 +53,7 @@ internal class OpenOp(
 ) : ConnWork(),
     Waiter,
     Bounded {
-    private val hand = Hand<OpenAnswer>()
+    internal val hand = Hand<OpenAnswer>()
     private var lease: Lease = Lease.None
 
     /** The id of the stream opened, written before [OpenAnswer.Opened] lands and read by the caller after. */
@@ -72,14 +72,26 @@ internal class OpenOp(
     }
 
     /** [answer] with a refused open as a value; a cancelled caller raises as [answer] does. */
-    suspend fun settled(): OpenSettled {
+    suspend fun settled(): OpenSettled = settled({ OpenSettled.Stream(it) }, { OpenSettled.NotOpened(it) })
+
+    /**
+     * [settled] as [opened] of the stream's id or [notOpened] of the refusal, with no answer object between. Inline, so
+     * it runs in its caller's suspend frame and makes none of its own.
+     */
+    suspend inline fun <T> settled(
+        opened: (QuicStreamId) -> T,
+        notOpened: (OpenAnswer.Failed) -> T,
+    ): T {
         val context = currentCoroutineContext()
         return when (val answer = hand.await(context) { cancelled() }) {
-            is OpenAnswer.Opened -> if (context.isActive) OpenSettled.Stream(QuicStreamId(opened)) else unclaimed(context)
-            is OpenAnswer.Failed -> OpenSettled.NotOpened(answer)
+            is OpenAnswer.Opened -> opened(openedFor(context))
+            is OpenAnswer.Failed -> notOpened(answer)
             is OpenAnswer.Cancelled -> raiseCancelled(context)
         }
     }
+
+    /** The id opened, for a caller still active in [context]; a caller cancelled meanwhile gives the stream back and raises. */
+    internal fun openedFor(context: CoroutineContext): QuicStreamId = if (context.isActive) QuicStreamId(opened) else unclaimed(context)
 
     /** A stream was opened for a caller cancelled meanwhile: the connection gives it back, and the caller is cancelled. */
     private fun unclaimed(context: CoroutineContext): Nothing {
@@ -91,7 +103,7 @@ internal class OpenOp(
      * The cancelling thread: an open not answered yet is answered Cancelled and handed back to the connection,
      * ahead of anything its caller does once it resumes.
      */
-    private fun cancelled() {
+    internal fun cancelled() {
         hand.answer(OpenAnswer.Cancelled) { conn.submit(Withdraw(), CallerPlace.HandToLoop) }
     }
 

@@ -2597,13 +2597,8 @@ public abstract interface class com/ditchoom/socket/quic/QuicReceiveStream : com
 	public abstract fun getOrigin ()Lcom/ditchoom/socket/quic/QuicStreamOrigin;
 	public abstract fun getReadPolicy ()Lcom/ditchoom/buffer/flow/ReadPolicy;
 	public abstract fun markReplaySafe ()V
-	public abstract fun read-rQHqx-g (Lcom/ditchoom/buffer/flow/ReadPolicy;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
-	public static synthetic fun read-rQHqx-g$default (Lcom/ditchoom/socket/quic/QuicReceiveStream;Lcom/ditchoom/buffer/flow/ReadPolicy;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public abstract fun readNext (Lcom/ditchoom/buffer/flow/ReadPolicy;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public abstract fun stop-yOLykP8 (J)V
-}
-
-public final class com/ditchoom/socket/quic/QuicReceiveStream$DefaultImpls {
-	public static synthetic fun read-rQHqx-g$default (Lcom/ditchoom/socket/quic/QuicReceiveStream;Lcom/ditchoom/buffer/flow/ReadPolicy;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
 }
 
 public abstract interface class com/ditchoom/socket/quic/QuicRefusal {
@@ -3155,7 +3150,9 @@ public final class com/ditchoom/socket/quic/QuicStreamId : java/lang/Comparable 
 }
 
 public final class com/ditchoom/socket/quic/QuicStreamKt {
-	public static final fun readEach (Lcom/ditchoom/socket/quic/QuicReceiveStream;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static final fun read (Lcom/ditchoom/socket/quic/QuicReceiveStream;Lcom/ditchoom/buffer/flow/ReadPolicy;Lkotlin/jvm/functions/Function1;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static synthetic fun read$default (Lcom/ditchoom/socket/quic/QuicReceiveStream;Lcom/ditchoom/buffer/flow/ReadPolicy;Lkotlin/jvm/functions/Function1;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
+	public static final fun readEach (Lcom/ditchoom/socket/quic/QuicReceiveStream;Lkotlin/jvm/functions/Function1;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 }
 
 public final class com/ditchoom/socket/quic/QuicStreamLimit {

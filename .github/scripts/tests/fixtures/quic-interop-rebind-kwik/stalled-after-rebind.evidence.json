@@ -1,0 +1,62 @@
+{
+ "connections": [
+  {
+   "bytes_in_flight_at_end": 0,
+   "bytes_in_flight_before_close": 0,
+   "end_ms": 30507.012,
+   "fin_sent_streams": 1,
+   "first_stream_ack_ms": 463.332,
+   "first_stream_tx_ms": 403.18,
+   "handshake_done_rx_ms": 416.857,
+   "last_rx_ms": 501.315,
+   "late_probes": 0,
+   "local_closes": [],
+   "local_initial_max_streams_bidi": 100,
+   "longest_wait_in_flight_ms": 48.591999999999985,
+   "max_stream_copies": 1,
+   "max_streams_bidi_sent": 0,
+   "our_streams_unfinished": 1,
+   "peer_bidi_streams_opened": 0,
+   "peer_closes": [],
+   "peer_gave_up_requests": 0,
+   "peer_resets": [],
+   "peer_source_cid_lengths": [
+    8
+   ],
+   "peer_unasked_retirements": 0,
+   "peer_unfinished_streams": 0,
+   "probes_missing_a_space": 0,
+   "pto_expiries_after_last_tx": 0,
+   "qlog": "quiche-client-2bb735c610c99866dcaf214e5c807663.sqlog",
+   "remote_active_connection_id_limit": 3,
+   "remote_disable_active_migration": false,
+   "rx_handshake_acks": 0,
+   "rx_handshake_crypto": 1,
+   "rx_initial_acks": 1,
+   "rx_initial_crypto": 1,
+   "rx_initial_crypto_end": 90,
+   "rx_initial_unlogged": 0,
+   "rx_packets": 26,
+   "tx_after_last_rx": 1,
+   "tx_crypto": 2,
+   "wire": {
+    "ours_delivered_after_last_rx": 0,
+    "ours_sent_after_last_rx": 0,
+    "peer_delivered_after_last_rx": 0,
+    "peer_packets_unread": 0,
+    "peer_sent_after_last_rx": 30,
+    "port": 41822
+   }
+  }
+ ],
+ "exits": {
+  "client": 1
+ },
+ "migrations": [],
+ "peer_unanswered_requests": 0,
+ "runner": {},
+ "sim_droplist_from_peer": 0,
+ "sim_from_peer": [],
+ "sim_to_peer": [],
+ "sim_to_us": []
+}

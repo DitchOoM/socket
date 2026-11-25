@@ -119,6 +119,10 @@ jobs:
   interop:
     needs: [natives, build-linux]
     if: ${{ !cancelled() && needs.natives.result == 'success' && needs.build-linux.result != 'failure' && inputs.lanes != 'native' }}
+    permissions:
+      contents: read
+      actions: read
+      packages: read
     uses: ./.github/workflows/quic-interop-gate.yaml
     with:
       version: "0.0.0-interop"

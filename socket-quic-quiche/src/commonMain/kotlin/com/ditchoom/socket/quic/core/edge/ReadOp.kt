@@ -21,6 +21,7 @@ import com.ditchoom.socket.quic.core.stream.Streams
 import com.ditchoom.socket.quic.core.stream.Waiter
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 import kotlinx.coroutines.currentCoroutineContext
+import kotlin.coroutines.CoroutineContext
 import kotlin.time.Duration
 
 /**
@@ -51,7 +52,7 @@ internal class ReadOp(
     private val asked = streamReads.chunk
     private var spare: Spare = idle.take(asked.bytes, factory)
     private var lease: Lease = Lease.None
-    private val hand = Hand<ReadAnswer>()
+    internal val hand = Hand<ReadAnswer>()
 
     // ---- the caller's side ----
 
@@ -75,10 +76,20 @@ internal class ReadOp(
         }
     }
 
-    /** [answer] with the read's own answer as it is, for a caller that reports failures as values. */
-    suspend fun taken(): ReadAnswer {
+    /**
+     * [answer] with the read's own answer as it is, for a caller that reports failures as values. Inline, so it runs in
+     * its caller's suspend frame and makes none of its own.
+     */
+    suspend inline fun taken(): ReadAnswer {
         val context = currentCoroutineContext()
-        val answer = hand.await(context) { cancelled() }
+        return took(hand.await(context) { cancelled() }, context)
+    }
+
+    /** The caller, once [answer] landed for its read: the stream's read count moves, and the answer is the caller's. */
+    internal fun took(
+        answer: ReadAnswer,
+        context: CoroutineContext,
+    ): ReadAnswer {
         try {
             when (answer) {
                 is ReadAnswer.Data -> streamReads.read(asked, answer.buffer.remaining())
@@ -99,7 +110,7 @@ internal class ReadOp(
      * The cancelling thread: a read not answered yet is answered Cancelled and handed back to the connection,
      * ahead of anything its caller does once it resumes.
      */
-    private fun cancelled() {
+    internal fun cancelled() {
         hand.answer(ReadAnswer.Cancelled) { conn.submit(Withdraw(), CallerPlace.HandToLoop) }
     }
 

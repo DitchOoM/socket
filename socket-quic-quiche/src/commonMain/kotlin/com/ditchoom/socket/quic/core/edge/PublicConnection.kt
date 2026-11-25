@@ -130,17 +130,18 @@ internal class CoreQuicConnection(
 
     override suspend fun stats(): QuicStatsRead = core.stats()
 
-    private suspend fun bidirectional(): StreamOpen<CoreBidiStream> =
-        when (val open = core.opened(StreamKind.Bidirectional)) {
-            is OpenSettled.Stream -> StreamOpen.opened(streams.both(core.halves.openedBoth(open.id), Arrival.Confirmed))
-            is OpenSettled.NotOpened -> StreamOpen.notOpened(notOpened(open.answer))
-        }
+    /** Inline, as [sendOnly] is: an open is one suspend frame, its caller's, and one boxed [StreamOpen]. */
+    private suspend inline fun bidirectional(): StreamOpen<CoreBidiStream> =
+        core.opening(StreamKind.Bidirectional, kotlinx.coroutines.currentCoroutineContext()).settled(
+            { id -> StreamOpen.opened(streams.both(core.halves.openedBoth(id), Arrival.Confirmed)) },
+            { StreamOpen.notOpened(notOpened(it)) },
+        )
 
-    private suspend fun sendOnly(): StreamOpen<CoreSendStream> =
-        when (val open = core.opened(StreamKind.Unidirectional)) {
-            is OpenSettled.Stream -> StreamOpen.opened(streams.sending(core.halves.openedSendOnly(open.id)))
-            is OpenSettled.NotOpened -> StreamOpen.notOpened(notOpened(open.answer))
-        }
+    private suspend inline fun sendOnly(): StreamOpen<CoreSendStream> =
+        core.opening(StreamKind.Unidirectional, kotlinx.coroutines.currentCoroutineContext()).settled(
+            { id -> StreamOpen.opened(streams.sending(core.halves.openedSendOnly(id))) },
+            { StreamOpen.notOpened(notOpened(it)) },
+        )
 
     /** Runs [handler] on [stream], then completes the stream it returned from; one it throws from is reset by its caller. */
     private suspend fun handle(

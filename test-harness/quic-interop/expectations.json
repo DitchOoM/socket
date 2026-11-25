@@ -228,7 +228,24 @@
       "longrtt": "pass",
       "multiplexing": "pass",
       "rebind-addr": "pass",
-      "rebind-port": "pass",
+      "rebind-port": {
+        "flaky": {
+          "why": "peer and simulator, by where the rebinding falls (run 45430954348, one failure in seven runs): the transfer ends at a rebinding, our client closes with NO_ERROR from the new port, and kwik answers that CONNECTION_CLOSE with a PATH_CHALLENGE (its qlog: close received at 10384 ms, challenge sent at 10385 ms) that no closed connection answers, which the runner fails; RFC 9000 §10.2.2 lets a draining endpoint send nothing; or (ours) the rebinding drops the 15 datagrams in flight to us just after our client acked, and our client, with a request outstanding and nothing of its own in flight, stays silent, so kwik never learns our new port and retransmits only to the old one, which the simulator drops as an unknown binding, until our idle timeout; the client's silence probe (PathLiveness, ported in X5) removes this branch",
+          "signature": {
+            "kind": "any-of",
+            "signatures": [
+              {
+                "kind": "peer-challenge-never-reached-our-open-connection"
+              },
+              {
+                "kind": "peer-move-never-reached-us",
+                "idle_s": 30,
+                "ended_by": "our-idle-timeout"
+              }
+            ]
+          }
+        }
+      },
       "resumption": "pass",
       "retry": "pass",
       "transfer": "pass",

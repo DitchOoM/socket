@@ -728,5 +728,41 @@ expect "peer-gave-up takes no idle_s" "$bad" "takes exactly ['ended_by']"
 bad="$(python3 "$script" judge <(echo '{"our-client":{"p":{"handshakeloss":{"flaky":{"why":"x","signature":{"kind":"peer-packets-lost-while-we-probed-on-time","ended_by":"whenever"}}}}}}') "$tmp/ok" 2>&1 >/dev/null)"
 expect "ended_by is a closed set" "$bad" "ended_by is one of ['our-idle-timeout', 'peer-gave-up', 'peer-closed']"
 
+# Run 45430954348, our client against kwik, rebind-port. Attempt 1: the transfer finished at the simulator's last
+# rebinding, our client closed with NO_ERROR from the new port, kwik answered that CONNECTION_CLOSE with a
+# PATH_CHALLENGE (its qlog: close received at 10384 ms, challenge sent at 10385 ms) and the runner failed the test
+# for a challenge without a response. Attempt 2: the rebinding dropped the 15 datagrams in flight to us, we had
+# nothing of ours in flight to send, and kwik retransmitted to the old port for 30 s until our idle timeout.
+rebind="$here/fixtures/quic-interop-rebind-kwik"
+unchallenged='{"kind":"peer-challenge-never-reached-our-open-connection"}'
+closed="$rebind/closed-before-the-challenge.evidence.json"
+check_kind "a challenge that came after our close" "$unchallenged" our-client "$(cat "$closed")" Matched
+check_kind "a challenge we received and did not answer is ours" "$unchallenged" our-client "$(sed 's/"path_responses_tx": 2/"path_responses_tx": 1/' "$closed")" NotMatched
+check_kind "a client that failed is not the signature" "$unchallenged" our-client "$(sed 's/"client": 0/"client": 1/' "$closed")" NotMatched
+check_kind "a close with an error is not the signature" "$unchallenged" our-client "$(sed 's/"code": 0,/"code": 10,/' "$closed")" NotMatched
+check_kind "a connection we never closed is not the signature" "$unchallenged" our-client "$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); d["connections"][0]["local_closes"]=[]; print(json.dumps(d))' "$closed")" NotMatched
+check_kind "no unanswered challenge is not the signature" "$unchallenged" our-client "$(sed 's/"unanswered_path_challenges": 1/"unanswered_path_challenges": 0/' "$closed")" NotMatched
+check_kind "a request of ours left unfinished is not the signature" "$unchallenged" our-client "$(sed 's/"our_streams_unfinished": 0/"our_streams_unfinished": 1/' "$closed")" NotMatched
+stalled='{"kind":"peer-move-never-reached-us","ended_by":"our-idle-timeout","idle_s":30}'
+check_kind "a flight lost to the rebinding, then 30 s of silence" "$stalled" our-client "$(cat "$rebind/stalled-after-rebind.evidence.json")" Matched
+expect "kwik rebind-port expects both of its failures" "$(python3 -c 'import json,sys; s=json.load(open(sys.argv[1]))["our-client"]["kwik"]["rebind-port"]["flaky"]["signature"]; print(sorted(x["kind"] for x in s["signatures"]))' "$here/../../../test-harness/quic-interop/expectations.json")" "['peer-challenge-never-reached-our-open-connection', 'peer-move-never-reached-us']"
+
+# The extractor counts the challenges that reached our connection and the responses it sent, and the runner's
+# verdict on a challenge that got no response.
+d="$tmp/logs3/p_ditchoom/rebind-port"
+mkdir -p "$d/client/qlog"
+{
+  printf '{"time":10,"name":"quic:packet_received","data":{"header":{"packet_type":"1RTT"},"frames":[{"frame_type":"path_challenge"}]}}\n'
+  printf '{"time":11,"name":"quic:packet_sent","data":{"header":{"packet_type":"1RTT"},"frames":[{"frame_type":"path_response"}]}}\n'
+  printf '{"time":20,"name":"quic:packet_received","data":{"header":{"packet_type":"1RTT"},"frames":[{"frame_type":"path_challenge"},{"frame_type":"stream","stream_id":1}]}}\n'
+  printf '{"time":21,"name":"quic:packet_sent","data":{"header":{"packet_type":"1RTT"},"frames":[{"frame_type":"path_response"}]}}\n'
+  printf '{"time":30,"name":"quic:packet_sent","data":{"header":{"packet_type":"1RTT"},"frames":[{"frame_type":"connection_close","error_space":"transport","error_code":0}]}}\n'
+} >"$d/client/qlog/quiche-client-4.sqlog"
+printf "2026-11-24 16:14:55,150 PATH_CHALLENGE without a PATH_RESPONSE: ['ea:66:37:ec:24:d1:0e:f3']\nclient exited with code 0\n" >"$d/output.txt"
+python3 -I "$extract" "$tmp/logs3" our-client p "$tmp/ev3.json"
+expect_rc "the extractor reads a rebinding test" $? 0
+ev="$(python3 -c 'import json,sys; t=json.load(open(sys.argv[1]))["tests"]["rebind-port"]; c=t["connections"][0]; print(c["path_challenges_rx"], c["path_responses_tx"], t["runner"], t["exits"])' "$tmp/ev3.json")"
+expect "the extractor counts challenges, responses and the runner's unanswered challenge" "$ev" "2 2 {'unanswered_path_challenges': 1} {'client': 0}"
+
 echo "quic-interop-gate: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
