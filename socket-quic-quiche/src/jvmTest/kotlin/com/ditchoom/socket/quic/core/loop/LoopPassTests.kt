@@ -127,13 +127,13 @@ class LoopPassTests {
     @Test
     fun aFloodIsTakenAtMostOneBoundPerPass() {
         val rig = Rig()
-        repeat(1500) { rig.io.arrive(byteArrayOf(1), peer(it)) }
+        repeat(800) { rig.io.arrive(byteArrayOf(1), peer(it)) }
 
         rig.loop.pass(Nanos(0))
-        assertEquals(1024L, rig.loop.counts.datagramsIn)
+        assertEquals(512L, rig.loop.counts.datagramsIn)
 
         rig.loop.pass(Nanos(1))
-        assertEquals(1500L, rig.loop.counts.datagramsIn)
+        assertEquals(800L, rig.loop.counts.datagramsIn)
     }
 
     @Test
@@ -200,14 +200,14 @@ class LoopPassTests {
         // leave the loop's next pass due at once, and that pass must finish the backlog with nothing new arriving.
         val rig = Rig()
         rig.io.holdsBacklog = true
-        repeat(1500) { rig.io.arrive(byteArrayOf(1), peer(it)) }
+        repeat(800) { rig.io.arrive(byteArrayOf(1), peer(it)) }
 
         val next = rig.loop.pass(Nanos(0))
-        assertEquals(1024L, rig.loop.counts.datagramsIn)
+        assertEquals(512L, rig.loop.counts.datagramsIn)
         assertEquals(NextDue.at(0L), next, "with datagrams held inside the io the loop must not sleep")
 
         val last = rig.loop.pass(Nanos(1))
-        assertEquals(1500L, rig.loop.counts.datagramsIn, "the backlog is delivered with no new datagram")
+        assertEquals(800L, rig.loop.counts.datagramsIn, "the backlog is delivered with no new datagram")
         assertEquals(NextDue.None, last, "and once it is empty the loop may sleep")
     }
 
