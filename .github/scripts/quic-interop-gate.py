@@ -30,8 +30,8 @@ expectation is NEW. REGRESSION, NEW and MISSING always fail the gate; STALE fail
 
 Subcommands:
   retry <expectations> <direction> <peer> <runner.json>   tests to run once more: expected to pass, did not
-  ran <runner.json>                                       exits 1 when no test reached a verdict (every one skipped
-                                                          or unsupported): the cell did not run, so it is no result
+  ran <runner.json>                                       exits 1 when every test was skipped (the runner found the
+                                                          peer not compliant): the cell did not run, so it is no result
   judge <expectations> <results-dir> [--stale=warn|fail] [--record=<file>]
 """
 import enum
@@ -973,9 +973,9 @@ def cmd_retry(args):
 def cmd_ran(args):
     (results_path,) = args
     actual = list(runner_results(results_path).values())
-    if any(r in ("succeeded", "failed") for r in actual):
+    if any(r != "skipped" for r in actual):
         return 0
-    print(f"no test ran: {actual.count('skipped')} skipped, {actual.count('unsupported')} unsupported")
+    print(f"no test ran: {len(actual)} of {len(actual)} skipped")
     return 1
 
 

@@ -253,7 +253,7 @@ jobs:
               runner_crash "$logs" "$json" "$rc" "$log"
             elif ! why=$(python3 "$gate" ran "$json"); then
               # The runner skips every test of a peer it found "not compliant", an image it could not pull
-              # included, and exits 0: no verdict is the cell not running, which fails it here, at its source.
+              # included, and exits 0: a run of only skipped tests is the cell not running, which fails it here.
               echo "::error title=interop cell did not run::$(basename "$json"): $why"
               not_run+=("$(basename "$json")")
             fi

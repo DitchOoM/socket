@@ -78,14 +78,17 @@ out="$(python3 "$script" judge "$tmp/exp.json" "$tmp/reg")"
 expect_rc "a passing retry is accepted" $? 0
 expect "a passing retry is reported" "$out" "| passed on retry | our-client | peer | transfer | retried | pass |"
 
-# A run in which no test reached a verdict (the peer's image never pulled, so the runner skipped every test) is the
-# cell failing to run, not a result; a run with one verdict, unsupported tests beside it, ran.
+# A run in which every test was skipped (the peer's image never pulled, so the runner found it not compliant) is the cell
+# failing to run, not a result. A test the peer declares unsupported is a verdict: a run of only those ran.
 mkdir "$tmp/ran"
-runner "$tmp/ran/skipped.json" handshake:null transfer:null retry:unsupported
+runner "$tmp/ran/skipped.json" handshake:null transfer:null
 out="$(python3 "$script" ran "$tmp/ran/skipped.json")"
-expect_rc "a run with no verdict did not run" $? 1
-expect "the skipped tests are counted" "$out" "no test ran: 2 skipped, 1 unsupported"
-runner "$tmp/ran/one.json" handshake:failed transfer:null retry:unsupported
+expect_rc "a run in which every test was skipped did not run" $? 1
+expect "the skipped tests are counted" "$out" "no test ran: 2 of 2 skipped"
+runner "$tmp/ran/unsupported.json" handshake:unsupported transfer:unsupported
+python3 "$script" ran "$tmp/ran/unsupported.json" >/dev/null
+expect_rc "a run of only unsupported tests ran" $? 0
+runner "$tmp/ran/one.json" handshake:failed transfer:null
 python3 "$script" ran "$tmp/ran/one.json" >/dev/null
 expect_rc "a run with one verdict ran" $? 0
 
