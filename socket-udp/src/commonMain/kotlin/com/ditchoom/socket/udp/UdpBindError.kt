@@ -9,8 +9,9 @@ package com.ditchoom.socket.udp
  * host's" ([LocalAddressUnavailable]) — one is worth retrying and the other never is — so no backend
  * may report a refused bind as a message-only exception with the errno discarded.
  *
- * Where a backend reduces the errno to a type or a phrase before this library sees it (the JDK,
- * Node), the member is still the contract and [errno][ERRNO_NOT_SURFACED] is what the number carries.
+ * Where a backend reduces the errno to a type or a name before this library sees it (Node), the
+ * member is still the contract and [errno][ERRNO_NOT_SURFACED] is what the number carries. The JDK's
+ * phrase renders one errno, so on JVM/Android the member carries the host's number for it.
  */
 sealed interface UdpBindError {
     /** Another socket holds the requested address and port (`EADDRINUSE`). */

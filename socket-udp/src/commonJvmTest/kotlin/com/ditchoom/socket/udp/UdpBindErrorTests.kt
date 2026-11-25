@@ -75,14 +75,14 @@ class UdpBindErrorTests {
     @Test
     fun aConnectsBindExceptionForAnUnavailableAddressIsNotAddressInUse() {
         assertEquals(
-            UdpConnectError.LocalAddressUnavailable(ERRNO_NOT_SURFACED),
-            jvmConnectErrorOf(BindException("Can't assign requested address")),
+            UdpConnectError.LocalAddressUnavailable(49),
+            jvmConnectErrorOf(BindException("Can't assign requested address"), HostErrnos.Darwin),
         )
         assertEquals(
-            UdpConnectError.LocalAddressUnavailable(ERRNO_NOT_SURFACED),
-            jvmConnectErrorOf(BindException("Cannot assign requested address")),
+            UdpConnectError.LocalAddressUnavailable(99),
+            jvmConnectErrorOf(BindException("Cannot assign requested address"), HostErrnos.Linux),
         )
-        assertEquals(UdpConnectError.AddressInUse(ERRNO_NOT_SURFACED), jvmConnectErrorOf(BindException("Address already in use")))
+        assertEquals(UdpConnectError.AddressInUse(98), jvmConnectErrorOf(BindException("Address already in use"), HostErrnos.Linux))
     }
 
     private companion object {
