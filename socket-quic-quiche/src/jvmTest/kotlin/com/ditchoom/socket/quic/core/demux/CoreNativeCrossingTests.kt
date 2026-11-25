@@ -219,6 +219,10 @@ class CoreNativeCrossingTests {
                     Law.atMost("connActivePathProbes", n("connActivePathProbes"), n("connOnTimeout"), slack),
                     // How a connection ended: asked once, after quiche answered closed.
                     Law.atMost("connIsTimedOut", n("connIsTimedOut"), n("connIsClosed"), slack),
+                    // A connection is freed once, after its end was read, with its send info and one receive info per path it made.
+                    Law.atMost("connFree", n("connFree"), n("connIsTimedOut"), slack),
+                    Law.atMost("sendInfoFree", n("sendInfoFree"), n("connFree"), slack),
+                    Law.atMost("recvInfoFree", n("recvInfoFree"), n("connFree"), slack),
                     // Whether the peer's close arrived: asked once in a turn that handed quiche a datagram.
                     Law.atMost("connIsDraining", n("connIsDraining"), minOf(turns, datagrams), slack),
                     // At most one terminating call per turn plus one per datagram sent (about one per datagram received).
