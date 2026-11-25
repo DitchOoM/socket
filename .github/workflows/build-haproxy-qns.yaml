@@ -9,13 +9,10 @@ name: Build haproxy-qns (pinned)
 # ubuntu, golang and quic-network-simulator-endpoint images by digest. The Ubuntu packages apt installs are not.
 # The inputs are recorded as image labels and in the job summary.
 #
-# Pushes only on workflow_dispatch. The pull_request trigger is TEMPORARY, for one build-only run on PR #1047
-# before this reaches main (workflow_dispatch registers only from the default branch); remove it before merging.
+# Runs only on workflow_dispatch, and pushes only then. A build-only run of this file passed on PR #1047
+# (run 45420064960, haproxy 5118dd42).
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - .github/workflows/build-haproxy-qns.yaml
 
 env:
   QNS_COMMIT: 09bee6cb10059efbbdf77b78796b308a9ec17697
