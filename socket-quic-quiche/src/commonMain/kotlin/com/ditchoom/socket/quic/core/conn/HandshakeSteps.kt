@@ -80,6 +80,7 @@ internal fun ConnParts.served(
     fire: Runnable,
 ) {
     announce(now, paths)
+    timer.served()
     if (collected == Collected.Everything) rearm(now, fire)
 }
 
