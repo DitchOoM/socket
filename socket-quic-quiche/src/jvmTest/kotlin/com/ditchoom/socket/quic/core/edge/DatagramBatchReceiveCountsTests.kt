@@ -1,14 +1,9 @@
 package com.ditchoom.socket.quic.core.edge
 
-import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.buffer.PlatformBuffer
-import com.ditchoom.socket.quic.DatagramOptions
 import com.ditchoom.socket.quic.DatagramReceive
-import com.ditchoom.socket.quic.DatagramSend
 import com.ditchoom.socket.quic.QuicConnectionStats
 import com.ditchoom.socket.quic.QuicDatagramBatch
 import com.ditchoom.socket.quic.QuicDatagrams
-import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicStatsRead
 import com.ditchoom.socket.quic.core.conn.CallerPlace
 import com.ditchoom.socket.quic.core.conn.Conn
@@ -16,9 +11,10 @@ import com.ditchoom.socket.quic.core.conn.ConnWork
 import com.ditchoom.socket.quic.core.conn.Datagrams
 import com.ditchoom.socket.quic.core.conn.Inside
 import com.ditchoom.socket.quic.core.life.ConnEnd
-import com.ditchoom.socket.quic.core.loop.LoopSet
+import com.ditchoom.socket.quic.core.testing.Explanation
+import com.ditchoom.socket.quic.core.testing.ProcessCpuSampler
+import com.ditchoom.socket.quic.core.testing.StallProbe
 import com.ditchoom.socket.quic.core.testing.withDescriptorsAbove127
-import com.ditchoom.socket.quic.network
 import com.ditchoom.socket.quic.skipOnMissingNativeLib
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
@@ -27,7 +23,6 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
-import kotlinx.coroutines.yield
 import java.lang.management.ManagementFactory
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
@@ -35,26 +30,19 @@ import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.Continuation
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.startCoroutine
-import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
-import kotlin.test.fail
 import kotlin.time.Duration.Companion.seconds
 
 /**
  * The public datagram receive under a one-way flood of 1000-byte datagrams over loopback, read at full speed by
- * [receiveEach] on a thread of its own: what each delivered datagram costs the reader in bytes allocated and in
+ * [receiveEach] on a thread of its own, sent by [DatagramFloodChild] in a JVM of its own: what each delivered datagram costs the reader in bytes allocated and in
  * resumes, and that the batches keep up, so the receive queue drops nothing. Design D5.8 measured the batched shape at
  * 8.5 B and about 0.05 resumes per datagram, with no drops; a receive resumed once per datagram, at 544 B and 92% drops.
  */
 class DatagramBatchReceiveCountsTests {
-    private val loops = LoopSet(1)
-
-    @AfterTest
-    fun closeLoops() = loops.close()
-
     @Test
     fun aFullSpeedReaderAllocatesUnder16BytesAndResumesUnderOncePer4Datagrams() =
         flooded(Reader.Each) { flood ->
@@ -72,8 +60,10 @@ class DatagramBatchReceiveCountsTests {
     @Test
     fun aFullSpeedReaderLosesNoDatagramToTheReceiveQueue() =
         flooded(Reader.Each) { flood ->
+            println("[dgram drop] drops ${flood.dropped} of ${flood.received}; ${flood.evidence()}")
             assertTrue(flood.received > 0, "the flood delivered nothing")
-            assertEquals(0L, flood.dropped, "datagrams the receive queue dropped of ${flood.received}; ${flood.evidence()}")
+            val processes = if (flood.dropped == 0L) "" else "\nprocesses at the failure:\n${ProcessCpuSampler.topNow()}"
+            assertEquals(0L, flood.dropped, "datagrams the receive queue dropped of ${flood.received}; ${flood.evidence()}$processes")
         }
 
     private class Flood(
@@ -86,11 +76,12 @@ class DatagramBatchReceiveCountsTests {
         val pressure: Pressure,
         val gcCount: Long,
         val gcMillis: Long,
+        val stall: Explanation,
     ) {
         /** What a dropping run's failure says: how long the reader waited at most, and how hard the queue was pressed. */
         fun evidence() =
             "longest gap between reader runs ${longestGapNanos / 1_000} us; queue high water ${pressure.highWater}; " +
-                "reads that dropped ${pressure.droppingReads}; GC $gcCount collections, $gcMillis ms"
+                "reads that dropped ${pressure.droppingReads}; GC $gcCount collections, $gcMillis ms; longest gap's $stall"
 
         fun bytesPer() = callerBytes.toDouble() / delivered
 
@@ -156,71 +147,60 @@ class DatagramBatchReceiveCountsTests {
                 skipOnMissingNativeLib(DatagramBatchReceiveCountsTests::class) {
                     val accepted = Channel<CoreConnection>(Channel.UNLIMITED)
                     withCoreServer(options = ON, onConnection = { accepted.send(it) }) { server ->
-                        val client = connectCore(server.port, loops = loops, factory = BufferFactory.network(), options = ON)
-                        val payload = payloadOf(FLOOD_BYTES)
-                        val sending = client.connection.coreDatagrams
-                        val core = withTimeout(10.seconds) { accepted.receive() }
-                        val receiving = core.public()
-                        val readerThread = ResumeCountingDispatcher("dgram-batch-reader")
-                        val delivered = AtomicLong()
-                        val ended = CompletableFuture<Result<DatagramReceive.NotReceived>>()
-                        suspend { read(reader, receiving.datagrams, delivered) }
-                            .startCoroutine(Continuation(readerThread + Job()) { ended.complete(it) })
-                        flood(sending, payload, WARM_UP_MS)
-                        settle(delivered)
-                        val before = statsOf(core)
-                        val threads = ManagementFactory.getThreadMXBean() as com.sun.management.ThreadMXBean
-                        val readerId = readerThread.threadId()
-                        val bytesFrom = threads.getThreadAllocatedBytes(readerId)
-                        val resumesFrom = readerThread.dispatches.get()
-                        val deliveredFrom = delivered.get()
-                        val pressureFrom = pressureOf(core)
-                        val gcFrom = gcTotals()
-                        readerThread.resetGap()
-                        flood(sending, payload, FLOOD_MS)
-                        settle(delivered)
-                        val after = statsOf(core)
-                        val pressureTo = pressureOf(core)
-                        val gcTo = gcTotals()
-                        val flood =
-                            Flood(
-                                delivered = delivered.get() - deliveredFrom,
-                                callerBytes = threads.getThreadAllocatedBytes(readerId) - bytesFrom,
-                                resumes = readerThread.dispatches.get() - resumesFrom,
-                                received = after.datagramsReceived - before.datagramsReceived,
-                                dropped = after.datagramDrops.receiveQueue - before.datagramDrops.receiveQueue,
-                                longestGapNanos = readerThread.longestGap.get(),
-                                pressure = Pressure(pressureTo.highWater, pressureTo.droppingReads - pressureFrom.droppingReads),
-                                gcCount = gcTo.first - gcFrom.first,
-                                gcMillis = gcTo.second - gcFrom.second,
-                            )
-                        client.connection.close(QuicError.NoError)
-                        assertIs<DatagramReceive.NotReceived.Unavailable.ConnectionEnded>(ended.get(10, TimeUnit.SECONDS).getOrThrow())
-                        readerThread.close()
-                        payload.freeNativeMemory()
-                        check(flood)
+                        // The sender is a JVM of its own: the reader under test pays for none of its CPU.
+                        FloodSender.start(server.port).use { sender ->
+                            sender.await(DatagramFloodChild.READY)
+                            val core = withTimeout(10.seconds) { accepted.receive() }
+                            val receiving = core.public()
+                            val readerThread = ResumeCountingDispatcher("dgram-batch-reader")
+                            val delivered = AtomicLong()
+                            val ended = CompletableFuture<Result<DatagramReceive.NotReceived>>()
+                            suspend { read(reader, receiving.datagrams, delivered) }
+                                .startCoroutine(Continuation(readerThread + Job()) { ended.complete(it) })
+                            sender.flood(WARM_UP_MS)
+                            settle(delivered)
+                            val before = statsOf(core)
+                            val threads = ManagementFactory.getThreadMXBean() as com.sun.management.ThreadMXBean
+                            val readerId = readerThread.threadId()
+                            val bytesFrom = threads.getThreadAllocatedBytes(readerId)
+                            val resumesFrom = readerThread.dispatches.get()
+                            val deliveredFrom = delivered.get()
+                            val pressureFrom = pressureOf(core)
+                            val gcFrom = gcTotals()
+                            readerThread.resetGap()
+                            val probe = StallProbe.start(readerThread.thread, StallProbe.Queue.Depth { readerThread.depth })
+                            sender.flood(FLOOD_MS)
+                            settle(delivered)
+                            val recording = probe.stop()
+                            val after = statsOf(core)
+                            val pressureTo = pressureOf(core)
+                            val gcTo = gcTotals()
+                            val flood =
+                                Flood(
+                                    delivered = delivered.get() - deliveredFrom,
+                                    callerBytes = threads.getThreadAllocatedBytes(readerId) - bytesFrom,
+                                    resumes = readerThread.dispatches.get() - resumesFrom,
+                                    received = after.datagramsReceived - before.datagramsReceived,
+                                    dropped = after.datagramDrops.receiveQueue - before.datagramDrops.receiveQueue,
+                                    longestGapNanos = readerThread.longestGap.get(),
+                                    pressure = Pressure(pressureTo.highWater, pressureTo.droppingReads - pressureFrom.droppingReads),
+                                    gcCount = gcTo.first - gcFrom.first,
+                                    gcMillis = gcTo.second - gcFrom.second,
+                                    stall =
+                                        readerThread.longestGapEnd.get().let { end ->
+                                            recording.explain(end - readerThread.longestGap.get(), end)
+                                        },
+                                )
+                            // Closing the child's stdin closes its connection, which ends the reader.
+                            sender.close()
+                            assertIs<DatagramReceive.NotReceived.Unavailable.ConnectionEnded>(ended.get(10, TimeUnit.SECONDS).getOrThrow())
+                            readerThread.close()
+                            check(flood)
+                        }
                     }
                 }
             }
         }
-
-    /** Sends [payload] as fast as the send queue takes it for [millis], waiting for room when it is full. */
-    private suspend fun flood(
-        channel: CoreDatagramChannel,
-        payload: PlatformBuffer,
-        millis: Long,
-    ) {
-        val until = System.nanoTime() + millis * 1_000_000
-        while (System.nanoTime() < until) {
-            payload.position(0)
-            when (channel.send(payload)) {
-                is DatagramSend.Sent -> Unit
-                is DatagramSend.NotSent.QueueFull -> channel.awaitRoom()
-                is DatagramSend.NotSent -> fail("the flood's send was refused")
-            }
-        }
-        yield()
-    }
 
     /** Waits until the reader has delivered all it will: its count holds still for 50 ms. */
     private suspend fun settle(delivered: AtomicLong) {
@@ -268,16 +248,9 @@ class DatagramBatchReceiveCountsTests {
 
     private suspend fun statsOf(connection: CoreConnection): QuicConnectionStats = assertIs<QuicStatsRead.Read>(connection.stats()).stats
 
-    private fun payloadOf(size: Int) =
-        BufferFactory.network().allocate(size).apply {
-            repeat(size) { writeByte(it.toByte()) }
-            resetForRead()
-        }
-
     private companion object {
         val CONN_FIELD = CoreConnection::class.java.getDeclaredField("conn").apply { isAccessible = true }
-        val ON = coreTestOptions.copy(datagrams = DatagramOptions())
-        const val FLOOD_BYTES = 1000
+        val ON = DatagramFloodChild.OPTIONS
         const val WARM_UP_MS = 500L
         const val FLOOD_MS = 2_500L
 
@@ -301,7 +274,14 @@ private class ResumeCountingDispatcher(
 
     /** The longest wait, in nanoseconds, between one run of the reader and the next, since [resetGap]. */
     val longestGap = AtomicLong()
+
+    /** When the [longestGap] ended, as a `System.nanoTime` instant. */
+    val longestGapEnd = AtomicLong()
     private val lastRun = AtomicLong()
+
+    /** The reader's thread, and how many resumes wait for it. */
+    val thread: Thread get() = inner.thread
+    val depth: Int get() = inner.depth
 
     override fun dispatch(
         context: CoroutineContext,
@@ -311,7 +291,10 @@ private class ResumeCountingDispatcher(
         inner.dispatch(context) {
             val now = System.nanoTime()
             val last = lastRun.getAndSet(now)
-            if (last != 0L && now - last > longestGap.get()) longestGap.set(now - last)
+            if (last != 0L && now - last > longestGap.get()) {
+                longestGap.set(now - last)
+                longestGapEnd.set(now)
+            }
             block.run()
         }
     }
@@ -319,6 +302,7 @@ private class ResumeCountingDispatcher(
     fun resetGap() {
         lastRun.set(0L)
         longestGap.set(0L)
+        longestGapEnd.set(0L)
     }
 
     fun threadId(): Long =
