@@ -31,7 +31,7 @@ internal class StreamTable(
     private val drain = StreamDrain(io, drains)
 
     /** What [unpark] finds for a stream that has no entry: nothing waits on it. */
-    private val absent = StreamEntry(QuicStreamId(0L), StreamShape.LocalBidirectional)
+    private val absent = StreamEntry(QuicStreamId(0L), StreamShape.LocalBidirectional, ParkedReads())
 
     private val entries = LongObjectMap(absent)
 
@@ -46,6 +46,9 @@ internal class StreamTable(
     /** The opens of each kind, and those waiting for the peer's credit. */
     val opens = OpenLanes(q, role)
 
+    /** The streams whose reader is parked. */
+    val reads = ParkedReads()
+
     var state: Streams = Streams.Open(StreamSend(q, io))
         private set
 
@@ -59,10 +62,7 @@ internal class StreamTable(
         val shape = shapeOf(id, role)
         return (
             if (spare.isEmpty()) {
-                StreamEntry(
-                    id,
-                    shape,
-                )
+                StreamEntry(id, shape, reads)
             } else {
                 spare.removeAt(spare.size - 1).reuse(id, shape)
             }

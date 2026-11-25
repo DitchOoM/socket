@@ -120,7 +120,7 @@ internal class Turn(
         }
         traced(TraceSection.ConnReceive) {
             try {
-                c.feed(bytes, length, from)
+                c.feed(bytes, length, from, now)
                 c.slots.keepAlive.touched(now)
                 c.slots.datagrams.received(now)
             } catch (failure: Exception) {

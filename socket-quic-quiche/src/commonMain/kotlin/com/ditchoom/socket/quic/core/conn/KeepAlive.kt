@@ -20,6 +20,10 @@ internal class KeepAliveTimer(
     private var phase = KeepPhase.Handshaking
     private var lastActivity = 0L
 
+    /** Monotonic: the pings asked of quiche. */
+    var pinged = 0L
+        private set
+
     /** The connection received or sent something at [now]. */
     fun touched(now: Nanos) {
         lastActivity = now.value
@@ -35,6 +39,7 @@ internal class KeepAliveTimer(
             KeepPhase.Established ->
                 if (now.value - lastActivity >= intervalNanos) {
                     q.api.connSendAckEliciting(q.handle)
+                    pinged++
                     lastActivity = now.value
                 }
         }
@@ -72,4 +77,11 @@ internal fun KeepAlive.offerWake(sink: WakeSink) =
     when (this) {
         is KeepAlive.Off -> Unit
         is KeepAlive.Every -> timer.offerWake(sink)
+    }
+
+/** Monotonic: the keep-alive pings asked of quiche. */
+internal fun KeepAlive.pinged(): Long =
+    when (this) {
+        is KeepAlive.Off -> 0L
+        is KeepAlive.Every -> timer.pinged
     }

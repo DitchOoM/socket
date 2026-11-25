@@ -47,8 +47,8 @@ internal class PathEvents(
         while (true) {
             val type =
                 when (val news = scratch.next(q)) {
-                    is PathNews.Event -> news.type
-                    is PathNews.Drained -> return PathVerdict.Undecided
+                    is EventNext.Event -> news.type
+                    is EventNext.Drained -> return PathVerdict.Undecided
                 }
             if (!q.addressIs(scratch.local, local)) continue
             if (type == QuichePathEventType.Validated) return PathVerdict.Validated

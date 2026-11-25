@@ -13,6 +13,7 @@ import com.ditchoom.socket.quic.core.edge.feedNetwork
 import com.ditchoom.socket.quic.core.edge.linkClassOf
 import com.ditchoom.socket.quic.core.edge.onMoveOf
 import com.ditchoom.socket.quic.core.loop.Loop
+import com.ditchoom.socket.quic.core.path.PathNews
 import com.ditchoom.socket.quic.core.testing.VirtualClock
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.udp.toPathKey
@@ -67,6 +68,10 @@ internal class ConditionReplay(
     /** When each download of [Workload.Download] was read to its end. */
     private val downloaded = ArrayList<Long>(1)
 
+    /** What the client's silence watch said, each change when the replay first saw it. */
+    private val news = ArrayList<PathMarkAt>()
+    private var told: PathNews = PathNews.Answering
+
     fun run(): Replayed =
         runBlocking {
             val api = loadQuicheApi()
@@ -107,6 +112,7 @@ internal class ConditionReplay(
             when (val w = workload) {
                 Workload.Echo -> launch { echoBack(server, accepted) }
                 is Workload.Download -> launch { serveDownload(server, accepted, w.bytes) }
+                is Workload.Writes -> launch { drop(server, accepted) }
             }
         var clientApp: AppStart = AppStart.Waiting
         val events = conditions.os.sortedBy { it.at }
@@ -131,10 +137,16 @@ internal class ConditionReplay(
                     when (val w = workload) {
                         Workload.Echo -> launch { echo(client) }
                         is Workload.Download -> launch { download(client, w.bytes) }
+                        is Workload.Writes -> launch { write(client, w.every) }
                     }
                 }
             if (established.isEmpty() && client.connection.state.value is QuicConnectionState.Established) established += now
             val loopsDue = settle(now, link, server.loop, client.loop, monitor)
+            val heard = client.parts.news.read()
+            if (heard != told) {
+                told = heard
+                news += PathMarkAt(heard::class.simpleName.orEmpty(), (now - ORIGIN).nanoseconds)
+            }
             when (val ended = client.connection.end()) {
                 is EdgeEnd.Ended -> {
                     finish = Finish.Ended(ended.end, script(now))
@@ -176,6 +188,8 @@ internal class ConditionReplay(
             established.map { (it - ORIGIN).nanoseconds },
             marks.sortedBy { it.at },
             downloaded.map { (it - ORIGIN).nanoseconds },
+            news.toList(),
+            link.clientArrivals.map { it.nanoseconds },
         )
     }
 
@@ -277,6 +291,40 @@ internal class ConditionReplay(
             }
             downloaded += clock.at.value
             steps++
+        } catch (ended: Exception) {
+            steps++
+        }
+    }
+
+    /** [PROBE_ECHO_BYTES] every [every] on one stream, never read back. */
+    private suspend fun write(
+        client: ReplayClient,
+        every: Duration,
+    ) {
+        try {
+            val stream = client.connection.openStream()
+            while (true) {
+                val chunk = factory.allocate(PROBE_ECHO_BYTES).apply { repeat(PROBE_ECHO_BYTES) { writeByte(it.toByte()) } }
+                chunk.resetForRead()
+                stream.writeFully(chunk, REPLAY_DEADLINE)
+                steps++
+                sleep.until(clock.at.value + every.inWholeNanoseconds)
+            }
+        } catch (ended: Exception) {
+            steps++
+        }
+    }
+
+    /** Reads whatever the client writes, and drops it. */
+    private suspend fun drop(
+        server: CoreServer,
+        accepted: CompletableDeferred<Unit>,
+    ) {
+        try {
+            val connection = server.accept()
+            accepted.complete(Unit)
+            val stream = connection.acceptStream()
+            while (stream.read(REPLAY_DEADLINE) { it.readByteArray(it.remaining()) } is ScopedReadResult.Data<*>) steps++
         } catch (ended: Exception) {
             steps++
         }

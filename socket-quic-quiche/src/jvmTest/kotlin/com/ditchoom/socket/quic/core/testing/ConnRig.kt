@@ -45,6 +45,10 @@ import com.ditchoom.socket.quic.core.loop.Route
 import com.ditchoom.socket.quic.core.observe.ConnCounts
 import com.ditchoom.socket.quic.core.path.ClientPaths
 import com.ditchoom.socket.quic.core.path.IdIssuer
+import com.ditchoom.socket.quic.core.path.PathNewsCell
+import com.ditchoom.socket.quic.core.path.PathSilence
+import com.ditchoom.socket.quic.core.path.Silence
+import com.ditchoom.socket.quic.core.path.SilenceRule
 import com.ditchoom.socket.quic.core.path.SinglePath
 import com.ditchoom.socket.quic.core.pool.FixedPool
 import com.ditchoom.socket.quic.core.ready.Poller
@@ -56,6 +60,7 @@ import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.time.QuicheTime
 import com.ditchoom.socket.quic.core.time.RttPrior
+import com.ditchoom.socket.quic.core.time.Span
 import com.ditchoom.socket.quic.core.time.WaitResolution
 import com.ditchoom.socket.quic.core.udp.BatchLimits
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
@@ -151,6 +156,7 @@ internal fun testConn(
     access: AccessGuard = AccessGuard.Unguarded,
     peer: PathKey = PathKey(4, 443, 0L, 0x7F000001L),
     memory: ConnMemory = ConnMemory(testLoopMemory(), BufferFactory.Default, nativeBytes(255)),
+    silence: SilenceRule = QUIET_RULE,
 ): Conn =
     buildConn(
         rules = rules,
@@ -167,6 +173,7 @@ internal fun testConn(
                 NO_MOVES,
                 access.sendsAccess(peer),
                 ChainSource.NotAsked,
+                silence,
             ),
         address =
             ConnAddress(
@@ -215,12 +222,13 @@ internal class ConnRig(
     peer: PathKey = PathKey(4, 443, 0L, 0x7F000001L),
     lanes: CallerLanes = CallerLanes.None,
     memory: ConnMemory = ConnMemory(testLoopMemory(), BufferFactory.Default, nativeBytes(255)),
+    silence: SilenceRule = QUIET_RULE,
 ) {
     val sink = RecordingSink()
     val counts = ConnCounts()
     val loop = loopOver(poller, clock, maxDatagrams, time)
     val socket = SendPort(io, loop.port, lanes, RecordingWork(), loop.counts, loop.callerCounts)
-    val conn: Conn = testConn(api, rules, target, capture, loop, socket, clock, sink, counts, access, peer, memory)
+    val conn: Conn = testConn(api, rules, target, capture, loop, socket, clock, sink, counts, access, peer, memory, silence)
     val endpoint =
         Endpoint(
             SocketRef(DatagramChannel.open()),
@@ -256,8 +264,13 @@ internal fun stubClientPaths(
             Random(1),
             { info, made -> q.freeInfo(info, made) },
             NO_MOVES,
+            PathSilence(q, QUIET_RULE),
         ),
     )
+
+/** A rig's path silence is not judged; its awaiting-peer probe backs off to quiche's default 30 s idle timeout. */
+internal val QUIET_RULE: SilenceRule
+    get() = SilenceRule(Silence.Off, Span(30_000_000_000L), PathNewsCell())
 
 /** A rig's socket is never moved. */
 private val NO_MOVES: (PathKey, RttPrior) -> Unit = { _, _ -> }

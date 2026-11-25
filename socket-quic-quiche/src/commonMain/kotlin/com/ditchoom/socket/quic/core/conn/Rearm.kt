@@ -32,15 +32,16 @@ internal fun ConnParts.rearm(
     slots.ack.offerWake(timer.sink)
     handshake.offerWake(timer.sink)
     life.offerWake(timer.sink)
-    slots.paths.offerWake(timer.sink)
+    slots.paths.offerWake(timer.sink, streams.reads.waiting)
     if (slots.ack.deadlineLeft() == Stale.Yes) timer.disarm()
     timer.rearm(now, fire)
 }
 
 /**
  * The connection's deadline fell due at [now]: quiche's timeout runs, and is recorded, when quiche's own timer has fallen
- * due, and while unconfirmed the handshake counts its PTO expiries. A deadline armed from a turn's start falls due
- * before quiche's timer does; a replay that ran its timer there would probe where this endpoint did nothing.
+ * due, and a client's silence watch then reads the expiries it left; while unconfirmed the handshake counts its PTO
+ * expiries. A deadline armed from a turn's start falls due before quiche's timer does; a replay that ran its timer
+ * there would probe where this endpoint did nothing.
  */
 internal fun ConnParts.expired(
     now: Nanos,
@@ -51,6 +52,7 @@ internal fun ConnParts.expired(
             slots.ack.mustWrite()
             flight.timerFired(now)
             timer.expire()
+            paths.timerFired(now)
         }
         TimerDue.NotYet -> Unit
     }

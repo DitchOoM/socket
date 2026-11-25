@@ -1,8 +1,12 @@
 package com.ditchoom.socket.quic.core.edge
 
+import com.ditchoom.socket.NetworkMonitor
 import com.ditchoom.socket.quic.MigrationPolicy
+import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.RouteSource
 import com.ditchoom.socket.quic.core.observe.CallerSide
+import com.ditchoom.socket.quic.core.path.Silence
+import com.ditchoom.socket.quic.core.time.Span
 import com.ditchoom.socket.transport.NetworkId
 
 /** What the network feed does about one reading of the monitor and the route. */
@@ -41,6 +45,26 @@ internal fun onMoveOf(policy: MigrationPolicy): OnMove =
         is MigrationPolicy.Automatic -> OnMove.Migrate
         is MigrationPolicy.Forbidden, is MigrationPolicy.Manual, is MigrationPolicy.Pinned -> OnMove.End
     }
+
+/**
+ * Whether a client judges its path's silence: only one that moves on its own ([OnMove.Migrate]) on a monitor whose
+ * network can change; [NetworkMonitor.AlwaysAvailable] never does.
+ */
+internal fun silenceOf(
+    policy: MigrationPolicy,
+    monitor: NetworkMonitor,
+): Silence =
+    when (onMoveOf(policy)) {
+        OnMove.End -> Silence.Off
+        OnMove.Migrate -> if (monitor === NetworkMonitor.AlwaysAvailable) Silence.Off else Silence.On
+    }
+
+/** How far a client's awaiting-peer probe backs off: to its idle timeout, or [PROBE_CAP_UNBOUNDED_IDLE] with none. */
+internal fun probeCapOf(options: QuicOptions): Span =
+    Span(if (options.idleTimeout.isPositive()) options.idleTimeout.inWholeNanoseconds else PROBE_CAP_UNBOUNDED_IDLE)
+
+/** The awaiting-peer probe's longest wait on a connection with no idle timeout: 60 s. */
+internal const val PROBE_CAP_UNBOUNDED_IDLE = 60_000_000_000L
 
 /** What the connection was last told. */
 private enum class Told { Usable, Gone, Moved }

@@ -102,6 +102,9 @@ internal class ConditionLink(
     /** The size of each datagram the server sent, in order. */
     val serverSizes = ArrayList<Int>()
 
+    /** When each datagram reached the client's socket, in nanoseconds from the script's start. */
+    val clientArrivals = ArrayList<Long>()
+
     val clientIo: DatagramBatchIo = End(Side.Client)
     val serverIo: DatagramBatchIo = End(Side.Server)
 
@@ -125,6 +128,7 @@ internal class ConditionLink(
             if (windowAt(datagram.arrives) is LinkWindow.Outage) continue
             if (datagram.to == Side.Client && (clientSocketDead() || datagram.client != client)) continue
             val from = if (datagram.to == Side.Client) server else datagram.client
+            if (datagram.to == Side.Client) clientArrivals += datagram.arrives - origin
             waiting.getValue(datagram.to).addLast(Waiting(from, datagram.bytes))
         }
     }

@@ -258,6 +258,7 @@ private suspend fun OnSetupLane.connectOnLane(
                     tokens = plan.tokens,
                     mismatch = mismatch,
                     capture = capture,
+                    silence = silenceOf(options.migration, monitor),
                 ),
                 peerSockAddr,
                 localSockAddr,

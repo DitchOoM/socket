@@ -12,7 +12,9 @@ import com.ditchoom.socket.quic.core.path.ClientPaths
 import com.ditchoom.socket.quic.core.path.IdIssuer
 import com.ditchoom.socket.quic.core.path.IdsRetired
 import com.ditchoom.socket.quic.core.path.IdsWanted
+import com.ditchoom.socket.quic.core.path.PathSilence
 import com.ditchoom.socket.quic.core.path.ServerPaths
+import com.ditchoom.socket.quic.core.path.SilenceRule
 import com.ditchoom.socket.quic.core.path.SinglePath
 import com.ditchoom.socket.quic.core.pool.FixedPool
 import com.ditchoom.socket.quic.core.sched.Entrant
@@ -48,7 +50,7 @@ internal sealed interface ConnSide {
      * its server's session ticket through one of its loop's [scratch] slots; what it took from its stores, [kept], goes
      * back if it never sent; its server's NEW_TOKEN token goes to [tokens]; its socket is moved by [mover]; a handshake
      * the system refused every send of is judged by [access]; its server's certificates are copied at completion as
-     * [chain] says.
+     * [chain] says; its path's silence is watched as [silence] says.
      */
     class Client(
         val ids: Random,
@@ -59,6 +61,7 @@ internal sealed interface ConnSide {
         val mover: (PathKey, RttPrior) -> Unit,
         val access: SendsAccess,
         val chain: ChainSource,
+        val silence: SilenceRule,
     ) : ConnSide
 
     /** A server hands its peer the ids its loop routes to it. */
@@ -157,6 +160,7 @@ private fun composed(
                                 side.ids,
                                 { info, made -> q.freeInfo(info, made) },
                                 side.mover,
+                                PathSilence(q, side.silence),
                             ),
                         )
                     is ConnSide.Server ->
