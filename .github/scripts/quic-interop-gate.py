@@ -681,6 +681,30 @@ class PeerServerDidNotChallengeNewPathFirst:
         return NotMatched()
 
 
+class PeerChallengeNeverReachedOurOpenConnection:
+    """The runner failed a rebinding test because a PATH_CHALLENGE of the peer's got no PATH_RESPONSE, while our
+    client finished every request, exited 0 and closed with NO_ERROR, and answered every challenge that reached the
+    connection while it was open: the unanswered one was addressed to a connection we had already closed."""
+
+    kind = "peer-challenge-never-reached-our-open-connection"
+
+    def __init__(self, fields):
+        no_fields(self.kind, fields)
+
+    def match(self, test_evidence, peer_role):
+        unanswered = test_evidence.get("runner", {}).get("unanswered_path_challenges", 0)
+        if peer_role != "server" or not unanswered or test_evidence.get("exits", {}).get("client") != 0:
+            return NotMatched()
+        for c in test_evidence.get("connections", []):
+            closed = bool(c["local_closes"]) and all(close["code"] == 0 for close in c["local_closes"])
+            if closed and c["our_streams_unfinished"] == 0 and c["path_challenges_rx"] == c["path_responses_tx"]:
+                return Matched(
+                    f"{c['qlog']}: the runner saw {unanswered} PATH_CHALLENGE(s) without a response; we answered all "
+                    f"{c['path_responses_tx']} that reached us and had closed with NO_ERROR, our client exited 0"
+                )
+        return NotMatched()
+
+
 class EndedBy(enum.Enum):
     """How a connection whose peer went missing ended: our idle timer expired (RFC 9000 §10.1), the peer's own
     report names the connection among those it gave up on (we then closed with the rest of the endpoint), or the
@@ -859,6 +883,7 @@ SIGNATURES = {
         PeerLeftARequestUnfinished,
         PeerRequestNeverArrived,
         PeerServerDidNotChallengeNewPathFirst,
+        PeerChallengeNeverReachedOurOpenConnection,
         PeerHandshakePacketsNeverArrived,
         PeerGoneWhileWeProbed,
         PeerClientHelloNeverCompleted,
