@@ -11,9 +11,8 @@ import java.net.UnknownHostException
  * cancel its wait for. The lookup itself cannot be interrupted (the JDK sits in the native resolver), so
  * see [BlockingHostResolver].
  */
-@OptIn(ExperimentalCoroutinesApi::class)
 internal val JvmHostResolver: HostResolver =
-    BlockingHostResolver(Dispatchers.IO.limitedParallelism(RESOLVER_PARALLELISM)) { host ->
+    blockingLookupResolver { host ->
         try {
             val records = InetAddress.getAllByName(host)
             resolvedInOrder(
@@ -24,3 +23,8 @@ internal val JvmHostResolver: HostResolver =
             Resolution.Failed(host, ResolveFailure.NotFound)
         }
     }
+
+/** A [BlockingHostResolver] running [lookup] the way every JVM resolver does: on [RESOLVER_PARALLELISM] threads of its own. */
+@OptIn(ExperimentalCoroutinesApi::class)
+internal fun blockingLookupResolver(lookup: (host: String) -> Resolution): HostResolver =
+    BlockingHostResolver(Dispatchers.IO.limitedParallelism(RESOLVER_PARALLELISM), lookup)
