@@ -10,6 +10,8 @@ import com.ditchoom.socket.quic.QuicReceiveStream
 import com.ditchoom.socket.quic.ScopedRead
 import com.ditchoom.socket.quic.StreamWrite
 import com.ditchoom.socket.quic.core.loop.LoopSet
+import com.ditchoom.socket.quic.core.testing.JDK_BOXED_HANDLES_PER_OP
+import com.ditchoom.socket.quic.core.testing.loopGateOfThisStack
 import com.ditchoom.socket.quic.core.testing.withDescriptorsAbove127
 import com.ditchoom.socket.quic.getOrElse
 import com.ditchoom.socket.quic.network
@@ -175,8 +177,8 @@ class PublicPathAllocationTests {
             callerGate: Double,
             loopGate: Double,
         ) = assertTrue(
-            caller <= callerGate && loop <= loopGate,
-            "caller %.1f B/op (gate %.0f), loop %.1f (gate %.0f)".format(caller, callerGate, loop, loopGate),
+            caller <= callerGate && loop <= stackLoopGate(loopGate),
+            "caller %.1f B/op (gate %.0f), loop %.1f (gate %.0f)".format(caller, callerGate, loop, stackLoopGate(loopGate)),
         )
     }
 
@@ -222,11 +224,12 @@ class PublicPathAllocationTests {
         const val NEW_STREAMS = 2_000
 
         // Gates, a little over what JDK 21 on macOS measured (two runs): per echo 617-631 B on the caller, 0 on the loop;
-        // per new stream 2,802 B on the caller (its open most of it), 60-67 B on the loop (67 B when the whole task runs); per download read 490 B, 0.
+        // per new stream 2,802 B on the caller (its open most of it), 35-37 B on the loop (a wake of the parked writeAndFinish
+        // allocates nothing there); per download read 490 B, 0.
         const val ECHO_CALLER_GATE = 680.0
         const val ECHO_LOOP_GATE = 8.0
         const val NEW_CALLER_GATE = 2_950.0
-        const val NEW_LOOP_GATE = 76.0
+        const val NEW_LOOP_GATE = 44.0
         const val DOWNLOAD_CALLER_GATE = 520.0
         const val DOWNLOAD_LOOP_GATE = 8.0
 
@@ -243,3 +246,6 @@ class PublicPathAllocationTests {
             }
     }
 }
+
+/** [native] on the native stack; on the JDK stack (Windows) it also allows the selector's boxed handles. */
+private fun stackLoopGate(native: Double): Double = loopGateOfThisStack(native, native + JDK_BOXED_HANDLES_PER_OP)

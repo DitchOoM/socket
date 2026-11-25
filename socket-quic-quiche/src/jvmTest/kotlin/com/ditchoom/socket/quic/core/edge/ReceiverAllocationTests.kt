@@ -13,6 +13,8 @@ import com.ditchoom.socket.quic.StreamReceive
 import com.ditchoom.socket.quic.StreamSend
 import com.ditchoom.socket.quic.StreamWrite
 import com.ditchoom.socket.quic.core.loop.LoopSet
+import com.ditchoom.socket.quic.core.testing.JDK_BOXED_HANDLES_PER_OP
+import com.ditchoom.socket.quic.core.testing.loopGateOfThisStack
 import com.ditchoom.socket.quic.core.testing.withDescriptorsAbove127
 import com.ditchoom.socket.quic.getOrElse
 import com.ditchoom.socket.quic.network
@@ -229,14 +231,14 @@ class ReceiverAllocationTests {
             callerGate: Double,
         ) {
             assertTrue(
-                lane <= laneGate && loop <= loopGate && caller <= callerGate,
+                lane <= laneGate && loop <= stackLoopGate(loopGate) && caller <= callerGate,
                 "caller %.1f B/op (gate %.0f), lane %.1f (gate %.0f), loop %.1f (gate %.0f)".format(
                     caller,
                     callerGate,
                     lane,
                     laneGate,
                     loop,
-                    loopGate,
+                    stackLoopGate(loopGate),
                 ),
             )
         }
@@ -313,3 +315,6 @@ class ReceiverAllocationTests {
             }
     }
 }
+
+/** [native] on the native stack; on the JDK stack (Windows) it also allows the selector's boxed handles. */
+private fun stackLoopGate(native: Double): Double = loopGateOfThisStack(native, native + JDK_BOXED_HANDLES_PER_OP)

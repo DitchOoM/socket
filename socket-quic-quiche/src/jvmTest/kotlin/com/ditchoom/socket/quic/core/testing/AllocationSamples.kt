@@ -40,6 +40,12 @@ internal inline fun <T> withDescriptorsAbove127(body: () -> T): T {
 }
 
 /**
+ * What a gate set on the native stack adds for the JDK stack: [loopGateOfThisStack]'s boxed handle, 16 B per ready key,
+ * for up to four selector wakes per operation (an echo wakes the loop twice, 31.9 B per echo on Windows).
+ */
+internal const val JDK_BOXED_HANDLES_PER_OP = 64.0
+
+/**
  * A loop's allocation gate on this process's stack: [native] where `qnet` polls, [jdk] on the JDK stack (Windows only),
  * whose `WEPollSelectorImpl` boxes every ready socket handle into an `Integer` (a handle is never in the cache), 16 B
  * per ready key, inside NIO's own calls.
