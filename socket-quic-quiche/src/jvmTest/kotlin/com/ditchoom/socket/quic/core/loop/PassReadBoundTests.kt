@@ -13,10 +13,10 @@ import kotlin.test.Test
 import kotlin.test.assertTrue
 
 /**
- * One pass reads a flooded socket up to its bound and never past it. A connection's receive queue holds a default
- * [DatagramOptions.recvQueueLen] datagrams, and a batch receive waiting for the loop is lent them only when the pass
- * serves the connection, after all its reads: a pass that read past the queue's depth dropped datagrams while the
- * receiver waited.
+ * One pass reads a flooded socket up to its bound and never past it. A batch receive is lent its connection's queue
+ * only when a pass serves the connection, after the pass's reads, and the receive asks again from its own thread: one
+ * that asks too late for a pass's serve is lent at the next, after a second pass's reads. Two passes' reads fit in the
+ * default [DatagramOptions.recvQueueLen], so a receiver one pass late loses nothing.
  */
 class PassReadBoundTests {
     /** A socket that always holds more: every receive takes [PER_READ] datagrams, short of a full batch. */
@@ -28,17 +28,19 @@ class PassReadBoundTests {
     }
 
     @Test
-    fun aFloodedSocketsPassReadsNoMoreDatagramsThanAReceiveQueueHolds() {
+    fun twoPassesOfAFloodedSocketReadNoMoreDatagramsThanAReceiveQueueHolds() {
         val rig = ConnRig(io = Flooded())
+        rig.pass()
+        val first = rig.loop.counts.datagramsIn
         rig.pass()
         val read = rig.loop.counts.datagramsIn
         val depth = DatagramOptions().recvQueueLen
-        assertTrue(read <= depth, "one pass read $read datagrams of a flood; a receive queue holds $depth")
-        assertTrue(read > depth - BATCH, "one pass read $read datagrams of a flood, short of the bound $depth by a batch or more")
+        assertTrue(read <= depth, "two passes read $read datagrams of a flood ($first in the first); a receive queue holds $depth")
+        assertTrue(read > depth - 2 * BATCH, "two passes read $read datagrams of a flood, short of $depth by more than a batch each")
     }
 
     private companion object {
-        /** Reads of 60 never land on a bound of 1024: the read that crosses it takes 60 past what is left. */
+        /** Reads of 60 never land on a bound that is a power of two: the read that would cross it is not begun. */
         const val PER_READ = 60
         const val BATCH = 64
         const val LENGTH = 1_000
