@@ -82,11 +82,15 @@ internal class CountingClock(
     override fun base(): ClockBase = real.base()
 }
 
-/** [real], with each batch send and each batch receive counted: one call into the network each. */
+/**
+ * [real], with each batch send and each batch receive counted: one call into the network each. A receive that found
+ * nothing is counted in [emptyReceives], every other in [receives].
+ */
 internal class CountingIo(
     private val real: DatagramBatchIo,
     private val sends: SeamCount,
     private val receives: SeamCount,
+    private val emptyReceives: SeamCount,
 ) : DatagramBatchIo by real {
     override fun send(batch: SendBatch): SendBatchResult {
         sends.hit()
@@ -94,8 +98,12 @@ internal class CountingIo(
     }
 
     override fun receive(into: ReceiveBatch): ReceiveBatchResult {
-        receives.hit()
-        return real.receive(into)
+        val got = real.receive(into)
+        when (got) {
+            is ReceiveBatchResult.Nothing -> emptyReceives.hit()
+            is ReceiveBatchResult.Got, is ReceiveBatchResult.GotWithBacklog, is ReceiveBatchResult.Failed -> receives.hit()
+        }
+        return got
     }
 }
 
