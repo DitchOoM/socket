@@ -24,8 +24,8 @@ import com.ditchoom.socket.quic.QuicStatsRead
 import com.ditchoom.socket.quic.QuicStreamLimit
 import com.ditchoom.socket.quic.QuicStreamOrigin
 import com.ditchoom.socket.quic.ScopedReadResult
-import com.ditchoom.socket.quic.read
 import com.ditchoom.socket.quic.core.conn.HandshakeFate
+import com.ditchoom.socket.quic.read
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -143,7 +143,10 @@ class EarlyDataReplayVirtualTests {
                 )
             assertEquals(expected, assertIs<QuicCloseException>(failed).end)
             val ended = assertIs<EdgeEnd.Ended>(client.connection.end())
-            assertIs<HandshakeFate.NotCompleted>(ended.handshake, "a refused replay ends the connection before its completion counts: the connect fails")
+            assertIs<HandshakeFate.NotCompleted>(
+                ended.handshake,
+                "a refused replay ends the connection before its completion counts: the connect fails",
+            )
             assertEquals(emptyList(), serving.read, "no early byte reached the server")
             assertEquals(1, runs, "the block ran once")
             serving.job.cancel()

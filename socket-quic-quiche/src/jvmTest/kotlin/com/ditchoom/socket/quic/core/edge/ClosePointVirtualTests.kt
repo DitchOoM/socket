@@ -19,11 +19,13 @@ import com.ditchoom.socket.quic.core.life.DrainUntil
 import com.ditchoom.socket.quic.read
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.yield
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
+import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.hours
@@ -254,7 +256,7 @@ class ClosePointVirtualTests {
         }
 
     @Test
-    fun aServerConnectionWhoseHandshakeCompletesInTheBatchThatClosesItIsOfferedThenEndsByPeer() =
+    fun aServerConnectionWhoseHandshakeCompletesInTheBatchThatClosesItIsNeverOffered() =
         VirtualPair.with(options, start = PairStart.Started) { pair ->
             pair.runUntil { pair.sentBy(End.Client).isNotEmpty() }
             // The client's Finished and its CONNECTION_CLOSE reach the server together.
@@ -268,14 +270,8 @@ class ClosePointVirtualTests {
             pair.runUntil { closed }
             assertTrue(pair.heldFrom(End.Client) >= 2, "the client's Finished and its close are held")
             pair.release(End.Client)
-            var offered: CoreConnection? = null
-            launch { offered = pair.accept() }
-            pair.runUntil { offered != null }
-            val serverSide = checkNotNull(offered)
-            pair.runUntil { serverSide.end() is EdgeEnd.Ended }
-            val end = assertIs<EdgeEnd.Ended>(serverSide.end()).end
-            assertEquals(QuicError.ApplicationError(APP_CODE), assertIs<ConnEnd.ByPeer>(end).error)
-            assertEquals("test", serverSide.negotiatedAlpn, "the completed handshake was reported")
+            pair.runFor(pair.oneWay * 6)
+            assertNull(withTimeoutOrNull(2.seconds) { pair.server.accept() }, "a connection closed in its handshake's serve was offered")
         }
 
     @Test

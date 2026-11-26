@@ -103,7 +103,10 @@ class CoreConnectionEndContractTests {
             serving(idle) { listener ->
                 val serving = launch { listener.handleConnections { handled.complete(it.handleStreams { }) } }
                 val connect = connectBlock(listener.port, idle) { withTimeout(IDLE_BOUND) { it.awaitEnd() } }
-                assertEquals<QuicConnectionEnd>(QuicConnectionEnd.IdleTimeout, assertIs<QuicConnect.Connected<QuicConnectionEnd>>(connect).value)
+                assertEquals<QuicConnectionEnd>(
+                    QuicConnectionEnd.IdleTimeout,
+                    assertIs<QuicConnect.Connected<QuicConnectionEnd>>(connect).value,
+                )
                 assertEquals<QuicConnectionEnd>(QuicConnectionEnd.IdleTimeout, withTimeout(IDLE_BOUND) { handled.await() })
                 serving.cancel()
             }

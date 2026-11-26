@@ -49,7 +49,11 @@ class CoreServerClosesAfterHandshakeTests {
                     val pinned = options.copy(serverCertificateHashes = listOf(served.hash))
                     val client = connected(connect(listener.port, pinned))
                     val end = withTimeout(WAIT) { client.awaitEnd() }
-                    assertEquals<QuicConnectionEnd>(QuicConnectionEnd.ByPeer(QuicError.NoError), end, "the handler's return closed it gracefully")
+                    assertEquals<QuicConnectionEnd>(
+                        QuicConnectionEnd.ByPeer(QuicError.NoError),
+                        end,
+                        "the handler's return closed it gracefully",
+                    )
                     assertIs<QuicConnectionLife.Ended>(client.life())
                     assertEquals(QuicResumptionOutcome.FullHandshake(QuicFullHandshakeReason.NoTicketOffered), client.handshake.resumption)
                     assertEquals("test", client.handshake.negotiatedAlpn)

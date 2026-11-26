@@ -1,7 +1,7 @@
 package com.ditchoom.socket.quic.core.edge
 
-import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicConnectionState
+import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.QuicheConn
