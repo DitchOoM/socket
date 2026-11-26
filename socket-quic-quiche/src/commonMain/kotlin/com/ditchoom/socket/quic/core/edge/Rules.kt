@@ -72,11 +72,10 @@ private fun overflowOf(overflow: DatagramOverflow): Overflow =
     }
 
 /**
- * The options a core endpoint of [role] configures quiche with. The core's own queues are the ones its options bound:
- * quiche's send queue is the short hand-off behind the core's ([quicheHandOff]), and its receive queue holds every
- * datagram one packet can carry, which the core takes out after each packet, so quiche never drops one uncounted. Its
- * [QuicOptions.incomingStreams] is the role's own choice: [IncomingStreams.ByRole] refuses on a client and accepts on a
- * server.
+ * The options a core endpoint of [role] configures quiche with. quiche's send queue is the short hand-off behind the
+ * core's own ([quicheHandOff]); its receive queue is the one the options bound, which holds received datagrams until a
+ * receive takes them, and whose drops the core counts. Its [QuicOptions.incomingStreams] is the role's own choice:
+ * [IncomingStreams.ByRole] refuses on a client and accepts on a server.
  */
 internal fun QuicOptions.forQuiche(role: QuicRole): QuicOptions {
     val incoming = incomingStreamsOf(incomingStreams, role)
@@ -86,7 +85,7 @@ internal fun QuicOptions.forQuiche(role: QuicRole): QuicOptions {
             copy(
                 incomingStreams = incoming,
                 datagrams =
-                    datagrams?.copy(sendQueueLen = rule.quicheHandOff(), recvQueueLen = QUICHE_DATAGRAMS_PER_PACKET),
+                    datagrams?.copy(sendQueueLen = rule.quicheHandOff()),
             )
     }
 }
@@ -104,9 +103,6 @@ internal fun incomingStreamsOf(
                 QuicRole.Server -> IncomingStreams.Accept()
             }
     }
-
-/** More DATAGRAM frames than one packet can carry: each empty one takes two bytes. */
-internal const val QUICHE_DATAGRAMS_PER_PACKET = 1024
 
 /** Whether idle connections of an endpoint are pinged, from [QuicOptions.keepAliveInterval]. */
 internal fun keepAliveRuleOf(options: QuicOptions): KeepAliveRule =

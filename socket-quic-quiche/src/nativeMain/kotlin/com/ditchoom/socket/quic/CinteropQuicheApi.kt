@@ -47,6 +47,7 @@ import com.ditchoom.socket.quic.quiche.quiche_conn_dgram_max_writable_len
 import com.ditchoom.socket.quic.quiche.quiche_conn_dgram_purge_outgoing
 import com.ditchoom.socket.quic.quiche.quiche_conn_dgram_recv
 import com.ditchoom.socket.quic.quiche.quiche_conn_dgram_recv_front_len
+import com.ditchoom.socket.quic.quiche.quiche_conn_dgram_recv_queue_len
 import com.ditchoom.socket.quic.quiche.quiche_conn_dgram_send
 import com.ditchoom.socket.quic.quiche.quiche_conn_dgram_send_queue_len
 import com.ditchoom.socket.quic.quiche.quiche_conn_early_data_reason
@@ -760,6 +761,8 @@ internal object CinteropQuicheApi : QuicheApi, QuicheRandomPin, QuicheClockPin {
     }
 
     override fun connDgramSendQueueLen(conn: QuicheConn): Int = quiche_conn_dgram_send_queue_len(conn.handle.toCPointer()!!).toInt()
+
+    override fun connDgramRecvQueueLen(conn: QuicheConn): Int = quiche_conn_dgram_recv_queue_len(conn.handle.toCPointer()!!).toInt()
 
     override fun hasReadableDgram(conn: QuicheConn): Boolean = quiche_conn_dgram_recv_front_len(conn.handle.toCPointer()!!) >= 0
 

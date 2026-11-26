@@ -1,61 +1,66 @@
 package com.ditchoom.socket.quic.core.conn
 
 import com.ditchoom.socket.quic.core.observe.Confined
-import com.ditchoom.socket.quic.core.time.Nanos
-
-/** Whether a drop was seen yet, and at which read's time. */
-private sealed interface LastDrop {
-    data object None : LastDrop
-
-    class At(
-        val at: Nanos,
-    ) : LastDrop
-}
 
 /**
- * How hard arrivals pressed on a connection's receive queue: the most it held at once, how many reads (each a socket
- * read's datagrams, stamped with one time) brought more than it had room for, and the most datagrams kept since a batch
- * receive was last lent the queue when one dropped. Kept within a pass's reads, a drop's receiver waited for the loop;
- * kept over several, it fell passes behind. Evidence for a dropping receiver; counts nothing a receive does. Inside
- * the connection only.
+ * Where the batch reader stood when quiche's queue dropped datagrams: away with its last batch; parked on the box and
+ * not yet told any arrived; or told and not yet lent them.
+ */
+internal enum class ReaderStood { Away, Parked, Told }
+
+/**
+ * How hard arrivals pressed on a connection's datagram receive queue: the most quiche held when the box read it, the
+ * most one batch was lent, and the drops counted by where the batch reader stood. A drop while it was parked is the
+ * box's: every read that leaves quiche holding a datagram tells a parked reader. A drop while it was away or told is
+ * the host's: the reader, or the work that lends to it, had not run. Evidence for a dropping receiver; counts nothing a
+ * receive does. Inside the connection only.
  */
 @Confined
 internal class DatagramPressure {
-    /** The most datagrams the queue held at once. */
-    var highWater = 0
+    /** The most datagrams quiche's queue held when the box read it. */
+    var heldHighWater = 0
         private set
 
-    /** Reads that dropped at least one datagram for want of room. */
-    var droppingReads = 0
+    /** The most datagrams one batch was lent. */
+    var largestLend = 0
         private set
 
-    /** The most datagrams kept since the last lend, the one that dropped another included, at any drop. */
-    var keptSinceLendAtDrop = 0
+    /** Batches lent at least one datagram. */
+    var lends = 0L
         private set
 
-    private var keptSinceLend = 0
+    /** Drops counted while the batch reader was away with its batch, or there was none. */
+    var dropsWhileAway = 0L
+        private set
 
-    private var lastDrop: LastDrop = LastDrop.None
+    /** Drops counted while the batch reader was parked and not yet told: the box's. */
+    var dropsWhileParked = 0L
+        private set
 
-    /** A datagram was kept, the queue holding [size] with it. */
-    fun queued(size: Int) {
-        keptSinceLend++
-        if (size > highWater) highWater = size
+    /** Drops counted while the batch reader was told datagrams arrived and had not been lent them. */
+    var dropsWhileTold = 0L
+        private set
+
+    /** quiche's queue held [count] datagrams. */
+    fun held(count: Int) {
+        if (count > heldHighWater) heldHighWater = count
     }
 
-    /** A batch receive was lent what the queue held. */
-    fun lent() {
-        keptSinceLend = 0
+    /** A batch was lent [count] datagrams. */
+    fun lent(count: Int) {
+        lends++
+        if (count > largestLend) largestLend = count
     }
 
-    /** A datagram was dropped for the one being kept, in the read stamped [at]. */
-    fun dropped(at: Nanos) {
-        if (keptSinceLend + 1 > keptSinceLendAtDrop) keptSinceLendAtDrop = keptSinceLend + 1
-        when (val last = lastDrop) {
-            is LastDrop.At -> if (last.at == at) return
-            is LastDrop.None -> Unit
+    /** [count] drops were counted with the batch reader where it [stood]. */
+    fun dropped(
+        count: Long,
+        stood: ReaderStood,
+    ) {
+        when (stood) {
+            ReaderStood.Away -> dropsWhileAway += count
+            ReaderStood.Parked -> dropsWhileParked += count
+            ReaderStood.Told -> dropsWhileTold += count
         }
-        droppingReads++
-        lastDrop = LastDrop.At(at)
     }
 }

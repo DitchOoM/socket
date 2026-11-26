@@ -393,6 +393,8 @@ object JniQuicheApi : QuicheApi {
 
     override fun connDgramSendQueueLen(conn: QuicheConn): Int = nConnDgramSendQueueLen(conn.handle).toInt()
 
+    override fun connDgramRecvQueueLen(conn: QuicheConn): Int = nConnDgramRecvQueueLen(conn.handle).toInt()
+
     override fun hasReadableDgram(conn: QuicheConn): Boolean = nConnDgramRecvFrontLen(conn.handle) >= 0
 
     override fun connDgramMaxWritableLen(conn: QuicheConn): MaxDatagramSize {
@@ -1215,6 +1217,10 @@ object JniQuicheApi : QuicheApi {
     @FastNative
     @JvmStatic
     private external fun nConnDgramRecvFrontLen(conn: Long): Long
+
+    @FastNative
+    @JvmStatic
+    private external fun nConnDgramRecvQueueLen(conn: Long): Long
 
     @JvmStatic
     private external fun nConnDgramPurgeOutgoing(conn: Long): Long

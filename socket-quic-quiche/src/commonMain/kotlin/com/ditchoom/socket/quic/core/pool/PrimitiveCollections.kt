@@ -32,6 +32,9 @@ internal class LongQueue {
 
     fun isNotEmpty(): Boolean = count > 0
 
+    /** How many values the queue holds. */
+    val size: Int get() = count
+
     fun addLast(value: Long) {
         if (count == ring.size) grow()
         ring[(head + count) and (ring.size - 1)] = value

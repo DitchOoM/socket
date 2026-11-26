@@ -46,7 +46,10 @@ internal class ConnCounts {
     /** Times a lingering connection answered a late datagram with its CONNECTION_CLOSE again. */
     val closesResent: Long get() = resent.value()
 
-    /** Received RFC 9221 datagrams dropped because the connection's receive queue was full and nobody was receiving. */
+    /**
+     * Received RFC 9221 datagrams quiche's receive queue dropped, oldest first, because it was full: counted when the
+     * connection finds the queue full, at every statistics read, and at its end.
+     */
     val datagramsOverflowed: Long get() = overflowed.value()
 
     /** RFC 9221 datagrams the connection's send queue refused because it was full: the caller was told, nothing was queued. */
@@ -87,7 +90,7 @@ internal class ConnCounts {
 
     fun closeResent() = resent.increment()
 
-    fun datagramOverflowed() = overflowed.increment()
+    fun datagramsOverflowed(count: Long) = overflowed.add(count)
 
     fun datagramRefusedQueueFull() = refused.increment()
 

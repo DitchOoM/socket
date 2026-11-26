@@ -1,7 +1,7 @@
 package com.ditchoom.socket.quic.core.conn
 
 import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.buffer.PlatformBuffer
+import com.ditchoom.socket.quic.QuicStatsRead
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.observe.Confined
@@ -10,149 +10,161 @@ import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.udp.Addressed
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 
-/** A queued datagram: its bytes and length. */
+/** The most datagrams one batch receive is lent at once, and so the most datagram slots a connection holds. */
+internal const val LEND_WINDOW = 256
+
+/** Memory a datagram is read into and lent from. */
 @Confined
-private class Queued(
+private class Slot(
     val bytes: NativeBytes,
-) {
-    var length = 0
-        private set
-    var arrivedAt = Nanos(0L)
-        private set
+)
 
-    fun filled(
-        length: Int,
-        at: Nanos,
-    ) {
-        this.length = length
-        arrivedAt = at
-    }
-}
-
-/** A batch receive parked in the box: told once datagrams are held for it to take. Runs inside the connection. */
-internal interface BatchWaiter {
-    /** The datagram [length] bytes long in [buffer], lent to the batch from its first byte. */
-    fun lent(
-        buffer: PlatformBuffer,
-        length: Int,
-    )
-
-    /** Datagrams arrived for the parked batch: it takes them by lending again. */
-    fun arrived()
-
-    /** The connection ended with the batch still parked. */
-    fun connectionEnded(end: ConnEnd)
-}
-
-/** The batch receive the box tells when datagrams arrive: none, or the one parked. */
-private sealed interface BatchWait {
-    data object None : BatchWait
+/** Where the batch reader stands: away with what it was last lent, if anything; parked for datagrams; or told they arrived and not yet back. */
+private sealed interface BatchReader {
+    data object Away : BatchReader
 
     class Parked(
         val waiter: BatchWaiter,
-    ) : BatchWait
+    ) : BatchReader
+
+    data object Told : BatchReader
 }
 
 /**
- * A connection's received RFC 9221 datagrams, inside it only. Receives park here, one answered per arriving datagram,
- * written straight into the receive's own memory. A datagram that finds none parked is kept in a queue of at most
- * [bound] slots, made as they are needed and reused after; when it is full the oldest is dropped for the newest and
- * counted, so a receiver that stops reading holds a bounded amount of memory. One kept past [incoming] is dropped,
- * counted, when it would be delivered. A batch receive is lent the queue's own slots, read in place, and gives them
- * back as the next batch is lent: at most [bound] slots are queued and as many lent.
+ * A connection's received RFC 9221 datagrams, inside it only. They stay in quiche's receive queue, [bound] long, until a
+ * receive takes them: quiche drops the oldest for the newest when it is full, and the box counts each drop as
+ * received but neither read out nor held. A receive is answered from quiche straight into its own memory, else parks
+ * until a datagram arrives. A batch receive is lent at most [LEND_WINDOW] datagrams, read into slots the box keeps and
+ * read in place, and gives them back as the next batch is lent. One past [incoming] is dropped, counted, when it would
+ * be delivered.
  */
 @Confined
 internal class DatagramBox(
     private val q: QuicheConnRef,
     private val bound: Int,
-    private val incoming: AgeBound,
+    incoming: AgeBound,
     private val factory: BufferFactory,
     private val counts: ConnCounts,
 ) {
-    private val queued = ArrayDeque<Queued>()
-    private val spare = ArrayDeque<Queued>()
+    private val spare = ArrayDeque<Slot>()
+    private val lentOut = ArrayDeque<Slot>()
     private val waiting = ArrayDeque<DatagramWaiter>()
-    private val lentOut = ArrayDeque<Queued>()
-    private var batch: BatchWait = BatchWait.None
+    private var reader: BatchReader = BatchReader.Away
+    private val arrivals = arrivalsOf(incoming)
 
-    /** How hard arrivals pressed on the queue, for a receiver that drops. */
+    /** How hard arrivals pressed on quiche's queue, for a receiver that drops. */
     val pressure = DatagramPressure()
 
-    /** Answers [waiter] with the oldest datagram held that is still fresh at [now] or quiche's next, else parks it until one arrives. */
+    private val tally = DatagramTally(q, counts, pressure)
+
+    /** Answers [waiter] with the oldest datagram quiche holds that is still fresh at [now], else parks it until one arrives. */
     fun receive(
         waiter: DatagramWaiter,
         now: Nanos,
-    ): Receipt {
-        while (queued.isNotEmpty()) {
-            val next = queued.removeFirst()
-            spare.addLast(next)
-            when (incoming.expired(next.arrivedAt, now)) {
-                Expiry.Expired -> counts.datagramExpiredIncoming()
-                Expiry.Fresh -> {
-                    next.bytes.copyOut(waiter.address, next.length)
-                    waiter.arrived(next.length)
-                    return Receipt.Delivered
-                }
-            }
-        }
-        return when (pull(waiter)) {
+    ): Receipt =
+        when (pull(waiter, now)) {
             Pulled.Got -> Receipt.Delivered
             Pulled.Nothing -> {
                 waiting.addLast(waiter)
                 Receipt.Parked
             }
         }
-    }
 
     fun withdraw(waiter: DatagramWaiter) {
         waiting.remove(waiter)
     }
 
     /**
-     * Gives back what the last batch was lent, then lends [into] every datagram held that is still fresh at [now], oldest
-     * first, else parks it until one arrives.
+     * Gives back what the last batch was lent, then lends [into] the oldest datagrams quiche holds that are still fresh at
+     * [now], at most [LEND_WINDOW], else parks it until one arrives.
      */
     fun lend(
         into: BatchWaiter,
         now: Nanos,
     ): Receipt {
         while (lentOut.isNotEmpty()) spare.addLast(lentOut.removeFirst())
-        while (keep(now) == Kept.One) Unit
-        while (queued.isNotEmpty()) {
-            val next = queued.removeFirst()
-            when (incoming.expired(next.arrivedAt, now)) {
+        var left = held(now)
+        while (left > 0 && lentOut.size < LEND_WINDOW) {
+            left--
+            val slot =
+                if (spare.isNotEmpty()) {
+                    spare.removeFirst()
+                } else {
+                    when (val fresh = made()) {
+                        is Made.Fresh -> fresh.slot
+                        is Made.Unaddressable -> break
+                    }
+                }
+            val length =
+                q.api.connDgramRecvStep(q.handle, slot.bytes.address, slot.bytes.capacity).fold(
+                    more = { it },
+                    last = { it },
+                    nothingYet = {
+                        spare.addFirst(slot)
+                        break
+                    },
+                    gone = {
+                        spare.addFirst(slot)
+                        break
+                    },
+                    reset = {
+                        spare.addFirst(slot)
+                        break
+                    },
+                    error = {
+                        spare.addFirst(slot)
+                        break
+                    },
+                )
+            tally.pulled()
+            when (arrivals.taken(now)) {
                 Expiry.Expired -> {
-                    spare.addLast(next)
+                    spare.addFirst(slot)
                     counts.datagramExpiredIncoming()
                 }
                 Expiry.Fresh -> {
-                    lentOut.addLast(next)
-                    into.lent(next.bytes.owner, next.length)
+                    lentOut.addLast(slot)
+                    into.lent(slot.bytes.owner, length)
                 }
             }
         }
         if (lentOut.isNotEmpty()) {
-            pressure.lent()
+            reader = BatchReader.Away
+            pressure.lent(lentOut.size)
             return Receipt.Delivered
         }
-        batch = BatchWait.Parked(into)
+        reader = BatchReader.Parked(into)
         return Receipt.Parked
     }
 
     /** The batch [into] no longer waits. */
     fun withdraw(into: BatchWaiter) {
-        when (val parked = batch) {
-            is BatchWait.Parked -> if (parked.waiter === into) batch = BatchWait.None
-            is BatchWait.None -> Unit
+        when (val parked = reader) {
+            is BatchReader.Parked -> if (parked.waiter === into) reader = BatchReader.Away
+            is BatchReader.Away, is BatchReader.Told -> Unit
         }
     }
 
+    /** The datagram slots the box holds, spare and lent: [DATAGRAM_ROOM] bytes each. */
+    fun slotsHeld(): Int = spare.size + lentOut.size
+
     /**
-     * Moves what quiche holds to the receives parked, else into the queue. Run after every datagram quiche reads, so
-     * quiche's own queue never holds more than that one and this queue's bound is the only one that drops. What is
-     * kept is stamped with [now], when it arrived.
+     * Run after every read quiche takes, at its time [now]: the receives parked are answered from quiche, and a parked
+     * batch is told datagrams arrived, so it is lent them when it runs again, after the pass's reads.
      */
     fun drain(now: Nanos) {
+        when (val parked = reader) {
+            is BatchReader.Parked ->
+                if (q.api.hasReadableDgram(q.handle)) {
+                    reader = BatchReader.Told
+                    parked.waiter.arrived()
+                }
+            is BatchReader.Away, is BatchReader.Told -> Unit
+        }
+        when (arrivals) {
+            is DatagramArrivals.Stamped -> held(now)
+            is DatagramArrivals.Unstamped -> Unit
+        }
         while (waiting.isNotEmpty()) {
             val first = waiting.first()
             when (first.interest()) {
@@ -161,97 +173,92 @@ internal class DatagramBox(
                     first.discard()
                 }
                 Interest.Wanted ->
-                    when (pull(first)) {
+                    when (pull(first, now)) {
                         Pulled.Got -> waiting.removeFirst()
-                        Pulled.Nothing -> return
+                        Pulled.Nothing -> break
                     }
             }
         }
-        while (keep(now) == Kept.One) Unit
-        when (val parked = batch) {
-            is BatchWait.Parked ->
-                if (queued.isNotEmpty()) {
-                    batch = BatchWait.None
-                    parked.waiter.arrived()
-                }
-            is BatchWait.None -> Unit
-        }
     }
 
-    /** The connection ended: every parked receive is told, and the queue's memory goes, what is lent included. */
+    /** Counts what quiche dropped as of [read], a statistics read made inside the connection just now. */
+    fun counted(read: QuicStatsRead) =
+        when (read) {
+            is QuicStatsRead.Read -> tally.count(read.stats.datagramsReceived, q.api.connDgramRecvQueueLen(q.handle), stood())
+            is QuicStatsRead.Ended -> Unit
+        }
+
+    /** The connection ended: what quiche dropped is counted, every parked receive is told, and the slots' memory goes. */
     fun endAll(end: ConnEnd) {
+        tally.fromQuiche(q.api.connDgramRecvQueueLen(q.handle), stood())
         while (waiting.isNotEmpty()) waiting.removeFirst().connectionEnded(end)
-        when (val parked = batch) {
-            is BatchWait.Parked -> {
-                batch = BatchWait.None
+        when (val parked = reader) {
+            is BatchReader.Parked -> {
+                reader = BatchReader.Away
                 parked.waiter.connectionEnded(end)
             }
-            is BatchWait.None -> Unit
+            is BatchReader.Away, is BatchReader.Told -> Unit
         }
-        for (held in listOf(queued, spare, lentOut)) {
+        for (held in listOf(spare, lentOut)) {
             held.forEach { it.bytes.free() }
             held.clear()
         }
     }
 
-    private fun pull(waiter: DatagramWaiter): Pulled =
-        q.api.connDgramRecvStep(q.handle, waiter.address, waiter.capacity).fold(
-            more = { length ->
-                waiter.arrived(length)
-                Pulled.Got
-            },
-            last = { length ->
-                waiter.arrived(length)
-                Pulled.Got
-            },
-            nothingYet = { Pulled.Nothing },
-            gone = { Pulled.Nothing },
-            reset = { Pulled.Nothing },
-            error = { code ->
-                waiter.refused(code)
-                Pulled.Got
-            },
-        )
+    /**
+     * How many datagrams quiche holds, read at [now]. A full queue may have dropped some, which are counted; an age bound
+     * stamps the ones that arrived since it was last read with [now].
+     */
+    private fun held(now: Nanos): Int {
+        val held = q.api.connDgramRecvQueueLen(q.handle)
+        val drops = if (held >= bound) tally.fromQuiche(held, stood()) else 0L
+        arrivals.read(held, drops, now)
+        pressure.held(held)
+        return held
+    }
 
-    /** Reads one datagram quiche holds into the queue, over the oldest when the queue is full. */
-    private fun keep(now: Nanos): Kept {
-        val slot =
-            when {
-                queued.size >= bound -> queued.first()
-                spare.isNotEmpty() -> spare.first()
-                else ->
-                    when (val fresh = made()) {
-                        is Made.Slot -> fresh.queued.also { spare.addLast(it) }
-                        is Made.Unaddressable -> return Kept.None
-                    }
-            }
-        val got =
-            q.api.connDgramRecvStep(q.handle, slot.bytes.address, slot.bytes.capacity).fold(
-                more = { it },
-                last = { it },
-                nothingYet = { return Kept.None },
-                gone = { return Kept.None },
-                reset = { return Kept.None },
-                error = { return Kept.None },
-            )
-        slot.filled(got, now)
-        if (queued.size >= bound) {
-            queued.removeFirst()
-            counts.datagramOverflowed()
-            pressure.dropped(now)
-        } else {
-            spare.removeFirst()
+    /** Where the batch reader stands, as a drop counted now is told. */
+    private fun stood(): ReaderStood =
+        when (reader) {
+            is BatchReader.Away -> ReaderStood.Away
+            is BatchReader.Parked -> ReaderStood.Parked
+            is BatchReader.Told -> ReaderStood.Told
         }
-        queued.addLast(slot)
-        pressure.queued(queued.size)
-        return Kept.One
+
+    /** Reads quiche's oldest datagram fresh at [now] into [waiter]'s memory, passing over the expired. */
+    private fun pull(
+        waiter: DatagramWaiter,
+        now: Nanos,
+    ): Pulled {
+        while (true) {
+            val length =
+                q.api.connDgramRecvStep(q.handle, waiter.address, waiter.capacity).fold(
+                    more = { it },
+                    last = { it },
+                    nothingYet = { return Pulled.Nothing },
+                    gone = { return Pulled.Nothing },
+                    reset = { return Pulled.Nothing },
+                    error = { code ->
+                        waiter.refused(code)
+                        return Pulled.Got
+                    },
+                )
+            tally.pulled()
+            when (arrivals.taken(now)) {
+                Expiry.Expired -> counts.datagramExpiredIncoming()
+                Expiry.Fresh -> {
+                    waiter.arrived(length)
+                    return Pulled.Got
+                }
+            }
+        }
     }
 
     /** A new slot from the connection's factory, which the connect checked makes addressable memory. */
     private fun made(): Made {
         val buffer = factory.allocate(DATAGRAM_ROOM)
         return when (val memory = NativeBytes.of(buffer)) {
-            is Addressed.Native -> Made.Slot(Queued(memory.bytes))
+            is Addressed.Native -> Made.Fresh(Slot(memory.bytes))
             is Addressed.NotAddressable -> {
                 buffer.freeNativeMemory()
                 Made.Unaddressable
@@ -260,14 +267,12 @@ internal class DatagramBox(
     }
 
     private sealed interface Made {
-        class Slot(
-            val queued: Queued,
+        class Fresh(
+            val slot: Slot,
         ) : Made
 
         data object Unaddressable : Made
     }
 
     private enum class Pulled { Got, Nothing }
-
-    private enum class Kept { One, None }
 }

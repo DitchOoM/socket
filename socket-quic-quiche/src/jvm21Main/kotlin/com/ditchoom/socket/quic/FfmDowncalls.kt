@@ -40,6 +40,10 @@ internal object HotCalls {
         )
 
     @JvmField
+    val hConnDgramRecvQueueLen: MethodHandle =
+        FfmLibrary.downcall("quiche_conn_dgram_recv_queue_len", FunctionDescriptor.of(JAVA_LONG, JAVA_LONG))
+
+    @JvmField
     val hConnDgramRecvFrontLen: MethodHandle =
         FfmLibrary.downcall(
             "quiche_conn_dgram_recv_front_len",

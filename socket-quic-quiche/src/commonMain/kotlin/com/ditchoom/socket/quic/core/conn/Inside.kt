@@ -104,7 +104,10 @@ internal class Inside(
     fun serverChecked() = c.serverChecked()
 
     /** The connection's statistics, read now. */
-    fun stats(): QuicStatsRead = c.slots.paths.stats()
+    fun stats(): QuicStatsRead =
+        c.slots.paths
+            .stats()
+            .also { c.slots.datagrams.counted(it) }
 
     /** What the connection waits on, seen now. */
     fun stallView(): StallView {

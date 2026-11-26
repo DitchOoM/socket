@@ -400,6 +400,11 @@ internal class StubQuicheApi(
 
     override fun connDgramSendQueueLen(conn: QuicheConn): Int = dgramSendQueueLen
 
+    /** Datagrams the stub's receive queue holds. */
+    @Volatile var dgramRecvQueueLen: Int = 0
+
+    override fun connDgramRecvQueueLen(conn: QuicheConn): Int = dgramRecvQueueLen
+
     @Volatile var hasReadableDgram: Boolean = false
 
     override fun hasReadableDgram(conn: QuicheConn) = hasReadableDgram

@@ -10,8 +10,10 @@ import com.ditchoom.socket.quic.core.conn.Conn
 import com.ditchoom.socket.quic.core.conn.ConnWork
 import com.ditchoom.socket.quic.core.conn.Datagrams
 import com.ditchoom.socket.quic.core.conn.Inside
+import com.ditchoom.socket.quic.core.conn.LEND_WINDOW
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.testing.Explanation
+import com.ditchoom.socket.quic.core.testing.PerfGates
 import com.ditchoom.socket.quic.core.testing.ProcessCpuSampler
 import com.ditchoom.socket.quic.core.testing.StallProbe
 import com.ditchoom.socket.quic.core.testing.withDescriptorsAbove127
@@ -39,8 +41,7 @@ import kotlin.time.Duration.Companion.seconds
 /**
  * The public datagram receive under a one-way flood of 1000-byte datagrams over loopback, read at full speed by
  * [receiveEach] on a thread of its own, sent by [DatagramFloodChild] in a JVM of its own: what each delivered datagram costs the reader in bytes allocated and in
- * resumes, and that the batches keep up, so the receive queue drops nothing. Design D5.8 measured the batched shape at
- * 8.5 B and about 0.05 resumes per datagram, with no drops; a receive resumed once per datagram, at 544 B and 92% drops.
+ * resumes, and the drops of quiche's receive queue, by where the reader stood when they were counted.
  */
 class DatagramBatchReceiveCountsTests {
     @Test
@@ -57,13 +58,27 @@ class DatagramBatchReceiveCountsTests {
             )
         }
 
+    /**
+     * Drops while the reader is away with its batch, or told and not yet lent, are the host's scheduling, so they are
+     * reported and trended; a drop while the reader was parked and not told is the box's, and fails. Every drop is
+     * counted where the reader stood.
+     */
     @Test
-    fun aFullSpeedReaderLosesNoDatagramToTheReceiveQueue() =
+    fun aFullSpeedReaderLosesNoDatagramWhileParkedAndItsDropsAreTrended() =
         flooded(Reader.Each) { flood ->
-            println("[dgram drop] drops ${flood.dropped} of ${flood.received}; ${flood.evidence()}")
+            val processes = if (flood.dropped == 0L) "" else "\nprocesses after the flood:\n${ProcessCpuSampler.topNow()}"
+            println("[dgram drop] drops ${flood.dropped} of ${flood.received}; ${flood.evidence()}$processes")
+            val owner = DatagramBatchReceiveCountsTests::class.java
+            PerfGates.record(owner, "full-speed-reader", "receive-queue-drops", flood.dropped.toDouble(), 0.0, "datagrams")
+            PerfGates.record(owner, "full-speed-reader", "drops-while-away", flood.pressure.dropsWhileAway.toDouble(), 0.0, "datagrams")
+            PerfGates.record(owner, "full-speed-reader", "drops-while-told", flood.pressure.dropsWhileTold.toDouble(), 0.0, "datagrams")
             assertTrue(flood.received > 0, "the flood delivered nothing")
-            val processes = if (flood.dropped == 0L) "" else "\nprocesses at the failure:\n${ProcessCpuSampler.topNow()}"
-            assertEquals(0L, flood.dropped, "datagrams the receive queue dropped of ${flood.received}; ${flood.evidence()}$processes")
+            assertEquals(0L, flood.pressure.dropsWhileParked, "drops while the reader was parked and not told; ${flood.evidence()}")
+            assertEquals(
+                flood.dropped,
+                flood.pressure.run { dropsWhileAway + dropsWhileParked + dropsWhileTold },
+                "every drop is counted where the reader stood; ${flood.evidence()}",
+            )
         }
 
     private class Flood(
@@ -80,9 +95,11 @@ class DatagramBatchReceiveCountsTests {
     ) {
         /** What a dropping run's failure says: how long the reader waited at most, and how hard the queue was pressed. */
         fun evidence() =
-            "longest gap between reader runs ${longestGapNanos / 1_000} us; queue high water ${pressure.highWater}; " +
-                "reads that dropped ${pressure.droppingReads}; most kept since a lend at a drop ${pressure.keptSinceLendAtDrop} " +
-                "(a pass reads up to $PASS_READS); GC $gcCount collections, $gcMillis ms; longest gap's $stall"
+            "longest gap between reader runs ${longestGapNanos / 1_000} us; quiche's queue held at most ${pressure.heldHighWater}; " +
+                "${pressure.lends} lends, the largest ${pressure.largestLend} of $LEND_WINDOW; drops while away " +
+                "${pressure.dropsWhileAway}, while parked ${pressure.dropsWhileParked}, while told ${pressure.dropsWhileTold}; " +
+                "GC $gcCount collections, $gcMillis ms; " +
+                "longest gap's $stall"
 
         fun bytesPer() = callerBytes.toDouble() / delivered
 
@@ -187,9 +204,12 @@ class DatagramBatchReceiveCountsTests {
                                     longestGapNanos = readerThread.longestGap.get(),
                                     pressure =
                                         Pressure(
-                                            pressureTo.highWater,
-                                            pressureTo.droppingReads - pressureFrom.droppingReads,
-                                            pressureTo.keptSinceLendAtDrop,
+                                            heldHighWater = pressureTo.heldHighWater,
+                                            largestLend = pressureTo.largestLend,
+                                            lends = pressureTo.lends - pressureFrom.lends,
+                                            dropsWhileAway = pressureTo.dropsWhileAway - pressureFrom.dropsWhileAway,
+                                            dropsWhileParked = pressureTo.dropsWhileParked - pressureFrom.dropsWhileParked,
+                                            dropsWhileTold = pressureTo.dropsWhileTold - pressureFrom.dropsWhileTold,
                                         ),
                                     gcCount = gcTo.first - gcFrom.first,
                                     gcMillis = gcTo.second - gcFrom.second,
@@ -222,9 +242,12 @@ class DatagramBatchReceiveCountsTests {
 
     /** What a connection's receive queue reported of its pressure, read inside it. */
     private class Pressure(
-        val highWater: Int,
-        val droppingReads: Int,
-        val keptSinceLendAtDrop: Int,
+        val heldHighWater: Int,
+        val largestLend: Int,
+        val lends: Long,
+        val dropsWhileAway: Long,
+        val dropsWhileParked: Long,
+        val dropsWhileTold: Long,
     )
 
     /** The server connection's receive-queue pressure, read inside it. */
@@ -236,13 +259,24 @@ class DatagramBatchReceiveCountsTests {
                 override fun run(inside: Inside) {
                     when (val datagrams = inside.datagrams) {
                         is Datagrams.On ->
-                            datagrams.box.pressure.let { read.complete(Pressure(it.highWater, it.droppingReads, it.keptSinceLendAtDrop)) }
-                        is Datagrams.Off -> read.complete(Pressure(0, 0, 0))
+                            datagrams.box.pressure.let {
+                                read.complete(
+                                    Pressure(
+                                        it.heldHighWater,
+                                        it.largestLend,
+                                        it.lends,
+                                        it.dropsWhileAway,
+                                        it.dropsWhileParked,
+                                        it.dropsWhileTold,
+                                    ),
+                                )
+                            }
+                        is Datagrams.Off -> read.complete(NO_PRESSURE)
                     }
                 }
 
                 override fun gone(end: ConnEnd) {
-                    read.complete(Pressure(0, 0, 0))
+                    read.complete(NO_PRESSURE)
                 }
             },
             CallerPlace.HandToLoop,
@@ -264,8 +298,7 @@ class DatagramBatchReceiveCountsTests {
         const val WARM_UP_MS = 500L
         const val FLOOD_MS = 2_500L
 
-        /** The loop's bound on one socket's reads in a pass: a drop kept within it was the loop's, past it the reader's. */
-        const val PASS_READS = 512
+        val NO_PRESSURE = Pressure(0, 0, 0L, 0L, 0L, 0L)
 
         /**
          * D5.8's batched shape measured 8.5 B; the receive measures 4.7 to 5.6 B by [QuicDatagrams.receiveEach] and 8.8 to

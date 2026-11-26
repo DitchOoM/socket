@@ -14,6 +14,7 @@ import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicDatagramRefused
 import com.ditchoom.socket.quic.QuicDatagramTooLarge
 import com.ditchoom.socket.quic.QuicError
+import com.ditchoom.socket.quic.QuicStatsRead
 import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.sched.SendRule
 import com.ditchoom.socket.quic.core.testing.coreTest
@@ -162,14 +163,12 @@ class CoreDatagramTests {
                     val channel = client.connection.datagramChannel()
                     receive(channel)
                     send(channel, ByteArray(1))
+
+                    suspend fun dropped() = assertIs<QuicStatsRead.Read>(client.connection.stats()).stats.datagramDrops.receiveQueue
                     withTimeout(WAIT) {
-                        while (client.connection.counts.datagramsOverflowed < SENT - QUEUE) delay(SETTLE)
+                        while (dropped() < SENT - QUEUE) delay(SETTLE)
                     }
-                    assertEquals(
-                        (SENT - QUEUE).toLong(),
-                        client.connection.counts.datagramsOverflowed,
-                        "everything past the bound is counted",
-                    )
+                    assertEquals((SENT - QUEUE).toLong(), dropped(), "everything past the bound is counted")
                     val kept = (0 until QUEUE).map { receive(channel) }
                     assertEquals(
                         (SENT - QUEUE + 1..SENT).toList(),

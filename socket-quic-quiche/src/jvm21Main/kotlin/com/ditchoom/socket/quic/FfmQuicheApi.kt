@@ -697,6 +697,8 @@ class FfmQuicheApi private constructor(
 
     override fun connDgramSendQueueLen(conn: QuicheConn): Int = (ConnCalls.hConnDgramSendQueueLen.invokeExact(conn.handle) as Long).toInt()
 
+    override fun connDgramRecvQueueLen(conn: QuicheConn): Int = (HotCalls.hConnDgramRecvQueueLen.invokeExact(conn.handle) as Long).toInt()
+
     override fun hasReadableDgram(conn: QuicheConn): Boolean = (HotCalls.hConnDgramRecvFrontLen.invokeExact(conn.handle) as Long) >= 0
 
     override fun connDgramMaxWritableLen(conn: QuicheConn): MaxDatagramSize {

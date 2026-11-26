@@ -578,6 +578,12 @@ JNIEXPORT jlong JNICALL JNI_FN(nConnDgramPurgeOutgoing)(JNIEnv *env, jclass cls,
     return (jlong)held;
 }
 
+/* The datagrams quiche's receive queue holds, not yet read. */
+JNIEXPORT jlong JNICALL JNI_FN(nConnDgramRecvQueueLen)(JNIEnv *env, jclass cls, jlong conn) {
+    (void)env; (void)cls;
+    return (jlong)quiche_conn_dgram_recv_queue_len((quiche_conn *)(uintptr_t)conn);
+}
+
 JNIEXPORT jlong JNICALL JNI_FN(nConnDgramRecvFrontLen)(JNIEnv *env, jclass cls, jlong conn) {
     /* quiche FFI returns ssize_t -1 when the recv queue is empty, else the front datagram length. */
     return (jlong)quiche_conn_dgram_recv_front_len((quiche_conn *)(uintptr_t)conn);

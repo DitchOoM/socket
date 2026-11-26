@@ -1,5 +1,7 @@
 package com.ditchoom.socket.quic.core.conn
 
+import com.ditchoom.buffer.PlatformBuffer
+import com.ditchoom.socket.quic.QuicStatsRead
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.stream.Backlog
 import com.ditchoom.socket.quic.core.time.Nanos
@@ -36,6 +38,21 @@ internal interface DatagramWaiter {
     fun connectionEnded(end: ConnEnd)
 }
 
+/** A batch receive parked in the box: told once datagrams are held for it to take. Runs inside the connection. */
+internal interface BatchWaiter {
+    /** The datagram [length] bytes long in [buffer], lent to the batch from its first byte. */
+    fun lent(
+        buffer: PlatformBuffer,
+        length: Int,
+    )
+
+    /** Datagrams arrived for the parked batch: it takes them by lending again. */
+    fun arrived()
+
+    /** The connection ended with the batch still parked. */
+    fun connectionEnded(end: ConnEnd)
+}
+
 /** Inside, at [now]: the datagram work of an established connection, served each turn: the room is read, what quiche received moves on, and idle send memory is let go. */
 internal fun Datagrams.wake(now: Nanos) =
     when (this) {
@@ -45,6 +62,13 @@ internal fun Datagrams.wake(now: Nanos) =
             box.drain(now)
             out.trim(now)
         }
+    }
+
+/** Inside: what quiche's receive queue dropped is counted, as of [read], a statistics read made just now. */
+internal fun Datagrams.counted(read: QuicStatsRead) =
+    when (this) {
+        is Datagrams.Off -> Unit
+        is Datagrams.On -> box.counted(read)
     }
 
 /** Inside: quiche has read a datagram, at [now]. */
