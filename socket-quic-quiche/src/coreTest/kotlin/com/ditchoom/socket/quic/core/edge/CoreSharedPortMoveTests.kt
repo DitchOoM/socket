@@ -60,7 +60,7 @@ class CoreSharedPortMoveTests {
                         readPolicy = ReadPolicy.Bounded(WAIT),
                         writePolicy = WritePolicy.Bounded(WAIT),
                         loops = loops,
-                        ride = ClientRide.Lent(LentChannel(shared.quic)),
+                        ride = ClientRide.Lent(lentChannelOf(shared.quic)),
                     )
                 val connection = client.connection.public()
                 assertSharedPortEchoes(connection, 0)

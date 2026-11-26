@@ -6,6 +6,8 @@ import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.core.sched.Caught
 import com.ditchoom.socket.quic.core.stream.SendRefusal
 import com.ditchoom.socket.quic.core.udp.Thrown
+import com.ditchoom.socket.udp.DatagramSendError
+import com.ditchoom.socket.udp.DatagramSendException
 import kotlinx.coroutines.Runnable
 
 /**
@@ -89,6 +91,21 @@ internal inline fun <R> overflowing(
         // A position seek past the limit is signalled differently per platform; the same answer.
         overflow()
     }
+
+/**
+ * The datagram-tier containment site of a lent channel's sender: a send the caller's channel refused (unreachable, too
+ * large, would block) is that one datagram's, answered by [refused]; the sender goes on with the next.
+ */
+internal inline fun sendContained(
+    refused: (DatagramSendError) -> Unit,
+    body: () -> Unit,
+) {
+    try {
+        body()
+    } catch (failed: DatagramSendException) {
+        refused(failed.error)
+    }
+}
 
 /** The failure a refused stream send is: past the close point, or after the end. */
 internal fun SendRefusal.raised(): Raised =

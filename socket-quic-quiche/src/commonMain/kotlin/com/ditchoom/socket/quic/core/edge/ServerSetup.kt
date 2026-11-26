@@ -64,7 +64,6 @@ import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.ReceiveBuffer
 import com.ditchoom.socket.quic.core.udp.SendBatch
 import com.ditchoom.socket.quic.core.udp.SocketBuffers
-import com.ditchoom.socket.quic.core.udp.SocketReport
 import com.ditchoom.socket.quic.encodeToNative
 import com.ditchoom.socket.quic.newConnectionIdRandom
 import kotlinx.coroutines.CompletableDeferred
@@ -273,7 +272,7 @@ internal class ServerSetup(
             // The caller's first pass would place the socket only after that pass's receive: place it now.
             LoopDriver.Caller -> loop.pass(clock.now())
         }
-        return CoreServer(localKey.port, loop, demux, counts, accepted, SocketReport(socket.granted(), localKey.port), stopped, handlers)
+        return CoreServer(localKey.port, loop, demux, counts, accepted, socket.report(localKey.port), stopped, handlers)
     }
 
     /** A chunk of the Initial backlog: at setup, then on the loop thread, which owns [memory] from its start. */

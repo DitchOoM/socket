@@ -37,7 +37,6 @@ import com.ditchoom.socket.quic.core.loop.Placement
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 import com.ditchoom.socket.quic.core.udp.SocketBuffers
 import com.ditchoom.socket.quic.core.udp.SocketPeer
-import com.ditchoom.socket.quic.core.udp.SocketReport
 import com.ditchoom.socket.quic.encodeToNative
 import com.ditchoom.socket.quic.generateScid
 import com.ditchoom.socket.quic.hostLiteral
@@ -197,7 +196,7 @@ private suspend fun OnSetupLane.connectOnLane(
                 openStackSocket(running.io, memory, bind, SocketPeer.Connected(peerKey), buffers, batching, CLIENT_BATCH)
             }
             is ClientRide.NetworkFramework -> withTimeout(timeout) { ride.connector.connect(host, port) }
-            is ClientRide.Lent -> StackSocket.Lent(ride.channel, LentPeers.One(peer, peerKey), ride.channel.local.toPathKey(), factory)
+            is ClientRide.Lent -> ride.socketTo(peer, peerKey, factory)
         }
     val opened = ClientSetup.Opened(seated, socket)
     moved(opened)
@@ -275,7 +274,7 @@ private suspend fun OnSetupLane.connectOnLane(
     api.nameTrafficSecretsLog(handle, built.capture, QuicRole.Client, keyLogDirectory) { QuicSessionId(scidHex) }
     val started =
         StartedClient(
-            CoreClient(connection, built.conn, running.loop, SocketReport(socket.granted(), local.port)),
+            CoreClient(connection, built.conn, running.loop, socket.report(local.port), built),
             offer,
             ServerCheck(connection, built.conn, built.chain),
         )

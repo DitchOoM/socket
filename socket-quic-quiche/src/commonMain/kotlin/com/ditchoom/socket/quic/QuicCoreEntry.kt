@@ -7,7 +7,6 @@ import com.ditchoom.socket.SSLSocketException
 import com.ditchoom.socket.SocketUnknownHostException
 import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.quic.core.edge.CoreQuicConnection
-import com.ditchoom.socket.quic.core.edge.LentChannel
 import com.ditchoom.socket.quic.core.edge.connectOnTheCore
 import com.ditchoom.socket.quic.core.edge.connectOverLent
 import com.ditchoom.socket.quic.core.edge.serveOnTheCore
@@ -137,7 +136,8 @@ private suspend fun connected(
  * `connectQuic` over [channel] on the core: a channel the caller bound and keeps, such as the QUIC branch of a port it
  * shares with ICE and STUN (`MultiplexedUdpSocket.quic`). The connection dials [peer] once, presents [serverName], and
  * runs with GREASE of the fixed bit off (RFC 9443 section 3). It never closes [channel] and never moves off it: closing
- * the connection leaves the port serving everything else on it.
+ * the connection leaves the port serving everything else on it. A channel carries one QUIC role at a time: while a
+ * connection or listener holds it, another connect or serve on it is refused with [QuicRefusal.ChannelInUse].
  */
 @OptIn(ExperimentalDatagramApi::class)
 suspend fun connectQuicOnCore(
@@ -146,14 +146,12 @@ suspend fun connectQuicOnCore(
     serverName: String,
     options: QuicOptions,
     timeout: Duration,
-): QuicConnect<QuicConnection> =
-    answered {
-        connectOverLent(LentChannel(channel), peer, serverName, options, timeout, BufferFactory.network())
-    }
+): QuicConnect<QuicConnection> = answered { connectOverLent(channel, peer, serverName, options, timeout, BufferFactory.network()) }
 
 /**
  * `serveQuic` over [channel] on the core: the listener reads and writes a channel the caller bound and keeps, runs with
  * GREASE of the fixed bit off, and never closes [channel]; closing the listener leaves the port serving everything else.
+ * A channel carries one QUIC role at a time, as for [connectQuicOnCore] over a channel.
  */
 @OptIn(ExperimentalDatagramApi::class)
 suspend fun serveQuicOnCore(
@@ -162,7 +160,7 @@ suspend fun serveQuicOnCore(
     options: QuicOptions,
 ): QuicServe<QuicListener> =
     try {
-        serveOverLent(LentChannel(channel), tls, options, BufferFactory.network())
+        serveOverLent(channel, tls, options, BufferFactory.network())
     } catch (refused: QuicRefusedException) {
         QuicServe.Refused(refused.refusal)
     }

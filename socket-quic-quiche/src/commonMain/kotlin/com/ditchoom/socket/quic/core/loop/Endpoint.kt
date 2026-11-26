@@ -50,7 +50,7 @@ internal class Endpoint(
     private val closing = SocketClose(io, socket)
     private val out: Outbox = route.outbox()
 
-    fun placed(token: Int) = run { this.token = token }
+    fun placed(token: Int) = io.placed().also { this.token = token }
 
     fun readable(via: Via) {
         when (via) {

@@ -82,7 +82,9 @@ suspend fun <R> serveQuic(
  * with ICE and STUN (`MultiplexedUdpSocket.quic` of `:socket-udp`), for direct peer-to-peer QUIC. One attempt, no race;
  * [serverName] is the identity presented and verified. The connection never closes [channel] and cannot move off it, so
  * closing the connection leaves the port serving everything else on it. GREASE of the fixed bit is off, since a greased
- * first byte lands in the DTLS and STUN ranges (RFC 9443 section 3). Answers as [connectQuic] does.
+ * first byte lands in the DTLS and STUN ranges (RFC 9443 section 3). A channel carries one QUIC role at a time, a client
+ * or a server: while one holds it, this is [QuicConnect.Refused] with [QuicRefusal.ChannelInUse]. Answers as
+ * [connectQuic] does.
  */
 @OptIn(ExperimentalDatagramApi::class)
 suspend fun connectQuic(
@@ -96,7 +98,8 @@ suspend fun connectQuic(
 /**
  * Serves QUIC over [channel], a datagram channel the caller bound and keeps, such as the QUIC branch of a port it shares
  * with ICE and STUN. The listener never closes [channel]: closing it leaves the port serving everything else on it.
- * GREASE of the fixed bit is off, as for [connectQuic] over a channel. Answers as [serveQuic] does.
+ * GREASE of the fixed bit is off, and the channel carries one QUIC role at a time, as for [connectQuic] over a channel.
+ * Answers as [serveQuic] does.
  */
 @OptIn(ExperimentalDatagramApi::class)
 suspend fun serveQuic(

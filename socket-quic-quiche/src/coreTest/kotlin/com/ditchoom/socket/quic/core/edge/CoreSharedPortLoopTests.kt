@@ -53,7 +53,7 @@ class CoreSharedPortLoopTests {
                         readPolicy = ReadPolicy.Bounded(WAIT),
                         writePolicy = WritePolicy.Bounded(WAIT),
                         loops = loops,
-                        ride = ClientRide.Lent(LentChannel(shared.quic)),
+                        ride = ClientRide.Lent(lentChannelOf(shared.quic)),
                     )
                 assertSharedPortEchoes(lent.connection.public(), 1)
                 assertSharedPortEchoes(owned.connection.public(), 2)

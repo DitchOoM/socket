@@ -12,6 +12,8 @@ import com.ditchoom.socket.quic.core.conn.Conn
 import com.ditchoom.socket.quic.core.conn.ConnAddress
 import com.ditchoom.socket.quic.core.conn.ConnMemory
 import com.ditchoom.socket.quic.core.conn.ConnSide
+import com.ditchoom.socket.quic.core.conn.MoveAsk
+import com.ditchoom.socket.quic.core.conn.MoveRefusal
 import com.ditchoom.socket.quic.core.conn.MoveWanted
 import com.ditchoom.socket.quic.core.conn.MoveWantedWork
 import com.ditchoom.socket.quic.core.conn.SlotRules
@@ -206,14 +208,21 @@ internal class ClientParts(
     /**
      * Any thread, after [start]: a second socket opens on [bind]'s address, on a network assumed to have a round trip
      * of [prior], once the connection can probe the path from there; the connection migrates to it once the path
-     * validates, the old socket carrying until then.
+     * validates, the old socket carrying until then. A connection on a lent socket is refused here, at once: no socket
+     * can replace the caller's.
      */
     fun migrate(
         bind: PathKey,
         prior: RttPrior,
-    ) = conn.submit(MoveWantedWork(MoveWanted(bind, prior)))
+    ): MoveAsk =
+        when (ownership) {
+            is SocketOwnership.Owned -> MoveAsk.Asked.also { conn.submit(MoveWantedWork(MoveWanted(bind, prior))) }
+            is SocketOwnership.Lent -> LENT_REFUSED
+        }
 
     private companion object {
+        val LENT_REFUSED = MoveAsk.Refused(MoveRefusal.SocketLent)
+
         const val MAX_ALPN = 255
     }
 }

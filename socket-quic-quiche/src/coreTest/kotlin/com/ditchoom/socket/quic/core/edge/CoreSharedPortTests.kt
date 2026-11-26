@@ -4,6 +4,7 @@ package com.ditchoom.socket.quic.core.edge
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.ReadBuffer
+import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.IpFamily
@@ -82,8 +83,8 @@ class CoreSharedPortTests {
                 assertTrue(server.socket.quic.isOpen, "the server's QUIC branch is the caller's, and stays open")
                 assertStunCrosses(client, server)
                 assertStunCrosses(server, client)
-                // A second connection on the same branches: nothing of the first one's is left on them. The first client
-                // let go of its socket in the pass after its close, a round trip before this one's echo can complete.
+                // A second connection on the same branches once the first ones let go of them: one QUIC role per channel.
+                assertTrue(eventually(LENT_WAIT) { claimable(server.socket.quic) && claimable(client.socket.quic) }, "both let go")
                 val second = serving(server)
                 val again = launch { second.handleConnections { it.handleStreams(::sharedPortEcho) } }
                 val reconnected = dial(client, server)
@@ -159,6 +160,10 @@ class CoreSharedPortTests {
 }
 
 private const val SHARED_PAYLOAD = 5_000
+
+/** [channel], claimed for one connect of a test's own: no other QUIC user holds it. */
+internal fun lentChannelOf(channel: AddressedDatagramChannel): LentChannel =
+    assertIs<Claimed.Lent>(LentChannels.claim(channel), "a test's channel is free").channel
 
 /** A stream of [connection] echoes round [round]'s bytes. */
 internal suspend fun assertSharedPortEchoes(

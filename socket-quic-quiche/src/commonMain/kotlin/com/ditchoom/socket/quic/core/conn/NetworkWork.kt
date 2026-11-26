@@ -55,6 +55,15 @@ internal sealed interface MoveRefusal {
     data object SocketLent : MoveRefusal
 }
 
+/** What asking a client connection to move answered: asked of its loop, or refused at once, as [Refused.why] says. */
+internal sealed interface MoveAsk {
+    data object Asked : MoveAsk
+
+    class Refused(
+        val why: MoveRefusal,
+    ) : MoveAsk
+}
+
 /** Inside: the loop refused the move the connection asked for, as [why] says; the connection stays. */
 internal class MoveRefusedWork(
     private val why: MoveRefusal,

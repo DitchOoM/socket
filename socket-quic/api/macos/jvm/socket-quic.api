@@ -2678,6 +2678,13 @@ public abstract interface class com/ditchoom/socket/quic/QuicReceiveStream : com
 public abstract interface class com/ditchoom/socket/quic/QuicRefusal {
 }
 
+public final class com/ditchoom/socket/quic/QuicRefusal$ChannelInUse : com/ditchoom/socket/quic/QuicRefusal {
+	public static final field INSTANCE Lcom/ditchoom/socket/quic/QuicRefusal$ChannelInUse;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
 public final class com/ditchoom/socket/quic/QuicRefusal$DatagramMaxAgeNotPositive : com/ditchoom/socket/quic/QuicRefusal {
 	public synthetic fun <init> (JLkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun component1-UwyO8pc ()J

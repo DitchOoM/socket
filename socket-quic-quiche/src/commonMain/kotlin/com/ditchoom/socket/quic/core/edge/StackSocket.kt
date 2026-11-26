@@ -15,6 +15,8 @@ import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 import com.ditchoom.socket.quic.core.udp.Granted
 import com.ditchoom.socket.quic.core.udp.GrantedBuffers
 import com.ditchoom.socket.quic.core.udp.GroRequest
+import com.ditchoom.socket.quic.core.udp.IoDrops
+import com.ditchoom.socket.quic.core.udp.LentDrops
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 import com.ditchoom.socket.quic.core.udp.NativeIo
 import com.ditchoom.socket.quic.core.udp.NativeOpened
@@ -22,6 +24,7 @@ import com.ditchoom.socket.quic.core.udp.NativeSocket
 import com.ditchoom.socket.quic.core.udp.PeerKeys
 import com.ditchoom.socket.quic.core.udp.SocketBuffers
 import com.ditchoom.socket.quic.core.udp.SocketPeer
+import com.ditchoom.socket.quic.core.udp.SocketReport
 import com.ditchoom.socket.quic.isWildcard
 
 /**
@@ -51,15 +54,26 @@ internal sealed interface StackSocket {
 
     /**
      * A channel the caller lent, on any loop's stack: no poller watches it and the core never closes it. [local] is the
-     * address the caller bound; its io's send slots come from [factory].
+     * address the caller bound; its io's slots come from [factory], and what it drops is counted in [drops].
      */
     class Lent(
         val channel: LentChannel,
         val peers: LentPeers,
         val local: PathKey,
         val factory: BufferFactory,
+        val drops: LentDrops = LentDrops(),
     ) : StackSocket
 }
+
+/** This socket's granted buffers, bound to [port], with what the kernel and its own io drop. */
+internal fun StackSocket.report(port: Int): SocketReport = SocketReport(granted(), port, io = ioDrops())
+
+/** What this socket's own io drops: counted for a lent channel, the kernel's alone otherwise. */
+internal fun StackSocket.ioDrops(): IoDrops =
+    when (this) {
+        is StackSocket.Jdk, is StackSocket.Native, is StackSocket.Network -> IoDrops.Kernel
+        is StackSocket.Lent -> IoDrops.Lent(drops)
+    }
 
 /** Who owns this socket: the loop, or the caller who lent it. */
 internal fun StackSocket.ownership(): SocketOwnership =
@@ -130,7 +144,7 @@ internal fun StackSocket.ioOf(
             SocketIo(native, SocketRefs(descriptorRef(native), secondDescriptorRef(native)))
         }
         is StackSocket.Network -> nwSocketIo(this, wake)
-        is StackSocket.Lent -> SocketIo(LentIo(channel, peers, factory, wake), SocketRefs(notPolledRef(), notPolledRef()))
+        is StackSocket.Lent -> SocketIo(LentIo(channel, peers, factory, drops, wake), SocketRefs(notPolledRef(), notPolledRef()))
     }
 
 /**

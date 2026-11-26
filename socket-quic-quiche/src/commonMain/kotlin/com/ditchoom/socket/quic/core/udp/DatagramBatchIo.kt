@@ -26,6 +26,9 @@ internal interface DatagramBatchIo {
     /** Receives what waits on the second socket, while one is open. */
     fun receiveSecond(into: ReceiveBatch): ReceiveBatchResult = ReceiveBatchResult.Nothing
 
+    /** Loop thread, once: the endpoint joined its loop, so an io that waits to run until then starts now. */
+    fun placed() = Unit
+
     /** Asked after an unnamed error: does the socket still work? */
     fun probe(): SocketProbe
 

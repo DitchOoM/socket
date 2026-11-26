@@ -31,6 +31,12 @@ sealed interface QuicRefusal {
         val reason: PinnedRadioRefusal,
     ) : QuicRefusal
 
+    /**
+     * The datagram channel lent to this connect or serve already carries a QUIC connection or listener: a channel
+     * carries one QUIC role at a time, and is free again once that one has ended and let go of it.
+     */
+    data object ChannelInUse : QuicRefusal
+
     /** This target has no QUIC. */
     data object NoQuicOnThisPlatform : QuicRefusal
 }

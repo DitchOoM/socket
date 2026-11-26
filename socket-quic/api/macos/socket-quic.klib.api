@@ -2892,6 +2892,12 @@ sealed interface com.ditchoom.socket.quic/QuicRefusal { // com.ditchoom.socket.q
         final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicRefusal.RadioNotPinnable.toString|toString(){}[0]
     }
 
+    final object ChannelInUse : com.ditchoom.socket.quic/QuicRefusal { // com.ditchoom.socket.quic/QuicRefusal.ChannelInUse|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicRefusal.ChannelInUse.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicRefusal.ChannelInUse.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicRefusal.ChannelInUse.toString|toString(){}[0]
+    }
+
     final object NoQuicOnThisPlatform : com.ditchoom.socket.quic/QuicRefusal { // com.ditchoom.socket.quic/QuicRefusal.NoQuicOnThisPlatform|null[0]
         final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicRefusal.NoQuicOnThisPlatform.equals|equals(kotlin.Any?){}[0]
         final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicRefusal.NoQuicOnThisPlatform.hashCode|hashCode(){}[0]

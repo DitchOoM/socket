@@ -44,7 +44,7 @@ class CoreSharedPortDatagramTests {
                             readPolicy = ReadPolicy.Bounded(WAIT),
                             writePolicy = WritePolicy.Bounded(WAIT),
                             flight = TEST_FLIGHT,
-                            ride = ClientRide.Lent(LentChannel(shared.quic)),
+                            ride = ClientRide.Lent(lentChannelOf(shared.quic)),
                         )
                     val channel = client.connection.datagramChannel()
                     for (n in 0 until ECHOES) {
