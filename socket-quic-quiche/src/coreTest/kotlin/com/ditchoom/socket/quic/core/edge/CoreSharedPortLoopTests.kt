@@ -32,7 +32,8 @@ class CoreSharedPortLoopTests {
     @Test
     fun aLentClientReceivesOnALoopWhoseOwnedSocketHoldsItsReceiveBuffers() =
         coreTest("CoreSharedPortLoopTests.aLentClientReceivesOnALoopWhoseOwnedSocketHoldsItsReceiveBuffers") {
-            val listener = assertIs<QuicServe.Serving<QuicListener>>(serveQuicOnCore(0, LOOPBACK, platformTlsConfig(), coreTestOptions)).value
+            val served = serveQuicOnCore(0, LOOPBACK, platformTlsConfig(), coreTestOptions)
+            val listener = assertIs<QuicServe.Serving<QuicListener>>(served).value
             val handlers = launch { listener.handleConnections { it.handleStreams(::sharedPortEcho) } }
             val loops = LoopSet(1)
             val shared = UdpSocket.bind(LOOPBACK, 0, bufferFactory = BufferFactory.network()).demultiplex(this)
