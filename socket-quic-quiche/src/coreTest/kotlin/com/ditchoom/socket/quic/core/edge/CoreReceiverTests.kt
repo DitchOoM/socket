@@ -28,6 +28,9 @@ import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
+import kotlin.concurrent.atomics.AtomicInt
+import kotlin.concurrent.atomics.AtomicLong
+import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
@@ -51,14 +54,15 @@ class CoreReceiverTests {
     @Test
     fun aReceiverGetsEveryByteInOrderThenTheEnd() =
         coreTest("CoreReceiverTests.aReceiverGetsEveryByteInOrderThenTheEnd") {
-            withCoreServer(onConnection = { core -> core.public().handleStreams(::echo) }) { server ->
+            val echoed = CountingEcho()
+            withCoreServer(onConnection = { core -> core.public().handleStreams(echoed::echo) }) { server ->
                 val client = connect(server.port)
                 val (send, receive) = client.openStream().orFail()
                 val collected = Collected()
                 assertSame(StreamReceive.Receiving, receive.receive(collected))
                 assertIs<StreamWrite.Written>(send.writeAndFinish(bytes(big())))
                 assertSame<ScopedRead.End>(ScopedRead.End.PeerFinished, withTimeout(WAIT) { collected.end.await() })
-                assertContentEquals(big(), collected.bytes())
+                assertSameBytes(big(), collected.bytes()) { "server ${echoed.describe()}; client receiver ${collected.describe()}" }
                 client.close()
             }
         }
@@ -249,14 +253,69 @@ class CoreReceiverTests {
         }
     }
 
-    /** A receiver that keeps a copy of everything it is lent, and completes [end] with the end. */
+    /** Fails with the sizes, the first differing index and [why] instead of both arrays, which overflow a test report. */
+    private fun assertSameBytes(
+        expected: ByteArray,
+        actual: ByteArray,
+        why: () -> String,
+    ) {
+        val firstDiffering = (0 until minOf(expected.size, actual.size)).firstOrNull { expected[it] != actual[it] }
+        if (expected.size != actual.size || firstDiffering != null) {
+            fail("expected ${expected.size} B, got ${actual.size} B, first differing index ${firstDiffering ?: "none"}: ${why()}")
+        }
+    }
+
+    /** The server's echo, counting what it read and what its writes took. */
+    @OptIn(ExperimentalAtomicApi::class)
+    private class CountingEcho {
+        private val read = AtomicLong(0L)
+        private val written = AtomicLong(0L)
+        private val notWritten = AtomicInt(0)
+
+        suspend fun echo(incoming: QuicIncomingStream) {
+            when (incoming) {
+                is QuicStream ->
+                    incoming.receive.readEach { chunk ->
+                        val length = chunk.remaining().toLong()
+                        read.addAndFetch(length)
+                        when (incoming.send.write(chunk)) {
+                            is StreamWrite.Written -> written.addAndFetch(length)
+                            else -> notWritten.addAndFetch(1)
+                        }
+                    }
+                is QuicReceiveStream -> incoming.readEach { }
+            }
+        }
+
+        fun describe(): String = "read=${read.load()} B written=${written.load()} B writesNotWritten=${notWritten.load()}"
+    }
+
+    /**
+     * A receiver that keeps a copy of everything it is lent, and completes [end] with the end. It counts its calls, the
+     * bytes it was lent and the most calls it saw at once, which the contract says is one.
+     */
+    @OptIn(ExperimentalAtomicApi::class)
     private class Collected : QuicStreamReceiver {
         private val got = ArrayList<Byte>()
         val end = CompletableDeferred<ScopedRead.End>()
+        private val inside = AtomicInt(0)
+        private val mostInside = AtomicInt(0)
+        private val calls = AtomicInt(0)
+        private val lent = AtomicLong(0L)
 
         override fun onBytes(bytes: ReadBuffer) {
+            val now = inside.addAndFetch(1)
+            while (true) {
+                val most = mostInside.load()
+                if (now <= most || mostInside.compareAndSet(most, now)) break
+            }
+            calls.addAndFetch(1)
+            lent.addAndFetch(bytes.remaining().toLong())
             while (bytes.remaining() > 0) got.add(bytes.readByte())
+            inside.addAndFetch(-1)
         }
+
+        fun describe(): String = "calls=${calls.load()} lent=${lent.load()} B kept=${got.size} B mostAtOnce=${mostInside.load()}"
 
         override fun onEnd(end: ScopedRead.End) {
             this.end.complete(end)
