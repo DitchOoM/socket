@@ -80,20 +80,22 @@ class HandlerAllocationTests {
     fun whatTheLoopAllocatesInThePoolPerOfferedConnectionIsReported() =
         runBlocking {
             skipOnMissingNativeLib(HandlerAllocationTests::class) {
-                // The helper takes every accepted connection, so the test waits on its offer, not on a second accept.
+                // The helper takes every accepted connection, so the test waits on its offer, not on a second accept. Each
+                // client closes only once its connection was offered: a close that reached the server with the client's
+                // last handshake flight would end the connection in the serve that completes its handshake, which is never
+                // offered.
                 val offered = Channel<Unit>(Channel.UNLIMITED)
                 withCoreServer(onConnection = { offered.trySend(Unit) }) { server ->
-                    repeat(WARM_CONNECTIONS) {
-                        connectCore(server.port, loops = loops).connection.close(QuicError.NoError)
+                    suspend fun offerOne() {
+                        val client = connectCore(server.port, loops = loops)
                         offered.receive()
+                        client.connection.close(QuicError.NoError)
                     }
+                    repeat(WARM_CONNECTIONS) { offerOne() }
                     val recording = jdk.jfr.Recording()
                     recording.enable("jdk.ObjectAllocationSample").with("throttle", "off").withStackTrace()
                     recording.start()
-                    repeat(CONNECTIONS) {
-                        connectCore(server.port, loops = loops).connection.close(QuicError.NoError)
-                        offered.receive()
-                    }
+                    repeat(CONNECTIONS) { offerOne() }
                     recording.stop()
                     val dump =
                         java.nio.file.Files
