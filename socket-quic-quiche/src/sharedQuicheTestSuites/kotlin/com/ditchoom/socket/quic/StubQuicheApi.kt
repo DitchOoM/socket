@@ -3,6 +3,8 @@
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.UnsafeMemory
+import com.ditchoom.socket.quic.core.stream.QUICHE_ERR_STREAM_RESET
+import com.ditchoom.socket.quic.core.stream.QUICHE_ERR_STREAM_STOPPED
 import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.Nanos
 import kotlin.concurrent.Volatile
@@ -36,23 +38,31 @@ internal class StubQuicheApi(
     /** If non-null, [connLocalError] returns it — simulates our local typed CONNECTION_CLOSE reason. */
     @Volatile var localError: QuicError? = null
 
-    @Volatile var streamRecvResult: StreamRecvResult = StreamRecvResult.Done
+    /** What every stream read answers once [streamRecvSteps] and [streamRecvSequence] are drained: nothing yet. */
+    @Volatile var streamRecvStep: StreamRecvStep = StreamRecvStep.error(StreamRecvStep.QUICHE_ERR_DONE_CODE)
+
+    /** Drained first by a stream read (as [connStreamRecvStep]); falls back to [streamRecvStep] when empty. */
+    val streamRecvSteps: ArrayDeque<StreamRecvStep> = ArrayDeque()
+
+    /** The 4.x-typed view of [streamRecvStep], for the driver suites; removed with the 4.x driver. */
+    var streamRecvResult: StreamRecvResult
+        get() = streamRecvStep.toResult()
+        set(value) {
+            streamRecvStep = StreamRecvStep.of(value)
+        }
 
     /**
      * If non-null, the next [connSend] returns this value (then resets to null).
-     * Lets tests force a single [QuicheDriver.flushOutgoing] iteration without
-     * a real congestion-control state machine.
+     * Lets tests force a single send iteration without a real congestion-control state machine.
      */
     @Volatile var connSendOnce: Int? = null
 
     /**
      * When true, the FIRST [connSend] observed *after [connClose] has been called* returns one
-     * datagram (1300B), then stops. This deterministically forces a single
-     * [QuicheDriver.flushOutgoing] -> [UdpChannel.send] during the *close* command's afterCommand —
-     * and only then, since every pre-close send happens before [connClose]. Tests gate that send to
-     * pin the driver between completing the Close deferred and running updateState(), with no
-     * dependence on connSendOnce timing or scheduler luck. See
-     * ReactiveDriverTests.close_completes_only_after_state_is_synced.
+     * datagram (1300B), then stops. This deterministically forces a single send during the close's
+     * follow-up work, and only then, since every pre-close send happens before [connClose]. Tests gate that
+     * send to pin the connection between completing the close and syncing its state, with no dependence on
+     * connSendOnce timing or scheduler luck.
      */
     @Volatile var emitOneDatagramOnClose = false
 
@@ -255,18 +265,27 @@ internal class StubQuicheApi(
      */
     val connSendQueue: ArrayDeque<Int> = ArrayDeque()
 
-    /**
-     * If non-empty, each [connStreamRecv] pops the next result (modelling quiche's sequence, e.g. a
-     * data-chunk-with-FIN followed by Done). Falls back to [streamRecvResult] once drained.
-     */
+    /** The 4.x-typed queue the driver suites fill; drained after [streamRecvSteps]. Removed with the 4.x driver. */
     val streamRecvSequence: ArrayDeque<StreamRecvResult> = ArrayDeque()
+
+    private fun nextStreamRecv(): StreamRecvStep =
+        streamRecvSteps.removeFirstOrNull()
+            ?: streamRecvSequence.removeFirstOrNull()?.let(StreamRecvStep::of)
+            ?: streamRecvStep
+
+    override fun connStreamRecvStep(
+        conn: QuicheConn,
+        streamId: QuicStreamId,
+        buf: Long,
+        bufLen: Int,
+    ): StreamRecvStep = nextStreamRecv()
 
     override fun connStreamRecv(
         conn: QuicheConn,
         streamId: QuicStreamId,
         buf: Long,
         bufLen: Int,
-    ) = streamRecvSequence.removeFirstOrNull() ?: streamRecvResult
+    ): StreamRecvResult = nextStreamRecv().toResult()
 
     /** When set, [connStreamSend] returns this instead of [bufLen] — e.g. -1 (QUICHE_ERR_DONE) or a real error. */
     @Volatile var connStreamSendResult: Int? = null
@@ -274,6 +293,16 @@ internal class StubQuicheApi(
     /** Peer application error code [connStreamSend] reports alongside a STREAM_STOPPED/RESET result. */
     @Volatile var connStreamSendErrorCode: QuicAppErrorCode? = null
 
+    override fun connStreamSendStep(
+        conn: QuicheConn,
+        streamId: QuicStreamId,
+        buf: Long,
+        bufLen: Int,
+        fin: Boolean,
+    ): StreamSendStep = StreamSendStep.of(connStreamSendResult ?: bufLen) { connStreamSendErrorCode ?: QuicAppErrorCode(0) }
+
+    // The 4.x-typed send the driver calls; removed with the 4.x driver. Real quiche writes out_error_code only
+    // on STREAM_STOPPED / STREAM_RESET (0 when the peer used 0), so a normal send carries no code.
     override fun connStreamSend(
         conn: QuicheConn,
         streamId: QuicStreamId,
@@ -282,11 +311,8 @@ internal class StubQuicheApi(
         fin: Boolean,
     ): StreamSendResult {
         val result = connStreamSendResult ?: bufLen
-        // Mirror real quiche: out_error_code is written ONLY on STREAM_STOPPED / STREAM_RESET, and is
-        // always present there (0 if the peer used 0). So default the code to 0 on those results when a
-        // test didn't set one, and leave it null otherwise (a normal send carries no error code).
         val code =
-            if (result == QuicheDriver.QUICHE_ERR_STREAM_STOPPED || result == QuicheDriver.QUICHE_ERR_STREAM_RESET) {
+            if (result == QUICHE_ERR_STREAM_STOPPED || result == QUICHE_ERR_STREAM_RESET) {
                 connStreamSendErrorCode ?: QuicAppErrorCode(0)
             } else {
                 connStreamSendErrorCode
@@ -383,16 +409,38 @@ internal class StubQuicheApi(
         }
     }
 
-    /** Drained first by [connDgramRecv]; falls back to [dgramRecvResult] when empty. */
+    /** What every datagram read answers once [dgramRecvSteps] and [dgramRecvSequence] are drained: nothing queued. */
+    @Volatile var dgramRecvStep: StreamRecvStep = StreamRecvStep.error(StreamRecvStep.QUICHE_ERR_DONE_CODE)
+
+    /** Drained first by a datagram read (as [connDgramRecvStep]); falls back to [dgramRecvStep] when empty. */
+    val dgramRecvSteps: ArrayDeque<StreamRecvStep> = ArrayDeque()
+
+    /** The 4.x-typed view of [dgramRecvStep], for the driver suites; removed with the 4.x driver. */
+    var dgramRecvResult: StreamRecvResult
+        get() = dgramRecvStep.toResult()
+        set(value) {
+            dgramRecvStep = StreamRecvStep.of(value)
+        }
+
+    /** The 4.x-typed queue the driver suites fill; drained after [dgramRecvSteps]. Removed with the 4.x driver. */
     val dgramRecvSequence: ArrayDeque<StreamRecvResult> = ArrayDeque()
 
-    @Volatile var dgramRecvResult: StreamRecvResult = StreamRecvResult.Done
+    private fun nextDgramRecv(): StreamRecvStep =
+        dgramRecvSteps.removeFirstOrNull()
+            ?: dgramRecvSequence.removeFirstOrNull()?.let(StreamRecvStep::of)
+            ?: dgramRecvStep
+
+    override fun connDgramRecvStep(
+        conn: QuicheConn,
+        buf: Long,
+        bufLen: Int,
+    ): StreamRecvStep = nextDgramRecv()
 
     override fun connDgramRecv(
         conn: QuicheConn,
         buf: Long,
         bufLen: Int,
-    ) = dgramRecvSequence.removeFirstOrNull() ?: dgramRecvResult
+    ): StreamRecvResult = nextDgramRecv().toResult()
 
     /** Datagrams the stub's send queue holds, which [connDgramPurgeOutgoing] drops and reports. */
     @Volatile var dgramSendQueueLen: Int = 0
@@ -966,9 +1014,8 @@ internal class StubQuicheApi(
 
     /**
      * Scripted `quiche_conn_path_stats`, one entry per path in quiche's own slab order — index 0 is the
-     * path the connection opened with. Empty (the default) means **no path stats bound at all**, which
-     * is what every existing suite relies on: `connPathStats` answers null and
-     * `QuicheDriver.pathValidationBudget` lands in its RFC 9000 §8.2.4 `kInitialRtt` branch.
+     * path the connection opened with. Empty (the default) means **no path stats bound at all**: `connPathStats`
+     * answers null and the path-validation budget lands in its RFC 9000 §8.2.4 `kInitialRtt` branch.
      *
      * Set it to drive the #574 liveness sampler by hand — the counters it reads are exactly these, so a
      * run of unanswered loss-detection expiries becomes a list assignment rather than a dead network.
@@ -1013,8 +1060,8 @@ internal class StubQuicheApi(
      * Spare destination connection ids the peer has issued (`quiche_conn_available_dcids`).
      *
      * **0 by default, on purpose** — that is what real quiche reports until the peer sends
-     * NEW_CONNECTION_ID, and it is why [QuicheDriver.handleMigrate] bails at the DCID guard before it
-     * ever probes. A test that wants to reach the probe has to say the peer issued one, exactly as a
+     * NEW_CONNECTION_ID, and it is why a migration bails at the DCID guard before it ever
+     * probes. A test that wants to reach the probe has to say the peer issued one, exactly as a
      * real peer would have to.
      */
     @Volatile var availableDcids = 0L
@@ -1028,7 +1075,7 @@ internal class StubQuicheApi(
      * real connection would still be waiting on.
      *
      * The negotiated values mirror this module's own defaults so a driver test reads plausible numbers;
-     * [QuicheDriver] dispatches on [PeerTransportParams.Negotiated.disableActiveMigration] and on
+     * A migration dispatches on [PeerTransportParams.Negotiated.disableActiveMigration] and on
      * [PeerTransportParams.Negotiated.activeConnIdLimit], which bounds the paths a peer that frees none can hold.
      */
     @Volatile var peerDisablesActiveMigration = false
@@ -1226,3 +1273,14 @@ internal class StubPathEvent(
     /** The IPv4 address of the event's local sockaddr, as [StubQuicheApi.registerSockAddr] takes it. */
     val localV4: Long = STUB_SOCKADDR_V4,
 )
+
+/** The 4.x-typed answer for this step; removed with [StreamRecvResult]. */
+private fun StreamRecvStep.toResult(): StreamRecvResult =
+    fold(
+        more = { StreamRecvResult.Data(it, false) },
+        last = { StreamRecvResult.Data(it, true) },
+        nothingYet = { StreamRecvResult.Done },
+        gone = { StreamRecvResult.ConnectionGone },
+        reset = { StreamRecvResult.Reset(it) },
+        error = { StreamRecvResult.Error(it) },
+    )

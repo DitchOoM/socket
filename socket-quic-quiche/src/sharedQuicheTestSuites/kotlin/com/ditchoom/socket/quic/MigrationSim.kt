@@ -4,19 +4,15 @@ package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
-import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.nativeMemoryAccess
-import com.ditchoom.socket.NetworkMonitor
 import com.ditchoom.socket.quic.sim.SimClock
 import com.ditchoom.socket.quic.sim.SimClockChoice
 import com.ditchoom.socket.quic.sim.resolve
-import com.ditchoom.socket.quic.trace.QuicTraceCapture
 import com.ditchoom.socket.quic.trace.QuicTraceRecorder
 import com.ditchoom.socket.quic.trace.TraceCapture
 import com.ditchoom.socket.transport.NetworkId
-import com.ditchoom.socket.udp.SocketAddressCodec
 import com.ditchoom.socket.udp.UdpSocket
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -44,30 +40,6 @@ import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TimeSource
-
-/**
- * One-way latency every simulated path carries unless a scenario says otherwise — so the DEFAULT is a
- * realistic network and RTT≈0 is something a test has to ask for.
- *
- * ⚠️ **This default is a bug fix, not a detail.** It used to be zero, and that hid an incomplete fix
- * for #459: quiche re-arms `request_validation()` from an abandoned path's own loss timer ~75ms after
- * the driver's RFC 9000 §8.2.4 abandon, so whether a CID-lifecycle patch held came down to whether an
- * ACK beat that PTO — which it always does on loopback. The whole migration suite was green while the
- * shipped behaviour was broken on any real mobile path. 60ms one-way (120ms round trip) is both an
- * ordinary cellular RTT and comfortably past that ~75ms threshold, so the default now exercises the
- * class of defect rather than hiding it.
- *
- * The same trap in a different place cost #445 a day: "a loopback burst of 12 migrations survives BOTH
- * patched and unpatched (RTT≈0 = no overtake window), while a real ~40ms path reproduced it
- * immediately". Virtual time makes latency free — there is no reason for a scenario to be unrealistic
- * by accident.
- *
- * Note the deliberate asymmetry with the probe-path default ([PathImpairment] with no latency): a new
- * path faster than the one being left IS the #445 overtake window, so the default scenario exercises
- * that too. A test that needs a specific relationship states both, as
- * [MigrationSimTestSuite.aMigrationStrandsInFlightPacketsBearingTheRetiredCid] does.
- */
-internal val DEFAULT_PATH_LATENCY = 60.milliseconds
 
 private const val QUICHE_PROTOCOL_VERSION = 0x00000001
 
@@ -603,77 +575,6 @@ internal class CidAuditQuicheApi(
             probeCalls += delegate.decodePathKey(localAddr) to it
         }
 }
-
-/**
- * A path written into native memory as a NUL-terminated C string, for quiche's `*_from_pem_file` calls.
- *
- * A test-local twin of `commonJvmWithQuicServer`'s `writeNullTerminatedString`: that one is `internal`
- * to `commonJvmMain` and its Apple/Linux counterparts are `private`, so none of the three is reachable
- * from a source set that compiles for all of them. Named distinctly so the JVM compilation, which does
- * see the `commonJvmMain` one, has no ambiguity.
- */
-internal fun simNullTerminated(
-    path: String,
-    factory: BufferFactory,
-): PlatformBuffer {
-    val buf = factory.allocate(path.length + 1)
-    buf.writeString(path, Charset.UTF8)
-    buf.writeByte(0)
-    buf.resetForRead()
-    return buf
-}
-
-/**
- * Sim options: TLS verification off (self-signed fixture cert), idle long enough not to race the
- * scenario.
- *
- * [migration] defaults to [MigrationPolicy.Manual] — the scenarios that script every handoff through
- * [MigrationSimScope.migrate]. Pass [MigrationPolicy.Automatic] together with a
- * [NetworkMonitorSource.Supplied] scriptable monitor to put the real [wireAutoMigration] reactor in
- * charge instead.
- *
- * [networkMonitor] defaults to a supplied [NetworkMonitor.AlwaysAvailable] rather than
- * [NetworkMonitorSource.ProcessDefault]: the sim has no OS sockets anywhere by design, and the
- * process default would resolve a real platform monitor with a real background thread the moment the
- * harness touched it. `AlwaysAvailable` never changes identity, so it is also the honest "nothing is
- * observing this connection" for the manual scenarios.
- */
-internal fun migrationSimOptions(
-    idleTimeout: Duration = 120.seconds,
-    keepAliveInterval: Duration? = null,
-    migration: MigrationPolicy = MigrationPolicy.Manual,
-    networkMonitor: NetworkMonitorSource = NetworkMonitorSource.Supplied(NetworkMonitor.AlwaysAvailable),
-    trace: QuicTraceCapture? = null,
-): QuicOptions =
-    QuicOptions(
-        alpnProtocols = listOf("migsim"),
-        verifyPeer = false,
-        idleTimeout = idleTimeout,
-        keepAliveInterval = keepAliveInterval,
-        migration = migration,
-        networkMonitor = networkMonitor,
-        trace = trace,
-    )
-
-/**
- * Everything about a migration-sim run that is decided by the platform rather than the scenario: which
- * `libquiche` binding to drive, where this target's test certificates are, and the C `sockaddr` layout
- * its OS uses.
- *
- * It is a parameter rather than something the sim discovers, because every way of discovering it is
- * platform-specific: `loadQuicheApi()` exists only on JVM/Android, the certificate fixtures are found
- * by classpath on the JVM and by filesystem probe on Kotlin/Native (and can be legitimately absent on a
- * simulator — see #359), and the sockaddr layout differs by OS. A per-platform test subclass supplies
- * one, exactly as [RetiredCidInFlightPacketTestSuite] takes its `testTlsConfig`/`platformQuicheApi`.
- */
-internal class MigrationSimEnv(
-    val api: QuicheApi,
-    val certChainPath: String,
-    val privKeyPath: String,
-    val codec: SocketAddressCodec,
-    /** [api]'s caller-entropy binding, which seeds quiche's own random draws from the sim's seed. */
-    val randomPin: QuicheRandomPin,
-)
 
 /**
  * Establish a real client/server quiche pair over a [MultiPathPipe] on the calling `runTest` scheduler's

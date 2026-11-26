@@ -4,7 +4,7 @@ import com.ditchoom.socket.quic.QuicAppErrorCode
 import com.ditchoom.socket.quic.QuicRole
 import com.ditchoom.socket.quic.QuicStreamId
 import com.ditchoom.socket.quic.QuicheConn
-import com.ditchoom.socket.quic.StreamRecvResult
+import com.ditchoom.socket.quic.StreamRecvStep
 import com.ditchoom.socket.quic.StubQuicheApi
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
@@ -108,7 +108,7 @@ class StreamTableTests {
         assertEquals(0, table.liveStreams())
         api.readableStreams.clear()
         api.readableStreams.addAll(listOf(1L, 5L, 9L))
-        api.streamRecvResult = StreamRecvResult.Reset(QuicAppErrorCode(7L))
+        api.streamRecvStep = StreamRecvStep.reset(QuicAppErrorCode(7L))
         table.wake()
         incoming.clear()
         table.takeIncoming { incoming += it }
