@@ -85,22 +85,57 @@ internal fun ConnParts.served(
     if (collected == Collected.Everything) rearm(now, fire)
 }
 
-/** A handshake that completed and was not reported yet is reported now: at the end of its serve, or before the end. */
-internal fun ConnParts.announce(
+/** A handshake that completed in this serve, and was not reported yet, is reported now. */
+private fun ConnParts.announce(
     now: Nanos,
     paths: Paths,
 ) {
     when (handshake.announcement()) {
-        Announcement.Due -> {
-            slots.datagrams.wake(now)
-            slots.qlog.established()
-            val report = handshake.report(now, paths.read(), outcome())
-            sink.established(report)
-            handshake.reported(report.facts)
-        }
+        Announcement.Due -> report(now, paths)
         Announcement.None -> Unit
     }
 }
+
+/**
+ * Before [end] is recorded: a handshake that completed in the serve [end] ends is reported only on a client whose server
+ * closed it, so the connect hands over a connection already ended. Otherwise it never counts as complete: a server
+ * never offers the connection, and a client whose own quiche closed it as it completed (a peer transport parameter it
+ * refused, say) failed its handshake.
+ */
+internal fun ConnParts.announceAtEnd(
+    now: Nanos,
+    paths: Paths,
+    end: ConnEnd,
+) {
+    when (handshake.announcement()) {
+        Announcement.Due ->
+            when (completionAtEnd(end)) {
+                CompletionAtEnd.Reported -> report(now, paths)
+                CompletionAtEnd.Dropped -> Unit
+            }
+        Announcement.None -> Unit
+    }
+}
+
+private fun ConnParts.report(
+    now: Nanos,
+    paths: Paths,
+) {
+    slots.datagrams.wake(now)
+    slots.qlog.established()
+    val report = handshake.report(now, paths.read(), outcome())
+    sink.established(report)
+    handshake.reported(report.facts)
+}
+
+/** Whether a handshake that completed in the serve that ends its connection is reported before the end. */
+private enum class CompletionAtEnd { Reported, Dropped }
+
+private fun ConnParts.completionAtEnd(end: ConnEnd): CompletionAtEnd =
+    when (slots.resumption) {
+        is Resumption.Server -> CompletionAtEnd.Dropped
+        is Resumption.Client -> if (end is ConnEnd.ByPeer) CompletionAtEnd.Reported else CompletionAtEnd.Dropped
+    }
 
 /**
  * The end of a handshake that is [over]: denied the access it needs, as its serve found; else past its deadline, sent

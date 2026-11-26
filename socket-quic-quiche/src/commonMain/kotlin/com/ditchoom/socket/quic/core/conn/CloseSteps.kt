@@ -36,16 +36,16 @@ internal fun ConnParts.close(
 
 /**
  * The start of the end, inside: [end] is recorded once and the answer says how a close asked of the connection went.
- * A handshake that completed in the serve that ends the connection is reported first, so an established connection is
- * always reported as such; that report runs before the end is recorded, so a throw in it is contained like any
- * work's and the end still follows. The deadline goes, and the end goes into the flight recording.
+ * A handshake that completed in the serve that ends the connection is reported first where it counts ([announceAtEnd]);
+ * that report runs before the end is recorded, so a throw in it is contained like any work's and the end still follows.
+ * The deadline goes, and the end goes into the flight recording.
  */
 internal fun ConnParts.ending(
     now: Nanos,
     end: ConnEnd,
 ): Ending {
     if (life.view() is Life.Over) return Ending.Already
-    announce(now, slots.paths)
+    announceAtEnd(now, slots.paths, end)
     val ending = life.end(end)
     when (ending) {
         is Ending.First -> {

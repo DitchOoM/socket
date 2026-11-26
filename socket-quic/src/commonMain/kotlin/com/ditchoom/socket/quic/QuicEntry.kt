@@ -5,7 +5,11 @@ package com.ditchoom.socket.quic
  * peer's candidates went; or why there is no connection. No outcome of a connect is an exception.
  */
 sealed interface QuicConnect<out T> {
-    /** The handshake completed with the candidate [race] names; [value] is the connection, or the block's value. */
+    /**
+     * The handshake completed with the candidate [race] names; [value] is the connection, or the block's value. A
+     * server that closed right after its handshake hands over a connection already ended: what the handshake settled
+     * stays readable, and its first call answers the end.
+     */
     class Connected<out T>(
         val value: T,
         val race: QuicCandidateRace,
@@ -26,7 +30,9 @@ sealed interface QuicConnect<out T> {
     /**
      * No candidate's handshake completed: [end] is how the last one attempted ended. A server certificate the check
      * refused ends as the CONNECTION_CLOSE sent for it; a name with no address, or no route to any, as
-     * [QuicConnectionEnd.NoUsablePath].
+     * [QuicConnectionEnd.NoUsablePath]; a 0-RTT the server rejected and could not be replayed, as
+     * [QuicConnectionEnd.EarlyDataRejected]. A handshake its own side refused as it completed (a peer transport
+     * parameter, say) did not complete.
      */
     class Failed(
         val end: QuicConnectionEnd,

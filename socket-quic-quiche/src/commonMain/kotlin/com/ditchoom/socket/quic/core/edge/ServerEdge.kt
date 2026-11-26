@@ -85,9 +85,10 @@ internal class ServerEdge(
                 seat,
                 options.abortCodes,
             )
-        // Offered once established, or once its 0-RTT is accepted; a connection that ends first is never offered. The
-        // decision is seen on the loop, with no hop; only then does the connection get its lane, and the offer itself runs
-        // on that lane, so an acceptor that resumes where it is resumed runs on a pool thread, never on the loop.
+        // Offered once established, or once its 0-RTT is accepted; a connection that ends first, or in the serve that
+        // completed its handshake, is never offered. The decision is seen on the loop, with no hop; only then does the
+        // connection get its lane, and the offer itself runs on that lane, so an acceptor that resumes where it is resumed
+        // runs on a pool thread, never on the loop.
         scope.launch(Dispatchers.Unconfined, CoroutineStart.UNDISPATCHED) {
             when (edge.start.first { it is HandlerStart.Decided }) {
                 HandlerStart.Now -> seat.offer(Runnable { accepted.trySend(connection) })
