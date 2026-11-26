@@ -125,6 +125,8 @@ internal sealed interface LinkWindow {
         val delay: DelayRange,
         val lossToPeer: PerMille,
         val lossFromPeer: PerMille,
+        /** The share of datagrams delivered twice, the second copy within the window's delay range after the first. */
+        val duplicate: PerMille = PerMille(0),
     ) : LinkWindow
 }
 

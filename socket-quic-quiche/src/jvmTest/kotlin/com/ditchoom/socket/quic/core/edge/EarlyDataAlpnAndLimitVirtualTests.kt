@@ -24,6 +24,7 @@ import com.ditchoom.socket.quic.QuicSessionTicketState
 import com.ditchoom.socket.quic.QuicStreamLimit
 import com.ditchoom.socket.quic.ScopedReadResult
 import com.ditchoom.socket.quic.core.conn.MismatchResponse
+import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.testing.platformQuicheApi
 import com.ditchoom.socket.quic.network
 import com.ditchoom.socket.quic.read
@@ -35,7 +36,6 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
-import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.seconds
 
@@ -74,9 +74,11 @@ class EarlyDataAlpnAndLimitVirtualTests {
             val client = pair.reconnect(options(alpn = listOf(PROTOCOL, OTHER_PROTOCOL)).copy(resumption = resumption))
             launch { runCatching { client.connection.runEarlyData(resumption, client.offer) { client.connection.established() } } }
             pair.runUntil { client.connection.end() is EdgeEnd.Ended }
-            assertTrue(
-                client.connection.state.value !is QuicConnectionState.Established,
-                "the offer was the session's protocol alone, so a server speaking another has nothing to select",
+            val ended = assertIs<EdgeEnd.Ended>(client.connection.end())
+            assertIs<ConnEnd.ByPeer>(
+                ended.end,
+                "the offer was the session's protocol alone, so a server speaking another closes the handshake over it; " +
+                    "an offer of both would reach a completed handshake whose early data is rejected instead",
             )
         }
     }

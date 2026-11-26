@@ -82,6 +82,10 @@ internal class ConditionLink(
     var reopens = 0
         private set
 
+    /** How many datagrams the link delivered a second time. */
+    var duplicated = 0
+        private set
+
     /** How many times the client's socket moved to a new local address. */
     var moves = 0
         private set
@@ -154,6 +158,7 @@ internal class ConditionLink(
         }
         val window = windowAt(now)
         val draw = random.nextInt(PER_MILLE)
+        var copies = 0
         val delay =
             when (window) {
                 is LinkWindow.Outage -> return
@@ -161,11 +166,16 @@ internal class ConditionLink(
                     val loss = if (from == Side.Client) window.lossToPeer else window.lossFromPeer
                     if (draw < loss.value) return
                     val span = (window.delay.max - window.delay.min).inWholeNanoseconds
+                    // Drawn only where a window duplicates, so a script that does not keeps the draws it always had.
+                    if (window.duplicate.value > 0 && random.nextInt(PER_MILLE) < window.duplicate.value) copies = 1
                     window.delay.min.inWholeNanoseconds + if (span > 0) random.nextLong(span + 1) else 0L
                 }
             }
         val to = if (from == Side.Client) Side.Server else Side.Client
-        inFlight.add(InFlight(now + delay, order++, to, clientAddress, bytes))
+        repeat(1 + copies) { copy ->
+            inFlight.add(InFlight(now + delay + copy * DUPLICATE_LAG, order++, to, clientAddress, bytes))
+        }
+        duplicated += copies
     }
 
     private fun clientSocketDead(): Boolean =
@@ -248,5 +258,8 @@ internal class ConditionLink(
 
     private companion object {
         const val PER_MILLE = 1000
+
+        /** How long after the first copy a duplicate arrives: 1 ms, in nanoseconds. */
+        const val DUPLICATE_LAG = 1_000_000L
     }
 }

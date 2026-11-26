@@ -71,6 +71,8 @@ internal class Replayed(
     val news: List<PathMarkAt> = emptyList(),
     /** When each datagram reached the client's socket, on the script's clock. */
     val clientArrivals: List<Duration> = emptyList(),
+    /** How many datagrams the link delivered twice. */
+    val duplicated: Int = 0,
 ) {
     /** When the client's path was declared silent, on the script's clock. */
     fun silentAt(): List<Duration> = news.filter { it.phase == "Silent" }.map { it.at }
