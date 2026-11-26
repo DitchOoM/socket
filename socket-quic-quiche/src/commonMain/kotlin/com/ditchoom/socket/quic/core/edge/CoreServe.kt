@@ -15,7 +15,7 @@ import com.ditchoom.socket.quic.core.demux.Demux
 import com.ditchoom.socket.quic.core.demux.ServerConfig
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.loop.Loop
-import com.ditchoom.socket.quic.core.loop.LoopStarter
+import com.ditchoom.socket.quic.core.loop.LoopStart
 import com.ditchoom.socket.quic.core.loop.startLoop
 import com.ditchoom.socket.quic.core.observe.Published
 import com.ditchoom.socket.quic.core.observe.ServerCounts
@@ -141,7 +141,7 @@ internal suspend fun coreServe(
     datagramSize: DatagramSize = DatagramSize.Probed,
     mismatch: MismatchResponse = MismatchResponse.Unpaced,
     sends: SendRule = sendRuleOfThisRuntime,
-    starter: LoopStarter = ::startLoop,
+    starter: (Loop, String) -> LoopStart = ::startLoop,
 ): CoreServer {
     // Before the setup lane, a socket or a file: a serve whose option values cannot be honoured opens nothing.
     verdictOn(options).orRefuse()

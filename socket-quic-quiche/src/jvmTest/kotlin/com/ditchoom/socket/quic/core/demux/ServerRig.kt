@@ -194,7 +194,19 @@ internal class ServerRig(
                 accepted += peer
                 val sink = RecordingSink()
                 sinks += sink
-                Opened(build.build(sink, com.ditchoom.socket.quic.trace.TraceCapture.Off, com.ditchoom.socket.quic.QuicSessionId("rig")).also { conns += it }, Runnable { })
+                Opened(
+                    build
+                        .build(
+                            sink,
+                            com.ditchoom.socket.quic.trace.TraceCapture.Off,
+                            com.ditchoom.socket.quic
+                                .QuicSessionId("rig"),
+                        ).also {
+                            conns +=
+                                it
+                        },
+                    Runnable { },
+                )
             },
         )
     val admission =

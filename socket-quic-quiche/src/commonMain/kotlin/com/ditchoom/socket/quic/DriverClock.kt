@@ -1,5 +1,7 @@
 package com.ditchoom.socket.quic
 
+import com.ditchoom.socket.quic.trace.QuicTraceRecorder
+import com.ditchoom.socket.testkit.trace.TraceSink
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
@@ -7,8 +9,6 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.selects.SelectBuilder
 import kotlinx.coroutines.selects.onTimeout
 import kotlinx.coroutines.withTimeoutOrNull
-import com.ditchoom.socket.quic.trace.QuicTraceRecorder
-import com.ditchoom.socket.testkit.trace.TraceSink
 import kotlin.time.Duration
 import kotlin.time.TimeMark
 import kotlin.time.TimeSource

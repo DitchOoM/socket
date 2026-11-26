@@ -56,11 +56,18 @@ class CoreQlogBudgetTests {
                 val stream = client.connection.openStream()
                 repeat(ECHOES) { n -> echoOver(stream, "echo-$n".encodeToByteArray()) }
                 client.connection.close(QuicError.NoError)
-                withTimeout(10.seconds) { client.connection.coroutineContext.job.join() }
+                withTimeout(10.seconds) {
+                    client.connection.coroutineContext.job
+                        .join()
+                }
             }
 
             val onDisk = listQlogFiles(dir).filter { it.path.substringAfterLast('/').startsWith("conn-0001") }
-            val sizes = onDisk.associate { it.path.substringAfterLast('/') to it.bytes }.entries.sortedBy { it.key }.associate { it.key to it.value }
+            val sizes =
+                onDisk.associate { it.path.substringAfterLast('/') to it.bytes }.entries.sortedBy { it.key }.associate {
+                    it.key to
+                        it.value
+                }
             val events = reported.load()
             val dump = "on disk: $sizes\nevents:\n${events.joinToString("\n") { it.line }}"
             assertTrue(
@@ -69,12 +76,18 @@ class CoreQlogBudgetTests {
             )
             assertTrue(sizes.size <= budget.connectionSegments, "more files than the connection keeps.\n$dump")
             assertEquals("conn-0001.sqlog", sizes.keys.first(), "the head, the handshake, is gone.\n$dump")
-            assertTrue(PARAMETERS_SET in (filesByName(dir)["conn-0001.sqlog"] ?: ""), "the head does not hold the transport parameters.\n$dump")
+            assertTrue(
+                PARAMETERS_SET in (filesByName(dir)["conn-0001.sqlog"] ?: ""),
+                "the head does not hold the transport parameters.\n$dump",
+            )
             val truncated = events.filterIsInstance<QlogEvent.Truncated>()
             assertTrue(truncated.isNotEmpty(), "the connection wrote past its budget and no drop was reported.\n$dump")
             assertTrue(truncated.all { it.pressure == QlogPressure.ConnectionSegments }, dump)
             for (drop in truncated) {
-                assertTrue(drop.dropped.path.substringAfterLast('/') !in sizes, "reported dropped but still on disk: ${drop.dropped}\n$dump")
+                assertTrue(
+                    drop.dropped.path.substringAfterLast('/') !in sizes,
+                    "reported dropped but still on disk: ${drop.dropped}\n$dump",
+                )
             }
             val retained = directory.retained().single { it.name == "conn-0001" }.files
             assertEquals(sizes.values.sum(), retained.sumOf { it.bytes }, "the directory's accounts disagree with the disk.\n$dump")

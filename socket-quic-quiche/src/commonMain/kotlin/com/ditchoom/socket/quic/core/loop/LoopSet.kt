@@ -4,7 +4,6 @@ package com.ditchoom.socket.quic.core.loop
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.socket.quic.QuicheApi
-import com.ditchoom.socket.quic.SocketRefusal
 import com.ditchoom.socket.quic.core.conn.ClientSession
 import com.ditchoom.socket.quic.core.conn.FlightArena
 import com.ditchoom.socket.quic.core.conn.LoopMemory
@@ -42,28 +41,6 @@ import kotlin.concurrent.atomics.AtomicArray
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.time.Duration
 
-/** What [LoopSet.place] answers. */
-internal sealed interface Placement {
-    class Placed(
-        val running: RunningLoop,
-    ) : Placement
-
-    data object SetClosed : Placement
-
-    /** The factory makes memory a JDK socket cannot read into. */
-    data object NotJdkMemory : Placement
-
-    /** The native stack could not open the loop's poller. */
-    class PollerRefused(
-        val refusal: SocketRefusal,
-    ) : Placement
-
-    /** The platform refused the loop's thread with [cause]; the set holds no loop for it. */
-    class ThreadRefused(
-        val cause: Throwable,
-    ) : Placement
-}
-
 private sealed interface Slot {
     data object Unstarted : Slot
 
@@ -92,7 +69,7 @@ internal class LoopSet(
     /** A handler step that holds a thread of the set's pool longer than this is reported, and only reported. */
     handlerStallBound: Duration = HandlerPool.DEFAULT_STALL_BOUND,
     /** Starts a loop's thread. */
-    private val starter: LoopStarter = ::startLoop,
+    private val starter: (Loop, String) -> LoopStart = ::startLoop,
 ) {
     private val slots = AtomicArray(Array<Slot>(size) { Slot.Unstarted })
 
@@ -254,7 +231,7 @@ internal class LoopSet(
             is LoopStart.Started -> Placement.Placed(running)
             is LoopStart.Refused -> {
                 slots.compareAndSetAt(index, taken, Slot.Unstarted)
-                Placement.ThreadRefused(started.cause)
+                Placement.ThreadRefused(started.thrown)
             }
         }
     }

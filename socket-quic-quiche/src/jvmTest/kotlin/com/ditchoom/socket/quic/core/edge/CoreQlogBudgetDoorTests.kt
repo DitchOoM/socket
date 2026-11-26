@@ -65,7 +65,10 @@ class CoreQlogBudgetDoorTests {
             val stream = client.connection.openStream()
             repeat(echoes) { n -> echoOver(stream, "echo-$n".encodeToByteArray()) }
             client.connection.close(QuicError.NoError)
-            withTimeout(10.seconds) { client.connection.coroutineContext.job.join() }
+            withTimeout(10.seconds) {
+                client.connection.coroutineContext.job
+                    .join()
+            }
         }
     }
 
@@ -115,7 +118,10 @@ class CoreQlogBudgetDoorTests {
                 )
                 val evicted = events.filterIsInstance<QlogEvent.Evicted>()
                 assertEquals(attempts.take(5), evicted.map { it.connection }, "every eviction is reported, oldest first.\n$dump")
-                assertTrue(evicted.all { it.closed == QlogClosed.NeverEstablished && it.pressure == QlogPressure.DirectoryConnections }, dump)
+                assertTrue(
+                    evicted.all { it.closed == QlogClosed.NeverEstablished && it.pressure == QlogPressure.DirectoryConnections },
+                    dump,
+                )
             }
         }
 
@@ -140,7 +146,10 @@ class CoreQlogBudgetDoorTests {
                         withCoreEchoServer { server ->
                             val client = connectCore(server.port)
                             client.connection.close(QuicError.NoError)
-                            withTimeout(10.seconds) { client.connection.coroutineContext.job.join() }
+                            withTimeout(10.seconds) {
+                                client.connection.coroutineContext.job
+                                    .join()
+                            }
                         }
                     }
                 } finally {

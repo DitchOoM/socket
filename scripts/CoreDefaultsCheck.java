@@ -408,8 +408,8 @@ public class CoreDefaultsCheck {
 
     static final List<String> WIRING_FILES = List.of("Turn.kt", "Compose.kt", "Slots.kt", "Rules.kt");
 
-    /** Where a `catch` may sit: the three containment sites, plus the platform mapping in `udp`. */
-    static final List<String> CATCH_SITES = List.of("edge/OpGuard.kt", "conn/Turn.kt", "loop/Loop.kt", "udp/*");
+    /** Where a `catch` may sit: the three containment sites, the platform mapping in `udp`, and the JVM's refusal of a loop thread. */
+    static final List<String> CATCH_SITES = List.of("edge/OpGuard.kt", "conn/Turn.kt", "loop/Loop.kt", "udp/*", "loop/LoopThread.jvm.kt");
 
     static final List<String> OWNERSHIP_KINDS = List.of("@Confined", "@LoopOnly", "@Published", "@Queue", "@Pool", "@CallerSide");
 

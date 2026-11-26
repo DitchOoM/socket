@@ -2898,12 +2898,6 @@ sealed interface com.ditchoom.socket.quic/QuicRefusal { // com.ditchoom.socket.q
         final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicRefusal.NoQuicOnThisPlatform.toString|toString(){}[0]
     }
 
-    final object QlogNotBudgeted : com.ditchoom.socket.quic/QuicRefusal { // com.ditchoom.socket.quic/QuicRefusal.QlogNotBudgeted|null[0]
-        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicRefusal.QlogNotBudgeted.equals|equals(kotlin.Any?){}[0]
-        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicRefusal.QlogNotBudgeted.hashCode|hashCode(){}[0]
-        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicRefusal.QlogNotBudgeted.toString|toString(){}[0]
-    }
-
     final object StandbyLinkNotHeld : com.ditchoom.socket.quic/QuicRefusal { // com.ditchoom.socket.quic/QuicRefusal.StandbyLinkNotHeld|null[0]
         final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicRefusal.StandbyLinkNotHeld.equals|equals(kotlin.Any?){}[0]
         final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicRefusal.StandbyLinkNotHeld.hashCode|hashCode(){}[0]

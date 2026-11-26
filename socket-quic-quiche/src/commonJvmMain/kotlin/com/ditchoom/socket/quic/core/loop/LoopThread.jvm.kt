@@ -1,5 +1,7 @@
 package com.ditchoom.socket.quic.core.loop
 
+import com.ditchoom.socket.quic.core.udp.Thrown
+
 /** Starts a dedicated platform daemon thread for a fully built [loop]. Never a virtual thread: the loop blocks in its poller. */
 internal fun startLoopThread(
     loop: Loop,
@@ -20,5 +22,5 @@ internal actual fun startLoop(
         LoopStart.Started
     } catch (refused: OutOfMemoryError) {
         // The system could not create the native thread: a refusal the caller is told of, not a process failure.
-        LoopStart.Refused(refused)
+        LoopStart.Refused(Thrown(refused))
     }

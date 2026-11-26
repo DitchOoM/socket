@@ -1417,7 +1417,6 @@ jobs:
           # (recv_info UAF) was first caught, so it arms core capture + --no-daemon.
           - name: "JNI"
             args: ""
-            sim-fuzz: "2000"
             test-launcher-jdk: ""
             core-dump: "true"
             audit: "false"
@@ -1430,7 +1429,6 @@ jobs:
           # client), which had a SIGSEGV that the old silent JNI fallback hid.
           - name: "FFM"
             args: "-PquicheJvmBackend=ffm"
-            sim-fuzz: "2000"
             test-launcher-jdk: ""
             core-dump: "false"
             audit: "false"
@@ -1447,12 +1445,8 @@ jobs:
           # audit "captures the JDK17 backend run (the last full jvmTest)". Auditing exactly
           # one leg also keeps the `quic-audit-linux-jvm` artifact name unique across the
           # matrix — review.yaml / merged.yaml collect `quic-audit-*` with merge-multiple.
-          #
-          # SIM_FUZZ_ITERATIONS is deliberately NOT set here, matching the monolith: the
-          # deep-fuzz lane rides the two JDK-21 backends only.
           - name: "JDK 17 / JNI"
             args: "-PjvmTestLauncher=17 -Porg.gradle.java.installations.fromEnv=JAVA_HOME_17_X64"
-            sim-fuzz: ""
             test-launcher-jdk: "17"
             core-dump: "false"
             audit: "true"
@@ -1465,11 +1459,10 @@ jobs:
           # the one that executes them. The build/toolchain stays on 21; only this Test task runs on
           # 25, found via the JAVA_HOME_25_X64 install from setup-java.
           #
-          # No deep-fuzz seeds, ring, recorder or audit here, as on the JDK 17 leg: those ride the
+          # No ring, recorder or audit here, as on the JDK 17 leg: those ride the
           # JDK 21 legs, and this one answers a single question, whether the suite passes on 25.
           - name: "JDK 25 / FFM"
             args: "-PquicheJvmBackend=ffm -PjvmTestLauncher=25 -Porg.gradle.java.installations.fromEnv=JAVA_HOME_25_X64"
-            sim-fuzz: ""
             test-launcher-jdk: "25"
             core-dump: "false"
             audit: "false"
@@ -1589,12 +1582,6 @@ jobs:
       - name: Run socket-quic-quiche JVM tests (${{ matrix.leg.name }})
         timeout-minutes: 24
         env:
-          # W5 deep-fuzz lane: 2000 Tier-A seeds through SimFuzzDeepRunTests (~1-2s;
-          # virtual time). Without this the deep lane never runs anywhere and only the
-          # 25-seed commonTest smoke guards the fuzzer. Forwarded into the test worker
-          # by the quiche build script (daemon env is not step env). Empty on the JDK-17
-          # leg, which is how the monolith had it, and on the JDK-25 leg.
-          SIM_FUZZ_ITERATIONS: ${{ matrix.leg.sim-fuzz }}
           # Every leg builds its own natives and inventoried zero skips.
           SOCKET_REQUIRE_ALL_TESTS: "1"
         run: |

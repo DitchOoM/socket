@@ -67,7 +67,10 @@ class CoreConnectivityTraceTests {
                     assertTrue(snapshot.any { it.contains("DGRAM_IN") }, "the connection records the datagrams it received")
                     val events = TraceEvent.parseAll(snapshot)
                     assertTrue(events.filterIsInstance<TraceEvent.Net>().any { it.state.networkId == migratedTo }, "identity: $snapshot")
-                    assertTrue(events.filterIsInstance<TraceEvent.Net>().any { it.state == NetworkState.Offline }, "reachability: $snapshot")
+                    assertTrue(
+                        events.filterIsInstance<TraceEvent.Net>().any { it.state == NetworkState.Offline },
+                        "reachability: $snapshot",
+                    )
                     assertTrue(events.filterIsInstance<TraceEvent.NetCapability>().isNotEmpty(), "declared capability, once: $snapshot")
                 }
             }
@@ -80,7 +83,12 @@ class CoreConnectivityTraceTests {
         predicate: (NetworkState) -> Boolean,
     ) {
         withTimeout(10.seconds) {
-            while (TraceEvent.parseAll(synchronized(lines) { lines.toList() }).filterIsInstance<TraceEvent.Net>().none { predicate(it.state) }) {
+            while (TraceEvent
+                    .parseAll(
+                        synchronized(lines) { lines.toList() },
+                    ).filterIsInstance<TraceEvent.Net>()
+                    .none { predicate(it.state) }
+            ) {
                 delay(POLL_MILLIS)
             }
         }

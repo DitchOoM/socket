@@ -43,7 +43,6 @@ import com.ditchoom.socket.quic.generateScid
 import com.ditchoom.socket.quic.hostLiteral
 import com.ditchoom.socket.quic.hostSockAddrLayout
 import com.ditchoom.socket.quic.keyLogDirectory
-import com.ditchoom.socket.quic.core.conn.nameQlog
 import com.ditchoom.socket.quic.nameTrafficSecretsLog
 import com.ditchoom.socket.quic.resolveNetworkMonitor
 import com.ditchoom.socket.quic.toPathKey
@@ -176,7 +175,7 @@ private suspend fun OnSetupLane.connectOnLane(
                     Raised.SocketRefused(NativeSocketRefusal(placed.refusal)),
                     QuicCloseCircumstance.HandshakeFailed,
                 )
-            is Placement.ThreadRefused -> raise(Raised.LoopThreadRefused(placed.cause), QuicCloseCircumstance.HandshakeFailed)
+            is Placement.ThreadRefused -> loopThreadRefused(placed.thrown.throwable)
         }
     val seated = ClientSetup.Seated(memory, running.loop)
     moved(seated)

@@ -51,7 +51,12 @@ class LoopThreadsEndTests {
         }
 
     /** The core's threads alive now: its loops and its handler pools. */
-    private fun coreThreads(): Set<Thread> = Thread.getAllStackTraces().keys.filter { it.isAlive && it.name.startsWith(PREFIX) }.toSet()
+    private fun coreThreads(): Set<Thread> =
+        Thread
+            .getAllStackTraces()
+            .keys
+            .filter { it.isAlive && it.name.startsWith(PREFIX) }
+            .toSet()
 
     private fun awaitNone(
         before: Set<Thread>,

@@ -18,11 +18,11 @@ import com.ditchoom.socket.quic.QuicStream
 import com.ditchoom.socket.quic.StreamWrite
 import com.ditchoom.socket.quic.connectQuicOnCore
 import com.ditchoom.socket.quic.core.demux.withCoreEchoServer
+import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.sched.LoopPort
 import com.ditchoom.socket.quic.core.sched.LoopWork
 import com.ditchoom.socket.quic.core.testing.platformTlsConfig
-import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.getOrElse
 import com.ditchoom.socket.quic.network
 import com.ditchoom.socket.quic.readEach
@@ -96,7 +96,11 @@ class CoreApplicationCodeTests {
                                     }
                                 }
                             }
-                        val peer = QuicPeer.Candidates(listOf(QuicEndpoint(ResolvedAddress(LOOPBACK, IpFamily.V4), listener.port)), "localhost")
+                        val peer =
+                            QuicPeer.Candidates(
+                                listOf(QuicEndpoint(ResolvedAddress(LOOPBACK, IpFamily.V4), listener.port)),
+                                "localhost",
+                            )
                         val connected = connectQuicOnCore(peer, options, TransportConfig(), WAIT)
                         probe.note("after the connect")
                         val client = assertIs<QuicConnect.Connected<QuicConnection>>(connected).value
@@ -121,7 +125,10 @@ class CoreApplicationCodeTests {
                     }
                 assertIs<QuicServe.Serving<Unit>>(served)
 
-                assertTrue(LoopSet.shared.countsOfStarted().isNotEmpty(), "no core loop was running, so nothing here was checked against one")
+                assertTrue(
+                    LoopSet.shared.countsOfStarted().isNotEmpty(),
+                    "no core loop was running, so nothing here was checked against one",
+                )
                 assertTrue(probe.checked.get() > MIN_POINTS, "the probe recorded only ${probe.checked.get()} points")
                 assertTrue(probe.traced.get() > 0, "no trace event reached a sink, so the sinks were not checked")
                 if (probe.onLoop.isNotEmpty()) {
@@ -189,7 +196,6 @@ class CoreApplicationCodeTests {
         val WAIT = 10.seconds
 
         /** A core loop thread: the server's, or one of a client set; their handler threads carry the prefix too, and are not loops. */
-        fun isLoopThread(name: String): Boolean =
-            name == "quic-core-server" || Regex("${LoopSet.THREAD_PREFIX}-\\d+").matches(name)
+        fun isLoopThread(name: String): Boolean = name == "quic-core-server" || Regex("${LoopSet.THREAD_PREFIX}-\\d+").matches(name)
     }
 }

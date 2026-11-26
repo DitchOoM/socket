@@ -62,6 +62,7 @@ class CoreConnectionIdentityTests {
         const val LOOPBACK = "127.0.0.1"
         val WAIT = 10.seconds
         val options =
-            com.ditchoom.socket.quic.QuicOptions(alpnProtocols = listOf("test"), verifyPeer = false, idleTimeout = 10.seconds)
+            com.ditchoom.socket.quic
+                .QuicOptions(alpnProtocols = listOf("test"), verifyPeer = false, idleTimeout = 10.seconds)
     }
 }

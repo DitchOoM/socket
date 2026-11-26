@@ -120,11 +120,6 @@ internal sealed interface Raised : OpFailure {
     /** The connect was given a set of loops that has been closed. */
     data object LoopsClosed : Raised
 
-    /** The platform refused the thread a loop needs. */
-    class LoopThreadRefused(
-        val cause: Throwable,
-    ) : Raised
-
     /** A second call asked to handle a connection's streams while a first still does. */
     data object StreamsHandled : Raised
 
@@ -245,7 +240,6 @@ private fun exceptionOf(
         is Raised.RouteUnresolved -> UnresolvedRouteSourceException(failure.reason)
         is Raised.ChainRefused -> ServerCertificateRejectedException(failure.rejection)
         is Raised.LoopsClosed -> CoreLoopsClosed()
-        is Raised.LoopThreadRefused -> CoreLoopThreadRefused(failure.cause)
         is Raised.StreamsHandled -> QuicStreamsAlreadyHandledException()
         is Raised.SocketRefused -> failure.refusal
         is Raised.SpecLayoutRefused -> CoreSpecLayoutMismatch(failure.mismatch)
@@ -274,10 +268,12 @@ private suspend fun timedOut(bound: Duration): Nothing = withTimeout(Duration.ZE
 /** A connect was given a set of loops that has been closed. */
 internal class CoreLoopsClosed : IllegalStateException()
 
-/** The platform refused the thread a loop needs, with [cause]: nothing was opened, and the call may be made again. */
+/** The platform refused the thread a loop needs, with [thrown]: nothing was opened, and the call may be made again. */
+internal fun loopThreadRefused(thrown: Throwable): Nothing = throw CoreLoopThreadRefused(thrown)
+
 internal class CoreLoopThreadRefused(
-    cause: Throwable,
-) : IllegalStateException(cause)
+    thrown: Throwable,
+) : IllegalStateException(thrown)
 
 /** The native library this process loaded does not lay out the socket spec block as this code does. */
 internal class CoreSpecLayoutMismatch(

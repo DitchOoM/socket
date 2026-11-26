@@ -29,13 +29,12 @@ import com.ditchoom.socket.quic.core.loop.JdkViewsMade
 import com.ditchoom.socket.quic.core.loop.Loop
 import com.ditchoom.socket.quic.core.loop.LoopIds
 import com.ditchoom.socket.quic.core.loop.LoopIo
+import com.ditchoom.socket.quic.core.loop.LoopStart
 import com.ditchoom.socket.quic.core.loop.OwnBatch
 import com.ditchoom.socket.quic.core.loop.Readiness
 import com.ditchoom.socket.quic.core.loop.Route
 import com.ditchoom.socket.quic.core.loop.SocketDiedNotice
 import com.ditchoom.socket.quic.core.loop.jdkViewsOf
-import com.ditchoom.socket.quic.core.loop.LoopStart
-import com.ditchoom.socket.quic.core.loop.LoopStarter
 import com.ditchoom.socket.quic.core.loop.waitsOf
 import com.ditchoom.socket.quic.core.observe.ServerCounts
 import com.ditchoom.socket.quic.core.pool.FixedPool
@@ -93,8 +92,7 @@ internal class ServerSetup(
     private val batching: UdpBatching,
     private val mismatch: MismatchResponse,
     private val sends: SendRule,
-    /** Starts the loop's thread when the driver is [LoopDriver.OwnThread]. */
-    private val starter: LoopStarter,
+    private val starter: (Loop, String) -> LoopStart,
 ) {
     /** The memory this server holds from [factory]: freed by the setup's [SetupOwner] until the loop is built, then by the loop. */
     private val memory = EdgeMemory(factory)
@@ -270,11 +268,9 @@ internal class ServerSetup(
         moved(SetupOwner.Placed(loop))
         when (driver) {
             LoopDriver.OwnThread -> {
-                when (val started = starter(loop, SERVER_THREAD)) {
-                    is LoopStart.Started -> moved(SetupOwner.Started(loop))
-                    // The loop never ran: the setup's owner, still the placed loop, stops it here and releases everything once.
-                    is LoopStart.Refused -> raise(Raised.LoopThreadRefused(started.cause), QuicCloseCircumstance.HandshakeFailed)
-                }
+                // A refusal leaves the placed loop the owner: its stop here releases everything once.
+                starter(loop, SERVER_THREAD).raiseIfRefused()
+                moved(SetupOwner.Started(loop))
             }
             // The caller's first pass would place the socket only after that pass's receive: place it now.
             LoopDriver.Caller -> loop.pass(clock.now())
@@ -299,8 +295,6 @@ internal class ServerSetup(
         const val CALLER_BATCH = 16
         const val SCID_BYTES = 16
         const val MAX_PEERS_CACHED = 1 shl 16
-
-        /** The ready sockets one native wait reports. */
-        const val READY_EVENTS = 64
+        const val READY_EVENTS = 64 // The ready sockets one native wait reports.
     }
 }

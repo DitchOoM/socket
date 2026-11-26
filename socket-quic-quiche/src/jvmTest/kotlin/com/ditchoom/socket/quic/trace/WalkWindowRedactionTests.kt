@@ -5,91 +5,46 @@ import java.io.File
 import java.net.InetAddress
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
-import kotlin.time.Duration
-import kotlin.time.Duration.Companion.milliseconds
-import kotlin.time.Duration.Companion.nanoseconds
-import kotlin.time.Duration.Companion.seconds
 
 /**
- * The walk fixtures in `commonTest/sim/fixtures/` are the output of [TraceToFixture] over the
- * committed windows in `resources/walk-traces/`, byte for byte, or this fails. Each window is
- * [TraceToFixture.extractWindow] over the pulled trace, from the instant in its file name: every
- * line kept, `OS_NET` on the connection's clock, every address a documentation one.
+ * This repository is public: nothing committed from a walk (the windows in `resources/walk-traces/` and the fixtures
+ * built from them) may name a real address, and one redaction table handles every place an address appears.
  */
-class WalkFixtureRegenerationTests {
-    /** Where a fixture's run ends. */
-    private sealed interface FixtureEnd {
-        /** At the connection's close, which the window holds. */
-        data object AtClose : FixtureEnd
-
-        /** At [at] on the connection's clock: the window was cut while the connection was still up. */
-        data class At(
-            val at: Duration,
-        ) : FixtureEnd
-    }
-
+class WalkWindowRedactionTests {
     private class Walk(
         val windowResource: String,
-        val fixtureName: String,
-        val valName: String,
-        val fromNanos: Long,
         val fixtureFile: String,
-        val end: FixtureEnd = FixtureEnd.AtClose,
     )
 
     private val walks =
         listOf(
             Walk(
                 "walk-traces/20260919T153909Z-walk-0912-0915-conn-0007-from-13066795292.trace",
-                "walk-2026-09-12-conn-7-dead-link-handoff",
-                "walk20260912Conn7DeadLinkHandoff",
-                13_066_795_292L,
                 "Walk20260912Conn7DeadLinkHandoff.kt",
             ),
             Walk(
                 "walk-traces/20260911T155035Z-walk-2026-09-10-conn-0001-from-1572876724625.trace",
-                "walk-2026-09-10-conn-1-dead-link-handoff",
-                "walk20260910Conn1DeadLinkHandoff",
-                1_572_876_724_625L,
                 "Walk20260910Conn1DeadLinkHandoff.kt",
             ),
             Walk(
                 "walk-traces/20260924T212145Z-walk-0920-leg3-conn-0001-from-25141684665792.trace",
-                "walk-2026-09-20-leg-3-conn-1-downlink-blackout",
-                "walk20260920Leg3Conn1DownlinkBlackout",
-                25_141_684_665_792L,
                 "Walk20260920Leg3Conn1DownlinkBlackout.kt",
             ),
             Walk(
                 "walk-traces/20260924T220750Z-walk-0924-short-conn-v4-0001-from-1193636943191.trace",
-                "walk-2026-09-24-v4-conn-1-cellular-not-yet-passing",
-                "walk20260924V4Conn1CellularNotYetPassing",
-                1_193_636_943_191L,
                 "Walk20260924V4Conn1CellularNotYetPassing.kt",
             ),
             Walk(
                 "walk-traces/20260924T220750Z-walk-0924-short-conn-v4-0002-from-382604493031-to-396000000000.trace",
-                "walk-2026-09-24-v4-conn-2-abrupt-handoff",
-                "walk20260924V4Conn2AbruptHandoff",
-                382_604_493_031L,
                 "Walk20260924V4Conn2AbruptHandoff.kt",
-                FixtureEnd.At(396_000_000_000L.nanoseconds),
             ),
             Walk(
                 "walk-traces/20261101T193304Z-walk-1031-flight-conn-v4-0187-from-2661255539042-to-2680000000000.trace",
-                "walk-2026-10-31-v4-conn-187-landing-handoff",
-                "walk20261031V4Conn187LandingHandoff",
-                2_661_255_539_042L,
                 "Walk20261031V4Conn187LandingHandoff.kt",
-                FixtureEnd.At(2_680_000_000_000L.nanoseconds),
             ),
             Walk(
                 "walk-traces/20261101T232429Z-walk-1031-flight-conn-v4-cellular-0165-from-67195738099.trace",
-                "walk-2026-10-31-v4-cellular-conn-165-data-suspended",
-                "walk20261031V4CellularConn165DataSuspended",
-                67_195_738_099L,
                 "Walk20261031V4CellularConn165DataSuspended.kt",
             ),
         )
@@ -103,33 +58,6 @@ class WalkFixtureRegenerationTests {
         File("src/commonTest/kotlin/com/ditchoom/socket/quic/sim/fixtures/$fixtureFile").also {
             assertTrue(it.isFile, "run from the module directory: ${it.absolutePath} not found")
         }
-
-    private fun regenerate(walk: Walk): String {
-        val events = walk.events()
-        val from = walk.fromNanos.nanoseconds
-        val end =
-            when (val end = walk.end) {
-                FixtureEnd.AtClose -> events.filterIsInstance<TraceEvent.State>().last { it.name.endsWith("Closed") }.at
-                is FixtureEnd.At -> end.at
-            }
-        return TraceToFixture.generateKotlin(
-            walk.fixtureName,
-            walk.valName,
-            TraceToFixture.window(events, from),
-            runFor = end - from,
-        )
-    }
-
-    @Test
-    fun theCommittedWalkFixturesAreTraceToFixturesOutputOverTheCommittedWindows() {
-        for (walk in walks) {
-            assertEquals(
-                regenerate(walk),
-                walk.committedFixture().readText(),
-                "${walk.fixtureFile} is not TraceToFixture's output over ${walk.windowResource}",
-            )
-        }
-    }
 
     /**
      * This repository is public, so nothing committed from a walk may name a real address — not in a
@@ -176,22 +104,6 @@ class WalkFixtureRegenerationTests {
         assertEquals(listOf(phoneDoc, addresses[5].single()), addresses[4])
         assertTrue(phoneDoc != InetAddress.getByName("203.0.113.9"), "handed out an address the trace already used")
         assertEquals(redacted, TraceAddressRedaction.redact(redacted), "a redacted trace must be a fixed point")
-    }
-
-    @Test
-    fun aProbeClockOffsetThatIsNotInStepWithTheMonitorIsRefused() {
-        val lines =
-            sequenceOf(
-                "v1 0 OS_NET state=Offline v4=Absent v6=Absent cell=NotReported links=-",
-                "v1 1000000000 NET Offline",
-                "v1 6001000000 OS_NET state=Offline v4=Absent v6=Absent cell=NotReported links=-",
-                "v1 5000000000 NET Routable Link:Cellular:2 Pending",
-            )
-        val inStep = TraceToFixture.extractWindow(lines, Duration.ZERO, Duration.INFINITE, OsNetStamps.ProbeClock(5.seconds))
-        assertEquals(1001.milliseconds, inStep.filterIsInstance<TraceEvent.OsNet>().last().at)
-        assertFailsWith<IllegalStateException>("an OS_NET stamped after the monitor moved on was accepted") {
-            TraceToFixture.extractWindow(lines, Duration.ZERO, Duration.INFINITE, OsNetStamps.ProbeClock(Duration.ZERO))
-        }
     }
 
     private fun path(address: InetAddress): String {

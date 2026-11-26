@@ -2709,13 +2709,6 @@ public final class com/ditchoom/socket/quic/QuicRefusal$NoQuicOnThisPlatform : c
 	public fun toString ()Ljava/lang/String;
 }
 
-public final class com/ditchoom/socket/quic/QuicRefusal$QlogNotBudgeted : com/ditchoom/socket/quic/QuicRefusal {
-	public static final field INSTANCE Lcom/ditchoom/socket/quic/QuicRefusal$QlogNotBudgeted;
-	public fun equals (Ljava/lang/Object;)Z
-	public fun hashCode ()I
-	public fun toString ()Ljava/lang/String;
-}
-
 public final class com/ditchoom/socket/quic/QuicRefusal$RadioNotPinnable : com/ditchoom/socket/quic/QuicRefusal {
 	public fun <init> (Lcom/ditchoom/socket/transport/NetworkKind$Radio;Lcom/ditchoom/socket/quic/PinnedRadioRefusal;)V
 	public final fun component1 ()Lcom/ditchoom/socket/transport/NetworkKind$Radio;

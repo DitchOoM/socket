@@ -12,7 +12,6 @@ import com.ditchoom.socket.quic.hexToBytes
 import com.ditchoom.socket.quic.network
 import com.ditchoom.socket.quic.skipOnMissingNativeLib
 import com.ditchoom.socket.quic.trace.QlogDeclaration
-import com.ditchoom.socket.quic.trace.QlogTarget
 import com.ditchoom.socket.quic.trace.QuicConnectionCapture
 import com.ditchoom.socket.quic.trace.QuicTraceCapture
 import com.ditchoom.socket.quic.trace.TrafficSecretsLog

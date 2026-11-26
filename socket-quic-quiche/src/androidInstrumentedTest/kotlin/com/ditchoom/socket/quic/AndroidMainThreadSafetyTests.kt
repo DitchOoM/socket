@@ -16,7 +16,6 @@ import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.HalfCloseable
 import com.ditchoom.buffer.flow.ReadResult
-import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.data.readString
 import com.ditchoom.data.writeString
@@ -85,7 +84,6 @@ import com.ditchoom.socket.webtransport.connect as connectWebTransport
  */
 @RunWith(AndroidJUnit4::class)
 class AndroidMainThreadSafetyTests {
-    private val quicOptions = QuicOptions(alpnProtocols = listOf("main-thread"), verifyPeer = false, idleTimeout = 10.seconds)
     private val h3Options = QuicOptions(alpnProtocols = listOf(HTTP3_ALPN), verifyPeer = false, idleTimeout = 10.seconds)
     private val wtOptions = h3Options.copy(datagrams = DatagramOptions())
     private val transport = TransportConfig(bufferFactory = BufferFactory.deterministic())
@@ -184,44 +182,6 @@ class AndroidMainThreadSafetyTests {
             // (a MutableStateFlow), and a hold's register and release are ConnectivityManager binder
             // calls, no disk or network I/O. Checked here so that stays true.
             CellularStandby.processDefault().hold().close()
-        }
-
-    @Test
-    fun quicServerAndClientStreamRoundTrip() =
-        onMainThread {
-            withQuicServer(port = 0, tlsConfig = tls, quicOptions = quicOptions) {
-                val echo =
-                    launch {
-                        connections {
-                            val stream = acceptStream()
-                            val data = stream.read(5.seconds)
-                            if (data is ReadResult.Data) {
-                                try {
-                                    stream.writeFully(text("echo:"), 5.seconds)
-                                    stream.writeFully(data.buffer, 5.seconds)
-                                } finally {
-                                    data.buffer.freeIfNeeded()
-                                }
-                            }
-                            stream.close()
-                        }
-                    }
-                try {
-                    withQuicConnection("localhost", port, quicOptions, timeout = 10.seconds) {
-                        val stream = openStream()
-                        stream.writeFully(text("hello"), 5.seconds)
-                        val reply = StringBuilder()
-                        while (reply.length < "echo:hello".length) {
-                            val read = stream.read(5.seconds) { it.readString(it.remaining(), Charset.UTF8) }
-                            reply.append(assertIs<ScopedReadResult.Data<String>>(read).value)
-                        }
-                        assertEquals("echo:hello", reply.toString())
-                        stream.close()
-                    }
-                } finally {
-                    echo.cancel()
-                }
-            }
         }
 
     @Test

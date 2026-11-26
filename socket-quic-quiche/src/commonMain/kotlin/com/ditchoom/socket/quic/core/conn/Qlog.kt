@@ -25,54 +25,59 @@ internal sealed interface Qlog {
     /** quiche writes one file, or none: there is nothing to measure. */
     data object Unbudgeted : Qlog
 
-    /**
-     * quiche writes the segments of [record]'s directory, which holds them to its budget. Every [CHECK_SERVES]-th serve
-     * measures the segment quiche writes and hands it the next once the budget says the segment is full; the counting is
-     * in serves, not time, so a burst is cut as promptly as a trickle and a run on virtual time cuts at the same points.
-     */
-    @Confined
+    /** quiche writes the segments of a directory that holds them to its budget; [watch] measures and cuts them. */
     class Segmented(
-        private val api: QuicheApi,
-        private val conn: QuicheConn,
-        private val record: QlogRecord,
-        private val role: QuicRole,
-        private val session: QuicSessionId,
-        head: QlogSegment,
-    ) : Qlog {
-        private var current: QlogSegment = head
-        private var serves = 0
+        val watch: SegmentWatch,
+    ) : Qlog
+}
 
-        /** Inside: the connection was served once more. */
-        fun measured() {
-            if (++serves < CHECK_SERVES) return
-            serves = 0
-            when (val step = record.observe(qlogFileBytes(current.path))) {
-                is QlogStep.Keep -> deleteDropped(record, step.evicted)
-                is QlogStep.RotateDue -> {
-                    deleteDropped(record, step.evicted)
-                    if (api.connSetQlogPath(conn, step.next.path, titleOf(role), segmentDescriptionOf(session, step.next))) {
-                        val finished = current
-                        current = step.next
-                        // quiche flushed and closed the segment it let go of as it did, so this is its final size.
-                        deleteDropped(record, record.rotated(step.next, qlogFileBytes(finished.path)))
-                    } else {
-                        record.rotationRefused(step.next)
-                    }
+/**
+ * The segments quiche writes for [record], which holds them to its directory's budget. Every [CHECK_SERVES]-th serve measures
+ * the segment quiche writes and hands it the next once the budget says the segment is full; the counting is in serves, not
+ * time, so a burst is cut as promptly as a trickle and a run on virtual time cuts at the same points.
+ */
+@Confined
+internal class SegmentWatch(
+    private val api: QuicheApi,
+    private val conn: QuicheConn,
+    private val record: QlogRecord,
+    private val role: QuicRole,
+    private val session: QuicSessionId,
+    head: QlogSegment,
+) {
+    private var current: QlogSegment = head
+    private var serves = 0
+
+    /** Inside: the connection was served once more. */
+    fun measure() {
+        if (++serves < CHECK_SERVES) return
+        serves = 0
+        when (val step = record.observe(qlogFileBytes(current.path))) {
+            is QlogStep.Keep -> deleteDropped(record, step.evicted)
+            is QlogStep.RotateDue -> {
+                deleteDropped(record, step.evicted)
+                if (api.connSetQlogPath(conn, step.next.path, titleOf(role), segmentDescriptionOf(session, step.next))) {
+                    val finished = current
+                    current = step.next
+                    // quiche flushed and closed the segment it let go of as it did, so this is its final size.
+                    deleteDropped(record, record.rotated(step.next, qlogFileBytes(finished.path)))
+                } else {
+                    record.rotationRefused(step.next)
                 }
             }
         }
-
-        /** Inside: the handshake completed, so the record is a connection that carried traffic and not a failed attempt. */
-        fun reachedEstablished() = record.established()
-
-        /** The connection's memory was freed, which flushed the last segment: settles the record's accounts. */
-        fun settle() = deleteDropped(record, record.close(qlogFileBytes(current.path)))
     }
 
-    companion object {
+    /** Inside: the handshake completed, so the record is a connection that carried traffic and not a failed attempt. */
+    fun reachedEstablished() = record.established()
+
+    /** The connection's memory was freed, which flushed the last segment: settles the record's accounts. */
+    fun settle() = deleteDropped(record, record.close(qlogFileBytes(current.path)))
+
+    private companion object {
         /**
-         * Serves between measurements of a budgeted qlog's current segment: one `stat` per this many. A serve writes at most
-         * one flush's worth of qlog, so a segment overshoots its size by at most this many flushes.
+         * Serves between measurements of the current segment: one `stat` per this many. A serve writes at most one flush's
+         * worth of qlog, so a segment overshoots its size by at most this many flushes.
          */
         const val CHECK_SERVES = 64
     }
@@ -82,21 +87,21 @@ internal sealed interface Qlog {
 internal fun Qlog.served() =
     when (this) {
         is Qlog.Unbudgeted -> Unit
-        is Qlog.Segmented -> measured()
+        is Qlog.Segmented -> watch.measure()
     }
 
 /** Inside: the connection's handshake completed. */
 internal fun Qlog.established() =
     when (this) {
         is Qlog.Unbudgeted -> Unit
-        is Qlog.Segmented -> reachedEstablished()
+        is Qlog.Segmented -> watch.reachedEstablished()
     }
 
 /** After the connection's memory was freed. */
 internal fun Qlog.closed() =
     when (this) {
         is Qlog.Unbudgeted -> Unit
-        is Qlog.Segmented -> settle()
+        is Qlog.Segmented -> watch.settle()
     }
 
 /**
@@ -138,7 +143,7 @@ internal fun QuicheApi.nameQlog(
                     deleteDropped(opening.record, opening.evicted)
                     if (connSetQlogPath(conn, opening.head.path, titleOf(role), segmentDescriptionOf(session, opening.head))) {
                         println("[qlog] tracing ${role.label} connection $session to ${opening.head.path}, segmented")
-                        Qlog.Segmented(this, conn, opening.record, role, session, opening.head)
+                        Qlog.Segmented(SegmentWatch(this, conn, opening.record, role, session, opening.head))
                     } else {
                         opening.record.refusedByQuiche()
                         refused(capture, opening.head.path, role, session)
@@ -155,7 +160,7 @@ private fun environmentTarget(
     session: QuicSessionId,
 ): QlogTarget =
     when (val dir = environmentSetting("quic.qlog.dir", "QUIC_QLOG_DIR")) {
-        EnvironmentSetting.Unset -> QlogTarget.Off
+        is EnvironmentSetting.Unset -> QlogTarget.Off
         is EnvironmentSetting.Value -> QlogEnvironment.target(dir.text, "quiche-${role.label}-$session")
     }
 
@@ -174,10 +179,7 @@ private fun deleteDropped(
     files: List<QlogFile>,
 ) {
     for (file in files) {
-        when (deleteQlogFile(file.path)) {
-            QlogDeletion.Deleted -> Unit
-            QlogDeletion.Failed -> record.directory.deleteFailed(file)
-        }
+        if (deleteQlogFile(file.path) == QlogDeletion.Failed) record.directory.deleteFailed(file)
     }
 }
 

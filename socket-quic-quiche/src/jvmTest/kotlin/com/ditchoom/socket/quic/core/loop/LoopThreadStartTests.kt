@@ -14,6 +14,7 @@ import com.ditchoom.socket.quic.core.edge.coreTestOptions
 import com.ditchoom.socket.quic.core.edge.echoOver
 import com.ditchoom.socket.quic.core.testing.platformQuicheApi
 import com.ditchoom.socket.quic.core.testing.platformTlsConfig
+import com.ditchoom.socket.quic.core.udp.Thrown
 import com.ditchoom.socket.quic.network
 import com.ditchoom.socket.quic.skipOnMissingNativeLib
 import kotlinx.coroutines.runBlocking
@@ -41,7 +42,9 @@ class LoopThreadStartTests {
             name: String,
         ): LoopStart =
             if (attempts.incrementAndGet() == 1) {
-                LoopStart.Refused(OutOfMemoryError("unable to create native thread: possibly out of memory or process/resource limits reached"))
+                LoopStart.Refused(
+                    Thrown(OutOfMemoryError("unable to create native thread: possibly out of memory or process/resource limits reached")),
+                )
             } else {
                 startLoop(loop, name)
             }
@@ -55,7 +58,8 @@ class LoopThreadStartTests {
                     val starts = RefusesOnce()
                     val loops = LoopSet(1, starter = starts::start)
                     try {
-                        val refused = withTimeout(WITHIN) { assertFailsWith<CoreLoopThreadRefused> { connectCore(server.port, loops = loops) } }
+                        val refused =
+                            withTimeout(WITHIN) { assertFailsWith<CoreLoopThreadRefused> { connectCore(server.port, loops = loops) } }
                         assertIs<OutOfMemoryError>(refused.rootCause(), "the refusal carries what the thread start threw")
                         assertEquals(emptyList(), loops.countsOfStarted(), "the loop that never ran is not left in the set")
 

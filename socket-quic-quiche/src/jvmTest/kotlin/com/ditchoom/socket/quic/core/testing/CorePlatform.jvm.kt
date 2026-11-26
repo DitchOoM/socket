@@ -27,7 +27,11 @@ internal fun scratchDirectory(tag: String): String =
 
 /** Every regular file directly in [dir], by name, with its text. */
 internal fun filesByName(dir: String): Map<String, String> =
-    java.io.File(dir).listFiles { f -> f.isFile }.orEmpty().associate { it.name to it.readText() }
+    java.io
+        .File(dir)
+        .listFiles { f -> f.isFile }
+        .orEmpty()
+        .associate { it.name to it.readText() }
 
 /** Runs [block] on a new platform thread named [name] and returns once it ended. */
 internal fun runOnANewThread(

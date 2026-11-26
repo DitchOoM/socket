@@ -8,7 +8,6 @@ import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicConnectionIdentity
 import com.ditchoom.socket.quic.QuicRole
 import com.ditchoom.socket.quic.SendTarget
-import com.ditchoom.socket.quic.core.conn.nameQlog
 import com.ditchoom.socket.quic.core.conn.Conn
 import com.ditchoom.socket.quic.core.conn.ConnAddress
 import com.ditchoom.socket.quic.core.conn.ConnMemory
@@ -18,6 +17,7 @@ import com.ditchoom.socket.quic.core.conn.MoveWantedWork
 import com.ditchoom.socket.quic.core.conn.SlotRules
 import com.ditchoom.socket.quic.core.conn.buildConn
 import com.ditchoom.socket.quic.core.conn.earlyPlanOf
+import com.ditchoom.socket.quic.core.conn.nameQlog
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.loop.Endpoint
 import com.ditchoom.socket.quic.core.loop.Route

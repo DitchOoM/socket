@@ -17,6 +17,7 @@ import com.ditchoom.socket.quic.core.conn.FlightSize
 import com.ditchoom.socket.quic.core.conn.LoopMemory
 import com.ditchoom.socket.quic.core.conn.SlotRules
 import com.ditchoom.socket.quic.core.conn.buildConn
+import com.ditchoom.socket.quic.core.conn.nameQlog
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.observe.ConnCounts
 import com.ditchoom.socket.quic.core.observe.Counter
@@ -29,7 +30,6 @@ import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.QuicheTime
 import com.ditchoom.socket.quic.core.udp.Addressed
 import com.ditchoom.socket.quic.core.udp.NativeBytes
-import com.ditchoom.socket.quic.core.conn.nameQlog
 import com.ditchoom.socket.quic.nameTrafficSecretsLog
 import com.ditchoom.socket.quic.trace.TraceCapture
 import kotlinx.coroutines.Runnable
