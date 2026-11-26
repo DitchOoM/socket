@@ -23,6 +23,7 @@ import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.RouteSource
 import com.ditchoom.socket.quic.UdpBatching
 import com.ditchoom.socket.quic.UdpSocketChannelFactory
+import com.ditchoom.socket.quic.clientAlpnOffer
 import com.ditchoom.socket.quic.core.conn.AccessGuard
 import com.ditchoom.socket.quic.core.conn.ClientTokens
 import com.ditchoom.socket.quic.core.conn.FlightSize
@@ -89,6 +90,8 @@ internal suspend fun coreConnect(
 ): CoreClient {
     // Before the setup lane, a socket or a file: a connect whose option values cannot be honoured opens nothing.
     verdictOn(options).orRefuse()
+    // A session whose protocol the options do not list fails here too, before a route is asked for.
+    clientAlpnOffer(options)
     val began = TimeSource.Monotonic.markNow()
     val peerHost = peerHostFor(host)
     val unstarted = ClientSetup.Unstarted(EdgeMemory(factory))
