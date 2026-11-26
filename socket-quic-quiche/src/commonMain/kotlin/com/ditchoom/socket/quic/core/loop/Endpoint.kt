@@ -39,6 +39,7 @@ internal class Endpoint(
     /** Runs on the loop once the socket has left it, after the connection ended and its last output went out. */
     private val onLeft: Runnable,
     private val readiness: Readiness = Readiness.Polled,
+    private val ownership: SocketOwnership = SocketOwnership.Owned,
 ) {
     var token = 0
         private set
@@ -188,7 +189,7 @@ internal class Endpoint(
         poller: Poller,
         seats: Loop,
     ) {
-        if (phase != Phase.Live || second.rehome(poller, seats, route) == SecondRehome.Reopened) return
+        if (ownership is SocketOwnership.Lent || phase != Phase.Live || second.rehome(poller, seats, route) == SecondRehome.Reopened) return
         poller.remove(token)
         when (val reopened = io.reopen()) {
             is Reopened.SameEndpoint -> {
@@ -204,14 +205,14 @@ internal class Endpoint(
         }
     }
 
-    /** A client's connection wants a socket on [bind]'s address, on a network assumed [prior]: see [SecondSocket.open]. */
+    /** A client's connection wants a socket on [bind]'s address, on a network assumed [prior]: see [SocketOwnership.move]. */
     fun move(
         poller: Poller,
         seats: Loop,
         bind: PathKey,
         prior: RttPrior,
     ) = when (route) {
-        is Route.Fixed -> if (phase == Phase.Live) second.open(this, poller, seats, route, bind, prior) else Unit
+        is Route.Fixed -> if (phase == Phase.Live) ownership.move(route) { second.open(this, poller, seats, route, bind, prior) } else Unit
         is Route.Demux -> Unit
     }
 

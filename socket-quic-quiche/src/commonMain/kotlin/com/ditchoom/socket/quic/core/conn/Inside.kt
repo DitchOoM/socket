@@ -81,8 +81,15 @@ internal class Inside(
             }
         }
 
-    /** The client's loop could not open the socket a move asked for: the move is refused, the connection stays. */
-    fun moveRefused() = c.flight.path(clock.now(), PathMark.OpenRefused)
+    /** The client's loop refused the move it was asked for, as [why] says: the connection stays on its socket. */
+    fun moveRefused(why: MoveRefusal) =
+        c.flight.path(
+            clock.now(),
+            when (why) {
+                is MoveRefusal.Unopened -> PathMark.OpenRefused
+                is MoveRefusal.SocketLent -> PathMark.LentRefused
+            },
+        )
 
     /** The client's loop lost the second socket [ticket] names: the move it served ends, the connection stays. */
     fun secondLost(ticket: SocketTicket) = c.secondLost(clock.now(), ticket)

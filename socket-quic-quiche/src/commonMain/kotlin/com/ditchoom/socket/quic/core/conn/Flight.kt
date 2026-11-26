@@ -28,6 +28,9 @@ internal enum class PathMark {
     /** A move was refused, the connection staying on its socket: it could not follow, open, or keep the new one. */
     Refused,
     OpenRefused,
+
+    /** A move was refused because the caller lent the socket that carries the connection. */
+    LentRefused,
     SecondLost,
 
     /** Quiche gave up validating the probed path or closed it: it is probed again later, or the move is given up. */

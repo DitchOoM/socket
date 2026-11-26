@@ -46,9 +46,20 @@ internal class MovedWork(
     override fun gone(end: ConnEnd) = Unit
 }
 
-/** Inside: the loop could not open the socket a move asked for; the move is refused and the connection stays. */
-internal class MoveRefusedWork : ConnWork() {
-    override fun run(inside: Inside) = inside.moveRefused()
+/** Why the loop refused a move: the connection stays on the socket that carries it. */
+internal sealed interface MoveRefusal {
+    /** No second socket could be opened at the address the move asked for. */
+    data object Unopened : MoveRefusal
+
+    /** The carrying socket is the caller's: no other socket can replace it. */
+    data object SocketLent : MoveRefusal
+}
+
+/** Inside: the loop refused the move the connection asked for, as [why] says; the connection stays. */
+internal class MoveRefusedWork(
+    private val why: MoveRefusal,
+) : ConnWork() {
+    override fun run(inside: Inside) = inside.moveRefused(why)
 
     override fun gone(end: ConnEnd) = Unit
 }

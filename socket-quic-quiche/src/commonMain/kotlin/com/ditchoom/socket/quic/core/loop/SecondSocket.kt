@@ -1,6 +1,7 @@
 package com.ditchoom.socket.quic.core.loop
 
 import com.ditchoom.socket.quic.PathKey
+import com.ditchoom.socket.quic.core.conn.MoveRefusal
 import com.ditchoom.socket.quic.core.conn.MoveRefusedWork
 import com.ditchoom.socket.quic.core.conn.MoveTo
 import com.ditchoom.socket.quic.core.conn.MovedWork
@@ -282,7 +283,7 @@ internal class SecondSocket(
         unopened: Beside,
     ) {
         when (unopened) {
-            is Beside.Refused -> fixed.conn.submitFromLoop(MoveRefusedWork())
+            is Beside.Refused -> fixed.conn.submitFromLoop(MoveRefusedWork(MoveRefusal.Unopened))
             is Beside.Unsupported -> fixed.conn.submitFromLoop(NetworkWork(NetworkChange.Moved))
             is Beside.Opened, is Beside.Arriving -> Unit
         }
