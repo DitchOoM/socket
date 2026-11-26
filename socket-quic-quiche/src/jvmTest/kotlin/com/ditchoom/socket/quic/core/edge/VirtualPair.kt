@@ -124,6 +124,9 @@ internal class VirtualPair private constructor(
     /** The ports the client's next moves bind to, in order, as an OS may hand back a port the socket left. */
     val movePorts = ArrayDeque<Int>()
 
+    /** Client ports the link carries nothing from or to, as a network that took the address and routes none of it. */
+    val deadClientPorts = HashSet<Int>()
+
     /** The client's quiche handle, seen with its first datagram. */
     private var clientConn = QuicheConn(1L)
 
@@ -245,6 +248,7 @@ internal class VirtualPair private constructor(
                         is SendTarget.ServerReply -> target.to.port
                         is SendTarget.ConnectedPeer -> if (end == End.Client) serverKey.port else clientKey.port
                     }
+                if ((if (end == End.Client) clientKey.port else port) in deadClientPorts) continue
                 val datagram = InFlight(clock.at.value + oneWay.inWholeNanoseconds, order++, to, bytes, port)
                 if (end in holding) held.getValue(end).add(datagram) else inFlight.add(datagram)
             }
