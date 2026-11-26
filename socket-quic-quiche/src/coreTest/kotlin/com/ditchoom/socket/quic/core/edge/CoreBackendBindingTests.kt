@@ -2,8 +2,6 @@
 
 package com.ditchoom.socket.quic.core.edge
 
-import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.buffer.Default
 import com.ditchoom.socket.quic.PeerMigrationPermission
 import com.ditchoom.socket.quic.PeerTransportParams
 import com.ditchoom.socket.quic.QuicActivePathStats
@@ -15,11 +13,10 @@ import com.ditchoom.socket.quic.QuicheRecvInfo
 import com.ditchoom.socket.quic.core.demux.withCoreEchoServer
 import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.testing.coreTest
+import com.ditchoom.socket.quic.core.testing.nativeBytes
 import com.ditchoom.socket.quic.core.testing.platformQuicheApi
-import com.ditchoom.socket.quic.core.udp.Addressed
 import com.ditchoom.socket.quic.core.udp.BatchLimits
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
-import com.ditchoom.socket.quic.core.udp.NativeBytes
 import com.ditchoom.socket.quic.core.udp.SendBatch
 import com.ditchoom.socket.quic.core.udp.SendBatchResult
 import com.ditchoom.socket.quic.migrationPermission
@@ -77,7 +74,7 @@ class CoreBackendBindingTests {
         override fun send(batch: SendBatch): SendBatchResult {
             val one =
                 single[batch.lane] ?: run {
-                    val bytes = (NativeBytes.of(BufferFactory.Default.allocate(batch.limits.maxDatagramSize)) as Addressed.Native).bytes
+                    val bytes = nativeBytes(batch.limits.maxDatagramSize)
                     SendBatch(bytes, BatchLimits(1, batch.limits.maxDatagramSize), batch.lane).also { single[batch.lane] = it }
                 }
             for (n in 0 until batch.pending) {
