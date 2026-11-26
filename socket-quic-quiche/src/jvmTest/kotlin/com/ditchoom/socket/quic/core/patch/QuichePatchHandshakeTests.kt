@@ -11,6 +11,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -111,6 +112,49 @@ class QuichePatchHandshakeTests {
                     pair.elapse(pair.nextTimer(pair.client)!!)
                     // Beside the probes, the request leaves again in a 1-RTT datagram of its own.
                     val probes = pair.sends(pair.client).filterNot { it.packetTypes == listOf("1-RTT") }
+                    assertTrue(
+                        probes.isNotEmpty() && probes.all { "Handshake" in it.packetTypes },
+                        "PTO ${pto + 1} must probe with the Finished (Handshake packets) while the handshake is " +
+                            "unconfirmed; it sent ${probes.map { it.packetTypes }}",
+                    )
+                }
+            } finally {
+                pair.close()
+            }
+        }
+
+    /**
+     * An ack-eliciting 1-RTT packet that carries no data does not arm the client's Application Data PTO while its
+     * handshake is unconfirmed, so the lost Finished is still re-sent at every PTO.
+     *
+     * RFC 9002 §6.2.1: an endpoint MUST NOT arm the PTO for the Application Data space until the handshake is
+     * confirmed. A PING in flight is ack-eliciting but is not data, so the Handshake PTO probe does not re-send it,
+     * and an Application Data timer armed for it (quiche armed it once the handshake was complete, which a client is
+     * when it sends its Finished) fires before the Handshake space's second probe and spends that PTO on a probe the
+     * server cannot read yet.
+     *
+     * Red against a quiche built without `patchQuichePtoWaitsForConfirmation`.
+     */
+    @Test
+    fun aPingInFlightDoesNotTakeAPtoFromTheLostFinished() =
+        runTest {
+            val pair = QuichePairByHand.open(env)
+            try {
+                pair.handshakeUpToTheClientsFinished()
+                val finished = pair.sends(pair.client)
+                assertTrue(finished.any { "Handshake" in it.packetTypes }, "the client sends its Finished")
+                pair.elapse(PING_LAG)
+                env.api.setThreadVirtualTimeNanos(pair.nowNanos(pair.client))
+                try {
+                    assertEquals(0, env.api.connSendAckEliciting(pair.client))
+                } finally {
+                    env.api.clearThreadVirtualTime()
+                }
+                assertTrue(pair.sends(pair.client).isNotEmpty(), "the client sends its PING")
+
+                repeat(LOST_FINISHED_PTOS) { pto ->
+                    pair.elapse(pair.nextTimer(pair.client)!!)
+                    val probes = pair.sends(pair.client)
                     assertTrue(
                         probes.isNotEmpty() && probes.all { "Handshake" in it.packetTypes },
                         "PTO ${pto + 1} must probe with the Finished (Handshake packets) while the handshake is " +
@@ -706,5 +750,7 @@ private const val CLOSE_CODE = 0x0L
 private const val HANDSHAKE_ROUNDS = 32
 
 private const val JUNK_HANDSHAKE_PACKETS = 64
+
+private val PING_LAG = 50.milliseconds
 
 private const val LOST_FINISHED_PTOS = 3

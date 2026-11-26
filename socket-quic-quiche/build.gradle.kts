@@ -1207,9 +1207,11 @@ fun patchQuicheFinIsSentUntilAcknowledged(sourceDir: File) {
  * Finished may be lost — a client with a request in flight split its PTOs between the Finished and 1-RTT
  * data the server cannot read yet: Finished, request, Finished, request, each interval double the last.
  * The quic-interop-runner's `handshakeloss` against quic-go: the lost Finished went out again 1, 5 and
- * 21 s later, quic-go dropped the handshake at 10 s, and the client idled out at 30 s. Exercised by
- * `QuichePatchHandshakeTests.aLostFinishedIsSentAgainAtEveryPtoUntilTheHandshakeIsConfirmed`, which stays green
- * with this patch reverted alone, and with [patchQuicheOneRttAckConfirms] reverted too.
+ * 21 s later, quic-go dropped the handshake at 10 s, and the client idled out at 30 s. Reproduced by
+ * `QuichePatchHandshakeTests.aPingInFlightDoesNotTakeAPtoFromTheLostFinished`: with a request in flight, a
+ * Handshake PTO probe re-sends the request too ([patchQuicheHandshakeProbeCarriesAppData]) and hides the
+ * split, so the test puts an ack-eliciting PING, which no probe re-sends, in flight instead.
+ * `aLostFinishedIsSentAgainAtEveryPtoUntilTheHandshakeIsConfirmed` stays green without this patch.
  *
  * A server confirms when it completes, so only a client's timing changes. Nothing is stranded meanwhile:
  * with no Handshake data in flight the server's own PTO re-sends HANDSHAKE_DONE, and its arrival
@@ -1256,6 +1258,12 @@ fun patchQuichePtoWaitsForConfirmation(sourceDir: File) {
  *
  * A packet that decrypts under the derived keys proves the peer holds them, so reading it before
  * confirmation weakens nothing.
+ *
+ * No unit test can guard this: quiche never starts a key update, so no pair of our own can send a packet in
+ * the flipped phase. The only guards are the interop gate's non-gating cells of our client against quinn,
+ * `handshakeloss` and `handshakecorruption` (test-harness/quic-interop/expectations.json); the gate's
+ * `keyupdate` cell runs the other direction (a peer's client updating against our server) and does not
+ * exercise this read.
  *
  * **Idempotent and loud in both directions** (the [patchQuicheForCallerClock] discipline).
  */
@@ -3914,26 +3922,26 @@ fun patchQuicheRetiredCidRecvIsDrop(sourceDir: File) {
  * packets from quinn.
  *
  * quiche moves a lost packet's frames into the queue only when it next builds a packet, so the loss
- * writer is the one both traces hit: edit 2 re-queues only an ID that is still live. Edit 1 covers the
- * window after that move: the frames are queued, a congestion window just cut by the loss has no room to
- * send them, and the retirement arrives while they wait — a retirement drops the number from the queue.
- * RFC 9000 §19.15/§19.16: a retired ID is never used again, so advertising it again is pointless as well
- * as fatal here.
+ * writer is the one both traces hit: it re-queues only an ID that is still live. RFC 9000 §19.15/§19.16: a
+ * retired ID is never used again, so advertising it again is pointless as well as fatal here.
  *
- * Regression guards, outliving this patch, in `QuichePatchCidRetirementTests`: with edit 2 reverted alone
- * these go red (`quiche_conn_send` answering -6, InvalidState):
+ * A second edit, which took a retired ID's number out of the queue in `retire_scid`, is not carried: it
+ * matters only when the frames stay queued because the congestion window left after a loss is narrower than
+ * a NEW_CONNECTION_ID frame, and with the window cut as quiche cuts it, the narrowest a pair can stage is
+ * 532 bytes, so no test could ever go red without it.
+ *
+ * Regression guards in `QuichePatchCidRetirementTests`: with this patch reverted alone these go red
+ * (`quiche_conn_send` answering -6, InvalidState):
  * `theClientKeepsSendingAfterThePeerRetiresIdsItHadQueuedToAdvertiseAgain` (the `handshakeloss` order),
  * `theClientKeepsSendingWhenAPacketAdvertisingIdsThePeerAlreadyRetiredIsSentAgain` (the `handshakecorruption`
- * order) and `theClientKeepsSendingWhenThePeerRetiresIdsQueuedBehindAFullCongestionWindow`. No test goes red with
- * edit 1 reverted alone.
+ * order) and `theClientKeepsSendingWhenThePeerRetiresIdsQueuedBehindAFullCongestionWindow`.
  * Upstream at the time of writing has the same code. Idempotent and loud in both directions (the
  * [patchQuicheForCallerClock] discipline).
  */
 fun patchQuicheRetiredScidIsNotAdvertised(sourceDir: File) {
     val marker = "socket-retired-scid-is-not-advertised"
     val libRs = sourceDir.resolve("quiche/src/lib.rs")
-    val cidRs = sourceDir.resolve("quiche/src/cid.rs")
-    if (!libRs.exists() || !cidRs.exists()) return
+    if (!libRs.exists()) return
 
     fun missingAnchor(what: String): Nothing =
         throw GradleException(
@@ -3944,30 +3952,7 @@ fun patchQuicheRetiredScidIsNotAdvertised(sourceDir: File) {
                 "Otherwise re-fit the anchor and re-run those tests before shipping.",
         )
 
-    // Edit 1 (cid.rs): a retirement takes the id's number out of the advertise queue — every copy, since a
-    // NEW_CONNECTION_ID lost twice is queued twice.
-    val cidText = cidRs.readText()
-    if (!cidText.contains(marker)) {
-        val anchor =
-            """
-            |            // Notifies the application.
-            |            self.retired_scids.push_back(e.cid);
-            """.trimMargin()
-        if (cidText.split(anchor).size != 2) missingAnchor("the retired-scid notification in retire_scid (quiche/src/cid.rs)")
-        val replacement =
-            """
-            |            // $marker: the peer has retired this id, so it must
-            |            // never be advertised again. Leaving its number queued makes send_single's
-            |            // get_new_connection_id_frame_for(seq)? fail every send() with InvalidState.
-            |            self.advertise_new_scid_seqs.retain(|s| *s != seq);
-            |
-            |            // Notifies the application.
-            |            self.retired_scids.push_back(e.cid);
-            """.trimMargin()
-        cidRs.writeText(cidText.replaceFirst(anchor, replacement))
-    }
-
-    // Edit 2 (lib.rs): a lost NEW_CONNECTION_ID is sent again only for an id that is still live — the peer
+    // A lost NEW_CONNECTION_ID is sent again only for an id that is still live — the peer
     // may have retired it after receiving the very packet we have now declared lost.
     val libText = libRs.readText()
     if (!libText.contains(marker)) {
