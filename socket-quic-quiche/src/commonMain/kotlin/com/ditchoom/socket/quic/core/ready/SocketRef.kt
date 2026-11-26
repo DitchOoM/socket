@@ -20,3 +20,6 @@ internal sealed interface PollHandle {
 }
 
 internal expect fun SocketRef.pollHandle(): PollHandle
+
+/** A socket no poller watches on either stack: its io wakes the loop itself when a datagram arrives. */
+internal expect fun notPolledRef(): SocketRef

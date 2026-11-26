@@ -585,9 +585,11 @@ public final class com/ditchoom/socket/quic/QuicConnStats {
 
 public final class com/ditchoom/socket/quic/QuicCoreEntryKt {
 	public static final fun connectQuicOnCore-gwCluXo (Lcom/ditchoom/socket/quic/QuicPeer;Lcom/ditchoom/socket/quic/QuicOptions;Lcom/ditchoom/socket/TransportConfig;JLkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static final fun connectQuicOnCore-myKFqkg (Lcom/ditchoom/buffer/flow/AddressedDatagramChannel;Lcom/ditchoom/socket/quic/QuicEndpoint;Ljava/lang/String;Lcom/ditchoom/socket/quic/QuicOptions;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public static final fun connectQuicOnCore-zkXUZaI (Lcom/ditchoom/socket/quic/QuicPeer;Lcom/ditchoom/socket/quic/QuicOptions;Lcom/ditchoom/socket/TransportConfig;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public static final fun serveQuicOnCore (ILjava/lang/String;Lcom/ditchoom/socket/quic/QuicTlsConfig;Lcom/ditchoom/socket/quic/QuicOptions;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public static final fun serveQuicOnCore (ILjava/lang/String;Lcom/ditchoom/socket/quic/QuicTlsConfig;Lcom/ditchoom/socket/quic/QuicOptions;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static final fun serveQuicOnCore (Lcom/ditchoom/buffer/flow/AddressedDatagramChannel;Lcom/ditchoom/socket/quic/QuicTlsConfig;Lcom/ditchoom/socket/quic/QuicOptions;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 }
 
 public final class com/ditchoom/socket/quic/QuicPathStats {

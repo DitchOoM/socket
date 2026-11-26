@@ -54,7 +54,8 @@ class CoreLocalEndpointSupportTests {
         body: suspend () -> Unit,
     ) {
         when (clientRideOfThisPlatform) {
-            is ClientRide.OwnSocket -> runBlocking { body() }
+            // No platform rides a lent channel by default: a caller lends one per connect.
+            is ClientRide.OwnSocket, is ClientRide.Lent -> runBlocking { body() }
             is ClientRide.NetworkFramework ->
                 recordSkip(
                     "CoreLocalEndpointSupportTests.$site",

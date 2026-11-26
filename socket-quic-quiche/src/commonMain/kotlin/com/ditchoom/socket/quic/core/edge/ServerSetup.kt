@@ -4,7 +4,6 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.socket.quic.NativeSocketRefusal
-import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicTlsConfig
@@ -51,7 +50,6 @@ import com.ditchoom.socket.quic.core.sched.HandlerPool
 import com.ditchoom.socket.quic.core.sched.HandlerThreads
 import com.ditchoom.socket.quic.core.sched.SendPort
 import com.ditchoom.socket.quic.core.sched.SendRule
-import com.ditchoom.socket.quic.core.sched.callerLanesOf
 import com.ditchoom.socket.quic.core.sched.laneCount
 import com.ditchoom.socket.quic.core.sched.size
 import com.ditchoom.socket.quic.core.sched.storages
@@ -66,7 +64,6 @@ import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.ReceiveBuffer
 import com.ditchoom.socket.quic.core.udp.SendBatch
 import com.ditchoom.socket.quic.core.udp.SocketBuffers
-import com.ditchoom.socket.quic.core.udp.SocketPeer
 import com.ditchoom.socket.quic.core.udp.SocketReport
 import com.ditchoom.socket.quic.encodeToNative
 import com.ditchoom.socket.quic.newConnectionIdRandom
@@ -76,7 +73,7 @@ import kotlinx.coroutines.channels.Channel
 
 /** Everything [coreServe] builds, in order: memory first (so a factory without native memory fails before any socket), then the socket and the loop. */
 internal class ServerSetup(
-    private val bind: PathKey,
+    private val port: ServerPort,
     private val tls: QuicTlsConfig,
     private val options: QuicOptions,
     private val factory: BufferFactory,
@@ -125,7 +122,7 @@ internal class ServerSetup(
         val callerLimits = BatchLimits(maxDatagrams = CALLER_BATCH, maxDatagramSize = MAX_DATAGRAM)
         val send = SendBatch(memory.native(limits.maxDatagrams * limits.maxDatagramSize), limits)
         val lanes =
-            callerLanesOf(sends.laneCount(CALLER_LANES)) { i ->
+            port.lanesOf(sends.laneCount(CALLER_LANES)) { i ->
                 CallerSend(i, SendBatch(memory.native(callerLimits.maxDatagrams * MAX_DATAGRAM), callerLimits, lane = i + 1))
             }
         val receiveBuffers = List(limits.maxDatagrams) { ReceiveBuffer(it, memory.native(MAX_DATAGRAM)) }
@@ -166,8 +163,8 @@ internal class ServerSetup(
         val quicheConfig = api.configNew(QUIC_V1)
         moved(SetupOwner.Configured(memory, poller, quicheConfig))
         configureServer(api, quicheConfig, tls, options, factory, handshake)
-        val socket = openStackSocket(loopIo, memory, bind, SocketPeer.Unconnected, buffers, batching, limits.maxDatagrams)
-        val socketIo = socket.ioOf(listOf(send.storage) + lanes.storages(), MAX_PEERS_CACHED, PeerKeys.SERVER_SETS) { }
+        val socket = port.open(loopIo, memory, buffers, batching, limits.maxDatagrams, factory)
+        val socketIo = socket.ioOf(listOf(send.storage) + lanes.storages(), MAX_PEERS_CACHED, PeerKeys.SERVER_SETS, poller::wake)
         moved(SetupOwner.Opened(memory, poller, quicheConfig, socketIo.io))
         return serve(socket, socketIo, poller, quicheConfig, limits, send, lanes, receiveBuffers, backlog, scratch, moved)
     }
@@ -261,10 +258,11 @@ internal class ServerSetup(
             }
         val readiness =
             when (driver) {
-                LoopDriver.OwnThread -> Readiness.Polled
+                LoopDriver.OwnThread -> socket.readiness()
                 LoopDriver.Caller -> Readiness.EveryPass
             }
-        loop.place(Endpoint(socketIo.refs, io, sendPort, Route.Demux(demux, OwnBatch(send)), Runnable { loop.close(finished) }, readiness))
+        val left = Runnable { loop.close(finished) }
+        loop.place(Endpoint(socketIo.refs, io, sendPort, Route.Demux(demux, OwnBatch(send)), left, readiness, socket.ownership()))
         moved(SetupOwner.Placed(loop))
         when (driver) {
             LoopDriver.OwnThread -> {

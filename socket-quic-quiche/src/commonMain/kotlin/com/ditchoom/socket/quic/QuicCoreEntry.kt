@@ -1,12 +1,17 @@
 package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.flow.AddressedDatagramChannel
+import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.socket.SSLSocketException
 import com.ditchoom.socket.SocketUnknownHostException
 import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.quic.core.edge.CoreQuicConnection
+import com.ditchoom.socket.quic.core.edge.LentChannel
 import com.ditchoom.socket.quic.core.edge.connectOnTheCore
+import com.ditchoom.socket.quic.core.edge.connectOverLent
 import com.ditchoom.socket.quic.core.edge.serveOnTheCore
+import com.ditchoom.socket.quic.core.edge.serveOverLent
 import com.ditchoom.socket.quic.core.edge.setupLane
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
@@ -126,9 +131,46 @@ private suspend fun connected(
     options: QuicOptions,
     transport: TransportConfig,
     timeout: Duration,
-): QuicConnect<CoreQuicConnection> =
+): QuicConnect<CoreQuicConnection> = answered { connectOnTheCore(peer, options, transport, timeout, BufferFactory.network()) }
+
+/**
+ * `connectQuic` over [channel] on the core: a channel the caller bound and keeps, such as the QUIC branch of a port it
+ * shares with ICE and STUN (`MultiplexedUdpSocket.quic`). The connection dials [peer] once, presents [serverName], and
+ * runs with GREASE of the fixed bit off (RFC 9443 section 3). It never closes [channel] and never moves off it: closing
+ * the connection leaves the port serving everything else on it.
+ */
+@OptIn(ExperimentalDatagramApi::class)
+suspend fun connectQuicOnCore(
+    channel: AddressedDatagramChannel,
+    peer: QuicEndpoint,
+    serverName: String,
+    options: QuicOptions,
+    timeout: Duration,
+): QuicConnect<QuicConnection> =
+    answered {
+        connectOverLent(LentChannel(channel), peer, serverName, options, timeout, BufferFactory.network())
+    }
+
+/**
+ * `serveQuic` over [channel] on the core: the listener reads and writes a channel the caller bound and keeps, runs with
+ * GREASE of the fixed bit off, and never closes [channel]; closing the listener leaves the port serving everything else.
+ */
+@OptIn(ExperimentalDatagramApi::class)
+suspend fun serveQuicOnCore(
+    channel: AddressedDatagramChannel,
+    tls: QuicTlsConfig,
+    options: QuicOptions,
+): QuicServe<QuicListener> =
     try {
-        connectOnTheCore(peer, options, transport, timeout, BufferFactory.network())
+        serveOverLent(LentChannel(channel), tls, options, BufferFactory.network())
+    } catch (refused: QuicRefusedException) {
+        QuicServe.Refused(refused.refusal)
+    }
+
+/** A connect on the core, its every outcome a value; see [connected]. */
+private suspend fun answered(connect: suspend () -> QuicConnect<CoreQuicConnection>): QuicConnect<CoreQuicConnection> =
+    try {
+        connect()
     } catch (cancelled: CancellationException) {
         throw cancelled
     } catch (ended: QuicCloseException) {
@@ -149,21 +191,3 @@ private suspend fun connected(
             SocketOpenRefusal.NotARefusal -> throw thrown
         }
     }
-
-/** `connectQuic` over a channel the caller lent, on the core: not served yet, so every connect is refused. */
-@OptIn(com.ditchoom.buffer.flow.ExperimentalDatagramApi::class)
-suspend fun connectQuicOnCore(
-    channel: com.ditchoom.buffer.flow.AddressedDatagramChannel,
-    peer: QuicEndpoint,
-    serverName: String,
-    options: QuicOptions,
-    timeout: Duration,
-): QuicConnect<QuicConnection> = QuicConnect.Refused(QuicRefusal.NoQuicOnThisPlatform)
-
-/** `serveQuic` over a channel the caller lent, on the core: not served yet, so every serve is refused. */
-@OptIn(com.ditchoom.buffer.flow.ExperimentalDatagramApi::class)
-suspend fun serveQuicOnCore(
-    channel: com.ditchoom.buffer.flow.AddressedDatagramChannel,
-    tls: QuicTlsConfig,
-    options: QuicOptions,
-): QuicServe<QuicListener> = QuicServe.Refused(QuicRefusal.NoQuicOnThisPlatform)

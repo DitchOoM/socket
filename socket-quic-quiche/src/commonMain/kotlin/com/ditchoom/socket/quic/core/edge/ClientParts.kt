@@ -23,6 +23,7 @@ import com.ditchoom.socket.quic.core.loop.Endpoint
 import com.ditchoom.socket.quic.core.loop.Route
 import com.ditchoom.socket.quic.core.loop.SharedBatch
 import com.ditchoom.socket.quic.core.loop.SocketDiedNotice
+import com.ditchoom.socket.quic.core.loop.SocketOwnership
 import com.ditchoom.socket.quic.core.loop.closeSecond
 import com.ditchoom.socket.quic.core.loop.move
 import com.ditchoom.socket.quic.core.loop.promote
@@ -31,6 +32,7 @@ import com.ditchoom.socket.quic.core.path.PathNewsCell
 import com.ditchoom.socket.quic.core.path.SilenceRule
 import com.ditchoom.socket.quic.core.path.SocketAsk
 import com.ditchoom.socket.quic.core.pool.Hold
+import com.ditchoom.socket.quic.core.sched.CallerLanes
 import com.ditchoom.socket.quic.core.sched.Entrant
 import com.ditchoom.socket.quic.core.sched.SendPort
 import com.ditchoom.socket.quic.core.sched.storages
@@ -60,7 +62,14 @@ internal class ClientParts(
         }
     }
 
-    private val lanes = w.running.lanes
+    private val ownership = w.socket.ownership()
+
+    // Only the loop sends on a lent channel: its io takes one sender at a time.
+    private val lanes =
+        when (ownership) {
+            is SocketOwnership.Owned -> w.running.lanes
+            is SocketOwnership.Lent -> CallerLanes.None
+        }
     private val socketIo =
         w.socket.ioOf(
             listOf(w.running.out.first.storage) + lanes.storages(),
@@ -168,7 +177,8 @@ internal class ClientParts(
             w.options.abortCodes,
         )
 
-    private val endpoint = Endpoint(socketIo.refs, io, socket, Route.Fixed(conn, SharedBatch(w.running.out)), released, w.readiness)
+    private val route = Route.Fixed(conn, SharedBatch(w.running.out))
+    private val endpoint = Endpoint(socketIo.refs, io, socket, route, released, w.readiness, ownership)
 
     /** Tests: the endpoint on the loop that carries this connection's sockets. */
     internal val loopEndpoint: Endpoint get() = endpoint

@@ -94,7 +94,7 @@ internal suspend fun coreConnect(
     val began = TimeSource.Monotonic.markNow()
     val peerHost = peerHostFor(host)
     val unstarted = ClientSetup.Unstarted(EdgeMemory(factory))
-    val sized = options.sizedBy(datagramSize)
+    val sized = ride.optionsFor(options.sizedBy(datagramSize))
     // Read once the lane is left: a caller cancelled meanwhile never sees the started client, but must end it.
     var setup: ClientSetup = unstarted
     try {
@@ -197,6 +197,7 @@ private suspend fun OnSetupLane.connectOnLane(
                 openStackSocket(running.io, memory, bind, SocketPeer.Connected(peerKey), buffers, batching, CLIENT_BATCH)
             }
             is ClientRide.NetworkFramework -> withTimeout(timeout) { ride.connector.connect(host, port) }
+            is ClientRide.Lent -> StackSocket.Lent(ride.channel, LentPeers.One(peer, peerKey), ride.channel.local.toPathKey(), factory)
         }
     val opened = ClientSetup.Opened(seated, socket)
     moved(opened)
@@ -262,7 +263,7 @@ private suspend fun OnSetupLane.connectOnLane(
                     tokens = plan.tokens,
                     mismatch = mismatch,
                     capture = capture,
-                    silence = silenceOf(options.migration, monitor),
+                    silence = ride.silenceOn(options.migration, monitor),
                 ),
                 peerSockAddr,
                 localSockAddr,
@@ -281,7 +282,9 @@ private suspend fun OnSetupLane.connectOnLane(
     // Placing the endpoint hands the memory to the loop, whose release of the connection frees it, whatever happens next.
     moved(ClientSetup.Started(started))
     built.start()
-    scope.feedNetwork(monitor, connection, built, { routeSource(route) }, local.hostLiteral(), onMoveOf(options.migration))
+    ride.followsNetwork {
+        scope.feedNetwork(monitor, connection, built, { routeSource(route) }, local.hostLiteral(), onMoveOf(options.migration))
+    }
     return started
 }
 

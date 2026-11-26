@@ -142,12 +142,69 @@ internal suspend fun coreServe(
     mismatch: MismatchResponse = MismatchResponse.Unpaced,
     sends: SendRule = sendRuleOfThisRuntime,
     starter: (Loop, String) -> LoopStart = ::startLoop,
+): CoreServer =
+    coreServe(
+        ServerPort.Bound(bind),
+        tls,
+        options,
+        factory,
+        api,
+        readPolicy,
+        writePolicy,
+        config,
+        wrapIo,
+        buffers,
+        clock,
+        driver,
+        stack,
+        batching,
+        datagramSize,
+        mismatch,
+        sends,
+        starter,
+    )
+
+/**
+ * Serves on [channel], which the caller lent and keeps: the server reads and writes it, never closes it, and runs with
+ * the options [onLentChannel] gives. [wrapIo] may wrap the channel's batch interface, as [coreServe]'s does.
+ */
+internal suspend fun coreServeLent(
+    channel: LentChannel,
+    tls: QuicTlsConfig,
+    options: QuicOptions,
+    factory: BufferFactory,
+    api: QuicheApi,
+    readPolicy: ReadPolicy,
+    writePolicy: WritePolicy,
+    config: ServerConfig = ServerConfig(),
+    wrapIo: (DatagramBatchIo) -> DatagramBatchIo = { it },
+): CoreServer = coreServe(ServerPort.Lent(channel), tls, options.onLentChannel(), factory, api, readPolicy, writePolicy, config, wrapIo)
+
+private suspend fun coreServe(
+    port: ServerPort,
+    tls: QuicTlsConfig,
+    options: QuicOptions,
+    factory: BufferFactory,
+    api: QuicheApi,
+    readPolicy: ReadPolicy,
+    writePolicy: WritePolicy,
+    config: ServerConfig,
+    wrapIo: (DatagramBatchIo) -> DatagramBatchIo,
+    buffers: SocketBuffers = SocketBuffers.Default,
+    clock: LoopClock = MonotonicClock,
+    driver: LoopDriver = LoopDriver.OwnThread,
+    stack: NetStack = netStackOfThisRuntime,
+    batching: UdpBatching = options.udpBatching,
+    datagramSize: DatagramSize = DatagramSize.Probed,
+    mismatch: MismatchResponse = MismatchResponse.Unpaced,
+    sends: SendRule = sendRuleOfThisRuntime,
+    starter: (Loop, String) -> LoopStart = ::startLoop,
 ): CoreServer {
     // Before the setup lane, a socket or a file: a serve whose option values cannot be honoured opens nothing.
     verdictOn(options).orRefuse()
     return withContext(setupLane) {
         ServerSetup(
-            bind,
+            port,
             tls,
             options.sizedBy(datagramSize),
             factory,

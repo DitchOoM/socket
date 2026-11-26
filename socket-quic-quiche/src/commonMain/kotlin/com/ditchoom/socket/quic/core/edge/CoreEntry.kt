@@ -2,6 +2,7 @@ package com.ditchoom.socket.quic.core.edge
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.socket.TransportConfig
+import com.ditchoom.socket.quic.QuicCandidateRace
 import com.ditchoom.socket.quic.QuicCloseChoice
 import com.ditchoom.socket.quic.QuicConnect
 import com.ditchoom.socket.quic.QuicEndpoint
@@ -78,6 +79,57 @@ private suspend fun connectOne(
             Handed.No -> client.connection.closeNow(QuicError.NoError)
         }
     }
+}
+
+/**
+ * Connects to [peer] over [channel], which the caller lent and keeps, as on a port it shares with ICE and STUN: one
+ * attempt, no race. The connection never closes the channel and never moves off it; a connect whose options cannot be
+ * honoured is refused before anything is sent.
+ */
+internal suspend fun connectOverLent(
+    channel: LentChannel,
+    peer: QuicEndpoint,
+    serverName: String,
+    options: QuicOptions,
+    timeout: Duration,
+    factory: BufferFactory,
+): QuicConnect<CoreQuicConnection> {
+    when (val verdict = verdictOn(options)) {
+        is OptionVerdict.Refused -> return QuicConnect.Refused(verdict.refusal)
+        is OptionVerdict.Honoured -> Unit
+    }
+    val api = withContext(setupLane) { coreQuicheApi }
+    val client =
+        coreConnect(
+            host = peer.address.ip,
+            port = peer.port,
+            serverName = serverName,
+            options = options,
+            factory = factory,
+            api = api,
+            timeout = timeout,
+            readPolicy = resolveStreamReadPolicy(options),
+            writePolicy = resolveStreamWritePolicy(options),
+            ride = ClientRide.Lent(channel),
+        )
+    return QuicConnect.Connected(client.connection.public(), QuicCandidateRace.Unopposed(peer))
+}
+
+/** Serves on [channel], which the caller lent and keeps; a serve whose options cannot be honoured is refused first. */
+internal suspend fun serveOverLent(
+    channel: LentChannel,
+    tls: QuicTlsConfig,
+    options: QuicOptions,
+    factory: BufferFactory,
+): QuicServe<CoreListener> {
+    when (val verdict = verdictOn(options)) {
+        is OptionVerdict.Refused -> return QuicServe.Refused(verdict.refusal)
+        is OptionVerdict.Honoured -> Unit
+    }
+    val api = withContext(setupLane) { coreQuicheApi }
+    val server =
+        coreServeLent(channel, tls, options, factory, api, resolveStreamReadPolicy(options), resolveStreamWritePolicy(options))
+    return QuicServe.Serving(CoreListener(server))
 }
 
 /** Whether a connected attempt reached its caller. */

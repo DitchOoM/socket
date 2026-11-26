@@ -45,6 +45,19 @@ internal class NativeBytes private constructor(
         length: Int,
     ) = UnsafeMemory.copyMemory(from.address + fromOffset, address + toOffset, length.toLong())
 
+    /** Copies [length] bytes of [from], from its position on, to the start of this memory. Allocates nothing. */
+    fun copyIn(
+        from: ReadBuffer,
+        length: Int,
+    ) {
+        val at = from.position()
+        addressing(
+            from,
+            at = { source -> UnsafeMemory.copyMemory(source + at, address, length.toLong()) },
+            notAddressable = { for (i in 0 until length) UnsafeMemory.putByte(address + i, from.get(at + i)) },
+        )
+    }
+
     /** Copies the first [length] bytes to the memory at [address]. Allocates nothing. */
     fun copyOut(
         address: Long,
