@@ -73,7 +73,7 @@ class CoreLentSendFaultTests {
             try {
                 val client = lentClient(faulty, listener.port, loops)
                 repeat(ROUNDS) { assertSharedPortEchoes(client.connection.public(), it) }
-                assertTrue(client.lentDrops(LentDrop.SendRefused) > 0, "the refused sends were counted")
+                assertTrue(client.lentDrops(LentDrop.SendTooLarge) > 0, "the refused sends were counted as too large")
                 client.connection.closeNow(QuicError.NoError)
             } finally {
                 loops.close()

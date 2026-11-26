@@ -68,6 +68,13 @@ internal sealed interface StackSocket {
 /** This socket's granted buffers, bound to [port], with what the kernel and its own io drop. */
 internal fun StackSocket.report(port: Int): SocketReport = SocketReport(granted(), port, io = ioDrops())
 
+/** Whose this socket is, as its connection's or listener's close and statistics see it. */
+internal fun StackSocket.hold(): ChannelHold =
+    when (this) {
+        is StackSocket.Jdk, is StackSocket.Native, is StackSocket.Network -> ChannelHold.Owned
+        is StackSocket.Lent -> ChannelHold.Lent(channel.claim, drops)
+    }
+
 /** What this socket's own io drops: counted for a lent channel, the kernel's alone otherwise. */
 internal fun StackSocket.ioDrops(): IoDrops =
     when (this) {

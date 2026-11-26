@@ -16,6 +16,7 @@ import com.ditchoom.socket.quic.QuicRefusal
 import com.ditchoom.socket.quic.QuicServe
 import com.ditchoom.socket.quic.QuicTlsConfig
 import com.ditchoom.socket.quic.QuicheApi
+import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.raceCandidates
 import com.ditchoom.socket.quic.resolveStreamReadPolicy
 import com.ditchoom.socket.quic.resolveStreamWritePolicy
@@ -98,6 +99,7 @@ internal suspend fun connectOverLent(
     options: QuicOptions,
     timeout: Duration,
     factory: BufferFactory,
+    loops: LoopSet = LoopSet.shared,
 ): QuicConnect<CoreQuicConnection> {
     val lent =
         when (val claimed = LentChannels.claim(channel)) {
@@ -118,6 +120,7 @@ internal suspend fun connectOverLent(
                 timeout = timeout,
                 readPolicy = resolveStreamReadPolicy(options),
                 writePolicy = resolveStreamWritePolicy(options),
+                loops = loops,
                 ride = ClientRide.Lent(lent),
             )
         return QuicConnect.Connected(client.connection.public(), QuicCandidateRace.Unopposed(peer)).also { handed = Handed.Yes }

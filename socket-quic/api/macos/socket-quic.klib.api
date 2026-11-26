@@ -3097,6 +3097,35 @@ sealed interface com.ditchoom.socket.quic/QuicSessionTicketState { // com.ditcho
     }
 }
 
+sealed interface com.ditchoom.socket.quic/QuicSocketDrops { // com.ditchoom.socket.quic/QuicSocketDrops|null[0]
+    final class LentChannel : com.ditchoom.socket.quic/QuicSocketDrops { // com.ditchoom.socket.quic/QuicSocketDrops.LentChannel|null[0]
+        constructor <init>(kotlin/Long, kotlin/Long, kotlin/Long, kotlin/Long, kotlin/Long, kotlin/Long, kotlin/Long, kotlin/Long) // com.ditchoom.socket.quic/QuicSocketDrops.LentChannel.<init>|<init>(kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long){}[0]
+
+        final val arrivalsFull // com.ditchoom.socket.quic/QuicSocketDrops.LentChannel.arrivalsFull|{}arrivalsFull[0]
+            final fun <get-arrivalsFull>(): kotlin/Long // com.ditchoom.socket.quic/QuicSocketDrops.LentChannel.arrivalsFull.<get-arrivalsFull>|<get-arrivalsFull>(){}[0]
+        final val foreignSource // com.ditchoom.socket.quic/QuicSocketDrops.LentChannel.foreignSource|{}foreignSource[0]
+            final fun <get-foreignSource>(): kotlin/Long // com.ditchoom.socket.quic/QuicSocketDrops.LentChannel.foreignSource.<get-foreignSource>|<get-foreignSource>(){}[0]
+        final val sendRefused // com.ditchoom.socket.quic/QuicSocketDrops.LentChannel.sendRefused|{}sendRefused[0]
+            final fun <get-sendRefused>(): kotlin/Long // com.ditchoom.socket.quic/QuicSocketDrops.LentChannel.sendRefused.<get-sendRefused>|<get-sendRefused>(){}[0]
+        final val sendTooLarge // com.ditchoom.socket.quic/QuicSocketDrops.LentChannel.sendTooLarge|{}sendTooLarge[0]
+            final fun <get-sendTooLarge>(): kotlin/Long // com.ditchoom.socket.quic/QuicSocketDrops.LentChannel.sendTooLarge.<get-sendTooLarge>|<get-sendTooLarge>(){}[0]
+        final val sendUnreachable // com.ditchoom.socket.quic/QuicSocketDrops.LentChannel.sendUnreachable|{}sendUnreachable[0]
+            final fun <get-sendUnreachable>(): kotlin/Long // com.ditchoom.socket.quic/QuicSocketDrops.LentChannel.sendUnreachable.<get-sendUnreachable>|<get-sendUnreachable>(){}[0]
+        final val sendWouldBlock // com.ditchoom.socket.quic/QuicSocketDrops.LentChannel.sendWouldBlock|{}sendWouldBlock[0]
+            final fun <get-sendWouldBlock>(): kotlin/Long // com.ditchoom.socket.quic/QuicSocketDrops.LentChannel.sendWouldBlock.<get-sendWouldBlock>|<get-sendWouldBlock>(){}[0]
+        final val tooLarge // com.ditchoom.socket.quic/QuicSocketDrops.LentChannel.tooLarge|{}tooLarge[0]
+            final fun <get-tooLarge>(): kotlin/Long // com.ditchoom.socket.quic/QuicSocketDrops.LentChannel.tooLarge.<get-tooLarge>|<get-tooLarge>(){}[0]
+        final val unaddressed // com.ditchoom.socket.quic/QuicSocketDrops.LentChannel.unaddressed|{}unaddressed[0]
+            final fun <get-unaddressed>(): kotlin/Long // com.ditchoom.socket.quic/QuicSocketDrops.LentChannel.unaddressed.<get-unaddressed>|<get-unaddressed>(){}[0]
+    }
+
+    final object KernelOnly : com.ditchoom.socket.quic/QuicSocketDrops { // com.ditchoom.socket.quic/QuicSocketDrops.KernelOnly|null[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicSocketDrops.KernelOnly.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicSocketDrops.KernelOnly.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicSocketDrops.KernelOnly.toString|toString(){}[0]
+    }
+}
+
 sealed interface com.ditchoom.socket.quic/QuicSocketFault { // com.ditchoom.socket.quic/QuicSocketFault|null[0]
     final class MoveRefused : com.ditchoom.socket.quic/QuicSocketFault { // com.ditchoom.socket.quic/QuicSocketFault.MoveRefused|null[0]
         constructor <init>(kotlin/Throwable) // com.ditchoom.socket.quic/QuicSocketFault.MoveRefused.<init>|<init>(kotlin.Throwable){}[0]
@@ -4082,7 +4111,7 @@ final class com.ditchoom.socket.quic/QuicConnectionIdentity { // com.ditchoom.so
 }
 
 final class com.ditchoom.socket.quic/QuicConnectionStats { // com.ditchoom.socket.quic/QuicConnectionStats|null[0]
-    constructor <init>(kotlin/Long, kotlin/Long, kotlin/Long, kotlin/Long, kotlin/Long, kotlin/Long, kotlin/Long, kotlin/Long, kotlin/Long, kotlin/Long, kotlin/Long, kotlin/Long, kotlin/Int, com.ditchoom.socket.quic/QuicActivePathStats, com.ditchoom.socket.quic/QuicDatagramDrops) // com.ditchoom.socket.quic/QuicConnectionStats.<init>|<init>(kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Int;com.ditchoom.socket.quic.QuicActivePathStats;com.ditchoom.socket.quic.QuicDatagramDrops){}[0]
+    constructor <init>(kotlin/Long, kotlin/Long, kotlin/Long, kotlin/Long, kotlin/Long, kotlin/Long, kotlin/Long, kotlin/Long, kotlin/Long, kotlin/Long, kotlin/Long, kotlin/Long, kotlin/Int, com.ditchoom.socket.quic/QuicActivePathStats, com.ditchoom.socket.quic/QuicDatagramDrops, com.ditchoom.socket.quic/QuicSocketDrops = ...) // com.ditchoom.socket.quic/QuicConnectionStats.<init>|<init>(kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Int;com.ditchoom.socket.quic.QuicActivePathStats;com.ditchoom.socket.quic.QuicDatagramDrops;com.ditchoom.socket.quic.QuicSocketDrops){}[0]
 
     final val activePath // com.ditchoom.socket.quic/QuicConnectionStats.activePath|{}activePath[0]
         final fun <get-activePath>(): com.ditchoom.socket.quic/QuicActivePathStats // com.ditchoom.socket.quic/QuicConnectionStats.activePath.<get-activePath>|<get-activePath>(){}[0]
@@ -4112,6 +4141,8 @@ final class com.ditchoom.socket.quic/QuicConnectionStats { // com.ditchoom.socke
         final fun <get-packetsSpuriouslyLost>(): kotlin/Long // com.ditchoom.socket.quic/QuicConnectionStats.packetsSpuriouslyLost.<get-packetsSpuriouslyLost>|<get-packetsSpuriouslyLost>(){}[0]
     final val paths // com.ditchoom.socket.quic/QuicConnectionStats.paths|{}paths[0]
         final fun <get-paths>(): kotlin/Int // com.ditchoom.socket.quic/QuicConnectionStats.paths.<get-paths>|<get-paths>(){}[0]
+    final val socketDrops // com.ditchoom.socket.quic/QuicConnectionStats.socketDrops|{}socketDrops[0]
+        final fun <get-socketDrops>(): com.ditchoom.socket.quic/QuicSocketDrops // com.ditchoom.socket.quic/QuicConnectionStats.socketDrops.<get-socketDrops>|<get-socketDrops>(){}[0]
     final val streamBytesRetransmitted // com.ditchoom.socket.quic/QuicConnectionStats.streamBytesRetransmitted|{}streamBytesRetransmitted[0]
         final fun <get-streamBytesRetransmitted>(): kotlin/Long // com.ditchoom.socket.quic/QuicConnectionStats.streamBytesRetransmitted.<get-streamBytesRetransmitted>|<get-streamBytesRetransmitted>(){}[0]
 }

@@ -272,7 +272,7 @@ internal class ServerSetup(
             // The caller's first pass would place the socket only after that pass's receive: place it now.
             LoopDriver.Caller -> loop.pass(clock.now())
         }
-        return CoreServer(localKey.port, loop, demux, counts, accepted, socket.report(localKey.port), stopped, handlers)
+        return CoreServer(localKey.port, loop, demux, counts, accepted, socket.report(localKey.port), stopped, handlers, socket.hold())
     }
 
     /** A chunk of the Initial backlog: at setup, then on the loop thread, which owns [memory] from its start. */

@@ -1809,7 +1809,8 @@ public final class com/ditchoom/socket/quic/QuicConnectionState$Idle : com/ditch
 }
 
 public final class com/ditchoom/socket/quic/QuicConnectionStats {
-	public fun <init> (JJJJJJJJJJJJILcom/ditchoom/socket/quic/QuicActivePathStats;Lcom/ditchoom/socket/quic/QuicDatagramDrops;)V
+	public fun <init> (JJJJJJJJJJJJILcom/ditchoom/socket/quic/QuicActivePathStats;Lcom/ditchoom/socket/quic/QuicDatagramDrops;Lcom/ditchoom/socket/quic/QuicSocketDrops;)V
+	public synthetic fun <init> (JJJJJJJJJJJJILcom/ditchoom/socket/quic/QuicActivePathStats;Lcom/ditchoom/socket/quic/QuicDatagramDrops;Lcom/ditchoom/socket/quic/QuicSocketDrops;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun getActivePath ()Lcom/ditchoom/socket/quic/QuicActivePathStats;
 	public final fun getBytesAcknowledged ()J
 	public final fun getBytesLost ()J
@@ -1824,6 +1825,7 @@ public final class com/ditchoom/socket/quic/QuicConnectionStats {
 	public final fun getPacketsSent ()J
 	public final fun getPacketsSpuriouslyLost ()J
 	public final fun getPaths ()I
+	public final fun getSocketDrops ()Lcom/ditchoom/socket/quic/QuicSocketDrops;
 	public final fun getStreamBytesRetransmitted ()J
 }
 
@@ -3089,6 +3091,28 @@ public final class com/ditchoom/socket/quic/QuicSessionTicketState$NotIssued : c
 	public fun equals (Ljava/lang/Object;)Z
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
+}
+
+public abstract interface class com/ditchoom/socket/quic/QuicSocketDrops {
+}
+
+public final class com/ditchoom/socket/quic/QuicSocketDrops$KernelOnly : com/ditchoom/socket/quic/QuicSocketDrops {
+	public static final field INSTANCE Lcom/ditchoom/socket/quic/QuicSocketDrops$KernelOnly;
+	public fun equals (Ljava/lang/Object;)Z
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/quic/QuicSocketDrops$LentChannel : com/ditchoom/socket/quic/QuicSocketDrops {
+	public fun <init> (JJJJJJJJ)V
+	public final fun getArrivalsFull ()J
+	public final fun getForeignSource ()J
+	public final fun getSendRefused ()J
+	public final fun getSendTooLarge ()J
+	public final fun getSendUnreachable ()J
+	public final fun getSendWouldBlock ()J
+	public final fun getTooLarge ()J
+	public final fun getUnaddressed ()J
 }
 
 public abstract interface class com/ditchoom/socket/quic/QuicSocketFault {

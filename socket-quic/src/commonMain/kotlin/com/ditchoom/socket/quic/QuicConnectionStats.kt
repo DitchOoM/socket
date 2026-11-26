@@ -37,7 +37,35 @@ class QuicConnectionStats(
     val activePath: QuicActivePathStats,
     /** The datagrams that were refused or dropped, by where. */
     val datagramDrops: QuicDatagramDrops,
+    /** What the socket the connection rides dropped by itself. */
+    val socketDrops: QuicSocketDrops = QuicSocketDrops.KernelOnly,
 )
+
+/** The UDP datagrams the socket a connection rides dropped by itself, beside what the operating system drops. */
+sealed interface QuicSocketDrops {
+    /** A socket of the connection's own: only the operating system drops, and that is not counted here. */
+    data object KernelOnly : QuicSocketDrops
+
+    /** A datagram channel the caller lent: what the connection's use of it dropped, by why. */
+    class LentChannel(
+        /** Received from a source other than the client's one peer. */
+        val foreignSource: Long,
+        /** Received while every arrival slot held a datagram not yet read. */
+        val arrivalsFull: Long,
+        /** Received larger than a datagram slot holds. */
+        val tooLarge: Long,
+        /** A server's datagram that named no peer. */
+        val unaddressed: Long,
+        /** Sends the channel refused as larger than its path carries. */
+        val sendTooLarge: Long,
+        /** Sends the channel refused as unreachable: no route, or the peer's port closed. */
+        val sendUnreachable: Long,
+        /** Sends the channel refused as ones it could not take now. */
+        val sendWouldBlock: Long,
+        /** Sends the channel refused for another reason it named. */
+        val sendRefused: Long,
+    ) : QuicSocketDrops
+}
 
 /** A connection's RFC 9221 datagrams that did not reach the receiving application, counted by where they stopped. */
 class QuicDatagramDrops(

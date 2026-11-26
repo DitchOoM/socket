@@ -66,6 +66,8 @@ internal class CoreServer(
     private val stopped: CompletableDeferred<Unit>,
     /** The threads its connections' application code runs on. */
     val handlers: HandlerPool,
+    /** Whose socket the server reads: its close waits until a lent one is free again. */
+    private val hold: ChannelHold = ChannelHold.Owned,
 ) {
     private val closing = CloseCell(ShutServer(parts, stopped))
 
@@ -83,11 +85,12 @@ internal class CoreServer(
 
     /**
      * Stops accepting, closes every connection with its CONNECTION_CLOSE sent, and returns once the loop has stopped and
-     * closed its socket. The loop owns the socket, so nothing here waits for a receive.
+     * closed its socket; a lent channel is free again by then, so the next serve or connect on it succeeds at once.
      */
     suspend fun close() {
         closing.begin(loop.port)
         stopped.await()
+        hold.letGo()
     }
 }
 

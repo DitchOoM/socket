@@ -168,4 +168,5 @@ private fun QuicConnectionStats.dropping(drops: QuicDatagramDrops) =
         paths = paths,
         activePath = activePath,
         datagramDrops = drops,
+        socketDrops = socketDrops,
     )

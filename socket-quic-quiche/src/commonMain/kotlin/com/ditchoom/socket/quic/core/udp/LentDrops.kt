@@ -13,36 +13,32 @@ internal enum class LentDrop {
     /** Received larger than a slot holds. */
     TooLarge,
 
-    /** Refused by the channel's send: unreachable, too large, would block; the channel stayed open. */
-    SendRefused,
-
     /**
-     * A server's datagram that named no peer. Server connections address every datagram ([SendTarget.ServerReply]);
-     * the send batch's target type is shared with client sockets, so this arm stays, counted.
+     * A server's datagram that named no peer. Server connections address every datagram; the send batch's target type
+     * is shared with client sockets, so this arm stays, counted.
      */
     Unaddressed,
+
+    /** The channel, still open, refused the send as larger than its path carries. */
+    SendTooLarge,
+
+    /** The channel, still open, refused the send as unreachable: no route, or the peer's port is closed (ICMP). */
+    SendUnreachable,
+
+    /** The channel, still open, refused the send as one it could not take now. */
+    SendWouldBlock,
+
+    /** The channel, still open, refused the send for another reason it named. */
+    SendRefused,
 }
 
 /** The datagrams one lent channel's io dropped, by [LentDrop]: any thread adds, any thread reads. */
 internal class LentDrops {
-    private val foreign = Counter()
-    private val arrivalsFull = Counter()
-    private val tooLarge = Counter()
-    private val sendRefused = Counter()
-    private val unaddressed = Counter()
+    private val counts = Array(LentDrop.entries.size) { Counter() }
 
-    fun dropped(why: LentDrop) = counter(why).increment()
+    fun dropped(why: LentDrop) = counts[why.ordinal].increment()
 
-    fun count(why: LentDrop): Long = counter(why).value()
-
-    private fun counter(why: LentDrop): Counter =
-        when (why) {
-            LentDrop.Foreign -> foreign
-            LentDrop.ArrivalsFull -> arrivalsFull
-            LentDrop.TooLarge -> tooLarge
-            LentDrop.SendRefused -> sendRefused
-            LentDrop.Unaddressed -> unaddressed
-        }
+    fun count(why: LentDrop): Long = counts[why.ordinal].value()
 }
 
 /** What a socket's io drops itself, beside what the kernel drops ([SocketReport.drops]). */

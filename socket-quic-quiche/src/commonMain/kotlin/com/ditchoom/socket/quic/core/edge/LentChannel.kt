@@ -18,7 +18,8 @@ import com.ditchoom.socket.quic.toPathKey
 
 /**
  * A datagram channel the caller lent a connection or a server, such as the QUIC branch of a demultiplexed port that
- * ICE and STUN share, with the claim that makes this connect or serve its one QUIC user ([LentChannels]). The core
+ * ICE and STUN share, with the claim that makes this connect or serve its one QUIC user ([LentChannels], by the channel
+ * object's identity: a wrapper and the channel it wraps are two channels to it). The core
  * receives from it and sends on it, and nothing more: there is no close here, so the caller's socket outlives every
  * connection on it, and the caller closes it when it is done. Direct peer-to-peer QUIC runs one QUIC role, a client or
  * a server, per channel.

@@ -7,6 +7,7 @@ import com.ditchoom.buffer.flow.DatagramReadResult
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.core.observe.Queue
 import com.ditchoom.socket.quic.core.udp.Addressed
@@ -15,6 +16,7 @@ import com.ditchoom.socket.quic.core.udp.LentDrops
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 import com.ditchoom.socket.quic.core.udp.Thrown
 import com.ditchoom.socket.quic.toPathKey
+import com.ditchoom.socket.udp.DatagramSendError
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -55,21 +57,20 @@ private enum class Blocked { Flowing, Waiting }
  * copies each datagram the channel returns into [arrivals] and gives the channel's buffer back on its own thread; the
  * loop is woken once for every run of arrivals it has not read. The sender sends what the loop put in [outbox],
  * parked between runs in a [WaiterCell], which allocates nothing; a send the channel refuses drops that datagram only,
- * and a refusal from a closed channel ends the pump. Each drop is counted in [drops]. Made on the loop thread when the
- * endpoint joins its loop, so an io that never reached its loop holds no memory and runs nothing.
+ * and a refusal from a closed channel ends the pump. Each drop is counted in [drops]. Started on the loop thread when
+ * the endpoint joins its loop, over [slots] its io made on the setup lane; nothing here allocates or raises.
  */
 @Queue
 internal class LentPump(
     private val channel: LentChannel,
     private val peers: LentPeers,
-    factory: BufferFactory,
+    slots: List<NativeBytes>,
     private val drops: LentDrops,
     /** Any thread: the loop has news to read. */
     private val wake: () -> Unit,
 ) {
-    private val slots = slotsOf(factory, 2 * SLOTS)
-    val arrivals = LentRing(slots.subList(0, SLOTS), channel.local)
-    val outbox = LentRing(slots.subList(SLOTS, 2 * SLOTS), channel.local)
+    val arrivals = LentRing(slots.subList(0, LENT_SLOTS), channel.local)
+    val outbox = LentRing(slots.subList(LENT_SLOTS, 2 * LENT_SLOTS), channel.local)
     private val end = AtomicReference<LentEnd>(LentEnd.Open)
     private val pumping = AtomicReference(Pumping.On)
     private val blocked = AtomicReference(Blocked.Flowing)
@@ -77,7 +78,7 @@ internal class LentPump(
     private val sender = WaiterCell()
 
     /** Receiver only: the form it last found the client's peer in, beside the two setup made. */
-    private var learned: SocketAddress = channel.local
+    private var learned: Learned = Learned.Nothing
 
     /** The receiver's end, the sender's and [close] each count once: the third lets go of the channel's claim. */
     private val usersOut = AtomicInt(0)
@@ -141,7 +142,7 @@ internal class LentPump(
     private fun userOut() {
         if (usersOut.incrementAndFetch() != USERS) return
         scope.cancel()
-        channel.claim.ioDone()
+        channel.claim.pumpEnded()
     }
 
     private suspend fun receiveAll() {
@@ -183,11 +184,18 @@ internal class LentPump(
         val source = got.datagram.peer
         return when (peers) {
             is LentPeers.One ->
-                peers.isFrom(source) ||
-                    source == learned ||
-                    isSamePeer(source.toPathKey(), peers.key).also { same -> if (same) learned = source }
+                peers.isFrom(source) || learned.isForm(source) || learns(source, peers.key)
             is LentPeers.Every -> true
         }
+    }
+
+    private fun learns(
+        source: SocketAddress,
+        key: PathKey,
+    ): Boolean {
+        if (!isSamePeer(source.toPathKey(), key)) return false
+        learned = Learned.Form(source)
+        return true
     }
 
     /** Sends what the loop offered until [close], then what is left: a close seen means every offer before it is seen. */
@@ -197,7 +205,7 @@ internal class LentPump(
                 val buffer = outbox.head().owner
                 buffer.position(0)
                 buffer.setLimit(outbox.headLength())
-                sendContained(refused = { drops.dropped(LentDrop.SendRefused) }) { channel.send(buffer, outbox.headAddress()) }
+                sendContained(refused = ::refused) { channel.send(buffer, outbox.headAddress()) }
                 outbox.pop()
                 if (blocked.compareAndSet(Blocked.Waiting, Blocked.Flowing)) wake()
                 if (!channel.isOpen()) {
@@ -212,11 +220,14 @@ internal class LentPump(
         }
     }
 
+    /** A send the channel refused: counted by its kind while the channel is open; a closed one ends the pump instead. */
+    private fun refused(error: DatagramSendError) {
+        if (channel.isOpen()) drops.dropped(dropOf(error))
+    }
+
     private fun settled(): Boolean = !outbox.isEmpty() || pumping.load() == Pumping.Closing
 
     private companion object {
-        /** Datagrams each direction holds between the loop and the channel's coroutines. */
-        const val SLOTS = 32
         const val USERS = 3
 
         /** How long a closed pump's sender may take to send what it holds. */
@@ -224,16 +235,42 @@ internal class LentPump(
     }
 }
 
+/** The kind of drop a send refused for [error] is. */
+private fun dropOf(error: DatagramSendError): LentDrop =
+    when (error) {
+        is DatagramSendError.TooLarge -> LentDrop.SendTooLarge
+        is DatagramSendError.Unreachable, is DatagramSendError.PortUnreachable -> LentDrop.SendUnreachable
+        is DatagramSendError.WouldBlock -> LentDrop.SendWouldBlock
+        is DatagramSendError.NotPermitted, is DatagramSendError.SourceAddressUnavailable, is DatagramSendError.OsError,
+        is DatagramSendError.PlatformError, is DatagramSendError.Transport,
+        -> LentDrop.SendRefused
+    }
+
+/** The form a lent client's receiver found its peer in, beyond the two its setup made. */
+private sealed interface Learned {
+    data object Nothing : Learned
+
+    class Form(
+        val address: SocketAddress,
+    ) : Learned
+}
+
+private fun Learned.isForm(source: SocketAddress): Boolean =
+    when (this) {
+        is Learned.Nothing -> false
+        is Learned.Form -> address == source
+    }
+
+/** Datagrams each direction holds between the loop and the channel's coroutines. */
+internal const val LENT_SLOTS = 32
+
 /**
- * [count] slots of [factory]'s memory, each with an address both sides copy by; a factory without addressable memory
- * frees the slots made so far and fails the setup.
+ * Setup lane: the slots of both of a lent io's rings, of [factory]'s memory, each with an address both sides copy by; a
+ * factory without addressable memory frees the slots made so far and fails the setup there.
  */
-private fun slotsOf(
-    factory: BufferFactory,
-    count: Int,
-): List<NativeBytes> {
-    val made = ArrayList<NativeBytes>(count)
-    repeat(count) {
+internal fun lentSlotsOf(factory: BufferFactory): List<NativeBytes> {
+    val made = ArrayList<NativeBytes>(2 * LENT_SLOTS)
+    repeat(2 * LENT_SLOTS) {
         val buffer = factory.allocate(MAX_DATAGRAM)
         when (val addressed = NativeBytes.of(buffer)) {
             is Addressed.Native -> made += addressed.bytes

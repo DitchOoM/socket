@@ -82,12 +82,13 @@ internal class CoreQuicConnection(
             is EdgeEnd.Ended -> QuicConnectionLife.Ended(publicEndOf(end.end))
         }
 
+    /** The end, once a lent channel the connection rode is free again: the next connect on it succeeds at once. */
     override suspend fun awaitEnd(): QuicConnectionEnd =
         publicEndOf(
             core.edge.closed
                 .await()
                 .end,
-        )
+        ).also { core.hold.letGo() }
 
     override suspend fun openStream(): StreamOpen<QuicStream> = bidirectional().also { it.fold(plain::opened) { } }
 
@@ -126,7 +127,7 @@ internal class CoreQuicConnection(
             is CloseOutcome.Immediate -> QuicCloseOutcome.Immediate
             is CloseOutcome.EndedFirst -> QuicCloseOutcome.EndedFirst(publicEndOf(outcome.end))
             is CloseOutcome.NotAsked -> QuicCloseOutcome.EndedFirst(awaitEnd())
-        }
+        }.also { core.hold.letGo() }
 
     override suspend fun stats(): QuicStatsRead = core.stats()
 

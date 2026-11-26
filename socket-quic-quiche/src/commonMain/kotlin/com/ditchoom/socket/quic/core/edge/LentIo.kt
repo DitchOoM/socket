@@ -25,21 +25,25 @@ import com.ditchoom.socket.quic.core.udp.UdpError
 import kotlin.concurrent.atomics.AtomicReference
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 
-/** A lent io's run: not started, pumping, or closed. */
+/** A lent io's run: not started, or [Live]. */
 private sealed interface LentRun {
     data object Unstarted : LentRun
+}
 
+/** A lent io's run once its endpoint joined its loop: pumping, or closed. */
+private sealed interface Live : LentRun {
     class Running(
         val pump: LentPump,
-    ) : LentRun
+    ) : Live
 
-    data object Closed : LentRun
+    data object Closed : Live
 }
 
 /**
  * The [DatagramBatchIo] of a channel the caller lent ([LentChannel]): one socket, which no poller watches and which this
- * io never closes. Nothing runs until its endpoint joins the loop: then the io takes its channel's claim from the
- * connect or serve that made it and starts its [LentPump]. The loop copies each arrival into its receive buffer, and
+ * io never closes. Its slots are made on the setup lane, where a factory without addressable memory fails the setup,
+ * and wait in its channel's claim; nothing runs until its endpoint joins the loop: then the io takes the claim and the
+ * slots from the connect or serve that made it and starts its [LentPump], which neither allocates nor raises. The loop copies each arrival into its receive buffer, and
  * each datagram it sends into a slot of the pump's outbox; with every slot taken the rest wait in the batch, and the
  * pump wakes the loop when one frees. Only the loop sends: a connection on a lent channel lends its callers no lane.
  * The loop's side allocates nothing per datagram. [close] stops the pump, or, for an io that never started, gives the
@@ -49,13 +53,17 @@ private sealed interface LentRun {
 internal class LentIo(
     private val channel: LentChannel,
     private val peers: LentPeers,
-    private val factory: BufferFactory,
+    factory: BufferFactory,
     val drops: LentDrops,
     /** Any thread: the loop has news to read. */
     private val wake: () -> Unit,
 ) : DatagramBatchIo {
     private val book = PeerBook(channel.local)
     private val run = AtomicReference<LentRun>(LentRun.Unstarted)
+
+    init {
+        channel.claim.slotsMade(lentSlotsOf(factory))
+    }
 
     override val capability: BatchCapability = BatchCapability.OneByOne
 
@@ -67,8 +75,8 @@ internal class LentIo(
     override fun send(batch: SendBatch): SendBatchResult {
         val pump =
             when (val now = running()) {
-                is LentRun.Running -> now.pump
-                is LentRun.Unstarted, is LentRun.Closed -> return SendBatchResult.Partial(0, UdpError.SocketClosed)
+                is Live.Running -> now.pump
+                is Live.Closed -> return SendBatchResult.Partial(0, UdpError.SocketClosed)
             }
         val outbox = pump.outbox
         var taken = 0
@@ -104,8 +112,8 @@ internal class LentIo(
     override fun receive(into: ReceiveBatch): ReceiveBatchResult {
         val pump =
             when (val now = running()) {
-                is LentRun.Running -> now.pump
-                is LentRun.Unstarted, is LentRun.Closed -> return ReceiveBatchResult.Failed(UdpError.SocketClosed)
+                is Live.Running -> now.pump
+                is Live.Closed -> return ReceiveBatchResult.Failed(UdpError.SocketClosed)
             }
         pump.reading()
         val arrivals = pump.arrivals
@@ -138,44 +146,46 @@ internal class LentIo(
     override fun probe(): SocketProbe =
         when (val now = run.load()) {
             is LentRun.Unstarted -> SocketProbe.Open
-            is LentRun.Running ->
+            is Live.Running ->
                 when (now.pump.end()) {
                     is LentEnd.Open -> SocketProbe.Open
                     is LentEnd.Closed, is LentEnd.Threw -> SocketProbe.Closed
                 }
-            is LentRun.Closed -> SocketProbe.Closed
+            is Live.Closed -> SocketProbe.Closed
         }
 
     /** The owner's socket is the owner's to follow the network with: it is the same endpoint. */
     override fun reopen(): Reopened = Reopened.SameEndpoint
 
-    /** Ends this io's use of the channel, which stays open; one that never started only gives its claim back. */
+    /** Ends this io's use of the channel, which stays open; one that never started gives its claim and slots back. */
     override fun close(): SocketClosed {
-        when (val was = run.exchange(LentRun.Closed)) {
-            is LentRun.Unstarted -> channel.claim.ioDone()
-            is LentRun.Running -> was.pump.close()
-            is LentRun.Closed -> Unit
+        when (val was = run.exchange(Live.Closed)) {
+            is LentRun.Unstarted -> channel.claim.closedUnstarted()
+            is Live.Running -> was.pump.close()
+            is Live.Closed -> Unit
         }
         return SocketClosed
     }
 
-    /** Tests: whether the io started its pump and the pump's coroutines have ended. */
-    internal fun pumpEnded(): Boolean =
+    /** Loop thread: the run, started when the endpoint joined the loop ([placed]). */
+    private fun running(): Live =
         when (val now = run.load()) {
-            is LentRun.Running -> now.pump.ended()
-            is LentRun.Unstarted, is LentRun.Closed -> false
+            is Live -> now
+            is LentRun.Unstarted -> start(now)
         }
 
-    /** Loop thread: the run, started on the first read or send, once the io holds its channel's claim. */
-    private fun running(): LentRun {
-        val now = run.load()
-        if (now !is LentRun.Unstarted) return now
-        return when (channel.claim.takeByIo()) {
-            ClaimTaken.AlreadyReleased -> LentRun.Closed.also { run.store(it) }
-            ClaimTaken.ByIo -> {
-                val started = LentRun.Running(LentPump(channel, peers, factory, drops, wake))
-                if (run.compareAndSet(now, started)) started else run.load().also { started.pump.close() }
+    /** Loop thread, once: takes the claim and the slots; a close that came meanwhile closes the pump at once. */
+    private fun start(unstarted: LentRun.Unstarted): Live {
+        val started =
+            when (val taken = channel.claim.start()) {
+                is Start.Taken -> Live.Running(LentPump(channel, peers, taken.slots, drops, wake))
+                is Start.EntryLetGo -> Live.Closed
             }
+        if (run.compareAndSet(unstarted, started)) return started
+        when (started) {
+            is Live.Running -> started.pump.close()
+            is Live.Closed -> Unit
         }
+        return Live.Closed
     }
 }

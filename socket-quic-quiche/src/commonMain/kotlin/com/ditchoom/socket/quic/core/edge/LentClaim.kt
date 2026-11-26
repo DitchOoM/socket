@@ -5,12 +5,15 @@ package com.ditchoom.socket.quic.core.edge
 import com.ditchoom.buffer.flow.AddressedDatagramChannel
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.socket.quic.core.observe.Published
+import com.ditchoom.socket.quic.core.udp.NativeBytes
+import kotlinx.coroutines.CompletableDeferred
 import kotlin.concurrent.atomics.AtomicReference
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 
 /**
- * The lent channels a QUIC connection or listener holds now, by identity. A channel carries one QUIC role at a time:
- * two readers of one channel would take each other's datagrams.
+ * The lent channels a QUIC connection or listener holds now, by object identity: a wrapper and the channel it wraps are
+ * two channels to this, so lend the same object every time. A channel carries one QUIC role at a time: two readers of
+ * one channel would take each other's datagrams.
  */
 @Published
 internal object LentChannels {
@@ -44,36 +47,86 @@ internal sealed interface Claimed {
     data object InUse : Claimed
 }
 
-/** Who holds a claimed channel, and so who lets go of it: the connect or serve that claimed it, then its io. */
-private enum class Holder { Entry, Io, Released }
+/** Who holds a claimed channel, and so who lets go of it. */
+private sealed interface Holder {
+    /** The connect or serve that claimed it; no io exists yet. */
+    data object Entry : Holder
 
-/** Whether a lent channel's io took its claim from the connect or serve that made it. */
-internal enum class ClaimTaken { ByIo, AlreadyReleased }
+    /** The entry still; its io made [slots] on the setup lane and has not started. */
+    class Unstarted(
+        val slots: List<NativeBytes>,
+    ) : Holder
+
+    /** The io, started, whose pump owns the slots. */
+    data object Io : Holder
+
+    data object Released : Holder
+}
+
+/** What starting an io found: the slots it made, now its pump's, or a claim its entry let go of meanwhile. */
+internal sealed interface Start {
+    class Taken(
+        val slots: List<NativeBytes>,
+    ) : Start
+
+    /** The entry failed before the io started: the slots are freed and the channel is free. */
+    data object EntryLetGo : Start
+}
 
 /**
- * One connect's or serve's claim of a channel. The entry holds it until the io starts and takes it; the entry lets go
- * only of a claim the io never took ([entryFailed]), the io of one it took or never started ([ioDone]). Each lets go
- * once, so the channel is released exactly once.
+ * One connect's or serve's claim of a channel, which ends with the channel free and nothing of the io's left: the
+ * entry holds it, then the io's slots wait in it until the io starts, then the io holds it until its pump has ended.
+ * Whoever lets go frees what it holds; each lets go once, so the channel is released exactly once.
  */
 @Published
 internal class LentClaim(
     private val channel: AddressedDatagramChannel,
 ) {
-    private val holder = AtomicReference(Holder.Entry)
+    private val holder = AtomicReference<Holder>(Holder.Entry)
+    private val released = CompletableDeferred<Unit>()
 
-    /** The io starts: it holds the claim from now on, unless the entry already let go of it. */
-    fun takeByIo(): ClaimTaken = if (holder.compareAndSet(Holder.Entry, Holder.Io)) ClaimTaken.ByIo else ClaimTaken.AlreadyReleased
-
-    /** The connect or serve failed: a claim no io took is released. */
-    fun entryFailed() = letGo(Holder.Entry)
-
-    /** The io is done with the channel, its coroutines ended; or it was closed before it started. */
-    fun ioDone() {
-        letGo(Holder.Io)
-        letGo(Holder.Entry)
+    /** Setup lane: the io made [slots]; an entry that already failed takes nothing, and they are freed at once. */
+    fun slotsMade(slots: List<NativeBytes>) {
+        if (!holder.compareAndSet(Holder.Entry, Holder.Unstarted(slots))) for (slot in slots) slot.free()
     }
 
-    private fun letGo(from: Holder) {
-        if (holder.compareAndSet(from, Holder.Released)) LentChannels.release(channel)
+    /** Loop thread, once: the io starts and holds the claim from now on, with its slots. */
+    fun start(): Start =
+        when (val seen = holder.load()) {
+            is Holder.Unstarted -> if (holder.compareAndSet(seen, Holder.Io)) Start.Taken(seen.slots) else Start.EntryLetGo
+            is Holder.Entry, is Holder.Io, is Holder.Released -> Start.EntryLetGo
+        }
+
+    /** The connect or serve failed: a claim no io started on is released, with any slots its io made. */
+    fun entryFailed() = letGoUnstarted()
+
+    /** The io was closed before it started: as [entryFailed]. */
+    fun closedUnstarted() = letGoUnstarted()
+
+    /** The started io's pump has ended: nothing reads or sends on the channel any more. */
+    fun pumpEnded() {
+        if (holder.compareAndSet(Holder.Io, Holder.Released)) release()
+    }
+
+    /** Suspends until the channel is free again; a claim that was never held by an io is free once its entry let go. */
+    suspend fun awaitReleased() = released.await()
+
+    private fun letGoUnstarted() {
+        while (true) {
+            when (val seen = holder.load()) {
+                is Holder.Entry -> if (holder.compareAndSet(seen, Holder.Released)) return release()
+                is Holder.Unstarted ->
+                    if (holder.compareAndSet(seen, Holder.Released)) {
+                        for (slot in seen.slots) slot.free()
+                        return release()
+                    }
+                is Holder.Io, is Holder.Released -> return
+            }
+        }
+    }
+
+    private fun release() {
+        LentChannels.release(channel)
+        released.complete(Unit)
     }
 }

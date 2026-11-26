@@ -177,6 +177,7 @@ internal class ClientParts(
             w.scope,
             HandlerSeat(w.running.handlers.pool(::poolContained), loop.handlers, identity.session),
             w.options.abortCodes,
+            w.socket.hold(),
         )
 
     private val route = Route.Fixed(conn, SharedBatch(w.running.out))

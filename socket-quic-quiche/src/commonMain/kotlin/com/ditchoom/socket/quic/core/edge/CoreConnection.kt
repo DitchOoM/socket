@@ -67,6 +67,8 @@ internal class CoreConnection(
     internal val handlers: HandlerSeat,
     /** The codes the library resets a stream with on the application's behalf. */
     internal val codes: QuicAbortCodes,
+    /** Whose socket the connection rides: a close waits until a lent one is free again. */
+    internal val hold: ChannelHold = ChannelHold.Owned,
 ) : CoroutineScope by scope {
     val state: StateFlow<QuicConnectionState> = edge.state
     val unreadAtClose: StateFlow<QuicUnreadAtClose> = edge.unread
@@ -211,7 +213,9 @@ internal class CoreConnection(
 
     /** Read inside the connection when asked; nothing is counted for it otherwise. */
     suspend fun stats(): QuicStatsRead =
-        suspendCancellableCoroutine { cont -> conn.submit(StatsWork(cont), CallerPlace.HandToLoop) }.withDatagramCounts(conn.counts)
+        suspendCancellableCoroutine { cont -> conn.submit(StatsWork(cont), CallerPlace.HandToLoop) }
+            .withDatagramCounts(conn.counts)
+            .withSocketDrops(hold)
 
     /** What the connection waits on: its published life and counts, and what the thread inside saw, if one answers within [bound]. */
     @OptIn(ExperimentalCoroutinesApi::class)
