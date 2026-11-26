@@ -58,7 +58,7 @@ class CoreLocalEndpointSupportTests {
             is ClientRide.NetworkFramework ->
                 recordSkip(
                     "CoreLocalEndpointSupportTests.$site",
-                    SkipReason.HostBehaviourDiffers("Network.framework assigns the local endpoint of a connection; a named port is advisory"),
+                    SkipReason.HostBehaviourDiffers("Network.framework assigns a connection's local endpoint; a named port is advisory"),
                     SkipGate.HostCannotProvideIt("a socket bound to a named local port"),
                 )
         }
