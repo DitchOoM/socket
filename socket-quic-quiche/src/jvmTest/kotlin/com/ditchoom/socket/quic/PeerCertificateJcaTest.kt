@@ -146,7 +146,7 @@ class PeerCertificateJcaTest {
 }
 
 /** Only [file]'s owner can reach it: `rw-------` on POSIX, one ALLOW entry for the owner on an ACL file system. */
-private fun assertOwnerOnly(file: File) {
+internal fun assertOwnerOnly(file: File) {
     val path = file.toPath()
     if ("posix" in FileSystems.getDefault().supportedFileAttributeViews()) {
         assertEquals("rw-------", PosixFilePermissions.toString(Files.getPosixFilePermissions(path)), file.path)

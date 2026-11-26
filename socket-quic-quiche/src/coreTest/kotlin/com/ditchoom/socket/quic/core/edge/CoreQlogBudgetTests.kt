@@ -62,9 +62,9 @@ class CoreQlogBudgetTests {
                 }
             }
 
-            val onDisk = listQlogFiles(dir).filter { it.path.substringAfterLast('/').startsWith("conn-0001") }
+            val onDisk = listQlogFiles(dir).filter { it.path.fileName().startsWith("conn-0001") }
             val sizes =
-                onDisk.associate { it.path.substringAfterLast('/') to it.bytes }.entries.sortedBy { it.key }.associate {
+                onDisk.associate { it.path.fileName() to it.bytes }.entries.sortedBy { it.key }.associate {
                     it.key to
                         it.value
                 }
@@ -85,13 +85,16 @@ class CoreQlogBudgetTests {
             assertTrue(truncated.all { it.pressure == QlogPressure.ConnectionSegments }, dump)
             for (drop in truncated) {
                 assertTrue(
-                    drop.dropped.path.substringAfterLast('/') !in sizes,
+                    drop.dropped.path.fileName() !in sizes,
                     "reported dropped but still on disk: ${drop.dropped}\n$dump",
                 )
             }
             val retained = directory.retained().single { it.name == "conn-0001" }.files
             assertEquals(sizes.values.sum(), retained.sumOf { it.bytes }, "the directory's accounts disagree with the disk.\n$dump")
         }
+
+    /** The file name after the path's last separator: `/`, or `\` where Windows lists the directory. */
+    private fun String.fileName(): String = substringAfterLast('/').substringAfterLast('\\')
 
     private companion object {
         const val SEGMENT_BYTES = 32L * 1024L

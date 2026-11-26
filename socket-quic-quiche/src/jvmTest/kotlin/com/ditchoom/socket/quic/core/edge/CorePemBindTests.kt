@@ -7,6 +7,7 @@ import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicServe
 import com.ditchoom.socket.quic.QuicSessionTicketKeys
+import com.ditchoom.socket.quic.assertOwnerOnly
 import com.ditchoom.socket.quic.core.conn.MismatchResponse
 import com.ditchoom.socket.quic.core.demux.loopbackV4
 import com.ditchoom.socket.quic.core.testing.platformQuicheApi
@@ -14,8 +15,6 @@ import com.ditchoom.socket.quic.core.testing.platformTlsConfig
 import com.ditchoom.socket.quic.network
 import kotlinx.coroutines.runBlocking
 import java.io.File
-import java.nio.file.Files
-import java.nio.file.attribute.PosixFilePermission
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -59,11 +58,7 @@ class CorePemBindTests {
                         val file = File(path)
                         seen += file
                         assertTrue(file.isFile && file.length() > 0, "$path is a regular, non-empty file while the bind reads it")
-                        assertEquals(
-                            setOf(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE),
-                            Files.getPosixFilePermissions(file.toPath()),
-                            "mode of $path",
-                        )
+                        assertOwnerOnly(file)
                     }
                     coreServe(
                         mismatch = MismatchResponse.Fail,
