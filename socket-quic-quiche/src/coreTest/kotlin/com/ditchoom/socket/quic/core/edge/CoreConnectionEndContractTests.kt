@@ -47,10 +47,20 @@ class CoreConnectionEndContractTests {
     @Test
     fun aServerHandlerWaitingOnItsStreamsReturnsWithTheClientsClose() =
         coreTest("CoreConnectionEndContractTests.aServerHandlerWaitingOnItsStreamsReturnsWithTheClientsClose") {
+            val offered = CompletableDeferred<Unit>()
             val handled = CompletableDeferred<QuicConnectionEnd>()
             serving(options) { listener ->
-                val serving = launch { listener.handleConnections { handled.complete(it.handleStreams { }) } }
+                val serving =
+                    launch {
+                        listener.handleConnections {
+                            offered.complete(Unit)
+                            handled.complete(it.handleStreams { })
+                        }
+                    }
                 val client = connected(connect(listener.port, options))
+                // A close that reached the server with the client's last handshake flight would end the connection in the
+                // serve that completes its handshake, which is never offered: the client closes once its handler runs.
+                withTimeout(CLOSE_BOUND) { offered.await() }
                 client.close(QuicCloseChoice.Immediate(QuicError.ApplicationError(CLIENT_CODE)))
                 assertEquals<QuicConnectionEnd>(
                     QuicConnectionEnd.ByPeer(QuicError.ApplicationError(CLIENT_CODE)),

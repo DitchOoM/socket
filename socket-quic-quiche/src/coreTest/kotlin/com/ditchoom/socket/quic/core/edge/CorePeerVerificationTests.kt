@@ -9,18 +9,18 @@ import com.ditchoom.socket.ServerCertificateRejection
 import com.ditchoom.socket.quic.CertificateHashVerification
 import com.ditchoom.socket.quic.PeerCertificate
 import com.ditchoom.socket.quic.PeerCertificateSupport
-import com.ditchoom.socket.quic.QuicCloseReason
-import com.ditchoom.socket.quic.QuicConnectionState
 import com.ditchoom.socket.quic.QuicError
+import com.ditchoom.socket.quic.QuicheApi
+import com.ditchoom.socket.quic.QuicheConn
 import com.ditchoom.socket.quic.ServerCertVerdict
 import com.ditchoom.socket.quic.ServerCertVerifier
 import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.testing.coreTest
 import com.ditchoom.socket.quic.core.testing.currentThreadName
 import com.ditchoom.socket.quic.core.testing.platformPeerCertificates
+import com.ditchoom.socket.quic.core.testing.platformQuicheApi
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.awaitCancellation
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeout
 import kotlin.test.AfterTest
 import kotlin.test.Test
@@ -49,11 +49,17 @@ class CorePeerVerificationTests {
         coreTest("CorePeerVerificationTests.aClientPinnedToAnotherCertificateFailsTypedAndSendsBadCertificate") {
             mint().use { pinned ->
                 mint().use { served ->
-                    val ended = CompletableDeferred<QuicCloseReason>()
-                    withMintedCoreServer(served, onConnection = { connection ->
-                        val closed = connection.state.first { it is QuicConnectionState.Closed } as QuicConnectionState.Closed
-                        ended.complete(closed.reason)
-                    }) { port ->
+                    // What the server was told is read from its quiche, not from an offered connection: the client's close can
+                    // reach the server with its Finished, and a connection that ends in the serve that completes its handshake
+                    // is never offered.
+                    val told = CompletableDeferred<QuicError>()
+                    val quiche = platformQuicheApi()
+                    val serverApi =
+                        object : QuicheApi by quiche {
+                            override fun connPeerError(conn: QuicheConn): QuicError? =
+                                quiche.connPeerError(conn).also { error -> if (error != null) told.complete(error) }
+                        }
+                    withMintedCoreServer(served, api = serverApi, onConnection = { awaitCancellation() }) { port ->
                         val failure =
                             assertFailsWith<CertificateHashPinningException> {
                                 connectCore(
@@ -65,9 +71,9 @@ class CorePeerVerificationTests {
                         val mismatch = assertIs<CertificateHashPinningFailure.HashMismatch>(failure.failure)
                         assertEquals(1, mismatch.pinnedCount)
                         assertTrue(mismatch.computedLeafHash.startsWith("sha-256:"), mismatch.computedLeafHash)
-                        assertEquals<QuicCloseReason>(
-                            QuicCloseReason.ByPeer(QuicError.CryptoError(BAD_CERTIFICATE)),
-                            withTimeout(10.seconds) { ended.await() },
+                        assertEquals<QuicError>(
+                            QuicError.CryptoError(BAD_CERTIFICATE),
+                            withTimeout(10.seconds) { told.await() },
                             "the server is told why: CONNECTION_CLOSE with the bad_certificate alert",
                         )
                     }
@@ -178,8 +184,9 @@ internal fun bytesOf(buffer: com.ditchoom.buffer.ReadBuffer): ByteArray {
  */
 internal suspend fun withMintedCoreServer(
     certificate: PeerCertificate,
+    api: QuicheApi = platformQuicheApi(),
     onConnection: suspend kotlinx.coroutines.CoroutineScope.(CoreConnection) -> Unit,
     body: suspend (port: Int) -> Unit,
 ) {
-    certificate.withPemFiles { tls -> withCoreServer(tls = tls, onConnection = onConnection) { server -> body(server.port) } }
+    certificate.withPemFiles { tls -> withCoreServer(tls = tls, api = api, onConnection = onConnection) { server -> body(server.port) } }
 }
