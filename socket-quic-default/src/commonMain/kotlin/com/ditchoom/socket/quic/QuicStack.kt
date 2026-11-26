@@ -1,5 +1,7 @@
 package com.ditchoom.socket.quic
 
+import com.ditchoom.buffer.flow.AddressedDatagramChannel
+import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.socket.TransportConfig
 import kotlin.time.Duration
 
@@ -39,6 +41,24 @@ internal expect suspend fun <R> coreServe(
     options: QuicOptions,
     block: suspend (QuicListener) -> R,
 ): QuicServe<R>
+
+/** [connectQuic] over a channel the caller lent, on this platform's core. */
+@OptIn(ExperimentalDatagramApi::class)
+internal expect suspend fun coreConnectOver(
+    channel: AddressedDatagramChannel,
+    peer: QuicEndpoint,
+    serverName: String,
+    options: QuicOptions,
+    timeout: Duration,
+): QuicConnect<QuicConnection>
+
+/** [serveQuic] over a channel the caller lent, on this platform's core. */
+@OptIn(ExperimentalDatagramApi::class)
+internal expect suspend fun coreServeOver(
+    channel: AddressedDatagramChannel,
+    tls: QuicTlsConfig,
+    options: QuicOptions,
+): QuicServe<QuicListener>
 
 /** What the legacy stack supports, independent of any connection. */
 internal expect val legacyCapabilities: EngineCapabilities
