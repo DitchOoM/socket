@@ -213,9 +213,11 @@ abstract class RetiredCidInFlightPacketTestSuite {
                         val retiredCount =
                             journal.within(ScenarioPhase.AwaitingQuicheRetirement, phaseBudget) { api.awaitQuicheRetiredAnScid() }
                         assertTrue(retiredCount > 0, "quiche never retired a source connection id, so nothing is stale")
+                        // Not "the latest datagram's CID": the client keeps acknowledging on the path it
+                        // left, so an old-CID datagram can arrive after the new-CID ones.
                         assertTrue(
-                            channel.lastShortHeaderDcid()?.contentEquals(retiringDcid) == false,
-                            "the client is still using the same destination CID after migrating, so the withheld " +
+                            channel.hasSeenDcidOtherThanHeld(),
+                            "the client never used another destination CID after migrating, so the withheld " +
                                 "packet's CID is not actually stale and this test would prove nothing",
                         )
 

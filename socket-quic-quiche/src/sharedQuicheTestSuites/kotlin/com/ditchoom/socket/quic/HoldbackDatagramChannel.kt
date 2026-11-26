@@ -63,12 +63,28 @@ internal class HoldbackDatagramChannel(
     @Volatile
     private var ringCount = 0
 
+    /**
+     * The destination CID the hold was armed for, and whether a short-header datagram bearing any
+     * other one has been handed to the server since. Datagrams on the path being left keep arriving
+     * interleaved with those on the new one (acknowledgements, probes), so the *latest* CID says
+     * nothing about whether the peer has moved; the fact that it ever used another does.
+     */
+    @Volatile
+    private var watchedDcid: ByteArray? = null
+
+    @Volatile
+    private var otherDcidSeen = false
+
     /** Destination CID of the most recent short-header datagram the server was handed. */
     fun lastShortHeaderDcid(): ByteArray? = lastDcid
+
+    /** True once the server has been handed a short-header datagram bearing a CID other than the one the hold was armed for. */
+    fun hasSeenDcidOtherThanHeld(): Boolean = otherDcidSeen
 
     /** Withhold the next short-header datagram whose destination CID is [dcid]. */
     fun holdNextDatagramFor(dcid: ByteArray) {
         check(hold is Hold.Idle) { "a datagram is already being withheld: $hold" }
+        watchedDcid = dcid.copyOf()
         hold = Hold.Armed(dcid.copyOf())
     }
 
@@ -130,6 +146,8 @@ internal class HoldbackDatagramChannel(
                     record(Ingress.LongHeader, 0, length)
                 } else {
                     lastDcid = dcid
+                    val watched = watchedDcid
+                    if (watched != null && !dcid.contentEquals(watched)) otherDcidSeen = true
                     val armed = hold
                     if (armed is Hold.Armed && dcid.contentEquals(armed.target)) {
                         hold = Hold.Withheld(result)
