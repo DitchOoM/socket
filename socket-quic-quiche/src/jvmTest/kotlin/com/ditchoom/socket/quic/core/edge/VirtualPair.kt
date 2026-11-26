@@ -32,6 +32,7 @@ import com.ditchoom.socket.quic.core.udp.SocketClosed
 import com.ditchoom.socket.quic.core.udp.SocketProbe
 import com.ditchoom.socket.quic.core.udp.SocketTicket
 import com.ditchoom.socket.quic.core.udp.Thrown
+import com.ditchoom.socket.quic.core.udp.UdpError
 import com.ditchoom.socket.quic.core.udp.toPathKey
 import com.ditchoom.socket.quic.loadQuicheApi
 import com.ditchoom.socket.quic.replay.conditions.LOCALHOST
@@ -50,6 +51,9 @@ import java.util.PriorityQueue
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
+
+/** How a [VirtualPair] client's second socket reads: as a socket does, failing once after a read, or dead. */
+internal enum class SecondReads { Normally, FailAfterARead, Dead }
 
 /** Which end of a [VirtualPair]. */
 internal enum class End { Client, Server }
@@ -114,6 +118,18 @@ internal class VirtualPair private constructor(
         holding += end
     }
 
+    /** What [end] sent while held arrives now, at the other end's sockets, before the next pass reads them. */
+    fun deliverHeldNow(end: End) {
+        holding -= end
+        for (datagram in held.getValue(end)) {
+            when (val port = deliveredTo(datagram)) {
+                null -> Unit
+                else -> waiting.getValue(datagram.to).addLast(Arrived(datagram.bytes, port))
+            }
+        }
+        held.getValue(end).clear()
+    }
+
     /** What [end] sent while held leaves now, in order, and arrives together: one receive batch at the other end. */
     fun release(end: End) {
         holding -= end
@@ -135,6 +151,15 @@ internal class VirtualPair private constructor(
     /** Whether the client's next sockets fail to open, as a bind to an address the host does not hold. */
     var refuseOpens = false
 
+    /** Whether the client's next sockets are made without waiting and then fail, as a Network.framework one can. */
+    var opensArriveThenFail = false
+
+    /** Whether reopening the client's second socket fails, as at an address its new network does not hold. */
+    var refuseSecondReopen = false
+
+    /** How the client's second socket reads. */
+    var secondReads = SecondReads.Normally
+
     /** Client ports the link carries nothing from or to, as a network that took the address and routes none of it. */
     val deadClientPorts = HashSet<Int>()
 
@@ -151,6 +176,10 @@ internal class VirtualPair private constructor(
     var clientSockets = 1
         private set
     var mostClientSockets = 1
+        private set
+
+    /** Datagrams the client tagged for a socket it does not hold: the connection's view and the loop's disagreed. */
+    var strayDatagrams = 0
         private set
 
     /** How many second sockets the client's loop closed without promoting them. */
@@ -289,7 +318,10 @@ internal class VirtualPair private constructor(
                         when {
                             ticket == carrying -> clientKey.port
                             ticket == second?.ticket -> second!!.key.port
-                            else -> continue
+                            else -> {
+                                strayDatagrams++
+                                continue
+                            }
                         }
                     } else {
                         when (val target = batch.targetOf(n)) {
@@ -310,8 +342,32 @@ internal class VirtualPair private constructor(
         override fun receiveSecond(into: ReceiveBatch): ReceiveBatchResult =
             when (val now = second) {
                 null -> ReceiveBatchResult.Nothing
-                else -> receiveOn(into, now.key.port)
+                else ->
+                    when (secondReads) {
+                        SecondReads.Normally -> receiveOn(into, now.key.port)
+                        SecondReads.FailAfterARead ->
+                            when (receiveOn(into, now.key.port)) {
+                                is ReceiveBatchResult.Got -> {
+                                    secondReads = SecondReads.Normally
+                                    ReceiveBatchResult.Failed(UdpError.PortUnreachable)
+                                }
+                                else -> ReceiveBatchResult.Nothing
+                            }
+                        SecondReads.Dead -> ReceiveBatchResult.Failed(UdpError.SocketClosed)
+                    }
             }
+
+        override fun reopenSecond(): Reopened =
+            if (refuseSecondReopen) {
+                Reopened.Refused(
+                    Thrown(java.net.BindException("Can't assign requested address")),
+                )
+            } else {
+                Reopened.SameEndpoint
+            }
+
+        override fun settleBeside(): Beside =
+            if (opensArriveThenFail) Beside.Refused(Thrown(java.io.IOException("the connection failed"))) else Beside.Unsupported
 
         /** What waits for the client socket on [port], or for the server. */
         private fun receiveOn(
@@ -351,6 +407,7 @@ internal class VirtualPair private constructor(
             ticket: SocketTicket,
         ): Beside {
             if (refuseOpens) return Beside.Refused(Thrown(java.net.BindException("Can't assign requested address")))
+            if (opensArriveThenFail) return Beside.Arriving
             val key = clientKey.copy(port = movePorts.removeFirstOrNull() ?: (maxOf(clientKey.port, nextPort) + 1))
             nextPort = key.port
             // A second opened while one is still open would be a third socket.

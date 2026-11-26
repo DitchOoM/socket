@@ -6,9 +6,12 @@ import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.flow.HalfCloseable
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.socket.quic.MigrateOutcome
 import com.ditchoom.socket.quic.MigrationPolicy
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicOptions
+import com.ditchoom.socket.quic.QuicheApi
+import com.ditchoom.socket.quic.QuicheConn
 import com.ditchoom.socket.quic.core.conn.DropWhy
 import com.ditchoom.socket.quic.core.loop.closeSecond
 import com.ditchoom.socket.quic.core.loop.move
@@ -19,6 +22,7 @@ import com.ditchoom.socket.quic.read
 import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.testkit.trace.TraceSink
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.yield
 import kotlin.test.Test
@@ -27,6 +31,7 @@ import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.nanoseconds
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -127,6 +132,143 @@ class CoreSecondSocketVirtualTests {
             pair.runUntil(within = 2.seconds) { echoed > 0 }
             assertEquals(PAYLOAD, echoed, "the old socket carries on")
         }
+
+    /**
+     * A move wanted in the very pass that reads the PATH_RESPONSE validating the move before it: the connection gives up
+     * the earlier probe before it asks for the new socket, so no promotion quiche committed to can be overtaken by the
+     * new socket's open, and it carries on from a socket the loop holds while the newest address is probed.
+     */
+    @Test
+    fun aMoveWantedInThePassItsPredecessorValidatesIsNotLost() =
+        VirtualPair.with(options) { pair ->
+            val serverSide = pair.accept()
+            launch { runCatching { while (true) echoOne(serverSide) } }
+            // The server's answers to the probe wait in the link until the next move is wanted, whose address carries nothing.
+            val first = pair.clientPort()
+            pair.deadClientPorts += first + 2
+            pair.hold(End.Server)
+            move(pair)
+            pair.runFor(pair.oneWay * 3)
+            assertEquals(2, pair.clientSockets)
+            assertTrue(pair.heldFrom(End.Server) > 0, "the server answered the probe")
+            assertTrue("Migrated" !in marks(pair), "the probe has not validated yet")
+            pair.deliverHeldNow(End.Server)
+            move(pair)
+            var echoed = 0
+            launch { echoed = echo(pair) }
+            pair.runUntil(within = 3.seconds) { echoed > 0 }
+            assertEquals(PAYLOAD, echoed, "the connection carries on while the newest move is probed")
+            assertEquals(0, pair.strayDatagrams, "the connection never wrote for a socket the loop had closed")
+            assertEquals(2, pair.mostClientSockets)
+            assertIs<EdgeEnd.Open>(pair.client.connection.end())
+        }
+
+    /** What the second socket read before its read failed reaches quiche: the PATH_RESPONSE among it validates the path. */
+    @Test
+    fun whatTheSecondSocketReadBeforeAFailureIsDelivered() =
+        VirtualPair.with(options) { pair ->
+            pair.secondReads = SecondReads.FailAfterARead
+            val from = pair.now()
+            move(pair)
+            awaitMark(pair, "Migrated")
+            val took = (pair.now() - from).nanoseconds
+            assertTrue(took < ONE_CHALLENGE, "migrated $took after the move: the first response was not lost")
+        }
+
+    /** A second socket that dies ends the move, not the connection: it stays on the socket it had. */
+    @Test
+    fun aSecondSocketThatDiesEndsOnlyTheMove() =
+        VirtualPair.with(options) { pair ->
+            val serverSide = pair.accept()
+            launch { runCatching { while (true) echoOne(serverSide) } }
+            val first = pair.clientPort()
+            pair.secondReads = SecondReads.Dead
+            move(pair)
+            awaitMark(pair, "SecondLost")
+            pair.runFor(ECHO_EVERY)
+            assertEquals(1, pair.clientSockets, "the dead socket was closed")
+            assertEchoesOn(pair, first)
+        }
+
+    /** A second socket made without waiting that then fails ends the move, not the connection. */
+    @Test
+    fun aSecondSocketThatFailsWhileItIsMadeEndsOnlyTheMove() =
+        VirtualPair.with(options) { pair ->
+            val serverSide = pair.accept()
+            launch { runCatching { while (true) echoOne(serverSide) } }
+            val first = pair.clientPort()
+            pair.opensArriveThenFail = true
+            move(pair)
+            awaitMark(pair, "OpenRefused")
+            pair.runFor(ECHO_EVERY)
+            assertEchoesOn(pair, first)
+        }
+
+    /** A rehome that cannot reopen the second socket ends the move, not the connection. */
+    @Test
+    fun aRehomeThatCannotReopenTheSecondSocketEndsOnlyTheMove() =
+        VirtualPair.with(options) { pair ->
+            val serverSide = pair.accept()
+            launch { runCatching { while (true) echoOne(serverSide) } }
+            val first = pair.clientPort()
+            pair.deadClientPorts += first + 1
+            pair.refuseSecondReopen = true
+            move(pair)
+            pair.runUntil(within = 2.seconds) { pair.clientSockets == 2 }
+            pair.client.parts.rehome()
+            awaitMark(pair, "SecondLost")
+            pair.runFor(ECHO_EVERY)
+            assertEquals(1, pair.clientSockets)
+            assertEchoesOn(pair, first)
+        }
+
+    /**
+     * A path quiche validates but will not migrate to while the carrying path answers is given up after as many tries as
+     * a failing validation: its socket is not held for the rest of the connection.
+     */
+    @Test
+    fun aMoveQuicheKeepsRefusingToMigrateToIsGivenUp() =
+        VirtualPair.with(options, clientApi = { RefusesMigration(it) }) { pair ->
+            val serverSide = pair.accept()
+            launch { runCatching { while (true) echoOne(serverSide) } }
+            val first = pair.clientPort()
+            move(pair)
+            launch {
+                while (true) {
+                    runCatching { echo(pair) }
+                    delay(ECHO_EVERY)
+                }
+            }
+            awaitMark(pair, "Abandoned", within = MOVE_GIVEN_UP)
+            pair.runFor(ECHO_EVERY)
+            assertEquals(1, pair.clientSockets)
+            assertEquals(first, pair.clientPort())
+        }
+
+    private suspend fun CoroutineScope.assertEchoesOn(
+        pair: VirtualPair,
+        port: Int,
+    ) {
+        assertIs<EdgeEnd.Open>(pair.client.connection.end(), "the connection stays open")
+        assertEquals(port, pair.clientPort(), "on the socket it had")
+        var echoed = 0
+        launch { echoed = echo(pair) }
+        pair.runUntil(within = 2.seconds) { echoed > 0 }
+        assertEquals(PAYLOAD, echoed, "the old socket carries on")
+    }
+
+    /** quiche validates the path of each move but refuses to migrate to it. */
+    private class RefusesMigration(
+        private val inner: QuicheApi,
+    ) : QuicheApi by inner {
+        override fun connMigrate(
+            conn: QuicheConn,
+            localAddr: Long,
+            localLen: Int,
+            peerAddr: Long,
+            peerLen: Int,
+        ): MigrateOutcome = MigrateOutcome.Rejected(INVALID_STATE)
+    }
 
     /** The abandoned move's socket is closed: the client holds one socket again, and never held more than two. */
     @Test
@@ -295,6 +437,12 @@ class CoreSecondSocketVirtualTests {
 
     private companion object {
         const val PAYLOAD = 600
+
+        /** A quiche error a refused migration reports. */
+        const val INVALID_STATE = -6
+
+        /** The interval a lost PATH_RESPONSE costs before a fresh challenge. */
+        val ONE_CHALLENGE = 900.milliseconds
         val ECHO_EVERY = 500.milliseconds
         const val MOVES = 4
 
