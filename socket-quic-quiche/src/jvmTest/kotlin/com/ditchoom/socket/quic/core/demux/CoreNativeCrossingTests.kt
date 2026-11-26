@@ -13,6 +13,8 @@ import com.ditchoom.socket.quic.MigrationPolicy
 import com.ditchoom.socket.quic.NetworkMonitorSource
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicError
+import com.ditchoom.socket.quic.QuicStatsRead
+import com.ditchoom.socket.quic.core.edge.CoreConnection
 import com.ditchoom.socket.quic.core.edge.connectCore
 import com.ditchoom.socket.quic.core.edge.coreTestOptions
 import com.ditchoom.socket.quic.core.edge.public
@@ -23,6 +25,7 @@ import com.ditchoom.socket.quic.core.testing.platformQuicheApi
 import com.ditchoom.socket.quic.core.testing.withDescriptorsAbove127
 import com.ditchoom.socket.quic.network
 import com.ditchoom.socket.transport.NetworkId
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -36,6 +39,7 @@ import java.util.concurrent.atomic.AtomicLong
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import kotlin.test.fail
 import kotlin.time.Duration.Companion.milliseconds
@@ -117,12 +121,17 @@ class CoreNativeCrossingTests {
                 val count = CrossingCount(platformQuicheApi())
                 val options = coreTestOptions.copy(datagrams = DatagramOptions())
                 val delivered = AtomicLong()
+                val served = CompletableDeferred<CoreConnection>()
                 withCoreServer(api = count.api, options = options, onConnection = { connection ->
+                    served.complete(connection)
                     connection.public().datagrams.receiveEach { delivered.incrementAndGet() }
                 }) { server ->
                     val client = connectCore(server.port, loops = loops, api = count.api, options = options)
                     val channel = client.connection.coreDatagrams
                     val payload = payload()
+                    val both = listOf(client.connection, withTimeout(10.seconds) { served.await() })
+
+                    suspend fun packetsSent() = both.sumOf { assertIs<QuicStatsRead.Read>(it.stats()).stats.packetsSent }
 
                     suspend fun bursts(datagrams: Int) {
                         val from = delivered.get()
@@ -144,11 +153,19 @@ class CoreNativeCrossingTests {
                     }
                     bursts(DATAGRAM_WARM_UP)
                     val from = delivered.get()
+                    val sentFrom = packetsSent()
                     count.start()
                     bursts(DATAGRAMS)
                     count.stop()
+                    val written = packetsSent() - sentFrom
                     val read = delivered.get() - from
-                    val report = count.report(read.toInt())
+                    val report =
+                        "%s\n    %d packets written, %d datagrams delivered of %d sent".format(
+                            count.report(read.toInt()),
+                            written,
+                            read,
+                            DATAGRAMS,
+                        )
                     println("[core native crossings] datagrams read in batches, per datagram delivered:\n%s".format(report))
                     client.connection.close(QuicError.NoError)
                     payload.freeIfNeeded()
@@ -158,6 +175,7 @@ class CoreNativeCrossingTests {
                             echoes = 0,
                             slack = read / SLACK_ECHOES_DIVISOR + SLACK_PER_CONNECTION * 2,
                             datagramsDelivered = read,
+                            written = PacketsWritten.Counted(written),
                         )
                     assertTrue(broken.isEmpty(), "crossings out of line with the work done: %s\n%s".format(broken, report))
                 }
@@ -246,6 +264,18 @@ class CoreNativeCrossingTests {
         const val QUIET_MS = 50L
     }
 
+    /**
+     * The packets quiche wrote while counted: as many as were received, on an echo whose path loses none, or the
+     * [Counted] packets its connections' statistics report, under a flood the kernel may drop from.
+     */
+    private sealed interface PacketsWritten {
+        data object AsReceived : PacketsWritten
+
+        class Counted(
+            val packets: Long,
+        ) : PacketsWritten
+    }
+
     /** What each quiche function's count must stay under, given the work counted in the same run. */
     private object Laws {
         /** The most stream reads and writes an echo makes, client and server together; coalesced chunks make fewer. */
@@ -258,6 +288,7 @@ class CoreNativeCrossingTests {
             echoes: Int,
             slack: Long,
             datagramsDelivered: Long = 0L,
+            written: PacketsWritten = PacketsWritten.AsReceived,
         ): List<String> {
             fun n(name: String) = c[name] ?: 0L
             val turns = n("connReadable")
@@ -293,8 +324,17 @@ class CoreNativeCrossingTests {
                     Law.atMost("recvInfoFree", n("recvInfoFree"), n("connFree"), slack),
                     // Whether the peer's close arrived: asked once in a turn that handed quiche a datagram.
                     Law.atMost("connIsDraining", n("connIsDraining"), minOf(turns, datagrams), slack),
-                    // At most one terminating call per turn plus one per datagram sent (about one per datagram received).
-                    Law.atMost("connSend", n("connSend"), turns + datagrams, slack),
+                    // At most one terminating call per turn plus one per packet written.
+                    Law.atMost(
+                        "connSend",
+                        n("connSend"),
+                        turns +
+                            when (written) {
+                                is PacketsWritten.AsReceived -> datagrams
+                                is PacketsWritten.Counted -> written.packets
+                            },
+                        slack,
+                    ),
                 ) + datagramLaws(::n, turns, datagrams, datagramsDelivered, slack)
             val known = laws.map { it.name }.toSet()
             return laws.mapNotNull { it.violation() } + c.keys.filter { it !in known }.map { "$it: no law, a new crossing" }
