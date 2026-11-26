@@ -2212,25 +2212,6 @@ sealed interface com.ditchoom.socket.quic/QuicEarlyDataChange { // com.ditchoom.
         final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicEarlyDataChange.BidirectionalStreams.toString|toString(){}[0]
     }
 
-    final class ConnectionData : com.ditchoom.socket.quic/QuicEarlyDataChange { // com.ditchoom.socket.quic/QuicEarlyDataChange.ConnectionData|null[0]
-        constructor <init>(kotlin/Long, kotlin/Long, kotlin/Long) // com.ditchoom.socket.quic/QuicEarlyDataChange.ConnectionData.<init>|<init>(kotlin.Long;kotlin.Long;kotlin.Long){}[0]
-
-        final val granted // com.ditchoom.socket.quic/QuicEarlyDataChange.ConnectionData.granted|{}granted[0]
-            final fun <get-granted>(): kotlin/Long // com.ditchoom.socket.quic/QuicEarlyDataChange.ConnectionData.granted.<get-granted>|<get-granted>(){}[0]
-        final val remembered // com.ditchoom.socket.quic/QuicEarlyDataChange.ConnectionData.remembered|{}remembered[0]
-            final fun <get-remembered>(): kotlin/Long // com.ditchoom.socket.quic/QuicEarlyDataChange.ConnectionData.remembered.<get-remembered>|<get-remembered>(){}[0]
-        final val written // com.ditchoom.socket.quic/QuicEarlyDataChange.ConnectionData.written|{}written[0]
-            final fun <get-written>(): kotlin/Long // com.ditchoom.socket.quic/QuicEarlyDataChange.ConnectionData.written.<get-written>|<get-written>(){}[0]
-
-        final fun component1(): kotlin/Long // com.ditchoom.socket.quic/QuicEarlyDataChange.ConnectionData.component1|component1(){}[0]
-        final fun component2(): kotlin/Long // com.ditchoom.socket.quic/QuicEarlyDataChange.ConnectionData.component2|component2(){}[0]
-        final fun component3(): kotlin/Long // com.ditchoom.socket.quic/QuicEarlyDataChange.ConnectionData.component3|component3(){}[0]
-        final fun copy(kotlin/Long = ..., kotlin/Long = ..., kotlin/Long = ...): com.ditchoom.socket.quic/QuicEarlyDataChange.ConnectionData // com.ditchoom.socket.quic/QuicEarlyDataChange.ConnectionData.copy|copy(kotlin.Long;kotlin.Long;kotlin.Long){}[0]
-        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicEarlyDataChange.ConnectionData.equals|equals(kotlin.Any?){}[0]
-        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicEarlyDataChange.ConnectionData.hashCode|hashCode(){}[0]
-        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicEarlyDataChange.ConnectionData.toString|toString(){}[0]
-    }
-
     final class DatagramFrameSize : com.ditchoom.socket.quic/QuicEarlyDataChange { // com.ditchoom.socket.quic/QuicEarlyDataChange.DatagramFrameSize|null[0]
         constructor <init>(kotlin/Long, kotlin/Long) // com.ditchoom.socket.quic/QuicEarlyDataChange.DatagramFrameSize.<init>|<init>(kotlin.Long;kotlin.Long){}[0]
 
@@ -2245,28 +2226,6 @@ sealed interface com.ditchoom.socket.quic/QuicEarlyDataChange { // com.ditchoom.
         final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicEarlyDataChange.DatagramFrameSize.equals|equals(kotlin.Any?){}[0]
         final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicEarlyDataChange.DatagramFrameSize.hashCode|hashCode(){}[0]
         final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicEarlyDataChange.DatagramFrameSize.toString|toString(){}[0]
-    }
-
-    final class StreamData : com.ditchoom.socket.quic/QuicEarlyDataChange { // com.ditchoom.socket.quic/QuicEarlyDataChange.StreamData|null[0]
-        constructor <init>(kotlin/Long, kotlin/Long, kotlin/Long, kotlin/Long) // com.ditchoom.socket.quic/QuicEarlyDataChange.StreamData.<init>|<init>(kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long){}[0]
-
-        final val granted // com.ditchoom.socket.quic/QuicEarlyDataChange.StreamData.granted|{}granted[0]
-            final fun <get-granted>(): kotlin/Long // com.ditchoom.socket.quic/QuicEarlyDataChange.StreamData.granted.<get-granted>|<get-granted>(){}[0]
-        final val remembered // com.ditchoom.socket.quic/QuicEarlyDataChange.StreamData.remembered|{}remembered[0]
-            final fun <get-remembered>(): kotlin/Long // com.ditchoom.socket.quic/QuicEarlyDataChange.StreamData.remembered.<get-remembered>|<get-remembered>(){}[0]
-        final val stream // com.ditchoom.socket.quic/QuicEarlyDataChange.StreamData.stream|{}stream[0]
-            final fun <get-stream>(): kotlin/Long // com.ditchoom.socket.quic/QuicEarlyDataChange.StreamData.stream.<get-stream>|<get-stream>(){}[0]
-        final val written // com.ditchoom.socket.quic/QuicEarlyDataChange.StreamData.written|{}written[0]
-            final fun <get-written>(): kotlin/Long // com.ditchoom.socket.quic/QuicEarlyDataChange.StreamData.written.<get-written>|<get-written>(){}[0]
-
-        final fun component1(): kotlin/Long // com.ditchoom.socket.quic/QuicEarlyDataChange.StreamData.component1|component1(){}[0]
-        final fun component2(): kotlin/Long // com.ditchoom.socket.quic/QuicEarlyDataChange.StreamData.component2|component2(){}[0]
-        final fun component3(): kotlin/Long // com.ditchoom.socket.quic/QuicEarlyDataChange.StreamData.component3|component3(){}[0]
-        final fun component4(): kotlin/Long // com.ditchoom.socket.quic/QuicEarlyDataChange.StreamData.component4|component4(){}[0]
-        final fun copy(kotlin/Long = ..., kotlin/Long = ..., kotlin/Long = ..., kotlin/Long = ...): com.ditchoom.socket.quic/QuicEarlyDataChange.StreamData // com.ditchoom.socket.quic/QuicEarlyDataChange.StreamData.copy|copy(kotlin.Long;kotlin.Long;kotlin.Long;kotlin.Long){}[0]
-        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicEarlyDataChange.StreamData.equals|equals(kotlin.Any?){}[0]
-        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicEarlyDataChange.StreamData.hashCode|hashCode(){}[0]
-        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicEarlyDataChange.StreamData.toString|toString(){}[0]
     }
 
     final class UnidirectionalStreams : com.ditchoom.socket.quic/QuicEarlyDataChange { // com.ditchoom.socket.quic/QuicEarlyDataChange.UnidirectionalStreams|null[0]

@@ -98,7 +98,7 @@ internal class ClientParts(
                     w.access,
                     chainSourceOf(w.options, w.memory.factory()),
                     SilenceRule(w.silence, probeCapOf(w.options), news),
-                    earlyPlanOf(QuicheConnRef(w.api, w.handle), w.offer, w.options.resumption, w.memory.factory()),
+                    earlyPlanOf(QuicheConnRef(w.api, w.handle), w.offer, w.options.resumption, nativeOf(w.memory.factory())),
                 ),
             address =
                 ConnAddress(

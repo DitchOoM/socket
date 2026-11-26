@@ -87,3 +87,16 @@ private fun flightOf(offer: Offer): FirstFlight =
         is Offer.Offered -> offer.flight
         is Offer.NoTicket, is Offer.Unusable -> FirstFlight.Immediate
     }
+
+/**
+ * Memory with an address from [factory], the one a connection's datagrams already proved addressable; memory without
+ * one raises, as the connect's own allocations do.
+ */
+internal fun nativeOf(factory: BufferFactory): (Int) -> NativeBytes =
+    { size ->
+        val buffer = factory.allocate(size)
+        when (val addressed = NativeBytes.of(buffer)) {
+            is Addressed.Native -> addressed.bytes
+            is Addressed.NotAddressable -> raise(Raised.FactoryNotNative(buffer), QuicCloseCircumstance.HandshakeFailed)
+        }
+    }

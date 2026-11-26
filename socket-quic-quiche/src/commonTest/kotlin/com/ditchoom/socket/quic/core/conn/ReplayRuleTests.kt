@@ -9,8 +9,8 @@ import kotlin.test.assertIs
 
 /** The one seam a rejected 0-RTT's replay is judged by, condition by condition, and the ticket parameters it reads. */
 class ReplayRuleTests {
-    private val remembered = TicketParams(1000, 500, 400, 10, 3, 1200)
-    private val use = EarlyUse(2, 2, 600, StreamBytes(4, 300), StreamBytes(2, 300))
+    private val remembered = TicketParams(10, 3, 1200)
+    private val use = EarlyUse(2, 2)
 
     private fun facts(
         granted: TicketParams = remembered,
@@ -27,8 +27,6 @@ class ReplayRuleTests {
                 ReplayCondition.BidirectionalStreams,
                 ReplayCondition.UnidirectionalStreams,
                 ReplayCondition.DatagramFrameSize,
-                ReplayCondition.ConnectionData,
-                ReplayCondition.StreamData,
             )
         assertEquals(ReplayVerdict.Replay, judge(all, facts()))
     }
@@ -55,26 +53,17 @@ class ReplayRuleTests {
     }
 
     @Test
-    fun lessCreditIsRefusedOnlyWhereItsConditionIsJudged() {
-        val low = params(maxData = 100, bidiRemote = 100)
-        assertEquals(ReplayVerdict.Replay, judge(REPLAY_CONDITIONS, facts(low)), "flow control only paces a replay")
-        val connection = assertIs<ReplayVerdict.Refuse>(judge(only(ReplayCondition.ConnectionData), facts(low)))
-        assertEquals(QuicEarlyDataChange.ConnectionData(1000, 100, 600), connection.change)
-        val stream = assertIs<ReplayVerdict.Refuse>(judge(only(ReplayCondition.StreamData), facts(low)))
-        assertEquals(QuicEarlyDataChange.StreamData(4, 500, 100, 300), stream.change)
-    }
-
-    @Test
     fun aSessionsParametersAreReadFromQuichesEncoding() {
         val read =
             assertIs<TicketRead.Read>(
                 ticketParamsOf(session(byteArrayOf(0x04, 0x02, 0x44, 0x00, 0x09, 0x01, 0x05, 0x20, 0x02, 0x44, 0xB0.toByte()))),
             )
         assertEquals(
-            listOf(0x400L, 0L, 0L, 0L, 5L, 0x4B0L),
+            listOf(0L, 5L, 0x4B0L),
             read.params.let {
-                listOf(it.initialMaxData, it.streamDataBidiRemote, it.streamDataUni, it.streamsBidi, it.streamsUni, it.datagramFrameSize)
+                listOf(it.streamsBidi, it.streamsUni, it.datagramFrameSize)
             },
+            "initial_max_data is skipped",
         )
         assertEquals(TicketRead.Unreadable, ticketParamsOf(session(byteArrayOf(0x04, 0x05, 0x01))), "a value past the end")
     }
@@ -90,10 +79,8 @@ class ReplayRuleTests {
         }
 
     private fun params(
-        maxData: Long = remembered.initialMaxData,
-        bidiRemote: Long = remembered.streamDataBidiRemote,
         streamsBidi: Long = remembered.streamsBidi,
         streamsUni: Long = remembered.streamsUni,
         datagram: Long = remembered.datagramFrameSize,
-    ) = TicketParams(maxData, bidiRemote, remembered.streamDataUni, streamsBidi, streamsUni, datagram)
+    ) = TicketParams(streamsBidi, streamsUni, datagram)
 }

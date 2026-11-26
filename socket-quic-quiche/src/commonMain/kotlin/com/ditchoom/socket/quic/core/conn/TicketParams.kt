@@ -5,13 +5,10 @@ import com.ditchoom.socket.quic.PeerTransportParams
 import com.ditchoom.socket.quic.core.observe.Confined
 
 /**
- * The server transport parameters 0-RTT relies on (RFC 9000 §7.4.1, RFC 9221 §3), as a ticket remembers them or a
+ * The server transport parameters a replay of rejected 0-RTT is judged on (RFC 9000 §7.4.1, RFC 9221 §3), as a ticket remembers them or a
  * handshake grants them. A parameter the server did not send is its default, 0; [datagramFrameSize] 0 is no datagrams.
  */
 internal class TicketParams(
-    val initialMaxData: Long,
-    val streamDataBidiRemote: Long,
-    val streamDataUni: Long,
     val streamsBidi: Long,
     val streamsUni: Long,
     val datagramFrameSize: Long,
@@ -26,9 +23,6 @@ internal class TicketParams(
                 is PeerTransportParams.NotYetNegotiated -> remembered
                 is PeerTransportParams.Negotiated ->
                     TicketParams(
-                        params.initialMaxData,
-                        params.initialMaxStreamDataBidiRemote,
-                        params.initialMaxStreamDataUni,
                         params.initialMaxStreamsBidi,
                         params.initialMaxStreamsUni,
                         maxOf(0L, params.maxDatagramFrameSize),
@@ -67,13 +61,13 @@ internal fun ticketParamsOf(serialized: ReadBuffer): TicketRead {
         reader.skip(valueEnd - reader.at)
     }
     return when (reader.read) {
-        Read.Whole -> TicketRead.Read(TicketParams(values[0], values[1], values[2], values[3], values[4], values[5]))
+        Read.Whole -> TicketRead.Read(TicketParams(values[0], values[1], values[2]))
         Read.PastTheEnd -> TicketRead.Unreadable
     }
 }
 
-/** initial_max_data, initial_max_stream_data_bidi_remote, initial_max_stream_data_uni, initial_max_streams_bidi and _uni, max_datagram_frame_size. */
-private val PARAM_IDS = longArrayOf(0x04, 0x06, 0x07, 0x08, 0x09, 0x20)
+/** initial_max_streams_bidi and _uni, max_datagram_frame_size. */
+private val PARAM_IDS = longArrayOf(0x08, 0x09, 0x20)
 
 /** Whether every read stayed inside the bytes. */
 private enum class Read { Whole, PastTheEnd }

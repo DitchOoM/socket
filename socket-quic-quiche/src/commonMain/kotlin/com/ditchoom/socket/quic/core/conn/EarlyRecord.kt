@@ -1,7 +1,5 @@
 package com.ditchoom.socket.quic.core.conn
 
-import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.socket.quic.QuicEarlyDataChange
 import com.ditchoom.socket.quic.QuicEarlyDataRejection
 import com.ditchoom.socket.quic.QuicResumption
 import com.ditchoom.socket.quic.QuicStreamId
@@ -15,7 +13,6 @@ import com.ditchoom.socket.quic.core.stream.Replayed
 import com.ditchoom.socket.quic.core.stream.StreamTable
 import com.ditchoom.socket.quic.core.stream.Streams
 import com.ditchoom.socket.quic.core.stream.WriteEnd
-import com.ditchoom.socket.quic.core.udp.Addressed
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 import kotlinx.coroutines.Runnable
 
@@ -58,13 +55,13 @@ internal sealed interface EarlySettle {
 
 /**
  * A client offering [resumption]'s ticket with 0-RTT, as [offer] says quiche took it, keeps its early bytes in memory
- * from [factory] and has quiche drop a rejected 0-RTT; any other client keeps nothing. Before the first send.
+ * from [allocate] and has quiche drop a rejected 0-RTT; any other client keeps nothing. Before the first send.
  */
 internal fun earlyPlanOf(
     q: QuicheConnRef,
     offer: Offer,
     resumption: QuicResumption,
-    factory: BufferFactory,
+    allocate: (Int) -> NativeBytes,
 ): EarlyPlan {
     val held =
         when (offer) {
@@ -81,7 +78,7 @@ internal fun earlyPlanOf(
         is TicketRead.Unreadable -> EarlyPlan.None
         is TicketRead.Read -> {
             resetStreamsOnEarlyDataReject(q)
-            EarlyPlan.Keeping(EarlyRecord(q, factory, ticket.protocol, read.params))
+            EarlyPlan.Keeping(EarlyRecord(q, allocate, ticket.protocol, read.params))
         }
     }
 }
@@ -111,22 +108,23 @@ private class Kept(
         }
 }
 
-private enum class RecordPhase { Recording, Overflowed, Replaying, Over }
+private enum class RecordPhase { Recording, Replaying, Over }
 
 /**
  * A client's 0-RTT bytes: a copy of every send quiche took before its server settled 0-RTT, never the caller's block,
- * so the block runs once. At most the ticket's `initial_max_data` is held, the most quiche lets 0-RTT carry. Freed when
+ * so the block runs once. It holds what quiche took, which quiche bounds by the ticket's `initial_max_data`: its
+ * connection credit until the server settles 0-RTT (RFC 9000 §7.4.1). Freed when
  * the server accepts 0-RTT, when quiche kept a rejected one's streams, once a replay is all in quiche, or at the end.
  */
 @Confined
 internal class EarlyRecord(
     private val q: QuicheConnRef,
-    private val factory: BufferFactory,
+    /** Memory with an address, from the connection's factory, which answers nothing else. */
+    private val allocate: (Int) -> NativeBytes,
     private val protocol: String,
     private val remembered: TicketParams,
 ) {
     private val kept = ArrayList<Kept>()
-    private var bytes = 0L
     private var phase = RecordPhase.Recording
     private val freed = Runnable { free() }
 
@@ -139,23 +137,13 @@ internal class EarlyRecord(
         end: WriteEnd,
     ) {
         if (phase != RecordPhase.Recording) return
-        if (bytes + length > remembered.initialMaxData) {
-            phase = RecordPhase.Overflowed
-            bytes += length
-            return
-        }
         if (length == 0) {
             kept += Kept(stream, KeptBytes.None, 0, end)
             return
         }
-        when (val memory = NativeBytes.of(factory.allocate(length))) {
-            is Addressed.Native -> {
-                NativeBytes.copy(address, memory.bytes.address, length)
-                kept += Kept(stream, KeptBytes.Held(memory.bytes), length, end)
-                bytes += length
-            }
-            is Addressed.NotAddressable -> phase = RecordPhase.Overflowed
-        }
+        val memory = allocate(length)
+        NativeBytes.copy(address, memory.address, length)
+        kept += Kept(stream, KeptBytes.Held(memory), length, end)
     }
 
     /** After each datagram quiche read: once the server settled 0-RTT, the bytes are freed, replayed, or refused. */
@@ -165,7 +153,7 @@ internal class EarlyRecord(
         handshake: Handshake,
     ): EarlySettle {
         when (phase) {
-            RecordPhase.Recording, RecordPhase.Overflowed -> Unit
+            RecordPhase.Recording -> Unit
             RecordPhase.Replaying, RecordPhase.Over -> return EarlySettle.Open
         }
         val reason =
@@ -179,13 +167,7 @@ internal class EarlyRecord(
             return settled(streams)
         }
         val granted = TicketParams.granted(q.api.connPeerTransportParams(q.handle), remembered)
-        val verdict =
-            when (phase) {
-                RecordPhase.Overflowed ->
-                    ReplayVerdict.Refuse(QuicEarlyDataChange.ConnectionData(remembered.initialMaxData, granted.initialMaxData, bytes))
-                RecordPhase.Recording, RecordPhase.Replaying, RecordPhase.Over ->
-                    judge(REPLAY_CONDITIONS, EarlyFacts(protocol, remembered, handshake.negotiated(), granted, useOf(kept)))
-            }
+        val verdict = judge(REPLAY_CONDITIONS, EarlyFacts(protocol, remembered, handshake.negotiated(), granted, useOf(kept)))
         return when (verdict) {
             is ReplayVerdict.Replay -> replay(streams, session.replayStart())
             is ReplayVerdict.Refuse -> {
@@ -248,25 +230,15 @@ internal class EarlyRecord(
     }
 }
 
-/** What the kept sends used, by stream: client-initiated ids, bit 1 set for unidirectional (RFC 9000 §2.1). */
+/** The streams of each kind the kept sends went on: client-initiated ids, bit 1 set for unidirectional (RFC 9000 §2.1). */
 private fun useOf(kept: List<Kept>): EarlyUse {
-    val perStream = LinkedHashMap<Long, Long>()
-    for (piece in kept) perStream[piece.stream] = (perStream[piece.stream] ?: 0L) + piece.length
     var bidi = 0L
     var uni = 0L
-    var fullestBidi = StreamBytes(0L, 0L)
-    var fullestUni = StreamBytes(0L, 0L)
-    for ((stream, carried) in perStream) {
-        val count = (stream shr STREAM_TYPE_BITS) + 1
-        if (stream and UNI_BIT == 0L) {
-            bidi = maxOf(bidi, count)
-            if (carried > fullestBidi.bytes) fullestBidi = StreamBytes(stream, carried)
-        } else {
-            uni = maxOf(uni, count)
-            if (carried > fullestUni.bytes) fullestUni = StreamBytes(stream, carried)
-        }
+    for (piece in kept) {
+        val count = (piece.stream shr STREAM_TYPE_BITS) + 1
+        if (piece.stream and UNI_BIT == 0L) bidi = maxOf(bidi, count) else uni = maxOf(uni, count)
     }
-    return EarlyUse(bidi, uni, kept.sumOf { it.length.toLong() }, fullestBidi, fullestUni)
+    return EarlyUse(bidi, uni)
 }
 
 private const val STREAM_TYPE_BITS = 2

@@ -129,7 +129,8 @@ sealed interface QuicResumption {
      * On the run-to-completion core the streams the rejected 0-RTT opened are reset (RFC 9001 §4.6.2;
      * the older engine sends their bytes again instead). The core keeps a copy of the
      * bytes [write] handed the engine, never [write] itself, and replays them on the same streams in
-     * 1-RTT, under the limits the server now grants, when the server kept what they relied on; it
+     * 1-RTT, under the limits the server now grants and paced by its flow control, when the server
+     * kept the protocol, the stream limits the bytes need and its datagram size; it
      * frees the copy once the server accepted 0-RTT or the replay is handed over. When the server
      * changed what they relied on, nothing is replayed and the connection ends with
      * [QuicConnectionEnd.EarlyDataRejected], whose [QuicEarlyDataChange] says what changed.
@@ -293,21 +294,6 @@ sealed interface QuicEarlyDataChange {
         val remembered: Long,
         val granted: Long,
         val opened: Long,
-    ) : QuicEarlyDataChange
-
-    /** The server grants [granted] bytes of connection credit, less than the [written] early bytes. */
-    data class ConnectionData(
-        val remembered: Long,
-        val granted: Long,
-        val written: Long,
-    ) : QuicEarlyDataChange
-
-    /** The server grants [granted] bytes on a new stream, less than the [written] early bytes of stream [stream]. */
-    data class StreamData(
-        val stream: Long,
-        val remembered: Long,
-        val granted: Long,
-        val written: Long,
     ) : QuicEarlyDataChange
 
     /** The server takes DATAGRAM frames of at most [granted] bytes, fewer than the [remembered]; 0 is none (RFC 9221 §3). */

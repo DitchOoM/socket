@@ -1888,21 +1888,6 @@ public final class com/ditchoom/socket/quic/QuicEarlyDataChange$BidirectionalStr
 	public fun toString ()Ljava/lang/String;
 }
 
-public final class com/ditchoom/socket/quic/QuicEarlyDataChange$ConnectionData : com/ditchoom/socket/quic/QuicEarlyDataChange {
-	public fun <init> (JJJ)V
-	public final fun component1 ()J
-	public final fun component2 ()J
-	public final fun component3 ()J
-	public final fun copy (JJJ)Lcom/ditchoom/socket/quic/QuicEarlyDataChange$ConnectionData;
-	public static synthetic fun copy$default (Lcom/ditchoom/socket/quic/QuicEarlyDataChange$ConnectionData;JJJILjava/lang/Object;)Lcom/ditchoom/socket/quic/QuicEarlyDataChange$ConnectionData;
-	public fun equals (Ljava/lang/Object;)Z
-	public final fun getGranted ()J
-	public final fun getRemembered ()J
-	public final fun getWritten ()J
-	public fun hashCode ()I
-	public fun toString ()Ljava/lang/String;
-}
-
 public final class com/ditchoom/socket/quic/QuicEarlyDataChange$DatagramFrameSize : com/ditchoom/socket/quic/QuicEarlyDataChange {
 	public fun <init> (JJ)V
 	public final fun component1 ()J
@@ -1912,23 +1897,6 @@ public final class com/ditchoom/socket/quic/QuicEarlyDataChange$DatagramFrameSiz
 	public fun equals (Ljava/lang/Object;)Z
 	public final fun getGranted ()J
 	public final fun getRemembered ()J
-	public fun hashCode ()I
-	public fun toString ()Ljava/lang/String;
-}
-
-public final class com/ditchoom/socket/quic/QuicEarlyDataChange$StreamData : com/ditchoom/socket/quic/QuicEarlyDataChange {
-	public fun <init> (JJJJ)V
-	public final fun component1 ()J
-	public final fun component2 ()J
-	public final fun component3 ()J
-	public final fun component4 ()J
-	public final fun copy (JJJJ)Lcom/ditchoom/socket/quic/QuicEarlyDataChange$StreamData;
-	public static synthetic fun copy$default (Lcom/ditchoom/socket/quic/QuicEarlyDataChange$StreamData;JJJJILjava/lang/Object;)Lcom/ditchoom/socket/quic/QuicEarlyDataChange$StreamData;
-	public fun equals (Ljava/lang/Object;)Z
-	public final fun getGranted ()J
-	public final fun getRemembered ()J
-	public final fun getStream ()J
-	public final fun getWritten ()J
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;
 }
