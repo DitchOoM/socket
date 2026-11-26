@@ -46,6 +46,11 @@ jobs:
           set -euo pipefail
           java scripts/EntryPointIsolationCheck.java --selftest
           java scripts/EntryPointIsolationCheck.java .
+      - name: Core and shared QUIC code use no 4.x-only declaration
+        run: |
+          set -euo pipefail
+          java scripts/SharedOutOf4xCheck.java --selftest
+          java scripts/SharedOutOf4xCheck.java .
       - name: HTTP3 codec layer names no QUIC type
         run: |
           set -euo pipefail
