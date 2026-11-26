@@ -91,7 +91,7 @@ internal class ImpairedPipe(
     /**
      * The impairment decision trace, in RNG-draw order: one entry per datagram that consumed draws
      * (blackhole drops consume none). Same seed → identical trace prefix across runs by construction;
-     * [SemanticSimTests] uses it as the determinism invariant that survives real-dispatcher timing.
+     * It is the determinism invariant that survives real-dispatcher timing.
      */
     internal data class Decision(
         val dropped: Boolean,

@@ -17,7 +17,7 @@
     -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!--
-      ACCESS_LOCAL_NETWORK lets P2pEchoServerProbe serve a phone on the same Wi-Fi. From API 37 an app
+      ACCESS_LOCAL_NETWORK lets a device test serve or reach a phone on the same Wi-Fi. From API 37 an app
       without it never sees a datagram from a local-network peer: the kernel counts each one as a drop on
       the socket and nothing else says so, while a peer reaching the same socket from the internet gets
       through. A runtime grant, like POST_NOTIFICATIONS (device-probe/install.sh grants both).

@@ -9,7 +9,7 @@ import kotlin.time.TimeSource
 /**
  * A meter's external command is bounded. Its wait is a plain JVM wait: unbounded, a slow command holds a
  * leak test's thread past the test's own deadline, where no coroutine deadline or cancellation reaches it
- * (`FailedConnectFdLeakTest` on Windows: 187 s against a 120 s budget, in the PowerShell meter).
+ * (a failed-connect leak test on Windows: 187 s against a 120 s budget, in the PowerShell meter).
  */
 class OpenHandleMeterTests {
     @Test

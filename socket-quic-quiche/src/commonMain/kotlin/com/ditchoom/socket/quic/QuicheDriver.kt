@@ -151,7 +151,7 @@ class QuicheDriver(
      * that quietly cannot migrate: a new platform, backend, or test double does not compile until it
      * states which case applies.
      *
-     * `internal` rather than `private` so `QuicCapabilityConformanceTestSuite` can read the **claim** a
+     * `internal` rather than `private` so a test can read the **claim** a
      * live connection was built with and check it against what that connection actually does. A
      * declaration nothing verifies is just a comment the compiler happens to type-check, and stating it
      * wrongly costs nothing until something measures it. Internal, so this stays inside the module — the

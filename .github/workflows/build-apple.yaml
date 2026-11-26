@@ -306,7 +306,7 @@ jobs:
   # Task names are UNQUALIFIED (no leading colon) so Gradle runs them in every subproject that has
   # them — a leading-colon `:macosArm64Test` would run only the ROOT project's test and silently skip
   # socket-quic-quiche / socket-http3 / socket-webtransport (a false green). The full QUIC suites are:
-  #   - socket-quic-quiche AppleQuicheEngineLoopbackTest (quiche client over NW-UDP <-> dual-stack
+  #   - socket-quic-quiche AppleCoreClientRideTests (quiche client over NW-UDP <-> dual-stack
   #     IPv6 POSIX server)
   #   - socket-http3 AppleHttp3LoopbackTest (the HTTP/3 stack)
   #   - socket-webtransport AppleWebTransportTest (the WebTransport server stack)

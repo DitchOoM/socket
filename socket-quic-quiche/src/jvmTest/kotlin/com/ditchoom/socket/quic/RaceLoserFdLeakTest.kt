@@ -44,7 +44,7 @@ import kotlin.time.Duration.Companion.seconds
  * attempts are scheduled — and from then on both handshakes run concurrently, as before.
  *
  * ## Why descriptors and not a counter
- * The same argument [FailedConnectFdLeakTest] makes: an instrument that counts `close()` calls reports
+ * An instrument that counts `close()` calls reports
  * what it is given, and the whole defect class here is a path that never reaches the call. Descriptors
  * returned to the process cannot be produced by a stub or a spy. This test is JVM-only for that reason —
  * it is the platform with a first-class descriptor count — while `QuicCandidateRaceTestSuite` carries

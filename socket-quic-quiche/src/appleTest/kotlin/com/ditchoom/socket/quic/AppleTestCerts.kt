@@ -24,8 +24,7 @@ import platform.posix.rename
 
 /**
  * Shared cert resolution for this module's Apple K/Native suites — the Apple counterpart of
- * `AndroidTestCerts`, extracted from [AppleQuicheEngineLoopbackTest] when [AppleQuicDatagramTests]
- * became the second consumer (issue #289).
+ * `AndroidTestCerts`, shared by the Apple suites.
  *
  * quiche loads its TLS chain + key from a **filesystem path**, so the resolution has two legs:
  *
