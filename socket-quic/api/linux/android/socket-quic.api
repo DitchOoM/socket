@@ -1594,6 +1594,19 @@ public final class com/ditchoom/socket/quic/QuicConnectionEnd$CallerFailed : com
 	public final fun getThrown ()Ljava/lang/Throwable;
 }
 
+public final class com/ditchoom/socket/quic/QuicConnectionEnd$EarlyDataRejected : com/ditchoom/socket/quic/QuicConnectionEnd {
+	public fun <init> (Lcom/ditchoom/socket/quic/QuicEarlyDataRejection;Lcom/ditchoom/socket/quic/QuicEarlyDataChange;)V
+	public final fun component1 ()Lcom/ditchoom/socket/quic/QuicEarlyDataRejection;
+	public final fun component2 ()Lcom/ditchoom/socket/quic/QuicEarlyDataChange;
+	public final fun copy (Lcom/ditchoom/socket/quic/QuicEarlyDataRejection;Lcom/ditchoom/socket/quic/QuicEarlyDataChange;)Lcom/ditchoom/socket/quic/QuicConnectionEnd$EarlyDataRejected;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/quic/QuicConnectionEnd$EarlyDataRejected;Lcom/ditchoom/socket/quic/QuicEarlyDataRejection;Lcom/ditchoom/socket/quic/QuicEarlyDataChange;ILjava/lang/Object;)Lcom/ditchoom/socket/quic/QuicConnectionEnd$EarlyDataRejected;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getChange ()Lcom/ditchoom/socket/quic/QuicEarlyDataChange;
+	public final fun getReason ()Lcom/ditchoom/socket/quic/QuicEarlyDataRejection;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
 public final class com/ditchoom/socket/quic/QuicConnectionEnd$HandshakeSendRefused : com/ditchoom/socket/quic/QuicConnectionEnd {
 	public fun <init> (Lcom/ditchoom/socket/quic/QuicHandshakeProgress;Lcom/ditchoom/socket/quic/QuicSendRefusal;)V
 	public final fun component1 ()Lcom/ditchoom/socket/quic/QuicHandshakeProgress;
@@ -1842,6 +1855,65 @@ public abstract interface class com/ditchoom/socket/quic/QuicDatagrams : com/dit
 
 public final class com/ditchoom/socket/quic/QuicDatagrams$DefaultImpls {
 	public static fun receiveEach (Lcom/ditchoom/socket/quic/QuicDatagrams;Lkotlin/jvm/functions/Function1;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
+public abstract interface class com/ditchoom/socket/quic/QuicEarlyDataChange {
+}
+
+public final class com/ditchoom/socket/quic/QuicEarlyDataChange$ApplicationProtocol : com/ditchoom/socket/quic/QuicEarlyDataChange {
+	public fun <init> (Ljava/lang/String;Ljava/lang/String;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun component2 ()Ljava/lang/String;
+	public final fun copy (Ljava/lang/String;Ljava/lang/String;)Lcom/ditchoom/socket/quic/QuicEarlyDataChange$ApplicationProtocol;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/quic/QuicEarlyDataChange$ApplicationProtocol;Ljava/lang/String;Ljava/lang/String;ILjava/lang/Object;)Lcom/ditchoom/socket/quic/QuicEarlyDataChange$ApplicationProtocol;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getNegotiated ()Ljava/lang/String;
+	public final fun getRemembered ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/quic/QuicEarlyDataChange$BidirectionalStreams : com/ditchoom/socket/quic/QuicEarlyDataChange {
+	public fun <init> (JJJ)V
+	public final fun component1 ()J
+	public final fun component2 ()J
+	public final fun component3 ()J
+	public final fun copy (JJJ)Lcom/ditchoom/socket/quic/QuicEarlyDataChange$BidirectionalStreams;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/quic/QuicEarlyDataChange$BidirectionalStreams;JJJILjava/lang/Object;)Lcom/ditchoom/socket/quic/QuicEarlyDataChange$BidirectionalStreams;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getGranted ()J
+	public final fun getOpened ()J
+	public final fun getRemembered ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/quic/QuicEarlyDataChange$DatagramFrameSize : com/ditchoom/socket/quic/QuicEarlyDataChange {
+	public fun <init> (JJ)V
+	public final fun component1 ()J
+	public final fun component2 ()J
+	public final fun copy (JJ)Lcom/ditchoom/socket/quic/QuicEarlyDataChange$DatagramFrameSize;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/quic/QuicEarlyDataChange$DatagramFrameSize;JJILjava/lang/Object;)Lcom/ditchoom/socket/quic/QuicEarlyDataChange$DatagramFrameSize;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getGranted ()J
+	public final fun getRemembered ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class com/ditchoom/socket/quic/QuicEarlyDataChange$UnidirectionalStreams : com/ditchoom/socket/quic/QuicEarlyDataChange {
+	public fun <init> (JJJ)V
+	public final fun component1 ()J
+	public final fun component2 ()J
+	public final fun component3 ()J
+	public final fun copy (JJJ)Lcom/ditchoom/socket/quic/QuicEarlyDataChange$UnidirectionalStreams;
+	public static synthetic fun copy$default (Lcom/ditchoom/socket/quic/QuicEarlyDataChange$UnidirectionalStreams;JJJILjava/lang/Object;)Lcom/ditchoom/socket/quic/QuicEarlyDataChange$UnidirectionalStreams;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getGranted ()J
+	public final fun getOpened ()J
+	public final fun getRemembered ()J
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
 }
 
 public abstract interface class com/ditchoom/socket/quic/QuicEarlyDataOutcome {
@@ -2632,13 +2704,6 @@ public final class com/ditchoom/socket/quic/QuicRefusal$DatagramSendQueueTooShor
 
 public final class com/ditchoom/socket/quic/QuicRefusal$NoQuicOnThisPlatform : com/ditchoom/socket/quic/QuicRefusal {
 	public static final field INSTANCE Lcom/ditchoom/socket/quic/QuicRefusal$NoQuicOnThisPlatform;
-	public fun equals (Ljava/lang/Object;)Z
-	public fun hashCode ()I
-	public fun toString ()Ljava/lang/String;
-}
-
-public final class com/ditchoom/socket/quic/QuicRefusal$QlogNotBudgeted : com/ditchoom/socket/quic/QuicRefusal {
-	public static final field INSTANCE Lcom/ditchoom/socket/quic/QuicRefusal$QlogNotBudgeted;
 	public fun equals (Ljava/lang/Object;)Z
 	public fun hashCode ()I
 	public fun toString ()Ljava/lang/String;

@@ -1973,6 +1973,22 @@ sealed interface com.ditchoom.socket.quic/QuicConnectionEnd { // com.ditchoom.so
             final fun <get-thrown>(): kotlin/Throwable // com.ditchoom.socket.quic/QuicConnectionEnd.CallerFailed.thrown.<get-thrown>|<get-thrown>(){}[0]
     }
 
+    final class EarlyDataRejected : com.ditchoom.socket.quic/QuicConnectionEnd { // com.ditchoom.socket.quic/QuicConnectionEnd.EarlyDataRejected|null[0]
+        constructor <init>(com.ditchoom.socket.quic/QuicEarlyDataRejection, com.ditchoom.socket.quic/QuicEarlyDataChange) // com.ditchoom.socket.quic/QuicConnectionEnd.EarlyDataRejected.<init>|<init>(com.ditchoom.socket.quic.QuicEarlyDataRejection;com.ditchoom.socket.quic.QuicEarlyDataChange){}[0]
+
+        final val change // com.ditchoom.socket.quic/QuicConnectionEnd.EarlyDataRejected.change|{}change[0]
+            final fun <get-change>(): com.ditchoom.socket.quic/QuicEarlyDataChange // com.ditchoom.socket.quic/QuicConnectionEnd.EarlyDataRejected.change.<get-change>|<get-change>(){}[0]
+        final val reason // com.ditchoom.socket.quic/QuicConnectionEnd.EarlyDataRejected.reason|{}reason[0]
+            final fun <get-reason>(): com.ditchoom.socket.quic/QuicEarlyDataRejection // com.ditchoom.socket.quic/QuicConnectionEnd.EarlyDataRejected.reason.<get-reason>|<get-reason>(){}[0]
+
+        final fun component1(): com.ditchoom.socket.quic/QuicEarlyDataRejection // com.ditchoom.socket.quic/QuicConnectionEnd.EarlyDataRejected.component1|component1(){}[0]
+        final fun component2(): com.ditchoom.socket.quic/QuicEarlyDataChange // com.ditchoom.socket.quic/QuicConnectionEnd.EarlyDataRejected.component2|component2(){}[0]
+        final fun copy(com.ditchoom.socket.quic/QuicEarlyDataRejection = ..., com.ditchoom.socket.quic/QuicEarlyDataChange = ...): com.ditchoom.socket.quic/QuicConnectionEnd.EarlyDataRejected // com.ditchoom.socket.quic/QuicConnectionEnd.EarlyDataRejected.copy|copy(com.ditchoom.socket.quic.QuicEarlyDataRejection;com.ditchoom.socket.quic.QuicEarlyDataChange){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicConnectionEnd.EarlyDataRejected.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicConnectionEnd.EarlyDataRejected.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicConnectionEnd.EarlyDataRejected.toString|toString(){}[0]
+    }
+
     final class HandshakeSendRefused : com.ditchoom.socket.quic/QuicConnectionEnd { // com.ditchoom.socket.quic/QuicConnectionEnd.HandshakeSendRefused|null[0]
         constructor <init>(com.ditchoom.socket.quic/QuicHandshakeProgress, com.ditchoom.socket.quic/QuicSendRefusal) // com.ditchoom.socket.quic/QuicConnectionEnd.HandshakeSendRefused.<init>|<init>(com.ditchoom.socket.quic.QuicHandshakeProgress;com.ditchoom.socket.quic.QuicSendRefusal){}[0]
 
@@ -2157,6 +2173,78 @@ sealed interface com.ditchoom.socket.quic/QuicConnectionState { // com.ditchoom.
         final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicConnectionState.Idle.equals|equals(kotlin.Any?){}[0]
         final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicConnectionState.Idle.hashCode|hashCode(){}[0]
         final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicConnectionState.Idle.toString|toString(){}[0]
+    }
+}
+
+sealed interface com.ditchoom.socket.quic/QuicEarlyDataChange { // com.ditchoom.socket.quic/QuicEarlyDataChange|null[0]
+    final class ApplicationProtocol : com.ditchoom.socket.quic/QuicEarlyDataChange { // com.ditchoom.socket.quic/QuicEarlyDataChange.ApplicationProtocol|null[0]
+        constructor <init>(kotlin/String, kotlin/String) // com.ditchoom.socket.quic/QuicEarlyDataChange.ApplicationProtocol.<init>|<init>(kotlin.String;kotlin.String){}[0]
+
+        final val negotiated // com.ditchoom.socket.quic/QuicEarlyDataChange.ApplicationProtocol.negotiated|{}negotiated[0]
+            final fun <get-negotiated>(): kotlin/String // com.ditchoom.socket.quic/QuicEarlyDataChange.ApplicationProtocol.negotiated.<get-negotiated>|<get-negotiated>(){}[0]
+        final val remembered // com.ditchoom.socket.quic/QuicEarlyDataChange.ApplicationProtocol.remembered|{}remembered[0]
+            final fun <get-remembered>(): kotlin/String // com.ditchoom.socket.quic/QuicEarlyDataChange.ApplicationProtocol.remembered.<get-remembered>|<get-remembered>(){}[0]
+
+        final fun component1(): kotlin/String // com.ditchoom.socket.quic/QuicEarlyDataChange.ApplicationProtocol.component1|component1(){}[0]
+        final fun component2(): kotlin/String // com.ditchoom.socket.quic/QuicEarlyDataChange.ApplicationProtocol.component2|component2(){}[0]
+        final fun copy(kotlin/String = ..., kotlin/String = ...): com.ditchoom.socket.quic/QuicEarlyDataChange.ApplicationProtocol // com.ditchoom.socket.quic/QuicEarlyDataChange.ApplicationProtocol.copy|copy(kotlin.String;kotlin.String){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicEarlyDataChange.ApplicationProtocol.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicEarlyDataChange.ApplicationProtocol.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicEarlyDataChange.ApplicationProtocol.toString|toString(){}[0]
+    }
+
+    final class BidirectionalStreams : com.ditchoom.socket.quic/QuicEarlyDataChange { // com.ditchoom.socket.quic/QuicEarlyDataChange.BidirectionalStreams|null[0]
+        constructor <init>(kotlin/Long, kotlin/Long, kotlin/Long) // com.ditchoom.socket.quic/QuicEarlyDataChange.BidirectionalStreams.<init>|<init>(kotlin.Long;kotlin.Long;kotlin.Long){}[0]
+
+        final val granted // com.ditchoom.socket.quic/QuicEarlyDataChange.BidirectionalStreams.granted|{}granted[0]
+            final fun <get-granted>(): kotlin/Long // com.ditchoom.socket.quic/QuicEarlyDataChange.BidirectionalStreams.granted.<get-granted>|<get-granted>(){}[0]
+        final val opened // com.ditchoom.socket.quic/QuicEarlyDataChange.BidirectionalStreams.opened|{}opened[0]
+            final fun <get-opened>(): kotlin/Long // com.ditchoom.socket.quic/QuicEarlyDataChange.BidirectionalStreams.opened.<get-opened>|<get-opened>(){}[0]
+        final val remembered // com.ditchoom.socket.quic/QuicEarlyDataChange.BidirectionalStreams.remembered|{}remembered[0]
+            final fun <get-remembered>(): kotlin/Long // com.ditchoom.socket.quic/QuicEarlyDataChange.BidirectionalStreams.remembered.<get-remembered>|<get-remembered>(){}[0]
+
+        final fun component1(): kotlin/Long // com.ditchoom.socket.quic/QuicEarlyDataChange.BidirectionalStreams.component1|component1(){}[0]
+        final fun component2(): kotlin/Long // com.ditchoom.socket.quic/QuicEarlyDataChange.BidirectionalStreams.component2|component2(){}[0]
+        final fun component3(): kotlin/Long // com.ditchoom.socket.quic/QuicEarlyDataChange.BidirectionalStreams.component3|component3(){}[0]
+        final fun copy(kotlin/Long = ..., kotlin/Long = ..., kotlin/Long = ...): com.ditchoom.socket.quic/QuicEarlyDataChange.BidirectionalStreams // com.ditchoom.socket.quic/QuicEarlyDataChange.BidirectionalStreams.copy|copy(kotlin.Long;kotlin.Long;kotlin.Long){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicEarlyDataChange.BidirectionalStreams.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicEarlyDataChange.BidirectionalStreams.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicEarlyDataChange.BidirectionalStreams.toString|toString(){}[0]
+    }
+
+    final class DatagramFrameSize : com.ditchoom.socket.quic/QuicEarlyDataChange { // com.ditchoom.socket.quic/QuicEarlyDataChange.DatagramFrameSize|null[0]
+        constructor <init>(kotlin/Long, kotlin/Long) // com.ditchoom.socket.quic/QuicEarlyDataChange.DatagramFrameSize.<init>|<init>(kotlin.Long;kotlin.Long){}[0]
+
+        final val granted // com.ditchoom.socket.quic/QuicEarlyDataChange.DatagramFrameSize.granted|{}granted[0]
+            final fun <get-granted>(): kotlin/Long // com.ditchoom.socket.quic/QuicEarlyDataChange.DatagramFrameSize.granted.<get-granted>|<get-granted>(){}[0]
+        final val remembered // com.ditchoom.socket.quic/QuicEarlyDataChange.DatagramFrameSize.remembered|{}remembered[0]
+            final fun <get-remembered>(): kotlin/Long // com.ditchoom.socket.quic/QuicEarlyDataChange.DatagramFrameSize.remembered.<get-remembered>|<get-remembered>(){}[0]
+
+        final fun component1(): kotlin/Long // com.ditchoom.socket.quic/QuicEarlyDataChange.DatagramFrameSize.component1|component1(){}[0]
+        final fun component2(): kotlin/Long // com.ditchoom.socket.quic/QuicEarlyDataChange.DatagramFrameSize.component2|component2(){}[0]
+        final fun copy(kotlin/Long = ..., kotlin/Long = ...): com.ditchoom.socket.quic/QuicEarlyDataChange.DatagramFrameSize // com.ditchoom.socket.quic/QuicEarlyDataChange.DatagramFrameSize.copy|copy(kotlin.Long;kotlin.Long){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicEarlyDataChange.DatagramFrameSize.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicEarlyDataChange.DatagramFrameSize.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicEarlyDataChange.DatagramFrameSize.toString|toString(){}[0]
+    }
+
+    final class UnidirectionalStreams : com.ditchoom.socket.quic/QuicEarlyDataChange { // com.ditchoom.socket.quic/QuicEarlyDataChange.UnidirectionalStreams|null[0]
+        constructor <init>(kotlin/Long, kotlin/Long, kotlin/Long) // com.ditchoom.socket.quic/QuicEarlyDataChange.UnidirectionalStreams.<init>|<init>(kotlin.Long;kotlin.Long;kotlin.Long){}[0]
+
+        final val granted // com.ditchoom.socket.quic/QuicEarlyDataChange.UnidirectionalStreams.granted|{}granted[0]
+            final fun <get-granted>(): kotlin/Long // com.ditchoom.socket.quic/QuicEarlyDataChange.UnidirectionalStreams.granted.<get-granted>|<get-granted>(){}[0]
+        final val opened // com.ditchoom.socket.quic/QuicEarlyDataChange.UnidirectionalStreams.opened|{}opened[0]
+            final fun <get-opened>(): kotlin/Long // com.ditchoom.socket.quic/QuicEarlyDataChange.UnidirectionalStreams.opened.<get-opened>|<get-opened>(){}[0]
+        final val remembered // com.ditchoom.socket.quic/QuicEarlyDataChange.UnidirectionalStreams.remembered|{}remembered[0]
+            final fun <get-remembered>(): kotlin/Long // com.ditchoom.socket.quic/QuicEarlyDataChange.UnidirectionalStreams.remembered.<get-remembered>|<get-remembered>(){}[0]
+
+        final fun component1(): kotlin/Long // com.ditchoom.socket.quic/QuicEarlyDataChange.UnidirectionalStreams.component1|component1(){}[0]
+        final fun component2(): kotlin/Long // com.ditchoom.socket.quic/QuicEarlyDataChange.UnidirectionalStreams.component2|component2(){}[0]
+        final fun component3(): kotlin/Long // com.ditchoom.socket.quic/QuicEarlyDataChange.UnidirectionalStreams.component3|component3(){}[0]
+        final fun copy(kotlin/Long = ..., kotlin/Long = ..., kotlin/Long = ...): com.ditchoom.socket.quic/QuicEarlyDataChange.UnidirectionalStreams // com.ditchoom.socket.quic/QuicEarlyDataChange.UnidirectionalStreams.copy|copy(kotlin.Long;kotlin.Long;kotlin.Long){}[0]
+        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicEarlyDataChange.UnidirectionalStreams.equals|equals(kotlin.Any?){}[0]
+        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicEarlyDataChange.UnidirectionalStreams.hashCode|hashCode(){}[0]
+        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicEarlyDataChange.UnidirectionalStreams.toString|toString(){}[0]
     }
 }
 
@@ -2808,12 +2896,6 @@ sealed interface com.ditchoom.socket.quic/QuicRefusal { // com.ditchoom.socket.q
         final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicRefusal.NoQuicOnThisPlatform.equals|equals(kotlin.Any?){}[0]
         final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicRefusal.NoQuicOnThisPlatform.hashCode|hashCode(){}[0]
         final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicRefusal.NoQuicOnThisPlatform.toString|toString(){}[0]
-    }
-
-    final object QlogNotBudgeted : com.ditchoom.socket.quic/QuicRefusal { // com.ditchoom.socket.quic/QuicRefusal.QlogNotBudgeted|null[0]
-        final fun equals(kotlin/Any?): kotlin/Boolean // com.ditchoom.socket.quic/QuicRefusal.QlogNotBudgeted.equals|equals(kotlin.Any?){}[0]
-        final fun hashCode(): kotlin/Int // com.ditchoom.socket.quic/QuicRefusal.QlogNotBudgeted.hashCode|hashCode(){}[0]
-        final fun toString(): kotlin/String // com.ditchoom.socket.quic/QuicRefusal.QlogNotBudgeted.toString|toString(){}[0]
     }
 
     final object StandbyLinkNotHeld : com.ditchoom.socket.quic/QuicRefusal { // com.ditchoom.socket.quic/QuicRefusal.StandbyLinkNotHeld|null[0]
