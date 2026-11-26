@@ -83,11 +83,15 @@ class CoreStreamReadMemorySoakTests {
                         val growthKb = after.nativeKb - before.nativeKb
                         val liveBufferGrowth = after.directPoolCount - before.directPoolCount
                         val report =
-                            "reads=$reads payload=${PAYLOAD.length}B tier=$tier meter=${meter.description}\n  $before\n  $duringRun\n  $after\n" +
+                            "reads=$reads payload=${PAYLOAD.length}B tier=$tier meter=${meter.description}\n" +
+                                "  $before\n  $duringRun\n  $after\n" +
                                 "  growth=${growthKb}kB (${"%.1f".format(growthKb * 1024.0 / reads)} B/read), bound=${MAX_GROWTH_KB}kB; " +
                                 "liveDirectBuffers=+$liveBufferGrowth, bound=$MAX_LIVE_DIRECT_BUFFER_GROWTH"
                         println("[core read soak] $report")
-                        assertTrue(growthKb <= MAX_GROWTH_KB, "the native footprint grew across $reads stream reads: a read buffer is not released.\n  $report")
+                        assertTrue(
+                            growthKb <= MAX_GROWTH_KB,
+                            "the native footprint grew across $reads stream reads: a read buffer is not released.\n  $report",
+                        )
                         assertTrue(
                             liveBufferGrowth <= MAX_LIVE_DIRECT_BUFFER_GROWTH,
                             "$liveBufferGrowth more live direct buffers than before $reads stream reads.\n  $report",
