@@ -7,6 +7,8 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.selects.SelectBuilder
 import kotlinx.coroutines.selects.onTimeout
 import kotlinx.coroutines.withTimeoutOrNull
+import com.ditchoom.socket.quic.trace.QuicTraceRecorder
+import com.ditchoom.socket.testkit.trace.TraceSink
 import kotlin.time.Duration
 import kotlin.time.TimeMark
 import kotlin.time.TimeSource
@@ -176,3 +178,9 @@ object RealDriverClock : DriverClock {
 
     override fun quicheTime(): DriverTime = DriverTime.Real
 }
+
+/** A recorder whose timestamps count from [clock]'s mark: the 4.x driver and its simulations stamp the trace with their own clock. */
+fun QuicTraceRecorder(
+    sink: TraceSink,
+    clock: DriverClock,
+): QuicTraceRecorder = QuicTraceRecorder(sink, clock.markNow())

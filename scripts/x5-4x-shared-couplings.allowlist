@@ -1,5 +1,2 @@
 # Uses of a 4.x declaration by a file that outlives the 4.x stack: <file><TAB><name>. Only shrinks:
 # scripts/SharedOutOf4xCheck.java fails on a stale entry. Core files (package quic.core) are never listed here.
-socket-quic-quiche/src/commonMain/kotlin/com/ditchoom/socket/quic/trace/OffLoopTraceSink.kt	serverReceiveDispatcher
-socket-quic-quiche/src/commonMain/kotlin/com/ditchoom/socket/quic/trace/QuicTraceRecorder.kt	DriverClock
-socket-quic-quiche/src/commonMain/kotlin/com/ditchoom/socket/quic/trace/QuicTraceRecorder.kt	RealDriverClock

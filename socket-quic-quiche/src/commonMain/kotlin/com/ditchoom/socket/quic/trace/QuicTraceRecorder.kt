@@ -4,14 +4,12 @@ import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.socket.MonitorCapability
 import com.ditchoom.socket.NetworkMonitor
 import com.ditchoom.socket.NetworkState
-import com.ditchoom.socket.quic.DriverClock
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicCloseReason
 import com.ditchoom.socket.quic.QuicConnectionState
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicPathState
 import com.ditchoom.socket.quic.QuicPathStats
-import com.ditchoom.socket.quic.RealDriverClock
 import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.testkit.trace.TracePath
 import com.ditchoom.socket.testkit.trace.TracePathStats
@@ -23,6 +21,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlin.time.Duration
 import kotlin.time.TimeMark
+import kotlin.time.TimeSource
 import com.ditchoom.socket.transport.Liveness as TransportLiveness
 
 /**
@@ -33,9 +32,7 @@ import com.ditchoom.socket.transport.Liveness as TransportLiveness
  * wake. Connectivity ([observe]) and liveness ([wrap]) taps are caller-wired, since those seams
  * live above the driver.
  *
- * All timestamps come from ONE clock — the [DriverClock] passed here, which must be the same
- * instance the driver runs on ([com.ditchoom.socket.quic.QuicheDriverTuning.clock]) so trace
- * stamps and driver timers can never skew (RFC §5 "one clock").
+ * All timestamps are offsets from one [origin], a monotonic mark; a replay passes its own clock's mark.
  *
  * ## Trace line grammar (version `v1`)
  *
@@ -81,10 +78,8 @@ import com.ditchoom.socket.transport.Liveness as TransportLiveness
  */
 class QuicTraceRecorder(
     private val sink: TraceSink,
-    clock: DriverClock = RealDriverClock,
+    private val origin: TimeMark = TimeSource.Monotonic.markNow(),
 ) {
-    private val origin: TimeMark = clock.markNow()
-
     /** Offset from the recorder's single clock origin — a Duration, matching [TraceEvent.at]. */
     internal fun now(): Duration = origin.elapsedNow()
 
