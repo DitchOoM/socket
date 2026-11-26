@@ -6,7 +6,9 @@ import com.ditchoom.socket.quic.EncodedSockAddr
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicConnectionIdentity
+import com.ditchoom.socket.quic.QuicRole
 import com.ditchoom.socket.quic.SendTarget
+import com.ditchoom.socket.quic.core.conn.nameQlog
 import com.ditchoom.socket.quic.core.conn.Conn
 import com.ditchoom.socket.quic.core.conn.ConnAddress
 import com.ditchoom.socket.quic.core.conn.ConnMemory
@@ -111,6 +113,7 @@ internal class ClientParts(
             memory = ConnMemory(w.running.shared, w.memory.factory(), alpn),
             flight = w.flight,
             capture = capture,
+            qlog = w.api.nameQlog(w.handle, capture, QuicRole.Client, w.session),
             port = loop.port,
             socket = socket,
             clock = w.clock,

@@ -29,7 +29,7 @@ import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.QuicheTime
 import com.ditchoom.socket.quic.core.udp.Addressed
 import com.ditchoom.socket.quic.core.udp.NativeBytes
-import com.ditchoom.socket.quic.nameQlog
+import com.ditchoom.socket.quic.core.conn.nameQlog
 import com.ditchoom.socket.quic.nameTrafficSecretsLog
 import com.ditchoom.socket.quic.trace.TraceCapture
 import kotlinx.coroutines.Runnable
@@ -97,12 +97,6 @@ internal class ConnBuild(
     /** Where the connection copies the negotiated ALPN; the edge reads it at establishment. */
     val alpn: PlatformBuffer get() = memory.alpn.owner
 
-    /** Names the connection's qlog before quiche reads its first datagram. */
-    fun nameQlog(
-        capture: TraceCapture,
-        session: QuicSessionId,
-    ) = q.api.nameQlog(q.handle, capture, QuicRole.Server, session)
-
     /** Names the connection's TLS key log before quiche reads its first datagram. */
     fun nameTrafficSecretsLog(
         capture: TraceCapture,
@@ -110,9 +104,11 @@ internal class ConnBuild(
         session: QuicSessionId,
     ) = q.api.nameTrafficSecretsLog(q.handle, capture, QuicRole.Server, directory) { session }
 
+    /** The connection, its qlog named before quiche reads its first datagram. */
     fun build(
         sink: ConnSink,
         capture: TraceCapture,
+        session: QuicSessionId,
     ): Conn =
         buildConn(
             rules = parts.rules,
@@ -122,6 +118,7 @@ internal class ConnBuild(
             memory = ConnMemory(parts.shared, parts.factory, memory.alpn),
             flight = parts.flight,
             capture = capture,
+            qlog = q.api.nameQlog(q.handle, capture, QuicRole.Server, session),
             port = parts.port,
             socket = parts.socket,
             clock = parts.clock,

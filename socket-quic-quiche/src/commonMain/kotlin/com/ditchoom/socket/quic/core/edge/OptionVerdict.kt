@@ -22,8 +22,6 @@ import com.ditchoom.socket.quic.StreamOpenPolicy
 import com.ditchoom.socket.quic.UdpBatching
 import com.ditchoom.socket.quic.core.conn.MIN_SEND_DEPTH
 import com.ditchoom.socket.quic.trace.QlogDeclaration
-import com.ditchoom.socket.quic.trace.QlogTarget
-import com.ditchoom.socket.quic.trace.TraceCapture
 
 /** What the core does with a connect's or serve's options: honours all of them, or refuses the first it cannot honour. */
 internal sealed interface OptionVerdict {
@@ -46,7 +44,6 @@ internal fun verdictOn(options: QuicOptions): OptionVerdict =
         migrationVerdict(options.migration),
         streamOpenVerdict(options.streamOpenPolicy),
         standbyVerdict(options.standbyLink),
-        options.trace.let { trace -> if (trace == null) OptionVerdict.Honoured else declaredQlogVerdict(trace.qlog) },
         transportVerdict(options),
     )
 
@@ -75,27 +72,6 @@ private fun standbyVerdict(link: StandbyLink): OptionVerdict =
         is StandbyLink.KeepCellularReady -> refused(QuicRefusal.StandbyLinkNotHeld)
     }
 
-/** The core writes a qlog to a file or to the environment's directory; it keeps no budgeted directory of segments. */
-internal fun qlogVerdict(target: QlogTarget): OptionVerdict =
-    when (target) {
-        is QlogTarget.Off, is QlogTarget.File -> OptionVerdict.Honoured
-        is QlogTarget.Budgeted -> refused(QuicRefusal.QlogNotBudgeted)
-    }
-
-/** What a trace's factory declares of its qlog targets, judged without asking the factory for anything. */
-private fun declaredQlogVerdict(declaration: QlogDeclaration): OptionVerdict =
-    when (declaration) {
-        is QlogDeclaration.NotBudgeted -> OptionVerdict.Honoured
-        is QlogDeclaration.Budgeted -> refused(QuicRefusal.QlogNotBudgeted)
-    }
-
-/** The qlog verdict of a connection's [capture]. */
-internal fun qlogVerdictOf(capture: TraceCapture): OptionVerdict =
-    when (capture) {
-        is TraceCapture.Off -> OptionVerdict.Honoured
-        is TraceCapture.On -> qlogVerdict(capture.qlog)
-    }
-
 /** The options whose every value the core honours, each decided on its own so that a new value is decided too. */
 private fun transportVerdict(options: QuicOptions): OptionVerdict {
     when (options.congestionControl) {
@@ -106,6 +82,11 @@ private fun transportVerdict(options: QuicOptions): OptionVerdict {
     }
     when (options.closeLinger) {
         is QuicCloseLinger.Immediate, is QuicCloseLinger.UntilPeerDone, is QuicCloseLinger.UntilAcknowledged -> Unit
+    }
+    options.trace?.let { trace ->
+        when (trace.qlog) {
+            is QlogDeclaration.NotBudgeted, is QlogDeclaration.Budgeted -> Unit
+        }
     }
     when (options.networkMonitor) {
         is NetworkMonitorSource.ProcessDefault, is NetworkMonitorSource.Supplied -> Unit

@@ -17,7 +17,6 @@ internal class ServerCounts {
     private val negotiations = Counter()
     private val recvInfos = Counter()
     private val unsettled = Counter()
-    private val qlogRefused = Counter()
 
     /** Datagrams handed to a connection. */
     val routed: Long get() = routedCount.value()
@@ -59,11 +58,6 @@ internal class ServerCounts {
     val recvInfosBuilt: Long get() = recvInfos.value()
 
     fun routedOne() = routedCount.increment()
-
-    /** Accepted connections whose trace named a budgeted qlog, which is not written. */
-    val qlogsRefusedAtAccept: Long get() = qlogRefused.value()
-
-    fun qlogRefusedAtAccept() = qlogRefused.increment()
 
     fun acceptedOne() = acceptedCount.increment()
 

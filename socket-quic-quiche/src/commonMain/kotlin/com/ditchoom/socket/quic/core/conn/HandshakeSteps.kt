@@ -80,6 +80,7 @@ internal fun ConnParts.served(
     fire: Runnable,
 ) {
     announce(now, paths)
+    slots.qlog.served()
     timer.served()
     if (collected == Collected.Everything) rearm(now, fire)
 }
@@ -92,6 +93,7 @@ internal fun ConnParts.announce(
     when (handshake.announcement()) {
         Announcement.Due -> {
             slots.datagrams.wake(now)
+            slots.qlog.established()
             val report = handshake.report(now, paths.read(), outcome())
             sink.established(report)
             handshake.reported(report.facts)

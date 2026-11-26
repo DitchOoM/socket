@@ -1,6 +1,5 @@
 package com.ditchoom.socket.quic.core.edge
 
-import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.core.demux.withCoreEchoServer
 import com.ditchoom.socket.quic.skipOnMissingNativeLib
@@ -15,6 +14,7 @@ import com.ditchoom.socket.quic.trace.QlogTarget
 import com.ditchoom.socket.quic.trace.QuicConnectionCapture
 import com.ditchoom.socket.quic.trace.QuicTraceCapture
 import com.ditchoom.socket.testkit.trace.TraceSink
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.job
 import kotlinx.coroutines.runBlocking
@@ -135,7 +135,7 @@ class CoreQlogBudgetTests {
                     for (name in attempts) {
                         try {
                             connectCore(port, options = coreTestOptions.copy(trace = captureInto(directory, name)), timeout = 1.seconds)
-                        } catch (_: QuicCloseException) {
+                        } catch (_: TimeoutCancellationException) {
                             // The attempt never established: the storm this test is about.
                         }
                     }

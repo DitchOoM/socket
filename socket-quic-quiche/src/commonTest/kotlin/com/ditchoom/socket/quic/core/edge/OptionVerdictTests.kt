@@ -6,10 +6,7 @@ import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicRefusal
 import com.ditchoom.socket.quic.StandbyLink
 import com.ditchoom.socket.quic.StreamOpenPolicy
-import com.ditchoom.socket.quic.trace.QlogBudget
 import com.ditchoom.socket.quic.trace.QlogDeclaration
-import com.ditchoom.socket.quic.trace.QlogDirectory
-import com.ditchoom.socket.quic.trace.QlogTarget
 import com.ditchoom.socket.quic.trace.QuicTraceCapture
 import com.ditchoom.socket.transport.NetworkKind
 import kotlin.test.Test
@@ -78,31 +75,11 @@ class OptionVerdictTests {
     }
 
     @Test
-    fun everyQlogTargetIsDecided() {
-        val budgeted = QlogTarget.Budgeted(QlogDirectory("/qlog", QlogBudget.of(1L shl 20, 2, 1L shl 26, 4)) { }, "conn")
-        for (target in listOf(QlogTarget.Off, QlogTarget.File("/qlog/a.sqlog"), budgeted)) {
-            val verdict = qlogVerdict(target)
-            when (target) {
-                QlogTarget.Off, is QlogTarget.File -> assertHonoured(verdict)
-                is QlogTarget.Budgeted -> {
-                    assertEquals(QuicRefusal.QlogNotBudgeted, refusalOf(verdict))
-                }
-            }
-        }
-    }
-
-    @Test
     fun everyQlogDeclarationIsDecidedWithoutAskingTheFactory() {
         for (declaration in listOf(QlogDeclaration.NotBudgeted, QlogDeclaration.Budgeted)) {
             val trace =
                 QuicTraceCapture(captureFor = { throw AssertionError("a declaration is judged without the factory") }, qlog = declaration)
-            val verdict = verdictOn(base.copy(trace = trace))
-            when (declaration) {
-                QlogDeclaration.NotBudgeted -> assertHonoured(verdict)
-                QlogDeclaration.Budgeted -> {
-                    assertEquals(QuicRefusal.QlogNotBudgeted, refusalOf(verdict))
-                }
-            }
+            assertHonoured(verdictOn(base.copy(trace = trace)))
         }
     }
 }

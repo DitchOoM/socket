@@ -12,6 +12,7 @@ import com.ditchoom.socket.quic.StubQuicheApi
 import com.ditchoom.socket.quic.core.conn.AccessGuard
 import com.ditchoom.socket.quic.core.conn.Arrival
 import com.ditchoom.socket.quic.core.conn.ChainSource
+import com.ditchoom.socket.quic.core.conn.Qlog
 import com.ditchoom.socket.quic.core.conn.ClientSession
 import com.ditchoom.socket.quic.core.conn.Conn
 import com.ditchoom.socket.quic.core.conn.ConnAddress
@@ -161,6 +162,7 @@ internal fun testConn(
 ): Conn =
     buildConn(
         rules = rules,
+        qlog = Qlog.Unbudgeted,
         q = QuicheConnRef(api, QuicheConn(1L)),
         side =
             ConnSide.Client(

@@ -209,6 +209,7 @@ internal fun replayClient(
         ClientWiring(
             api,
             handle,
+            QuicSessionId("replay"),
             options,
             memory,
             RunningLoop(

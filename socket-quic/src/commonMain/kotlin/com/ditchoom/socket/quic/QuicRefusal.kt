@@ -1,6 +1,5 @@
 package com.ditchoom.socket.quic
 
-import com.ditchoom.socket.quic.trace.QlogTarget
 import com.ditchoom.socket.transport.NetworkKind
 import kotlin.time.Duration
 
@@ -11,9 +10,6 @@ import kotlin.time.Duration
 sealed interface QuicRefusal {
     /** [StandbyLink.KeepCellularReady]: no standby link is held; use [StandbyLink.OnDemand]. */
     data object StandbyLinkNotHeld : QuicRefusal
-
-    /** A [QlogTarget.Budgeted] qlog: use [QlogTarget.File], or the `QUIC_QLOG_DIR` environment. */
-    data object QlogNotBudgeted : QuicRefusal
 
     /**
      * A [DatagramOptions.sendQueueLen] of [sendQueueLen], below the [minimum] a send queue holds: one datagram handed to

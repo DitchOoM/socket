@@ -88,6 +88,7 @@ internal fun buildConn(
     memory: ConnMemory,
     flight: FlightSize,
     capture: TraceCapture,
+    qlog: Qlog,
     port: LoopPort,
     socket: SendPort,
     clock: LoopClock,
@@ -96,7 +97,7 @@ internal fun buildConn(
     loopEntrant: Entrant,
     counts: ConnCounts,
 ): Conn =
-    q.composedAround(SinglePath(q, address.peer, address.local, address.target)) { first ->
+    q.composedAround(SinglePath(q, address.peer, address.local, address.target), qlog) { first ->
         composed(
             rules,
             q,
@@ -105,6 +106,7 @@ internal fun buildConn(
             memory,
             flight,
             capture,
+            qlog,
             port,
             socket,
             clock,
@@ -124,6 +126,7 @@ private fun composed(
     memory: ConnMemory,
     flight: FlightSize,
     capture: TraceCapture,
+    qlog: Qlog,
     port: LoopPort,
     socket: SendPort,
     clock: LoopClock,
@@ -203,6 +206,7 @@ private fun composed(
                     is KeepAliveRule.Off -> KeepAlive.Off
                     is KeepAliveRule.Every -> KeepAlive.Every(KeepAliveTimer(q, r.intervalNanos))
                 },
+            qlog = qlog,
         )
     val parts =
         ConnParts(
@@ -213,7 +217,7 @@ private fun composed(
             timer = ConnTimer(q, port, WakeSink(), counts.timer),
             ingress = Ingress(q, memory.shared, memory.factory, counts, turnClock),
             egress = Egress(q, counts, turnClock),
-            release = Release(q),
+            release = Release(q, qlog),
             network = NetworkWatch(),
             flight = ConnFlight(flight, memory.shared.arena, address.peerKey, capture, flightOrigin(capture, clock.now())),
             inbox = WorkInbox(),

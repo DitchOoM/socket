@@ -66,12 +66,9 @@ internal class ServerEdge(
     ): Opened {
         val capture = traceRecorderFor(options)
         val id = hex(peer.scid0) + hex(peer.scid1)
-        // A trace that declared nothing is judged as its connections are accepted: a budgeted target is not written, and counted.
-        if (qlogVerdictOf(capture) is OptionVerdict.Refused) counts.qlogRefusedAtAccept()
-        build.nameQlog(capture, QuicSessionId(id))
         build.nameTrafficSecretsLog(capture, keyLogDirectory, QuicSessionId(id))
         val edge = EdgeState(build.alpn, capture, TicketHome.NotKept, ChainHome.NotKept)
-        val conn = build.build(edge, capture)
+        val conn = build.build(edge, capture, QuicSessionId(id))
         val scope = CoroutineScope(SupervisorJob())
         val seat = seats.seat(QuicSessionId(id))
         val connection =

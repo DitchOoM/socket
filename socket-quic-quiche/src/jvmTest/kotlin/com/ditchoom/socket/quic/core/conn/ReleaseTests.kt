@@ -30,7 +30,7 @@ class ReleaseTests {
             }
         val q = QuicheConnRef(api, QuicheConn(1L))
         val path = stubClientPaths(q)
-        val release = Release(q)
+        val release = Release(q, Qlog.Unbudgeted)
         release.free(path)
         assertEquals(emptyList(), freed, "nothing asked for a release")
         var then = 0

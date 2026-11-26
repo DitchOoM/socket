@@ -31,6 +31,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertIs
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
@@ -117,19 +118,9 @@ class CoreOptionRefusalTests {
     }
 
     @Test
-    fun aDeclaredBudgetedQlogIsRefusedWithoutAskingTheFactory() {
-        val refusal = refusedConnect(coreTestOptions.copy(trace = tracing(budgeted, QlogDeclaration.Budgeted)))
-        assertEquals<QuicRefusal>(QuicRefusal.QlogNotBudgeted, refusal)
-        assertTrue(factoryThreads.isEmpty(), "a declared target is refused without minting a capture")
-    }
-
-    @Test
-    fun aBudgetedQlogDeclaredNotBudgetedIsRefusedByAClientBeforeAnySocketAndOffTheCallingThread() {
-        val caller = Thread.currentThread()
-        val refusal = refusedConnect(coreTestOptions.copy(trace = tracing(budgeted)))
-        assertEquals<QuicRefusal>(QuicRefusal.QlogNotBudgeted, refusal)
-        assertEquals(1, factoryThreads.size, "the factory is asked once, to name the qlog")
-        assertNotEquals(caller, factoryThreads[0], "and not on the calling thread")
+    fun aDeclaredBudgetedQlogIsHonouredWithoutAskingTheFactory() {
+        assertIs<OptionVerdict.Honoured>(verdictOn(coreTestOptions.copy(trace = tracing(budgeted, QlogDeclaration.Budgeted))))
+        assertTrue(factoryThreads.isEmpty(), "a declared target is judged without minting a capture")
     }
 
     @Test
@@ -174,39 +165,11 @@ class CoreOptionRefusalTests {
         }
 
     @Test
-    fun aServeWhoseTraceDeclaresABudgetedQlogIsRefusedWithoutAskingTheFactory() =
-        runBlocking {
-            skipOnMissingNativeLib(CoreOptionRefusalTests::class) {
-                val e =
-                    assertFailsWith<QuicRefusedException> {
-                        serveWith(coreTestOptions.copy(trace = tracing(budgeted, QlogDeclaration.Budgeted)))
-                    }
-                assertEquals<QuicRefusal>(QuicRefusal.QlogNotBudgeted, e.refusal)
-                assertTrue(factoryThreads.isEmpty(), "a refused serve mints no capture")
-            }
-        }
-
-    @Test
     fun anIdleServeMintsNoCapture() =
         runBlocking {
             skipOnMissingNativeLib(CoreOptionRefusalTests::class) {
                 serveWith(coreTestOptions.copy(trace = tracing())).close()
                 assertTrue(factoryThreads.isEmpty(), "a server asks the factory only as it accepts a connection")
-            }
-        }
-
-    @Test
-    fun aBudgetedQlogDeclaredNotBudgetedOnAServerIsNotWrittenAndIsCounted() =
-        runBlocking {
-            skipOnMissingNativeLib(CoreOptionRefusalTests::class) {
-                var counted = 0L
-                withCoreEchoServer(options = coreTestOptions.copy(trace = tracing(budgeted))) { server ->
-                    val client = connectCore(server.port)
-                    client.connection.close(QuicError.NoError)
-                    counted = server.counts.qlogsRefusedAtAccept
-                }
-                assertEquals(1, counted, "the accepted connection ran without its qlog, and the server counted it")
-                assertEquals(1, factoryThreads.size)
             }
         }
 

@@ -43,7 +43,7 @@ import com.ditchoom.socket.quic.generateScid
 import com.ditchoom.socket.quic.hostLiteral
 import com.ditchoom.socket.quic.hostSockAddrLayout
 import com.ditchoom.socket.quic.keyLogDirectory
-import com.ditchoom.socket.quic.nameQlog
+import com.ditchoom.socket.quic.core.conn.nameQlog
 import com.ditchoom.socket.quic.nameTrafficSecretsLog
 import com.ditchoom.socket.quic.resolveNetworkMonitor
 import com.ditchoom.socket.quic.toPathKey
@@ -161,7 +161,6 @@ private suspend fun OnSetupLane.connectOnLane(
 ): StartedClient {
     // The application's trace factory runs here, on the setup lane and not on the caller's thread, and before anything opens.
     val capture = traceRecorderFor(options)
-    qlogVerdictOf(capture).orRefuse()
     val keyLogDirectory = keyLogDirectory()
     val peer = UdpSocket.resolve(peerHost, port)
     val peerKey = peer.toPathKey()
@@ -243,6 +242,7 @@ private suspend fun OnSetupLane.connectOnLane(
                 ClientWiring(
                     api,
                     handle,
+                    QuicSessionId(scidHex),
                     options,
                     memory,
                     running,
@@ -272,7 +272,6 @@ private suspend fun OnSetupLane.connectOnLane(
     moved(ClientSetup.Built(built))
     val connection = built.connection(factory, peer, QuicConnectionIdentity(QuicSessionId(scidHex), QuicWireConnectionId.Known(scidHex)))
     wireClientConnectivityTap(options, built.capture, connection, monitor)
-    api.nameQlog(handle, built.capture, QuicRole.Client, QuicSessionId(scidHex))
     api.nameTrafficSecretsLog(handle, built.capture, QuicRole.Client, keyLogDirectory) { QuicSessionId(scidHex) }
     val started =
         StartedClient(

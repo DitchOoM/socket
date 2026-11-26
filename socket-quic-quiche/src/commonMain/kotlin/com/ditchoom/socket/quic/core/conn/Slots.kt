@@ -80,4 +80,5 @@ internal class ConnSlots(
     val resumption: Resumption,
     val datagrams: Datagrams,
     val keepAlive: KeepAlive,
+    val qlog: Qlog,
 )
