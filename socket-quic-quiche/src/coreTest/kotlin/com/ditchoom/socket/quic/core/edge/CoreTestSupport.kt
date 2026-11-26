@@ -58,6 +58,7 @@ internal suspend fun connectCore(
     api: com.ditchoom.socket.quic.QuicheApi = platformQuicheApi(),
     options: QuicOptions = coreTestOptions,
     tokens: ClientTokens = ClientTokens.NotKept,
+    timeout: Duration = 10.seconds,
     wrapIo: (DatagramBatchIo) -> DatagramBatchIo = { it },
 ): CoreClient =
     coreConnect(
@@ -69,7 +70,7 @@ internal suspend fun connectCore(
         options = if (options.sessionStore === QuicSessionStore.Default) options.copy(sessionStore = QuicSessionStore.NotKept) else options,
         factory = factory,
         api = api,
-        timeout = 10.seconds,
+        timeout = timeout,
         readPolicy = ReadPolicy.Bounded(10.seconds),
         writePolicy = WritePolicy.Bounded(10.seconds),
         wrapIo = wrapIo,
