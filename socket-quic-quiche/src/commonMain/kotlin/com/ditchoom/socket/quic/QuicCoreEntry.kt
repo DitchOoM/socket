@@ -149,3 +149,21 @@ private suspend fun connected(
             SocketOpenRefusal.NotARefusal -> throw thrown
         }
     }
+
+/** `connectQuic` over a channel the caller lent, on the core: not served yet, so every connect is refused. */
+@OptIn(com.ditchoom.buffer.flow.ExperimentalDatagramApi::class)
+suspend fun connectQuicOnCore(
+    channel: com.ditchoom.buffer.flow.AddressedDatagramChannel,
+    peer: QuicEndpoint,
+    serverName: String,
+    options: QuicOptions,
+    timeout: Duration,
+): QuicConnect<QuicConnection> = QuicConnect.Refused(QuicRefusal.NoQuicOnThisPlatform)
+
+/** `serveQuic` over a channel the caller lent, on the core: not served yet, so every serve is refused. */
+@OptIn(com.ditchoom.buffer.flow.ExperimentalDatagramApi::class)
+suspend fun serveQuicOnCore(
+    channel: com.ditchoom.buffer.flow.AddressedDatagramChannel,
+    tls: QuicTlsConfig,
+    options: QuicOptions,
+): QuicServe<QuicListener> = QuicServe.Refused(QuicRefusal.NoQuicOnThisPlatform)
