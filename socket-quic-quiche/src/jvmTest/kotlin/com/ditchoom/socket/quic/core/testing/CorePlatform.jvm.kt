@@ -1,5 +1,7 @@
 package com.ditchoom.socket.quic.core.testing
 
+import com.ditchoom.socket.quic.JcaPeerCertificateBackend
+import com.ditchoom.socket.quic.PeerCertificateSupport
 import com.ditchoom.socket.quic.QuicTlsConfig
 import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.core.edge.coreTlsConfig
@@ -10,6 +12,9 @@ import com.ditchoom.socket.quic.loadQuicheApi
 internal fun platformQuicheApi(): QuicheApi = loadQuicheApi()
 
 internal fun platformTlsConfig(): QuicTlsConfig = coreTlsConfig()
+
+/** The certificates this platform can mint. */
+internal fun platformPeerCertificates(): PeerCertificateSupport = PeerCertificateSupport.Available(JcaPeerCertificateBackend)
 
 internal fun currentThreadName(): String = Thread.currentThread().name
 

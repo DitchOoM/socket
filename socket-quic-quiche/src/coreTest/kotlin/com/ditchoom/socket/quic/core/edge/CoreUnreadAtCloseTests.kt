@@ -11,7 +11,6 @@ import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.testing.coreTest
 import com.ditchoom.socket.quic.network
 import com.ditchoom.socket.quic.read
-import com.ditchoom.socket.quic.runUntilClosed
 import kotlinx.coroutines.awaitCancellation
 import kotlin.test.AfterTest
 import kotlin.test.Test
@@ -24,7 +23,7 @@ import kotlin.time.TimeSource
 
 /**
  * A core connection's [com.ditchoom.socket.quic.QuicScope.unreadAtClose] tracks the connection: open while it is,
- * and settled once it ends, so `runUntilClosed` cancels a block on a connection the peer closed promptly instead of
+ * and settled once it ends, so `runUntilEnded` cancels a block on a connection the peer closed promptly instead of
  * waiting out its linger.
  */
 class CoreUnreadAtCloseTests {
@@ -46,7 +45,7 @@ class CoreUnreadAtCloseTests {
                     "nothing is unread at a close that has not happened: $unread",
                 )
                 val began = TimeSource.Monotonic.markNow()
-                val closed = assertFailsWith<QuicCloseException> { connection.runUntilClosed(LINGER) { awaitCancellation() } }
+                val closed = assertFailsWith<QuicCloseException> { connection.runUntilEnded(LINGER) { awaitCancellation() } }
                 val took = began.elapsedNow()
                 assertIs<QuicCloseReason.ByPeer>(closed.closeReason)
                 assertTrue(took < LINGER / 4, "the block ended $took after the peer closed; the linger is $LINGER")
@@ -74,7 +73,7 @@ class CoreUnreadAtCloseTests {
                 var replied = -1
                 val began = TimeSource.Monotonic.markNow()
                 assertFailsWith<QuicCloseException> {
-                    connection.runUntilClosed(LINGER) {
+                    connection.runUntilEnded(LINGER) {
                         val stream = acceptStream()
                         stream.read(10.seconds) { replied = it.readByte().toInt() }.also { assertIs<ScopedReadResult.Data<*>>(it) }
                         awaitCancellation()

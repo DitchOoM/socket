@@ -9,22 +9,19 @@ import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.socket.quic.QuicCloseLinger
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicOptions
-import com.ditchoom.socket.quic.QuicTlsConfig
 import com.ditchoom.socket.quic.ScopedReadResult
 import com.ditchoom.socket.quic.core.conn.MismatchResponse
+import com.ditchoom.socket.quic.core.demux.withCoreStreamServer
 import com.ditchoom.socket.quic.core.edge.EdgeEnd
 import com.ditchoom.socket.quic.core.edge.coreConnect
-import com.ditchoom.socket.quic.core.edge.coreTlsConfig
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.loadQuicheApi
 import com.ditchoom.socket.quic.read
 import com.ditchoom.socket.quic.skipOnMissingNativeLib
-import com.ditchoom.socket.quic.withQuicServer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
@@ -52,17 +49,15 @@ class CoreClientAgainstServerTests {
     fun aCoreClientEchoesOneMebibyteByteExactAndClosesItsConnection() =
         runBlocking {
             skipOnMissingNativeLib(CoreClientAgainstServerTests::class) {
-                withQuicServer(port = 0, tlsConfig = tlsConfig(), quicOptions = serverOptions) {
-                    val server =
-                        launch(Dispatchers.IO) {
-                            connections {
-                                val stream = acceptStream()
-                                while (stream.read(10.seconds) { stream.writeFully(it, 10.seconds) } is ScopedReadResult.Data<*>) Unit
-                                stream.shutdownSend()
-                            }
-                        }
+                withCoreStreamServer(
+                    options = serverOptions,
+                    onStream = { stream ->
+                        while (stream.read(10.seconds) { stream.writeFully(it, 10.seconds) } is ScopedReadResult.Data<*>) Unit
+                        stream.shutdownSend()
+                    },
+                ) { server ->
                     val payload = Random(7).nextBytes(PAYLOAD)
-                    val echoed = withContext(Dispatchers.IO) { echoThroughCoreClient(port, payload) }
+                    val echoed = withContext(Dispatchers.IO) { echoThroughCoreClient(server.port, payload) }
                     val got = echoed.second
                     val firstDiff = (0 until minOf(got.size, payload.size)).firstOrNull { got[it] != payload[it] } ?: -1
                     val nextMatch =
@@ -89,7 +84,6 @@ class CoreClientAgainstServerTests {
                         got,
                         "${echoed.first}; first difference at $firstDiff; echo resumes at payload offset $nextMatch",
                     )
-                    server.cancel()
                 }
             }
         }
@@ -142,8 +136,6 @@ class CoreClientAgainstServerTests {
         assertIs<ConnEnd.ByLocal>((client.connection.end() as EdgeEnd.Ended).end, "the connection ended by our close")
         return endedBy to received.toByteArray()
     }
-
-    private fun tlsConfig(): QuicTlsConfig = coreTlsConfig()
 
     private companion object {
         const val PAYLOAD = 1 shl 20

@@ -12,12 +12,12 @@ import com.ditchoom.socket.quic.PeerCertificateSupport
 import com.ditchoom.socket.quic.QuicCloseReason
 import com.ditchoom.socket.quic.QuicConnectionState
 import com.ditchoom.socket.quic.QuicError
-import com.ditchoom.socket.quic.QuicheEngine
 import com.ditchoom.socket.quic.ServerCertVerdict
 import com.ditchoom.socket.quic.ServerCertVerifier
 import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.testing.coreTest
 import com.ditchoom.socket.quic.core.testing.currentThreadName
+import com.ditchoom.socket.quic.core.testing.platformPeerCertificates
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.first
@@ -162,9 +162,9 @@ class CorePeerVerificationTests {
 
 /** A fresh W3C-conformant self-signed certificate. */
 internal suspend fun mint(): PeerCertificate =
-    when (val support = QuicheEngine.peerCertificates) {
+    when (val support = platformPeerCertificates()) {
         is PeerCertificateSupport.Available -> support.mint()
-        PeerCertificateSupport.Unavailable -> fail("the quiche engine mints peer certificates on every platform the core runs on")
+        PeerCertificateSupport.Unavailable -> fail("the platform mints peer certificates on every platform the core runs on")
     }
 
 internal fun bytesOf(buffer: com.ditchoom.buffer.ReadBuffer): ByteArray {

@@ -13,15 +13,12 @@ import com.ditchoom.socket.quic.ScopedReadResult
 import com.ditchoom.socket.quic.core.conn.CallerPlace
 import com.ditchoom.socket.quic.core.conn.ConnWork
 import com.ditchoom.socket.quic.core.conn.Inside
+import com.ditchoom.socket.quic.core.demux.withCoreStreamServer
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.network
 import com.ditchoom.socket.quic.read
 import com.ditchoom.socket.quic.skipOnMissingNativeLib
-import com.ditchoom.socket.quic.withQuicServer
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
@@ -142,22 +139,10 @@ class TerminalStreamTests {
         body: suspend CoroutineScope.(CoreClient) -> Unit,
     ) = runBlocking {
         skipOnMissingNativeLib(TerminalStreamTests::class) {
-            withQuicServer(port = 0, tlsConfig = coreTlsConfig(), quicOptions = coreTestOptions) {
-                coroutineScope {
-                    val server =
-                        launch(Dispatchers.IO) {
-                            connections {
-                                while (true) {
-                                    val stream = acceptStream()
-                                    launch { runCatching { handle(stream) } }
-                                }
-                            }
-                        }
-                    val client = connectCore(port, factory = BufferFactory.network())
-                    body(client)
-                    client.connection.close(QuicError.NoError)
-                    server.cancel()
-                }
+            withCoreStreamServer(onStream = { stream -> runCatching { handle(stream) } }) { server ->
+                val client = connectCore(server.port, factory = BufferFactory.network())
+                body(client)
+                client.connection.close(QuicError.NoError)
             }
         }
     }

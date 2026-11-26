@@ -1,22 +1,15 @@
 package com.ditchoom.socket.quic.core.edge
 
-import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.socket.quic.QuicTlsConfig
-import com.ditchoom.socket.quic.ScopedReadResult
+import com.ditchoom.socket.quic.core.demux.withCoreEchoServer
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.ReceiveBatchResult
 import com.ditchoom.socket.quic.core.udp.SendBatch
 import com.ditchoom.socket.quic.core.udp.SendBatchResult
-import com.ditchoom.socket.quic.read
-import com.ditchoom.socket.quic.withQuicServer
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.launch
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
-import kotlin.time.Duration.Companion.seconds
 
 /** Counts, per thread name, the sends and receives a loop's socket saw. */
 internal class RecordingIo(
@@ -41,34 +34,12 @@ internal class RecordingIo(
     fun receivesByThread(): Map<String, Long> = receives.mapValues { it.value.get() }
 }
 
-/** Echoes every stream the 4.x server accepts, on [scope]; the body gets the server's port. */
+/** Echoes every stream the core server accepts, for the length of [body], which gets the server's port. */
 internal suspend fun withEchoServer(
-    unsolicited: suspend com.ditchoom.socket.quic.QuicScope.() -> Unit = {},
+    unsolicited: suspend CoreConnection.() -> Unit = {},
     body: suspend CoroutineScope.(port: Int) -> Unit,
 ) {
-    withQuicServer(port = 0, tlsConfig = coreTlsConfig(), quicOptions = coreTestOptions) {
-        coroutineScope {
-            val server =
-                launch(Dispatchers.IO) {
-                    connections {
-                        unsolicited()
-                        while (true) {
-                            val stream = acceptStream()
-                            launch {
-                                // The client closing the connection ends the echo; it is not a failure of the server.
-                                try {
-                                    while (stream.read(10.seconds) { stream.writeFully(it, 10.seconds) } is ScopedReadResult.Data<*>) Unit
-                                } catch (closed: com.ditchoom.socket.quic.QuicCloseException) {
-                                    Unit
-                                }
-                            }
-                        }
-                    }
-                }
-            body(port)
-            server.cancel()
-        }
-    }
+    withCoreEchoServer(unsolicited = unsolicited) { server -> body(server.port) }
 }
 
 /**

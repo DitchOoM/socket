@@ -3,6 +3,7 @@
 package com.ditchoom.socket.quic.core.testing
 
 import com.ditchoom.socket.quic.CinteropQuicheApi
+import com.ditchoom.socket.quic.PeerCertificateSupport
 import com.ditchoom.socket.quic.QuicTlsConfig
 import com.ditchoom.socket.quic.QuicheApi
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -24,6 +25,9 @@ import kotlin.native.concurrent.Worker
 internal fun platformQuicheApi(): QuicheApi = CinteropQuicheApi
 
 internal fun platformTlsConfig(): QuicTlsConfig = nativeCoreTls()
+
+/** The certificates this platform can mint: Apple and Linux have different backends. */
+internal expect fun platformPeerCertificates(): PeerCertificateSupport
 
 /** The server certificate the shared core suites serve: Apple and Linux find their test files differently. */
 internal expect fun nativeCoreTls(): QuicTlsConfig

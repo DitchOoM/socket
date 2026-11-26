@@ -2,6 +2,8 @@
 
 package com.ditchoom.socket.quic.core.testing
 
+import com.ditchoom.socket.quic.BoringSslPeerCertificateBackend
+import com.ditchoom.socket.quic.PeerCertificateSupport
 import com.ditchoom.socket.quic.QuicTlsConfig
 import platform.posix.F_OK
 import platform.posix.access
@@ -13,3 +15,5 @@ private fun certPath(name: String): String {
     val candidates = listOf("testcerts/$name", "socket-quic-quiche/testcerts/$name")
     return candidates.firstOrNull { access(it, F_OK) == 0 } ?: throw AssertionError("test cert not found: $name (tried $candidates)")
 }
+
+internal actual fun platformPeerCertificates(): PeerCertificateSupport = PeerCertificateSupport.Available(BoringSslPeerCertificateBackend)

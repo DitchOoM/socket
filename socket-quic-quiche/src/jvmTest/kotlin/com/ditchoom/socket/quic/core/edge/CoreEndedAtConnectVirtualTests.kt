@@ -19,7 +19,6 @@ import com.ditchoom.socket.quic.core.conn.HandshakeFate
 import com.ditchoom.socket.quic.core.life.CloseOutcome
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.read
-import com.ditchoom.socket.quic.runUntilClosed
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.launch
 import kotlin.test.Test
@@ -137,7 +136,7 @@ class CoreEndedAtConnectVirtualTests {
             pair.runUntil { connect.done() }
             assertEquals(RETURNED, connect.outcome, "the close landed before the connect looked")
             var closed: QuicCloseException? = null
-            launch { closed = assertFailsWith<QuicCloseException> { client.runUntilClosed(LINGER) { awaitCancellation() } } }
+            launch { closed = assertFailsWith<QuicCloseException> { client.runUntilEnded(LINGER) { awaitCancellation() } } }
             val began = pair.now()
             pair.runUntil { closed != null }
             assertIs<QuicCloseReason.ByPeer>(checkNotNull(closed).closeReason)

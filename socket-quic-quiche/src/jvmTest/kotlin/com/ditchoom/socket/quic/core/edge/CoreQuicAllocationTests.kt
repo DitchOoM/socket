@@ -4,11 +4,9 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.flow.HalfCloseable
 import com.ditchoom.buffer.flow.ReadResult
-import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.freeIfNeeded
-import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicError
-import com.ditchoom.socket.quic.ScopedReadResult
+import com.ditchoom.socket.quic.core.demux.withCoreEchoServer
 import com.ditchoom.socket.quic.core.ready.NetStack
 import com.ditchoom.socket.quic.core.ready.netStackOfThisRuntime
 import com.ditchoom.socket.quic.core.testing.PerfGates
@@ -17,13 +15,9 @@ import com.ditchoom.socket.quic.core.testing.withDescriptorsAbove127
 import com.ditchoom.socket.quic.network
 import com.ditchoom.socket.quic.read
 import com.ditchoom.socket.quic.skipOnMissingNativeLib
-import com.ditchoom.socket.quic.withQuicServer
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import java.lang.management.ManagementFactory
 import java.time.Instant
@@ -202,35 +196,7 @@ class CoreQuicAllocationTests {
 
     /** An echo server that finishes its side of a stream once the client finishes its own, so streams are released. */
     internal suspend fun withClosingEchoServer(body: suspend CoroutineScope.(port: Int) -> Unit) {
-        withQuicServer(port = 0, tlsConfig = coreTlsConfig(), quicOptions = coreTestOptions) {
-            coroutineScope {
-                val server =
-                    launch(Dispatchers.IO) {
-                        connections {
-                            while (true) {
-                                val stream = acceptStream()
-                                launch {
-                                    // The client closing the connection ends the read with a QuicCloseException; uncaught here it would end the
-                                    // whole process on Android.
-                                    try {
-                                        while (stream.read(
-                                                10.seconds,
-                                            ) { stream.writeFully(it, 10.seconds) } is ScopedReadResult.Data<*>
-                                        ) {
-                                            Unit
-                                        }
-                                    } catch (closed: QuicCloseException) {
-                                        // The peer is gone: the echo is over.
-                                    }
-                                    stream.close()
-                                }
-                            }
-                        }
-                    }
-                body(port)
-                server.cancel()
-            }
-        }
+        withCoreEchoServer { server -> body(server.port) }
     }
 
     private class Report(

@@ -7,8 +7,13 @@ import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.socket.quic.IncomingStreams
 import com.ditchoom.socket.quic.QuicByteStream
+import com.ditchoom.socket.quic.QuicCloseException
+import com.ditchoom.socket.quic.QuicCloseReason
+import com.ditchoom.socket.quic.QuicConnectionState
+import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicSessionStore
+import com.ditchoom.socket.quic.QuicUnreadAtClose
 import com.ditchoom.socket.quic.ScopedReadResult
 import com.ditchoom.socket.quic.core.conn.ClientTokens
 import com.ditchoom.socket.quic.core.conn.FlightSize
@@ -18,12 +23,22 @@ import com.ditchoom.socket.quic.core.testing.platformQuicheApi
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 import com.ditchoom.socket.quic.network
 import com.ditchoom.socket.quic.read
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.filterIsInstance
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
 /** The options every core test connects with. */
@@ -111,3 +126,42 @@ internal class ReceivedBytes(
 }
 
 internal suspend fun <T> onIo(block: suspend CoroutineScope.() -> T): T = withContext(Dispatchers.IO, block)
+
+/**
+ * Runs [block] on this connection for no longer than it lives. When the connection ends first, [block] is cancelled once
+ * nothing the connection received is left to read (or after [linger]) and this throws a [QuicCloseException] with the
+ * close's reason; what [block] returns or throws itself wins, and so does the caller's own cancellation. An end this
+ * side asked for with an application error is not the connection dying: [block] unwinds on its own.
+ */
+internal suspend fun <R> CoreConnection.runUntilEnded(
+    linger: Duration,
+    block: suspend CoreConnection.() -> R,
+): R {
+    val diedFirst = CompletableDeferred<QuicCloseException>()
+    val returned = CompletableDeferred<R>()
+    return try {
+        coroutineScope {
+            val body = async(start = CoroutineStart.UNDISPATCHED) { block().also { returned.complete(it) } }
+            val watch =
+                launch {
+                    val closed = state.filterIsInstance<QuicConnectionState.Closed>().first()
+                    val reason = closed.reason
+                    if (reason is QuicCloseReason.ByLocal && reason.error is QuicError.ApplicationError) return@launch
+                    withTimeoutOrNull(linger) { unreadAtClose.filterIsInstance<QuicUnreadAtClose.AllRead>().first() }
+                    val close = QuicCloseException(closed.reason, "connection closed while its block was running")
+                    diedFirst.complete(close)
+                    body.cancel(CancellationException("connection closed", close))
+                }
+            try {
+                body.await()
+            } finally {
+                watch.cancel()
+            }
+        }
+    } catch (e: CancellationException) {
+        currentCoroutineContext().ensureActive()
+        if (returned.isCompleted) return returned.await()
+        if (diedFirst.isCompleted) throw diedFirst.await()
+        throw e
+    }
+}

@@ -5,6 +5,7 @@ import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.socket.quic.PathKey
+import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicheApi
@@ -44,9 +45,41 @@ internal suspend fun withCoreEchoServer(
     wrapIo: (DatagramBatchIo) -> DatagramBatchIo = { it },
     api: QuicheApi = platformQuicheApi(),
     onAccepted: (CoreConnection) -> Unit = {},
+    unsolicited: suspend CoreConnection.() -> Unit = {},
     factory: BufferFactory = BufferFactory.network(),
     options: QuicOptions = coreTestOptions,
     sends: SendRule = sendRuleOfThisRuntime,
+    body: suspend CoroutineScope.(CoreServer) -> Unit,
+) = withCoreStreamServer(
+    config = config,
+    bind = bind,
+    wrapIo = wrapIo,
+    api = api,
+    onAccepted = onAccepted,
+    unsolicited = unsolicited,
+    factory = factory,
+    options = options,
+    sends = sends,
+    onStream = ::echoStream,
+    body = body,
+)
+
+/**
+ * Serves on a loopback port with [config], running [onStream] on every stream of every connection, for the length of
+ * [body]; the server is closed afterwards. [unsolicited] runs on each accepted connection before its streams are handed
+ * out. [body] gets the server.
+ */
+internal suspend fun withCoreStreamServer(
+    config: ServerConfig = ServerConfig(),
+    bind: PathKey = loopbackV4(),
+    wrapIo: (DatagramBatchIo) -> DatagramBatchIo = { it },
+    api: QuicheApi = platformQuicheApi(),
+    onAccepted: (CoreConnection) -> Unit = {},
+    unsolicited: suspend CoreConnection.() -> Unit = {},
+    factory: BufferFactory = BufferFactory.network(),
+    options: QuicOptions = coreTestOptions,
+    sends: SendRule = sendRuleOfThisRuntime,
+    onStream: suspend (QuicByteStream) -> Unit,
     body: suspend CoroutineScope.(CoreServer) -> Unit,
 ) {
     val server =
@@ -65,8 +98,8 @@ internal suspend fun withCoreEchoServer(
         )
     try {
         coroutineScope {
-            // The echo only suspends: on IO every resumption could wake another of its up to 64 workers.
-            val serving = launch(Dispatchers.Default) { serveEchoes(server, onAccepted) }
+            // The handlers only suspend: on IO every resumption could wake another of its up to 64 workers.
+            val serving = launch(Dispatchers.Default) { serveStreams(server, onAccepted, unsolicited, onStream) }
             body(server)
             serving.cancel()
         }
@@ -75,10 +108,21 @@ internal suspend fun withCoreEchoServer(
     }
 }
 
-/** Echoes every stream of every connection [server] accepts until the server stops or the caller cancels. */
-private suspend fun serveEchoes(
+/** Reads [stream] and writes every buffer back, until the peer finishes it. */
+internal suspend fun echoStream(stream: QuicByteStream) {
+    while (stream.read(10.seconds) { stream.writeFully(it, 10.seconds) } is ScopedReadResult.Data<*>) Unit
+    stream.close()
+}
+
+/**
+ * Runs [onStream] on every stream of every connection [server] accepts until the server stops or the caller cancels.
+ * [unsolicited] runs on each accepted connection before its streams are collected.
+ */
+private suspend fun serveStreams(
     server: CoreServer,
     onAccepted: (CoreConnection) -> Unit,
+    unsolicited: suspend CoreConnection.() -> Unit,
+    onStream: suspend (QuicByteStream) -> Unit,
 ) {
     try {
         coroutineScope {
@@ -86,12 +130,12 @@ private suspend fun serveEchoes(
                 onAccepted(connection)
                 launch {
                     try {
+                        connection.unsolicited()
                         connection.streams().collect { stream ->
                             launch {
-                                // The peer closing the connection ends the echo; it is not a failure.
+                                // The peer closing the connection ends a handler; it is not a failure of the server.
                                 try {
-                                    while (stream.read(10.seconds) { stream.writeFully(it, 10.seconds) } is ScopedReadResult.Data<*>) Unit
-                                    stream.close()
+                                    onStream(stream)
                                 } catch (closed: QuicCloseException) {
                                     Unit
                                 }
