@@ -108,3 +108,12 @@ internal suspend fun serveOnTheCore(
         )
     return QuicServe.Serving(CoreListener(server))
 }
+
+/** Serves on [host]:[port] with [pem] held in memory: its files are written for the bind only, and are gone once it returns. */
+internal suspend fun serveOnTheCore(
+    port: Int,
+    host: String,
+    pem: PemIdentity,
+    options: QuicOptions,
+    factory: BufferFactory,
+): QuicServe<CoreListener> = pem.onFiles { tls -> serveOnTheCore(port, host, tls, options, factory) }
