@@ -1,7 +1,6 @@
 package com.ditchoom.socket.quic.core.edge
 
 import com.ditchoom.socket.quic.QuicAppErrorCode
-import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.Tier
@@ -43,7 +42,7 @@ internal value class HandlerResetCode(
 }
 
 /**
- * Runs [handler] for every stream the peer opens on this connection, on the threads of its endpoint's pool, one step of
+ * Runs [handler] for every stream the peer opens on this connection, handed each as [shape] makes it, on the threads of its endpoint's pool, one step of
  * this connection's handlers at a time, and returns once the connection has ended and every handler has returned.
  *
  * - A new stream's handler coroutine is made on a pool thread: the loop only resumes the acceptor with the stream.
@@ -56,12 +55,6 @@ internal value class HandlerResetCode(
  * - The caller resumes from a pool thread, or from the default dispatcher once the endpoint has stopped: never from a
  *   loop.
  */
-internal suspend fun CoreConnection.handleStreams(
-    resetCode: HandlerResetCode = HandlerResetCode.Default,
-    handler: suspend (QuicByteStream) -> Unit,
-): StreamsHandled = handleStreams(resetCode, halves::public, handler)
-
-/** [handleStreams] with each stream handed to [handler] as [shape] makes it. */
 internal suspend fun <S> CoreConnection.handleStreams(
     resetCode: HandlerResetCode,
     shape: (IncomingStream) -> S,

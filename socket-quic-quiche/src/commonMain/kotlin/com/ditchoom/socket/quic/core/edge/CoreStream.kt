@@ -14,7 +14,6 @@ import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicStreamId
 import com.ditchoom.socket.quic.QuicStreamOrigin
 import com.ditchoom.socket.quic.QuicStreamSide
-import com.ditchoom.socket.quic.core.conn.Arrival
 import com.ditchoom.socket.quic.core.stream.StreamKind
 import com.ditchoom.socket.quic.core.stream.kindOf
 import kotlin.time.Duration
@@ -86,38 +85,9 @@ internal class CoreSendOnlyStream(
 }
 
 /**
- * A stream the peer opened to send only, as the public [ByteStream] contract sees it, which has a write: a write or a
- * [shutdownSend] is refused as a direction the stream does not have. The core's own [ReceiveHalf] has no write.
- */
-internal class CoreReceiveOnlyStream(
-    private val receive: ReceiveHalf,
-    override val writePolicy: WritePolicy,
-) : ByteStream,
-    HalfCloseable,
-    Resettable {
-    override val readPolicy: ReadPolicy get() = receive.readPolicy
-    override val isOpen: Boolean get() = receive.isOpen()
-
-    override suspend fun read(deadline: Duration): ReadResult = receive.read(deadline)
-
-    override suspend fun write(
-        buffer: ReadBuffer,
-        deadline: Duration,
-    ): BytesWritten = absent(receive.id, QuicStreamSide.Write)
-
-    override suspend fun shutdownSend(): Unit = absent(receive.id, QuicStreamSide.Write)
-
-    override suspend fun close() = receive.close()
-
-    override suspend fun reset(errorCode: Long) {
-        receive.stop(QuicAppErrorCode(errorCode))
-    }
-}
-
-/**
  * A connection's streams in the core's own shapes: an open of a bidirectional stream gives both halves, an open of a
- * unidirectional one only a [SendHalf], and a stream the peer opened is [IncomingStream] by its kind. [public] wraps
- * each for the public [QuicByteStream] surface.
+ * unidirectional one only a [SendHalf], and a stream the peer opened is [IncomingStream] by its kind. [public] wraps the
+ * two a 0-RTT block opens as the [QuicByteStream] its [com.ditchoom.socket.quic.QuicEarlyDataScope] hands out.
  */
 internal class StreamHalves(
     private val connection: CoreConnection,
@@ -159,22 +129,7 @@ internal class StreamHalves(
 
     fun public(send: SendHalf): QuicByteStream = QuicByteStream(send.id, CoreSendOnlyStream(send, readPolicy), QuicStreamOrigin.Confirmed)
 
-    /** A stream that arrived in 0-RTT is read only once the handshake completes, unless it is marked replay-safe. */
-    fun public(incoming: IncomingStream): QuicByteStream =
-        when (incoming) {
-            is IncomingStream.Bidirectional ->
-                QuicByteStream(incoming.stream.id, CoreStream(incoming.stream), originOf(incoming.arrival))
-            is IncomingStream.ReceiveOnly ->
-                QuicByteStream(incoming.receive.id, CoreReceiveOnlyStream(incoming.receive, writePolicy), originOf(incoming.arrival))
-        }
-
     private fun both(id: QuicStreamId) = BidiStream(SendHalf(connection, id, writePolicy), ReceiveHalf(connection, id, readPolicy))
-
-    private fun originOf(arrival: Arrival): QuicStreamOrigin =
-        when (arrival) {
-            Arrival.Confirmed -> QuicStreamOrigin.Confirmed
-            Arrival.Early -> QuicStreamOrigin.Early(connection::established)
-        }
 }
 
 /** A call on the direction [side] of a unidirectional stream that has no such direction. */

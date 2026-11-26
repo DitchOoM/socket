@@ -18,7 +18,6 @@ import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicResumption
 import com.ditchoom.socket.quic.QuicResumptionOutcome
-import com.ditchoom.socket.quic.QuicScope
 import com.ditchoom.socket.quic.QuicSessionTicket
 import com.ditchoom.socket.quic.QuicSessionTicketState
 import com.ditchoom.socket.quic.QuicStreamOrigin
@@ -304,7 +303,7 @@ class CoreEarlyDataServerTests {
     /** Runs [handler] for every connection [server] starts: each on its own, the connection closing when it returns or fails. */
     private fun CoroutineScope.serve(
         server: CoreServer,
-        handler: suspend QuicScope.() -> Unit,
+        handler: suspend CoreConnection.() -> Unit,
     ): Job =
         launch {
             val serving = this

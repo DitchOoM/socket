@@ -9,9 +9,11 @@ import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.ScopedReadResult
 import com.ditchoom.socket.quic.core.edge.CoreServer
 import com.ditchoom.socket.quic.core.edge.EdgeEnd
+import com.ditchoom.socket.quic.core.edge.acceptStream
 import com.ditchoom.socket.quic.core.edge.feedNetwork
 import com.ditchoom.socket.quic.core.edge.linkClassOf
 import com.ditchoom.socket.quic.core.edge.onMoveOf
+import com.ditchoom.socket.quic.core.edge.openStream
 import com.ditchoom.socket.quic.core.loop.Loop
 import com.ditchoom.socket.quic.core.path.PathNews
 import com.ditchoom.socket.quic.core.testing.VirtualClock

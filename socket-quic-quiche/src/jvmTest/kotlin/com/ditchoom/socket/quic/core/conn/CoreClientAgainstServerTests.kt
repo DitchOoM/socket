@@ -14,6 +14,7 @@ import com.ditchoom.socket.quic.core.conn.MismatchResponse
 import com.ditchoom.socket.quic.core.demux.withCoreStreamServer
 import com.ditchoom.socket.quic.core.edge.EdgeEnd
 import com.ditchoom.socket.quic.core.edge.coreConnect
+import com.ditchoom.socket.quic.core.edge.openStream
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.loadQuicheApi
 import com.ditchoom.socket.quic.read

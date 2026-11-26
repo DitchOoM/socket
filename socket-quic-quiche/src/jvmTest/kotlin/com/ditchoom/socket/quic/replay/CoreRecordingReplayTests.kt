@@ -20,11 +20,13 @@ import com.ditchoom.socket.quic.core.conn.MismatchResponse
 import com.ditchoom.socket.quic.core.demux.ServerConfig
 import com.ditchoom.socket.quic.core.edge.DatagramSize
 import com.ditchoom.socket.quic.core.edge.TestCertificate
+import com.ditchoom.socket.quic.core.edge.acceptStream
 import com.ditchoom.socket.quic.core.edge.coreConnect
 import com.ditchoom.socket.quic.core.edge.coreServe
 import com.ditchoom.socket.quic.core.edge.coreTestOptions
 import com.ditchoom.socket.quic.core.edge.coreTlsConfig
 import com.ditchoom.socket.quic.core.edge.echoOver
+import com.ditchoom.socket.quic.core.edge.openStream
 import com.ditchoom.socket.quic.core.testing.flightDirectory
 import com.ditchoom.socket.quic.core.testing.makeDirectories
 import com.ditchoom.socket.quic.core.testing.writeTextFile

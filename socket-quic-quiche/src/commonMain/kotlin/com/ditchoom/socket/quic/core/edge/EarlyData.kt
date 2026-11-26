@@ -1,8 +1,9 @@
 package com.ditchoom.socket.quic.core.edge
 
 import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.socket.quic.ConnectionEarlyDataScope
+import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicCloseCircumstance
+import com.ditchoom.socket.quic.QuicEarlyDataScope
 import com.ditchoom.socket.quic.QuicResumption
 import com.ditchoom.socket.quic.QuicSessionTicket
 import com.ditchoom.socket.quic.core.conn.FirstFlight
@@ -64,7 +65,7 @@ internal suspend fun CoreConnection.runEarlyData(
             QuicResumption.None, is QuicResumption.Resume -> return awaitEstablished()
             is QuicResumption.ResumeWithEarlyData -> resumption.write
         }
-    val scope = ConnectionEarlyDataScope(this)
+    val scope = CoreEarlyDataScope(this)
     when (flightOf(offer)) {
         FirstFlight.HeldForEarlyData -> {
             try {
@@ -80,6 +81,17 @@ internal suspend fun CoreConnection.runEarlyData(
             outlivingTheEnd({ end() is EdgeEnd.Ended }) { scope.block() }
         }
     }
+}
+
+/** The part of a core connection a [QuicResumption.ResumeWithEarlyData] block sees: its two ways to open a stream. */
+private class CoreEarlyDataScope(
+    private val connection: CoreConnection,
+) : QuicEarlyDataScope {
+    override val bufferFactory: BufferFactory get() = connection.bufferFactory
+
+    override suspend fun openStream(): QuicByteStream = connection.halves.let { it.public(it.openBidirectional()) }
+
+    override suspend fun openUniStream(): QuicByteStream = connection.halves.let { it.public(it.openSendOnly()) }
 }
 
 private fun flightOf(offer: Offer): FirstFlight =

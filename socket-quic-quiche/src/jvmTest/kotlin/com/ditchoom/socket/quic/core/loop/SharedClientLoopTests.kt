@@ -14,6 +14,7 @@ import com.ditchoom.socket.quic.core.edge.CoreClient
 import com.ditchoom.socket.quic.core.edge.coreConnect
 import com.ditchoom.socket.quic.core.edge.coreTestOptions
 import com.ditchoom.socket.quic.core.edge.echoOver
+import com.ditchoom.socket.quic.core.edge.openStream
 import com.ditchoom.socket.quic.core.edge.withEchoServer
 import com.ditchoom.socket.quic.core.testing.LoopScheduling
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
