@@ -120,6 +120,11 @@ internal sealed interface Raised : OpFailure {
     /** The connect was given a set of loops that has been closed. */
     data object LoopsClosed : Raised
 
+    /** The platform refused the thread a loop needs. */
+    class LoopThreadRefused(
+        val cause: Throwable,
+    ) : Raised
+
     /** A second call asked to handle a connection's streams while a first still does. */
     data object StreamsHandled : Raised
 
@@ -240,6 +245,7 @@ private fun exceptionOf(
         is Raised.RouteUnresolved -> UnresolvedRouteSourceException(failure.reason)
         is Raised.ChainRefused -> ServerCertificateRejectedException(failure.rejection)
         is Raised.LoopsClosed -> CoreLoopsClosed()
+        is Raised.LoopThreadRefused -> CoreLoopThreadRefused(failure.cause)
         is Raised.StreamsHandled -> QuicStreamsAlreadyHandledException()
         is Raised.SocketRefused -> failure.refusal
         is Raised.SpecLayoutRefused -> CoreSpecLayoutMismatch(failure.mismatch)

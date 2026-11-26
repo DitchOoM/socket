@@ -14,7 +14,11 @@ internal fun startLoopThread(
 internal actual fun startLoop(
     loop: Loop,
     name: String,
-): LoopStart {
-    startLoopThread(loop, name)
-    return LoopStart.Started
-}
+): LoopStart =
+    try {
+        startLoopThread(loop, name)
+        LoopStart.Started
+    } catch (refused: OutOfMemoryError) {
+        // The system could not create the native thread: a refusal the caller is told of, not a process failure.
+        LoopStart.Refused(refused)
+    }

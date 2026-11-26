@@ -177,6 +177,7 @@ private suspend fun OnSetupLane.connectOnLane(
                     Raised.SocketRefused(NativeSocketRefusal(placed.refusal)),
                     QuicCloseCircumstance.HandshakeFailed,
                 )
+            is Placement.ThreadRefused -> raise(Raised.LoopThreadRefused(placed.cause), QuicCloseCircumstance.HandshakeFailed)
         }
     val seated = ClientSetup.Seated(memory, running.loop)
     moved(seated)

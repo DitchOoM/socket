@@ -181,7 +181,7 @@ private fun notOpened(answer: OpenAnswer.Failed): StreamOpen.NotOpened =
         is Raised.PastClose -> StreamOpen.NotOpened.ConnectionEnded(publicEndOf(failure.end))
         is Raised.WriteRefused, is Raised.ReadRefused, is Raised.Thrown, is Raised.Typed, is Raised.StreamClosed, is Raised.ReadInProgress,
         is Raised.NoSuchDirection, is Raised.NotNative, is Raised.FactoryNotNative, is Raised.RouteUnresolved,
-        is Raised.LoopsClosed, is Raised.StreamsHandled, is Raised.SocketRefused, is Raised.SpecLayoutRefused,
+        is Raised.LoopsClosed, is Raised.LoopThreadRefused, is Raised.StreamsHandled, is Raised.SocketRefused, is Raised.SpecLayoutRefused,
         is Raised.NetworkRefused, is Raised.AccessDenied, is Raised.ChainRefused,
         -> raise(failure, answer.during)
     }

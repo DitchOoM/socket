@@ -57,6 +57,11 @@ internal sealed interface Placement {
     class PollerRefused(
         val refusal: SocketRefusal,
     ) : Placement
+
+    /** The platform refused the loop's thread with [cause]; the set holds no loop for it. */
+    class ThreadRefused(
+        val cause: Throwable,
+    ) : Placement
 }
 
 private sealed interface Slot {
@@ -238,15 +243,27 @@ internal class LoopSet(
                 sessions = FixedPool(sessionBytes.size) { SessionScratch(it, sessionBytes[it]) },
                 handlers = handlers,
             )
-        if (!slots.compareAndSetAt(index, seen, Slot.Running(running))) {
+        val taken = Slot.Running(running)
+        if (!slots.compareAndSetAt(index, seen, taken)) {
             loop.close(Runnable { })
-            starter(loop, name)
+            begin(loop, name)
             return place(factory, api)
         }
         loop.connections.increment()
-        starter(loop, name)
-        return Placement.Placed(running)
+        return when (val started = begin(loop, name)) {
+            is LoopStart.Started -> Placement.Placed(running)
+            is LoopStart.Refused -> {
+                slots.compareAndSetAt(index, taken, Slot.Unstarted)
+                Placement.ThreadRefused(started.cause)
+            }
+        }
     }
+
+    /** Starts [loop]'s thread; a thread the platform refused never runs the loop, so the loop is stopped here and frees what it holds. */
+    private fun begin(
+        loop: Loop,
+        name: String,
+    ): LoopStart = starter(loop, name).also { if (it is LoopStart.Refused) loop.stopHere() }
 
     companion object {
         /** The loops every client connection shares unless it is given a set of its own. */

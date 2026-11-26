@@ -56,7 +56,7 @@ class LoopThreadStartTests {
                     val loops = LoopSet(1, starter = starts::start)
                     try {
                         val refused = withTimeout(WITHIN) { assertFailsWith<CoreLoopThreadRefused> { connectCore(server.port, loops = loops) } }
-                        assertIs<OutOfMemoryError>(refused.cause, "the refusal carries what the thread start threw")
+                        assertIs<OutOfMemoryError>(refused.rootCause(), "the refusal carries what the thread start threw")
                         assertEquals(emptyList(), loops.countsOfStarted(), "the loop that never ran is not left in the set")
 
                         val client = withTimeout(WITHIN) { connectCore(server.port, loops = loops) }
@@ -92,7 +92,7 @@ class LoopThreadStartTests {
                             )
                         }
                     }
-                assertIs<OutOfMemoryError>(refused.cause, "the refusal carries what the thread start threw")
+                assertIs<OutOfMemoryError>(refused.rootCause(), "the refusal carries what the thread start threw")
 
                 val served =
                     coreServe(
@@ -111,6 +111,9 @@ class LoopThreadStartTests {
                 assertEquals(2, starts.attempts.get(), "one refused start and one that started")
             }
         }
+
+    /** The first cause of the chain: coroutine stack recovery wraps a copy of the exception around the one thrown. */
+    private fun Throwable.rootCause(): Throwable = generateSequence(this) { it.cause }.last()
 
     private companion object {
         const val PAYLOAD = 200

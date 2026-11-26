@@ -34,6 +34,7 @@ import com.ditchoom.socket.quic.core.loop.Readiness
 import com.ditchoom.socket.quic.core.loop.Route
 import com.ditchoom.socket.quic.core.loop.SocketDiedNotice
 import com.ditchoom.socket.quic.core.loop.jdkViewsOf
+import com.ditchoom.socket.quic.core.loop.LoopStart
 import com.ditchoom.socket.quic.core.loop.LoopStarter
 import com.ditchoom.socket.quic.core.loop.waitsOf
 import com.ditchoom.socket.quic.core.observe.ServerCounts
@@ -269,8 +270,11 @@ internal class ServerSetup(
         moved(SetupOwner.Placed(loop))
         when (driver) {
             LoopDriver.OwnThread -> {
-                starter(loop, SERVER_THREAD)
-                moved(SetupOwner.Started(loop))
+                when (val started = starter(loop, SERVER_THREAD)) {
+                    is LoopStart.Started -> moved(SetupOwner.Started(loop))
+                    // The loop never ran: the setup's owner, still the placed loop, stops it here and releases everything once.
+                    is LoopStart.Refused -> raise(Raised.LoopThreadRefused(started.cause), QuicCloseCircumstance.HandshakeFailed)
+                }
             }
             // The caller's first pass would place the socket only after that pass's receive: place it now.
             LoopDriver.Caller -> loop.pass(clock.now())
