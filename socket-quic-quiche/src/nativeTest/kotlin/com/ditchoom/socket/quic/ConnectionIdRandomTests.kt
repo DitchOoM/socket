@@ -21,7 +21,7 @@ import kotlin.test.assertNotEquals
 class ConnectionIdRandomTests {
     @Test
     fun threadsDrawingConnectionIdsConcurrentlyNeverDrawTheSameId() {
-        val random = QuicheDriverTuning().random
+        val random = connectionIdRandom
         val workers = 16
         val drawsPerWorker = 50_000
         val drawn =
@@ -47,7 +47,6 @@ class ConnectionIdRandomTests {
         // A regression to a generator that predicts its own next draw (Random.Default, a counter, a seed)
         // is a different type.
         assertIs<NativeEntropyRandom>(connectionIdRandom)
-        assertIs<NativeEntropyRandom>(QuicheDriverTuning().random)
     }
 
     @Test

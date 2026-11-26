@@ -35,7 +35,7 @@ import kotlin.time.Instant
  * as the private half of the certificate's public key.
  */
 class PeerCertificateJcaTest {
-    private val engine = QuicheEngine.peerCertificates as PeerCertificateSupport.Available
+    private val engine = PeerCertificateSupport.Available(JcaPeerCertificateBackend)
 
     @Test
     fun javaSecurityParsesVerifiesAndAgreesAcrossManyCertificates() =

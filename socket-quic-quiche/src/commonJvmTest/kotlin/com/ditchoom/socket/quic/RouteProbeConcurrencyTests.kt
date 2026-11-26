@@ -33,6 +33,9 @@ import kotlin.test.assertTrue
 import kotlin.test.fail
 import kotlin.time.Duration.Companion.milliseconds
 
+/** The receive buffer the probes' sockets are opened with: one datagram. */
+private const val RECEIVE_BUFFER_SIZE = 1350
+
 /**
  * Concurrent route probes never share a 4-tuple, without a lock.
  *
@@ -285,7 +288,7 @@ class RouteProbeConcurrencyTests {
         codec = SocketAddressCodec(hostOsSockAddrLayout()),
         bufferFactory = BufferFactory.Default,
         recvBufferFactory = BufferFactory.Default,
-        receiveBufferSize = QuicheDriver.MAX_DATAGRAM_SIZE,
+        receiveBufferSize = RECEIVE_BUFFER_SIZE,
         localEndpointSupport = LocalEndpointSupport.Bindable,
         openChannel = opener,
     )
