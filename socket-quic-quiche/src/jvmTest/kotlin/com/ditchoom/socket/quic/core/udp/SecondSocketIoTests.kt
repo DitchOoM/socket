@@ -57,21 +57,23 @@ class SecondSocketIoTests {
     @Test
     fun aSecondDescriptorOpenedWhileOneIsOpenClosesTheEarlierOne() {
         val io = nativeClient(server().localAddress as InetSocketAddress)
-        assertIs<Beside.Opened>(io.openBeside(LOOPBACK_ANY, SocketTicket(1)))
-        val earlier = io.secondDescriptor()
-        assertIs<Beside.Opened>(io.openBeside(LOOPBACK_ANY, SocketTicket(2)))
-        // The kernel may hand the new socket the old one's number, which then shows it was closed first.
-        if (io.secondDescriptor() != earlier) assertTrue(shim.close(earlier) < 0, "the earlier second descriptor was closed")
+        val earlier = assertIs<Beside.Opened>(io.openBeside(LOOPBACK_ANY, SocketTicket(1))).local
+        val later = assertIs<Beside.Opened>(io.openBeside(LOOPBACK_ANY, SocketTicket(2))).local
+        // The earlier socket's port says whether it was closed: a descriptor number can be reused by any thread in the
+        // process at once, a port held by an open socket refuses another bind. The later socket may itself get the port.
+        if (later.port != earlier.port) {
+            DatagramChannel.open().use { probe -> probe.bind(InetSocketAddress("127.0.0.1", earlier.port)) }
+        }
         io.close()
     }
 
     @Test
     fun aNativeCloseClosesTheSecondDescriptorToo() {
         val io = nativeClient(server().localAddress as InetSocketAddress)
-        assertIs<Beside.Opened>(io.openBeside(LOOPBACK_ANY, SocketTicket(1)))
-        val second = io.secondDescriptor()
+        val second = assertIs<Beside.Opened>(io.openBeside(LOOPBACK_ANY, SocketTicket(1))).local
         io.close()
-        assertTrue(shim.close(second) < 0, "the second descriptor was closed with the io")
+        // The port says the socket was closed with the io; its descriptor number may already be another socket's.
+        DatagramChannel.open().use { probe -> probe.bind(InetSocketAddress("127.0.0.1", second.port)) }
     }
 
     /**
