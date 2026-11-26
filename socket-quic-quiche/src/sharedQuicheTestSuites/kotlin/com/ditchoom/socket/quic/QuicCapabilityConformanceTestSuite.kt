@@ -58,7 +58,7 @@ import kotlin.time.Duration.Companion.seconds
  *   somewhere else.
  *
  * ## Why it lives in `src/sharedQuicheTestSuites/kotlin`
- * Same reason as [PeerTransportParamsLayoutTestSuite]: it needs this module's `internal` seams
+ * Same reason as [CoreBackendBindingTests]: it needs this module's `internal` seams
  * ([QuicheBackedConnection], [QuicheDriver.migration]), so :socket-testsuite — which only sees the
  * public `:socket-quic-default` facade — cannot host it; and `androidInstrumentedTest` deliberately does
  * not `dependsOn(commonTest)`, so a `commonTest` home would exclude the JNI backend on real Android.

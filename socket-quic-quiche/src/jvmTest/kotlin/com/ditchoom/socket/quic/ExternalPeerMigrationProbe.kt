@@ -24,7 +24,7 @@ import kotlin.time.Duration.Companion.seconds
  * lost its `#[repr(C)]` upstream, so `peer_disable_active_migration` sat at offset 96 while the header
  * declared 80, and every backend read `active_conn_id_limit` as the bool. Migration then "silently
  * refuses" against every peer. `sizeof` matches under both layouts, so only the neighbouring fields
- * can tell a real refusal from a misread struct — exactly as [PeerTransportParamsLayoutTestSuite]
+ * can tell a real refusal from a misread struct — exactly as [CoreBackendBindingTests]
  * asserts against a server whose parameters we chose. Here the values are the peer's, so they are
  * printed for a human to sanity-check rather than asserted: an `activeConnIdLimit` of -1, or an idle
  * timeout of 0, means the struct is being misread and the refusal is ours, not theirs.

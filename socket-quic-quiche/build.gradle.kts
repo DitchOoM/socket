@@ -5126,7 +5126,7 @@ fun patchQuicheForCallerClock(sourceDir: File) {
  * an already-applied marker returns; an anchor that has moved throws; and an upstream that has *fixed*
  * this — `#[repr(C)]` already above the struct without our marker — also throws, so a quiche bump surfaces
  * as a build failure telling you to delete this patch, never as a silent double-attribute or a no-op.
- * When that day comes the correct move is to **delete this patch and keep `PeerTransportParamsLayoutTestSuite`**:
+ * When that day comes the correct move is to **delete this patch and keep `CoreBackendBindingTests`**:
  * the patch is the workaround, the neighbour-field guard is the thing that proves the ABI is right, and it
  * is still the only check that can catch a future regression (see #388).
  */
@@ -5143,7 +5143,7 @@ fun patchQuicheTransportParamsRepr(sourceDir: File) {
                 "quiche/src/ffi.rs. Either a quiche bump moved/renamed the struct behind " +
                 "quiche_conn_peer_transport_params, or upstream fixed the missing #[repr(C)] and reshaped this " +
                 "code. If upstream fixed it: DELETE patchQuicheTransportParamsRepr and its call site, and KEEP " +
-                "PeerTransportParamsLayoutTestSuite — the guard is what proves the ABI, the patch was only the " +
+                "CoreBackendBindingTests — the guard is what proves the ABI, the patch was only the " +
                 "workaround. Otherwise re-fit the patch and re-verify the field order against " +
                 "quiche/include/quiche.h before shipping. See https://github.com/DitchOoM/socket/issues/388",
         )
@@ -5153,7 +5153,7 @@ fun patchQuicheTransportParamsRepr(sourceDir: File) {
             "socket-transport-params-repr-c (DitchOoM/socket#388): quiche's TransportParams already carries " +
                 "#[repr(C)] — upstream has fixed the layout bug this patch works around. DELETE " +
                 "patchQuicheTransportParamsRepr and its call site (do not double-apply the attribute), and KEEP " +
-                "PeerTransportParamsLayoutTestSuite, which is the regression guard and outlives the patch. " +
+                "CoreBackendBindingTests, which is the regression guard and outlives the patch. " +
                 "See https://github.com/DitchOoM/socket/issues/388",
         )
     }

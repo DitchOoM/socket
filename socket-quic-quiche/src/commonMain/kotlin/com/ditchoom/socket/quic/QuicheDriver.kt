@@ -4913,7 +4913,7 @@ class QuicheDriver(
      * single-threaded, never off-loop. [PeerTransportParams.NotYetNegotiated] until the handshake has
      * processed them, and once the connection is torn down.
      *
-     * Exists for `PeerTransportParamsLayoutTestSuite`, which asserts the *neighbours* of
+     * Exists for `CoreBackendBindingTests`, which asserts the *neighbours* of
      * `disable_active_migration` against the values this connection configured. That is the only thing
      * that catches the quiche ABI defect this module patches around
      * (`patchQuicheTransportParamsRepr`): the flag itself is a silent kill switch, so a wrong read

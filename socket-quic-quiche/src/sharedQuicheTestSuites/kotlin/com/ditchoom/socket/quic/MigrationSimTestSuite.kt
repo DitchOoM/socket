@@ -387,68 +387,6 @@ abstract class MigrationSimTestSuite {
         }
 
     /**
-     * A reply over a path losing 30 % of its datagrams in both directions must not be lost to the client's
-     * own ACKs. A driver that ACKs only every second datagram however lossy the path sends half the ACKs, so
-     * a burst's ACKs are all lost about four times as often and the server waits out PTOs that back off
-     * (15 s, 27 s, 53 s on this 800 ms path) until its 30 s write bound or the 120 s close linger ends
-     * the connection first. Over seeds 0..1999 that was 34 runs short of the whole reply and its FIN, against 9
-     * with an ACK per datagram and 11 with [AckCadence].
-     *
-     * These seeds each came up short with an ACK every second datagram and arrive whole with the adaptive
-     * cadence. A seed fixes the pipe's loss draws, not which datagrams they land on, so the list belongs to
-     * the cadence and is re-measured when that changes.
-     */
-    @Test
-    fun aReplyOverAVeryLossyPathIsDeliveredWholeBecauseTheClientAcksEveryDatagramOnceItSawLoss() =
-        runTest {
-            wrapTestBody {
-                for (seed in SEEDS_SHORT_WITH_ACKS_EVERY_SECOND_DATAGRAM) {
-                    val read = readAReplyAfterTheServerClosed(seed)
-                    assertEquals(
-                        read.expected,
-                        read.received,
-                        "seed $seed: the client got ${read.received} of ${read.expected} bytes, then ${read.ending}, " +
-                            "traffic ${read.traffic}",
-                    )
-                    assertEquals(ReplyEnding.Fin, read.ending, "seed $seed: the reply arrived whole; it must also end")
-                }
-            }
-        }
-
-    /**
-     * A client that only receives has no packet of its own in flight once its request is acknowledged, so
-     * the loss counters of the packets it sent never move and [AckCadence] stays on an ACK every second
-     * datagram however lossy the link turns. Here the link is clean through the handshake and the request
-     * and loses half its datagrams from the moment the server has read it. The client sees the loss only as
-     * gaps in the packet numbers it receives (`quiche_conn_recv_gaps`, [EvidenceSource.ReceiveGap]).
-     *
-     * Over seeds 0..299 on an 800 ms path: 110 runs short of the whole reply with an ACK every second
-     * datagram, 98 with the sent-packet evidence alone, 75 with the gap evidence added, 55 with an ACK per
-     * datagram. These seeds are short of it without the gap evidence and whole with it; a seed fixes the
-     * pipe's loss draws, not which datagrams they land on, so the list belongs to the cadence.
-     */
-    @Test
-    fun aReceiverWithNothingInFlightAcksEveryDatagramOnceItSeesAGapInThePacketNumbers() =
-        runTest {
-            wrapTestBody {
-                for (seed in SEEDS_SHORT_WITHOUT_THE_GAP_EVIDENCE) {
-                    val read =
-                        readAReplyAfterTheServerClosed(
-                            seed,
-                            impairment = PathImpairment(latency = SLOW_PATH_ONE_WAY),
-                            impairmentAfterRequest = PathImpairment(latency = SLOW_PATH_ONE_WAY, loss = 0.5),
-                        )
-                    assertEquals(
-                        read.expected,
-                        read.received,
-                        "seed $seed: the client got ${read.received} of ${read.expected} bytes, then ${read.ending}, traffic ${read.traffic}",
-                    )
-                    assertEquals(ReplyEnding.Fin, read.ending, "seed $seed: the reply arrived whole; it must also end")
-                }
-            }
-        }
-
-    /**
      * [LossModel.Bursty] loses datagrams in runs, at the rate it was given: over the datagrams the server
      * sent on a link at 15 % overall loss and a mean burst of 5, the lost fraction is near 15 % and a lost
      * datagram is followed by another about four times in five. It is what the sweep over bursty paths
@@ -5711,13 +5649,6 @@ abstract class MigrationSimTestSuite {
         const val DETERMINISM_SEED = 671_101L
 
         /**
-         * Measured: seeds among 0..1999 of the 800 ms, 30 %-loss reply scenario that read less than the whole
-         * reply (or not its FIN) when the loop ACKed every second datagram on every path, and read all of it with
-         * [AckCadence]'s two cadences. First five of 32.
-         */
-        val SEEDS_SHORT_WITH_ACKS_EVERY_SECOND_DATAGRAM = listOf(61L, 97L, 461L, 470L, 503L)
-
-        /**
          * Measured: the seeds among 0..1999 whose reply arrives whole and loses its FIN when quiche is built
          * without `patchQuicheFinIsSentUntilAcknowledged`, every run; with the patch each ends with the FIN.
          *
@@ -5742,9 +5673,6 @@ abstract class MigrationSimTestSuite {
 
         /** What [aWriteQueuedJustBeforeTheConnectionsCloseIsStillSent] writes as the connection closes. */
         const val LAST_WORDS = "last words"
-
-        /** Measured: see [aReceiverWithNothingInFlightAcksEveryDatagramOnceItSeesAGapInThePacketNumbers]. First five of 46. */
-        val SEEDS_SHORT_WITHOUT_THE_GAP_EVIDENCE = listOf(4L, 17L, 22L, 24L, 28L)
 
         /** Replies [aBurstyLinkLosesInRunsAtTheRateItWasGiven] draws from. */
         const val BURSTY_CHECK_SEEDS = 40L

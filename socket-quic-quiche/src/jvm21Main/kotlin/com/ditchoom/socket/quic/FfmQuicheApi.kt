@@ -1433,7 +1433,7 @@ class FfmQuicheApi private constructor(
         // `TransportParams` (patchQuicheTransportParamsRepr in build.gradle.kts). Upstream omits it, and
         // repr(Rust) sinks the 1-byte bool to offset 96 while sizeof stays 104 — so a stale libquiche
         // makes this read peer_active_conn_id_limit as the bool and silently disables migration.
-        // `PeerTransportParamsLayoutTestSuite` asserts the neighbour fields against configured values, which
+        // `CoreBackendBindingTests` asserts the neighbour fields against configured values, which
         // is the only thing that catches it (a size assertion cannot).
         private const val TRANSPORT_PARAMS_SIZE = 104L
         private const val TRANSPORT_PARAMS_DISABLE_ACTIVE_MIGRATION_OFFSET = 80L

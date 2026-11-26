@@ -18,7 +18,7 @@ package com.ditchoom.socket.quic
  * Reading only the `bool` gives a plausible-looking answer with no way to notice it came from the wrong
  * offset; reading its neighbours too lets a test assert them against values the connection *configured*,
  * so a layout drift fails a build instead of silently switching migration off. See
- * `PeerTransportParamsLayoutTestSuite` and `patchQuicheTransportParamsRepr` in the module's `build.gradle.kts`.
+ * `CoreBackendBindingTests` and `patchQuicheTransportParamsRepr` in the module's `build.gradle.kts`.
  */
 sealed interface PeerTransportParams {
     /**
