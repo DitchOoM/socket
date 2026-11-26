@@ -199,6 +199,6 @@ private fun QuicConnectionEnd.thrownForTrace(): Throwable? =
         is QuicConnectionEnd.ServerClosed,
         is QuicConnectionEnd.ServerClosedUnsettled, is QuicConnectionEnd.NoErrorRecorded, is QuicConnectionEnd.Released,
         is QuicConnectionEnd.NetworkLost, is QuicConnectionEnd.LocalAddressGone, is QuicConnectionEnd.NoUsablePath,
-        is QuicConnectionEnd.ReasonOnly,
+        is QuicConnectionEnd.ReasonOnly, is QuicConnectionEnd.EarlyDataRejected,
         -> null
     }

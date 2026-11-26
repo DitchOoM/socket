@@ -449,6 +449,13 @@ interface QuicheApi {
     fun connEarlyDataReason(conn: QuicheConn): Int
 
     /**
+     * A client whose server rejects its 0-RTT keeps none of it: its packets in flight are discarded and every stream it
+     * opened is forgotten, for the caller to replay (`quiche_conn_reset_streams_on_early_data_reject`, a patched-in
+     * export). Before the first send.
+     */
+    fun connResetStreamsOnEarlyDataReject(conn: QuicheConn)
+
+    /**
      * Whether any stream still has data, or a FIN, this endpoint wrote and the peer has not acknowledged
      * (`quiche_conn_stream_data_unacknowledged`, a patched-in export). A send side the peer stopped, or
      * this endpoint shut down, owes nothing. What a graceful close waits for.

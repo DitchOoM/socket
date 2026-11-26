@@ -413,6 +413,9 @@ fun downloadQuicheSource(
     // A resumed client takes the peer's stream limits from the handshake, not the larger of them and the ticket's, unless
     // its early data was accepted (RFC 9000 §7.4.1). Idempotent, fails loudly on drift. See the KDoc.
     patchQuicheResumedStreamLimitsFromTheHandshake(sourceDir)
+    // A client whose 0-RTT was rejected keeps none of its streams, when the connection asks (RFC 9001 §4.6.2): the core
+    // replays what it wrote. Idempotent, fails loudly on drift. See the KDoc.
+    patchQuicheRejectedEarlyDataIsDropped(sourceDir)
 
     // Name the patch set this tree now carries. The tree outlives the run (CI caches it with a
     // prefix fallback), so a reader that compiles it outside these tasks checks this stamp rather
@@ -2842,6 +2845,141 @@ fun patchQuicheResumedStreamLimitsFromTheHandshake(sourceDir: File) {
         |
         """.trimMargin(),
     )
+}
+
+/**
+ * A client whose server rejected its 0-RTT keeps nothing of it (RFC 9001 §4.6.2: the client resets the state of all
+ * streams). quiche sends 0-RTT and 1-RTT in one packet number space (`Type::ZeroRTT => Epoch::Application` in packet.rs)
+ * and, on BoringSSL's `SSL_ERROR_EARLY_DATA_REJECTED`, only resets the TLS state (tls/mod.rs): the 0-RTT packets stay
+ * in flight, are declared lost once 1-RTT packets are acknowledged, and their STREAM frames are retransmitted in 1-RTT
+ * (`next_lost_frame` → `stream.send.retransmit` in `send_single`), so the early bytes reach the server under whatever
+ * it now negotiated. Here, at the reject, the client discards its application-space packets in flight (all 0-RTT: it has
+ * no 1-RTT keys yet), forgets every stream it opened together with its flow-control spend, so a stream it opens again
+ * is fresh under the handshake's limits, and takes the negotiated ALPN, so the caller can judge a replay at once.
+ *
+ * Inert unless the connection asked for it with `quiche_conn_reset_streams_on_early_data_reject`: a caller that
+ * does not replay what it wrote keeps quiche's re-send. Applied after [patchQuicheResumedStreamLimitsFromTheHandshake],
+ * whose `SOCKET_EARLY_DATA_ACCEPTED` it reads. Marker-guarded, loud on drift and on an upstream export.
+ */
+fun patchQuicheRejectedEarlyDataIsDropped(sourceDir: File) {
+    val marker = "socket-rejected-early-data-is-dropped"
+    val src = sourceDir.resolve("quiche/src")
+    val libRs = src.resolve("lib.rs")
+    val streamRs = src.resolve("stream/mod.rs")
+    val ffiRs = src.resolve("ffi.rs")
+    if (!libRs.exists() || !streamRs.exists() || !ffiRs.exists()) return
+    if (libRs.readText().contains(marker)) return
+    if (ffiRs.readText().contains("fn quiche_conn_reset_streams_on_early_data_reject")) {
+        throw GradleException("$marker: ffi.rs already exports quiche_conn_reset_streams_on_early_data_reject. DELETE this patch.")
+    }
+
+    fun insertBefore(
+        file: File,
+        anchor: String,
+        insert: String,
+    ) {
+        val text = file.readText()
+        if (text.split(anchor).size != 2) {
+            throw GradleException(
+                "$marker: `${anchor.trim().lines().first()}` not found exactly once in ${file.name}: a quiche bump or an " +
+                    "earlier patch moved it. Re-fit patchQuicheRejectedEarlyDataIsDropped and re-run EarlyDataReplayVirtualTests.",
+            )
+        }
+        file.writeText(text.replace(anchor, insert + anchor))
+    }
+
+    insertBefore(
+        streamRs,
+        "    fn tx_buffered_actual(&self) -> usize {\n",
+        """
+        |    // $marker: every stream this side opened is forgotten, as if never opened.
+        |    pub fn socket_drop_local_streams(&mut self, is_server: bool) {
+        |        let local: Vec<u64> =
+        |            self.streams.keys().copied().filter(|id| is_local(*id, is_server)).collect();
+        |        for id in local {
+        |            if let Some(stream) = self.streams.remove(&id) {
+        |                let key = Arc::clone(&stream.priority_key);
+        |                self.remove_readable(&key);
+        |                self.remove_writable(&key);
+        |                self.remove_flushable(&key);
+        |            }
+        |            self.almost_full.remove(&id);
+        |            self.blocked.remove(&id);
+        |            self.reset.remove(&id);
+        |            self.stopped.remove(&id);
+        |        }
+        |        self.local_opened_streams_bidi = 0;
+        |        self.local_opened_streams_uni = 0;
+        |        self.tx_buffered = self.tx_buffered_actual();
+        |    }
+        |
+        |
+        """.trimMargin(),
+    )
+    insertBefore(
+        libRs,
+        "    did_retry: bool,\n",
+        "    // $marker: whether a rejected 0-RTT resets every stream this client opened.\n    socket_drop_rejected_early_data: bool,\n\n",
+    )
+    insertBefore(libRs, "            did_retry: false,\n", "            socket_drop_rejected_early_data: false,\n")
+    insertBefore(
+        libRs,
+        "        let mut ex_data = tls::ExData {\n            application_protos: &self.application_protos,\n",
+        "        // $marker: whether this call starts in 0-RTT.\n        let socket_was_early = !self.is_server && self.handshake.is_in_early_data();\n\n",
+    )
+    insertBefore(
+        libRs,
+        "            return Ok(());\n        }\n\n        self.handshake_completed = self.handshake.is_completed();\n",
+        "            self.socket_on_early_data_reject(socket_was_early, now);\n\n",
+    )
+    insertBefore(
+        libRs,
+        "    fn drop_epoch_state(&mut self, epoch: packet::Epoch, now: Instant) {\n",
+        """
+        |    /// $marker: the caller replays what it wrote in 0-RTT, so a reject resets every stream it opened.
+        |    pub fn socket_reset_streams_on_early_data_reject(&mut self) {
+        |        self.socket_drop_rejected_early_data = true;
+        |    }
+        |
+        |    // $marker: the server rejected the 0-RTT this call began in: none of it is kept.
+        |    fn socket_on_early_data_reject(&mut self, was_early: bool, now: Instant) {
+        |        if !self.socket_drop_rejected_early_data ||
+        |            !was_early ||
+        |            self.handshake.is_in_early_data() ||
+        |            self.handshake.early_data_reason() == SOCKET_EARLY_DATA_ACCEPTED
+        |        {
+        |            return;
+        |        }
+        |        let handshake_status = self.handshake_status();
+        |        for (_, p) in self.paths.iter_mut() {
+        |            p.recovery.on_pkt_num_space_discarded(
+        |                packet::Epoch::Application,
+        |                handshake_status,
+        |                now,
+        |            );
+        |        }
+        |        self.streams.socket_drop_local_streams(self.is_server);
+        |        self.tx_data = 0;
+        |        self.last_tx_data = 0;
+        |        self.blocked_limit = None;
+        |        self.alpn = self.handshake.alpn_protocol().to_vec();
+        |        self.update_tx_cap();
+        |    }
+        |
+        |
+        """.trimMargin(),
+    )
+    ffiRs.appendText(
+        "\n" +
+            """
+            |// $marker: a rejected 0-RTT resets every stream this client opened; the caller replays them.
+            |#[no_mangle]
+            |pub extern "C" fn quiche_conn_reset_streams_on_early_data_reject(conn: &mut Connection) {
+            |    conn.socket_reset_streams_on_early_data_reject();
+            |}
+            """.trimMargin() + "\n",
+    )
+    logger.lifecycle("Patched quiche source: a rejected 0-RTT keeps none of its streams")
 }
 
 /**

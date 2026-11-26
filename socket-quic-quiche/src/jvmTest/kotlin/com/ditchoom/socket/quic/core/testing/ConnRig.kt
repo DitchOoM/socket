@@ -19,6 +19,7 @@ import com.ditchoom.socket.quic.core.conn.ConnMemory
 import com.ditchoom.socket.quic.core.conn.ConnSide
 import com.ditchoom.socket.quic.core.conn.ConnSink
 import com.ditchoom.socket.quic.core.conn.ConnectReport
+import com.ditchoom.socket.quic.core.conn.EarlyPlan
 import com.ditchoom.socket.quic.core.conn.EarlyReport
 import com.ditchoom.socket.quic.core.conn.FlightArena
 import com.ditchoom.socket.quic.core.conn.FlightSize
@@ -174,6 +175,7 @@ internal fun testConn(
                 access.sendsAccess(peer),
                 ChainSource.NotAsked,
                 silence,
+                EarlyPlan.None,
             ),
         address =
             ConnAddress(

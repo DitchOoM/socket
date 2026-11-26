@@ -15,6 +15,7 @@ import com.ditchoom.socket.quic.core.conn.MoveWanted
 import com.ditchoom.socket.quic.core.conn.MoveWantedWork
 import com.ditchoom.socket.quic.core.conn.SlotRules
 import com.ditchoom.socket.quic.core.conn.buildConn
+import com.ditchoom.socket.quic.core.conn.earlyPlanOf
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.loop.Endpoint
 import com.ditchoom.socket.quic.core.loop.Route
@@ -97,6 +98,7 @@ internal class ClientParts(
                     w.access,
                     chainSourceOf(w.options, w.memory.factory()),
                     SilenceRule(w.silence, probeCapOf(w.options), news),
+                    earlyPlanOf(QuicheConnRef(w.api, w.handle), w.offer, w.options.resumption, w.memory.factory()),
                 ),
             address =
                 ConnAddress(

@@ -80,6 +80,7 @@ import com.ditchoom.socket.quic.quiche.quiche_conn_readable
 import com.ditchoom.socket.quic.quiche.quiche_conn_recv
 import com.ditchoom.socket.quic.quiche.quiche_conn_recv_gaps
 import com.ditchoom.socket.quic.quiche.quiche_conn_requeue_path
+import com.ditchoom.socket.quic.quiche.quiche_conn_reset_streams_on_early_data_reject
 import com.ditchoom.socket.quic.quiche.quiche_conn_retire_dcid
 import com.ditchoom.socket.quic.quiche.quiche_conn_retired_scid_iter
 import com.ditchoom.socket.quic.quiche.quiche_conn_retired_scids
@@ -821,6 +822,9 @@ internal object CinteropQuicheApi : QuicheApi, QuicheRandomPin, QuicheClockPin {
     override fun connIsInEarlyData(conn: QuicheConn): Boolean = quiche_conn_is_in_early_data(conn.handle.toCPointer()!!)
 
     override fun connEarlyDataReason(conn: QuicheConn): Int = quiche_conn_early_data_reason(conn.handle.toCPointer()!!).toInt()
+
+    override fun connResetStreamsOnEarlyDataReject(conn: QuicheConn) =
+        quiche_conn_reset_streams_on_early_data_reject(conn.handle.toCPointer()!!)
 
     override fun connStreamDataUnacknowledged(conn: QuicheConn): Boolean =
         quiche_conn_stream_data_unacknowledged(conn.handle.toCPointer()!!)

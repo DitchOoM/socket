@@ -754,6 +754,10 @@ class FfmQuicheApi private constructor(
 
     override fun connEarlyDataReason(conn: QuicheConn): Int = ConnCalls.hEarlyDataReason.invokeExact(conn.handle) as Int
 
+    override fun connResetStreamsOnEarlyDataReject(conn: QuicheConn) {
+        ConnCalls.hResetStreamsOnEarlyDataReject.invokeExact(conn.handle)
+    }
+
     override fun connStreamDataUnacknowledged(conn: QuicheConn): Boolean =
         HotCalls.hStreamDataUnacknowledged.invokeExact(conn.handle) as Boolean
 

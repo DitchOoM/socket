@@ -37,7 +37,7 @@ import kotlin.time.Duration.Companion.seconds
 /**
  * Nothing a client writes reaches a server before the server passed its check after the handshake, on a real core
  * client and server on virtual time, through the connect's own [ServerCheck.connected]: an early-data block that runs
- * after the handshake runs only after the check, 0-RTT the handshake did not accept (which quiche sends again as 1-RTT)
+ * after the handshake runs only after the check, 0-RTT the handshake did not accept (which the core replays as 1-RTT)
  * waits for the check, a resumed connection is checked against its chain like a fresh one, and a chain that could not
  * be copied fails the check, resumed or not.
  */

@@ -82,6 +82,7 @@ internal fun publicEndOf(end: ConnEnd): QuicConnectionEnd =
         is ConnEnd.NetworkLost -> QuicConnectionEnd.NetworkLost
         is ConnEnd.LocalAddressGone -> QuicConnectionEnd.LocalAddressGone
         is ConnEnd.NoUsablePath -> QuicConnectionEnd.NoUsablePath
+        is ConnEnd.EarlyDataRejected -> QuicConnectionEnd.EarlyDataRejected(end.reason, end.change)
     }
 
 /** The exception that reports [end] to a caller who was [during] something, for channels that are closed with one. */
@@ -101,5 +102,6 @@ internal fun ConnEnd.circumstance(during: QuicCloseCircumstance): QuicCloseCircu
         is ConnEnd.HandshakeSendRefused, is ConnEnd.AccessDenied,
         is ConnEnd.SocketFailed, is ConnEnd.LoopStopped, is ConnEnd.ServerClosed, is ConnEnd.NoErrorRecorded,
         is ConnEnd.NetworkLost, is ConnEnd.LocalAddressGone, is ConnEnd.ServerClosedUnsettled, is ConnEnd.NoUsablePath,
+        is ConnEnd.EarlyDataRejected,
         -> during
     }

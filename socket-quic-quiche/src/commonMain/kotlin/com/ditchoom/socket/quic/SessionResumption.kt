@@ -9,6 +9,8 @@ import kotlinx.coroutines.CompletableDeferred
  * their decoding into the public outcome types. The numbering is BoringSSL's (`include/openssl/ssl.h`).
  */
 internal object QuicEarlyDataReason {
+    /** Not settled yet: a client that offered 0-RTT before the server's EncryptedExtensions. */
+    const val UNKNOWN = 0
     const val DISABLED = 1
     const val ACCEPTED = 2
     const val PEER_DECLINED = 4

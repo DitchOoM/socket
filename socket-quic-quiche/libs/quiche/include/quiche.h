@@ -1316,6 +1316,12 @@ void quiche_clear_thread_random_state(void);
 // source patch in socket-quic-quiche/build.gradle.kts (patchQuicheEarlyDataReasonFfi).
 uint32_t quiche_conn_early_data_reason(const quiche_conn *conn);
 
+// socket-rejected-early-data-is-dropped: a client whose server rejects its 0-RTT keeps none of it — the
+// application-space packets in flight are discarded and every stream it opened is forgotten, so the caller
+// replays what it wrote (RFC 9001 §4.6.2). Call before the first send. Added by the marker-guarded source
+// patch in socket-quic-quiche/build.gradle.kts (patchQuicheRejectedEarlyDataIsDropped).
+void quiche_conn_reset_streams_on_early_data_reject(quiche_conn *conn);
+
 // socket-stream-data-unacknowledged: whether any stream still has data, or a FIN, this endpoint wrote
 // and the peer has not acknowledged — what a graceful close waits for. Added by the marker-guarded source
 // patch in socket-quic-quiche/build.gradle.kts (patchQuicheStreamDataUnacknowledgedFfi).

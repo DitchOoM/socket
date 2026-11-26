@@ -261,6 +261,11 @@ internal object ConnCalls {
         FfmLibrary.downcall("quiche_conn_early_data_reason", FunctionDescriptor.of(JAVA_INT, JAVA_LONG))
 
     @JvmField
+    val hResetStreamsOnEarlyDataReject: MethodHandle =
+        // void quiche_conn_reset_streams_on_early_data_reject(quiche_conn *conn) — patched-in export
+        FfmLibrary.downcall("quiche_conn_reset_streams_on_early_data_reject", FunctionDescriptor.ofVoid(JAVA_LONG))
+
+    @JvmField
     val hSetHandshakePtoCeiling: MethodHandle =
         // void quiche_conn_set_handshake_pto_ceiling(quiche_conn *conn, uint64_t first, uint32_t growth, uint64_t max)
         FfmLibrary.downcall("quiche_conn_set_handshake_pto_ceiling", FunctionDescriptor.ofVoid(JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_LONG))

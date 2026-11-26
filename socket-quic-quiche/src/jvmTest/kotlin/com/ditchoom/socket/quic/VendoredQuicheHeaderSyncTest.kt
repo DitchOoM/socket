@@ -169,6 +169,7 @@ private val OURS =
         "quiche_set_thread_random_state",
         "quiche_clear_thread_random_state",
         "quiche_conn_early_data_reason",
+        "quiche_conn_reset_streams_on_early_data_reject",
         "quiche_conn_stream_data_unacknowledged",
         "quiche_conn_peer_cert_chain_at",
         "quiche_conn_is_handshake_confirmed",

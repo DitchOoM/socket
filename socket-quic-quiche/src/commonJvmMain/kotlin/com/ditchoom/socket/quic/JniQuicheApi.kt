@@ -450,6 +450,8 @@ object JniQuicheApi : QuicheApi {
 
     override fun connEarlyDataReason(conn: QuicheConn): Int = nConnEarlyDataReason(conn.handle)
 
+    override fun connResetStreamsOnEarlyDataReject(conn: QuicheConn) = nConnResetStreamsOnEarlyDataReject(conn.handle)
+
     override fun connStreamDataUnacknowledged(conn: QuicheConn): Boolean = nConnStreamDataUnacknowledged(conn.handle)
 
     override fun connRecvGaps(conn: QuicheConn): Long = nConnRecvGaps(conn.handle)
@@ -1280,6 +1282,8 @@ object JniQuicheApi : QuicheApi {
     @JvmStatic private external fun nConnIsInEarlyData(conn: Long): Boolean
 
     @JvmStatic private external fun nConnEarlyDataReason(conn: Long): Int
+
+    @JvmStatic private external fun nConnResetStreamsOnEarlyDataReject(conn: Long)
 
     @JvmStatic private external fun nConnStreamDataUnacknowledged(conn: Long): Boolean
 

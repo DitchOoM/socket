@@ -126,6 +126,7 @@ internal class Turn(
                 c.feed(bytes, length, from, now)
                 c.slots.keepAlive.touched(now)
                 c.slots.datagrams.received(now)
+                c.settleEarly(now).ifRefused { finish(now, it) }
             } catch (failure: Exception) {
                 fail(now, failure)
             }

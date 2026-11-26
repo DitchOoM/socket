@@ -17,7 +17,7 @@ import kotlin.test.assertSame
 class StreamTableTests {
     private val api = StubQuicheApi()
     private val q = QuicheConnRef(api, QuicheConn(1L))
-    private val table = StreamTable(q, StreamIo(q, QuicAppErrorCode(0L)), QuicRole.Client, testLoopMemory().drains)
+    private val table = StreamTable(q, StreamIo(q, QuicAppErrorCode(0L)), QuicRole.Client, testLoopMemory().drains, EarlyCopy.Off)
     private val send = (table.state as Streams.Open).send
 
     private class Counting(

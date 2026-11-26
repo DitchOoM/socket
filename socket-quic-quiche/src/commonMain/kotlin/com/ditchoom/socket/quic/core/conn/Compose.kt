@@ -21,6 +21,7 @@ import com.ditchoom.socket.quic.core.sched.Entrant
 import com.ditchoom.socket.quic.core.sched.LoopPort
 import com.ditchoom.socket.quic.core.sched.SendPort
 import com.ditchoom.socket.quic.core.sched.WorkInbox
+import com.ditchoom.socket.quic.core.stream.EarlyCopy
 import com.ditchoom.socket.quic.core.stream.StreamIo
 import com.ditchoom.socket.quic.core.stream.StreamTable
 import com.ditchoom.socket.quic.core.time.ClockBase
@@ -50,7 +51,7 @@ internal sealed interface ConnSide {
      * its server's session ticket through one of its loop's [scratch] slots; what it took from its stores, [kept], goes
      * back if it never sent; its server's NEW_TOKEN token goes to [tokens]; its socket is moved by [mover]; a handshake
      * the system refused every send of is judged by [access]; its server's certificates are copied at completion as
-     * [chain] says; its path's silence is watched as [silence] says.
+     * [chain] says; its path's silence is watched as [silence] says; its 0-RTT bytes are kept for a replay as [early] says.
      */
     class Client(
         val ids: Random,
@@ -62,6 +63,7 @@ internal sealed interface ConnSide {
         val access: SendsAccess,
         val chain: ChainSource,
         val silence: SilenceRule,
+        val early: EarlyPlan,
     ) : ConnSide
 
     /** A server hands its peer the ids its loop routes to it. */
@@ -180,7 +182,11 @@ private fun composed(
                 },
             resumption =
                 when (side) {
-                    is ConnSide.Client -> Resumption.Client(ClientSession(q, side.offer, side.scratch, side.kept, side.tokens, side.chain))
+                    is ConnSide.Client ->
+                        Resumption.Client(
+                            ClientSession(q, side.offer, side.scratch, side.kept, side.tokens, side.chain),
+                            side.early,
+                        )
                     is ConnSide.Server -> Resumption.Server(ServerSession(q, rules.earlyData))
                 },
             datagrams =
@@ -203,7 +209,7 @@ private fun composed(
             role = side.role(),
             life = ConnLife(q, Linger(memory.factory, counts), rules.close),
             handshake = Handshake(q, rules.handshake, clock.now().value, memory.alpn, side.chainSource(), memory.factory),
-            streams = StreamTable(q, StreamIo(q, rules.writeCut), side.role(), memory.shared.drains),
+            streams = StreamTable(q, StreamIo(q, rules.writeCut), side.role(), memory.shared.drains, side.earlyCopy()),
             timer = ConnTimer(q, port, WakeSink(), counts.timer),
             ingress = Ingress(q, memory.shared, memory.factory, counts, turnClock),
             egress = Egress(q, counts, turnClock),
@@ -238,6 +244,12 @@ private fun ConnSide.chainSource(): ChainSource =
     when (this) {
         is ConnSide.Client -> chain
         is ConnSide.Server -> ChainSource.NotAsked
+    }
+
+private fun ConnSide.earlyCopy(): EarlyCopy =
+    when (this) {
+        is ConnSide.Client -> early.copy()
+        is ConnSide.Server -> EarlyCopy.Off
     }
 
 private fun ConnSide.role(): QuicRole =

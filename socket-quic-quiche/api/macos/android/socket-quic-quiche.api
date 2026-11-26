@@ -213,6 +213,7 @@ public final class com/ditchoom/socket/quic/JniQuicheApi : com/ditchoom/socket/q
 	public fun connRecv-LflwuVw (JJIJ)I
 	public fun connRecvGaps-ObL0uzk (J)J
 	public fun connRequeuePath-oJNOU9g (JJIJI)I
+	public fun connResetStreamsOnEarlyDataReject-ObL0uzk (J)V
 	public fun connRetireDcid-7TBY80c (JJ)I
 	public fun connRetiredScids-ObL0uzk (J)I
 	public fun connScidsLeft-ObL0uzk (J)J
@@ -746,6 +747,7 @@ public abstract interface class com/ditchoom/socket/quic/QuicheApi {
 	public abstract fun connRecv-LflwuVw (JJIJ)I
 	public abstract fun connRecvGaps-ObL0uzk (J)J
 	public abstract fun connRequeuePath-oJNOU9g (JJIJI)I
+	public abstract fun connResetStreamsOnEarlyDataReject-ObL0uzk (J)V
 	public abstract fun connRetireDcid-7TBY80c (JJ)I
 	public fun connRetiredScids-ObL0uzk (J)I
 	public abstract fun connScidsLeft-ObL0uzk (J)J

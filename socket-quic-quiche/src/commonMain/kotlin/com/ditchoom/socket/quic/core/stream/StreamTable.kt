@@ -27,6 +27,7 @@ internal class StreamTable(
     val io: StreamIo,
     private val role: QuicRole,
     drains: FixedPool<DrainSlot>,
+    early: EarlyCopy,
 ) {
     private val drain = StreamDrain(io, drains)
 
@@ -49,7 +50,7 @@ internal class StreamTable(
     /** The streams whose reader is parked. */
     val reads = ParkedReads()
 
-    var state: Streams = Streams.Open(StreamSend(q, io))
+    var state: Streams = Streams.Open(StreamSend(q, io, early))
         private set
 
     /** Monotonic: received data handed to a parked reader, and streams the peer opened, counted as they are found. */
@@ -60,13 +61,8 @@ internal class StreamTable(
         val held = entries.getOrDefault(id.id, absent)
         if (held !== absent) return held
         val shape = shapeOf(id, role)
-        return (
-            if (spare.isEmpty()) {
-                StreamEntry(id, shape, reads)
-            } else {
-                spare.removeAt(spare.size - 1).reuse(id, shape)
-            }
-        ).also { entries[id.id] = it }
+        val made = if (spare.isEmpty()) StreamEntry(id, shape, reads) else spare.removeAt(spare.size - 1).reuse(id, shape)
+        return made.also { entries[id.id] = it }
     }
 
     /** Whether [id] names a stream that is spent: one this side opened or was told of, whose entry was let go. */
@@ -280,7 +276,8 @@ internal class StreamTable(
 
     /**
      * Hands out every stream quiche marked writable: a parked writer retries; a stream nobody writes is asked its
-     * capacity, which is how a stream the peer stopped ends our side and, once over, leaves quiche.
+     * capacity, which is how a stream the peer stopped ends our side and, once over, leaves quiche. A stream still
+     * replaying a rejected 0-RTT's bytes hands quiche those first, and its writer waits until they are in.
      */
     private fun wakeWriters() {
         while (true) {
@@ -291,10 +288,11 @@ internal class StreamTable(
     }
 
     private fun writable(id: QuicStreamId) {
-        if (writeWaiters.remove(id.id)) return entry(id).wakeWriter(this)
-        when (io.capacity(id)) {
-            QUICHE_ERR_STREAM_STOPPED.toLong() -> stopped(id)
-            else -> Unit
+        when (val now = state) {
+            is Streams.Open -> if (now.send.resume(id) == Replaying.Behind) return
+            is Streams.Closing, is Streams.Ended -> Unit
         }
+        if (writeWaiters.remove(id.id)) return entry(id).wakeWriter(this)
+        if (io.capacity(id) == QUICHE_ERR_STREAM_STOPPED.toLong()) stopped(id)
     }
 }

@@ -148,7 +148,13 @@ internal fun ConnParts.firstFlight(): FlightGate =
 internal fun ConnParts.serverChecked() =
     when (val r = slots.resumption) {
         is Resumption.Server -> Unit
-        is Resumption.Client -> r.session.checked()
+        is Resumption.Client -> {
+            r.session.checked()
+            when (val early = r.early) {
+                is EarlyPlan.None -> Unit
+                is EarlyPlan.Keeping -> early.record.checked(streams)
+            }
+        }
     }
 
 private fun ConnParts.checkOnCompletion() =
@@ -163,11 +169,48 @@ internal fun ConnParts.releaseFirstFlight() =
         is Resumption.Client -> r.session.release()
     }
 
-/** At the end: a client's kept ticket goes back to its store if no datagram of the connection was ever written. */
+/**
+ * At the end: a client's kept ticket goes back to its store if no datagram of the connection was ever written, and the
+ * bytes it kept of its 0-RTT are freed.
+ */
 internal fun ConnParts.ticketAtEnd() =
     when (val r = slots.resumption) {
         is Resumption.Server -> Unit
-        is Resumption.Client -> r.session.ended(egress.firstOut())
+        is Resumption.Client -> {
+            r.session.ended(egress.firstOut())
+            when (val early = r.early) {
+                is EarlyPlan.None -> Unit
+                is EarlyPlan.Keeping -> early.record.ended(streams)
+            }
+        }
+    }
+
+/**
+ * After each datagram quiche read, before any work runs: a client whose server just settled its 0-RTT frees the bytes
+ * it kept, replays them, or ends because the server changed what they relied on.
+ */
+internal fun ConnParts.settleEarly(now: Nanos): EarlySettle {
+    val settled =
+        when (val r = slots.resumption) {
+            is Resumption.Server -> EarlySettle.Open
+            is Resumption.Client ->
+                when (val early = r.early) {
+                    is EarlyPlan.None -> EarlySettle.Open
+                    is EarlyPlan.Keeping -> early.record.settle(r.session, streams, handshake)
+                }
+        }
+    when (settled) {
+        is EarlySettle.Open -> Unit
+        is EarlySettle.Refused -> close(CloseChoice.Immediate(QuicError.NoError), settled.end, now)
+    }
+    return settled
+}
+
+/** Runs [then] with the end of a refused 0-RTT; the connection is past its close point already. */
+internal inline fun EarlySettle.ifRefused(then: (ConnEnd) -> Unit) =
+    when (this) {
+        is EarlySettle.Open -> Unit
+        is EarlySettle.Refused -> then(end)
     }
 
 private fun ConnParts.early() =

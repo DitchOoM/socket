@@ -8,6 +8,8 @@ import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicCloseReason
 import com.ditchoom.socket.quic.QuicConnectionEnd
+import com.ditchoom.socket.quic.QuicEarlyDataChange
+import com.ditchoom.socket.quic.QuicEarlyDataRejection
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicHandshakeReached
 import com.ditchoom.socket.quic.QuicRttSample
@@ -62,6 +64,7 @@ class ConnectionEndMappingTests {
             ConnEnd.NoUsablePath,
             ConnEnd.HandshakeSendRefused(progress, SendRefusal.PermissionDenied),
             ConnEnd.AccessDenied(QuicAccessDenial.AndroidPermissionNotHeld),
+            ConnEnd.EarlyDataRejected(QuicEarlyDataRejection.DeclinedByPeer, QuicEarlyDataChange.UnidirectionalStreams(4, 1, 2)),
         )
 
     /** Exhaustive without `else`: a new [ConnEnd] does not compile until it is numbered here and sampled above. */
@@ -85,6 +88,7 @@ class ConnectionEndMappingTests {
             is ConnEnd.NoUsablePath -> 15
             is ConnEnd.HandshakeSendRefused -> 16
             is ConnEnd.AccessDenied -> 17
+            is ConnEnd.EarlyDataRejected -> 18
         }
 
     /** The public variant each end must map to, numbered as [variant] numbers ends. */
@@ -108,6 +112,7 @@ class ConnectionEndMappingTests {
             is QuicConnectionEnd.NoUsablePath -> 15
             is QuicConnectionEnd.HandshakeSendRefused -> 16
             is QuicConnectionEnd.AccessDenied -> 17
+            is QuicConnectionEnd.EarlyDataRejected -> 18
             is QuicConnectionEnd.ReasonOnly -> -1
         }
 

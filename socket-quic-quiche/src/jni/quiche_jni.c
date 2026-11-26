@@ -660,6 +660,10 @@ JNIEXPORT jint JNICALL JNI_FN(nConnEarlyDataReason)(JNIEnv *env, jclass cls, jlo
     return (jint)quiche_conn_early_data_reason((const quiche_conn *)(uintptr_t)conn);
 }
 
+JNIEXPORT void JNICALL JNI_FN(nConnResetStreamsOnEarlyDataReject)(JNIEnv *env, jclass cls, jlong conn) {
+    quiche_conn_reset_streams_on_early_data_reject((quiche_conn *)(uintptr_t)conn);
+}
+
 JNIEXPORT jboolean JNICALL JNI_FN(nConnIsHandshakeConfirmed)(JNIEnv *env, jclass cls, jlong conn) {
     return (jboolean)quiche_conn_is_handshake_confirmed((const quiche_conn *)(uintptr_t)conn);
 }

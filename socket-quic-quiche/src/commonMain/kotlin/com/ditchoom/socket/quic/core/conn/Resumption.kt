@@ -11,6 +11,7 @@ import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.observe.Confined
 import com.ditchoom.socket.quic.core.pool.FixedPool
 import com.ditchoom.socket.quic.core.pool.Pooled
+import com.ditchoom.socket.quic.core.stream.ReplayStart
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 import kotlinx.coroutines.Runnable
 
@@ -79,7 +80,7 @@ internal sealed interface KeptTicket {
 
 /**
  * Whether a client holds its output until its server is checked: from the completion of a handshake that did not accept
- * the 0-RTT it sent, which quiche sends again in 1-RTT to a server whose certificate is still to be checked.
+ * the 0-RTT it sent, which is replayed in 1-RTT to a server whose certificate is still to be checked.
  */
 private enum class CheckHold { None, UntilChecked }
 
@@ -149,6 +150,19 @@ internal class ClientSession(
                 },
             )
         }
+
+    /** A replay of a rejected 0-RTT waits for the server's check, when there is one, as the client's output does. */
+    fun replayStart(): ReplayStart = if (chain is ChainSource.Copied) ReplayStart.AfterCheck else ReplayStart.Now
+
+    /** Whether the server settled this client's 0-RTT yet, and how. */
+    fun earlyFate(): EarlyFate {
+        val reason = q.api.connEarlyDataReason(q.handle)
+        if (reason == QuicEarlyDataReason.UNKNOWN) return EarlyFate.Unsettled
+        return when (val outcome = QuicEarlyDataReason.earlyData(reason)) {
+            is QuicEarlyDataOutcome.Accepted -> EarlyFate.Accepted
+            is QuicEarlyDataOutcome.NotAccepted -> EarlyFate.NotAccepted(outcome.reason)
+        }
+    }
 
     /** Once, when the handshake completed: whether output waits for the server's check, as [ClientSession] says. */
     fun completed() {

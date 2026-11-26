@@ -6,6 +6,7 @@ import com.ditchoom.socket.quic.StreamRecvStep
 import com.ditchoom.socket.quic.StreamSendStep
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.observe.Confined
+import kotlinx.coroutines.Runnable
 
 /** Whether a write ends our side of the stream. */
 internal enum class WriteEnd { More, Finish }
@@ -62,18 +63,82 @@ internal class StreamIo(
     }
 }
 
-/** Hands quiche stream data: what accepting it is. Held only by a [StreamTable] before its connection's close point. */
+/**
+ * Hands quiche stream data: what accepting it is. Held only by a [StreamTable] before its connection's close point. A
+ * client's sends before its server settled 0-RTT are also handed to [copy]; after a rejected 0-RTT the kept sends are
+ * replayed ([replay]) ahead of anything its callers send on the same streams.
+ */
 @Confined
 internal class StreamSend(
     private val q: QuicheConnRef,
     private val io: StreamIo,
+    private var copy: EarlyCopy,
 ) {
+    private val early = EarlyReplay()
+    private val raw: (Long, Long, Int, WriteEnd) -> StreamSendStep = { stream, address, length, end ->
+        handed(QuicStreamId(stream), address, length, end)
+    }
+
     /**
      * Sends on [stream], allocating nothing. quiche answers Done both when it can take nothing now and when it already
      * let the stream go: a stream our side has not ended is let go only once the peer stopped it, so that answer is
-     * [STOPPED].
+     * [STOPPED]. A stream still replaying takes nothing but a FIN alone, which follows the replay.
      */
     fun send(
+        stream: QuicStreamId,
+        address: Long,
+        length: Int,
+        end: WriteEnd,
+    ): StreamSendStep {
+        if (early.holds(stream.id)) {
+            if (length > 0 || end == WriteEnd.More) return FULL
+            early.finAfter(stream.id)
+            return StreamSendStep.taken(0)
+        }
+        val sent = handed(stream, address, length, end)
+        when (val to = copy) {
+            is EarlyCopy.Off -> Unit
+            is EarlyCopy.To ->
+                sent.fold(
+                    took = { took ->
+                        if (took > 0 ||
+                            length == 0
+                        ) {
+                            to.keep(stream.id, address, took, if (took == length) end else WriteEnd.More)
+                        }
+                    },
+                    full = {},
+                    refused = { _, _ -> },
+                )
+        }
+        return sent
+    }
+
+    /** The server settled 0-RTT: nothing more is copied. */
+    fun stopCopying() {
+        copy = EarlyCopy.Off
+    }
+
+    /**
+     * Replays [pieces], in order, ahead of later sends on their streams, from [start]; [done] runs once quiche took all
+     * of them.
+     */
+    fun replay(
+        pieces: List<Replayed>,
+        done: Runnable,
+        start: ReplayStart,
+    ) = early.start(pieces, done, start, raw)
+
+    /** A replay held for the server's check goes now. */
+    fun releaseReplay() = early.release(raw)
+
+    /** [stream] can take bytes: what it still has to replay goes first. */
+    fun resume(stream: QuicStreamId): Replaying = early.resume(stream.id, raw)
+
+    /** Past the close point nothing more is replayed. */
+    fun dropReplay() = early.drop()
+
+    private fun handed(
         stream: QuicStreamId,
         address: Long,
         length: Int,
@@ -98,6 +163,9 @@ internal class StreamSend(
     private companion object {
         /** A send refused because the peer stopped the stream; quiche no longer says with which code. */
         val STOPPED = StreamSendStep.stopped(QuicAppErrorCode(0L))
+
+        /** quiche can take nothing now. */
+        val FULL = StreamSendStep.of(StreamSendStep.QUICHE_ERR_DONE_CODE) { QuicAppErrorCode(0L) }
     }
 }
 

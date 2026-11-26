@@ -466,6 +466,8 @@ internal class StubQuicheApi(
 
     override fun connEarlyDataReason(conn: QuicheConn) = QuicEarlyDataReason.NO_SESSION_OFFERED
 
+    override fun connResetStreamsOnEarlyDataReject(conn: QuicheConn) = Unit
+
     /** Controllable quiche timeout. Null (default) = "no quiche timer pending", so the keepalive deadline
      *  is the only thing that can wake the driver loop — see the keepalive driver tests. */
     @Volatile var connTimeout: Duration? = null

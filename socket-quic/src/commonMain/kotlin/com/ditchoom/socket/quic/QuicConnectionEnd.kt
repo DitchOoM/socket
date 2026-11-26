@@ -89,6 +89,16 @@ sealed interface QuicConnectionEnd {
     /** No path the connection could send on was left. */
     data object NoUsablePath : QuicConnectionEnd
 
+    /**
+     * The server rejected the client's 0-RTT for [reason] and changed what the early bytes relied on, as [change] says:
+     * nothing written in the [QuicResumption.ResumeWithEarlyData] block reached the server, and the client ended the
+     * connection rather than replay it (RFC 9001 §4.6.2). Connect again; the block runs again on that connection.
+     */
+    data class EarlyDataRejected(
+        val reason: QuicEarlyDataRejection,
+        val change: QuicEarlyDataChange,
+    ) : QuicConnectionEnd
+
     /** An engine that records only the close reason ended the connection with [reason]. */
     data class ReasonOnly(
         val reason: QuicCloseReason,
@@ -108,6 +118,7 @@ val QuicConnectionEnd.closeReason: QuicCloseReason
             is QuicConnectionEnd.ServerClosed -> QuicCloseReason.ByLocal(QuicError.NoError)
             is QuicConnectionEnd.ServerClosedUnsettled -> QuicCloseReason.ByLocal(QuicError.ServerStoppedBeforeCloseSent)
             is QuicConnectionEnd.NoUsablePath -> QuicCloseReason.ByLocal(QuicError.NoViablePath)
+            is QuicConnectionEnd.EarlyDataRejected -> QuicCloseReason.ByLocal(QuicError.NoError)
             is QuicConnectionEnd.ReasonOnly -> reason
             is QuicConnectionEnd.AccessDenied,
             is QuicConnectionEnd.SocketFailed, is QuicConnectionEnd.CallerFailed, is QuicConnectionEnd.LoopFailed,

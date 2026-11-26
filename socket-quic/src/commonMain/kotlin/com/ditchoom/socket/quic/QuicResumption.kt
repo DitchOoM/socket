@@ -115,8 +115,7 @@ sealed interface QuicResumption {
      * [QuicSessionTicket.protocol], the one the session speaks — instead of
      * [QuicOptions.alpnProtocols]. There is no protocol to pass and no list to widen, so early bytes
      * cannot be read under a protocol other than the one they were written for: not when the server
-     * accepts 0-RTT, and not when it declines and the engine sends them again after the handshake
-     * (which is what it does instead of resetting the streams as RFC 9001 §4.6.2 has a client do).
+     * accepts 0-RTT, and not when it declines and they are replayed after the handshake.
      * [QuicOptions.alpnProtocols] must still list that protocol — it is what the caller says this
      * connection may speak — or the connect fails with [EarlyDataProtocolNotOfferedException] before
      * anything is sent.
@@ -124,8 +123,17 @@ sealed interface QuicResumption {
      * [write] runs before [withQuicConnection]'s block. Its writes are queued, not sent, until it
      * returns — so it must not wait on the peer; a read, or a write the session's remembered flow
      * control cannot take whole, releases the first flight at that point. On the connection that
-     * results the bytes reach the server exactly once: if the server does not accept 0-RTT they are
-     * sent again after the handshake instead of early, and [QuicScope.resumption] says which happened.
+     * results the bytes reach the server exactly once, and [write] runs once.
+     *
+     * ## When the server rejects 0-RTT
+     * On the run-to-completion core the streams the rejected 0-RTT opened are reset (RFC 9001 §4.6.2;
+     * the older engine sends their bytes again instead). The core keeps a copy of the
+     * bytes [write] handed the engine, never [write] itself, and replays them on the same streams in
+     * 1-RTT, under the limits the server now grants, when the server kept what they relied on; it
+     * frees the copy once the server accepted 0-RTT or the replay is handed over. When the server
+     * changed what they relied on, nothing is replayed and the connection ends with
+     * [QuicConnectionEnd.EarlyDataRejected], whose [QuicEarlyDataChange] says what changed.
+     * [QuicScope.resumption] says which happened.
      *
      * ## ⚠️ One connect is not one attempt
      * A connect races its peer's candidate endpoints ([QuicPeer]), and each attempt is its own
@@ -184,7 +192,7 @@ sealed interface QuicResumptionOutcome {
         val earlyData: QuicEarlyDataOutcome,
     ) : QuicResumptionOutcome
 
-    /** The handshake was full, for [reason]. Any 0-RTT data was discarded by the server and sent again afterwards. */
+    /** The handshake was full, for [reason]. Any 0-RTT data was discarded by the server and replayed in 1-RTT. */
     data class FullHandshake(
         val reason: QuicFullHandshakeReason,
     ) : QuicResumptionOutcome
@@ -221,7 +229,7 @@ sealed interface QuicEarlyDataOutcome {
     /** The server accepted 0-RTT: what the client wrote as early data was processed before the handshake completed. */
     data object Accepted : QuicEarlyDataOutcome
 
-    /** 0-RTT was not accepted, for [reason]. Early data, if any was written, was sent after the handshake. */
+    /** 0-RTT was not accepted, for [reason]. Early data, if any was written, was replayed in 1-RTT. */
     data class NotAccepted(
         val reason: QuicEarlyDataRejection,
     ) : QuicEarlyDataOutcome
@@ -260,4 +268,51 @@ sealed interface QuicEarlyDataRejection {
     data class Unrecognized(
         val code: Int,
     ) : QuicEarlyDataRejection
+}
+
+/**
+ * What a server that rejected 0-RTT changed since its ticket that the client's early bytes relied on, so they were not
+ * replayed (RFC 9000 §7.4.1, RFC 9001 §4.6.2). Carried by [QuicConnectionEnd.EarlyDataRejected].
+ */
+sealed interface QuicEarlyDataChange {
+    /** The server negotiated [negotiated], not the [remembered] protocol the bytes were written for. */
+    data class ApplicationProtocol(
+        val remembered: String,
+        val negotiated: String,
+    ) : QuicEarlyDataChange
+
+    /** The server grants [granted] bidirectional streams; the early bytes were written on [opened]. */
+    data class BidirectionalStreams(
+        val remembered: Long,
+        val granted: Long,
+        val opened: Long,
+    ) : QuicEarlyDataChange
+
+    /** The server grants [granted] unidirectional streams; the early bytes were written on [opened]. */
+    data class UnidirectionalStreams(
+        val remembered: Long,
+        val granted: Long,
+        val opened: Long,
+    ) : QuicEarlyDataChange
+
+    /** The server grants [granted] bytes of connection credit, less than the [written] early bytes. */
+    data class ConnectionData(
+        val remembered: Long,
+        val granted: Long,
+        val written: Long,
+    ) : QuicEarlyDataChange
+
+    /** The server grants [granted] bytes on a new stream, less than the [written] early bytes of stream [stream]. */
+    data class StreamData(
+        val stream: Long,
+        val remembered: Long,
+        val granted: Long,
+        val written: Long,
+    ) : QuicEarlyDataChange
+
+    /** The server takes DATAGRAM frames of at most [granted] bytes, fewer than the [remembered]; 0 is none (RFC 9221 §3). */
+    data class DatagramFrameSize(
+        val remembered: Long,
+        val granted: Long,
+    ) : QuicEarlyDataChange
 }

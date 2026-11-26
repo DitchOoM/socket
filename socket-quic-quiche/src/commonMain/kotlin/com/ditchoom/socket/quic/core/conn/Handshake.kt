@@ -194,6 +194,9 @@ internal class Handshake(
         )
     }
 
+    /** The negotiated ALPN as text: quiche's once the server's EncryptedExtensions were read. */
+    fun negotiated(): String = alpnText()
+
     private fun alpnText(): String {
         val length = alpn()
         val text = alpn.owner

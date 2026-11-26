@@ -214,6 +214,11 @@ internal class GuardedQuicheApi(
         return delegate.connEarlyDataReason(conn)
     }
 
+    override fun connResetStreamsOnEarlyDataReject(conn: QuicheConn) {
+        guard.assertOnLoop(LoopSite.Quiche)
+        delegate.connResetStreamsOnEarlyDataReject(conn)
+    }
+
     override fun connStreamDataUnacknowledged(conn: QuicheConn): Boolean {
         guard.assertOnLoop(LoopSite.Quiche)
         return delegate.connStreamDataUnacknowledged(conn)
