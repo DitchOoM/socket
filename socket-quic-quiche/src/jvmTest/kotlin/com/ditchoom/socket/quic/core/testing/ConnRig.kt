@@ -83,6 +83,9 @@ internal class RecordingSink : ConnSink {
     val ended = ArrayList<ConnEnd>()
     val outcomes = ArrayList<CloseOutcome>()
 
+    /** Whether the handshake had completed, as each end said. */
+    val fates = ArrayList<HandshakeFate>()
+
     override fun established(report: ConnectReport) {
         established += report
     }
@@ -109,6 +112,7 @@ internal class RecordingSink : ConnSink {
     ) {
         ended += end
         outcomes += outcome
+        fates += handshake
     }
 }
 
