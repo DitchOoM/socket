@@ -2816,9 +2816,8 @@ class QuicheDriver(
     /** What the peer is known to do with the paths this client leaves. See [PeerPathRoom]. */
     private var peerPathRoom: PeerPathRoom = PeerPathRoom.Kept(emptySet())
 
-    /** How many of our source ids this client has asked the peer to retire (Retire Prior To), and how many it has retired. */
-    private var retirementsAsked = 0L
-    private var retirementsSeen = 0L
+    /** Our source ids quiche holds and the Retire Prior To it has sent: which of the peer's retirements were asked for. */
+    private val ourSourceIds = OurSourceIds()
 
     /**
      * Start the migration that arrived before the handshake confirmed, on the turn that confirms it —
@@ -3185,10 +3184,6 @@ class QuicheDriver(
             if (_sessionTicket.value is QuicSessionTicketState.NotIssued) refreshSessionTicket()
             val issued = issueSpareCids()
             val retired = drainRetiredScids()
-            retirementsSeen += retired
-            // More retirements than this client asked for: the peer retires the ids of paths a client leaves
-            // on its own, so it frees those paths and has room for any number of moves.
-            if (retirementsSeen > retirementsAsked) peerPathRoom = PeerPathRoom.Freed(peerPathRoom.movedTo)
             // The routing table is set to what quiche says, not adjusted by what just happened: the
             // two counts only decide WHETHER to look, never what the answer is.
             projectSourceIds(setMayHaveMoved = issued > 0 || retired > 0)
@@ -4354,7 +4349,6 @@ class QuicheDriver(
                     peerHoldsAnUnusedIdOfOurs() -> LeftPathSourceId.Settled
                     issueOneScid() >= 0 -> {
                         count++
-                        retirementsAsked++
                         LeftPathSourceId.Settled
                     }
                     else -> LeftPathSourceId.Owed
@@ -4413,9 +4407,12 @@ class QuicheDriver(
                 true,
                 addr(seqScratch),
             )
+        if (rc >= 0) {
+            quicheOwesAFlush = true // NEW_CONNECTION_ID is queued
+            ourSourceIds.issued(scid.readLong(), scid.readLong(), peerSourceIdLimit())
+        }
         scid.freeNativeMemory()
         token.freeNativeMemory()
-        if (rc >= 0) quicheOwesAFlush = true // NEW_CONNECTION_ID is queued
         return rc
     }
 
@@ -4449,11 +4446,41 @@ class QuicheDriver(
             if (yielded > count) {
                 capture.record { it.error(RetiredScidOverflow(yielded, count)) }
             }
-            minOf(yielded, count)
+            val drained = minOf(yielded, count)
+            judgeRetirements(slots, drained)
+            drained
         } finally {
             slots.freeNativeMemory()
         }
     }
+
+    /**
+     * Mark the peer as freeing the paths a client leaves once it retires an id of ours that no Retire Prior To
+     * asked for (RFC 9000 §19.16): a peer may ignore the ask (mvfst) and still retire a left path's id, so it is
+     * the id retired that tells, not how many.
+     */
+    private fun judgeRetirements(
+        slots: PlatformBuffer,
+        drained: Int,
+    ) {
+        for (i in 0 until drained) {
+            val at = i * RETIRED_SCID_SLOT_BYTES
+            val retirement =
+                if ((slots[at].toInt() and 0xFF) == QUIC_ISSUED_CONN_ID_LEN) {
+                    ourSourceIds.peerRetired(slots.getLong(at + 1), slots.getLong(at + 1 + Long.SIZE_BYTES))
+                } else {
+                    ourSourceIds.peerRetiredHandshakeId()
+                }
+            if (retirement == PeerRetirement.Unasked) peerPathRoom = PeerPathRoom.Freed(peerPathRoom.movedTo)
+        }
+    }
+
+    /** The peer's `active_connection_id_limit`: quiche's own floor of 2 until the peer's parameters arrive. */
+    private fun peerSourceIdLimit(): Long =
+        when (val params = api.connPeerTransportParams(conn)) {
+            PeerTransportParams.NotYetNegotiated -> OurSourceIds.QUICHE_MIN_PEER_LIMIT
+            is PeerTransportParams.Negotiated -> params.activeConnIdLimit
+        }
 
     /**
      * How many source CIDs the last [projectSourceIds] published. Compared against

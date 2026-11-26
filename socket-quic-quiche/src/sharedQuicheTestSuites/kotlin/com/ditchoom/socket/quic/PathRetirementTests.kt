@@ -7,6 +7,7 @@ import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.deterministic
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.coroutines.EmptyCoroutineContext
@@ -231,6 +232,32 @@ class PathRetirementTests {
         suspend fun evict(port: Int) {
             stub.pathEvents += StubPathEvent(QuichePathEventType.Closed, port)
             wake()
+        }
+
+        /**
+         * A peer with an `active_connection_id_limit` of 5 takes our ids 1–4, and four moves fill it: the push
+         * after the fourth issues our id 5 with Retire Prior To 1, asking the peer to retire our id 0.
+         */
+        suspend fun fillAPeerLimitOfFiveWithFourMoves(scope: TestScope) {
+            stub.peerActiveConnIdLimit = 5L
+            stub.scidsLeft = 4L
+            stub.activeScidCount = 5
+            scope.runCurrent()
+            wake()
+            scope.runCurrent()
+            wake()
+            scope.runCurrent()
+            assertEquals(4, stub.newScidCalls, "the peer's limit of 5 was not filled with our ids 1-4")
+            for (move in 1..4) {
+                val result = migrate()
+                scope.runCurrent()
+                validate(move)
+                scope.runCurrent()
+                result.assertSucceeded()
+                wake()
+                scope.runCurrent()
+            }
+            assertEquals(5, stub.newScidCalls, "the fourth move did not push the original path's id out")
         }
 
         /** One benign driver-loop wake (a no-op stream open), so `afterCommand` runs again. */
@@ -943,8 +970,7 @@ class PathRetirementTests {
             f.stub.peerActiveConnIdLimit = 3L
             f.stub.scidsLeft = 0L
             f.stub.activeScidCount = 3
-            f.stub.retiredScidCount = 1
-            f.stub.retiredScidsDrained = 1
+            f.stub.peerRetires(0)
             f.driver.start(this)
             try {
                 runCurrent()
@@ -967,6 +993,58 @@ class PathRetirementTests {
                 f.wake()
                 runCurrent()
                 assertEquals(1, f.stub.newScidCalls, "a peer that retired an id unasked was taken to hold an unused one")
+            } finally {
+                f.driver.destroy()
+            }
+        }
+
+    /**
+     * **A retirement no Retire Prior To asked for shows the peer frees paths, whatever it did with the ask.**
+     * mvfst (run 45763399479): its limit of 5 is full after four moves, the id pushed out after the fourth asks
+     * it to retire our id 0 (Retire Prior To 1), and it retires our id 3 instead, the id of a path it left.
+     * One retirement for one ask, but not the one asked for: the fifth move is probed.
+     */
+    @Test
+    fun aRetirementAboveRetirePriorToShowsThePeerFreesPathsThoughTheAskWentUnanswered() =
+        runTest {
+            val f = Fixture()
+            f.driver.start(this)
+            try {
+                f.fillAPeerLimitOfFiveWithFourMoves(this)
+                f.stub.peerRetires(3)
+                f.wake()
+                runCurrent()
+
+                val fifth = f.migrate()
+                runCurrent()
+                f.validate(5)
+                runCurrent()
+                fifth.assertSucceeded()
+            } finally {
+                f.driver.destroy()
+            }
+        }
+
+    /**
+     * **The retirement a Retire Prior To asked for frees no path.** The partner of the test above: a quiche peer
+     * retires our id 0 as asked and links a fresh id to the path it left, so it still holds five paths and the
+     * fifth move is refused unprobed.
+     */
+    @Test
+    fun theRetirementRetirePriorToAskedForLeavesAPeerLimitOfFiveFullAfterFourMoves() =
+        runTest {
+            val f = Fixture()
+            f.driver.start(this)
+            try {
+                f.fillAPeerLimitOfFiveWithFourMoves(this)
+                f.stub.peerRetires(0)
+                f.wake()
+                runCurrent()
+
+                val fifth = f.migrate()
+                runCurrent()
+                assertEquals(MigrationResult.Unmoved.Failed.NoSpareConnectionId, fifth.await())
+                assertEquals(4, f.factory.opened, "a socket was opened for a move the peer cannot admit")
             } finally {
                 f.driver.destroy()
             }

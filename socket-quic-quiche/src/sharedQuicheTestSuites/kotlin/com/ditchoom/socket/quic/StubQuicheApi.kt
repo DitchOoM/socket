@@ -2,6 +2,7 @@
 
 package com.ditchoom.socket.quic
 
+import com.ditchoom.buffer.UnsafeMemory
 import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.Nanos
 import kotlin.concurrent.Volatile
@@ -896,8 +897,14 @@ internal class StubQuicheApi(
         newScidCalls++
         // Mirror real quiche: a successful issue consumes one unit of the peer-granted capacity.
         if (scidsLeft > 0L) scidsLeft--
+        // quiche numbers the ids it takes 1, 2, … after the handshake id; keep the bytes so a scripted
+        // retirement can hand the driver back the very id it issued.
+        if (scidLen == QUIC_ISSUED_CONN_ID_LEN) issuedScids += ByteArray(scidLen) { UnsafeMemory.getByte(scidAddr + it) }
         return 0
     }
+
+    /** The bytes of every id [connNewScid] took, in order: index `n` holds the id quiche numbered `n + 1`. */
+    val issuedScids: MutableList<ByteArray> = mutableListOf()
 
     /**
      * Scripted [MigrateOutcome] queue, drained one outcome per [connMigrate] call in FIFO order.
@@ -1079,13 +1086,9 @@ internal class StubQuicheApi(
     override fun connRetiredScids(conn: QuicheConn) = retiredScidCount
 
     /**
-     * Yields **nothing**, for the reason [connPathEventNext] registers a sockaddr instead of writing
-     * one: this stub decodes no real memory, and filling the driver's buffer with fabricated connection
-     * IDs would be a lie dressed as coverage. What it does record is the *policy* — that the driver
-     * drains exactly when the count says to, and sizes the buffer from that count.
-     *
-     * The bytes are covered where they mean something: `RetiredScidDrainTests` runs this against real
-     * quiche over a real migration, which is also the only place the four FFI backends are exercised.
+     * Writes the ids [peerRetires] queued into [out], one slot of [RETIRED_SCID_SLOT_BYTES] each (a length byte
+     * then the id), as quiche's iterator does, and reports how many it wrote. The real backends' bytes are
+     * covered by `RetiredScidDrainTests` against real quiche over a real migration.
      */
     override fun connDrainRetiredScids(
         conn: QuicheConn,
@@ -1095,14 +1098,27 @@ internal class StubQuicheApi(
         drainRetiredScidCalls++
         lastDrainCapacity = maxIds
         retiredScidCount = 0
-        return retiredScidsDrained.also { retiredScidsDrained = 0 }
+        val written = minOf(pendingRetiredScids.size, maxIds)
+        repeat(written) { slot ->
+            val id = pendingRetiredScids.removeFirst()
+            val at = out + slot.toLong() * RETIRED_SCID_SLOT_BYTES
+            UnsafeMemory.putByte(at, id.size.toByte())
+            id.forEachIndexed { i, b -> UnsafeMemory.putByte(at + 1 + i, b) }
+        }
+        pendingRetiredScids.clear()
+        return written
     }
 
+    private val pendingRetiredScids = ArrayDeque<ByteArray>()
+
     /**
-     * How many retirements the next [connDrainRetiredScids] reports as drained, writing no ids. The driver
-     * acts on the count alone (whether the peer retired more than it was asked to). **0 by default.**
+     * The peer retires our ids [seqs] (RETIRE_CONNECTION_ID): sequence 0 is the handshake id, which no
+     * [connNewScid] issued, and `n` the id the `n`-th one did. The next [connDrainRetiredScids] yields them.
      */
-    @Volatile var retiredScidsDrained = 0
+    fun peerRetires(vararg seqs: Int) {
+        for (seq in seqs) pendingRetiredScids.addLast(if (seq == 0) STUB_HANDSHAKE_SCID else issuedScids[seq - 1])
+        retiredScidCount = pendingRetiredScids.size
+    }
 
     /**
      * How many source CIDs quiche considers active (`quiche_conn_active_scids`). **0 by default** —
@@ -1186,6 +1202,9 @@ internal class StubQuicheApi(
         const val WRITABLE_ITER = 1L
     }
 }
+
+/** The handshake id [StubQuicheApi.peerRetires] hands back for sequence 0: no [StubQuicheApi.connNewScid] issued it. */
+private val STUB_HANDSHAKE_SCID = ByteArray(QUIC_ISSUED_CONN_ID_LEN) { 0x5A }
 
 /** First handle of the recv_infos [StubQuicheApi.recvInfoNew] makes. */
 private const val STUB_RECV_INFO_BASE = 1_000L
