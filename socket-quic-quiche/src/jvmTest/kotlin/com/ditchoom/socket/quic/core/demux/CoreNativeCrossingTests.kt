@@ -13,10 +13,14 @@ import com.ditchoom.socket.quic.MigrationPolicy
 import com.ditchoom.socket.quic.NetworkMonitorSource
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicError
+import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicStatsRead
+import com.ditchoom.socket.quic.core.conn.DatagramRule
+import com.ditchoom.socket.quic.core.conn.quicheHandOff
 import com.ditchoom.socket.quic.core.edge.CoreConnection
 import com.ditchoom.socket.quic.core.edge.connectCore
 import com.ditchoom.socket.quic.core.edge.coreTestOptions
+import com.ditchoom.socket.quic.core.edge.datagramRuleOf
 import com.ditchoom.socket.quic.core.edge.public
 import com.ditchoom.socket.quic.core.edge.withCoreServer
 import com.ditchoom.socket.quic.core.loop.LoopSet
@@ -175,11 +179,18 @@ class CoreNativeCrossingTests {
                             echoes = 0,
                             slack = read / SLACK_ECHOES_DIVISOR + SLACK_PER_CONNECTION * 2,
                             datagramsDelivered = read,
-                            written = PacketsWritten.Counted(written),
+                            written = PacketsWritten.Fed(written, handOffOf(options)),
                         )
                     assertTrue(broken.isEmpty(), "crossings out of line with the work done: %s\n%s".format(broken, report))
                 }
             }
+        }
+
+    /** The datagrams quiche's send queue is handed at once under [options]. */
+    private fun handOffOf(options: QuicOptions): Int =
+        when (val rule = datagramRuleOf(options)) {
+            is DatagramRule.On -> rule.quicheHandOff()
+            is DatagramRule.Off -> fail("datagrams are off under $options")
         }
 
     /** A monitor whose network can change, so a client under [MigrationPolicy.Automatic] judges its path's silence. */
@@ -265,14 +276,16 @@ class CoreNativeCrossingTests {
     }
 
     /**
-     * The packets quiche wrote while counted: as many as were received, on an echo whose path loses none, or the
-     * [Counted] packets its connections' statistics report, under a flood the kernel may drop from.
+     * What quiche wrote while counted: on an echo, as many packets as were received; on a datagram flood, the [Fed.packets]
+     * its connections' statistics report, fed from a hand-off of [Fed.handOff] datagrams that is refilled each time
+     * quiche runs dry.
      */
     private sealed interface PacketsWritten {
         data object AsReceived : PacketsWritten
 
-        class Counted(
+        class Fed(
             val packets: Long,
+            val handOff: Int,
         ) : PacketsWritten
     }
 
@@ -324,14 +337,14 @@ class CoreNativeCrossingTests {
                     Law.atMost("recvInfoFree", n("recvInfoFree"), n("connFree"), slack),
                     // Whether the peer's close arrived: asked once in a turn that handed quiche a datagram.
                     Law.atMost("connIsDraining", n("connIsDraining"), minOf(turns, datagrams), slack),
-                    // At most one terminating call per turn plus one per packet written.
+                    // One per packet written, and one that finds quiche dry per turn and per full hand-off refilled.
                     Law.atMost(
                         "connSend",
                         n("connSend"),
                         turns +
                             when (written) {
                                 is PacketsWritten.AsReceived -> datagrams
-                                is PacketsWritten.Counted -> written.packets
+                                is PacketsWritten.Fed -> written.packets + n("connDgramSend") / written.handOff
                             },
                         slack,
                     ),
