@@ -675,7 +675,7 @@ fun patchQuicheForCallerEntropy(sourceDir: File) {
  * It takes two losses: the receiver's ACK of the data and the sender's FIN-only packet. The sender
  * then declares both lost and retransmits them as one frame (offset 0, all the data, FIN set), every
  * byte of which the reader already has. Reproduced deterministically by
- * `MigrationSimTestSuite.aFinRetransmittedWithBytesTheReaderAlreadyConsumedEndsTheStream`, and seen as
+ * `QuichePatchStreamTests.aFinRetransmittedWithBytesTheReaderAlreadyConsumedEndsTheStream`, and seen as
  * a request that never ended on an 800 ms / 30 % loss sim path.
  *
  * The edit: such a frame is reduced to its empty FIN-carrying tail at the read offset — exactly the
@@ -711,7 +711,7 @@ fun patchQuicheDuplicateDataFinIsKept(sourceDir: File) {
                 "quiche bump moved or reshaped it — possibly fixing this upstream, which is the outcome we " +
                 "want. If a fully-duplicate frame carrying the FIN now leaves the stream readable at its end: " +
                 "DELETE this patch and its call site, and KEEP the regression guard " +
-                "MigrationSimTestSuite.aFinRetransmittedWithBytesTheReaderAlreadyConsumedEndsTheStream. " +
+                "QuichePatchStreamTests.aFinRetransmittedWithBytesTheReaderAlreadyConsumedEndsTheStream. " +
                 "Otherwise re-fit the anchor and re-verify with that guard before shipping.",
         )
     }
@@ -1081,8 +1081,8 @@ fun patchQuicheRecvGapCounter(sourceDir: File) {
  *    graceful close there is nothing left to wait for.
  *
  * Either way the peer reads the whole stream and never its end. Reproduced by
- * `MigrationSimTestSuite.aFinWrittenWhileAnEarlierRangeAwaitsRetransmissionIsStillSent` and
- * `aReplyEndsWithItsFinWhenTheServerClosesRightAfterWritingIt`.
+ * `QuichePatchStreamTests.aFinWrittenWhileAnEarlierRangeAwaitsRetransmissionIsStillSent` and
+ * `QuichePatchStreamTests.aFinLostBehindAcknowledgedDataIsSentAgain`.
  *
  * The edits: `SendBuf` gains `socket_fin_sent` (set when `emit` puts the FIN on a frame, cleared when the
  * ACK handler's loss arm sees a frame carrying it lost) and `socket_fin_acked` (set when the ACK handler
@@ -1207,8 +1207,9 @@ fun patchQuicheFinIsSentUntilAcknowledged(sourceDir: File) {
  * Finished may be lost — a client with a request in flight split its PTOs between the Finished and 1-RTT
  * data the server cannot read yet: Finished, request, Finished, request, each interval double the last.
  * The quic-interop-runner's `handshakeloss` against quic-go: the lost Finished went out again 1, 5 and
- * 21 s later, quic-go dropped the handshake at 10 s, and the client idled out at 30 s. Reproduced by
- * `MigrationSimTestSuite.aLostFinishedIsSentAgainAtEveryPtoUntilTheHandshakeIsConfirmed`.
+ * 21 s later, quic-go dropped the handshake at 10 s, and the client idled out at 30 s. Exercised by
+ * `QuichePatchHandshakeTests.aLostFinishedIsSentAgainAtEveryPtoUntilTheHandshakeIsConfirmed`, which stays green
+ * with this patch reverted alone, and with [patchQuicheOneRttAckConfirms] reverted too.
  *
  * A server confirms when it completes, so only a client's timing changes. Nothing is stranded meanwhile:
  * with no Handshake data in flight the server's own PTO re-sends HANDSHAKE_DONE, and its arrival
@@ -1228,7 +1229,7 @@ fun patchQuichePtoWaitsForConfirmation(sourceDir: File) {
             "$marker: `completed: self.is_established(),` not found exactly once in quiche's lib.rs — a quiche " +
                 "bump moved it, or upstream now gates the Application Data PTO on confirmation. If so, DELETE " +
                 "patchQuichePtoWaitsForConfirmation and KEEP " +
-                "MigrationSimTestSuite.aLostFinishedIsSentAgainAtEveryPtoUntilTheHandshakeIsConfirmed; otherwise " +
+                "QuichePatchHandshakeTests.aLostFinishedIsSentAgainAtEveryPtoUntilTheHandshakeIsConfirmed; otherwise " +
                 "re-fit the anchor.",
         )
     }
@@ -1301,7 +1302,7 @@ fun patchQuichePeerKeyUpdateReadBeforeConfirmation(sourceDir: File) {
  *    lost, the runner counted two handshakes for one connection.
  *  - A lost Finished likewise reached quic-go once per PTO, too rarely to beat its 10 s handshake limit.
  * RFC 9002 §6.2.4 has a probe carry unacknowledged data when there is any, and lets both probes carry
- * the same data. Reproduced by `MigrationSimTestSuite.bothProbesOfAPtoCarryALostClientHello` and
+ * the same data. Reproduced by `QuichePatchHandshakeTests.bothProbesOfAPtoCarryALostClientHello` and
  * `bothProbesOfAPtoCarryALostFinished`.
  *
  * The edit: just before `send_single` builds its CRYPTO frame, a probe (`loss_probes(epoch) > 0`) in a
@@ -1322,7 +1323,7 @@ fun patchQuicheHandshakeProbesCarryCrypto(sourceDir: File) {
             "$marker: the CRYPTO frame block of send_single was not found exactly once in quiche's lib.rs — a " +
                 "quiche bump moved it. Re-fit patchQuicheHandshakeProbesCarryCrypto (or delete it if quiche's " +
                 "PTO probes now all carry unacknowledged CRYPTO data) and re-verify with " +
-                "MigrationSimTestSuite.bothProbesOfAPtoCarryALostClientHello.",
+                "QuichePatchHandshakeTests.bothProbesOfAPtoCarryALostClientHello.",
         )
     }
     libRs.writeText(
@@ -1378,8 +1379,8 @@ fun patchQuicheHandshakeProbesCarryCrypto(sourceDir: File) {
  * re-sent its ClientHello at 106 ms and PING probes at 0.3, 0.7, 1.3, 2 and 4 s, each answered by an ACK
  * alone; the server's first PTO (1 s) re-sent only the ServerHello, lost again, and its second (2 s) only
  * the Handshake packets, which arrived and could not be decrypted. quic-go abandons a handshake at 10 s.
- * Reproduced by `MigrationSimTestSuite.aRepeatedClientHelloBringsTheServersLostFlightAgainAtOnce` and
- * `aServerPtoResendsTheWholeLostFlightNotOneSpaceOfIt`.
+ * Reproduced by `QuichePatchHandshakeTests.aRepeatedClientHelloBringsTheServersLostFlightAgainAtOnce` and
+ * `QuichePatchHandshakeTests.aServerPtoResendsTheWholeLostFlightNotOneSpaceOfIt`.
  *
  * Each space re-sends at most `SOCKET_FLIGHT_RESEND_CHUNK` bytes from its oldest unacknowledged offset —
  * one packet's worth, the bytes the peer is missing first — so a large certificate chain does not turn a
@@ -1405,8 +1406,8 @@ fun patchQuicheLostFlightIsResentWhole(sourceDir: File) {
                     "Re-fit patchQuicheLostFlightIsResentWhole (or delete it if quiche now re-sends its " +
                     "unacknowledged handshake CRYPTO data on a repeated ClientHello and coalesces every handshake " +
                     "space into its PTO probes) and re-verify with " +
-                    "MigrationSimTestSuite.aRepeatedClientHelloBringsTheServersLostFlightAgainAtOnce and " +
-                    "aServerPtoResendsTheWholeLostFlightNotOneSpaceOfIt. Anchor:\n$anchor",
+                    "QuichePatchHandshakeTests.aRepeatedClientHelloBringsTheServersLostFlightAgainAtOnce and " +
+                    "QuichePatchHandshakeTests.aServerPtoResendsTheWholeLostFlightNotOneSpaceOfIt. Anchor:\n$anchor",
             )
         }
         text = text.replace(anchor, replacement)
@@ -1536,7 +1537,7 @@ fun patchQuicheLostFlightIsResentWhole(sourceDir: File) {
  * 1, 3, 7 and 15 s, and quic-go's three acknowledgements of them were lost as well. quic-go re-sent only
  * its Finished, which the confirmed server could no longer read, and the connection idled out at 30 s.
  * RFC 9002 §6.2.4 has a probe carry new or previously sent data when there is any. Reproduced by
- * `MigrationSimTestSuite.everyServerPtoProbeCarriesAnUnacknowledgedHandshakeDone`.
+ * `QuichePatchHandshakeTests.everyServerPtoProbeCarriesAnUnacknowledgedHandshakeDone`.
  *
  * **Idempotent and loud** (the [patchQuicheForCallerClock] discipline).
  */
@@ -1560,7 +1561,7 @@ fun patchQuicheHandshakeDoneRidesEveryProbe(sourceDir: File) {
             "$marker: the HANDSHAKE_DONE block of send_single was not found exactly once in quiche's lib.rs — a " +
                 "quiche bump moved it. Re-fit patchQuicheHandshakeDoneRidesEveryProbe (or delete it if quiche's " +
                 "PTO probes now carry an unacknowledged HANDSHAKE_DONE) and re-verify with " +
-                "MigrationSimTestSuite.everyServerPtoProbeCarriesAnUnacknowledgedHandshakeDone.",
+                "QuichePatchHandshakeTests.everyServerPtoProbeCarriesAnUnacknowledgedHandshakeDone.",
         )
     }
     libRs.writeText(
@@ -1594,7 +1595,7 @@ fun patchQuicheHandshakeDoneRidesEveryProbe(sourceDir: File) {
  * quic-go (run 43559668153) the Finished went out again 8 s after it was lost, after quic-go's 5 s
  * handshake limit; against s2n-quic (run 43604040594) a request waited 25 s after HANDSHAKE_DONE, and the
  * read deadline fired first. Reproduced by
- * `MigrationSimTestSuite.theClientsPtoBackoffStartsAgainWhenItDiscardsItsHandshakeKeys`.
+ * `QuichePatchHandshakeTests.theClientsPtoBackoffStartsAgainWhenItDiscardsItsHandshakeKeys`.
  *
  * The edit adds `self.pto_count = 0` before the timer is re-armed, in both recovery implementations.
  *
@@ -1618,7 +1619,7 @@ fun patchQuichePtoBackoffResetsOnKeyDiscard(sourceDir: File) {
                 "$marker: the end of on_pkt_num_space_discarded was not found exactly once in ${file.name} — a " +
                     "quiche bump moved it, or upstream now resets the PTO backoff there. If so, DELETE " +
                     "patchQuichePtoBackoffResetsOnKeyDiscard and KEEP " +
-                    "MigrationSimTestSuite.theClientsPtoBackoffStartsAgainWhenItDiscardsItsHandshakeKeys; otherwise " +
+                    "QuichePatchHandshakeTests.theClientsPtoBackoffStartsAgainWhenItDiscardsItsHandshakeKeys; otherwise " +
                     "re-fit the anchor.",
             )
         }
@@ -1648,7 +1649,7 @@ fun patchQuichePtoBackoffResetsOnKeyDiscard(sourceDir: File) {
  * `handshakeloss` with our client against s2n-quic, quinn and rama (runs 43559668153, 43556869462,
  * 43569919260): the server confirmed, HANDSHAKE_DONE was lost, the client sent eight Handshake-only probes
  * over 19 s, and the read deadline or idle timeout fired. Reproduced by
- * `MigrationSimTestSuite.aHandshakeProbeCarriesTheRequestTheConfirmedServerNeverGot`.
+ * `QuichePatchHandshakeTests.aHandshakeProbeCarriesTheRequestTheConfirmedServerNeverGot`.
  *
  * The edits: `RecoveryOps` gains `socket_requeue_oldest_unacked_data`, which queues the frames of the
  * space's oldest packet carrying data that is neither acknowledged nor lost, unless frames are already
@@ -1680,7 +1681,7 @@ fun patchQuicheHandshakeProbeCarriesAppData(sourceDir: File) {
                 "$marker: `${anchor.trim().lines().first()}` not found exactly once in ${file.name} — a quiche " +
                     "bump moved it. Re-fit patchQuicheHandshakeProbeCarriesAppData, or delete it if quiche's " +
                     "Handshake PTO probes now carry the client's unacknowledged 1-RTT data. Either way keep " +
-                    "MigrationSimTestSuite.aHandshakeProbeCarriesTheRequestTheConfirmedServerNeverGot.",
+                    "QuichePatchHandshakeTests.aHandshakeProbeCarriesTheRequestTheConfirmedServerNeverGot.",
             )
         }
         file.writeText(text.replace(anchor, replacement))
@@ -1777,7 +1778,7 @@ fun patchQuicheHandshakeProbeCarriesAppData(sourceDir: File) {
  * whole datagram, request included (quic-interop-runner `handshakeloss`, our client against the quiche server,
  * run 43612995827). [patchQuicheCloseBeforeConfirmationAlsoInOneRtt] sends its 1-RTT CONNECTION_CLOSE copy
  * alone for the same reason. Reproduced by
- * `MigrationSimTestSuite.aHandshakeProbeCarriesTheRequestTheConfirmedServerNeverGot`.
+ * `QuichePatchHandshakeTests.aHandshakeProbeCarriesTheRequestTheConfirmedServerNeverGot`.
  *
  * The edit: the coalescing loop of `send_on_path` stops after a Handshake packet while an unconfirmed client
  * has Application Data frames queued for retransmission, so the next `send` call writes them alone.
@@ -1796,7 +1797,7 @@ fun patchQuicheProbeAppDataInItsOwnDatagram(sourceDir: File) {
             "$marker: the close-before-confirmation break in send_on_path's coalescing loop was not found exactly " +
                 "once in quiche's lib.rs — a quiche bump or a change to patchQuicheCloseBeforeConfirmationAlsoInOneRtt " +
                 "moved it. Re-fit patchQuicheProbeAppDataInItsOwnDatagram and re-verify with " +
-                "MigrationSimTestSuite.aHandshakeProbeCarriesTheRequestTheConfirmedServerNeverGot.",
+                "QuichePatchHandshakeTests.aHandshakeProbeCarriesTheRequestTheConfirmedServerNeverGot.",
         )
     }
     libRs.writeText(
@@ -3328,7 +3329,7 @@ fun patchQuicheValidatedPathSurvivesProbeLoss(sourceDir: File) {
  * 42326957428 before this change, 42363016612): the request reached the server at 5 s and was dropped,
  * the handshake completed at 17.6 s, quinn's next PTO fell at 30 s, and its 30 s idle timeout fired
  * first. Against quic-go (run 42345499750) the same dropped request left the client waiting on a PTO it
- * never armed. Reproduced by `MigrationSimTestSuite.aRequestThatArrivesBeforeTheFinishedIsServedOnceItDoes`.
+ * never armed. Reproduced by `QuichePatchHandshakeTests.aRequestThatArrivesBeforeTheFinishedIsServedOnceItDoes`.
  *
  * The edit: the existing 0-RTT buffer (`undecryptable_pkts`, `MAX_UNDECRYPTABLE_PACKETS` entries) also takes
  * a server's short-header packets while it is not established; at completion only the 0-RTT entries are
@@ -3353,7 +3354,7 @@ fun patchQuicheEarlyOneRttIsBuffered(sourceDir: File) {
                 "$marker: an anchor was not found exactly once in quiche's lib.rs — a quiche bump moved it. " +
                     "Re-fit patchQuicheEarlyOneRttIsBuffered (or delete it if quiche now buffers 1-RTT packets " +
                     "that arrive before its handshake completes) and re-verify with " +
-                    "MigrationSimTestSuite.aRequestThatArrivesBeforeTheFinishedIsServedOnceItDoes. Anchor:\n$anchor",
+                    "QuichePatchHandshakeTests.aRequestThatArrivesBeforeTheFinishedIsServedOnceItDoes. Anchor:\n$anchor",
             )
         }
         text = text.replace(anchor, replacement)
@@ -3447,7 +3448,7 @@ fun patchQuicheEarlyOneRttIsBuffered(sourceDir: File) {
  * dropped a client's. When only the datagram carrying the ServerHello was lost, the server had to send its
  * whole Handshake flight again after a PTO. In the quic-interop-runner the server's Handshake data reached
  * our client intact 1.1 s before the ServerHello and was dropped, and the handshake failed. Reproduced by
- * `MigrationSimTestSuite.aClientReadsTheHandshakePacketsThatArrivedBeforeTheServerHello`.
+ * `QuichePatchHandshakeTests.aClientReadsTheHandshakePacketsThatArrivedBeforeTheServerHello`.
  *
  * The edit, on [patchQuicheEarlyOneRttIsBuffered]'s buffer (`undecryptable_pkts`): a client that is not
  * established and has no Handshake key keeps a Handshake packet, first come, while fewer than
@@ -3477,7 +3478,7 @@ fun patchQuicheClientKeepsEarlyHandshakePackets(sourceDir: File) {
                 "$marker: an anchor was not found exactly once in quiche's lib.rs — a quiche bump (or a change to " +
                     "patchQuicheEarlyOneRttIsBuffered) moved it. Re-fit patchQuicheClientKeepsEarlyHandshakePackets " +
                     "(or delete it if quiche now buffers a client's early Handshake packets) and re-verify with " +
-                    "MigrationSimTestSuite.aClientReadsTheHandshakePacketsThatArrivedBeforeTheServerHello. Anchor:\n$anchor",
+                    "QuichePatchHandshakeTests.aClientReadsTheHandshakePacketsThatArrivedBeforeTheServerHello. Anchor:\n$anchor",
             )
         }
         text = text.replace(anchor, replacement)
@@ -3590,8 +3591,8 @@ fun patchQuicheClientKeepsEarlyHandshakePackets(sourceDir: File) {
  * coalesced as Handshake + 1-RTT (RFC 9000 §10.2.3). Our server had confirmed and discarded its
  * Handshake keys, so the Handshake packet was undecryptable, the 1-RTT packet behind it was dropped too,
  * and the server never saw the close: it retransmitted until its idle timeout. Reproduced by
- * `MigrationSimTestSuite.aOneRttPacketBehindAnUndecryptableHandshakePacketIsStillRead` and
- * `aCloseBehindAnUndecryptableHandshakePacketClosesTheConnection`.
+ * `QuichePatchHandshakeTests.aOneRttPacketBehindAnUndecryptableHandshakePacketIsStillRead` and
+ * `QuichePatchHandshakeTests.aCloseBehindAnUndecryptableHandshakePacketClosesTheConnection`.
  *
  * The edit: in `recv`'s `Err(Error::Done)` arm, re-read the unprotected long header of the packet that
  * failed (header protection covers neither the type bits nor the Length) and, for an Initial, 0-RTT or
@@ -3630,7 +3631,7 @@ fun patchQuicheCoalescedPacketsAfterAnUndecryptableOne(sourceDir: File) {
             "$marker: the `Err(Error::Done)` arm of Connection::recv was not found exactly once in quiche's " +
                 "lib.rs — a quiche bump changed it. If upstream now skips an unprocessable coalesced packet by " +
                 "its Length (RFC 9000 §12.2), DELETE patchQuicheCoalescedPacketsAfterAnUndecryptableOne and KEEP " +
-                "MigrationSimTestSuite.aOneRttPacketBehindAnUndecryptableHandshakePacketIsStillRead; otherwise " +
+                "QuichePatchHandshakeTests.aOneRttPacketBehindAnUndecryptableHandshakePacketIsStillRead; otherwise " +
                 "re-fit the anchor.",
         )
     }
@@ -3919,12 +3920,12 @@ fun patchQuicheRetiredCidRecvIsDrop(sourceDir: File) {
  * RFC 9000 §19.15/§19.16: a retired ID is never used again, so advertising it again is pointless as well
  * as fatal here.
  *
- * Regression guards, outliving this patch, in `MigrationSimTestSuite` — each edit reverted alone turns
- * its guard red (`quiche_conn_send` answering -6, InvalidState):
- *  - edit 2: `theClientKeepsSendingAfterThePeerRetiresIdsItHadQueuedToAdvertiseAgain` (the `handshakeloss`
- *    order) and `theClientKeepsSendingWhenAPacketAdvertisingIdsThePeerAlreadyRetiredIsSentAgain` (the
- *    `handshakecorruption` order);
- *  - edit 1: `theClientKeepsSendingWhenThePeerRetiresIdsQueuedBehindAFullCongestionWindow`.
+ * Regression guards, outliving this patch, in `QuichePatchCidRetirementTests`: with edit 2 reverted alone
+ * these go red (`quiche_conn_send` answering -6, InvalidState):
+ * `theClientKeepsSendingAfterThePeerRetiresIdsItHadQueuedToAdvertiseAgain` (the `handshakeloss` order),
+ * `theClientKeepsSendingWhenAPacketAdvertisingIdsThePeerAlreadyRetiredIsSentAgain` (the `handshakecorruption`
+ * order) and `theClientKeepsSendingWhenThePeerRetiresIdsQueuedBehindAFullCongestionWindow`. No test goes red with
+ * edit 1 reverted alone.
  * Upstream at the time of writing has the same code. Idempotent and loud in both directions (the
  * [patchQuicheForCallerClock] discipline).
  */
@@ -3939,7 +3940,7 @@ fun patchQuicheRetiredScidIsNotAdvertised(sourceDir: File) {
             "$marker: $what was not found. A quiche bump moved or reshaped it — possibly fixing this " +
                 "upstream (a retired source connection id left queued for NEW_CONNECTION_ID makes every " +
                 "send() fail with InvalidState). If upstream fixed it: DELETE this patch and its call site, " +
-                "and KEEP the MigrationSimTestSuite.theClientKeepsSending* tests, the regression guards. " +
+                "and KEEP the QuichePatchCidRetirementTests.theClientKeepsSending* tests, the regression guards. " +
                 "Otherwise re-fit the anchor and re-run those tests before shipping.",
         )
 
@@ -4014,7 +4015,7 @@ fun patchQuicheRetiredScidIsNotAdvertised(sourceDir: File) {
  * `ok_or(InvalidState)` instead of `OutOfIdentifiers`, which the driver treats the same (best-effort).
  *
  * Regression guard, outliving this patch:
- * `MigrationSimTestSuite.aRepeatedRetirementOfAnIdTheClientAlreadyRetiredLeavesItOpen`. Upstream at the
+ * `QuichePatchCidRetirementTests.aRepeatedRetirementOfAnIdTheClientAlreadyRetiredLeavesItOpen`. Upstream at the
  * time of writing has the same code. Idempotent and loud in both directions.
  */
 fun patchQuicheRepeatedRetirementIsIgnored(sourceDir: File) {
@@ -4043,7 +4044,7 @@ fun patchQuicheRepeatedRetirementIsIgnored(sourceDir: File) {
             "$marker: BoundedConnectionIdSeqs::remove in quiche/src/cid.rs was not found. A quiche bump moved " +
                 "or reshaped it — possibly fixing this upstream (a repeated RETIRE_CONNECTION_ID with one id " +
                 "left closes the connection with PROTOCOL_VIOLATION). If upstream fixed it: DELETE this patch " +
-                "and its call site, and KEEP MigrationSimTestSuite.aRepeatedRetirementOfAnIdTheClientAlreadyRetiredLeavesItOpen. " +
+                "and its call site, and KEEP QuichePatchCidRetirementTests.aRepeatedRetirementOfAnIdTheClientAlreadyRetiredLeavesItOpen. " +
                 "Otherwise re-fit the anchor and re-run that test before shipping.",
         )
     }
@@ -4082,7 +4083,7 @@ fun patchQuicheRepeatedRetirementIsIgnored(sourceDir: File) {
  * decrypt: the server never learns the connection ended and keeps it — and every handler on it — until
  * its idle timeout. Measured on JVM loopback under load (`quiche_conn_peer_error` still null 5 s after
  * the client closed, the server retransmitting into the void) and reproduced deterministically by
- * `MigrationSimTestSuite.aClientThatClosesBeforeItsHandshakeIsConfirmedStillClosesTheServer`.
+ * `QuichePatchHandshakeTests.aClientThatClosesBeforeItsHandshakeIsConfirmedStillClosesTheServer`.
  *
  * RFC 9000 §10.2.3 allows exactly this: prior to confirmation "another CONNECTION_CLOSE frame MAY be sent
  * in a packet that uses a lower packet protection level". Sending both covers both peers: one that has
@@ -4114,7 +4115,7 @@ fun patchQuicheCloseBeforeConfirmationAlsoInOneRtt(sourceDir: File) {
                 "socket-close-before-confirmation: an anchor was not found exactly once in quiche's lib.rs. A " +
                     "quiche bump moved or reshaped the close path — possibly sending a pre-confirmation " +
                     "CONNECTION_CLOSE at 1-RTT upstream, which is the outcome we want. If so, DELETE this patch " +
-                    "and KEEP MigrationSimTestSuite.aClientThatClosesBeforeItsHandshakeIsConfirmedStillClosesTheServer; " +
+                    "and KEEP QuichePatchHandshakeTests.aClientThatClosesBeforeItsHandshakeIsConfirmedStillClosesTheServer; " +
                     "otherwise re-fit the anchor and re-verify with that test. Anchor:\n$anchor",
             )
         }
@@ -4272,7 +4273,7 @@ fun patchQuicheCloseBeforeConfirmationAlsoInOneRtt(sourceDir: File) {
  * follows from it: no path is created for such a packet and no id is linked. A retired id on a new
  * 4-tuple is still dropped, and every packet still has to decrypt.
  *
- * Reproduced by `MigrationSimTestSuite.packetsOnASlowerLeftPathAreReceivedAfterThePeerRetiresTheirConnectionId`.
+ * Reproduced by `QuichePatchCidRetirementTests.packetsOnASlowerLeftPathAreReceivedAfterThePeerRetiresTheirConnectionId`.
  * Applied after [patchQuicheRetiredCidRecvIsDrop] and [patchQuicheRetiredScidIsNotAdvertised], whose edits
  * its anchors include. Marker-guarded and loud: a re-run returns, a moved anchor throws.
  */
@@ -4294,7 +4295,7 @@ fun patchQuicheRetiredScidStillReceivedOnAHeldPath(sourceDir: File) {
                 "$marker: `${anchor.trim().lines().first()}` not found exactly once in ${file.name}: a quiche bump " +
                     "moved it. Re-fit patchQuicheRetiredScidStillReceivedOnAHeldPath, or delete it if quiche now " +
                     "receives a packet bearing a just-retired id on a path it holds. Either way keep " +
-                    "MigrationSimTestSuite.packetsOnASlowerLeftPathAreReceivedAfterThePeerRetiresTheirConnectionId.",
+                    "QuichePatchCidRetirementTests.packetsOnASlowerLeftPathAreReceivedAfterThePeerRetiresTheirConnectionId.",
             )
         }
         file.writeText(text.replace(anchor, replacement))
@@ -4555,7 +4556,7 @@ fun patchQuicheOrphanPathLoss(sourceDir: File) {
  * the path it was sent on and none is retransmitted. A frame whose packet did arrive is sent again, which
  * the peer discards as a duplicate. Which paths are evicted, and when, is unchanged.
  *
- * Reproduced by `MigrationSimTestSuite.streamDataInFlightOnAnEvictedPathIsStillDelivered`. Marker-guarded
+ * Reproduced by `QuichePatchEvictedPathTests.streamDataInFlightOnAnEvictedPathIsStillDelivered`. Marker-guarded
  * and loud: a re-run returns, a moved anchor throws.
  */
 fun patchQuicheEvictedPathFramesRequeued(sourceDir: File) {
@@ -4578,7 +4579,7 @@ fun patchQuicheEvictedPathFramesRequeued(sourceDir: File) {
                 "$marker: `${anchor.trim().lines().first()}` not found exactly once in ${file.name} — a quiche " +
                     "bump moved it. Re-fit patchQuicheEvictedPathFramesRequeued, or delete it if quiche now keeps " +
                     "a path with frames in flight or retransmits them when it evicts the path. Either way keep " +
-                    "MigrationSimTestSuite.streamDataInFlightOnAnEvictedPathIsStillDelivered.",
+                    "QuichePatchEvictedPathTests.streamDataInFlightOnAnEvictedPathIsStillDelivered.",
             )
         }
         file.writeText(text.replace(anchor, replacement))
@@ -4739,7 +4740,7 @@ fun patchQuicheEvictedPathFramesRequeued(sourceDir: File) {
  *  - The DCID refill loop skips such paths, or it would hand the retired slot straight back.
  * A new challenge on the path's 4-tuple (a NAT reusing the port) makes it answerable again.
  *
- * Reproduced by `MigrationSimTestSuite.lateChallengesFromAbandonedProbesLeaveTheServerRoomForANewPath`.
+ * Reproduced by `QuichePatchEvictedPathTests.lateChallengesFromAbandonedProbesLeaveTheServerRoomForANewPath`.
  * Applied after [patchQuicheRetireDcidNoRelink], whose refill filter it extends. Marker-guarded and loud:
  * a re-run returns, a moved anchor throws.
  */
@@ -4762,7 +4763,7 @@ fun patchQuicheServerReleasesAbandonedPaths(sourceDir: File) {
                     "bump or a change to patchQuicheRetireDcidNoRelink moved it. Re-fit " +
                     "patchQuicheServerReleasesAbandonedPaths, or delete it if quiche now releases a path its peer " +
                     "abandoned. Either way keep " +
-                    "MigrationSimTestSuite.lateChallengesFromAbandonedProbesLeaveTheServerRoomForANewPath.",
+                    "QuichePatchEvictedPathTests.lateChallengesFromAbandonedProbesLeaveTheServerRoomForANewPath.",
             )
         }
         file.writeText(text.replace(anchor, replacement))
