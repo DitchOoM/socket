@@ -14,6 +14,7 @@ internal fun startLoopThread(
 internal actual fun startLoop(
     loop: Loop,
     name: String,
-) {
+): LoopStart {
     startLoopThread(loop, name)
+    return LoopStart.Started
 }

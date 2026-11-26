@@ -34,7 +34,7 @@ import com.ditchoom.socket.quic.core.loop.Readiness
 import com.ditchoom.socket.quic.core.loop.Route
 import com.ditchoom.socket.quic.core.loop.SocketDiedNotice
 import com.ditchoom.socket.quic.core.loop.jdkViewsOf
-import com.ditchoom.socket.quic.core.loop.startLoop
+import com.ditchoom.socket.quic.core.loop.LoopStarter
 import com.ditchoom.socket.quic.core.loop.waitsOf
 import com.ditchoom.socket.quic.core.observe.ServerCounts
 import com.ditchoom.socket.quic.core.pool.FixedPool
@@ -92,6 +92,8 @@ internal class ServerSetup(
     private val batching: UdpBatching,
     private val mismatch: MismatchResponse,
     private val sends: SendRule,
+    /** Starts the loop's thread when the driver is [LoopDriver.OwnThread]. */
+    private val starter: LoopStarter,
 ) {
     /** The memory this server holds from [factory]: freed by the setup's [SetupOwner] until the loop is built, then by the loop. */
     private val memory = EdgeMemory(factory)
@@ -267,7 +269,7 @@ internal class ServerSetup(
         moved(SetupOwner.Placed(loop))
         when (driver) {
             LoopDriver.OwnThread -> {
-                startLoop(loop, SERVER_THREAD)
+                starter(loop, SERVER_THREAD)
                 moved(SetupOwner.Started(loop))
             }
             // The caller's first pass would place the socket only after that pass's receive: place it now.

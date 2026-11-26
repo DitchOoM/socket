@@ -86,6 +86,8 @@ internal class LoopSet(
     private val sends: SendRule = sendRuleOfThisRuntime,
     /** A handler step that holds a thread of the set's pool longer than this is reported, and only reported. */
     handlerStallBound: Duration = HandlerPool.DEFAULT_STALL_BOUND,
+    /** Starts a loop's thread. */
+    private val starter: LoopStarter = ::startLoop,
 ) {
     private val slots = AtomicArray(Array<Slot>(size) { Slot.Unstarted })
 
@@ -238,11 +240,11 @@ internal class LoopSet(
             )
         if (!slots.compareAndSetAt(index, seen, Slot.Running(running))) {
             loop.close(Runnable { })
-            startLoop(loop, name)
+            starter(loop, name)
             return place(factory, api)
         }
         loop.connections.increment()
-        startLoop(loop, name)
+        starter(loop, name)
         return Placement.Placed(running)
     }
 

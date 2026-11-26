@@ -12,10 +12,11 @@ import kotlin.native.concurrent.Worker
 internal actual fun startLoop(
     loop: Loop,
     name: String,
-) {
+): LoopStart {
     val worker = Worker.start(name = name)
     worker.executeAfter(0L) {
         loop.run()
         worker.requestTermination(processScheduledJobs = false)
     }
+    return LoopStart.Started
 }

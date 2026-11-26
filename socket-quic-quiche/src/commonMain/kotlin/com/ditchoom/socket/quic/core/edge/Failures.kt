@@ -268,6 +268,11 @@ private suspend fun timedOut(bound: Duration): Nothing = withTimeout(Duration.ZE
 /** A connect was given a set of loops that has been closed. */
 internal class CoreLoopsClosed : IllegalStateException()
 
+/** The platform refused the thread a loop needs, with [cause]: nothing was opened, and the call may be made again. */
+internal class CoreLoopThreadRefused(
+    cause: Throwable,
+) : IllegalStateException(cause)
+
 /** The native library this process loaded does not lay out the socket spec block as this code does. */
 internal class CoreSpecLayoutMismatch(
     val mismatch: SpecLayoutMismatch,
