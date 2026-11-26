@@ -7,9 +7,7 @@ package com.ditchoom.socket.quic
  *
  * Asserts the black-box lifecycle invariants of the Apple quiche server (dual-stack POSIX UDP bind):
  * close completes promptly, close does not deadlock while a connection handler is blocked, repeated
- * bind/close cycles stay prompt, and the connections flow completes on close. The JVM-only reflection
- * assertion on `serverJob` is not portable to K/N and is deliberately not ported (same call the Linux
- * member made).
+ * bind/close cycles stay prompt, and the connections flow completes on close.
  *
  * Cert resolution comes from the committed `cert.crt`/`cert.key` via [AppleTestCerts], which
  * materializes the embedded PEM into `TMPDIR` when the cwd has no `testcerts/` — so this suite runs for

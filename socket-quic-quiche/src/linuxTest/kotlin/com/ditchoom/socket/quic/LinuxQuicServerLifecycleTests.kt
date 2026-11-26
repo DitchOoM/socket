@@ -11,8 +11,7 @@ import platform.posix.access
  * (clean close within 2s, no deadlock while connections block, prompt repeated bind/close cycles,
  * streams flow completes on close) ran only on JVM + Apple, never on native Linux. Provides linux
  * cert resolution; native compiles quiche via cinterop, so there is no `UnsatisfiedLinkError` skip
- * path (the default pass-through [wrapTestBody] is correct). The JVM-only reflection assertion on
- * `serverJob` is deliberately not ported — that's an internal-state check available only on the JVM.
+ * path (the default pass-through [wrapTestBody] is correct).
  */
 class LinuxQuicServerLifecycleTests : QuicServerLifecycleTestSuite() {
     private fun certPath(name: String): String {

@@ -97,8 +97,6 @@ Note `WrapJvmExceptionTests.kt:161` references `"example.com"` only as a *string
 | `IoUringManagerTests.rapidCleanupReinitializeCycles` (`:350`) | `< 500ms` ×10 | **STATE** |
 | `IoUringManagerTests.rapidOpenCloseCycles` (`:178`) | `successCount >= 80%` | **borderline** — under WSL2 a ratio assertion is also flaky; see §5 |
 
-`ServerConnectionTimingTest` (QUIC) is named "timing" but actually asserts *functional* outcomes inside a `withTimeout(15.seconds)` — it does **not** assert a tight budget. Leave it; it is correctly written.
-
 ### 1c. Tests that depend on OS/kernel socket-state timing
 
 | Test (file:line) | Dependency | Fix |

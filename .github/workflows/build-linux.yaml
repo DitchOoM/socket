@@ -1551,7 +1551,7 @@ jobs:
       #
       # timeout-minutes caps a single hanging socket-quic test so it can't burn the
       # job timeout and wipe subsequent steps. On run 26467344275 step 29 hung 53min
-      # on QuicLocalServerTests.serverAcceptsConnection before this guard existed.
+      # on a local-server echo test before this guard existed.
       #
       # ⚠️ 24, not 8, and it must stay ~3x whatever the unscaled figure would be.
       # This workflow sets QUIC_TEST_TIME_SCALE=3 at workflow level, which triples
@@ -2675,11 +2675,9 @@ jobs:
   # + MALLOC_PERTURB_ + glibc.malloc.check=3 on the forked test worker. We re-run
   # only the recv-path robustness + concurrency-soak suites (the allocation-heavy
   # native paths) so a regression aborts the JVM with a diagnostic instead of
-  # silently corrupting state. These three suites are in-process (client+server +
+  # silently corrupting state. These suites are in-process (client+server +
   # classpath certs), so `jvmTest`'s best-effort harnessUp bring-up is incidental —
-  # the tests themselves need no Docker peer. StaleConnectionDiagnosticTests is
-  # included because the still-open intermittent JNI SIGABRT (exit 134, no failing
-  # JUnit case) was last seen *near* it — a teardown-heavy suite.
+  # the tests themselves need no Docker peer.
   malloc-check:
     name: "QUIC malloc-check (Linux x64)"
     needs: natives
@@ -2713,8 +2711,8 @@ jobs:
         continue-on-error: true
         shell: bash
         run: bash .github/scripts/runner-facts.sh start build/jvm-logs/runner-facts.txt
-      # ⚠️ 24, not 8: this is the most deadline-heavy lane in the workflow (QuicConcurrencySoakTests
-      # + StaleConnectionDiagnosticTests) and QUIC_TEST_TIME_SCALE=3 triples every `.scaled` budget
+      # ⚠️ 24, not 8: this is the most deadline-heavy lane in the workflow (QuicConcurrencySoakTests)
+      # and QUIC_TEST_TIME_SCALE=3 triples every `.scaled` budget
       # it waits on. A step timeout CANCELS the step, so tripping this lid yields a truncated test
       # report AND loses the core dump this lane exists to capture — strictly worse signal than the
       # slow-but-complete run it would be pre-empting. Keep at ~3x the unscaled figure.
@@ -2734,7 +2732,6 @@ jobs:
           .github/scripts/gradle-retry.sh :socket-quic-quiche:jvmTest -PquicMallocCheck --continue --no-daemon \
             --tests "com.ditchoom.socket.quic.QuicMalformedPacketTests" \
             --tests "com.ditchoom.socket.quic.QuicConcurrencySoakTests" \
-            --tests "com.ditchoom.socket.quic.StaleConnectionDiagnosticTests" \
             --no-configuration-cache ${{ inputs.gradle-args }}
 
       - name: Runner facts (end)
