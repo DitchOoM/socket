@@ -358,7 +358,8 @@ class CoreNativeCrossingTests {
          * carried them. Each datagram is read out of quiche once. A lend asks quiche's queue its length once, and is the work
          * of a turn that answers its reader, or of a wake after a read found quiche holding one. Whether quiche holds one is asked once a read
          * while a batch is parked, and once a turn. A sender's feed hands quiche each datagram once and stops at the first
-         * refused, once a turn; it reads the room once a turn, and quiche's send queue once a packet written.
+         * refused, once a turn; it reads the room once a turn, and quiche's send queue once a packet written. quiche's
+         * statistics are read only by a queue-length read that found its receive queue full, to count what it dropped.
          */
         private fun datagramLaws(
             n: (String) -> Long,
@@ -374,6 +375,7 @@ class CoreNativeCrossingTests {
                 Law.atMost("connDgramSend", n("connDgramSend"), delivered + turns, slack),
                 Law.atMost("connDgramMaxWritableBytes", n("connDgramMaxWritableBytes"), turns, slack),
                 Law.atMost("connDgramSendQueueLen", n("connDgramSendQueueLen"), n("connSend"), slack),
+                Law.atMost("connStats", n("connStats"), n("connDgramRecvQueueLen"), slack),
             )
     }
 
