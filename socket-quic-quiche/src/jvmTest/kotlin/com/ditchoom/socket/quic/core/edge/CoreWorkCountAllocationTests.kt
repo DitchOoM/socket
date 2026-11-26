@@ -21,6 +21,7 @@ import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.sched.SendRule
 import com.ditchoom.socket.quic.core.testing.Attribution
+import com.ditchoom.socket.quic.core.testing.ClockSite
 import com.ditchoom.socket.quic.core.testing.CountingClock
 import com.ditchoom.socket.quic.core.testing.CountingFactory
 import com.ditchoom.socket.quic.core.testing.CountingIo
@@ -57,9 +58,12 @@ import kotlin.time.Duration.Companion.seconds
  * a caller hands the loop), but how many loop passes and connection serves they spread over is the scheduler's: events
  * that land within one pass share it, and a loaded host shares fewer. So a socket receive that brought datagrams is
  * gated per operation, each carrying at least one of the echo's; one that found the socket drained ends the reading of
- * a pass that read datagrams first, so it is held to at most one per receive that brought them. A count that each pass
- * makes (waits, clock readings) is gated per [Per.Pass], the timer's re-arms per [Per.Serve], and the passes and serves
- * themselves per operation only where an echo's events never share one (see [SHARED_TURNS]). Each operation runs under
+ * a pass that read datagrams first, so it is held to at most one per receive that brought them. A pass waits at most
+ * once and a serve re-arms the timer at most once. The clock is read at sites each bounded by the work that makes them
+ * ([ClockSite]), counted in an extra run that files every reading by its site: two a pass, one a turn's start and one
+ * a write's per serve, one per receive that brought datagrams, per datagram in and per datagram out, and an operation's
+ * own readings, gated per operation. The passes and serves themselves are gated per operation only where an echo's
+ * events never share one (see [SHARED_TURNS]). Each operation runs under
  * both [SendRule]s, whichever this host defaults to, and each gate is the highest value measured under that rule plus the
  * margin [ECHO_MARGIN] states; a count no margin holds is [Gate.TrendOnly] (see [BULK_EACH]). A failed gate prints every count and the
  * callers of the counted calls, sampled over a short extra run. Named `*AllocationTests` so `coreAllocationTest` runs
@@ -220,7 +224,6 @@ class CoreWorkCountAllocationTests {
                 Metric.DeadlineMoves to client.conn.counts.timer.moves,
                 Metric.RearmsTaken to client.loop.port.rearmsTaken(),
                 Metric.DeadlinesMade to client.loop.port.deadlinesMade(),
-                Metric.ClockReads to seams.clock.reads.value(),
                 Metric.PoolAcquires to seams.factory.acquires.value(),
                 Metric.PoolMisses to stats.poolMisses,
                 // A release that finds room goes back idle; a hit takes one idle buffer: the releases are the hits plus the idle growth.
@@ -244,23 +247,34 @@ class CoreWorkCountAllocationTests {
                 is SendRule.ByLoop -> "$operation, the loop sends"
                 is SendRule.InPlace -> "$operation, callers send in place"
             }
-        val gates = gatesByRule.of(rule)
         repeat(warmUp) { once() }
         val before = Snapshot(client, seams)
         repeat(measured) { once() }
         val after = Snapshot(client, seams)
         val delta = Metric.entries.associateWith { after.values.getValue(it) - before.values.getValue(it) }
-        val perOp =
+        val units =
             Metric.entries.associateWith { m ->
-                val over =
-                    when (m.per) {
-                        Per.Op -> measured.toLong()
-                        Per.Pass -> delta.getValue(Metric.Passes)
-                        Per.Serve -> delta.getValue(Metric.Serves)
-                        Per.Receive -> delta.getValue(Metric.Receives)
-                    }
-                delta.getValue(m).toDouble() / maxOf(1L, over)
+                when (m.per) {
+                    Per.Op -> measured.toLong()
+                    Per.Pass -> delta.getValue(Metric.Passes)
+                    Per.Serve -> delta.getValue(Metric.Serves)
+                    Per.Receive -> delta.getValue(Metric.Receives)
+                }.coerceAtLeast(1L)
             }
+        val perOp = Metric.entries.associateWith { m -> delta.getValue(m).toDouble() / units.getValue(m) }
+        // A law of one each holds to the count, but for the few increments a counter read between operations is stale by.
+        val gates =
+            Metric.entries.associateWith { m ->
+                when (m.bound) {
+                    Bound.Measured -> gatesByRule.of(rule).getValue(m)
+                    Bound.OneEach ->
+                        when (val g = gatesByRule.of(rule).getValue(m)) {
+                            is Gate.AtMost -> Gate.AtMost(g.limit + IN_FLIGHT.toDouble() / units.getValue(m))
+                            is Gate.TrendOnly -> g
+                        }
+                }
+            }
+        val clock = clockSites(client, seams, name, classified(measured), gatesByRule.opReads(rule), once)
         seams.attribute(Attribution.On)
         repeat(attributed(measured)) { once() }
         seams.attribute(Attribution.Off)
@@ -280,7 +294,7 @@ class CoreWorkCountAllocationTests {
                 "  callers of a send:\n${seams.sends.sites(per)}\n" +
                 "  callers of a receive:\n${seams.receives.sites(per)}\n" +
                 "  callers of a pool acquire:\n${seams.factory.acquires.sites(per)}"
-        println("[core work counts: $name]\n$table\n$sites")
+        println("[core work counts: $name]\n$table\n${clock.table}\n$sites")
         val test = name.replace(Regex("[^A-Za-z0-9]+"), "-").trim('-')
         Metric.entries.forEach {
             PerfGates.record(
@@ -292,8 +306,47 @@ class CoreWorkCountAllocationTests {
                 "per-${it.per.unit}",
             )
         }
-        val over = Metric.entries.filter { over(gates.getValue(it), perOp.getValue(it)).isNotEmpty() }
-        assertTrue(over.isEmpty(), "$name: ${over.joinToString { it.label }} over the gate\n$table\n$sites")
+        clock.record(test)
+        val over = Metric.entries.filter { over(gates.getValue(it), perOp.getValue(it)).isNotEmpty() }.map { it.label } + clock.over()
+        assertTrue(over.isEmpty(), "$name: ${over.joinToString()} over the gate\n$table\n${clock.table}\n$sites")
+    }
+
+    /**
+     * Runs [once] [operations] times with every clock reading filed by its [ClockSite], and holds each site to its
+     * bound in the work counted in the same run; the readings an operation makes itself are held to [opReads] each.
+     */
+    private suspend fun clockSites(
+        client: CoreClient,
+        seams: Seams,
+        name: String,
+        operations: Int,
+        opReads: Gate,
+        once: suspend () -> Unit,
+    ): ClockReadings {
+        val sitesFrom = seams.clock.sites.values()
+        val from = Snapshot(client, seams)
+        val inFrom = client.loop.counts.datagramsIn
+        val outFrom = client.loop.counts.datagramsOut
+        seams.clock.sites.classifying = Attribution.On
+        repeat(operations) { once() }
+        seams.clock.sites.classifying = Attribution.Off
+        val to = Snapshot(client, seams)
+
+        fun done(m: Metric) = to.values.getValue(m) - from.values.getValue(m)
+        val work =
+            SiteWork(
+                operations = operations.toLong(),
+                passes = done(Metric.Passes),
+                serves = done(Metric.Serves),
+                receives = done(Metric.Receives),
+                datagramsIn = client.loop.counts.datagramsIn - inFrom,
+                datagramsOut = client.loop.counts.datagramsOut - outFrom,
+            )
+        val read =
+            seams.clock.sites
+                .values()
+                .mapValues { it.value - sitesFrom.getValue(it.key) }
+        return ClockReadings(name, read, work, opReads)
     }
 
     private fun over(
@@ -306,6 +359,8 @@ class CoreWorkCountAllocationTests {
         }
 
     private fun attributed(measured: Int) = maxOf(1, minOf(ATTRIBUTED, measured))
+
+    private fun classified(measured: Int) = maxOf(1, minOf(CLASSIFIED, measured))
 
     /** Runs [body] on a caller thread of its own, as the allocation gates do, so in-place entries match theirs. */
     private fun onCallerThread(body: suspend () -> Unit) {
@@ -384,13 +439,97 @@ class CoreWorkCountAllocationTests {
     private class Gates(
         private val byLoop: Map<Metric, Gate>,
         private val inPlace: Map<Metric, Gate>,
+        private val opReadsByLoop: Gate,
+        private val opReadsInPlace: Gate,
     ) {
         fun of(rule: SendRule): Map<Metric, Gate> =
             when (rule) {
                 is SendRule.ByLoop -> byLoop
                 is SendRule.InPlace -> inPlace
             }
+
+        /** The clock readings an operation makes itself ([ClockSite.Op]), each. */
+        fun opReads(rule: SendRule): Gate =
+            when (rule) {
+                is SendRule.ByLoop -> opReadsByLoop
+                is SendRule.InPlace -> opReadsInPlace
+            }
     }
+
+    /** The work a classified run did, which bounds each [ClockSite]'s readings. */
+    private class SiteWork(
+        val operations: Long,
+        val passes: Long,
+        val serves: Long,
+        val receives: Long,
+        val datagramsIn: Long,
+        val datagramsOut: Long,
+    )
+
+    /** The clock readings of a classified run of [name], by [ClockSite], against each site's bound in [work]. */
+    private class ClockReadings(
+        private val name: String,
+        private val read: Map<ClockSite, Long>,
+        private val work: SiteWork,
+        private val opReads: Gate,
+    ) {
+        /** The most readings [site] may make in [work]; an operation's own readings, [opReads] each. */
+        private fun most(site: ClockSite): Gate =
+            when (site) {
+                ClockSite.Pass -> Gate.AtMost(PASS_READS * work.passes + IN_FLIGHT)
+                ClockSite.Turn, ClockSite.Write -> Gate.AtMost((work.serves + IN_FLIGHT).toDouble())
+                ClockSite.SentAt -> Gate.AtMost((work.datagramsOut + IN_FLIGHT).toDouble())
+                ClockSite.Judge -> Gate.AtMost(JUDGED_ONCE)
+                ClockSite.Receive -> Gate.AtMost((work.receives + IN_FLIGHT).toDouble())
+                ClockSite.DatagramIn -> Gate.AtMost((work.datagramsIn + IN_FLIGHT).toDouble())
+                ClockSite.Op ->
+                    when (opReads) {
+                        is Gate.AtMost -> Gate.AtMost(opReads.limit * work.operations)
+                        is Gate.TrendOnly -> opReads
+                    }
+            }
+
+        private fun overOf(site: ClockSite): Over =
+            when (val most = most(site)) {
+                is Gate.AtMost -> if (read.getValue(site) > most.limit) Over.Yes else Over.No
+                is Gate.TrendOnly -> Over.No
+            }
+
+        val table: String =
+            "  clock readings by site, over ${work.operations} more operations (${work.passes} passes, ${work.serves} serves, " +
+                "${work.receives} receives, ${work.datagramsIn} datagrams in, ${work.datagramsOut} out):\n" +
+                ClockSite.entries.joinToString("\n") { site ->
+                    "    %-11s %8d  (%s)%s".format(site, read.getValue(site), most(site), if (overOf(site) == Over.Yes) "  OVER" else "")
+                }
+
+        fun over(): List<String> = ClockSite.entries.filter { overOf(it) == Over.Yes }.map { "clock-reads at $it" }
+
+        /** Each site's readings as a share of its bound, and the operation's own readings each. */
+        fun record(test: String) {
+            ClockSite.entries.forEach { site ->
+                PerfGates.record(
+                    CoreWorkCountAllocationTests::class.java,
+                    test,
+                    "clock-reads-${site.name.lowercase()}",
+                    read.getValue(site) / most(site).limit(),
+                    1.0,
+                    "of-bound",
+                )
+            }
+            PerfGates.record(
+                CoreWorkCountAllocationTests::class.java,
+                test,
+                "clock-reads-op-each",
+                read.getValue(ClockSite.Op).toDouble() / work.operations,
+                opReads.limit(),
+                "per-op",
+            )
+        }
+
+        override fun toString() = name
+    }
+
+    private enum class Over { Yes, No }
 
     /** What a count is divided by: the operations, the loop's passes or the connection's serves in them, or the receives that brought datagrams. */
     private enum class Per(
@@ -420,15 +559,14 @@ class CoreWorkCountAllocationTests {
         Passes("loop-passes", Per.Op),
         Serves("conn-serves", Per.Op),
 
-        /** At most one a pass: how many passes find their input already waiting is the scheduler's. */
-        Waits("poll-waits", Per.Pass),
+        /** At most one a pass: a pass that finds its input already waiting does not wait. */
+        Waits("poll-waits", Per.Pass, Bound.OneEach),
 
-        /** At most one a serve: how many serves an echo's events spread over is the scheduler's. */
-        TimerRearms("timer-rearms", Per.Serve),
+        /** At most one a serve: a serve that collected everything re-arms the timer once. */
+        TimerRearms("timer-rearms", Per.Serve, Bound.OneEach),
         DeadlineMoves("deadline-moves", Per.Op),
         RearmsTaken("rearms-taken", Per.Op),
         DeadlinesMade("deadlines-made", Per.Op),
-        ClockReads("clock-reads", Per.Pass),
         PoolAcquires("pool-acquires", Per.Op),
         PoolReleases("pool-releases", Per.Op),
         PoolMisses("pool-misses", Per.Op),
@@ -440,6 +578,10 @@ class CoreWorkCountAllocationTests {
         const val WARM_UP = 2_000
         const val MEASURED = 10_000
         const val ATTRIBUTED = 200
+        const val CLASSIFIED = 2_000
+
+        /** The increments a count read between operations may lag or lead its work by. */
+        const val IN_FLIGHT = 2L
         const val CHUNK = 65_536
         const val BULK_MIB = 16
         const val POOL_BUFFERS = 256
@@ -461,27 +603,32 @@ class CoreWorkCountAllocationTests {
 
         /**
          * The highest of every run measured, in the order of [Metric] less [Bound.OneEach]: sends, receives that brought
-         * datagrams, passes, serves, waits a pass, timer re-arms a serve, deadline moves, re-arms taken, deadlines made,
-         * clock reads a pass, pool acquires, releases, misses. The per-op counts: macOS arm64, JDK 21, JNI and FFM, native and JDK stacks, and macOS CI, the loop sending;
+         * datagrams, passes, serves, deadline moves, re-arms taken, deadlines made, pool acquires, releases, misses; then an
+         * operation's own clock readings, the loop sending and callers in place. The per-op counts: macOS arm64, JDK 21, JNI and FFM, native and JDK stacks, and macOS CI, the loop sending;
          * those, Linux x64 CI (JDK 17, 21, 25; JNI, FFM) and Windows CI, callers in place. The per-pass and per-serve counts,
-         * the receives that brought datagrams, and the passes and serves: macOS arm64, JDK 21, JNI and FFM, idle and with every
-         * core busy, never above the packets an echo brings; the datagram echo's clock reads a pass, Windows CI too, where its
-         * two arrivals share more passes.
+         * the receives that brought datagrams, the passes and serves, and the operation's clock readings: macOS arm64, JDK 21,
+         * JNI and FFM, idle and with every core busy, never above the packets an echo brings.
          */
         val ONE_STREAM =
             Gates(
-                gates(NONE_TREND, 2.000, 1.993, 3.968, 4.959, 0.977, 0.798, 0.018, 2.005, 0.0, 5.547, 1.0, 1.0, 0.0),
-                gates(NONE_TREND, 2.000, 1.998, 1.997, 4.996, 1.000, 0.800, 0.021, 2.005, 0.0, 9.429, 1.0, 1.0, 0.0),
+                gates(NONE_TREND, 2.000, 1.993, 3.968, 4.959, 0.018, 2.005, 0.0, 1.0, 1.0, 0.0),
+                gates(NONE_TREND, 2.000, 1.998, 1.997, 4.996, 0.021, 2.005, 0.0, 1.0, 1.0, 0.0),
+                withMargin(1.002),
+                withMargin(2.943),
             )
         val NEW_STREAM =
             Gates(
-                gates(NONE_TREND, 4.021, 3.998, 8.994, 10.990, 0.980, 0.818, 0.059, 4.014, 0.0, 5.346, 1.0, 1.0, 0.0),
-                gates(NONE_TREND, 4.021, 3.999, 3.995, 10.993, 1.000, 0.818, 0.050, 4.015, 0.0, 9.634, 1.0, 1.0, 0.0),
+                gates(NONE_TREND, 4.021, 3.998, 8.994, 10.990, 0.059, 4.014, 0.0, 1.0, 1.0, 0.0),
+                gates(NONE_TREND, 4.021, 3.999, 3.995, 10.993, 0.050, 4.015, 0.0, 1.0, 1.0, 0.0),
+                withMargin(2.015),
+                withMargin(6.856),
             )
         val DATAGRAM =
             Gates(
-                gates(SHARED_TURNS, 1.993, 1.927, 2.982, 3.005, 0.937, 1.000, 0.018, 0.018, 0.0, 7.103, 1.0, 1.0, 0.0),
-                gates(SHARED_TURNS, 2.000, 1.908, 2.996, 3.298, 0.999, 1.000, 0.014, 0.012, 0.0, 7.129, 1.0, 1.0, 0.0),
+                gates(SHARED_TURNS, 1.993, 1.927, 2.982, 3.005, 0.018, 0.018, 0.0, 1.0, 1.0, 0.0),
+                gates(SHARED_TURNS, 2.000, 1.908, 2.996, 3.298, 0.014, 0.012, 0.0, 1.0, 1.0, 0.0),
+                withMargin(2.020),
+                withMargin(2.994),
             )
 
         /**
@@ -499,7 +646,16 @@ class CoreWorkCountAllocationTests {
                     else -> Gate.TrendOnly
                 }
             }
-        val BULK = Gates(BULK_EACH, BULK_EACH)
+        val BULK = Gates(BULK_EACH, BULK_EACH, Gate.TrendOnly, Gate.TrendOnly)
+
+        /** A pass reads the clock after it and after its wait, which is the next pass's time. */
+        const val PASS_READS = 2.0
+
+        /** The connection's first datagram judges whose clock libquiche reads, once. */
+        const val JUDGED_ONCE = 1.0
+
+        /** [value] plus [ECHO_MARGIN], at least [LEAST_MARGIN]. */
+        fun withMargin(value: Double): Gate = Gate.AtMost(maxOf(value * (1 + ECHO_MARGIN), value + LEAST_MARGIN))
 
         /**
          * Each count's gate: [trend] trended only, a [Bound.OneEach] count at most one, every other the [measured] value (one
@@ -514,10 +670,7 @@ class CoreWorkCountAllocationTests {
                 when {
                     m in trend -> Gate.TrendOnly
                     m.bound == Bound.OneEach -> Gate.AtMost(1.0)
-                    else -> {
-                        val value = measured[MEASURED_METRICS.indexOf(m)]
-                        Gate.AtMost(maxOf(value * (1 + ECHO_MARGIN), value + LEAST_MARGIN))
-                    }
+                    else -> withMargin(measured[MEASURED_METRICS.indexOf(m)])
                 }
             }
         }

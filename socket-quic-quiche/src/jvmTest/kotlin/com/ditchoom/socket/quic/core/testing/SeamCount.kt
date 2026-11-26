@@ -69,13 +69,97 @@ internal class SeamCount {
     }
 }
 
-/** [real], with every reading counted in [reads]; its base is [real]'s, so libquiche is pinned exactly as without it. */
+/** Where the core reads its clock: each site's reads have a bound in work counted alongside them. */
+internal enum class ClockSite {
+    /** The loop's own: the reading after a pass, and the one after its wait that is the next pass's time. */
+    Pass,
+
+    /** The start of a turn the loop serves in its pass. */
+    Turn,
+
+    /** A write's start, which quiche's pacer judges it at. */
+    Write,
+
+    /** A written datagram whose send time may be the pacer's. */
+    SentAt,
+
+    /** The connection's first datagram, which judges whose clock libquiche reads. */
+    Judge,
+
+    /** A socket read that brought datagrams. */
+    Receive,
+
+    /** A datagram handed to quiche. */
+    DatagramIn,
+
+    /** Anything else: an operation's own readings, a caller's entry in place among them. */
+    Op,
+}
+
+/** Clock readings filed by [ClockSite] while [classifying] is [Attribution.On]: the caller's frames name the site. */
+internal class ClockSites {
+    private val bySite = ClockSite.entries.associateWith { LongAdder() }
+
+    @Volatile
+    var classifying = Attribution.Off
+
+    fun read() {
+        when (classifying) {
+            Attribution.Off -> Unit
+            Attribution.On -> bySite.getValue(site()).increment()
+        }
+    }
+
+    fun values(): Map<ClockSite, Long> = bySite.mapValues { it.value.sum() }
+
+    private fun site(): ClockSite =
+        StackWalker.getInstance().walk { stack ->
+            stack
+                .filter { it.className.startsWith(CORE) && it.className.substringAfterLast('.') !in WRAPPERS }
+                .findFirst()
+                .map { siteOf(it.className.substringAfterLast('.'), it.methodName.substringBefore('-')) }
+                .orElse(ClockSite.Op)
+        }
+
+    private fun siteOf(
+        type: String,
+        method: String,
+    ): ClockSite =
+        when (type) {
+            "Loop" -> ClockSite.Pass
+            "Conn" -> if (method == "turn") ClockSite.Turn else ClockSite.Op
+            "Egress" ->
+                when (method) {
+                    "write", "writePaced" -> ClockSite.Write
+                    "sentAt" -> ClockSite.SentAt
+                    "judged" -> ClockSite.Judge
+                    else -> ClockSite.Op
+                }
+            "Endpoint" -> if (method == "receiveWaiting") ClockSite.Receive else ClockSite.Op
+            "Ingress" -> ClockSite.DatagramIn
+            else -> ClockSite.Op
+        }
+
+    private companion object {
+        const val CORE = "com.ditchoom.socket.quic"
+
+        /** Frames that only pass a reading on: the counting clock, the turn's clock, and a connection's inside. */
+        val WRAPPERS = setOf("CountingClock", "ClockSites", "TurnClock", "MonotonicClock")
+    }
+}
+
+/**
+ * [real], with every reading counted in [reads] and filed in [sites]; its base is [real]'s, so libquiche is pinned
+ * exactly as without it.
+ */
 internal class CountingClock(
     private val real: LoopClock,
     val reads: SeamCount = SeamCount(),
+    val sites: ClockSites = ClockSites(),
 ) : LoopClock {
     override fun now(): Nanos {
         reads.hit()
+        sites.read()
         return real.now()
     }
 
