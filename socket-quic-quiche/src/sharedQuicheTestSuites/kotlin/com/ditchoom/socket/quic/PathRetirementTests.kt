@@ -239,25 +239,53 @@ class PathRetirementTests {
          * after the fourth issues our id 5 with Retire Prior To 1, asking the peer to retire our id 0.
          */
         suspend fun fillAPeerLimitOfFiveWithFourMoves(scope: TestScope) {
-            stub.peerActiveConnIdLimit = 5L
-            stub.scidsLeft = 4L
-            stub.activeScidCount = 5
-            scope.runCurrent()
-            wake()
-            scope.runCurrent()
-            wake()
-            scope.runCurrent()
-            assertEquals(4, stub.newScidCalls, "the peer's limit of 5 was not filled with our ids 1-4")
-            for (move in 1..4) {
-                val result = migrate()
-                scope.runCurrent()
-                validate(move)
-                scope.runCurrent()
-                result.assertSucceeded()
-                wake()
-                scope.runCurrent()
-            }
+            fillAPeerLimitWithOurIds(scope, 5L)
+            for (move in 1..4) move(scope, move)
             assertEquals(5, stub.newScidCalls, "the fourth move did not push the original path's id out")
+        }
+
+        /** A peer with an `active_connection_id_limit` of [limit] takes our ids 1 to [limit] - 1 beside the handshake id. */
+        suspend fun fillAPeerLimitWithOurIds(
+            scope: TestScope,
+            limit: Long,
+        ) {
+            stub.peerActiveConnIdLimit = limit
+            stub.scidsLeft = limit - 1
+            stub.activeScidCount = limit.toInt()
+            scope.runCurrent()
+            wake()
+            scope.runCurrent()
+            wake()
+            scope.runCurrent()
+            assertEquals(limit.toInt() - 1, stub.newScidCalls, "the peer's limit of $limit was not filled with our ids")
+        }
+
+        /**
+         * The peer retires our ids [seqs] in the datagram that also frees their slots, so quiche has room for as many
+         * new ids on the wake that reads it.
+         */
+        suspend fun peerRetiresAndFreesSlots(
+            scope: TestScope,
+            vararg seqs: Int,
+        ) {
+            stub.peerRetires(*seqs)
+            stub.scidsLeft += seqs.size
+            wake()
+            scope.runCurrent()
+        }
+
+        /** Move [index], which must succeed, and give the driver the wake after it. */
+        suspend fun move(
+            scope: TestScope,
+            index: Int,
+        ) {
+            val result = migrate()
+            scope.runCurrent()
+            validate(index)
+            scope.runCurrent()
+            result.assertSucceeded()
+            wake()
+            scope.runCurrent()
         }
 
         /** One benign driver-loop wake (a no-op stream open), so `afterCommand` runs again. */
@@ -1014,6 +1042,62 @@ class PathRetirementTests {
                 f.stub.peerRetires(3)
                 f.wake()
                 runCurrent()
+
+                val fifth = f.migrate()
+                runCurrent()
+                f.validate(5)
+                runCurrent()
+                fifth.assertSucceeded()
+            } finally {
+                f.driver.destroy()
+            }
+        }
+
+    /**
+     * **A retirement read on the wake that issues the id it makes room for was not asked for by that id.** kwik
+     * (run 45772979122, limit 3): it retires our handshake id at 1991.7 ms, right after move 1 and before any Retire
+     * Prior To of ours, and its datagram frees the slot our id 3 is issued into at 1994.1 ms. The driver issued
+     * first and judged the retirement after, against the Retire Prior To that issue set, so it took the retirement
+     * as asked and refused move 3.
+     */
+    @Test
+    fun aRetirementMadeBeforeTheIssueOnTheSameWakeWasUnaskedKwik() =
+        runTest {
+            val f = Fixture()
+            f.driver.start(this)
+            try {
+                f.fillAPeerLimitWithOurIds(this, 3L)
+                f.move(this, 1)
+                f.peerRetiresAndFreesSlots(this, 0)
+                assertEquals(3, f.stub.newScidCalls, "the slot the retirement freed was not refilled")
+                f.move(this, 2)
+
+                val third = f.migrate()
+                runCurrent()
+                f.validate(3)
+                runCurrent()
+                third.assertSucceeded()
+            } finally {
+                f.driver.destroy()
+            }
+        }
+
+    /**
+     * **The same order before any move.** quinn (run 45772979122, limit 5): it retires our handshake id at 112.4 ms,
+     * once our ids 1-4 have arrived, and our id 5 fills the freed slot at 113.9 ms. Every move after that fits;
+     * judged against the Retire Prior To of the issue that followed it, the retirement looked asked and move 5 was
+     * refused.
+     */
+    @Test
+    fun aRetirementMadeBeforeTheIssueOnTheSameWakeWasUnaskedQuinn() =
+        runTest {
+            val f = Fixture()
+            f.driver.start(this)
+            try {
+                f.fillAPeerLimitWithOurIds(this, 5L)
+                f.peerRetiresAndFreesSlots(this, 0)
+                assertEquals(5, f.stub.newScidCalls, "the slot the retirement freed was not refilled")
+                for (move in 1..4) f.move(this, move)
 
                 val fifth = f.migrate()
                 runCurrent()

@@ -13,7 +13,8 @@ internal enum class PeerRetirement {
  * Our source connection ids quiche holds, by sequence number, and the Retire Prior To it has sent, kept the
  * way quiche's `cid.rs` keeps them: what tells a retirement the peer was asked for from one it made unasked.
  * The handshake id is sequence 0 and the only id not handed to [issued]; quiche numbers the rest 1, 2, … in
- * the order it takes them. Loop only.
+ * the order it takes them. Fed in quiche's order: a retirement quiche applied before an issue is reported
+ * before it. Loop only.
  */
 internal class OurSourceIds {
     private var seqs = LongArray(INITIAL_CAPACITY)

@@ -3182,8 +3182,10 @@ class QuicheDriver(
             // The server sends its tickets after the handshake; one length read per wake until the first
             // arrives, and the newest is latched again at close.
             if (_sessionTicket.value is QuicSessionTicketState.NotIssued) refreshSessionTicket()
-            val issued = issueSpareCids()
+            // Retirements first: quiche applied them when it read the datagram, before any id issued here, and
+            // [ourSourceIds] judges each against the Retire Prior To quiche had then.
             val retired = drainRetiredScids()
+            val issued = issueSpareCids()
             // The routing table is set to what quiche says, not adjusted by what just happened: the
             // two counts only decide WHETHER to look, never what the answer is.
             projectSourceIds(setMayHaveMoved = issued > 0 || retired > 0)
