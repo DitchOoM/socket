@@ -32,9 +32,9 @@ import kotlin.test.fail
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * A core connection leaves the TLS secrets that decrypt it, in the NSS key log format Wireshark reads, where its capture
- * names a [TrafficSecretsLog.File] and where the `QUIC_KEYLOG_DIR` door names a directory; one that names neither leaves
- * nothing, and one whose file cannot be opened carries on and says so in its trace.
+ * A core connection leaves the TLS secrets that decrypt it where the `QUIC_KEYLOG_DIR` door names a directory, named by the
+ * session at each end, and the key log opens every datagram its trace recorded. The named-file cases run on every platform
+ * in [com.ditchoom.socket.quic.core.edge.CoreKeyLogTests].
  */
 class CoreTrafficSecretsLogTests {
     private class Recording : TraceSink {
@@ -93,48 +93,6 @@ class CoreTrafficSecretsLogTests {
 
     private val required =
         listOf("CLIENT_HANDSHAKE_TRAFFIC_SECRET", "SERVER_HANDSHAKE_TRAFFIC_SECRET", "CLIENT_TRAFFIC_SECRET_0", "SERVER_TRAFFIC_SECRET_0")
-
-    @Test
-    fun aNamedTrafficSecretsLogHoldsTheConnectionsTlsSecretsInNssFormat() =
-        runBlocking {
-            skipOnMissingNativeLib(CoreTrafficSecretsLogTests::class) {
-                val dir = newDirectory()
-                val sink = Recording()
-                val echo = echoOnce(QuicConnectionCapture(sink, trafficSecrets = TrafficSecretsLog.File("$dir/conn-0001.keys")))
-                assertEquals(PAYLOAD, echo.reply)
-                val keyLog = dir.filesByName()["conn-0001.keys"] ?: fail("no key log; the directory holds ${dir.filesByName().keys}")
-                val entries = NssKeyLog.parse(keyLog)
-                assertTrue(entries.map { it.label }.containsAll(required), "key log carries ${entries.map { it.label }}:\n$keyLog")
-                assertEquals(1, entries.map { it.clientRandom }.toSet().size, "one client random:\n$keyLog")
-                assertTrue(sink.events.none { it is TraceEvent.TrafficSecretsRefused }, "an opened key log is not refused")
-            }
-        }
-
-    @Test
-    fun noTrafficSecretsAreWrittenUnlessAFileIsNamed() =
-        runBlocking {
-            skipOnMissingNativeLib(CoreTrafficSecretsLogTests::class) {
-                val dir = newDirectory()
-                val capture = QuicConnectionCapture(Recording(), qlog = QlogTarget.File("$dir/conn-0001.sqlog"))
-                assertEquals(TrafficSecretsLog.Off, capture.trafficSecrets)
-                assertEquals(PAYLOAD, echoOnce(capture).reply)
-                val files = dir.filesByName()
-                assertEquals(setOf("conn-0001.sqlog"), files.keys)
-                assertTrue(files.values.none { body -> required.any { it in body } }, "no file may carry TLS secrets: ${files.keys}")
-            }
-        }
-
-    @Test
-    fun aKeyLogThatCannotBeOpenedIsReportedInTheTraceAndTheConnectionCarriesOn() =
-        runBlocking {
-            skipOnMissingNativeLib(CoreTrafficSecretsLogTests::class) {
-                val path = "${newDirectory()}/no-such-directory/conn-0001.keys"
-                val sink = Recording()
-                val echo = echoOnce(QuicConnectionCapture(sink, trafficSecrets = TrafficSecretsLog.File(path)))
-                assertEquals(PAYLOAD, echo.reply, "a key log that cannot be opened must never cost the connection")
-                assertEquals(listOf(path), sink.events.filterIsInstance<TraceEvent.TrafficSecretsRefused>().map { it.path })
-            }
-        }
 
     @Test
     fun theEnvironmentDoorWritesBothEndsKeyLogsNamedBySessionAndTheyAgree() =

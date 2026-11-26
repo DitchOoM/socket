@@ -4,6 +4,7 @@ package com.ditchoom.socket.quic.core.testing
 
 import com.ditchoom.socket.quic.CinteropQuicheApi
 import com.ditchoom.socket.quic.PeerCertificateSupport
+import com.ditchoom.socket.quic.NativeTestFiles
 import com.ditchoom.socket.quic.QuicTlsConfig
 import com.ditchoom.socket.quic.QuicheApi
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -33,6 +34,12 @@ internal expect fun platformPeerCertificates(): PeerCertificateSupport
 internal expect fun nativeCoreTls(): QuicTlsConfig
 
 internal fun currentThreadName(): String = Worker.current.name
+
+/** A new, empty directory, as an absolute path. */
+internal fun scratchDirectory(tag: String): String = NativeTestFiles.newDirectory(tag)
+
+/** Every regular file directly in [dir], by name, with its text. */
+internal fun filesByName(dir: String): Map<String, String> = NativeTestFiles.filesIn(dir)
 
 /** Runs [block] on a new worker named [name] and returns once it ended. */
 internal fun runOnANewThread(

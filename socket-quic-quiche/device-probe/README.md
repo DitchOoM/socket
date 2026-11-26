@@ -59,7 +59,7 @@ Three records, kept side by side so a bug in any one instrument leaves the other
   key log format (`SSLKEYLOGFILE`), named by the same stem as its trace and its qlog. With them the
   trace's `DGRAM_OUT`/`DGRAM_IN` bytes open in anything that speaks RFC 9001 — Wireshark reads the
   file as its TLS *(Pre)-Master-Secret log filename*, given a pcap built from the trace's hex — with
-  no code of this library in the loop (`JvmTrafficSecretsLogTests` opens every packet of a recorded
+  no code of this library in the loop (`CoreTrafficSecretsLogTests` opens every packet of a recorded
   trace this way). A secret: the probe keeps them in the app's **private** files dir (`-e probeKeyLog 1`,
   which `start.sh` passes), and `pull.sh` copies them out through `run-as` into a 0700 `…-keys/`
   directory. A key log quiche cannot open is a `TRAFFIC-SECRETS-REFUSED` line of its lane.

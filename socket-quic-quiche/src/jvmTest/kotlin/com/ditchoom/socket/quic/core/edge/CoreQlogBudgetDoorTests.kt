@@ -30,11 +30,11 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * A core connection's qlog stays inside its [QlogBudget] on disk, and every byte the budget drops is reported. quiche
- * writes the qlog itself, so these run real connections and measure the directory with the file API afterwards: what is
- * on disk is the verdict, never the directory's own accounts.
+ * A reconnect storm against a silent peer keeps the directory's connection limit and the connection that carried traffic,
+ * and the `QUIC_QLOG_DIR` door keeps its budget and its notes. The segment budget of one connection runs on every platform
+ * in [CoreQlogBudgetTests].
  */
-class CoreQlogBudgetTests {
+class CoreQlogBudgetDoorTests {
     private fun freshDirectory(tag: String): File = Files.createTempDirectory(tag).toFile()
 
     private fun sorted(files: Map<String, Long>): Map<String, Long> = files.entries.sortedBy { it.key }.associate { it.key to it.value }
@@ -70,51 +70,9 @@ class CoreQlogBudgetTests {
     }
 
     @Test
-    fun aConnectionWritingPastItsBudgetKeepsItsHeadAndItsLatestAndReportsEveryDrop() =
-        runBlocking {
-            skipOnMissingNativeLib(CoreQlogBudgetTests::class) {
-                val dir = freshDirectory("core-qlog-budget-connection")
-                val events = ConcurrentLinkedQueue<QlogEvent>()
-                val budget =
-                    QlogBudget.of(
-                        SEGMENT_BYTES,
-                        connectionSegments = 3,
-                        directoryBytes = 1024L * SEGMENT_BYTES,
-                        directoryConnections = 8,
-                    )
-                val directory = QlogDirectory(dir.absolutePath, budget) { events += it }
-
-                echoingConnection(captureInto(directory, "conn-0001"), echoes = 600)
-
-                val onDisk = sorted(filesIn(dir).filterKeys { it.startsWith("conn-0001") })
-                val dump = "on disk: $onDisk\nevents:\n${events.joinToString("\n") { it.line }}"
-                assertTrue(
-                    onDisk.values.all { it <= 3 * SEGMENT_BYTES },
-                    "a qlog file outgrew its segment of $SEGMENT_BYTES bytes by more than twice: the connection's " +
-                        "record was not cut into segments at all.\n$dump",
-                )
-                assertTrue(onDisk.size <= budget.connectionSegments, "more files than the connection keeps.\n$dump")
-                assertEquals("conn-0001.sqlog", onDisk.keys.first(), "the head, the handshake, is gone.\n$dump")
-                assertTrue(PARAMETERS_SET in File(dir, "conn-0001.sqlog").readText(), "the head does not hold the transport parameters.\n$dump")
-                val truncated = events.filterIsInstance<QlogEvent.Truncated>()
-                assertTrue(truncated.isNotEmpty(), "the connection wrote past its budget and no drop was reported.\n$dump")
-                assertTrue(truncated.all { it.pressure == QlogPressure.ConnectionSegments }, dump)
-                for (drop in truncated) {
-                    assertTrue(drop.dropped.path.substringAfterLast('/') !in onDisk, "reported dropped but still on disk: ${drop.dropped}\n$dump")
-                }
-                val retained = directory.retained().single { it.name == "conn-0001" }.files
-                assertEquals(
-                    onDisk.values.sum(),
-                    retained.sumOf { it.bytes },
-                    "the directory's accounts disagree with the disk, so its budget is not the disk's.\n$dump",
-                )
-            }
-        }
-
-    @Test
     fun aReconnectStormKeepsItsConnectionLimitAndTheConnectionThatCarriedTraffic() =
         runBlocking {
-            skipOnMissingNativeLib(CoreQlogBudgetTests::class) {
+            skipOnMissingNativeLib(CoreQlogBudgetDoorTests::class) {
                 val dir = freshDirectory("core-qlog-budget-storm")
                 val events = ConcurrentLinkedQueue<QlogEvent>()
                 val budget =
@@ -171,7 +129,7 @@ class CoreQlogBudgetTests {
     @Test
     fun theEnvironmentDoorKeepsItsBudgetAndItsLossesInTheDirectoryItWrites() =
         runBlocking {
-            skipOnMissingNativeLib(CoreQlogBudgetTests::class) {
+            skipOnMissingNativeLib(CoreQlogBudgetDoorTests::class) {
                 val dir = freshDirectory("core-qlog-budget-env")
                 // An earlier server process's record, which this one must count rather than ignore.
                 File(dir, "quiche-server-0123abcd.sqlog").writeText("x".repeat(1000))
