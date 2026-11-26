@@ -57,6 +57,8 @@ MIGRATION_SUMMARY = re.compile(r"MIGRATION-SUMMARY attempted=(\d+) succeeded=(\d
 PEER_IDLE_TIMEOUT = re.compile(r"connection timed out after [\d.]+s and only completed (\d+)/(\d+) requests")
 PEER_IDLE_REQUEST_FAILED = re.compile(r"Request \S+ failed: .*IdleTimerExpired")
 PEER_FAILED_REQUEST_PATH = re.compile(r"Request (/\S+) failed: .*IdleTimerExpired")
+ONE_RTT_OVERRUN = re.compile(r"Client sent too much data in 1-RTT packets")
+NEQO_CLIENT_EVENT = re.compile(r"\[Client ([0-9a-f]+)\] (Enabled 0-RTT|Rx ACK space=ap\b|Lost: Stream\()")
 OUR_SERVER_REQUEST = re.compile(r"\bREQUEST session=([0-9a-f]+) path=(/\S+)")
 TRANSPORT_SPACE = "transport"
 
@@ -110,6 +112,8 @@ def connection_facts(path, side):
         "local_closes": [],
         "peer_closes": [],
         "rx_packets": 0,
+        "rx_0rtt_packets": 0,
+        "dropped_0rtt_packets": 0,
         "rx_initial_crypto": 0,
         "rx_initial_acks": 0,
         "rx_handshake_crypto": 0,
@@ -151,11 +155,14 @@ def connection_facts(path, side):
             facts["pto_expiries_after_last_tx"] += 1
         if name.endswith("connection_closed") and data.get("reason"):
             facts["close_reason"] = data["reason"]
+        if name.endswith("packet_dropped") and (data.get("header") or {}).get("packet_type") == "0RTT":
+            facts["dropped_0rtt_packets"] += 1
         if name.endswith("packet_received"):
             facts["rx_packets"] += 1
             facts["last_rx_ms"] = at
             facts["tx_after_last_rx"] = 0
             space = (data.get("header") or {}).get("packet_type", "")
+            facts["rx_0rtt_packets"] += space == "0RTT"
             frames = {f.get("frame_type") for f in data.get("frames") or []}
             if space == "initial" and "packet_number" in (data.get("header") or {}):
                 initial_rx.add(int(data["header"]["packet_number"]))
@@ -720,6 +727,26 @@ def attribute_by_request_path(connections, by_session):
                 c["peer_gave_up_requests"] = c.get("peer_gave_up_requests", 0) + count
 
 
+def resumed_client_losses(output_txt):
+    """[{connection, lost_stream_before_first_ack}] for each connection the neqo client logged "Enabled 0-RTT" on:
+    how many of its own STREAM tokens it declared lost before the first ACK it received in the application space."""
+    resumed, acked, lost = [], set(), collections.Counter()
+    if os.path.exists(output_txt):
+        with open(output_txt, errors="replace") as f:
+            for line in f:
+                m = NEQO_CLIENT_EVENT.search(line)
+                if not m:
+                    continue
+                cid, event = m.groups()
+                if event == "Enabled 0-RTT":
+                    resumed.append(cid)
+                elif event.startswith("Rx ACK"):
+                    acked.add(cid)
+                elif cid not in acked:
+                    lost[cid] += 1
+    return [{"connection": cid, "lost_stream_before_first_ack": lost[cid]} for cid in resumed]
+
+
 def runner_output(output_txt, side):
     """(container exits, our client's migration summaries, runner verdicts, simulator deliveries to us, to the
     peer and from the peer, the peer's datagrams a drop list dropped)."""
@@ -741,6 +768,8 @@ def runner_output(output_txt, side):
                 m = UNANSWERED_PATH_CHALLENGE.search(line)
                 if m:
                     runner["unanswered_path_challenges"] = len([c for c in m.group(1).split(",") if c.strip()])
+                if ONE_RTT_OVERRUN.search(line):
+                    runner["one_rtt_overrun"] = True
                 if EMPTY_DOWNLOAD.search(line):
                     runner["empty_downloads"] = runner.get("empty_downloads", 0) + 1
                 droplist_from_peer += SIM_DROPLIST.findall(line).count(PEER_ADDRESS[side])
@@ -827,6 +856,9 @@ def evidence(logs, direction, peer):
             "sim_droplist_from_peer": droplist_from_peer,
             "peer_unanswered_requests": unanswered,
         }
+        resumed = resumed_client_losses(os.path.join(test_dir, "output.txt")) if side == "server" else []
+        if resumed:
+            tests[test]["peer_resumed_connections"] = resumed
     return tests
 
 

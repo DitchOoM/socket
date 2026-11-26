@@ -816,6 +816,33 @@ class PeerPacketsLostWhileWeProbedOnTime:
         return NotMatched()
 
 
+class PeerResentZeroRttItDeclaredLost:
+    """The runner failed the peer's client for sending too much in 1-RTT packets (it re-sent its early request data
+    there), and the client had declared its own 0-RTT STREAM data lost, on the connection it resumed, before the
+    first acknowledgement of the application space reached it, while our server had received 0-RTT packets and
+    dropped none: the data was not lost, the client's loss timer fired on a guessed RTT (RFC 9002 §6.2.2) before
+    any ACK could arrive."""
+
+    kind = "peer-resent-0rtt-it-declared-lost"
+
+    def __init__(self, fields):
+        no_fields(self.kind, fields)
+
+    def match(self, test_evidence, peer_role):
+        if not test_evidence.get("runner", {}).get("one_rtt_overrun"):
+            return NotMatched()
+        resumed = [r for r in test_evidence.get("peer_resumed_connections", []) if r["lost_stream_before_first_ack"] > 0]
+        connections = test_evidence.get("connections", [])
+        received = sum(c.get("rx_0rtt_packets", 0) for c in connections)
+        dropped = sum(c.get("dropped_0rtt_packets", 0) for c in connections)
+        if resumed and received > 0 and dropped == 0:
+            return Matched(
+                f"the client declared {resumed[0]['lost_stream_before_first_ack']} STREAM tokens of its 0-RTT data lost "
+                f"before any ACK; we received {received} 0-RTT packets and dropped none"
+            )
+        return NotMatched()
+
+
 class AnyOf:
     """The cell has more than one proven failure; a failure must match one of the listed signatures (each a
     {"kind": ..., ...fields} of another kind)."""
@@ -896,6 +923,7 @@ SIGNATURES = {
         PeerGaveUpWhileWeWereAmplificationLimited,
         PeerMoveNeverReachedUs,
         PeerPacketsLostWhileWeProbedOnTime,
+        PeerResentZeroRttItDeclaredLost,
         AnyOf,
     )
 }

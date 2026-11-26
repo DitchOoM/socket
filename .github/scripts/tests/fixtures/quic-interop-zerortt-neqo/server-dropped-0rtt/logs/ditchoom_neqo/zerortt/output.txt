@@ -1,0 +1,13 @@
+client  | 2026-11-26T17:37:40.875238Z DEBUG neqo_transport::connection: [Client 962ed853df4d0f9e97] Rx ACK space=ap, ranges=[0..=0]
+client  | 2026-11-26T17:37:40.883997Z DEBUG neqo_transport::connection: [Client 58028b24b8e2d20c] Enabled 0-RTT
+client  | 2026-11-26T17:37:40.888909Z  INFO neqo_transport::path: [pri-path:58028b24b8e2d20c 0.0.0.0:38906->193.167.100.100:443] discarding a packet without an RTT estimate; guessing RTT=879.272µs
+client  | 2026-11-26T17:37:40.888955Z DEBUG neqo_transport::connection: [Client 58028b24b8e2d20c] Lost: Stream(Stream(RecoveryToken { id: StreamId(0), offset: 0, length: 249, fin: false }))
+client  | 2026-11-26T17:37:40.888971Z DEBUG neqo_transport::connection: [Client 58028b24b8e2d20c] Lost: Stream(Stream(RecoveryToken { id: StreamId(0), offset: 249, length: 8, fin: true }))
+client  | 2026-11-26T17:37:40.888975Z DEBUG neqo_transport::connection: [Client 58028b24b8e2d20c] Lost: Stream(Stream(RecoveryToken { id: StreamId(4), offset: 0, length: 257, fin: true }))
+client  | 2026-11-26T17:37:40.908015Z DEBUG neqo_transport::connection: [Client 58028b24b8e2d20c] Lost: Stream(Stream(RecoveryToken { id: StreamId(120), offset: 0, length: 183, fin: false }))
+client  | 2026-11-26T17:37:40.908020Z DEBUG neqo_transport::connection: [Client 58028b24b8e2d20c] Lost: Stream(Stream(RecoveryToken { id: StreamId(120), offset: 183, length: 74, fin: true }))
+client  | 2026-11-26T17:37:40.908025Z DEBUG neqo_transport::connection: [Client 58028b24b8e2d20c] Lost: Stream(Stream(RecoveryToken { id: StreamId(124), offset: 0, length: 167, fin: false }))
+client  | 2026-11-26T17:37:40.928220Z DEBUG neqo_transport::connection: [Client 58028b24b8e2d20c] Rx ACK space=ap, ranges=[0..=1]
+2026-11-26 17:37:41,868 Container exits: b'\x1b[Kclient exited with code 0'
+2026-11-26 17:37:43,136 1-RTT size: 7564
+2026-11-26 17:37:43,136 Client sent too much data in 1-RTT packets.

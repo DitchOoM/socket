@@ -1063,7 +1063,14 @@
       "transfer": "pass",
       "transfercorruption": "pass",
       "transferloss": "pass",
-      "zerortt": "pass"
+      "zerortt": {
+        "flaky": {
+          "why": "neqo's client declares its own 0-RTT STREAM data lost about 5 ms after sending it, on a guessed RTT and before any ACK can arrive, then re-sends it in 1-RTT; the runner fails it for sending too much in 1-RTT packets while our server received every 0-RTT packet",
+          "signature": {
+            "kind": "peer-resent-0rtt-it-declared-lost"
+          }
+        }
+      }
     },
     "ngtcp2": {
       "amplificationlimit": "pass",

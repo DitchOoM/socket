@@ -764,5 +764,60 @@ expect_rc "the extractor reads a rebinding test" $? 0
 ev="$(python3 -c 'import json,sys; t=json.load(open(sys.argv[1]))["tests"]["rebind-port"]; c=t["connections"][0]; print(c["path_challenges_rx"], c["path_responses_tx"], t["runner"], t["exits"])' "$tmp/ev3.json")"
 expect "the extractor counts challenges, responses and the runner's unanswered challenge" "$ev" "2 2 {'unanswered_path_challenges': 1} {'client': 0}"
 
+# neqo's zerortt against our server (2026-11-26): the client declares its own 0-RTT stream data lost about 5 ms
+# after sending it, before any ACK can arrive, and re-sends it in 1-RTT, so the runner fails it for sending too
+# much there. The fixtures are the real failing run trimmed to the relevant lines; the two negatives change one
+# fact each (no early Lost line; a 0-RTT packet our server dropped), and both still carry the runner's symptom.
+zr="$here/fixtures/quic-interop-zerortt-neqo"
+zrkind='{"kind":"peer-resent-0rtt-it-declared-lost"}'
+for v in failing no-early-lost server-dropped-0rtt; do
+  python3 -I "$extract" "$zr/$v/logs" our-server neqo "$tmp/zr-$v.json"
+  expect_rc "the extractor reads the zerortt $v capture" $? 0
+done
+ev="$(python3 -c 'import json,sys; t=json.load(open(sys.argv[1]))["tests"]["zerortt"]; c=t["connections"][0]; print(t["runner"], t["peer_resumed_connections"], c["rx_0rtt_packets"], c["dropped_0rtt_packets"])' "$tmp/zr-failing.json")"
+expect "the extractor reads the runner's verdict, the client's losses before its first ACK and our 0-RTT receipts" "$ev" "{'one_rtt_overrun': True} [{'connection': '58028b24b8e2d20c', 'lost_stream_before_first_ack': 6}] 2 0"
+ev="$(python3 -c 'import json,sys; t=json.load(open(sys.argv[1]))["tests"]["zerortt"]; print(t["runner"], t["peer_resumed_connections"], t["connections"][0]["dropped_0rtt_packets"])' "$tmp/zr-no-early-lost.json")"
+expect "no Lost line means none before the first ACK" "$ev" "{'one_rtt_overrun': True} [{'connection': '58028b24b8e2d20c', 'lost_stream_before_first_ack': 0}] 0"
+ev="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["tests"]["zerortt"]["connections"][0]["dropped_0rtt_packets"])' "$tmp/zr-server-dropped-0rtt.json")"
+expect "the extractor counts the 0-RTT packet our server dropped" "$ev" "1"
+zr_case() { # <name> <fixture> <expected>
+  expect "$1" "$(python3 - "$script" "$zrkind" "$tmp/zr-$2.json" "$1" <<'PY'
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("gate", sys.argv[1])
+gate = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(gate)
+raw = json.loads(sys.argv[2])
+kind = raw.pop("kind")
+test = json.load(open(sys.argv[3]))["tests"]["zerortt"]
+print(f"{sys.argv[4]}: {type(gate.SIGNATURES[kind](raw).match(test, 'client')).__name__}")
+PY
+)" "$1: $3"
+}
+zr_case "a client that re-sent 0-RTT data it declared lost, with every 0-RTT packet received" failing Matched
+zr_case "a runner failure with no early Lost line is not the signature" no-early-lost NotMatched
+zr_case "a 0-RTT packet our server dropped is not the signature" server-dropped-0rtt NotMatched
+# The checked-in expectation: a matching failure and a pass are green, any other failure is red.
+python3 - "$here/../../../test-harness/quic-interop/expectations.json" "$tmp/zr-exp.json" <<'PY'
+import json, sys
+entry = json.load(open(sys.argv[1]))["our-server"]["neqo"]["zerortt"]
+json.dump({"our-server": {"neqo": {"zerortt": entry}}}, open(sys.argv[2], "w"))
+PY
+mkdir "$tmp/zr"
+runner "$tmp/zr/our-server__neqo.json" zerortt:failed
+cp "$tmp/zr-failing.json" "$tmp/zr/our-server__neqo.evidence.json"
+out="$(python3 "$script" judge "$tmp/zr-exp.json" "$tmp/zr" --stale=fail)"
+expect_rc "the checked-in zerortt expectation keeps the matching failure green" $? 0
+expect "the matching failure is shown as a proven flaky" "$out" "| flaky (signature) | our-server | neqo | zerortt | failed | flaky |"
+runner "$tmp/zr/our-server__neqo.json" zerortt:succeeded
+out="$(python3 "$script" judge "$tmp/zr-exp.json" "$tmp/zr" --stale=fail)"
+expect_rc "the checked-in zerortt expectation keeps a pass green" $? 0
+runner "$tmp/zr/our-server__neqo.json" zerortt:failed
+for v in no-early-lost server-dropped-0rtt; do
+  cp "$tmp/zr-$v.json" "$tmp/zr/our-server__neqo.evidence.json"
+  out="$(python3 "$script" judge "$tmp/zr-exp.json" "$tmp/zr" --stale=fail)"
+  expect_rc "a zerortt failure shown as $v fails the gate" $? 1
+  expect "a zerortt failure shown as $v is a regression" "$out" "| REGRESSION | our-server | neqo | zerortt | failed | flaky | failed, but not as peer-resent-0rtt-it-declared-lost"
+done
+
 echo "quic-interop-gate: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
