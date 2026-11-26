@@ -819,5 +819,27 @@ for v in no-early-lost server-dropped-0rtt; do
   expect "a zerortt failure shown as $v is a regression" "$out" "| REGRESSION | our-server | neqo | zerortt | failed | flaky | failed, but not as peer-resent-0rtt-it-declared-lost"
 done
 
+# keyupdate: the peer's client starts key updates against our server, a non-gating cell until a run measures it
+# (an unproven flaky entry accepts either outcome); as a client our endpoint answers unsupported (quiche never starts
+# an update). The checked-in expectations carry both for every peer.
+mkdir "$tmp/ku"
+printf '%s' '{"our-client": {"peer": {"handshake": "pass", "keyupdate": "unsupported"}}, "our-server": {"peer": {"handshake": "pass", "keyupdate": {"flaky": "unproven: not yet measured"}}}}' >"$tmp/ku-exp.json"
+runner "$tmp/ku/our-client__peer.json" handshake:succeeded keyupdate:unsupported
+runner "$tmp/ku/our-server__peer.json" handshake:succeeded keyupdate:failed
+out="$(python3 "$script" judge "$tmp/ku-exp.json" "$tmp/ku" --stale=fail)"
+expect_rc "a failing keyupdate cell does not gate" $? 0
+expect "a failing keyupdate cell is shown as flaky" "$out" "| flaky (unproven) | our-server | peer | keyupdate | failed | flaky |"
+runner "$tmp/ku/our-server__peer.json" handshake:succeeded keyupdate:succeeded
+out="$(python3 "$script" judge "$tmp/ku-exp.json" "$tmp/ku" --stale=fail)"
+expect_rc "a passing keyupdate cell does not gate" $? 0
+runner "$tmp/ku/our-server__peer.json" handshake:failed keyupdate:failed
+out="$(python3 "$script" judge "$tmp/ku-exp.json" "$tmp/ku")"
+expect_rc "keyupdate flakiness does not excuse a failing handshake" $? 1
+checked_in="$here/../../../test-harness/quic-interop/expectations.json"
+for dir in our-client our-server; do
+  jq -e --arg d "$dir" '.[$d] | to_entries | all(.value | has("keyupdate"))' "$checked_in" >/dev/null
+  expect_rc "every checked-in $dir peer carries a keyupdate expectation" $? 0
+done
+
 echo "quic-interop-gate: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

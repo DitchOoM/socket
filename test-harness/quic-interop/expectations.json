@@ -106,6 +106,7 @@
       },
       "handshakeloss": "pass",
       "ipv6": "pass",
+      "keyupdate": "unsupported",
       "longrtt": "pass",
       "multiplexing": "pass",
       "rebind-addr": "pass",
@@ -132,6 +133,7 @@
       "handshakecorruption": "unsupported",
       "handshakeloss": "unsupported",
       "ipv6": "pass",
+      "keyupdate": "unsupported",
       "longrtt": "pass",
       "multiplexing": "pass",
       "rebind-addr": {
@@ -179,6 +181,7 @@
         }
       },
       "ipv6": "pass",
+      "keyupdate": "unsupported",
       "longrtt": "pass",
       "multiplexing": "pass",
       "rebind-addr": {
@@ -225,6 +228,7 @@
       },
       "handshakeloss": "pass",
       "ipv6": "pass",
+      "keyupdate": "unsupported",
       "longrtt": "pass",
       "multiplexing": "pass",
       "rebind-addr": "pass",
@@ -261,6 +265,7 @@
       "handshakecorruption": "pass",
       "handshakeloss": "pass",
       "ipv6": "pass",
+      "keyupdate": "unsupported",
       "longrtt": "pass",
       "multiplexing": "pass",
       "rebind-addr": "pass",
@@ -280,6 +285,7 @@
       "handshakecorruption": "pass",
       "handshakeloss": "pass",
       "ipv6": "pass",
+      "keyupdate": "unsupported",
       "longrtt": "pass",
       "multiplexing": "pass",
       "rebind-addr": {
@@ -327,6 +333,7 @@
       "handshakecorruption": "pass",
       "handshakeloss": "pass",
       "ipv6": "pass",
+      "keyupdate": "unsupported",
       "longrtt": "pass",
       "multiplexing": "pass",
       "rebind-addr": {
@@ -353,6 +360,7 @@
       "handshakecorruption": "pass",
       "handshakeloss": "pass",
       "ipv6": "pass",
+      "keyupdate": "unsupported",
       "longrtt": "pass",
       "multiplexing": "pass",
       "rebind-addr": "pass",
@@ -390,6 +398,7 @@
       },
       "handshakeloss": "pass",
       "ipv6": "pass",
+      "keyupdate": "unsupported",
       "longrtt": "pass",
       "multiplexing": "pass",
       "rebind-addr": {
@@ -413,6 +422,7 @@
       "handshakecorruption": "pass",
       "handshakeloss": "pass",
       "ipv6": "pass",
+      "keyupdate": "unsupported",
       "longrtt": "pass",
       "multiplexing": "pass",
       "rebind-addr": "pass",
@@ -439,6 +449,7 @@
       "handshakecorruption": "pass",
       "handshakeloss": "pass",
       "ipv6": "pass",
+      "keyupdate": "unsupported",
       "longrtt": "pass",
       "multiplexing": "pass",
       "rebind-addr": "pass",
@@ -510,6 +521,7 @@
         }
       },
       "ipv6": "pass",
+      "keyupdate": "unsupported",
       "longrtt": "pass",
       "multiplexing": "pass",
       "rebind-addr": "pass",
@@ -559,6 +571,7 @@
         }
       },
       "ipv6": "pass",
+      "keyupdate": "unsupported",
       "longrtt": "pass",
       "multiplexing": "pass",
       "rebind-addr": {
@@ -616,6 +629,7 @@
         }
       },
       "ipv6": "pass",
+      "keyupdate": "unsupported",
       "longrtt": "pass",
       "multiplexing": "pass",
       "rebind-addr": "pass",
@@ -635,6 +649,7 @@
       "handshakecorruption": "pass",
       "handshakeloss": "pass",
       "ipv6": "pass",
+      "keyupdate": "unsupported",
       "longrtt": "pass",
       "multiplexing": "pass",
       "rebind-addr": "pass",
@@ -673,6 +688,7 @@
         }
       },
       "ipv6": "pass",
+      "keyupdate": "unsupported",
       "longrtt": "pass",
       "multiplexing": "pass",
       "rebind-addr": "pass",
@@ -710,6 +726,7 @@
         }
       },
       "ipv6": "pass",
+      "keyupdate": "unsupported",
       "longrtt": "pass",
       "multiplexing": "pass",
       "rebind-addr": "pass",
@@ -785,8 +802,12 @@
       "active-migration": {
         "flaky": {
           "why": "peer: mvfst decides it by whether it retires an id of ours unasked. When it retires none, our client counts mvfst's limit of 5 paths as full after four moves and answers NoSpareConnectionId (run 44963314572: no RETIRE_CONNECTION_ID from mvfst); when it retires one, our client knows mvfst frees the paths it leaves and every move succeeds (run 44963103718: mvfst retired our id 1 at 2.97 s, before any Retire Prior To of ours, and six of six moves succeeded). mvfst ignores our Retire Prior To: in run 45763399479 the id pushed out after move 4 asked it to retire our id 0 at 5.82 s and it retired our id 3 instead at 5.94 s; our client now judges a retirement by its id against Retire Prior To, so that shape counts as unasked",
-          "signature": {"kind": "migration-out-of-ids-peer-retired-nothing"},
-          "pass-signature": {"kind": "migration-peer-retired-unasked"}
+          "signature": {
+            "kind": "migration-out-of-ids-peer-retired-nothing"
+          },
+          "pass-signature": {
+            "kind": "migration-peer-retired-unasked"
+          }
         }
       },
       "transfer": "pass"
@@ -847,6 +868,9 @@
       "handshakecorruption": "pass",
       "handshakeloss": "pass",
       "ipv6": "pass",
+      "keyupdate": {
+        "flaky": "unproven: not yet measured. The peer client starts key updates against our server; the cell is non-gating until a run records its result and a failure signature"
+      },
       "longrtt": "pass",
       "multiplexing": "pass",
       "rebind-addr": "pass",
@@ -866,6 +890,9 @@
       "handshakecorruption": "unsupported",
       "handshakeloss": "unsupported",
       "ipv6": "unsupported",
+      "keyupdate": {
+        "flaky": "unproven: not yet measured. The peer client starts key updates against our server; the cell is non-gating until a run records its result and a failure signature"
+      },
       "longrtt": "unsupported",
       "multiplexing": "unsupported",
       "rebind-addr": "unsupported",
@@ -885,6 +912,9 @@
       "handshakecorruption": "unsupported",
       "handshakeloss": "unsupported",
       "ipv6": "pass",
+      "keyupdate": {
+        "flaky": "unproven: not yet measured. The peer client starts key updates against our server; the cell is non-gating until a run records its result and a failure signature"
+      },
       "longrtt": "pass",
       "multiplexing": "pass",
       "rebind-addr": "pass",
@@ -911,6 +941,9 @@
       "handshakecorruption": "pass",
       "handshakeloss": "pass",
       "ipv6": "pass",
+      "keyupdate": {
+        "flaky": "unproven: not yet measured. The peer client starts key updates against our server; the cell is non-gating until a run records its result and a failure signature"
+      },
       "longrtt": {
         "flaky": {
           "why": "peer: in this test kwik's client uses a zero-length source connection id and still sends NEW_CONNECTION_ID frames (five, with connection id length 0, in its first 1-RTT packet); RFC 9000 §19.15 makes that a FRAME_ENCODING_ERROR, which our server closes with. kwik's other tests use 8-byte ids and pass; in longrtt the transfer sometimes completes before our close reaches it (failed in run 43671782277, passed in 43674919594)",
@@ -971,6 +1004,9 @@
         }
       },
       "ipv6": "pass",
+      "keyupdate": {
+        "flaky": "unproven: not yet measured. The peer client starts key updates against our server; the cell is non-gating until a run records its result and a failure signature"
+      },
       "longrtt": "pass",
       "multiplexing": "pass",
       "rebind-addr": "pass",
@@ -998,6 +1034,9 @@
       "handshakecorruption": "pass",
       "handshakeloss": "pass",
       "ipv6": "pass",
+      "keyupdate": {
+        "flaky": "unproven: not yet measured. The peer client starts key updates against our server; the cell is non-gating until a run records its result and a failure signature"
+      },
       "longrtt": "pass",
       "multiplexing": "pass",
       "rebind-addr": "pass",
@@ -1031,6 +1070,9 @@
         }
       },
       "ipv6": "pass",
+      "keyupdate": {
+        "flaky": "unproven: not yet measured. The peer client starts key updates against our server; the cell is non-gating until a run records its result and a failure signature"
+      },
       "longrtt": "pass",
       "multiplexing": "pass",
       "rebind-addr": {
@@ -1054,6 +1096,9 @@
       "handshakecorruption": "pass",
       "handshakeloss": "pass",
       "ipv6": "pass",
+      "keyupdate": {
+        "flaky": "unproven: not yet measured. The peer client starts key updates against our server; the cell is non-gating until a run records its result and a failure signature"
+      },
       "longrtt": "pass",
       "multiplexing": "pass",
       "rebind-addr": "pass",
@@ -1080,6 +1125,9 @@
       "handshakecorruption": "pass",
       "handshakeloss": "pass",
       "ipv6": "pass",
+      "keyupdate": {
+        "flaky": "unproven: not yet measured. The peer client starts key updates against our server; the cell is non-gating until a run records its result and a failure signature"
+      },
       "longrtt": "pass",
       "multiplexing": "pass",
       "rebind-addr": "pass",
@@ -1099,6 +1147,9 @@
       "handshakecorruption": "pass",
       "handshakeloss": "pass",
       "ipv6": "pass",
+      "keyupdate": {
+        "flaky": "unproven: not yet measured. The peer client starts key updates against our server; the cell is non-gating until a run records its result and a failure signature"
+      },
       "longrtt": "pass",
       "multiplexing": "pass",
       "rebind-addr": "pass",
@@ -1118,6 +1169,9 @@
       "handshakecorruption": "pass",
       "handshakeloss": "pass",
       "ipv6": "pass",
+      "keyupdate": {
+        "flaky": "unproven: not yet measured. The peer client starts key updates against our server; the cell is non-gating until a run records its result and a failure signature"
+      },
       "longrtt": "pass",
       "multiplexing": "pass",
       "rebind-addr": "pass",
@@ -1200,6 +1254,9 @@
         }
       },
       "ipv6": "pass",
+      "keyupdate": {
+        "flaky": "unproven: not yet measured. The peer client starts key updates against our server; the cell is non-gating until a run records its result and a failure signature"
+      },
       "longrtt": "pass",
       "multiplexing": "pass",
       "rebind-addr": "pass",
@@ -1268,6 +1325,9 @@
         }
       },
       "ipv6": "pass",
+      "keyupdate": {
+        "flaky": "unproven: not yet measured. The peer client starts key updates against our server; the cell is non-gating until a run records its result and a failure signature"
+      },
       "longrtt": "pass",
       "multiplexing": "pass",
       "rebind-addr": "pass",
@@ -1287,6 +1347,9 @@
       "handshakecorruption": "pass",
       "handshakeloss": "pass",
       "ipv6": "pass",
+      "keyupdate": {
+        "flaky": "unproven: not yet measured. The peer client starts key updates against our server; the cell is non-gating until a run records its result and a failure signature"
+      },
       "longrtt": "pass",
       "multiplexing": "pass",
       "rebind-addr": "pass",
@@ -1342,6 +1405,9 @@
         }
       },
       "ipv6": "pass",
+      "keyupdate": {
+        "flaky": "unproven: not yet measured. The peer client starts key updates against our server; the cell is non-gating until a run records its result and a failure signature"
+      },
       "longrtt": "pass",
       "multiplexing": "pass",
       "rebind-addr": "pass",
@@ -1387,6 +1453,9 @@
         }
       },
       "ipv6": "pass",
+      "keyupdate": {
+        "flaky": "unproven: not yet measured. The peer client starts key updates against our server; the cell is non-gating until a run records its result and a failure signature"
+      },
       "longrtt": "pass",
       "multiplexing": {
         "known-failure": {

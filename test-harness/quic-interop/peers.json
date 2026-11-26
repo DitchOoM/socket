@@ -20,5 +20,5 @@
     "s2n-quic": ["server", "client"],
     "xquic": ["server", "client"]
   },
-  "tests": "handshake,transfer,multiplexing,longrtt,retry,resumption,zerortt,blackhole,handshakeloss,transferloss,handshakecorruption,transfercorruption,amplificationlimit,ipv6,rebind-port,rebind-addr,goodput"
+  "tests": "handshake,transfer,multiplexing,longrtt,retry,resumption,zerortt,blackhole,handshakeloss,transferloss,handshakecorruption,transfercorruption,amplificationlimit,ipv6,rebind-port,rebind-addr,goodput,keyupdate"
 }

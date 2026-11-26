@@ -37,13 +37,15 @@ import kotlin.time.TimeSource
  *  - `connectionmigration`: the runner's migration test is the server's preferred_address, which quiche
  *    does not advertise. The CLIENT is handed `transfer` there, so our client against a peer that
  *    advertises one is reported as a failure, which is accurate: it does not move to it.
- *  - `keyupdate`, `chacha20`, `ecn`, `v2`: quiche exposes no per-connection control for them.
+ *  - `chacha20`, `ecn`, `v2`: quiche exposes no per-connection control for them.
+ *  - `keyupdate`: served as `transfer` (the peer's client starts the updates and quiche follows them); as a
+ *    client this endpoint answers [UNSUPPORTED], because quiche never starts a key update.
  *  - `http3`: socket-http3 can serve it; wiring it in here is a follow-up.
  *
  * The client's tests and its `CLIENT_PARAMS` (`migrate=active`) are described at [runInteropClient]; the
  * server's `SERVER_PARAMS` (`streams=raised`) at [InteropStreamLimit].
  */
-private val serverTests = setOf("handshake", "transfer", "multiconnect", "resumption", "zerortt")
+private val serverTests = setOf("handshake", "transfer", "multiconnect", "resumption", "zerortt", "keyupdate")
 
 /**
  * This library as a [quic-interop-runner](https://github.com/quic-interop/quic-interop-runner) endpoint,
@@ -75,7 +77,7 @@ fun main() {
     val code =
         when (role) {
             "server" -> if (test in serverTests) runServer(test, recorder) else UNSUPPORTED
-            "client" -> runClient()
+            "client" -> if (test == "keyupdate") UNSUPPORTED else runClient()
             else -> {
                 System.err.println("ROLE must be client or server, was '$role'")
                 1
