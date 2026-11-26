@@ -145,7 +145,8 @@ internal class LentIo(
     override fun receive(into: ReceiveBatch): ReceiveBatchResult {
         var got = 0
         while (!arrivals.isEmpty()) {
-            val buffer = into.take()
+            val buffer = into.takeToCopyInto()
+            // Only a full batch has no buffer: what is left is read in the same pass, after this batch is delivered.
             if (buffer !is ReceiveBuffer) return ReceiveBatchResult.GotWithBacklog
             val length = arrivals.headLength()
             buffer.bytes.copyFrom(arrivals.head(), 0, 0, length)

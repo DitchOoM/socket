@@ -50,6 +50,12 @@ internal class ReceiveSlots(
         return buffer
     }
 
+    /** An armed slot's buffer, for an io that copies into it: it leaves its slot as [handUp] does, or [Taken.Empty]. */
+    fun takeArmed(): Taken {
+        for (i in 0 until capacity) if (slots[i] is ReceiveBuffer) return handUp(i)
+        return Taken.Empty
+    }
+
     /** Gives every armed buffer back to the pool, once; the slots are empty and the next [arm] takes again. */
     fun disarm() {
         for (i in 0 until capacity) {
