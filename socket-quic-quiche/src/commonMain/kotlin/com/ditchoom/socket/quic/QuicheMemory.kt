@@ -98,6 +98,24 @@ sealed interface QuicheMemory {
 internal expect fun reachabilityFence(owner: Any)
 
 /**
+ * The raw address of a buffer the **driver** allocated for itself — the UDP send buffer, packet
+ * buffers from the receive pool, sockaddr / CID / token scratch, the stream-read pool.
+ *
+ * Every factory a driver is built from passed `TransportConfig.quicBufferFactory()`'s
+ * `requireNativeMemory()` probe at setup, so a `null` here is a broken invariant — a factory that
+ * answered the probe natively and then handed out a heap buffer — never a caller's mistake. Hence
+ * [checkNotNull] with the invariant spelled out, in contrast to the typed
+ * [QuicNativeMemoryRequiredException] that [DriverStreamAdapter.streamWrite] and
+ * [DriverDatagramAdapter.send] give a **caller-fed** buffer: exactly those two take a buffer from a
+ * public API; every other site is on memory the driver allocated.
+ */
+internal fun PlatformBuffer.driverOwnedNativeAddress(): Long =
+    checkNotNull(nativeMemoryAccess) {
+        "driver-owned ${this::class.simpleName} has no native memory: the connection's BufferFactory " +
+            "passed requireNativeMemory() at setup and then allocated a heap buffer — a factory that lies to the probe"
+    }.nativeAddress
+
+/**
  * The memory a buffer the **driver** allocated for itself lends to quiche — the UDP send buffer,
  * packet buffers from the receive pool, the stream-read pool, sockaddr / CID / token scratch.
  *

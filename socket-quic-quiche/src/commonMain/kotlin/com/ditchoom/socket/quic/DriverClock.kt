@@ -143,17 +143,6 @@ internal interface QuicheEntropySource {
 }
 
 /**
- * The caller-entropy FFI (`patchQuicheForCallerEntropy`): pin the calling thread's seeded random stream in
- * libquiche, and release it. Implemented by each real backend's binding; reached only through
- * [QuicheEntropy.Seeded].
- */
-internal interface QuicheRandomPin {
-    fun setThreadRandomState(state: Long)
-
-    fun clearThreadRandomState()
-}
-
-/**
  * Which clock quiche's C library should read for a connection operation. A sealed choice, not a nullable
  * `Long?`, so "use the real wall clock" (production) and "use this exact virtual instant" (sim) are two
  * distinct, exhaustively-handled cases — never an overloaded sentinel.

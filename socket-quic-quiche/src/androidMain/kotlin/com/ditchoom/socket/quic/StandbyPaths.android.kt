@@ -49,7 +49,7 @@ internal actual fun standbyPathsFor(
 /** [StandbyPaths] over one [CellularStandbyHold]. */
 private class CellularStandbyPaths(
     private val hold: CellularStandbyHold,
-    private val factory: UdpSocketChannelFactory,
+    private val factory: DriverUdpChannelFactory,
     private val driver: QuicheDriver,
 ) : StandbyPaths {
     override val current: StandbyPath get() = hold.state.value.asStandbyPath()

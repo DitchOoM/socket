@@ -295,7 +295,7 @@ class FfmQuicheApi private constructor(
             StreamRecvResult.Data(raw.toInt(), fin)
         } else if (raw == QUICHE_ERR_DONE) {
             StreamRecvResult.Done
-        } else if (raw.toInt() == QuicheDriver.QUICHE_ERR_STREAM_RESET) {
+        } else if (raw.toInt() == QUICHE_ERR_STREAM_RESET) {
             StreamRecvResult.Reset(QuicAppErrorCode(out.errorCode.get(JAVA_LONG, 0)))
         } else {
             StreamRecvResult.Error(raw.toInt())
@@ -320,7 +320,7 @@ class FfmQuicheApi private constructor(
             ) as Long
         return if (raw >= 0) {
             StreamRecvStep.data(raw.toInt(), out.fin.get(JAVA_BOOLEAN, 0))
-        } else if (raw.toInt() == QuicheDriver.QUICHE_ERR_STREAM_RESET) {
+        } else if (raw.toInt() == QUICHE_ERR_STREAM_RESET) {
             StreamRecvStep.reset(QuicAppErrorCode(out.errorCode.get(JAVA_LONG, 0)))
         } else {
             StreamRecvStep.error(raw.toInt())
@@ -348,7 +348,7 @@ class FfmQuicheApi private constructor(
             ).toInt()
         // quiche fills out_error_code only on STREAM_STOPPED / STREAM_RESET, and it is read only then.
         val errorCode =
-            if (result == QuicheDriver.QUICHE_ERR_STREAM_STOPPED || result == QuicheDriver.QUICHE_ERR_STREAM_RESET) {
+            if (result == QUICHE_ERR_STREAM_STOPPED || result == QUICHE_ERR_STREAM_RESET) {
                 QuicAppErrorCode(errOut.get(JAVA_LONG, 0))
             } else {
                 null

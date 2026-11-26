@@ -1521,6 +1521,11 @@ public final class com/ditchoom/socket/quic/UnresolvedRouteSourceException : jav
 	public final fun getReason ()Lcom/ditchoom/socket/quic/RouteProbeFailure;
 }
 
+public final class com/ditchoom/socket/quic/trace/DriverTraceRecordingKt {
+	public static final fun wrapUdpChannel (Lcom/ditchoom/socket/quic/trace/QuicTraceRecorder;Lcom/ditchoom/socket/quic/UdpChannel;Lcom/ditchoom/socket/quic/PathKey;)Lcom/ditchoom/socket/quic/UdpChannel;
+	public static synthetic fun wrapUdpChannel$default (Lcom/ditchoom/socket/quic/trace/QuicTraceRecorder;Lcom/ditchoom/socket/quic/UdpChannel;Lcom/ditchoom/socket/quic/PathKey;ILjava/lang/Object;)Lcom/ditchoom/socket/quic/UdpChannel;
+}
+
 public final class com/ditchoom/socket/quic/trace/QuicTraceRecorder {
 	public fun <init> (Lcom/ditchoom/socket/testkit/trace/TraceSink;Lcom/ditchoom/socket/quic/DriverClock;)V
 	public synthetic fun <init> (Lcom/ditchoom/socket/testkit/trace/TraceSink;Lcom/ditchoom/socket/quic/DriverClock;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
@@ -1539,9 +1544,7 @@ public final class com/ditchoom/socket/quic/trace/QuicTraceRecorder {
 	public final fun stats (Lcom/ditchoom/socket/quic/QuicPathStats;)V
 	public final fun streamLoss (JILcom/ditchoom/socket/quic/trace/StreamLossCause;)V
 	public final fun trafficSecretsRefused (Ljava/lang/String;)V
-	public final fun wrap (Lcom/ditchoom/socket/quic/UdpChannel;Lcom/ditchoom/socket/quic/PathKey;)Lcom/ditchoom/socket/quic/UdpChannel;
 	public final fun wrap (Lcom/ditchoom/socket/transport/Liveness;)Lcom/ditchoom/socket/transport/Liveness;
-	public static synthetic fun wrap$default (Lcom/ditchoom/socket/quic/trace/QuicTraceRecorder;Lcom/ditchoom/socket/quic/UdpChannel;Lcom/ditchoom/socket/quic/PathKey;ILjava/lang/Object;)Lcom/ditchoom/socket/quic/UdpChannel;
 }
 
 public abstract interface class com/ditchoom/socket/quic/trace/StreamLossCause {

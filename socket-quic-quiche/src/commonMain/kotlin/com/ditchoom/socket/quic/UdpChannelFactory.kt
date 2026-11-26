@@ -1,4 +1,11 @@
+@file:OptIn(ExperimentalDatagramApi::class)
+
 package com.ditchoom.socket.quic
+
+import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.flow.ExperimentalDatagramApi
+import com.ditchoom.buffer.flow.SocketAddress
+import com.ditchoom.socket.udp.SocketAddressCodec
 
 /**
  * Opens additional client UDP sockets for connection migration (RFC 9000 §9).
@@ -67,3 +74,52 @@ class NewPath(
     val localEndpoint: QuicLocalEndpoint,
     val release: () -> Unit,
 )
+
+/**
+ * The [UdpChannelFactory] a [QuicheDriver] is given: [UdpSocketChannelFactory]'s sockets, opened as the
+ * driver's migration paths. The path's local sockaddr is encoded via [codec] into pinned native memory
+ * that the driver decodes into a [PathKey] to route datagrams to the socket, and frees via
+ * [NewPath.release] when the path is torn down.
+ */
+@OptIn(InternalQuicApi::class)
+internal class DriverUdpChannelFactory(
+    peer: SocketAddress,
+    codec: SocketAddressCodec,
+    bufferFactory: BufferFactory,
+    recvBufferFactory: BufferFactory,
+    receiveBufferSize: Int,
+    localEndpointSupport: LocalEndpointSupport,
+    openChannel: ConnectedUdpOpener = ConnectedUdpOpener.Platform,
+) : UdpSocketChannelFactory(
+        peer,
+        codec,
+        bufferFactory,
+        recvBufferFactory,
+        receiveBufferSize,
+        localEndpointSupport,
+        openChannel,
+    ),
+    UdpChannelFactory {
+    override fun openingWith(opener: ConnectedUdpOpener): DriverUdpChannelFactory =
+        DriverUdpChannelFactory(peer, codec, bufferFactory, recvBufferFactory, receiveBufferSize, localEndpointSupport, opener)
+
+    override suspend fun openPath(
+        localHost: String?,
+        localPort: Int,
+    ): NewPath {
+        val channel =
+            openChannel.open(peer.host, peer.port, bindHostFor(localHost), localPort, receiveBufferSize, recvBufferFactory)
+        val local = channel.localAddress.orNull() ?: error("connected migration path has no local address")
+        val encoded = codec.encodeToNative(local, bufferFactory)
+        return NewPath(
+            channel = DatagramChannelUdpChannel(channel),
+            localSockAddrAddress = encoded.address,
+            localSockAddrLength = encoded.length,
+            // The same resolved local address the sockaddr above encodes, in presentation form —
+            // `UdpSocket.connect` reports it on every platform, Apple included, which is what makes
+            // Succeeded name a real endpoint even where the platform picked it.
+            localEndpoint = QuicLocalEndpoint(local.host, local.port),
+            release = { encoded.free() },
+        )
+    }
+}

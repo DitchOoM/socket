@@ -209,7 +209,7 @@ object JniQuicheApi : QuicheApi {
             QUICHE_ERR_DONE -> StreamRecvResult.Done
             // The C shim wrote the 8 bytes straight to native memory (it only has the raw address, not the
             // buffer object); read them back big-endian by absolute index.
-            QuicheDriver.QUICHE_ERR_STREAM_RESET.toLong() -> StreamRecvResult.Reset(QuicAppErrorCode(scratch.readErrorCode()))
+            QUICHE_ERR_STREAM_RESET.toLong() -> StreamRecvResult.Reset(QuicAppErrorCode(scratch.readErrorCode()))
             else -> StreamRecvResult.Error(raw.toInt())
         }
     }
@@ -227,7 +227,7 @@ object JniQuicheApi : QuicheApi {
         if (lower63 <= bufLen.toLong()) return StreamRecvStep.data(lower63.toInt(), raw < 0)
         return when (raw) {
             QUICHE_ERR_DONE -> StreamRecvStep.error(StreamRecvStep.QUICHE_ERR_DONE_CODE)
-            QuicheDriver.QUICHE_ERR_STREAM_RESET.toLong() -> StreamRecvStep.reset(QuicAppErrorCode(scratch.readErrorCode()))
+            QUICHE_ERR_STREAM_RESET.toLong() -> StreamRecvStep.reset(QuicAppErrorCode(scratch.readErrorCode()))
             else -> StreamRecvStep.error(raw.toInt())
         }
     }
@@ -244,7 +244,7 @@ object JniQuicheApi : QuicheApi {
         val scratch = errorCodeScratch.get()
         val result = nConnStreamSend(conn.handle, streamId.id, buf, bufLen, fin, scratch.nativeMemoryAccess!!.nativeAddress.toLong())
         val code =
-            if (result == QuicheDriver.QUICHE_ERR_STREAM_STOPPED || result == QuicheDriver.QUICHE_ERR_STREAM_RESET) {
+            if (result == QUICHE_ERR_STREAM_STOPPED || result == QUICHE_ERR_STREAM_RESET) {
                 // The C shim wrote the 8 bytes straight to native memory; it only has the raw address, not
                 // the buffer object, so it can't (and shouldn't) touch the JVM-side read/write cursor.
                 QuicAppErrorCode(scratch.readErrorCode())

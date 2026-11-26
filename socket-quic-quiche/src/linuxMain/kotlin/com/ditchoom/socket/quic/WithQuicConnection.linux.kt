@@ -143,7 +143,7 @@ internal suspend fun buildLinuxQuicConnection(
             val codec = SocketAddressCodec(linuxSockAddrLayout)
             val path =
                 binding.openClientPath(peer) {
-                    UdpSocketChannelFactory(
+                    DriverUdpChannelFactory(
                         peer = peer,
                         codec = codec,
                         bufferFactory = bufferFactory,

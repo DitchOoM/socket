@@ -114,8 +114,7 @@ sealed interface RouteProbeFailure {
 
 /**
  * Thrown when the route source could not be resolved and the caller named no source of its own — by
- * [UdpChannelFactory.openPath] for a migration path, and by `UdpSocketChannelFactory.openPrimaryChannel`
- * for the socket a connection starts on. Carries the typed
+ * a migration path's open, and by `UdpSocketChannelFactory.openPrimaryChannel` for the socket a connection starts on. Carries the typed
  * [reason]; catch-and-inspect rather than catch-and-parse.
  *
  * **Why this fails the path open instead of falling back to an unnamed bind.** An unnamed bind against

@@ -133,7 +133,7 @@ internal suspend fun buildJvmQuicConnection(
         val opener = quicOptions.migration.pathOpener { radio -> pinnedRadioOpener(radio, timeout, parentJob) }
         val path =
             binding.openClientPath(peer) {
-                UdpSocketChannelFactory(
+                DriverUdpChannelFactory(
                     peer = peer,
                     codec = codec,
                     bufferFactory = bufferFactory,

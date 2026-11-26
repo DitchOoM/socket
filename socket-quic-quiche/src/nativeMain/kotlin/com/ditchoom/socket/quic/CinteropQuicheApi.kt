@@ -410,7 +410,7 @@ internal object CinteropQuicheApi : QuicheApi, QuicheRandomPin, QuicheClockPin {
                 ).toInt()
             // quiche fills out_error_code only on STREAM_STOPPED / STREAM_RESET.
             val peerCode =
-                if (result == QuicheDriver.QUICHE_ERR_STREAM_STOPPED || result == QuicheDriver.QUICHE_ERR_STREAM_RESET) {
+                if (result == QUICHE_ERR_STREAM_STOPPED || result == QUICHE_ERR_STREAM_RESET) {
                     QuicAppErrorCode(errorCode.value.toLong())
                 } else {
                     null

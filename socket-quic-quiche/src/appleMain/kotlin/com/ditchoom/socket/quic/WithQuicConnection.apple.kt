@@ -159,7 +159,7 @@ internal suspend fun buildAppleQuicConnection(
                 try {
                     withTimeout(timeout) {
                         binding.openClientPath(peer) {
-                            UdpSocketChannelFactory(
+                            DriverUdpChannelFactory(
                                 peer = peer,
                                 codec = codec,
                                 bufferFactory = bufferFactory,
@@ -599,29 +599,6 @@ internal class AppleQuicConfigCalls(
         com.ditchoom.socket.quic.quiche
             .quiche_config_log_keys(cfg)
 }
-
-/**
- * Effective peer-verification decision, mirroring [applyQuicOptions]'s policy (and the Linux
- * connect path's local copy): pinned hashes verify the chain only under RequireBoth; otherwise
- * verify unless explicitly disabled, and always when CA anchors are pinned.
- */
-private fun effectiveVerifyPeer(o: QuicOptions): Boolean =
-    if (o.serverCertificateHashes.isNotEmpty()) {
-        o.certificateHashVerification == CertificateHashVerification.RequireBoth
-    } else {
-        o.verifyPeer || o.trustedCaCertificatesPem.isNotEmpty()
-    }
-
-/**
- * Whether SecTrust ([appleSystemChainTrust]) rather than BoringSSL validates the server chain: the iOS
- * family, peer verification on, no pinned anchors or leaf hashes, and [AppleTrustSource.SystemTrustStore].
- */
-internal fun usesSecTrust(o: QuicOptions): Boolean =
-    Platform.osFamily != OsFamily.MACOSX &&
-        o.appleTrustSource == AppleTrustSource.SystemTrustStore &&
-        o.trustedCaCertificatesPem.isEmpty() &&
-        o.serverCertificateHashes.isEmpty() &&
-        effectiveVerifyPeer(o)
 
 /**
  * Load the default trust anchors for [config] on Apple when verifyPeer is on but no anchors are

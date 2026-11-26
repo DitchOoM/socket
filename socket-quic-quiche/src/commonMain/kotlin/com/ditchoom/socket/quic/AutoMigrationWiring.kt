@@ -10,8 +10,8 @@ import com.ditchoom.socket.canRouteOffLink
 import com.ditchoom.socket.networkId
 import com.ditchoom.socket.ownerOf
 import com.ditchoom.socket.quic.trace.TraceCapture
+import com.ditchoom.socket.quic.trace.migrationAttempt
 import com.ditchoom.socket.quic.trace.record
-import com.ditchoom.socket.shared
 import com.ditchoom.socket.transport.NetworkId
 import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -44,24 +44,6 @@ import kotlin.time.Duration.Companion.seconds
  * wireClientConnectivityTap — same one-hop shape, wired from the three QuicheEngine actuals' connect()
  * paths (never bind(): a server has no local client path).
  */
-
-/**
- * Resolve [QuicOptions.networkMonitor] to the single [NetworkMonitor] instance this connection observes.
- *
- * Called **once per connection**, by the engine, and the result handed to all three consumers — the
- * reactor below, the trace tap, and [ConnectionNetworkObservation]. That sharing is an invariant, not an
- * optimisation: two monitors would report `ObservationSequence`s indexing different streams, so a
- * migration and the close correlation that is supposed to explain it would carry counters that look
- * joinable and are not.
- *
- * Neither case is owned here. [NetworkMonitorSource.Supplied] is the caller's, and the process default
- * belongs to whoever installed it — nothing in this module closes either.
- */
-internal suspend fun resolveNetworkMonitor(source: NetworkMonitorSource): NetworkMonitor =
-    when (source) {
-        NetworkMonitorSource.ProcessDefault -> NetworkMonitor.shared()
-        is NetworkMonitorSource.Supplied -> source.monitor
-    }
 
 /**
  * What the monitor is reporting **right now**, as a snapshot: a routable link it can name, or nothing

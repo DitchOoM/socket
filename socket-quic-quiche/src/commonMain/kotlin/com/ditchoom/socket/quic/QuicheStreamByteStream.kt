@@ -10,7 +10,6 @@ import com.ditchoom.buffer.flow.Resettable
 import com.ditchoom.buffer.flow.WritePolicy
 import kotlin.concurrent.Volatile
 import kotlin.time.Duration
-import kotlin.time.Duration.Companion.seconds
 
 /**
  * Platform-agnostic interface for a QUIC stream backed by a quiche connection.
@@ -223,6 +222,6 @@ class QuicheStreamByteStream(
 
     companion object {
         /** Default per-call deadline for a request/response-shaped stream (`QuicOptions.persistentStreams = false`). */
-        val DEFAULT_STREAM_DEADLINE: Duration = 15.seconds
+        val DEFAULT_STREAM_DEADLINE: Duration = com.ditchoom.socket.quic.DEFAULT_STREAM_DEADLINE
     }
 }

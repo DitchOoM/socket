@@ -1026,7 +1026,6 @@ final class com.ditchoom.socket.quic.trace/QuicTraceRecorder { // com.ditchoom.s
     final fun stats(com.ditchoom.socket.quic/QuicPathStats) // com.ditchoom.socket.quic.trace/QuicTraceRecorder.stats|stats(com.ditchoom.socket.quic.QuicPathStats){}[0]
     final fun streamLoss(kotlin/Long, kotlin/Int, com.ditchoom.socket.quic.trace/StreamLossCause) // com.ditchoom.socket.quic.trace/QuicTraceRecorder.streamLoss|streamLoss(kotlin.Long;kotlin.Int;com.ditchoom.socket.quic.trace.StreamLossCause){}[0]
     final fun trafficSecretsRefused(kotlin/String) // com.ditchoom.socket.quic.trace/QuicTraceRecorder.trafficSecretsRefused|trafficSecretsRefused(kotlin.String){}[0]
-    final fun wrap(com.ditchoom.socket.quic/UdpChannel, com.ditchoom.socket.quic/PathKey? = ...): com.ditchoom.socket.quic/UdpChannel // com.ditchoom.socket.quic.trace/QuicTraceRecorder.wrap|wrap(com.ditchoom.socket.quic.UdpChannel;com.ditchoom.socket.quic.PathKey?){}[0]
     final fun wrap(com.ditchoom.socket.transport/Liveness): com.ditchoom.socket.transport/Liveness // com.ditchoom.socket.quic.trace/QuicTraceRecorder.wrap|wrap(com.ditchoom.socket.transport.Liveness){}[0]
     final suspend fun flush() // com.ditchoom.socket.quic.trace/QuicTraceRecorder.flush|flush(){}[0]
 }
@@ -1561,6 +1560,7 @@ final const val com.ditchoom.socket.quic/NO_TIMEOUT_NANOS // com.ditchoom.socket
 final const val com.ditchoom.socket.quic/RETIRED_SCID_SLOT_BYTES // com.ditchoom.socket.quic/RETIRED_SCID_SLOT_BYTES|{}RETIRED_SCID_SLOT_BYTES[0]
     final fun <get-RETIRED_SCID_SLOT_BYTES>(): kotlin/Int // com.ditchoom.socket.quic/RETIRED_SCID_SLOT_BYTES.<get-RETIRED_SCID_SLOT_BYTES>|<get-RETIRED_SCID_SLOT_BYTES>(){}[0]
 
+final fun (com.ditchoom.socket.quic.trace/QuicTraceRecorder).com.ditchoom.socket.quic.trace/wrapUdpChannel(com.ditchoom.socket.quic/UdpChannel, com.ditchoom.socket.quic/PathKey? = ...): com.ditchoom.socket.quic/UdpChannel // com.ditchoom.socket.quic.trace/wrapUdpChannel|wrapUdpChannel@com.ditchoom.socket.quic.trace.QuicTraceRecorder(com.ditchoom.socket.quic.UdpChannel;com.ditchoom.socket.quic.PathKey?){}[0]
 final fun (com.ditchoom.socket.quic/QuicheApi).com.ditchoom.socket.quic/decodePathKey(kotlin/Long): com.ditchoom.socket.quic/PathKey // com.ditchoom.socket.quic/decodePathKey|decodePathKey@com.ditchoom.socket.quic.QuicheApi(kotlin.Long){}[0]
 final inline fun (com.ditchoom.socket.quic.trace/TraceCapture).com.ditchoom.socket.quic.trace/record(kotlin/Function1<com.ditchoom.socket.quic.trace/QuicTraceRecorder, kotlin/Unit>) // com.ditchoom.socket.quic.trace/record|record@com.ditchoom.socket.quic.trace.TraceCapture(kotlin.Function1<com.ditchoom.socket.quic.trace.QuicTraceRecorder,kotlin.Unit>){}[0]
 final inline fun <#A: kotlin/Any?> (com.ditchoom.socket.quic.trace/TraceCapture).com.ditchoom.socket.quic.trace/recordOr(#A, kotlin/Function1<com.ditchoom.socket.quic.trace/QuicTraceRecorder, #A>): #A // com.ditchoom.socket.quic.trace/recordOr|recordOr@com.ditchoom.socket.quic.trace.TraceCapture(0:0;kotlin.Function1<com.ditchoom.socket.quic.trace.QuicTraceRecorder,0:0>){0§<kotlin.Any?>}[0]

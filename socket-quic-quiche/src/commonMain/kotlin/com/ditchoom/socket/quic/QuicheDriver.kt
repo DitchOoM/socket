@@ -28,6 +28,7 @@ import com.ditchoom.socket.quic.trace.StreamLossCause
 import com.ditchoom.socket.quic.trace.TraceCapture
 import com.ditchoom.socket.quic.trace.record
 import com.ditchoom.socket.quic.trace.recordOr
+import com.ditchoom.socket.quic.trace.wrapUdpChannel
 import com.ditchoom.socket.udp.DatagramSendError
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineName
@@ -1198,7 +1199,7 @@ class QuicheDriver(
     private fun tapChannel(
         channel: UdpChannel,
         key: PathKey,
-    ): UdpChannel = capture.recordOr(channel) { r -> r.wrap(channel, key.takeIf { k -> k.family != 0 }) }
+    ): UdpChannel = capture.recordOr(channel) { r -> r.wrapUdpChannel(channel, key.takeIf { k -> k.family != 0 }) }
 
     // The primary path's local sockaddr, or null when this driver has no migration wiring. Reading it
     // through the sealed capability is what retires the `0L`-means-absent sentinel: in the Supported
@@ -5189,13 +5190,13 @@ class QuicheDriver(
          * longer wants what we are writing to THIS stream. A stream-level event — the connection is
          * healthy — so a stream *write* hitting it raises [QuicStreamException], not [QuicCloseException].
          */
-        const val QUICHE_ERR_STREAM_STOPPED = -15
+        const val QUICHE_ERR_STREAM_STOPPED = com.ditchoom.socket.quic.QUICHE_ERR_STREAM_STOPPED
 
         /**
          * `QUICHE_ERR_STREAM_RESET` (quiche.h). The peer sent RESET_STREAM (RFC 9000 §19.4) on THIS
          * stream. Like [QUICHE_ERR_STREAM_STOPPED], stream-scoped — the connection survives.
          */
-        const val QUICHE_ERR_STREAM_RESET = -16
+        const val QUICHE_ERR_STREAM_RESET = com.ditchoom.socket.quic.QUICHE_ERR_STREAM_RESET
 
         /**
          * `QUICHE_ERR_INVALID_STREAM_STATE` (quiche.h) — one of only two `stream_recv` codes
@@ -5669,24 +5670,6 @@ class DriverStreamAdapter(
         }
     }
 }
-
-/**
- * The raw address of a buffer the **driver** allocated for itself — the UDP send buffer, packet
- * buffers from the receive pool, sockaddr / CID / token scratch, the stream-read pool.
- *
- * Every factory a driver is built from passed `TransportConfig.quicBufferFactory()`'s
- * `requireNativeMemory()` probe at setup, so a `null` here is a broken invariant — a factory that
- * answered the probe natively and then handed out a heap buffer — never a caller's mistake. Hence
- * [checkNotNull] with the invariant spelled out, in contrast to the typed
- * [QuicNativeMemoryRequiredException] that [DriverStreamAdapter.streamWrite] and
- * [DriverDatagramAdapter.send] give a **caller-fed** buffer: exactly those two take a buffer from a
- * public API; every other site is on memory the driver allocated.
- */
-internal fun PlatformBuffer.driverOwnedNativeAddress(): Long =
-    checkNotNull(nativeMemoryAccess) {
-        "driver-owned ${this::class.simpleName} has no native memory: the connection's BufferFactory " +
-            "passed requireNativeMemory() at setup and then allocated a heap buffer — a factory that lies to the probe"
-    }.nativeAddress
 
 /**
  * quiche yielded more retired connection IDs than the count it reported a moment earlier, so the
