@@ -6,6 +6,7 @@ import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.flow.HalfCloseable
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.socket.quic.MigrationPolicy
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.core.conn.DropWhy
@@ -19,6 +20,7 @@ import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.testkit.trace.TraceSink
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.yield
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -79,6 +81,51 @@ class CoreSecondSocketVirtualTests {
             awaitMark(pair, "Migrated")
             val drops = recorded(pair).filterIsInstance<TraceEvent.Drop>().filter { it.type == DropWhy.NoSocketForPath.type }
             assertEquals(emptyList(), drops, "every datagram quiche wrote had a socket")
+        }
+
+    /**
+     * The second socket cannot be opened, as at an address the host does not hold: the move is refused and recorded, and
+     * the connection stays on the socket it had, open and echoing.
+     */
+    @Test
+    fun aMoveWhoseSocketCannotBeOpenedStaysOnTheOldSocket() =
+        VirtualPair.with(options) { pair ->
+            val serverSide = pair.accept()
+            launch { runCatching { while (true) echoOne(serverSide) } }
+            val first = pair.clientPort()
+            pair.refuseOpens = true
+            move(pair)
+            awaitMark(pair, "OpenRefused")
+            pair.runFor(ECHO_EVERY)
+            assertIs<EdgeEnd.Open>(pair.client.connection.end(), "a refused move does not end the connection")
+            assertEquals(first, pair.clientPort())
+            assertEquals(1, pair.clientSockets)
+            var echoed = 0
+            launch { echoed = echo(pair) }
+            pair.runUntil(within = 2.seconds) { echoed > 0 }
+            assertEquals(PAYLOAD, echoed, "the old socket carries on")
+        }
+
+    /**
+     * The peer forbade migration (`disable_active_migration`): the connection cannot follow the second socket, which is
+     * closed; the move is recorded as refused and the connection stays on the socket it had, open and echoing.
+     */
+    @Test
+    fun aMoveThePeerForbidsStaysOnTheOldSocket() =
+        VirtualPair.with(options.copy(migration = MigrationPolicy.Forbidden)) { pair ->
+            val serverSide = pair.accept()
+            launch { runCatching { while (true) echoOne(serverSide) } }
+            val first = pair.clientPort()
+            move(pair)
+            awaitMark(pair, "Refused")
+            pair.runFor(ECHO_EVERY)
+            assertIs<EdgeEnd.Open>(pair.client.connection.end(), "a move the peer forbids does not end the connection")
+            assertEquals(first, pair.clientPort())
+            assertEquals(1, pair.clientSockets, "the second socket was closed")
+            var echoed = 0
+            launch { echoed = echo(pair) }
+            pair.runUntil(within = 2.seconds) { echoed > 0 }
+            assertEquals(PAYLOAD, echoed, "the old socket carries on")
         }
 
     /** The abandoned move's socket is closed: the client holds one socket again, and never held more than two. */
@@ -179,7 +226,14 @@ class CoreSecondSocketVirtualTests {
         within: Duration = 5.seconds,
     ) {
         var seen = false
-        val watching = launch { while (!seen) seen = mark in flight(pair).filterIsInstance<TraceEvent.PathState>().map { it.phase } }
+        val watching =
+            launch {
+                while (!seen) {
+                    seen = mark in flight(pair).filterIsInstance<TraceEvent.PathState>().map { it.phase }
+                    // A dump of an ended connection answers at once: the pair's passes must still run between reads.
+                    yield()
+                }
+            }
         pair.runUntil(within = within) { seen }
         watching.cancel()
     }

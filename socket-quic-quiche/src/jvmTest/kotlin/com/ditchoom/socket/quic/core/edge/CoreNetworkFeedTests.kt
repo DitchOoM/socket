@@ -327,6 +327,44 @@ class CoreNetworkFeedTests {
             }
         }
 
+    /**
+     * On real sockets: the route moves to an address this host does not hold, so the socket beside the carrying one cannot
+     * be bound there. The move is refused and recorded, and the connection stays open on the socket it had, echoing.
+     */
+    @Test
+    fun aRouteToAnAddressThatCannotBeBoundStaysOnTheOldSocket() =
+        runBlocking {
+            skipOnMissingNativeLib(CoreNetworkFeedTests::class) {
+                withEchoServer { port ->
+                    val monitor = FakeMonitor()
+                    monitor.state.value = WIFI_BEFORE
+                    var source: RouteSource = RouteSource.Resolved("127.0.0.1")
+                    var io = SecondGoesNowhere(FakeIo())
+                    val client =
+                        connectWatched(
+                            port,
+                            monitor,
+                            wrapIo = { SecondGoesNowhere(it).also { wrapped -> io = wrapped } },
+                            routeSource = { source },
+                        )
+                    val socket = SocketView.of(io.real)
+                    val bound = socket.local()
+                    val warm = Random(1).nextBytes(500)
+                    assertContentEquals(warm, echoOver(client.connection.openStream(), warm))
+
+                    source = UNHELD
+                    monitor.state.value = WIFI_AFTER
+                    withTimeout(5.seconds) { while ("OpenRefused" !in marksOf(client)) delay(5) }
+                    assertEquals(1, io.opened, "the move tried to open its socket")
+                    assertIs<EdgeEnd.Open>(client.connection.end(), "a refused move does not end the connection")
+                    val payload = Random(7).nextBytes(2_000)
+                    assertContentEquals(payload, withTimeout(5.seconds) { echoOver(client.connection.openStream(), payload) })
+                    assertEquals(bound, socket.local(), "the carrying socket carried on")
+                    client.connection.close(QuicError.NoError)
+                }
+            }
+        }
+
     @Test
     fun aClientThatDoesNotMoveOnItsOwnEndsAtOnceAsLocalAddressGoneWhenANewAddressTakesTheRoute() =
         runBlocking {
@@ -404,6 +442,9 @@ class CoreNetworkFeedTests {
 
     private companion object {
         val WILDCARD = RouteSource.Resolved("0.0.0.0")
+
+        /** An address of TEST-NET-1 (RFC 5737), which no host of the suite holds: a socket cannot be bound to it. */
+        val UNHELD = RouteSource.Resolved("192.0.2.1")
         val ROUTE_ANSWER = 100.milliseconds
 
         /** Past three failed validations of a move and the waits between them, on real time. */

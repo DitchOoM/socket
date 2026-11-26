@@ -31,6 +31,7 @@ import com.ditchoom.socket.quic.core.udp.SendBatchResult
 import com.ditchoom.socket.quic.core.udp.SocketClosed
 import com.ditchoom.socket.quic.core.udp.SocketProbe
 import com.ditchoom.socket.quic.core.udp.SocketTicket
+import com.ditchoom.socket.quic.core.udp.Thrown
 import com.ditchoom.socket.quic.core.udp.toPathKey
 import com.ditchoom.socket.quic.loadQuicheApi
 import com.ditchoom.socket.quic.replay.conditions.LOCALHOST
@@ -130,6 +131,9 @@ internal class VirtualPair private constructor(
 
     /** The ports the client's next moves bind to, in order, as an OS may hand back a port the socket left. */
     val movePorts = ArrayDeque<Int>()
+
+    /** Whether the client's next sockets fail to open, as a bind to an address the host does not hold. */
+    var refuseOpens = false
 
     /** Client ports the link carries nothing from or to, as a network that took the address and routes none of it. */
     val deadClientPorts = HashSet<Int>()
@@ -346,6 +350,7 @@ internal class VirtualPair private constructor(
             bind: PathKey,
             ticket: SocketTicket,
         ): Beside {
+            if (refuseOpens) return Beside.Refused(Thrown(java.net.BindException("Can't assign requested address")))
             val key = clientKey.copy(port = movePorts.removeFirstOrNull() ?: (maxOf(clientKey.port, nextPort) + 1))
             nextPort = key.port
             // A second opened while one is still open would be a third socket.
