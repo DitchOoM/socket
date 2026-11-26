@@ -3,7 +3,8 @@ package com.ditchoom.socket.quic.core.udp
 import com.ditchoom.socket.quic.PathKey
 
 /**
- * One socket, owned by one loop. Never blocks.
+ * A socket owned by one loop, with at most one more beside it while a client moves: the carrying socket, and a second
+ * one opened on another address whose path is being probed. Never blocks.
  *
  * A pass hands the network one [SendBatch] and takes one [ReceiveBatch] per wake. The core does not know which
  * implementation is in use; a socket's [capability] only ever steps down. The io never sees a platform buffer:
@@ -12,52 +13,78 @@ import com.ditchoom.socket.quic.PathKey
 internal interface DatagramBatchIo {
     val capability: BatchCapability
 
+    /**
+     * Sends each pending datagram from the socket [SendBatch.socketOf] names. A datagram for a socket this io does not
+     * hold (one closed or never opened) is taken and goes nowhere. What the second socket refuses is dropped, never
+     * reported: a probe's socket cannot fault the one carrying the connection.
+     */
     fun send(batch: SendBatch): SendBatchResult
 
+    /** Receives what waits on the carrying socket. */
     fun receive(into: ReceiveBatch): ReceiveBatchResult
+
+    /** Receives what waits on the second socket, while one is open; a failure there is read as nothing waiting. */
+    fun receiveSecond(into: ReceiveBatch): ReceiveBatchResult = ReceiveBatchResult.Nothing
 
     /** Asked after an unnamed error: does the socket still work? */
     fun probe(): SocketProbe
 
     /**
-     * Loop thread, with the socket out of the poller: closes this socket and opens one bound to the same local address
-     * and port, connected to the same peer, on whatever network carries that address now. The 4-tuple is unchanged,
-     * so the peer sees the same path. A send racing the swap is answered [UdpError.Replaced].
+     * Loop thread, with the socket out of the poller: closes the carrying socket and opens one bound to the same local
+     * address and port, connected to the same peer, on whatever network carries that address now. The 4-tuple is
+     * unchanged, so the peer sees the same path. A send racing the swap is answered [UdpError.Replaced].
      */
     fun reopen(): Reopened
 
     /**
-     * Loop thread, with the socket out of the poller: opens a socket bound to [bind]'s address on a port of its own,
-     * connected to the same peer, and closes this one once the new one is open. The peer sees a new path.
+     * Loop thread, with the second socket out of the poller: [reopen] for the second socket, which holds the address the
+     * connection is moving to and so the one a changed network carries now.
      */
-    fun moveTo(bind: PathKey): Moved
+    fun reopenSecond(): Reopened = Reopened.SameEndpoint
 
     /**
-     * Loop thread, each pass while a [moveTo] answered [Moved.Arriving]: whether the new socket is ready. [Moved.To] and
-     * [Moved.Refused] end the wait; [Moved.Arriving] says to ask again at the next wake.
+     * Loop thread, with no second socket open: opens one beside the carrying socket, bound to [bind]'s address on a port
+     * of its own and connected to the same peer, and names it [ticket]. The carrying socket is untouched: the peer sees
+     * a new path, and the old one keeps carrying until the loop promotes or closes the second.
      */
-    fun settleMove(): Moved = Moved.Unsupported
+    fun openBeside(
+        bind: PathKey,
+        ticket: SocketTicket,
+    ): Beside = Beside.Unsupported
 
+    /**
+     * Loop thread, each pass while an [openBeside] answered [Beside.Arriving]: whether the second socket is ready.
+     * [Beside.Opened] and [Beside.Refused] end the wait; [Beside.Arriving] says to ask again at the next wake.
+     */
+    fun settleBeside(): Beside = Beside.Unsupported
+
+    /** Loop thread, with the sockets out of the poller: the second socket carries from now on, and the old one is closed. */
+    fun promote() = Unit
+
+    /** Loop thread, with the second socket out of the poller: closes the second socket, or the one being made. */
+    fun closeSecond() = Unit
+
+    /** Closes every socket this io holds. */
     fun close(): SocketClosed
 }
 
-/** What a [DatagramBatchIo.moveTo] did. */
-internal sealed interface Moved {
-    /** A new socket is bound to [local]; the old one is closed. */
-    class To(
+/** What a [DatagramBatchIo.openBeside] did. */
+internal sealed interface Beside {
+    /** A second socket is bound to [local]; the carrying one is unchanged. */
+    class Opened(
         val local: PathKey,
-    ) : Moved
+    ) : Beside
 
-    /** No socket could be opened at the address: the old one is kept. */
+    /** No socket could be opened at the address: the carrying one is unchanged. */
     class Refused(
         val thrown: Thrown,
-    ) : Moved
+    ) : Beside
 
-    /** A socket is being made without waiting for it: [DatagramBatchIo.settleMove] says when it is ready, and wakes the loop. */
-    data object Arriving : Moved
+    /** A socket is being made without waiting for it: [DatagramBatchIo.settleBeside] says when it is ready, and wakes the loop. */
+    data object Arriving : Beside
 
-    /** This kind of socket follows the device's paths by itself and cannot be moved. */
-    data object Unsupported : Moved
+    /** This kind of socket follows the device's paths by itself: no second one is opened. */
+    data object Unsupported : Beside
 }
 
 /** What a [DatagramBatchIo.reopen] did. */

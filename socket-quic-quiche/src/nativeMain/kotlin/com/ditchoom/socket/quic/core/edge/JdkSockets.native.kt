@@ -32,3 +32,5 @@ internal actual fun jdkSocketIo(
 ): SocketIo = socket.socket.never()
 
 internal actual fun descriptorRef(io: NativeIo): SocketRef = SocketRef { PollHandle.Descriptor(io.descriptor()) }
+
+internal actual fun secondDescriptorRef(io: NativeIo): SocketRef = SocketRef { PollHandle.Descriptor(io.secondDescriptor()) }

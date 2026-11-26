@@ -16,6 +16,7 @@ import com.ditchoom.socket.quic.core.stream.StreamTable
 import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.udp.NativeBytes
+import com.ditchoom.socket.quic.core.udp.SocketTicket
 import com.ditchoom.socket.testkit.trace.TraceSink
 
 /** What work running inside a connection may reach. One per connection, handed only to work that is inside. */
@@ -75,7 +76,7 @@ internal class Inside(
             }
         }
 
-    /** The client's socket now leaves from [to]. */
+    /** The client's loop opened a second socket, which leaves from [to]. */
     fun moved(to: MoveTo) = turn.moved(clock.now(), to)
 
     /** A client's first flight, held for its 0-RTT, may leave. */
@@ -84,14 +85,15 @@ internal class Inside(
     /** The ids the loop routed to this server connection. */
     fun issue(spare: List<SpareId>) = turn.issue(spare)
 
-    /** A datagram that was copied because it arrived, from [from], while a caller was inside. */
+    /** A datagram that was copied because it arrived, from [from] on socket [on], while a caller was inside. */
     fun receiveCopy(
         bytes: NativeBytes,
         length: Int,
         from: PathKey,
+        on: SocketTicket,
     ) {
         try {
-            turn.receive(bytes, length, from, clock.now())
+            turn.receive(bytes, length, from, clock.now(), on)
         } finally {
             c.ingress.copyRead()
         }

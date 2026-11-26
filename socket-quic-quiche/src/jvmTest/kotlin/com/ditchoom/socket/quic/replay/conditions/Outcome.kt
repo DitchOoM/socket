@@ -73,6 +73,8 @@ internal class Replayed(
     val clientArrivals: List<Duration> = emptyList(),
     /** How many datagrams the link delivered twice. */
     val duplicated: Int = 0,
+    /** Whether each datagram the client sent, in the order of [clientSends], left a socket a move opened. */
+    val clientSendsMoved: List<Boolean> = emptyList(),
 ) {
     /** When the client's path was declared silent, on the script's clock. */
     fun silentAt(): List<Duration> = news.filter { it.phase == "Silent" }.map { it.at }

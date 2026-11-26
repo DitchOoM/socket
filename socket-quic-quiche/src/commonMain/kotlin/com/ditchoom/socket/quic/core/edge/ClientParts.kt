@@ -23,9 +23,13 @@ import com.ditchoom.socket.quic.core.loop.Endpoint
 import com.ditchoom.socket.quic.core.loop.Route
 import com.ditchoom.socket.quic.core.loop.SharedBatch
 import com.ditchoom.socket.quic.core.loop.SocketDiedNotice
+import com.ditchoom.socket.quic.core.loop.closeSecond
+import com.ditchoom.socket.quic.core.loop.move
+import com.ditchoom.socket.quic.core.loop.promote
 import com.ditchoom.socket.quic.core.observe.ConnCounts
 import com.ditchoom.socket.quic.core.path.PathNewsCell
 import com.ditchoom.socket.quic.core.path.SilenceRule
+import com.ditchoom.socket.quic.core.path.SocketAsk
 import com.ditchoom.socket.quic.core.pool.Hold
 import com.ditchoom.socket.quic.core.sched.Entrant
 import com.ditchoom.socket.quic.core.sched.SendPort
@@ -76,6 +80,15 @@ internal class ClientParts(
 
     /** What the connection's silence watch says of its path. */
     val news = PathNewsCell()
+
+    /** What the connection asks of its sockets, each loop work on [endpoint]. */
+    private val ask: (SocketAsk) -> Unit = { asked ->
+        when (asked) {
+            is SocketAsk.OpenBeside -> loop.move(endpoint, asked.bind, asked.prior)
+            is SocketAsk.Promote -> loop.promote(endpoint, asked.ticket)
+            is SocketAsk.CloseSecond -> loop.closeSecond(endpoint, asked.ticket)
+        }
+    }
     val conn: Conn =
         buildConn(
             rules =
@@ -96,7 +109,7 @@ internal class ClientParts(
                     w.running.sessions,
                     w.kept,
                     w.tokens,
-                    { bind, prior -> loop.move(endpoint, bind, prior) },
+                    ask,
                     w.access,
                     chainSourceOf(w.options, w.memory.factory()),
                     SilenceRule(w.silence, probeCapOf(w.options), news),
@@ -155,7 +168,10 @@ internal class ClientParts(
             w.options.abortCodes,
         )
 
-    private val endpoint = Endpoint(socketIo.ref, io, socket, Route.Fixed(conn, SharedBatch(w.running.out)), released, w.readiness)
+    private val endpoint = Endpoint(socketIo.refs, io, socket, Route.Fixed(conn, SharedBatch(w.running.out)), released, w.readiness)
+
+    /** Tests: the endpoint on the loop that carries this connection's sockets. */
+    internal val loopEndpoint: Endpoint get() = endpoint
 
     /** The endpoint joins its loop and the connection's first flight goes out in the loop's next pass. */
     fun start() {
@@ -178,8 +194,9 @@ internal class ClientParts(
     fun rehome() = loop.rehome(endpoint)
 
     /**
-     * Any thread, after [start]: the socket moves to [bind]'s address, on a network assumed to have a round trip of
-     * [prior], once the connection can probe the path from there, and the connection migrates with it.
+     * Any thread, after [start]: a second socket opens on [bind]'s address, on a network assumed to have a round trip of
+     * [prior], once the connection can probe the path from there; the connection migrates to it once the path validates,
+     * the old socket carrying until then.
      */
     fun migrate(
         bind: PathKey,

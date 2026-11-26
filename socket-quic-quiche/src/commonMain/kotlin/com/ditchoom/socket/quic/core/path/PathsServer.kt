@@ -15,6 +15,7 @@ import com.ditchoom.socket.quic.core.life.RetiredId
 import com.ditchoom.socket.quic.core.life.SpareId
 import com.ditchoom.socket.quic.core.observe.Confined
 import com.ditchoom.socket.quic.core.observe.Published
+import com.ditchoom.socket.quic.core.udp.SocketTicket
 import com.ditchoom.socket.quic.decodePathKey
 import com.ditchoom.socket.quic.encodeToNative
 import kotlin.concurrent.atomics.AtomicInt
@@ -101,7 +102,7 @@ internal class ServerPaths(
     val retired: IdsRetired,
     private val free: (QuicheRecvInfo, Made) -> Unit,
 ) {
-    private val firstTo = Outgoing.To(first.target)
+    private val firstTo = Outgoing.To(first.target, SocketTicket.FIRST)
     private val fixed = Sorting.Fixed(firstTo)
     private val peers = ArrayList<PeerAddr>(1)
     private var events: EventMemory = EventMemory.None
@@ -131,7 +132,7 @@ internal class ServerPaths(
         if (peers.size == MAX_PEERS && !evictOne()) return RecvFrom.TooManyAddresses
         val sockAddr = from.encodeToNative(factory)
         val recvInfo = q.api.recvInfoNew(sockAddr.address, sockAddr.length, first.local.address, first.local.length)
-        val target = Outgoing.To(SendTarget.ServerReply(to = from, from = ReplySource.Recorded(localKey)))
+        val target = Outgoing.To(SendTarget.ServerReply(to = from, from = ReplySource.Recorded(localKey)), SocketTicket.FIRST)
         val peer = PeerAddr(from, q.api.decodePathKey(sockAddr.address), recvInfo, target, Made.Here(sockAddr))
         peer.checking(PeerCheck.Validating)
         peers.add(peer)

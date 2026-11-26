@@ -9,6 +9,7 @@ import com.ditchoom.socket.quic.QuicAccessDenial
 import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.core.ready.PollHandle
 import com.ditchoom.socket.quic.core.ready.SocketRef
+import com.ditchoom.socket.quic.core.ready.SocketRefs
 import com.ditchoom.socket.quic.core.udp.NwIo
 import com.ditchoom.socket.quic.core.udp.NwLife
 import com.ditchoom.socket.quic.core.udp.NwSettled
@@ -88,5 +89,5 @@ internal actual fun nwSocketIo(
 ): SocketIo {
     val io = with(socket.socket) { NwIo(connection, life, peer, host, port, wake) }
     io.start()
-    return SocketIo(io, SocketRef { PollHandle.NotPolled })
+    return SocketIo(io, SocketRefs(SocketRef { PollHandle.NotPolled }, SocketRef { PollHandle.NotPolled }))
 }

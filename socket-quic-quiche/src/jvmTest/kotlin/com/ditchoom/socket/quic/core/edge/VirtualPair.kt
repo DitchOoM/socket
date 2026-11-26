@@ -20,8 +20,8 @@ import com.ditchoom.socket.quic.core.testing.VirtualClock
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.udp.ArrivedOn
 import com.ditchoom.socket.quic.core.udp.BatchCapability
+import com.ditchoom.socket.quic.core.udp.Beside
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
-import com.ditchoom.socket.quic.core.udp.Moved
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.ReceiveBatchResult
 import com.ditchoom.socket.quic.core.udp.ReceiveBuffer
@@ -30,6 +30,7 @@ import com.ditchoom.socket.quic.core.udp.SendBatch
 import com.ditchoom.socket.quic.core.udp.SendBatchResult
 import com.ditchoom.socket.quic.core.udp.SocketClosed
 import com.ditchoom.socket.quic.core.udp.SocketProbe
+import com.ditchoom.socket.quic.core.udp.SocketTicket
 import com.ditchoom.socket.quic.core.udp.toPathKey
 import com.ditchoom.socket.quic.loadQuicheApi
 import com.ditchoom.socket.quic.replay.conditions.LOCALHOST
@@ -84,7 +85,13 @@ internal class VirtualPair private constructor(
     val clock = VirtualClock(Nanos(ORIGIN))
     private val inFlight = PriorityQueue<InFlight>(compareBy<InFlight>({ it.arrives }, { it.order }))
     private var order = 0L
-    private val waiting = mapOf(End.Client to ArrayDeque<ByteArray>(), End.Server to ArrayDeque())
+    private val waiting = mapOf(End.Client to ArrayDeque<Arrived>(), End.Server to ArrayDeque())
+
+    /** A datagram that reached an end: from the client's port [port] at the server, to it at the client. */
+    private class Arrived(
+        val bytes: ByteArray,
+        val port: Int,
+    )
 
     /** Every datagram either end sent, in order, the lost ones included. */
     val sent = ArrayList<Sent>()
@@ -127,6 +134,25 @@ internal class VirtualPair private constructor(
     /** Client ports the link carries nothing from or to, as a network that took the address and routes none of it. */
     val deadClientPorts = HashSet<Int>()
 
+    /** The client's second socket, while its loop holds one beside the carrying one. */
+    private class Second(
+        val key: PathKey,
+        val ticket: SocketTicket,
+    )
+
+    private var second: Second? = null
+    private var carrying = SocketTicket.FIRST
+
+    /** How many sockets the client holds now, and the most it ever held at once. */
+    var clientSockets = 1
+        private set
+    var mostClientSockets = 1
+        private set
+
+    /** How many second sockets the client's loop closed without promoting them. */
+    var secondsClosed = 0
+        private set
+
     /** The client's quiche handle, seen with its first datagram. */
     private var clientConn = QuicheConn(1L)
 
@@ -142,6 +168,7 @@ internal class VirtualPair private constructor(
         private set
     private lateinit var serverKey: PathKey
     private lateinit var clientKey: PathKey
+    private var nextPort = 0
 
     /** Virtual nanoseconds since the pair started. */
     fun now(): Long = clock.at.value - ORIGIN
@@ -188,7 +215,10 @@ internal class VirtualPair private constructor(
         repeat(ROUNDS) {
             while (inFlight.isNotEmpty() && inFlight.peek().arrives <= clock.at.value) {
                 val datagram = inFlight.poll()
-                if (delivered(datagram)) waiting.getValue(datagram.to).addLast(datagram.bytes)
+                when (val port = deliveredTo(datagram)) {
+                    null -> Unit
+                    else -> waiting.getValue(datagram.to).addLast(Arrived(datagram.bytes, port))
+                }
             }
             val now = clock.at
             due = minOf(passOf(server.loop, now), passOf(client.loop, now))
@@ -202,18 +232,23 @@ internal class VirtualPair private constructor(
         now: Nanos,
     ): Long = loop.pass(now).fold({ Long.MAX_VALUE }, { it })
 
-    private fun delivered(datagram: InFlight): Boolean =
-        when (delivery) {
-            Delivery.ToEnd -> true
-            Delivery.ToAddress -> datagram.to == End.Server || datagram.port == clientKey.port
+    /** The port a datagram arrives at the client on, or the client port it came from at the server; null when lost. */
+    private fun deliveredTo(datagram: InFlight): Int? {
+        if (datagram.to == End.Server) return datagram.port
+        val open = datagram.port == clientKey.port || datagram.port == second?.key?.port
+        return when {
+            open -> datagram.port
+            delivery == Delivery.ToEnd -> clientKey.port
+            else -> null
         }
+    }
 
     private class InFlight(
         val arrives: Long,
         val order: Long,
         val to: End,
         val bytes: ByteArray,
-        /** The port it is addressed to. */
+        /** The client port it is addressed to, or, toward the server, the client port it was sent from. */
         val port: Int,
     )
 
@@ -244,28 +279,55 @@ internal class VirtualPair private constructor(
                 }
                 val to = if (end == End.Client) End.Server else End.Client
                 val port =
-                    when (val target = batch.targetOf(n)) {
-                        is SendTarget.ServerReply -> target.to.port
-                        is SendTarget.ConnectedPeer -> if (end == End.Client) serverKey.port else clientKey.port
+                    if (end == End.Client) {
+                        // The client port it leaves from: the socket its ticket names, or none.
+                        val ticket = batch.socketOf(n)
+                        when {
+                            ticket == carrying -> clientKey.port
+                            ticket == second?.ticket -> second!!.key.port
+                            else -> continue
+                        }
+                    } else {
+                        when (val target = batch.targetOf(n)) {
+                            is SendTarget.ServerReply -> target.to.port
+                            is SendTarget.ConnectedPeer -> clientKey.port
+                        }
                     }
-                if ((if (end == End.Client) clientKey.port else port) in deadClientPorts) continue
+                if (port in deadClientPorts) continue
                 val datagram = InFlight(clock.at.value + oneWay.inWholeNanoseconds, order++, to, bytes, port)
                 if (end in holding) held.getValue(end).add(datagram) else inFlight.add(datagram)
             }
             return SendBatchResult.AllTaken
         }
 
-        override fun receive(into: ReceiveBatch): ReceiveBatchResult {
+        override fun receive(into: ReceiveBatch): ReceiveBatchResult =
+            if (end == End.Client) receiveOn(into, clientKey.port) else receiveOn(into, ANY_PORT)
+
+        override fun receiveSecond(into: ReceiveBatch): ReceiveBatchResult =
+            when (val now = second) {
+                null -> ReceiveBatchResult.Nothing
+                else -> receiveOn(into, now.key.port)
+            }
+
+        /** What waits for the client socket on [port], or for the server. */
+        private fun receiveOn(
+            into: ReceiveBatch,
+            port: Int,
+        ): ReceiveBatchResult {
             val queue = waiting.getValue(end)
             var got = 0
-            while (queue.isNotEmpty()) {
+            val iterator = queue.iterator()
+            while (iterator.hasNext()) {
+                val arrived = iterator.next()
+                if (end == End.Client && arrived.port != port) continue
                 val buffer = into.take()
                 if (buffer !is ReceiveBuffer) break
-                val bytes = queue.removeFirst()
+                iterator.remove()
+                val bytes = arrived.bytes
                 val view = (buffer.bytes.owner.unwrapFully() as BaseJvmBuffer).byteBuffer
                 (view as Buffer).clear()
                 view.put(bytes)
-                val from = if (end == End.Client) serverKey else clientKey
+                val from = if (end == End.Client) serverKey else clientKey.copy(port = arrived.port)
                 into.received(buffer, bytes.size, from, ArrivedOn.Unreported)
                 got++
             }
@@ -277,15 +339,44 @@ internal class VirtualPair private constructor(
         override fun reopen(): Reopened = Reopened.SameEndpoint
 
         /**
-         * The client's socket moves to the next port, or to the port a test queued ([movePorts]): the server sees its
-         * datagrams come from there.
+         * The client's second socket opens on the next port, or on the port a test queued ([movePorts]): the server sees
+         * its datagrams come from there.
          */
-        override fun moveTo(bind: PathKey): Moved {
-            clientKey = clientKey.copy(port = movePorts.removeFirstOrNull() ?: (clientKey.port + 1))
-            return Moved.To(clientKey)
+        override fun openBeside(
+            bind: PathKey,
+            ticket: SocketTicket,
+        ): Beside {
+            val key = clientKey.copy(port = movePorts.removeFirstOrNull() ?: (maxOf(clientKey.port, nextPort) + 1))
+            nextPort = key.port
+            // A second opened while one is still open would be a third socket.
+            clientSockets = if (second == null) 2 else 3
+            second = Second(key, ticket)
+            mostClientSockets = maxOf(mostClientSockets, clientSockets)
+            return Beside.Opened(key)
         }
 
-        override fun close(): SocketClosed = SocketClosed
+        override fun promote() {
+            val now = second ?: return
+            clientKey = now.key
+            carrying = now.ticket
+            second = null
+            clientSockets = 1
+        }
+
+        override fun closeSecond() {
+            if (second == null) return
+            second = null
+            clientSockets = 1
+            secondsClosed++
+        }
+
+        override fun close(): SocketClosed {
+            if (end == End.Client) {
+                second = null
+                clientSockets = 0
+            }
+            return SocketClosed
+        }
     }
 
     /** The client's api: counts every datagram handed to its quiche. */
@@ -306,6 +397,7 @@ internal class VirtualPair private constructor(
 
     companion object {
         private const val ORIGIN = 1_000_000_000L
+        private const val ANY_PORT = -1
         private const val MIN_STEP = 1_000L
         private const val ROUNDS = 4
         private const val YIELDS = 4
@@ -386,6 +478,9 @@ internal class VirtualPair private constructor(
                 LinkClass.Ethernet,
             )
         clientKey = client.local
+        carrying = SocketTicket.FIRST
+        second = null
+        clientSockets = 1
         client.parts.start()
         return client
     }

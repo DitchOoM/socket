@@ -4,6 +4,7 @@ import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.SpareId
 import com.ditchoom.socket.quic.core.time.RttPrior
+import com.ditchoom.socket.quic.core.udp.SocketTicket
 
 /** Inside: the network changed as [change] says. */
 internal class NetworkWork(
@@ -14,10 +15,11 @@ internal class NetworkWork(
     override fun gone(end: ConnEnd) = Unit
 }
 
-/** Where a client's socket now leaves from, and the round trip assumed of the network it is on. */
+/** Where a client's second socket, [ticket], leaves from, and the round trip assumed of the network it is on. */
 internal class MoveTo(
     val local: PathKey,
     val prior: RttPrior,
+    val ticket: SocketTicket,
 )
 
 /** Where a client's socket is wanted: [bind]'s address, on a network assumed to have a round trip of [prior]. */
@@ -35,7 +37,7 @@ internal class MoveWantedWork(
     override fun gone(end: ConnEnd) = Unit
 }
 
-/** Inside: the client's socket was moved and now leaves from [to]. */
+/** Inside: the client's loop opened a second socket, which leaves from [to]. */
 internal class MovedWork(
     private val to: MoveTo,
 ) : ConnWork() {

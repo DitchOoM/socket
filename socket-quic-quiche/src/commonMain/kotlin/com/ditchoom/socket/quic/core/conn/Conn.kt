@@ -23,6 +23,7 @@ import com.ditchoom.socket.quic.core.sched.WorkLeft
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 import com.ditchoom.socket.quic.core.udp.SendBatch
+import com.ditchoom.socket.quic.core.udp.SocketTicket
 import kotlinx.coroutines.Runnable
 import kotlin.concurrent.atomics.AtomicInt
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
@@ -96,16 +97,17 @@ internal class Conn(
         touch()
     }
 
-    /** Loop thread: a datagram from [from] at the start of [bytes], read in the pass at [at]; copied when a caller is inside. */
+    /** Loop thread: a datagram from [from] on socket [on] at the start of [bytes], read in the pass at [at]; copied for a caller inside. */
     fun received(
         bytes: NativeBytes,
         length: Int,
         from: PathKey,
         at: Nanos,
+        on: SocketTicket,
     ) {
         when (turn.ingress().reach(touch())) {
-            Reach.Direct -> turn.receive(bytes, length, from, clock.held(at))
-            Reach.Copy -> copyForHolder(bytes, length, from)
+            Reach.Direct -> turn.receive(bytes, length, from, clock.held(at), on)
+            Reach.Copy -> copyForHolder(bytes, length, from, on)
         }
     }
 
@@ -201,9 +203,10 @@ internal class Conn(
         bytes: NativeBytes,
         length: Int,
         from: PathKey,
+        on: SocketTicket,
     ) {
         val work =
-            when (val copy = turn.ingress().copy(bytes, length, from)) {
+            when (val copy = turn.ingress().copy(bytes, length, from, on)) {
                 is CopiedWork -> copy
                 is Copy.Dropped -> return
             }
@@ -285,14 +288,10 @@ internal class Conn(
         }
     }
 
-    private fun scheduleServe() {
-        if (serveQueued.compareAndSet(IDLE, QUEUED)) port.submit(serve)
-    }
+    private fun scheduleServe() = run { if (serveQueued.compareAndSet(IDLE, QUEUED)) port.submit(serve) }
 
     /** Loop thread: the connection's deadline fell due; quiche's timeout runs inside, with the other work. */
-    private fun timerFired() {
-        if (timerQueued.compareAndSet(IDLE, QUEUED)) submit(timerWork)
-    }
+    private fun timerFired() = run { if (timerQueued.compareAndSet(IDLE, QUEUED)) submit(timerWork) }
 }
 
 private const val IDLE = 0

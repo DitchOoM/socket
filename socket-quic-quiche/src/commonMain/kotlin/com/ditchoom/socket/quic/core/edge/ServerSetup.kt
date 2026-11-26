@@ -264,7 +264,7 @@ internal class ServerSetup(
                 LoopDriver.OwnThread -> Readiness.Polled
                 LoopDriver.Caller -> Readiness.EveryPass
             }
-        loop.place(Endpoint(socketIo.ref, io, sendPort, Route.Demux(demux, OwnBatch(send)), Runnable { loop.close(finished) }, readiness))
+        loop.place(Endpoint(socketIo.refs, io, sendPort, Route.Demux(demux, OwnBatch(send)), Runnable { loop.close(finished) }, readiness))
         moved(SetupOwner.Placed(loop))
         when (driver) {
             LoopDriver.OwnThread -> {

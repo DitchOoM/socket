@@ -163,7 +163,7 @@ internal fun ConnParts.keepClose(
     val until = timer.drainEnds(now)
     if (egress.last() == LastOut.Dropped) {
         when (val to = slots.paths.closeRedirect()) {
-            is Outgoing.To -> egress.sendDroppedTo(out, to.target, flight)
+            is Outgoing.To -> egress.sendDroppedTo(out, to, flight)
             is Outgoing.Dropped -> Unit
         }
     }

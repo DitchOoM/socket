@@ -16,12 +16,13 @@ import com.ditchoom.socket.quic.core.pool.Taken
 import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.udp.Addressed
 import com.ditchoom.socket.quic.core.udp.NativeBytes
+import com.ditchoom.socket.quic.core.udp.SocketTicket
 import kotlin.concurrent.atomics.AtomicInt
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.concurrent.atomics.decrementAndFetch
 import kotlin.concurrent.atomics.incrementAndFetch
 
-/** Memory a datagram that arrives while a caller is inside is copied into, with its length and where it came from. */
+/** Memory a datagram that arrives while a caller is inside is copied into, with its length, where it came from and on which socket. */
 @Confined
 internal class CopySlot(
     index: Int,
@@ -31,13 +32,17 @@ internal class CopySlot(
         private set
     var from = NO_SOURCE
         private set
+    var on = SocketTicket.FIRST
+        private set
 
     fun filled(
         length: Int,
         from: PathKey,
+        on: SocketTicket,
     ) {
         this.length = length
         this.from = from
+        this.on = on
     }
 }
 
@@ -122,17 +127,18 @@ internal class Ingress(
         flight.dropped(clock.now(), DropWhy.TooManyPeerAddresses, length, from.family, from.port, from.hi, from.lo)
     }
 
-    /** Loop thread, when [reach] says so: copies the datagram that came [from] into work for the thread inside. */
+    /** Loop thread, when [reach] says so: copies the datagram that came [from] on socket [on] into work for the thread inside. */
     fun copy(
         bytes: NativeBytes,
         length: Int,
         from: PathKey,
+        on: SocketTicket,
     ): Copy {
         when (val slot = shared.slots.tryTake()) {
             is Pooled -> {
                 val held = shared.slots[slot.index]
                 held.bytes.copyFrom(bytes, 0, 0, length)
-                held.filled(length, from)
+                held.filled(length, from, on)
                 counts.datagramCopied()
                 queued.incrementAndFetch()
                 return shared.workFor(slot.index)
@@ -143,7 +149,7 @@ internal class Ingress(
                         fresh.bytes.copyFrom(bytes, 0, 0, length)
                         counts.datagramCopied()
                         queued.incrementAndFetch()
-                        return FreshRecv(fresh.bytes, length, from)
+                        return FreshRecv(fresh.bytes, length, from, on)
                     }
                     is Addressed.NotAddressable -> {
                         counts.datagramDropped()
@@ -158,10 +164,11 @@ internal class Ingress(
         private val bytes: NativeBytes,
         private val length: Int,
         private val from: PathKey,
+        private val on: SocketTicket,
     ) : CopiedWork() {
         override fun run(inside: Inside) {
             try {
-                inside.receiveCopy(bytes, length, from)
+                inside.receiveCopy(bytes, length, from, on)
             } finally {
                 bytes.free()
             }
@@ -178,7 +185,7 @@ internal class SlotRecv(
 ) : CopiedWork() {
     override fun run(inside: Inside) {
         try {
-            inside.receiveCopy(slot.bytes, slot.length, slot.from)
+            inside.receiveCopy(slot.bytes, slot.length, slot.from, slot.on)
         } finally {
             slots.give(slot)
         }

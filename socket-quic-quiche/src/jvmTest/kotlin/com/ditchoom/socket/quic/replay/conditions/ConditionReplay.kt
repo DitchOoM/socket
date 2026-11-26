@@ -191,6 +191,7 @@ internal class ConditionReplay(
             news.toList(),
             link.clientArrivals.map { it.nanoseconds },
             link.duplicated,
+            link.clientSendsMoved.toList(),
         )
     }
 

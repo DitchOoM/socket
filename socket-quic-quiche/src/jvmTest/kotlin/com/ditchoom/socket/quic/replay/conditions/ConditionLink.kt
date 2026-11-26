@@ -7,8 +7,8 @@ import com.ditchoom.socket.quic.SendTarget
 import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.udp.ArrivedOn
 import com.ditchoom.socket.quic.core.udp.BatchCapability
+import com.ditchoom.socket.quic.core.udp.Beside
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
-import com.ditchoom.socket.quic.core.udp.Moved
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.ReceiveBatchResult
 import com.ditchoom.socket.quic.core.udp.ReceiveBuffer
@@ -17,6 +17,7 @@ import com.ditchoom.socket.quic.core.udp.SendBatch
 import com.ditchoom.socket.quic.core.udp.SendBatchResult
 import com.ditchoom.socket.quic.core.udp.SocketClosed
 import com.ditchoom.socket.quic.core.udp.SocketProbe
+import com.ditchoom.socket.quic.core.udp.SocketTicket
 import java.nio.Buffer
 import java.util.PriorityQueue
 import kotlin.random.Random
@@ -40,8 +41,9 @@ internal sealed interface OsNow {
  * window it is sent in says, from one seeded random stream, and nothing crosses an outage. The client's socket is tied
  * to the network it was opened on, as Android ties it: once the OS has another network up (or none), the socket takes
  * what is sent and delivers nothing, until [DatagramBatchIo.reopen] opens it on the network up now. A client socket
- * moved by [DatagramBatchIo.moveTo] is a new one, on the network up now and on a port of its own: the server sees its
- * datagrams come from there, and what the server sends to the old one is lost. Loop thread only.
+ * opened by [DatagramBatchIo.openBeside] is a second one, on the network up now and on a port of its own, beside the
+ * carrying one, which keeps its own network: the server sees the second's datagrams come from there. Promoting it makes
+ * it the carrying one and closes the old. Loop thread only.
  */
 internal class ConditionLink(
     private val conditions: Conditions,
@@ -66,7 +68,25 @@ internal class ConditionLink(
     private class Waiting(
         val from: PathKey,
         val bytes: ByteArray,
+        /** The client address it arrived at, for a datagram toward the client. */
+        val at: PathKey,
     )
+
+    /** The client's second socket: its address, the network it was opened on, and its ticket. */
+    private class Second(
+        val key: PathKey,
+        val home: NetHandle,
+        val ticket: SocketTicket,
+    )
+
+    private var second: Second? = null
+
+    /** The address the client connected from, set at its first send. */
+    private val first: PathKey by lazy { client }
+    private var carrying = SocketTicket.FIRST
+
+    /** The address the client's last second socket was opened on. */
+    private var movedTo: PathKey? = null
 
     private val random = Random(seed)
     private val origin = clock.now().value
@@ -100,6 +120,9 @@ internal class ConditionLink(
     /** The size of each datagram the client sent, in order. */
     val clientSizes = ArrayList<Int>()
 
+    /** Whether each datagram the client sent left a socket a move opened, not the one it connected on. */
+    val clientSendsMoved = ArrayList<Boolean>()
+
     /** When the server sent each datagram, in nanoseconds from the script's start. */
     val serverSends = ArrayList<Long>()
 
@@ -130,10 +153,10 @@ internal class ConditionLink(
             val datagram = inFlight.poll()
             moved++
             if (windowAt(datagram.arrives) is LinkWindow.Outage) continue
-            if (datagram.to == Side.Client && (clientSocketDead() || datagram.client != client)) continue
+            if (datagram.to == Side.Client && !clientSocketTakes(datagram.client)) continue
             val from = if (datagram.to == Side.Client) server else datagram.client
             if (datagram.to == Side.Client) clientArrivals += datagram.arrives - origin
-            waiting.getValue(datagram.to).addLast(Waiting(from, datagram.bytes))
+            waiting.getValue(datagram.to).addLast(Waiting(from, datagram.bytes, datagram.client))
         }
     }
 
@@ -147,12 +170,13 @@ internal class ConditionLink(
         if (from == Side.Client) {
             clientSends += now - origin
             clientSizes += bytes.size
+            clientSendsMoved += clientAddress != first
         } else {
             serverSends += now - origin
             serverSizes += bytes.size
         }
-        if (from == Side.Client && clientSocketDead()) return
-        if (from == Side.Server && moves > 0 && clientAddress == client && loseToMoved > 0) {
+        if (from == Side.Client && !clientSocketTakes(clientAddress)) return
+        if (from == Side.Server && clientAddress == movedTo && loseToMoved > 0) {
             loseToMoved--
             return
         }
@@ -178,11 +202,19 @@ internal class ConditionLink(
         duplicated += copies
     }
 
-    private fun clientSocketDead(): Boolean =
-        when (val now = os) {
-            is OsNow.Offline -> true
-            is OsNow.On -> now.network != socketHome
+    /** Whether the client socket at [address] is open and on the network up now. */
+    private fun clientSocketTakes(address: PathKey): Boolean {
+        val home =
+            when {
+                address == client -> socketHome
+                address == second?.key -> second!!.home
+                else -> return false
+            }
+        return when (val now = os) {
+            is OsNow.Offline -> false
+            is OsNow.On -> now.network == home
         }
+    }
 
     private fun windowAt(nanos: Long): LinkWindow {
         val at: Duration = (nanos - origin).nanoseconds
@@ -206,7 +238,12 @@ internal class ConditionLink(
                 view.get(bytes)
                 val clientAddress =
                     when (val target = batch.targetOf(n)) {
-                        is SendTarget.ConnectedPeer -> client
+                        is SendTarget.ConnectedPeer ->
+                            when (batch.socketOf(n)) {
+                                carrying -> client
+                                second?.ticket -> second!!.key
+                                else -> continue
+                            }
                         is SendTarget.ServerReply -> target.to
                     }
                 send(side, bytes, clientAddress, clock.now().value)
@@ -214,13 +251,28 @@ internal class ConditionLink(
             return SendBatchResult.AllTaken
         }
 
-        override fun receive(into: ReceiveBatch): ReceiveBatchResult {
+        override fun receive(into: ReceiveBatch): ReceiveBatchResult = receiveAt(into, client)
+
+        override fun receiveSecond(into: ReceiveBatch): ReceiveBatchResult =
+            when (val now = second) {
+                null -> ReceiveBatchResult.Nothing
+                else -> receiveAt(into, now.key)
+            }
+
+        /** What waits for this end; at the client, what arrived at [address]. */
+        private fun receiveAt(
+            into: ReceiveBatch,
+            address: PathKey,
+        ): ReceiveBatchResult {
             val queue = waiting.getValue(side)
             var got = 0
-            while (queue.isNotEmpty()) {
+            val iterator = queue.iterator()
+            while (iterator.hasNext()) {
+                val datagram = iterator.next()
+                if (side == Side.Client && datagram.at != address) continue
                 val buffer = into.take()
                 if (buffer !is ReceiveBuffer) break
-                val datagram = queue.removeFirst()
+                iterator.remove()
                 val view = (buffer.bytes.owner.unwrapFully() as BaseJvmBuffer).byteBuffer
                 (view as Buffer).clear()
                 view.put(datagram.bytes)
@@ -228,6 +280,16 @@ internal class ConditionLink(
                 got++
             }
             return if (got > 0) ReceiveBatchResult.Got else ReceiveBatchResult.Nothing
+        }
+
+        override fun reopenSecond(): Reopened {
+            val now = second ?: return Reopened.SameEndpoint
+            reopens++
+            when (val up = os) {
+                is OsNow.On -> second = Second(now.key, up.network, now.ticket)
+                is OsNow.Offline -> Unit
+            }
+            return Reopened.SameEndpoint
         }
 
         override fun probe(): SocketProbe = SocketProbe.Open
@@ -241,16 +303,36 @@ internal class ConditionLink(
             return Reopened.SameEndpoint
         }
 
-        /** The new socket's address is the link's own choice: the old host on the next port, whatever [bind] names. */
-        override fun moveTo(bind: PathKey): Moved {
+        /** The second socket's address is the link's own choice: the old host on the next port, whatever [bind] names. */
+        override fun openBeside(
+            bind: PathKey,
+            ticket: SocketTicket,
+        ): Beside {
             moves++
-            when (val now = os) {
-                is OsNow.On -> socketHome = now.network
-                is OsNow.Offline -> Unit
-            }
-            client = client.copy(port = client.port + 1)
-            waiting.getValue(Side.Client).clear()
-            return Moved.To(client)
+            val home =
+                when (val now = os) {
+                    is OsNow.On -> now.network
+                    is OsNow.Offline -> socketHome
+                }
+            val key = client.copy(port = maxOf(client.port, movedTo?.port ?: 0) + 1)
+            second = Second(key, home, ticket)
+            movedTo = key
+            return Beside.Opened(key)
+        }
+
+        override fun promote() {
+            val now = second ?: return
+            waiting.getValue(Side.Client).removeAll { it.at == client }
+            client = now.key
+            socketHome = now.home
+            carrying = now.ticket
+            second = null
+        }
+
+        override fun closeSecond() {
+            val now = second ?: return
+            waiting.getValue(Side.Client).removeAll { it.at == now.key }
+            second = null
         }
 
         override fun close(): SocketClosed = SocketClosed

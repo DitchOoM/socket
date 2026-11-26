@@ -18,6 +18,7 @@ import com.ditchoom.socket.quic.core.observe.ServerCounts
 import com.ditchoom.socket.quic.core.pool.FixedPool
 import com.ditchoom.socket.quic.core.pool.MemoryHold
 import com.ditchoom.socket.quic.core.ready.SocketRef
+import com.ditchoom.socket.quic.core.ready.SocketRefs
 import com.ditchoom.socket.quic.core.sched.CallerLanes
 import com.ditchoom.socket.quic.core.sched.CallerSend
 import com.ditchoom.socket.quic.core.sched.Entrant
@@ -118,9 +119,6 @@ internal class BoundedIo(
     override fun probe(): SocketProbe = SocketProbe.Open
 
     override fun reopen(): Reopened = Reopened.SameEndpoint
-
-    override fun moveTo(bind: com.ditchoom.socket.quic.PathKey): com.ditchoom.socket.quic.core.udp.Moved =
-        com.ditchoom.socket.quic.core.udp.Moved.Unsupported
 
     override fun close(): SocketClosed {
         events.add(CLOSED)
@@ -232,7 +230,7 @@ internal class ServerRig(
         )
     val endpoint =
         Endpoint(
-            SocketRef(DatagramChannel.open()),
+            SocketRefs(SocketRef(DatagramChannel.open()), SocketRef(DatagramChannel.open())),
             io,
             socket,
             Route.Demux(demux, OwnBatch(SendBatch(nativeBytes(64 * 1500), BatchLimits(64, 1500)))),

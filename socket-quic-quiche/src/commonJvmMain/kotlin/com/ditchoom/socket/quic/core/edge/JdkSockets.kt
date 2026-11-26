@@ -5,6 +5,7 @@ import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.RouteProbeFailure
 import com.ditchoom.socket.quic.core.loop.LoopIo
 import com.ditchoom.socket.quic.core.ready.SocketRef
+import com.ditchoom.socket.quic.core.ready.SocketRefs
 import com.ditchoom.socket.quic.core.udp.DontFragment
 import com.ditchoom.socket.quic.core.udp.JdkBacked
 import com.ditchoom.socket.quic.core.udp.JdkBytes
@@ -63,10 +64,12 @@ internal actual fun jdkSocketIo(
     maxPeersCached: Int,
 ): SocketIo {
     val nio = NioOneByOne(socket.socket.channel, sends.map { SendView(it, jdkView(it)) }, socket.loop.receiveViews.views, maxPeersCached)
-    return SocketIo(nio, SocketRef(Supplier { nio.channel }))
+    return SocketIo(nio, SocketRefs(SocketRef(Supplier { nio.channel }), SocketRef(Supplier { nio.secondChannel })))
 }
 
 internal actual fun descriptorRef(io: NativeIo): SocketRef = SocketRef(IntSupplier { io.descriptor() })
+
+internal actual fun secondDescriptorRef(io: NativeIo): SocketRef = SocketRef(IntSupplier { io.secondDescriptor() })
 
 /** The JDK view a channel writes [bytes] through. */
 private fun jdkView(bytes: NativeBytes): JdkBytes =

@@ -7,6 +7,7 @@ import com.ditchoom.socket.quic.UdpBatching
 import com.ditchoom.socket.quic.core.loop.LoopIo
 import com.ditchoom.socket.quic.core.loop.Readiness
 import com.ditchoom.socket.quic.core.ready.SocketRef
+import com.ditchoom.socket.quic.core.ready.SocketRefs
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 import com.ditchoom.socket.quic.core.udp.Granted
 import com.ditchoom.socket.quic.core.udp.GrantedBuffers
@@ -81,10 +82,10 @@ internal fun StackSocket.readiness(): Readiness =
         is StackSocket.Network -> Readiness.EveryPass
     }
 
-/** A socket's batch io and the handle its loop's poller watches. */
+/** A socket's batch io and the handles its loop's poller watches. */
 internal class SocketIo(
     val io: DatagramBatchIo,
-    val ref: SocketRef,
+    val refs: SocketRefs,
 )
 
 /**
@@ -102,7 +103,7 @@ internal fun StackSocket.ioOf(
         is StackSocket.Jdk -> jdkSocketIo(this, sends, maxPeersCached)
         is StackSocket.Native -> {
             val native = NativeIo(loop.shim, socket, loop.sendRecords, loop.receiveRecords, PeerKeys(peerSets))
-            SocketIo(native, descriptorRef(native))
+            SocketIo(native, SocketRefs(descriptorRef(native), secondDescriptorRef(native)))
         }
         is StackSocket.Network -> nwSocketIo(this, wake)
     }
@@ -188,6 +189,9 @@ internal expect fun jdkSocketIo(
 
 /** The handle the poller watches for a native socket: its descriptor now, read again after a reopen. */
 internal expect fun descriptorRef(io: NativeIo): SocketRef
+
+/** The handle the poller watches for a native socket's second descriptor, read when it is added. */
+internal expect fun secondDescriptorRef(io: NativeIo): SocketRef
 
 /** A client's Network.framework connection: made only on Apple's Kotlin/Native targets. */
 internal expect class NwSocket

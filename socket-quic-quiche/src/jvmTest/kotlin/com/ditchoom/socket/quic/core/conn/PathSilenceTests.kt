@@ -6,6 +6,7 @@ import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.QuicheConn
 import com.ditchoom.socket.quic.StubQuicheApi
 import com.ditchoom.socket.quic.core.life.ConnEnd
+import com.ditchoom.socket.quic.core.loop.Via
 import com.ditchoom.socket.quic.core.path.PathNews
 import com.ditchoom.socket.quic.core.path.PathNewsCell
 import com.ditchoom.socket.quic.core.path.Silence
@@ -191,7 +192,7 @@ class PathSilenceTests {
         repeat(EXPIRIES) { f.read(it + 1L) }
         assertEquals(PathNews.Silent, f.news())
         f.io.pending = 1
-        f.rig.endpoint.readable()
+        f.rig.endpoint.readable(Via.Carrying)
         f.passAt(f.now + 1_000_000L)
         assertEquals(PathNews.Answering, f.news(), "a datagram arrived and the path is still silent")
         assertEquals(listOf("Silent", "Answering"), f.marks().filter { it == "Silent" || it == "Answering" })

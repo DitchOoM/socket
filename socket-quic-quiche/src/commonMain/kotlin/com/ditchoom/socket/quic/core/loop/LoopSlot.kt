@@ -5,13 +5,24 @@ import com.ditchoom.socket.quic.core.conn.SendsRefusedWork
 import com.ditchoom.socket.quic.core.demux.ServerPhase
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.Life
+import com.ditchoom.socket.quic.core.observe.TraceSection
+import com.ditchoom.socket.quic.core.observe.traced
 import com.ditchoom.socket.quic.core.sched.RefusalNews
+import com.ditchoom.socket.quic.core.time.Nanos
+import com.ditchoom.socket.quic.core.udp.ReceiveBatch
+import com.ditchoom.socket.quic.core.udp.SocketTicket
 
 /** A place in a loop's socket table: an endpoint, or empty. */
 internal sealed interface LoopSlot {
     data object Empty : LoopSlot
 
+    /** [endpoint]'s carrying socket: the slot that serves it. */
     class Taken(
+        val endpoint: Endpoint,
+    ) : LoopSlot
+
+    /** [endpoint]'s second socket, the one its [Via.Probing] names: read here, served from its endpoint's own slot. */
+    class Second(
         val endpoint: Endpoint,
     ) : LoopSlot
 }
@@ -68,6 +79,21 @@ internal fun Route.refused(news: RefusalNews) =
                 is Route.Demux -> Unit
             }
     }
+
+/** The datagrams of one read on the socket [on] names, in a receive phase that began [at]. */
+internal fun Route.deliver(
+    batch: ReceiveBatch,
+    at: Nanos,
+    on: SocketTicket,
+) {
+    when (this) {
+        is Route.Fixed -> for (i in 0 until batch.count) {
+            conn.received(batch.bufferAt(i).bytes, batch.lengthAt(i), batch.fromAt(i), at, on)
+        }
+        is Route.Demux -> traced(TraceSection.Demux) { demux.route(batch, out.batch, at) }
+    }
+    batch.release()
+}
 
 /** Whether an endpoint is still on its loop after a serve. */
 internal enum class Stay { Stays, Left }

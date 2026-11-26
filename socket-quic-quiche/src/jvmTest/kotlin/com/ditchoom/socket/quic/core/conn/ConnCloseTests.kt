@@ -13,6 +13,7 @@ import com.ditchoom.socket.quic.core.stream.Waiter
 import com.ditchoom.socket.quic.core.testing.ConnRig
 import com.ditchoom.socket.quic.core.testing.nativeBytes
 import com.ditchoom.socket.quic.core.time.Nanos
+import com.ditchoom.socket.quic.core.udp.SocketTicket
 import com.ditchoom.socket.quic.trace.QuicTraceRecorder
 import com.ditchoom.socket.quic.trace.TraceCapture
 import com.ditchoom.socket.testkit.trace.TraceEvent
@@ -90,7 +91,7 @@ class ConnCloseTests {
         val close = io.sent.single().bytes
         val arrivals = api.recvArrivals.size
         for (n in 1..LATE) {
-            rig.conn.received(nativeBytes(DATAGRAM), DATAGRAM, PEER, Nanos(AT + n))
+            rig.conn.received(nativeBytes(DATAGRAM), DATAGRAM, PEER, Nanos(AT + n), SocketTicket.FIRST)
             rig.pass(AT + n)
         }
         // The 1st, 2nd, 4th and 8th of ten late datagrams are answered.
@@ -118,7 +119,7 @@ class ConnCloseTests {
         traced.conn.submit(CloseWork(QuicError.NoError))
         traced.pass(AT)
         for (n in 1..LATE) {
-            traced.conn.received(nativeBytes(DATAGRAM), DATAGRAM, PEER, Nanos(AT + n))
+            traced.conn.received(nativeBytes(DATAGRAM), DATAGRAM, PEER, Nanos(AT + n), SocketTicket.FIRST)
             traced.pass(AT + n)
         }
         assertEquals(1 + 4, sent.sent.size)
@@ -175,7 +176,7 @@ class ConnCloseTests {
         assertIs<Life.Closing>(rig.conn.life(), "callers may still use the connection while it flushes")
         assertEquals(emptyList(), rig.sink.ended)
         api.streamDataUnacknowledged = false
-        rig.conn.received(nativeBytes(DATAGRAM), DATAGRAM, PEER, Nanos(AT + 1))
+        rig.conn.received(nativeBytes(DATAGRAM), DATAGRAM, PEER, Nanos(AT + 1), SocketTicket.FIRST)
         rig.pass(AT + 1)
         assertEquals(1, io.sent.size, "acknowledged: the close went out in that pass")
         assertIs<ConnEnd.ByLocal>(rig.sink.ended.single())

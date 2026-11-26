@@ -9,6 +9,7 @@ import com.ditchoom.socket.quic.SendTarget
 import com.ditchoom.socket.quic.StubQuicheApi
 import com.ditchoom.socket.quic.core.observe.ConnCounts
 import com.ditchoom.socket.quic.core.ready.SocketRef
+import com.ditchoom.socket.quic.core.ready.SocketRefs
 import com.ditchoom.socket.quic.core.sched.CallerLanes
 import com.ditchoom.socket.quic.core.sched.SendPort
 import com.ditchoom.socket.quic.core.testing.CoreTestRules
@@ -117,7 +118,7 @@ class LoopClockReadsTests {
             testConn(api, CoreTestRules, SendTarget.ConnectedPeer, TraceCapture.Off, loop, socket, clock, RecordingSink(), ConnCounts())
         val channel = DatagramChannel.open().also { channels.add(it) }
         val batch = OwnBatch(SendBatch(nativeBytes(MAX_DATAGRAMS * DATAGRAM), BatchLimits(MAX_DATAGRAMS, DATAGRAM)))
-        loop.attach(Endpoint(SocketRef(channel), io, socket, Route.Fixed(conn, batch), Runnable { }))
+        loop.attach(Endpoint(SocketRefs(SocketRef(channel), SocketRef(channel)), io, socket, Route.Fixed(conn, batch), Runnable { }))
         conn.start()
     }
 
@@ -153,7 +154,7 @@ class LoopClockReadsTests {
                 val channel = DatagramChannel.open().also { channels.add(it) }
                 val endpoint =
                     Endpoint(
-                        SocketRef(channel),
+                        SocketRefs(SocketRef(channel), SocketRef(channel)),
                         io,
                         socket,
                         Route.Fixed(conn, OwnBatch(SendBatch(nativeBytes(MAX_DATAGRAMS * DATAGRAM), BatchLimits(MAX_DATAGRAMS, DATAGRAM)))),

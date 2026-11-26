@@ -13,6 +13,7 @@ import com.ditchoom.socket.quic.core.time.WakeSink
 import com.ditchoom.socket.quic.core.udp.BatchLimits
 import com.ditchoom.socket.quic.core.udp.Room
 import com.ditchoom.socket.quic.core.udp.SendBatch
+import com.ditchoom.socket.quic.core.udp.SocketTicket
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -222,7 +223,7 @@ class ConnLifeTests {
         out.commit(CLOSE_LENGTH, SendTarget.ConnectedPeer)
         life.linger.closeOut(
             out,
-            listOf(CloseDatagram(0, CLOSE_LENGTH, SendTarget.ConnectedPeer)),
+            listOf(CloseDatagram(0, CLOSE_LENGTH, SendTarget.ConnectedPeer, SocketTicket.FIRST)),
             Nanos(0L),
             Nanos(LINGER),
             PeerAddress.Validated,
@@ -278,7 +279,7 @@ class ConnLifeTests {
         out.commit(CLOSE_LENGTH, SendTarget.ConnectedPeer)
         life.linger.closeOut(
             out,
-            listOf(CloseDatagram(0, CLOSE_LENGTH, SendTarget.ConnectedPeer)),
+            listOf(CloseDatagram(0, CLOSE_LENGTH, SendTarget.ConnectedPeer, SocketTicket.FIRST)),
             Nanos(0L),
             Nanos(LINGER),
             PeerAddress.Validated,

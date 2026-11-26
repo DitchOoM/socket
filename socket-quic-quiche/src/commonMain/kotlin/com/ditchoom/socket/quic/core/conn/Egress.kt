@@ -1,10 +1,10 @@
 package com.ditchoom.socket.quic.core.conn
 
-import com.ditchoom.socket.quic.SendTarget
 import com.ditchoom.socket.quic.core.life.CloseDatagram
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.observe.Confined
 import com.ditchoom.socket.quic.core.observe.ConnCounts
+import com.ditchoom.socket.quic.core.path.CONNECTED_PEER
 import com.ditchoom.socket.quic.core.path.Outgoing
 import com.ditchoom.socket.quic.core.path.Sorting
 import com.ditchoom.socket.quic.core.path.Window
@@ -20,12 +20,11 @@ internal enum class LastOut { None, Kept, Dropped }
 internal enum class FirstOut { NotYet, Written }
 
 /**
- * Datagrams out: the only file that asks quiche for output and reads its send infos. Each datagram goes where the
- * connection's [Paths] say: all to one target, or each by the address quiche wrote it for; one for a path no socket
- * of ours holds is dropped and recorded ([DropWhy.NoSocketForPath]). Remembers what became of the last datagram of its
- * last write: the write that makes quiche drain ends with its CONNECTION_CLOSE. Each datagram is recorded at the time
- * quiche stamped it with, which its round trips and probes are measured from and which a replay sends it at ([sentAt]).
- * A write's datagrams leave together, in one batch.
+ * Datagrams out: the only file that asks quiche for output and reads its send infos. Each datagram goes where the connection's [Paths] say:
+ * all to one target, or each by the address quiche wrote it for; one for a path no socket of ours holds is dropped and recorded
+ * ([DropWhy.NoSocketForPath]). Remembers what became of the last datagram of its last write: the write that makes quiche drain ends with
+ * its CONNECTION_CLOSE. Each datagram is recorded at the time quiche stamped it with, which its round trips and probes are measured from
+ * and which a replay sends it at ([sentAt]). A write's datagrams leave together, in one batch.
  */
 @Confined
 internal class Egress(
@@ -36,13 +35,13 @@ internal class Egress(
     private var last = LastOut.None
     private var lastOffset = 0
     private var lastLength = 0
-    private var lastTarget: SendTarget = SendTarget.ConnectedPeer
+    private var lastTo = CONNECTED_PEER
 
     /** The datagram the write kept before its last, which a close before confirmation writes its Handshake packet in. */
     private var before = LastOut.None
     private var beforeOffset = 0
     private var beforeLength = 0
-    private var beforeTarget: SendTarget = SendTarget.ConnectedPeer
+    private var beforeTo = CONNECTED_PEER
     private var first = FirstOut.NotYet
     private var mismatchOffset = 0L
     private val feed = EgressFeed()
@@ -74,14 +73,14 @@ internal class Egress(
         out: SendBatch,
         confirmation: Confirmation,
     ): List<CloseDatagram> {
-        val final = CloseDatagram(lastOffset, lastLength, lastTarget)
+        val final = CloseDatagram(lastOffset, lastLength, lastTo.target, lastTo.socket)
         val split =
             when (confirmation) {
                 Confirmation.Pending ->
                     before == LastOut.Kept && longHeader(out, beforeOffset) && !longHeader(out, lastOffset)
                 Confirmation.Confirmed -> false
             }
-        return if (split) listOf(CloseDatagram(beforeOffset, beforeLength, beforeTarget), final) else listOf(final)
+        return if (split) listOf(CloseDatagram(beforeOffset, beforeLength, beforeTo.target, beforeTo.socket), final) else listOf(final)
     }
 
     private fun longHeader(
@@ -209,7 +208,7 @@ internal class Egress(
         before = last
         beforeOffset = lastOffset
         beforeLength = lastLength
-        beforeTarget = lastTarget
+        beforeTo = lastTo
         lastOffset = offset
         lastLength = written
         lastDueNanos = q.api.sendInfoAtNanos(info)
@@ -252,8 +251,8 @@ internal class Egress(
         flight: ConnFlight,
     ) {
         last = LastOut.Kept
-        lastTarget = to.target
-        out.commit(lastLength, to.target)
+        lastTo = to
+        out.commit(lastLength, to.target, to.socket)
         flight.datagramOut(at, out.storage, lastOffset, lastLength)
     }
 
@@ -274,17 +273,17 @@ internal class Egress(
     }
 
     /**
-     * The last datagram, which no socket of ours held, goes to [target] after all: it is still where it was written,
+     * The last datagram, which no socket of ours held, goes as [to] says after all: it is still where it was written,
      * the batch's next slot, since nothing came after it.
      */
     fun sendDroppedTo(
         out: SendBatch,
-        target: SendTarget,
+        to: Outgoing.To,
         flight: ConnFlight,
     ) {
         last = LastOut.Kept
-        lastTarget = target
-        out.commit(lastLength, target)
+        lastTo = to
+        out.commit(lastLength, to.target, to.socket)
         flight.datagramOut(clock.now(), out.storage, lastOffset, lastLength)
     }
 }

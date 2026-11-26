@@ -8,6 +8,7 @@ import com.ditchoom.socket.quic.core.observe.Confined
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.time.RttPrior
 import com.ditchoom.socket.quic.core.time.WakeSink
+import com.ditchoom.socket.quic.core.udp.SocketTicket
 
 /**
  * Whether a client's socket waits to move. The path from a new address needs a spare destination id, which the peer
@@ -36,15 +37,34 @@ internal enum class Want {
     NoUsablePath,
 }
 
+/** What a client's connection asks of its loop's sockets: loop work, and a no-op there for a ticket the loop no longer holds. */
+internal sealed interface SocketAsk {
+    /** A second socket on [bind]'s address, on a network assumed a round trip of [prior]; the loop answers with its ticket. */
+    class OpenBeside(
+        val bind: PathKey,
+        val prior: RttPrior,
+    ) : SocketAsk
+
+    /** The second socket [ticket] names carries from now on, and the old one is closed. */
+    class Promote(
+        val ticket: SocketTicket,
+    ) : SocketAsk
+
+    /** The second socket [ticket] names is closed. */
+    class CloseSecond(
+        val ticket: SocketTicket,
+    ) : SocketAsk
+}
+
 /**
- * Where a client's socket is wanted, and whether it may go yet. It moves through [mover], which moves it to an address
- * on a port of its own, on a network assumed to have the given round trip. Inside the connection only.
+ * Where a client's socket is wanted, and whether it may go yet. It goes through [ask], which opens a second socket
+ * on an address and a port of its own, on a network assumed to have the given round trip. Inside the connection only.
  */
 @Confined
 internal class MoveHold(
     private val q: QuicheConnRef,
     private val ears: PeerHearing,
-    private val mover: (PathKey, RttPrior) -> Unit,
+    private val ask: (SocketAsk) -> Unit,
 ) {
     var held: HeldMove = HeldMove.None
         private set
@@ -82,7 +102,7 @@ internal class MoveHold(
         prior: RttPrior,
     ): Want {
         held = HeldMove.None
-        mover(bind, prior)
+        ask(SocketAsk.OpenBeside(bind, prior))
         return Want.Moving
     }
 

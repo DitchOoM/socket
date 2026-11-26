@@ -13,6 +13,7 @@ import com.ditchoom.socket.quic.core.observe.ConnCounts
 import com.ditchoom.socket.quic.core.pool.FixedPool
 import com.ditchoom.socket.quic.core.ready.SelectorPoller
 import com.ditchoom.socket.quic.core.ready.SocketRef
+import com.ditchoom.socket.quic.core.ready.SocketRefs
 import com.ditchoom.socket.quic.core.ready.jdkStackOfThisRuntime
 import com.ditchoom.socket.quic.core.sched.CallerLanes
 import com.ditchoom.socket.quic.core.sched.SendPort
@@ -78,7 +79,7 @@ internal class NioEcho(
     val thread: Thread
 
     init {
-        loop.place(Endpoint(SocketRef(server), io, socket, Route.Fixed(conn, OwnBatch(send)), Runnable { }))
+        loop.place(Endpoint(SocketRefs(SocketRef(server), SocketRef(server)), io, socket, Route.Fixed(conn, OwnBatch(send)), Runnable { }))
         conn.start()
         thread = startLoopThread(loop, threadName)
     }

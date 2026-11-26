@@ -19,8 +19,8 @@ import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.udp.Addressed
 import com.ditchoom.socket.quic.core.udp.BatchCapability
 import com.ditchoom.socket.quic.core.udp.BatchLimits
+import com.ditchoom.socket.quic.core.udp.Beside
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
-import com.ditchoom.socket.quic.core.udp.Moved
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.ReceiveBatchResult
@@ -29,6 +29,7 @@ import com.ditchoom.socket.quic.core.udp.SendBatch
 import com.ditchoom.socket.quic.core.udp.SendBatchResult
 import com.ditchoom.socket.quic.core.udp.SocketClosed
 import com.ditchoom.socket.quic.core.udp.SocketProbe
+import com.ditchoom.socket.quic.core.udp.SocketTicket
 import com.ditchoom.socket.quic.network
 
 /** A [Poller] that only counts the wakes it is asked for. */
@@ -105,13 +106,16 @@ internal class FakeIo : DatagramBatchIo {
         return reopenAnswer
     }
 
-    /** What [moveTo] answers; the test may change it. */
-    var moveAnswer: Moved = Moved.Unsupported
+    /** What [openBeside] answers; the test may change it. */
+    var besideAnswer: Beside = Beside.Unsupported
     val movedTo = ArrayList<PathKey>()
 
-    override fun moveTo(bind: PathKey): Moved {
+    override fun openBeside(
+        bind: PathKey,
+        ticket: SocketTicket,
+    ): Beside {
         movedTo += bind
-        return moveAnswer
+        return besideAnswer
     }
 
     override fun close(): SocketClosed = SocketClosed

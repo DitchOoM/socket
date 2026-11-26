@@ -52,16 +52,17 @@ import com.ditchoom.socket.quic.core.path.PathSilence
 import com.ditchoom.socket.quic.core.path.Silence
 import com.ditchoom.socket.quic.core.path.SilenceRule
 import com.ditchoom.socket.quic.core.path.SinglePath
+import com.ditchoom.socket.quic.core.path.SocketAsk
 import com.ditchoom.socket.quic.core.pool.FixedPool
 import com.ditchoom.socket.quic.core.ready.Poller
 import com.ditchoom.socket.quic.core.ready.SocketRef
+import com.ditchoom.socket.quic.core.ready.SocketRefs
 import com.ditchoom.socket.quic.core.sched.CallerLanes
 import com.ditchoom.socket.quic.core.sched.Entrant
 import com.ditchoom.socket.quic.core.sched.SendPort
 import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.time.QuicheTime
-import com.ditchoom.socket.quic.core.time.RttPrior
 import com.ditchoom.socket.quic.core.time.Span
 import com.ditchoom.socket.quic.core.time.WaitResolution
 import com.ditchoom.socket.quic.core.udp.BatchLimits
@@ -239,7 +240,7 @@ internal class ConnRig(
     val conn: Conn = testConn(api, rules, target, capture, loop, socket, clock, sink, counts, access, peer, memory, silence)
     val endpoint =
         Endpoint(
-            SocketRef(DatagramChannel.open()),
+            SocketRefs(SocketRef(DatagramChannel.open()), SocketRef(DatagramChannel.open())),
             io,
             socket,
             Route.Fixed(conn, OwnBatch(SendBatch(nativeBytes(maxDatagrams * 1500), BatchLimits(maxDatagrams, 1500)))),
@@ -280,5 +281,5 @@ internal fun stubClientPaths(
 internal val QUIET_RULE: SilenceRule
     get() = SilenceRule(Silence.Off, Span(30_000_000_000L), PathNewsCell())
 
-/** A rig's socket is never moved. */
-private val NO_MOVES: (PathKey, RttPrior) -> Unit = { _, _ -> }
+/** A rig's sockets never move: what its connection asks of them is dropped. */
+private val NO_MOVES: (SocketAsk) -> Unit = { }

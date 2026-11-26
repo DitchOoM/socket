@@ -7,7 +7,7 @@ import com.ditchoom.socket.quic.core.observe.LoopOnly
 /**
  * The [DatagramBatchIo] of the native stack: one `qnet` call per batch, whatever the batching. Sending is [NativeSend]
  * (segmented groups, the EMSGSIZE fallback), receiving is [NativeReceive] (per datagram or coalesced), and the socket's
- * own lifecycle (reopen, move, close) is [NativeSocket]'s; this class puts the three behind one interface and shares
+ * own lifecycle (reopen, a second socket beside it, close) is [NativeSocket]'s; this class puts the three behind one interface and shares
  * their batching mode.
  */
 @LoopOnly
@@ -36,7 +36,17 @@ internal class NativeIo(
 
     override fun send(batch: SendBatch): SendBatchResult = sending.send(batch)
 
-    override fun receive(into: ReceiveBatch): ReceiveBatchResult = receiving.receive(into)
+    override fun receive(into: ReceiveBatch): ReceiveBatchResult = receiving.receive(into, ReceiveOn.Carrying)
+
+    override fun receiveSecond(into: ReceiveBatch): ReceiveBatchResult =
+        when (val pair = socket.pair()) {
+            is NativePair.One -> ReceiveBatchResult.Nothing
+            is NativePair.Two ->
+                when (val got = receiving.receive(into, pair.second)) {
+                    is ReceiveBatchResult.Failed -> ReceiveBatchResult.Nothing
+                    is ReceiveBatchResult.Got, is ReceiveBatchResult.GotWithBacklog, is ReceiveBatchResult.Nothing -> got
+                }
+        }
 
     override fun probe(): SocketProbe =
         socket.cell.use(
@@ -47,9 +57,22 @@ internal class NativeIo(
 
     override fun reopen(): Reopened = socket.reopen()
 
-    override fun moveTo(bind: PathKey): Moved = socket.moveTo(bind)
+    override fun openBeside(
+        bind: PathKey,
+        ticket: SocketTicket,
+    ): Beside = socket.openBeside(bind, ticket)
+
+    override fun reopenSecond(): Reopened = socket.reopenSecond()
+
+    override fun promote() = socket.promote()
+
+    override fun closeSecond() = socket.closeSecond()
+
+    /** The descriptor of the second socket, which the poller watches while one is open. */
+    fun secondDescriptor(): Int = socket.secondDescriptor()
 
     override fun close(): SocketClosed {
+        socket.closeSecond()
         socket.cell.close { fd -> shim.close(fd) }
         return SocketClosed
     }

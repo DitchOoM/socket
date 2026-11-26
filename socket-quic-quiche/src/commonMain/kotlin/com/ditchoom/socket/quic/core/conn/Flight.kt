@@ -19,7 +19,7 @@ import kotlin.time.Duration.Companion.nanoseconds
 
 /** A change of a connection's path, as its flight recording names it. */
 internal enum class PathMark {
-    /** The client's socket moved to a new local address and the path from it is probed. */
+    /** The client's loop opened a socket on a new local address and the path from it is probed. */
     Moved,
 
     /** The probed path was validated and the connection migrated to it. */
@@ -28,8 +28,9 @@ internal enum class PathMark {
     /** The client's socket moved, and the connection could not follow it. */
     Refused,
 
-    /** Quiche gave up validating the probed path, or closed it; the endpoint waits to be probed again. */
+    /** Quiche gave up validating the probed path or closed it: it waits to be probed again, or the move was given up for good. */
     ProbeFailed,
+    Abandoned,
 
     /** A stranded endpoint was probed again, or tried to be. */
     Reprobed,

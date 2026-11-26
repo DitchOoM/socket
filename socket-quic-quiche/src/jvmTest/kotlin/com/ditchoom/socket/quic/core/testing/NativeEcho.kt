@@ -15,6 +15,7 @@ import com.ditchoom.socket.quic.core.pool.FixedPool
 import com.ditchoom.socket.quic.core.ready.NativePoller
 import com.ditchoom.socket.quic.core.ready.PollerOpened
 import com.ditchoom.socket.quic.core.ready.SocketRef
+import com.ditchoom.socket.quic.core.ready.SocketRefs
 import com.ditchoom.socket.quic.core.sched.CallerLanes
 import com.ditchoom.socket.quic.core.sched.SendPort
 import com.ditchoom.socket.quic.core.time.LoopClock
@@ -119,7 +120,15 @@ internal class NativeEcho(
                 sink,
                 ConnCounts(),
             )
-        loop.place(Endpoint(SocketRef(IntSupplier { io.descriptor() }), io, sendPort, Route.Fixed(conn, OwnBatch(send)), Runnable { }))
+        loop.place(
+            Endpoint(
+                SocketRefs(SocketRef(IntSupplier { io.descriptor() }), SocketRef(IntSupplier { io.secondDescriptor() })),
+                io,
+                sendPort,
+                Route.Fixed(conn, OwnBatch(send)),
+                Runnable { },
+            ),
+        )
         conn.start()
         thread = startLoopThread(loop, threadName)
         return this

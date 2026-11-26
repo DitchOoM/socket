@@ -6,6 +6,11 @@ import com.ditchoom.socket.quic.core.observe.LoopOnly
 import com.ditchoom.socket.quic.core.pool.Pooled
 import com.ditchoom.socket.quic.core.pool.Taken
 
+/** Which of a socket's descriptors a receive reads: the carrying one, or the second one beside it. */
+internal sealed interface ReceiveOn {
+    data object Carrying : ReceiveOn
+}
+
 /**
  * The receive half of [NativeIo], the loop's alone: it hands `qnet` the records of the batch's armed [ReceiveSlots], which
  * keep their buffers between receives, and
@@ -25,11 +30,20 @@ internal class NativeReceive(
 ) {
     private var lastAt: ArrivedOn = ArrivedOn.Unreported
 
-    fun receive(into: ReceiveBatch): ReceiveBatchResult {
+    /** Receives from the socket [on] names. */
+    fun receive(
+        into: ReceiveBatch,
+        on: ReceiveOn,
+    ): ReceiveBatchResult {
         val count = into.slots.arm(receiveRecords)
         if (count == 0) return ReceiveBatchResult.Nothing
+        val cell =
+            when (on) {
+                is ReceiveOn.Carrying -> socket.cell
+                is SecondDescriptor -> on.cell
+            }
         val result =
-            socket.cell.use(
+            cell.use(
                 call = { fd -> readInto(fd, count, into.limits.maxDatagramSize) },
                 replacing = { 0L },
                 closed = { NativeResult.CLOSED },
@@ -39,7 +53,7 @@ internal class NativeReceive(
             val at = i * NativeIo.RECV_RECORD
             when (val buffer = into.slots.handUp(i)) {
                 is ReceiveBuffer ->
-                    into.received(buffer, receiveRecords.intAt(at + LENGTH), keyAt(at + SOURCE), arrivedAt(at + NativeIo.RECV_DEST))
+                    into.received(buffer, receiveRecords.intAt(at + LENGTH), keyAt(at + SOURCE), arrivedAt(at + NativeIo.RECV_DEST, on))
                 // A datagram reported past the armed slots cannot be: `qnet` fills at most the records it was given.
                 is Taken.Empty, is Pooled -> Unit
             }
@@ -76,10 +90,17 @@ internal class NativeReceive(
      * The local address the datagram was sent to, on the socket's port, when `qnet` reports it (a wildcard server's
      * socket does); built once per run of datagrams to one address.
      */
-    private fun arrivedAt(offset: Int): ArrivedOn {
+    private fun arrivedAt(
+        offset: Int,
+        on: ReceiveOn,
+    ): ArrivedOn {
         val family = receiveRecords.intAt(offset)
         if (family == 0) return ArrivedOn.Unreported
-        val port = socket.local.port
+        val port =
+            when (on) {
+                is ReceiveOn.Carrying -> socket.local.port
+                is SecondDescriptor -> on.local.port
+            }
         val hi = receiveRecords.longAt(offset + 8)
         val lo = receiveRecords.longAt(offset + 16)
         when (val last = lastAt) {

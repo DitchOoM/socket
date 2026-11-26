@@ -9,16 +9,21 @@ import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.observe.Confined
 import com.ditchoom.socket.quic.core.udp.Addressed
 import com.ditchoom.socket.quic.core.udp.NativeBytes
+import com.ditchoom.socket.quic.core.udp.SocketTicket
 import kotlin.jvm.JvmInline
 
-/** Where one datagram quiche wrote goes: to [target], or nowhere, because no socket of ours holds its path. */
+/** Where one datagram quiche wrote goes: to [target] from the socket [socket] names, or nowhere, as no socket of ours holds its path. */
 internal sealed interface Outgoing {
     class To(
         val target: SendTarget,
+        val socket: SocketTicket,
     ) : Outgoing
 
     data object Dropped : Outgoing
 }
+
+/** The connected peer, from the socket a connection opened on: where a client's datagrams go until a path says more. */
+internal val CONNECTED_PEER = Outgoing.To(SendTarget.ConnectedPeer, SocketTicket.FIRST)
 
 /** How a connection's datagrams are sent out: all the same way, or each by the address quiche wrote it for. */
 internal sealed interface Sorting {

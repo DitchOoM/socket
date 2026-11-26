@@ -18,26 +18,29 @@ import com.ditchoom.socket.quic.core.path.Window
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.time.WakeSink
 import com.ditchoom.socket.quic.core.udp.NativeBytes
+import com.ditchoom.socket.quic.core.udp.SocketTicket
 
 // What every role's paths answer, asked the same way: each is one `when` over the slot.
 
-/** What quiche is told about a datagram that came from [from] at [now]; a client's path answered then. */
+/** What quiche is told about a datagram that came from [from] on socket [on] at [now]; a client's path answered then. */
 internal fun Paths.recvFrom(
     from: PathKey,
     now: Nanos,
+    on: SocketTicket,
 ): RecvFrom =
     when (this) {
-        is Paths.Client -> paths.recvFrom().also { paths.silence.answered(now) }
+        is Paths.Client -> paths.recvFrom(on).also { paths.silence.answered(now) }
         is Paths.Server -> paths.recvInfo(from)
     }
 
-/** Hands quiche the datagram of [length] bytes at the start of [bytes] that came [from] at [now], unless no path takes it. */
+/** Hands quiche the datagram of [length] bytes at the start of [bytes] that came [from] on [on] at [now], unless no path takes it. */
 internal fun ConnParts.feed(
     bytes: NativeBytes,
     length: Int,
     from: PathKey,
     now: Nanos,
-) = when (val info = slots.paths.recvFrom(from, now)) {
+    on: SocketTicket,
+) = when (val info = slots.paths.recvFrom(from, now, on)) {
     is RecvFrom.Info -> {
         slots.ack.received()
         life.heard()
@@ -126,6 +129,7 @@ internal fun ConnParts.stepPaths(now: Nanos): PathStep =
             when (step) {
                 PathStep.Steady, PathStep.NoUsablePath -> Unit
                 PathStep.ProbeFailed -> flight.path(now, PathMark.ProbeFailed)
+                PathStep.Abandoned -> flight.path(now, PathMark.Abandoned)
                 PathStep.Challenged -> flight.path(now, PathMark.Challenged)
                 PathStep.Reprobed -> {
                     flight.path(now, PathMark.Reprobed)
@@ -165,8 +169,9 @@ internal fun Paths.endOf(end: ConnEnd): ConnEnd =
     }
 
 /**
- * Inside: a client's socket now leaves from [local]. The connection probes the path from it and migrates once it is
- * validated; before its handshake is confirmed (RFC 9000 §9), or when the peer forbade migration, it cannot follow.
+ * Inside: a client's second socket leaves from [to]'s address. The connection probes the path from it and migrates once
+ * it is validated, the carrying socket carrying until then; before its handshake is confirmed (RFC 9000 §9), or when
+ * the peer forbade migration, it cannot follow.
  */
 internal fun ConnParts.follow(
     now: Nanos,
@@ -181,8 +186,8 @@ internal fun ConnParts.follow(
     slots.ack.mustWrite()
     val answer =
         when (handshake.confirmation()) {
-            Confirmation.Pending -> MoveAnswer.Refused
-            Confirmation.Confirmed -> client.move(now, to.local, to.prior)
+            Confirmation.Pending -> client.decline(to.ticket)
+            Confirmation.Confirmed -> client.move(now, to.local, to.prior, to.ticket)
         }
     flight.path(
         now,

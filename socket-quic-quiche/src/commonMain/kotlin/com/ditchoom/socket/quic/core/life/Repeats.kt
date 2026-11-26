@@ -4,6 +4,7 @@ import com.ditchoom.socket.quic.SendTarget
 import com.ditchoom.socket.quic.core.observe.Confined
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.time.WakeSink
+import com.ditchoom.socket.quic.core.udp.SocketTicket
 
 /**
  * Whether the peer's address is validated (RFC 9000 §8.1): until it is, a server sends it at most three times the
@@ -12,7 +13,8 @@ import com.ditchoom.socket.quic.core.time.WakeSink
 internal enum class PeerAddress { Validated, Unvalidated }
 
 /**
- * One datagram of the close quiche wrote: [length] bytes at [offset] of the write's batch, to [target]. A close before
+ * One datagram of the close quiche wrote: [length] bytes at [offset] of the write's batch, to [target] from the socket
+ * [socket] names. A close before
  * the handshake is confirmed is two, its Handshake packet first and its 1-RTT copy after (RFC 9000 §10.2.3): a peer
  * reads the one it has keys for.
  */
@@ -20,6 +22,7 @@ internal class CloseDatagram(
     val offset: Int,
     val length: Int,
     val target: SendTarget,
+    val socket: SocketTicket,
 )
 
 /** The unprompted repeat of a lingering close that is owed next: one probe timeout after the close, then two, then none. */

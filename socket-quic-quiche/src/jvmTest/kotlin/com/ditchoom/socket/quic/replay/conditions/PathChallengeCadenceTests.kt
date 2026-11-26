@@ -50,7 +50,11 @@ class PathChallengeCadenceTests {
         val moved = replayed.pathMarks.first { it.phase == "Moved" }.at
         val abandoned = replayed.pathMarks.first { it.phase == "ProbeFailed" }.at - moved
         assertTrue(abandoned <= FIRST_ABANDON, "the first validation was abandoned $abandoned after the move: ${replayed.pathMarks}")
-        val probes = replayed.clientSends.indices.count { replayed.clientSends[it] >= MOVE_AT && replayed.clientSizes[it] == PATH_PROBE }
+        // The new path's probes: the old socket keeps sending the connection's data, in datagrams as small, beside them.
+        val probes =
+            replayed.clientSends.indices.count {
+                replayed.clientSends[it] >= MOVE_AT && replayed.clientSizes[it] == PATH_PROBE && replayed.clientSendsMoved[it]
+            }
         assertTrue(probes <= MOST_PROBES, "$probes path probes over the $IDLE the dead path was tried: ${replayed.pathMarks}")
         val failed = replayed.pathMarks.filter { it.phase == "ProbeFailed" }.map { it.at }
         for (challenge in replayed.pathMarks.filter { it.phase == "Challenged" }.map { it.at }) {

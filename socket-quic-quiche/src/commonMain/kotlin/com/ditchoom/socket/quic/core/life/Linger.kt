@@ -158,7 +158,7 @@ internal class Linger(
                     val kept =
                         datagrams.map { d ->
                             made.bytes.copyFrom(out.storage, d.offset, at, d.length)
-                            CloseDatagram(at, d.length, d.target).also { at += d.length }
+                            CloseDatagram(at, d.length, d.target, d.socket).also { at += d.length }
                         }
                     val repeats = Repeats(now, (until - now) / DRAIN_PTOS, until, address)
                     Wire.Answering(made.bytes, kept, until, repeats, address)
@@ -216,7 +216,7 @@ internal class Linger(
                 if (out.room() == Room.Full) return Room.Full
                 val d = answering.datagrams[piece]
                 out.storage.copyFrom(answering.copy, d.offset, out.nextOffset(), d.length)
-                out.commit(d.length, d.target)
+                out.commit(d.length, d.target, d.socket)
                 piece++
             }
             piece = 0

@@ -20,6 +20,7 @@ import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 import com.ditchoom.socket.quic.core.udp.SendBatch
+import com.ditchoom.socket.quic.core.udp.SocketTicket
 import com.ditchoom.socket.quic.core.udp.Thrown
 import com.ditchoom.socket.testkit.trace.TraceSink
 import kotlinx.coroutines.Runnable
@@ -28,9 +29,8 @@ import kotlinx.coroutines.Runnable
 internal enum class Collected { Everything, MoreWaiting, Abandoned }
 
 /**
- * The order of one serve, and the connection-tier containment site: an exception thrown by work or by a step ends
- * this connection and no other; an `Error` is not contained. Holds no state: it asks each component and passes the
- * answers on.
+ * The order of one serve, and the connection-tier containment site: an exception thrown by work or by a step ends this connection and no
+ * other; an `Error` is not contained. Holds no state: it asks each component and passes the answers on.
  */
 internal class Turn(
     private val c: ConnParts,
@@ -110,12 +110,13 @@ internal class Turn(
             Collected.Abandoned
         }
 
-    /** Inside: quiche reads a datagram at the start of [bytes] that came [from]; one after the end is only counted. */
+    /** Inside: quiche reads a datagram at the start of [bytes] that came [from] on socket [on]; one after the end is only counted. */
     fun receive(
         bytes: NativeBytes,
         length: Int,
         from: PathKey,
         now: Nanos,
+        on: SocketTicket,
     ) {
         if (c.life.view() is Life.Over) {
             c.flight.datagramIn(now, bytes, 0, length)
@@ -123,7 +124,7 @@ internal class Turn(
         }
         traced(TraceSection.ConnReceive) {
             try {
-                c.feed(bytes, length, from, now)
+                c.feed(bytes, length, from, now, on)
                 c.slots.keepAlive.touched(now)
                 c.slots.datagrams.received(now)
                 c.settleEarly(now).ifRefused { finish(now, it) }
@@ -140,10 +141,7 @@ internal class Turn(
      * Inside, at [now]: the connection's deadline fell due. While unconfirmed, the handshake counts quiche's PTO expiries.
      * The recording takes [now]: a replay runs quiche's timeout when this host did, however late it woke.
      */
-    fun expire(now: Nanos) {
-        if (c.life.view() !is Life.Open) return
-        c.expired(now, paths)
-    }
+    fun expire(now: Nanos) = if (c.life.view() is Life.Open) c.expired(now, paths) else Unit
 
     fun network(
         now: Nanos,
@@ -157,7 +155,7 @@ internal class Turn(
         }
     }
 
-    /** Inside: a client's socket now leaves from [to]; a connection that cannot follow it ends ([follow]). */
+    /** Inside: a client's second socket leaves from [to]; a connection that cannot follow it ends ([follow]). */
     fun moved(
         now: Nanos,
         to: MoveTo,

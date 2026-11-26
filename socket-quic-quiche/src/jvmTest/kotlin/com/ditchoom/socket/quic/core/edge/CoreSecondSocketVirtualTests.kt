@@ -9,7 +9,11 @@ import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.core.conn.DropWhy
+import com.ditchoom.socket.quic.core.loop.closeSecond
+import com.ditchoom.socket.quic.core.loop.move
+import com.ditchoom.socket.quic.core.loop.promote
 import com.ditchoom.socket.quic.core.time.RttPrior
+import com.ditchoom.socket.quic.core.udp.SocketTicket
 import com.ditchoom.socket.quic.read
 import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.testkit.trace.TraceSink
@@ -19,6 +23,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
@@ -76,13 +81,106 @@ class CoreSecondSocketVirtualTests {
             assertEquals(emptyList(), drops, "every datagram quiche wrote had a socket")
         }
 
+    /** The abandoned move's socket is closed: the client holds one socket again, and never held more than two. */
+    @Test
+    fun anAbandonedMoveClosesOnlyItsSecondSocket() =
+        VirtualPair.with(options) { pair ->
+            val serverSide = pair.accept()
+            launch { runCatching { while (true) echoOne(serverSide) } }
+            val first = pair.clientPort()
+            pair.deadClientPorts += first + 1
+            move(pair)
+            pair.runUntil(within = 2.seconds) { pair.clientSockets == 2 }
+            awaitMark(pair, "Abandoned", within = MOVE_GIVEN_UP)
+            pair.runFor(ECHO_EVERY)
+            assertEquals(1, pair.clientSockets, "the probe's socket was closed")
+            assertEquals(1, pair.secondsClosed)
+            assertEquals(2, pair.mostClientSockets)
+            assertEquals(first, pair.clientPort(), "the carrying socket was left open")
+            var echoed = 0
+            launch { echoed = echo(pair) }
+            pair.runUntil(within = 2.seconds) { echoed > 0 }
+            assertEquals(PAYLOAD, echoed)
+        }
+
+    /**
+     * Moves that follow each other before any validates never hold a third socket: each opens its socket only once the
+     * loop closed the one before.
+     */
+    @Test
+    fun movesThatFollowEachOtherNeverHoldAThirdSocket() =
+        VirtualPair.with(options) { pair ->
+            val serverSide = pair.accept()
+            launch { runCatching { while (true) echoOne(serverSide) } }
+            val first = pair.clientPort()
+            for (port in first + 1..first + MOVES) pair.deadClientPorts += port
+            repeat(MOVES) {
+                move(pair)
+                pair.runFor(PROBE_FOR)
+            }
+            assertEquals(2, pair.mostClientSockets, "a move opened its socket only once the one before was closed")
+            assertEquals(MOVES - 1, pair.secondsClosed)
+            pair.deadClientPorts.clear()
+            pair.movePorts.addLast(first + MOVES + 1)
+            move(pair)
+            awaitMark(pair, "Migrated")
+            assertEquals(first + MOVES + 1, pair.clientPort())
+            assertEquals(1, pair.clientSockets)
+            var echoed = 0
+            launch { echoed = echo(pair) }
+            pair.runUntil(within = 2.seconds) { echoed > 0 }
+            assertEquals(PAYLOAD, echoed)
+        }
+
+    /** A promotion or a close naming a ticket the loop no longer holds open changes nothing. */
+    @Test
+    fun aStaleTicketIsIgnored() =
+        VirtualPair.with(options) { pair ->
+            val serverSide = pair.accept()
+            launch { runCatching { while (true) echoOne(serverSide) } }
+            val first = pair.clientPort()
+            move(pair)
+            awaitMark(pair, "Migrated")
+            val moved = pair.clientPort()
+            pair.deadClientPorts += moved + 1
+            move(pair)
+            pair.runUntil(within = 2.seconds) { pair.clientSockets == 2 }
+            val loop = pair.client.loop
+            val endpoint = pair.client.parts.loopEndpoint
+            // The first socket's ticket, and the first move's, which carries now: neither names the open second socket.
+            loop.promote(endpoint, SocketTicket.FIRST)
+            loop.closeSecond(endpoint, SocketTicket.FIRST)
+            loop.promote(endpoint, SocketTicket.FIRST.next())
+            loop.closeSecond(endpoint, SocketTicket.FIRST.next())
+            pair.runFor(ECHO_EVERY)
+            assertEquals(2, pair.clientSockets, "the second socket stayed open")
+            assertEquals(moved, pair.clientPort(), "the carrying socket stayed the carrying one")
+            assertTrue(moved != first)
+            var echoed = 0
+            launch { echoed = echo(pair) }
+            pair.runUntil(within = 2.seconds) { echoed > 0 }
+            assertEquals(PAYLOAD, echoed)
+        }
+
+    /** A connection released while a move is open closes both of its sockets. */
+    @Test
+    fun releaseClosesBothSockets() =
+        VirtualPair.with(options) { pair ->
+            pair.deadClientPorts += pair.clientPort() + 1
+            move(pair)
+            pair.runUntil(within = 2.seconds) { pair.clientSockets == 2 }
+            pair.client.connection.closeNow(com.ditchoom.socket.quic.QuicError.NoError)
+            pair.runUntil { pair.client.connection.end() is EdgeEnd.Ended && pair.clientSockets == 0 }
+        }
+
     private suspend fun CoroutineScope.awaitMark(
         pair: VirtualPair,
         mark: String,
+        within: Duration = 5.seconds,
     ) {
         var seen = false
         val watching = launch { while (!seen) seen = mark in flight(pair).filterIsInstance<TraceEvent.PathState>().map { it.phase } }
-        pair.runUntil(within = 5.seconds) { seen }
+        pair.runUntil(within = within) { seen }
         watching.cancel()
     }
 
@@ -144,6 +242,10 @@ class CoreSecondSocketVirtualTests {
     private companion object {
         const val PAYLOAD = 600
         val ECHO_EVERY = 500.milliseconds
+        const val MOVES = 4
+
+        /** Long enough for a move's socket to open and its path to be probed, short of its validation failing. */
+        val PROBE_FOR = 300.milliseconds
 
         /** Past three failed validations of the move and the waits between them. */
         val MOVE_GIVEN_UP = 20.seconds

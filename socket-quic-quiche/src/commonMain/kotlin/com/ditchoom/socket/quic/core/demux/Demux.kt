@@ -16,6 +16,7 @@ import com.ditchoom.socket.quic.core.udp.NativeBytes
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.Room
 import com.ditchoom.socket.quic.core.udp.SendBatch
+import com.ditchoom.socket.quic.core.udp.SocketTicket
 
 /** Whether an Initial that would start a handshake is held for later or started now. */
 private enum class Mode {
@@ -196,7 +197,7 @@ internal class Demux(
         at: Nanos,
     ) {
         counts.routedOne()
-        peer.conn.received(datagram, length, from, at)
+        peer.conn.received(datagram, length, from, at, SocketTicket.FIRST)
     }
 
     /** An Initial that names no connection: a new one, if the server takes it. */
@@ -247,7 +248,7 @@ internal class Demux(
         peer.routed(table.add(admission.newCid, peer), original)
         peer.listedAt(peers.size)
         peers.add(peer)
-        peer.conn.received(datagram, length, from, at)
+        peer.conn.received(datagram, length, from, at, SocketTicket.FIRST)
     }
 
     /** [peer] ended: its routes go, and its memory is released once nobody is inside it. */

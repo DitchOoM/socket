@@ -6,7 +6,8 @@ import com.ditchoom.socket.quic.SendTarget
 
 /**
  * The send half of [NativeIo]: a batch's lengths, targets and reply sources go into its lane's native records
- * ([sendRecords], one per lane by [SendBatch.lane]) and `qnet` is handed the batch's own memory. Safe from any thread, one
+ * ([sendRecords], one per lane by [SendBatch.lane]) and `qnet` is handed the batch's own memory, one call per run of
+ * datagrams for the same socket. Safe from any thread, one
  * thread per lane. A device that refuses segmented sends steps [mode] down to [BatchCapability.Multi] for good; a link
  * whose MTU is below a datagram size (EMSGSIZE) sends that batch without segments, and takes segments only for smaller
  * datagrams after ([segmentLimit]).
@@ -43,10 +44,46 @@ internal class NativeSend(
             }
         }
         var taken = 0
+        while (taken < count) {
+            val run = batch.runFrom(taken)
+            val pair = socket.pair()
+            val ticket = batch.socketOf(taken)
+            if (ticket == pair.carrying()) {
+                when (val sent = sendRun(batch, records, taken, run, longest, socket.cell, pair.family())) {
+                    is SendBatchResult.AllTaken -> taken += run
+                    is SendBatchResult.Partial -> return SendBatchResult.Partial(taken + sent.taken, sent.why)
+                }
+            } else {
+                // A datagram for the second socket is best effort, and one for a socket that is gone goes nowhere.
+                when (pair) {
+                    is NativePair.Two ->
+                        if (pair.second.ticket == ticket) {
+                            sendRun(batch, records, taken, run, longest, pair.second.cell, pair.second.family)
+                        }
+                    is NativePair.One -> Unit
+                }
+                taken += run
+            }
+        }
+        return SendBatchResult.AllTaken
+    }
+
+    /** Sends the [count] datagrams from the [skip]th on through [cell]'s descriptor, of [family]. */
+    private fun sendRun(
+        batch: SendBatch,
+        records: NativeBytes,
+        skip: Int,
+        count: Int,
+        longest: Int,
+        cell: DescriptorCell,
+        family: Int,
+    ): SendBatchResult {
+        var taken = 0
         while (true) {
             val capability = mode.load()
             val segmented = capability is BatchCapability.Segmented && capability.send is Gso.On && segmentLimit.allows(longest)
-            val result = sendFrom(batch, records, taken, count - taken, if (segmented) capability else unsegmented(capability))
+            val result =
+                sendFrom(batch, records, skip + taken, count - taken, if (segmented) capability else unsegmented(capability), cell, family)
             if (result and NativeResult.SEGMENT_REFUSED != 0L) mode.stepDown(capability)
             taken += NativeResult.count(result)
             val code = NativeResult.code(result)
@@ -67,12 +104,14 @@ internal class NativeSend(
         skip: Int,
         count: Int,
         capability: BatchCapability,
+        cell: DescriptorCell,
+        family: Int,
     ): Long =
-        socket.cell.use(
+        cell.use(
             call = { fd ->
                 shim.udpSend(
                     fd,
-                    socket.family,
+                    family,
                     modeOf(capability),
                     batch.storage.address + batch.offsetOf(skip),
                     batch.limits.maxDatagramSize,

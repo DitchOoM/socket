@@ -16,6 +16,7 @@ import com.ditchoom.socket.quic.core.path.PathSilence
 import com.ditchoom.socket.quic.core.path.ServerPaths
 import com.ditchoom.socket.quic.core.path.SilenceRule
 import com.ditchoom.socket.quic.core.path.SinglePath
+import com.ditchoom.socket.quic.core.path.SocketAsk
 import com.ditchoom.socket.quic.core.pool.FixedPool
 import com.ditchoom.socket.quic.core.sched.Entrant
 import com.ditchoom.socket.quic.core.sched.LoopPort
@@ -28,7 +29,6 @@ import com.ditchoom.socket.quic.core.time.ClockBase
 import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.time.QuicheTime
-import com.ditchoom.socket.quic.core.time.RttPrior
 import com.ditchoom.socket.quic.core.time.WakeSink
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 import com.ditchoom.socket.quic.core.udp.SockAddr
@@ -49,7 +49,7 @@ internal sealed interface ConnSide {
     /**
      * A client draws the ids it hands its peer from [ids], offered quiche [offer] before its first flight, and copies
      * its server's session ticket through one of its loop's [scratch] slots; what it took from its stores, [kept], goes
-     * back if it never sent; its server's NEW_TOKEN token goes to [tokens]; its socket is moved by [mover]; a handshake
+     * back if it never sent; its server's NEW_TOKEN token goes to [tokens]; its loop's sockets are asked through [ask]; a handshake
      * the system refused every send of is judged by [access]; its server's certificates are copied at completion as
      * [chain] says; its path's silence is watched as [silence] says; its 0-RTT bytes are kept for a replay as [early] says.
      */
@@ -59,7 +59,7 @@ internal sealed interface ConnSide {
         val scratch: FixedPool<SessionScratch>,
         val kept: KeptTicket,
         val tokens: TokenHome,
-        val mover: (PathKey, RttPrior) -> Unit,
+        val ask: (SocketAsk) -> Unit,
         val access: SendsAccess,
         val chain: ChainSource,
         val silence: SilenceRule,
@@ -164,7 +164,7 @@ private fun composed(
                                 IdIssuer(memory.factory),
                                 side.ids,
                                 { info, made -> q.freeInfo(info, made) },
-                                side.mover,
+                                side.ask,
                                 PathSilence(q, side.silence),
                             ),
                         )

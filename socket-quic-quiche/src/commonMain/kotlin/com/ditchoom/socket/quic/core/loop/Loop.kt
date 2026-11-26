@@ -1,7 +1,6 @@
 package com.ditchoom.socket.quic.core.loop
 
 import com.ditchoom.socket.quic.NextDue
-import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.Tier
 import com.ditchoom.socket.quic.core.life.Tiers
@@ -20,7 +19,6 @@ import com.ditchoom.socket.quic.core.sched.SleepPlan
 import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.time.QuicheTime
-import com.ditchoom.socket.quic.core.time.RttPrior
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.Thrown
 import com.ditchoom.socket.quic.reportOnThisThread
@@ -62,7 +60,7 @@ private sealed interface Run {
 internal class Loop(
     val id: Int,
     val name: String,
-    private val poller: Poller,
+    internal val poller: Poller,
     /** The loop's time, which its connections read too. */
     val clock: LoopClock,
     private val receive: ReceiveBatch,
@@ -91,13 +89,6 @@ internal class Loop(
 
     /** Any thread: [endpoint]'s socket is reopened on the network that carries its address now (see [Endpoint.rehome]). */
     fun rehome(endpoint: Endpoint) = port.submit(RehomeWork(this, endpoint))
-
-    /** Any thread: [endpoint]'s socket is moved to [bind]'s address, a new local endpoint (see [Endpoint.move]). */
-    fun move(
-        endpoint: Endpoint,
-        bind: PathKey,
-        prior: RttPrior,
-    ) = port.submit(MoveWork(this, endpoint, bind, prior))
 
     /** Any thread: a connection its set placed here ended before it joined: the seat it was counted for is given back. */
     fun seatGivenBack() = connections.decrement()
@@ -183,7 +174,8 @@ internal class Loop(
         port.fireDue(now)
         for (i in 0 until ready.count) {
             when (val slot = slots[ready.tokenAt(i)]) {
-                is LoopSlot.Taken -> slot.endpoint.readable()
+                is LoopSlot.Taken -> slot.endpoint.readable(Via.Carrying)
+                is LoopSlot.Second -> slot.endpoint.readable(Via.Probing)
                 is LoopSlot.Empty -> Unit
             }
         }
@@ -192,7 +184,8 @@ internal class Loop(
         budget.begin(now)
         for (i in slots.indices) {
             when (val slot = slots[i]) {
-                is LoopSlot.Taken -> receiveOn(slot.endpoint)
+                is LoopSlot.Taken -> receiveOn(slot.endpoint, Via.Carrying)
+                is LoopSlot.Second -> receiveOn(slot.endpoint, Via.Probing)
                 is LoopSlot.Empty -> Unit
             }
         }
@@ -201,12 +194,12 @@ internal class Loop(
         for (i in slots.indices) {
             when (val slot = slots[i]) {
                 is LoopSlot.Taken -> {
-                    when (slot.endpoint.serve(poller, now, port)) {
+                    when (slot.endpoint.serve(poller, this, now, port)) {
                         Stay.Left -> vacate(slot.endpoint)
                         Stay.Stays -> if (slot.endpoint.hasBacklog()) backlog = true
                     }
                 }
-                is LoopSlot.Empty -> Unit
+                is LoopSlot.Second, is LoopSlot.Empty -> Unit
             }
         }
         handlers.end()
@@ -220,16 +213,20 @@ internal class Loop(
         val token = free.popOr { slots.size.also { slots.add(LoopSlot.Empty) } }
         slots[token] = LoopSlot.Taken(endpoint)
         endpoint.placed(token)
-        poller.add(endpoint.socketRef, token)
+        poller.add(endpoint.refs.carrying, token)
     }
 
-    internal fun reopen(endpoint: Endpoint) = endpoint.rehome(poller)
+    /** A slot of [endpoint]'s second socket, which the poller reports as its [Via.Probing]; its token. */
+    internal fun seat(endpoint: Endpoint): Int {
+        val token = free.popOr { slots.size.also { slots.add(LoopSlot.Empty) } }
+        slots[token] = LoopSlot.Second(endpoint)
+        return token
+    }
 
-    internal fun moveTo(
-        endpoint: Endpoint,
-        bind: PathKey,
-        prior: RttPrior,
-    ) = endpoint.move(poller, bind, prior)
+    internal fun unseat(token: Int) {
+        slots[token] = LoopSlot.Empty
+        free.push(token)
+    }
 
     internal fun beginClosing(then: Runnable) {
         when (run) {
@@ -239,9 +236,12 @@ internal class Loop(
         }
     }
 
-    private fun receiveOn(endpoint: Endpoint) {
+    private fun receiveOn(
+        endpoint: Endpoint,
+        via: Via,
+    ) {
         try {
-            endpoint.receive(receive, counts, clock, budget)
+            endpoint.receive(via, receive, counts, clock, budget, poller, this)
         } catch (failure: Exception) {
             receive.release()
             endpoint.ioThrew(Thrown(failure))
@@ -283,8 +283,8 @@ internal class Loop(
             val slot = slots[i]
             slots[i] = LoopSlot.Empty
             when (slot) {
-                is LoopSlot.Taken -> outcome = outcome.then { slot.endpoint.loopEnded(end, poller) }
-                is LoopSlot.Empty -> Unit
+                is LoopSlot.Taken -> outcome = outcome.then { slot.endpoint.loopEnded(end, poller, this) }
+                is LoopSlot.Second, is LoopSlot.Empty -> Unit
             }
         }
         slots.clear()

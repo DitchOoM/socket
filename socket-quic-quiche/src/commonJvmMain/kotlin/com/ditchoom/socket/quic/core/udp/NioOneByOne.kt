@@ -12,7 +12,7 @@ import java.nio.ByteBuffer
 import java.nio.channels.DatagramChannel
 
 /**
- * A non-blocking [DatagramChannel], one datagram per system call.
+ * A non-blocking [DatagramChannel], one datagram per system call, and the second one beside it while a client moves.
  *
  * Receiving is the loop's alone. Sending is safe from any thread, one thread per [SendBatch] at a time: what a send
  * touches besides the channel, which is thread-safe, is kept per lane. [sends] holds a view of one batch per lane,
@@ -41,7 +41,8 @@ internal class NioOneByOne(
     val channel: DatagramChannel get() = cell.load()
 
     override fun send(batch: SendBatch): SendBatchResult {
-        val channel = cell.load()
+        val channels = cell.channels()
+        val channel = channels.held.channel()
         if (sendStorages[batch.lane] !== batch.storage) {
             when (val backed = JdkBytes.of(batch.storage)) {
                 is JdkBacked.Backed -> sendBuffers[batch.lane] = backed.bytes.view.duplicate()
@@ -56,6 +57,11 @@ internal class NioOneByOne(
             val offset = batch.offsetOf(n)
             // Buffer's own methods: ByteBuffer's covariant overrides are absent from Android before API 33.
             sendView.limit(offset + batch.lengthOf(n)).position(offset)
+            val ticket = batch.socketOf(n)
+            if (ticket != channels.ticket) {
+                sendBeside(channels.second, ticket, sendBuffers[batch.lane])
+                continue
+            }
             val written =
                 try {
                     when (val target = batch.targetOf(n)) {
@@ -79,8 +85,38 @@ internal class NioOneByOne(
         return SendBatchResult.AllTaken
     }
 
-    override fun receive(into: ReceiveBatch): ReceiveBatchResult {
-        val channel = cell.load()
+    /** One datagram for the socket [ticket] names, if it is the second: best effort, so a refusal drops it. */
+    private fun sendBeside(
+        second: SecondChannel,
+        ticket: SocketTicket,
+        bytes: ByteBuffer,
+    ) {
+        when (second) {
+            is SecondChannel.Open ->
+                if (second.ticket == ticket) {
+                    try {
+                        second.channel.write(bytes)
+                    } catch (dropped: IOException) {
+                        // The probe's socket refused it, or was closed under the send: the datagram is lost, as on a link.
+                    }
+                }
+            is SecondChannel.None -> Unit
+        }
+    }
+
+    override fun receive(into: ReceiveBatch): ReceiveBatchResult = receiveFrom(cell.load(), into, Refusal.Reported)
+
+    override fun receiveSecond(into: ReceiveBatch): ReceiveBatchResult =
+        when (val second = cell.second()) {
+            is SecondChannel.Open -> receiveFrom(second.channel, into, Refusal.ReadAsNothing)
+            is SecondChannel.None -> ReceiveBatchResult.Nothing
+        }
+
+    private fun receiveFrom(
+        channel: DatagramChannel,
+        into: ReceiveBatch,
+        refusal: Refusal,
+    ): ReceiveBatchResult {
         var got = 0
         while (true) {
             val buffer = into.take()
@@ -93,7 +129,11 @@ internal class NioOneByOne(
                     channel.receive(bytes)
                 } catch (e: IOException) {
                     into.giveBack(buffer)
-                    return if (got > 0) ReceiveBatchResult.Got else ReceiveBatchResult.Failed(udpErrorOf(e))
+                    return when {
+                        got > 0 -> ReceiveBatchResult.Got
+                        refusal == Refusal.ReadAsNothing -> ReceiveBatchResult.Nothing
+                        else -> ReceiveBatchResult.Failed(udpErrorOf(e))
+                    }
                 }
             if (from !is InetSocketAddress) {
                 into.giveBack(buffer)
@@ -109,13 +149,26 @@ internal class NioOneByOne(
 
     override fun reopen(): Reopened = cell.reopen()
 
-    override fun moveTo(bind: PathKey): Moved =
+    override fun openBeside(
+        bind: PathKey,
+        ticket: SocketTicket,
+    ): Beside =
         when (val address = bind.toInetSocketAddress()) {
-            null -> Moved.Unsupported
-            else -> cell.moveTo(address)
+            null -> Beside.Unsupported
+            else -> cell.openBeside(address, ticket)
         }
 
+    override fun reopenSecond(): Reopened = cell.reopenSecond()
+
+    override fun promote() = cell.promote()
+
+    override fun closeSecond() = cell.closeSecond()
+
+    /** The second channel, which the selector watches while one is open. */
+    val secondChannel: DatagramChannel get() = cell.secondChannel()
+
     override fun close(): SocketClosed {
+        cell.closeSecond()
         cell.load().close()
         return SocketClosed
     }
@@ -133,6 +186,9 @@ internal class NioOneByOne(
         return key
     }
 }
+
+/** What a receive makes of a channel's refusal: the carrying socket's is reported, a probe's is read as nothing waiting. */
+private enum class Refusal { Reported, ReadAsNothing }
 
 /** A lane's batch memory and the JDK view of it a channel writes from. */
 internal class SendView(
