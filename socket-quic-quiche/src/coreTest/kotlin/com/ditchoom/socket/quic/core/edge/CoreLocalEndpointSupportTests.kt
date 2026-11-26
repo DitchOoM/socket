@@ -1,11 +1,11 @@
 package com.ditchoom.socket.quic.core.edge
 
 import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.socket.quic.DriverUdpChannelFactory
 import com.ditchoom.socket.quic.InternalQuicApi
 import com.ditchoom.socket.quic.LocalEndpointSupport
 import com.ditchoom.socket.quic.QuicLocalEndpoint
 import com.ditchoom.socket.quic.RouteSource
-import com.ditchoom.socket.quic.UdpSocketChannelFactory
 import com.ditchoom.socket.quic.hostSockAddrLayout
 import com.ditchoom.socket.quic.network
 import com.ditchoom.socket.testkit.skip.SkipGate
@@ -26,9 +26,9 @@ import kotlin.test.assertEquals
  */
 @OptIn(InternalQuicApi::class)
 class CoreLocalEndpointSupportTests {
-    /** The factory [coreConnect] builds for a peer on loopback. */
-    private suspend fun factoryFor(port: Int): UdpSocketChannelFactory =
-        UdpSocketChannelFactory(
+    /** The factory [coreConnect] builds for a peer on loopback, with the path open the route tests use. */
+    private suspend fun factoryFor(port: Int): DriverUdpChannelFactory =
+        DriverUdpChannelFactory(
             UdpSocket.resolve("127.0.0.1", port),
             SocketAddressCodec(hostSockAddrLayout),
             BufferFactory.network(),
@@ -38,7 +38,7 @@ class CoreLocalEndpointSupportTests {
         )
 
     /** A port this process just held, which the host accepts a bind on again. */
-    private suspend fun freePort(factory: UdpSocketChannelFactory): Int {
+    private suspend fun freePort(factory: DriverUdpChannelFactory): Int {
         val path = factory.openPath(null, 0)
         try {
             return path.localEndpoint.port
