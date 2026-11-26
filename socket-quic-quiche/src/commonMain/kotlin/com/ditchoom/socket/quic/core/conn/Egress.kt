@@ -20,11 +20,12 @@ internal enum class LastOut { None, Kept, Dropped }
 internal enum class FirstOut { NotYet, Written }
 
 /**
- * Datagrams out: the only file that asks quiche for output and reads its send infos. Each datagram goes where the connection's [Paths] say:
- * all to one target, or each by the address quiche wrote it for; one for a path no socket of ours holds is dropped and recorded
- * ([DropWhy.NoSocketForPath]). Remembers what became of the last datagram of its last write: the write that makes quiche drain ends with
- * its CONNECTION_CLOSE. Each datagram is recorded at the time quiche stamped it with, which its round trips and probes are measured from
- * and which a replay sends it at ([sentAt]). A write's datagrams leave together, in one batch.
+ * Datagrams out: the only file that asks quiche for output and reads its send infos. Each datagram goes where the
+ * connection's [Paths] say: all to one target, or each by the address quiche wrote it for; one for a path no socket of
+ * ours holds is dropped and recorded ([DropWhy.NoSocketForPath]). Remembers what became of the last datagram of its
+ * last write: the write that makes quiche drain ends with its CONNECTION_CLOSE. Each datagram is recorded at the time
+ * quiche stamped it with, which its round trips and probes are measured from and which a replay sends it at ([sentAt]).
+ * A write's datagrams leave together, in one batch.
  */
 @Confined
 internal class Egress(

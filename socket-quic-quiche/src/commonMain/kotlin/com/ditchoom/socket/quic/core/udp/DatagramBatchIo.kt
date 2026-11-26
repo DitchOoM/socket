@@ -23,7 +23,7 @@ internal interface DatagramBatchIo {
     /** Receives what waits on the carrying socket. */
     fun receive(into: ReceiveBatch): ReceiveBatchResult
 
-    /** Receives what waits on the second socket, while one is open; a failure there is read as nothing waiting. */
+    /** Receives what waits on the second socket, while one is open. */
     fun receiveSecond(into: ReceiveBatch): ReceiveBatchResult = ReceiveBatchResult.Nothing
 
     /** Asked after an unnamed error: does the socket still work? */
@@ -37,15 +37,15 @@ internal interface DatagramBatchIo {
     fun reopen(): Reopened
 
     /**
-     * Loop thread, with the second socket out of the poller: [reopen] for the second socket, which holds the address the
-     * connection is moving to and so the one a changed network carries now.
+     * Loop thread, with the second socket out of the poller: [reopen] for the second socket, which holds the address
+     * the connection is moving to and so the one a changed network carries now.
      */
     fun reopenSecond(): Reopened = Reopened.SameEndpoint
 
     /**
-     * Loop thread, with no second socket open: opens one beside the carrying socket, bound to [bind]'s address on a port
-     * of its own and connected to the same peer, and names it [ticket]. The carrying socket is untouched: the peer sees
-     * a new path, and the old one keeps carrying until the loop promotes or closes the second.
+     * Loop thread: opens one beside the carrying socket, bound to [bind]'s address on a port of its own and connected
+     * to the same peer, and names it [ticket]; a second one still open is closed first, so there are never three. The
+     * carrying socket is untouched: the peer sees a new path, and the old one carries until the second is promoted.
      */
     fun openBeside(
         bind: PathKey,
@@ -58,7 +58,10 @@ internal interface DatagramBatchIo {
      */
     fun settleBeside(): Beside = Beside.Unsupported
 
-    /** Loop thread, with the sockets out of the poller: the second socket carries from now on, and the old one is closed. */
+    /**
+     * Loop thread, with the sockets out of the poller: the second socket carries from now on, and the old one is
+     * closed.
+     */
     fun promote() = Unit
 
     /** Loop thread, with the second socket out of the poller: closes the second socket, or the one being made. */
@@ -80,7 +83,10 @@ internal sealed interface Beside {
         val thrown: Thrown,
     ) : Beside
 
-    /** A socket is being made without waiting for it: [DatagramBatchIo.settleBeside] says when it is ready, and wakes the loop. */
+    /**
+     * A socket is being made without waiting for it: [DatagramBatchIo.settleBeside] says when it is ready, and wakes
+     * the loop.
+     */
     data object Arriving : Beside
 
     /** This kind of socket follows the device's paths by itself: no second one is opened. */

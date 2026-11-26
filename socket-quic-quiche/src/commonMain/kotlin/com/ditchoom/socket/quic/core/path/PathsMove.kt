@@ -44,7 +44,9 @@ internal enum class MoveAnswer {
     /** The new endpoint's path is being validated, or has no spare id to be. */
     Following,
 
-    /** The peer forbade migration: the connection cannot follow its socket. */
+    /**
+     * The peer forbade migration, or the handshake is unconfirmed: the connection cannot follow its socket, and stays.
+     */
     Refused,
 
     /** The peer gave no spare id and is silent, so none can come: the connection cannot follow its socket. */

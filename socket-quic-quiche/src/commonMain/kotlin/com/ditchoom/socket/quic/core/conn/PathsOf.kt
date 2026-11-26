@@ -12,6 +12,7 @@ import com.ditchoom.socket.quic.core.path.Outgoing
 import com.ditchoom.socket.quic.core.path.PathRead
 import com.ditchoom.socket.quic.core.path.PathStep
 import com.ditchoom.socket.quic.core.path.RecvFrom
+import com.ditchoom.socket.quic.core.path.SecondHeld
 import com.ditchoom.socket.quic.core.path.Sorting
 import com.ditchoom.socket.quic.core.path.Want
 import com.ditchoom.socket.quic.core.path.Window
@@ -22,7 +23,9 @@ import com.ditchoom.socket.quic.core.udp.SocketTicket
 
 // What every role's paths answer, asked the same way: each is one `when` over the slot.
 
-/** What quiche is told about a datagram that came from [from] on socket [on] at [now]; a client's path answered then. */
+/**
+ * What quiche is told about a datagram that came from [from] on socket [on] at [now]; a client's path answered then.
+ */
 internal fun Paths.recvFrom(
     from: PathKey,
     now: Nanos,
@@ -33,7 +36,10 @@ internal fun Paths.recvFrom(
         is Paths.Server -> paths.recvInfo(from)
     }
 
-/** Hands quiche the datagram of [length] bytes at the start of [bytes] that came [from] on [on] at [now], unless no path takes it. */
+/**
+ * Hands quiche the datagram of [length] bytes at the start of [bytes] that came [from] on [on] at [now], unless no path
+ * takes it.
+ */
 internal fun ConnParts.feed(
     bytes: NativeBytes,
     length: Int,
@@ -105,7 +111,10 @@ internal fun Paths.stats(): QuicStatsRead =
         is Paths.Server -> paths.stats()
     }
 
-/** The connection is established: each role hands out, or asks the loop for, the ids a move needs; a client's watch reads its baseline. */
+/**
+ * The connection is established: each role hands out, or asks the loop for, the ids a move needs; a client's watch
+ * reads its baseline.
+ */
 internal fun Paths.established() =
     when (this) {
         is Paths.Client -> {
@@ -199,9 +208,19 @@ internal fun ConnParts.follow(
     return answer
 }
 
+/** Inside: the second socket [ticket] names is gone; the move it served ends and the connection stays where it is. */
+internal fun ConnParts.secondLost(
+    now: Nanos,
+    ticket: SocketTicket,
+) = when (val paths = slots.paths) {
+    is Paths.Client -> if (paths.paths.lost(ticket) == SecondHeld.Lost) flight.path(now, PathMark.SecondLost) else Unit
+    is Paths.Server -> Unit
+}
+
 /**
- * Inside: a client's socket is wanted on [wanted]'s address. Before its handshake is confirmed it moves at once and the
- * connection, which cannot follow it (RFC 9000 §9), ends; after, it moves once the path from there can be probed.
+ * Inside: a client's socket is wanted on [wanted]'s address. Before its handshake is confirmed it moves at once, and
+ * the connection, which cannot follow it (RFC 9000 §9), refuses the move and stays; after, it moves once the path from
+ * there can be probed.
  */
 internal fun ConnParts.want(
     now: Nanos,

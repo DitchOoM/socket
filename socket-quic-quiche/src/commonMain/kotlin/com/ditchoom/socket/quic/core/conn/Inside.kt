@@ -34,7 +34,10 @@ internal class Inside(
 
     fun life(): Life = life.view()
 
-    /** The close point of a close with [error]: with no error it is the connection's [ConnLife.noError] choice, else immediate. */
+    /**
+     * The close point of a close with [error]: with no error it is the connection's [ConnLife.noError] choice, else
+     * immediate.
+     */
     fun close(error: QuicError) =
         c.close(if (error is QuicError.NoError) life.noError else CloseChoice.Immediate(error), ConnEnd.ByLocal(error), clock.now())
 
@@ -44,7 +47,9 @@ internal class Inside(
     /** The close point of the close its server asks for, as the connection's [ConnLife.noError] choice says. */
     fun closeForServer() = c.close(life.noError, ConnEnd.ServerClosed, clock.now())
 
-    /** A deadline on the connection's loop that runs [action] when an arming falls due; made once, re-armed in place. */
+    /**
+     * A deadline on the connection's loop that runs [action] when an arming falls due; made once, re-armed in place.
+     */
     fun rearmable(action: DeadlineFired): Rearmable = port.rearmable(action)
 
     /** Arms [deadline] for [due], in place of what it was armed for; allocates nothing. */
@@ -75,6 +80,12 @@ internal class Inside(
                 end(denied)
             }
         }
+
+    /** The client's loop could not open the socket a move asked for: the move is refused, the connection stays. */
+    fun moveRefused() = c.flight.path(clock.now(), PathMark.OpenRefused)
+
+    /** The client's loop lost the second socket [ticket] names: the move it served ends, the connection stays. */
+    fun secondLost(ticket: SocketTicket) = c.secondLost(clock.now(), ticket)
 
     /** The client's loop opened a second socket, which leaves from [to]. */
     fun moved(to: MoveTo) = turn.moved(clock.now(), to)

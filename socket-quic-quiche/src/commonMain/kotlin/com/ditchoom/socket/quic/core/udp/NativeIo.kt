@@ -7,8 +7,8 @@ import com.ditchoom.socket.quic.core.observe.LoopOnly
 /**
  * The [DatagramBatchIo] of the native stack: one `qnet` call per batch, whatever the batching. Sending is [NativeSend]
  * (segmented groups, the EMSGSIZE fallback), receiving is [NativeReceive] (per datagram or coalesced), and the socket's
- * own lifecycle (reopen, a second socket beside it, close) is [NativeSocket]'s; this class puts the three behind one interface and shares
- * their batching mode.
+ * own lifecycle (reopen, a second socket beside it, close) is [NativeSocket]'s; this class puts the three behind one
+ * interface and shares their batching mode.
  */
 @LoopOnly
 internal class NativeIo(
@@ -42,10 +42,7 @@ internal class NativeIo(
         when (val pair = socket.pair()) {
             is NativePair.One -> ReceiveBatchResult.Nothing
             is NativePair.Two ->
-                when (val got = receiving.receive(into, pair.second)) {
-                    is ReceiveBatchResult.Failed -> ReceiveBatchResult.Nothing
-                    is ReceiveBatchResult.Got, is ReceiveBatchResult.GotWithBacklog, is ReceiveBatchResult.Nothing -> got
-                }
+                receiving.receive(into, pair.second)
         }
 
     override fun probe(): SocketProbe =
@@ -78,7 +75,10 @@ internal class NativeIo(
     }
 
     companion object {
-        /** Bytes of one send record and one receive record, and where each holds its local address, as `qnet.h` lays them out. */
+        /**
+         * Bytes of one send record and one receive record, and where each holds its local address, as `qnet.h` lays
+         * them out.
+         */
         const val SEND_RECORD = 56
         const val SEND_SOURCE = 32
         const val RECV_RECORD = 64

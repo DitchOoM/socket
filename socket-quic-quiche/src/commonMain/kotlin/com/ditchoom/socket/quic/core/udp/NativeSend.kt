@@ -49,7 +49,7 @@ internal class NativeSend(
             val pair = socket.pair()
             val ticket = batch.socketOf(taken)
             if (ticket == pair.carrying()) {
-                when (val sent = sendRun(batch, records, taken, run, longest, socket.cell, pair.family())) {
+                when (val sent = sendRun(batch, records, taken, run, longest, pair.cell(), pair.family())) {
                     is SendBatchResult.AllTaken -> taken += run
                     is SendBatchResult.Partial -> return SendBatchResult.Partial(taken + sent.taken, sent.why)
                 }
@@ -121,7 +121,8 @@ internal class NativeSend(
                 )
             },
             replacing = { NativeResult.REPLACED },
-            closed = { NativeResult.CLOSED },
+            // A cell no longer the socket's carrying one, or second, was replaced under this sender: its datagrams drop.
+            closed = { if (cell === socket.pair().cell()) NativeResult.CLOSED else NativeResult.REPLACED },
         )
 
     private companion object {

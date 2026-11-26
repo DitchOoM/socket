@@ -105,14 +105,15 @@ internal class ChannelCell(
     }
 
     /**
-     * Loop thread, with no second channel open: opens a channel bound to [bind] on a port of its own, connected to the
-     * same peer, with the same buffer sizes, beside the carrying one, and names it [ticket]. The carrying channel is
-     * untouched.
+     * Loop thread: opens a channel bound to [bind] on a port of its own, connected to the same peer, with the same buffer
+     * sizes, beside the carrying one, and names it [ticket]; a second one still open is closed first. The carrying channel
+     * is untouched.
      */
     fun openBeside(
         bind: InetSocketAddress,
         ticket: SocketTicket,
     ): Beside {
+        closeSecond()
         val was = current.load()
         val old = was.held.channel()
         val fresh =

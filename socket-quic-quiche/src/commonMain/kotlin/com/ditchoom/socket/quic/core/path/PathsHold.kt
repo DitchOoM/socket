@@ -17,7 +17,10 @@ import com.ditchoom.socket.quic.core.udp.SocketTicket
 internal sealed interface HeldMove {
     data object None : HeldMove
 
-    /** The socket is wanted on [bind]'s address and waits for a spare id; the move is final once [darkAt] passes in silence. */
+    /**
+     * The socket is wanted on [bind]'s address and waits for a spare id; the move is final once [darkAt] passes in
+     * silence.
+     */
     class Waiting(
         val bind: PathKey,
         val prior: RttPrior,
@@ -37,9 +40,15 @@ internal enum class Want {
     NoUsablePath,
 }
 
-/** What a client's connection asks of its loop's sockets: loop work, and a no-op there for a ticket the loop no longer holds. */
+/**
+ * What a client's connection asks of its loop's sockets: loop work, and a no-op there for a ticket the loop no longer
+ * holds.
+ */
 internal sealed interface SocketAsk {
-    /** A second socket on [bind]'s address, on a network assumed a round trip of [prior]; the loop answers with its ticket. */
+    /**
+     * A second socket on [bind]'s address, on a network assumed a round trip of [prior]; the loop answers with its
+     * ticket.
+     */
     class OpenBeside(
         val bind: PathKey,
         val prior: RttPrior,
@@ -71,8 +80,8 @@ internal class MoveHold(
 
     /**
      * The socket is wanted on [bind]'s address. It moves now when the path from there can be probed, or when the peer
-     * forbade migration, which the move then answers. With no spare id it waits where it is: the peer sends the id there,
-     * and could not reach a socket that left. A silent peer can send none, and the move is final.
+     * forbade migration, which the move then answers. With no spare id it waits where it is: the peer sends the id
+     * there, and could not reach a socket that left. A silent peer can send none, and the move is final.
      */
     fun want(
         now: Nanos,
@@ -107,8 +116,8 @@ internal class MoveHold(
     }
 
     /**
-     * A waiting socket moves once the peer's spare id came; what arrives meanwhile shows the peer can still send one, and
-     * silence until [HeldMove.Waiting.darkAt] makes the move final ([PathStep.NoUsablePath]).
+     * A waiting socket moves once the peer's spare id came; what arrives meanwhile shows the peer can still send one,
+     * and silence until [HeldMove.Waiting.darkAt] makes the move final ([PathStep.NoUsablePath]).
      */
     fun step(now: Nanos): PathStep {
         val waiting =

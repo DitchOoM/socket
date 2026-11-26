@@ -21,10 +21,9 @@ import com.ditchoom.socket.quic.encodeToNative
 import kotlin.random.Random
 
 /**
- * A client's paths. A move is made before it breaks: the new endpoint's socket opens beside the carrying one, its path is
- * probed (RFC 9000 §8.2) with datagrams of at most 1200 bytes while the old one carries, and once it validates the
- * connection migrates, the loop promotes the socket and the left path's id is retired, in one step. A move whose path
- * keeps failing while the old one answers is given up. Datagrams for a path no socket holds are dropped. Inside only.
+ * A client's paths. A move is made before it breaks: the new endpoint's socket opens beside the carrying one and its path
+ * is probed (RFC 9000 §8.2) with datagrams of at most 1200 bytes; once it validates, the connection migrates and the loop
+ * promotes the socket. A move refused, lost or failing while the old path answers ends with the connection where it was.
  */
 @Confined
 internal class ClientPaths(
@@ -47,8 +46,13 @@ internal class ClientPaths(
     private val ears = PeerHearing(q)
     private val retiredIds = RetiredReader(factory)
 
-    /** Where the socket is wanted, and whether it waits to move there. */
-    val hold = MoveHold(q, ears, ask)
+    /** Where the socket is wanted, and whether it waits to move there; a new move gives up the one under way first. */
+    val hold =
+        MoveHold(q, ears) { asked ->
+            // Before the new socket's open is asked, so no promotion of the old probe can follow it to the loop.
+            if (asked is SocketAsk.OpenBeside) move = Move.Settled(abandon())
+            ask(asked)
+        }
 
     val sendInfo get() = first.sendInfo
 
@@ -59,7 +63,7 @@ internal class ClientPaths(
     /** What quiche is told about a datagram that arrived on socket [on]: on the endpoint [Move.readsOnSecond] chooses. */
     fun recvFrom(on: SocketTicket): RecvFrom {
         ears.arrived()
-        if (move.readsOnSecond(on)) return move.second().info
+        if (move.readOn(on) == ReadOn.Second) return move.second().info
         if (move.carrying().socket == on) carryingHeard = Answered.Yes
         return move.carrying().info
     }
@@ -132,6 +136,13 @@ internal class ClientPaths(
     /** The connection cannot follow the second socket [ticket] names: the loop closes it, and the move is refused. */
     fun decline(ticket: SocketTicket): MoveAnswer = MoveAnswer.Refused.also { ask(SocketAsk.CloseSecond(ticket)) }
 
+    /** The loop lost the second socket [ticket] names: the move it served ends, and the connection stays where it is. */
+    fun lost(ticket: SocketTicket): SecondHeld {
+        if (move is Move.Settled || move.second().socket != ticket) return SecondHeld.Stale
+        move = Move.Settled(abandon())
+        return SecondHeld.Lost
+    }
+
     /** Whether the socket's endpoint has no validated path yet: an idle end then means no usable path was found. */
     fun unsettled(): Boolean = move !is Move.Settled || hold.held is HeldMove.Waiting
 
@@ -157,6 +168,10 @@ internal class ClientPaths(
             return migrate(now, stranded.from, stranded.at, stranded.id, stranded.retry.failed)
         }
         if (now.value < stranded.retry.due.value) return PathStep.Steady
+        if (stranded.retry.failed >= ABANDON_AFTER_FAILURES && carryingHeard == Answered.Yes) {
+            move = Move.Settled(abandon())
+            return PathStep.Abandoned
+        }
         topUp()
         val hearing = ears.judge(now)
         return when (stranded.why) {
@@ -217,8 +232,7 @@ internal class ClientPaths(
         probing: Move.Probing,
     ): PathStep {
         if (probing.failed + 1 >= ABANDON_AFTER_FAILURES && carryingHeard == Answered.Yes) {
-            dropSecond(probing.to.local, LinkedId.Seq(probing.to.dcidSeq))
-            move = Move.Settled(probing.from)
+            move = Move.Settled(abandon())
             return PathStep.Abandoned
         }
         val retry = validationRetryAt(now, probing.failed + 1)
@@ -238,13 +252,13 @@ internal class ClientPaths(
                 ask(SocketAsk.Promote(to.socket))
                 // The old path's socket closes with the promotion: what it had in flight is resent from the new one now.
                 peer.requeue(from.local)
-                retire(from.dcidSeq)
+                q.retire(from.dcidSeq)
                 spend(from.local)
                 move = Move.Settled(Linked(to, migrated.dcidSeq))
                 PathStep.Migrated
             }
             is MigrateOutcome.Rejected -> {
-                retire(id)
+                q.retire(id)
                 move = Move.Stranded(from, to, Unprobed.MigrationRefused, q.retryAt(now, failed + 1), LinkedId.None)
                 PathStep.Steady
             }
@@ -264,15 +278,12 @@ internal class ClientPaths(
             is Move.Stranded -> now.from.also { dropSecond(now.at, now.id) }
         }
 
-    /**
-     * The second endpoint [local] is left: its path's id is retired, its socket closed (a no-op once the loop closed it to
-     * open the next) and the endpoint spent.
-     */
+    /** The second endpoint [local] is left: its path's id retired, its socket closed (once the loop's own close: a no-op), spent. */
     private fun dropSecond(
         local: LocalAddr,
         id: LinkedId,
     ) {
-        retire(id)
+        q.retire(id)
         ask(SocketAsk.CloseSecond(local.socket))
         spend(local)
     }
@@ -281,16 +292,5 @@ internal class ClientPaths(
     private fun spend(local: LocalAddr) {
         previous.held { left -> free(left.recvInfo, left.made) }
         previous = Previous.Held(local)
-    }
-
-    private fun retire(id: LinkedId) =
-        when (id) {
-            is LinkedId.Seq -> retire(id.seq)
-            is LinkedId.None -> Unit
-        }
-
-    private fun retire(seq: Long) {
-        // A refusal leaves the id with quiche until the connection ends; no path uses it.
-        q.api.connRetireDcid(q.handle, seq)
     }
 }

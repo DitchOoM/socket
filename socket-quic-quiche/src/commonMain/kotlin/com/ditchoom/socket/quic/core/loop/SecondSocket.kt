@@ -1,11 +1,12 @@
 package com.ditchoom.socket.quic.core.loop
 
 import com.ditchoom.socket.quic.PathKey
+import com.ditchoom.socket.quic.core.conn.MoveRefusedWork
 import com.ditchoom.socket.quic.core.conn.MoveTo
 import com.ditchoom.socket.quic.core.conn.MovedWork
 import com.ditchoom.socket.quic.core.conn.NetworkChange
 import com.ditchoom.socket.quic.core.conn.NetworkWork
-import com.ditchoom.socket.quic.core.life.ConnEnd
+import com.ditchoom.socket.quic.core.conn.SecondLostWork
 import com.ditchoom.socket.quic.core.observe.LoopCounts
 import com.ditchoom.socket.quic.core.observe.LoopOnly
 import com.ditchoom.socket.quic.core.observe.TraceSection
@@ -19,8 +20,8 @@ import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.ReceiveBatchResult
 import com.ditchoom.socket.quic.core.udp.Reopened
-import com.ditchoom.socket.quic.core.udp.SocketFault
 import com.ditchoom.socket.quic.core.udp.SocketTicket
+import com.ditchoom.socket.quic.core.udp.UdpError
 
 /** What a promotion found: no second socket for its ticket, or one promoted, with or without datagrams the io held. */
 internal enum class Promotion { Stale, Promoted, PromotedWithBacklog }
@@ -49,10 +50,17 @@ internal class SecondSocket(
         if (input != ReceiveInput.Backlog) input = ReceiveInput.Maybe
     }
 
-    /** Whether an open second socket's io holds datagrams the poller will never signal. */
-    fun hasBacklog(): Boolean = sockets is Sockets.Two && input == ReceiveInput.Backlog
+    /** Whether an open second socket may hold datagrams, [ReceiveInput.Backlog] when its io holds some the poller never signals. */
+    fun input(): ReceiveInput =
+        when (sockets) {
+            is Sockets.Two -> input
+            is Sockets.One, is Sockets.Opening -> ReceiveInput.Drained
+        }
 
-    /** Reads what waits on the second socket, up to [most] datagrams, handing each read to [route]; failures read as nothing. */
+    /**
+     * Reads what waits on the second socket, up to [most] datagrams, handing each read to [route]. What a read that failed
+     * had taken is handed on too; a socket that failed for good is closed and its connection told ([lose]).
+     */
     fun receive(
         route: Route,
         batch: ReceiveBatch,
@@ -60,6 +68,8 @@ internal class SecondSocket(
         clock: LoopClock,
         readiness: Readiness,
         most: Int,
+        poller: Poller,
+        seats: Loop,
     ) {
         val two =
             when (val now = sockets) {
@@ -75,9 +85,15 @@ internal class SecondSocket(
                     taken += batch.count
                     route.deliver(batch, clock.now(), two.second)
                 }
-                is ReceiveBatchResult.Nothing, is ReceiveBatchResult.Failed -> {
-                    batch.release()
+                is ReceiveBatchResult.Nothing -> {
                     input = ReceiveInput.Drained
+                    break
+                }
+                is ReceiveBatchResult.Failed -> {
+                    taken += batch.count
+                    route.deliver(batch, clock.now(), two.second)
+                    input = ReceiveInput.Drained
+                    if (got.error is UdpError.SocketClosed) lose(poller, seats, route, two)
                     break
                 }
             }
@@ -89,7 +105,7 @@ internal class SecondSocket(
      * [endpoint]'s connection wants a socket on [bind]'s address: one is opened there, on a port of its own, beside the
      * carrying one, after any second one an earlier move left is closed, and the connection is told its ticket in this
      * pass; a socket made without waiting tells it in the pass that finds it ready ([settle]). One that cannot be opened
-     * there ends the connection; one that cannot be moved ends it as its address went away.
+     * there refuses the move, and the connection stays where it is; one that cannot be moved ends it as its address went away.
      */
     fun open(
         endpoint: Endpoint,
@@ -167,7 +183,7 @@ internal class SecondSocket(
 
     /**
      * While a move is open the second socket holds the address the connection is moving to, so a changed network reopens
-     * it, and [route]'s connection is told. One that cannot be reopened is closed and ends the connection.
+     * it, and [route]'s connection is told. One that cannot be reopened is lost ([lose]).
      */
     fun rehome(
         poller: Poller,
@@ -187,16 +203,14 @@ internal class SecondSocket(
                 route.rehomed()
             }
             is Reopened.Refused -> {
-                seats.unseat(two.token)
-                io.closeSecond()
-                sockets = Sockets.One(two.carrying)
-                route.endWith(ConnEnd.SocketFailed(SocketFault.ReopenRefused(reopened.thrown)))
+                poller.add(refs.second, two.token)
+                lose(poller, seats, route, two)
             }
         }
         return SecondRehome.Reopened
     }
 
-    /** The second socket's slot is let go with its endpoint; the io closes the socket. */
+    /** The second socket's slot is let go with its endpoint, once; the io closes the socket. */
     fun leave(
         poller: Poller,
         seats: Loop,
@@ -205,8 +219,24 @@ internal class SecondSocket(
             is Sockets.Two -> {
                 poller.remove(now.token)
                 seats.unseat(now.token)
+                sockets = Sockets.One(now.carrying)
             }
-            is Sockets.One, is Sockets.Opening -> Unit
+            is Sockets.One -> Unit
+            is Sockets.Opening -> sockets = Sockets.One(now.carrying)
+        }
+    }
+
+    /** The second socket failed for good: it is closed, and its connection ends the move it served and stays where it is. */
+    private fun lose(
+        poller: Poller,
+        seats: Loop,
+        route: Route,
+        two: Sockets.Two,
+    ) {
+        drop(poller, seats)
+        when (route) {
+            is Route.Fixed -> route.conn.submitFromLoop(SecondLostWork(two.second))
+            is Route.Demux -> Unit
         }
     }
 
@@ -246,13 +276,13 @@ internal class SecondSocket(
         fixed.conn.submitFromLoop(MovedWork(MoveTo(local, prior, ticket)))
     }
 
-    /** No second socket came of a move: the connection ends, as its socket could not be made or cannot be moved. */
+    /** No second socket came of a move: it is refused and the connection stays, or, for a socket that cannot move, ends. */
     private fun unopened(
         fixed: Route.Fixed,
         unopened: Beside,
     ) {
         when (unopened) {
-            is Beside.Refused -> fixed.conn.endWithLoop(ConnEnd.SocketFailed(SocketFault.MoveRefused(unopened.thrown)))
+            is Beside.Refused -> fixed.conn.submitFromLoop(MoveRefusedWork())
             is Beside.Unsupported -> fixed.conn.submitFromLoop(NetworkWork(NetworkChange.Moved))
             is Beside.Opened, is Beside.Arriving -> Unit
         }

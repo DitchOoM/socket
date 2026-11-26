@@ -12,12 +12,11 @@ internal sealed interface ReceiveOn {
 }
 
 /**
- * The receive half of [NativeIo], the loop's alone: it hands `qnet` the records of the batch's armed [ReceiveSlots], which
- * keep their buffers between receives, and
- * `qnet` answers how many datagrams came, exactly, and what stopped it. A socket with `UDP_GRO` on ([Receiving.Coalesced])
- * reads one `recvmmsg` per call and `qnet` splits each message into the batch's slots, so what is handed on is the
- * datagrams as the sender sent them; whole messages that did not fit wait inside `qnet` and the result says so
- * ([ReceiveBatchResult.GotWithBacklog]).
+ * The receive half of [NativeIo], the loop's alone: it hands `qnet` the records of the batch's armed [ReceiveSlots],
+ * which keep their buffers between receives, and `qnet` answers how many datagrams came, exactly, and what stopped it.
+ * A socket with `UDP_GRO` on ([Receiving.Coalesced]) reads one `recvmmsg` per call and `qnet` splits each message into
+ * the batch's slots, so what is handed on is the datagrams as the sender sent them; whole messages that did not fit
+ * wait inside `qnet` and the result says so ([ReceiveBatchResult.GotWithBacklog]).
  */
 @LoopOnly
 internal class NativeReceive(

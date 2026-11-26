@@ -19,20 +19,33 @@ internal sealed interface Receiving {
     data object Coalesced : Receiving
 }
 
-/** A client's sockets as senders read them: the carrying one, and the second beside it while a move is open. */
+/**
+ * A client's sockets as senders read them, in one reading: the carrying one's ticket, family and cell, and the second
+ * beside it while a move is open. A promotion publishes the second's cell as the carrying one with its ticket, so no
+ * sender can pair one socket's ticket with the other's descriptor.
+ */
 internal sealed interface NativePair {
     /** [family] is 4 or 6: the carrying socket's, which an IPv4 target on an IPv6 socket is mapped into. */
     class One(
         val carrying: SocketTicket,
         val family: Int,
+        val cell: DescriptorCell,
     ) : NativePair
 
     class Two(
         val carrying: SocketTicket,
         val family: Int,
+        val cell: DescriptorCell,
         val second: SecondDescriptor,
     ) : NativePair
 }
+
+/** The carrying socket's cell. */
+internal fun NativePair.cell(): DescriptorCell =
+    when (this) {
+        is NativePair.One -> cell
+        is NativePair.Two -> cell
+    }
 
 /** The carrying socket's ticket. */
 internal fun NativePair.carrying(): SocketTicket =
@@ -58,11 +71,11 @@ internal class SecondDescriptor(
 ) : ReceiveOn
 
 /**
- * A UDP socket `qnet` opened: non-blocking, close-on-exec, its buffers asked of the kernel and read back, bound and, for a
- * client, connected. [spec] is the native block the socket was opened from; [reopen] opens it again from the same
+ * A UDP socket `qnet` opened: non-blocking, close-on-exec, its buffers asked of the kernel and read back, bound and,
+ * for a client, connected. [spec] is the native block the socket was opened from; [reopen] opens it again from the same
  * block on the same local address and port. A client's move opens a second descriptor beside it ([openBeside]), which
- * [promote] makes the carrying one or [closeSecond] closes: never more than two. Its batching is probed once, at open ([SocketOpening]), and [gro] says
- * how `UDP_GRO` went the last time a descriptor was opened.
+ * [promote] makes the carrying one or [closeSecond] closes: never more than two. Its batching is probed once, at open
+ * ([SocketOpening]), and [gro] says how `UDP_GRO` went the last time a descriptor was opened.
  */
 @Published
 internal class NativeSocket internal constructor(
@@ -74,8 +87,6 @@ internal class NativeSocket internal constructor(
     val capability: BatchCapability,
     val receiving: Receiving,
 ) {
-    val cell = DescriptorCell(first)
-
     private val options = OptionsCell(firstOptions)
 
     /** What the socket's last open did about `UDP_GRO`. */
@@ -84,7 +95,10 @@ internal class NativeSocket internal constructor(
     /** Whether this socket's datagrams carry DF, as it was set at its last open. */
     val dontFragment: DontFragment get() = options.load().dontFragment
 
-    private val pair = AtomicReference<NativePair>(NativePair.One(SocketTicket.FIRST, spec.intAt(SpecLayout.BIND)))
+    private val pair = AtomicReference<NativePair>(NativePair.One(SocketTicket.FIRST, spec.intAt(SpecLayout.BIND), DescriptorCell(first)))
+
+    /** The carrying socket's descriptor and the senders using it. */
+    val cell: DescriptorCell get() = pair.load().cell()
 
     val local: PathKey get() = recordAt(spec, SpecLayout.LOCAL)
 
@@ -119,14 +133,15 @@ internal class NativeSocket internal constructor(
     }
 
     /**
-     * Loop thread, with no second socket open: opens a socket on [bind]'s address and a port of its own, to the same
-     * peer, beside this one, and names it [ticket]. The carrying descriptor and the local address this socket reports
-     * are unchanged until [promote].
+     * Loop thread: opens a socket on [bind]'s address and a port of its own, to the same peer, beside this one, and
+     * names it [ticket]; a second one still open is closed first. The carrying descriptor and the local address this
+     * socket reports are unchanged until [promote].
      */
     fun openBeside(
         bind: PathKey,
         ticket: SocketTicket,
     ): Beside {
+        closeSecond()
         val carrying = pair.load()
         val carryingLocal = local
         putRecord(spec, SpecLayout.BIND, PathKey(bind.family, 0, bind.hi, bind.lo))
@@ -139,13 +154,14 @@ internal class NativeSocket internal constructor(
         val applied = applyOptions(shim, fd, family, request)
         val second = SecondDescriptor(ticket, DescriptorCell(fd), recordAt(spec, SpecLayout.LOCAL), family, applied)
         putRecord(spec, SpecLayout.LOCAL, carryingLocal)
-        pair.store(NativePair.Two(carrying.carrying(), carrying.family(), second))
+        pair.store(NativePair.Two(carrying.carrying(), carrying.family(), carrying.cell(), second))
         return Beside.Opened(second.local)
     }
 
     /**
-     * Loop thread: the second descriptor carries from now on and the old one is closed. Senders that met the second's own
-     * cell closed drop what they held; from the swap on, its ticket names the carrying cell.
+     * Loop thread: the second descriptor carries from now on, its cell and ticket published in one store, and the old
+     * one is closed once no sender is inside a call on it. A sender that read the old pairing finds the old cell
+     * closed: a replacement, which drops its datagrams ([NativeSend]).
      */
     fun promote() {
         val two =
@@ -154,21 +170,10 @@ internal class NativeSocket internal constructor(
                 is NativePair.One -> return
             }
         val second = two.second
-        // Quiesced, not closed: the descriptor lives on in the carrying cell.
-        second.cell.close { }
-        val swapped =
-            cell.replace { old ->
-                shim.close(old)
-                Swapped.To(second.cell.descriptor())
-            }
-        when (swapped) {
-            Quiesced.Quiet -> Unit
-            // The socket was closed already: the second descriptor has no cell to carry it, and is closed too.
-            Quiesced.WasClosed -> shim.close(second.cell.descriptor())
-        }
         putRecord(spec, SpecLayout.LOCAL, second.local)
         options.store(second.options)
-        pair.store(NativePair.One(second.ticket, second.family))
+        pair.store(NativePair.One(second.ticket, second.family, second.cell))
+        two.cell.close { fd -> shim.close(fd) }
     }
 
     /** Loop thread: [reopen] for the second descriptor, on its own address and port; one that cannot be is closed. */
@@ -185,12 +190,17 @@ internal class NativeSocket internal constructor(
         val fd = shim.udpOpenSocket(spec.address)
         putRecord(spec, SpecLayout.LOCAL, carryingLocal)
         if (fd < 0) {
-            pair.store(NativePair.One(two.carrying, two.family))
+            pair.store(NativePair.One(two.carrying, two.family, two.cell))
             return Reopened.Refused(Thrown(NativeSocketRefusal(SocketRefusal.of(-fd))))
         }
         val applied = applyOptions(shim, fd, old.family, request)
         pair.store(
-            NativePair.Two(two.carrying, two.family, SecondDescriptor(old.ticket, DescriptorCell(fd), old.local, old.family, applied)),
+            NativePair.Two(
+                two.carrying,
+                two.family,
+                two.cell,
+                SecondDescriptor(old.ticket, DescriptorCell(fd), old.local, old.family, applied),
+            ),
         )
         return Reopened.SameEndpoint
     }
@@ -199,7 +209,7 @@ internal class NativeSocket internal constructor(
     fun closeSecond() {
         when (val now = pair.load()) {
             is NativePair.Two -> {
-                pair.store(NativePair.One(now.carrying, now.family))
+                pair.store(NativePair.One(now.carrying, now.family, now.cell))
                 now.second.cell.close { fd -> shim.close(fd) }
             }
             is NativePair.One -> Unit
@@ -213,14 +223,17 @@ internal class NativeSocket internal constructor(
     fun secondDescriptor(): Int =
         when (val now = pair.load()) {
             is NativePair.Two -> now.second.cell.descriptor()
-            is NativePair.One -> cell.descriptor()
+            is NativePair.One -> now.cell.descriptor()
         }
 
     companion object {
         /** The spec block's size in bytes, as `qnet.h` lays it out. */
         const val SPEC_BYTES = SpecLayout.BYTES
 
-        /** The most datagrams one coalesced read holds: a socket asks for `UDP_GRO` only when its batch can take them all. */
+        /**
+         * The most datagrams one coalesced read holds: a socket asks for `UDP_GRO` only when its batch can take them
+         * all.
+         */
         const val GRO_MAX_DATAGRAMS = 64
 
         fun open(

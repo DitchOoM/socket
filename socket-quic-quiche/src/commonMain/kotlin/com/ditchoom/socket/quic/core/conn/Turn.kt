@@ -29,8 +29,9 @@ import kotlinx.coroutines.Runnable
 internal enum class Collected { Everything, MoreWaiting, Abandoned }
 
 /**
- * The order of one serve, and the connection-tier containment site: an exception thrown by work or by a step ends this connection and no
- * other; an `Error` is not contained. Holds no state: it asks each component and passes the answers on.
+ * The order of one serve, and the connection-tier containment site: an exception thrown by work or by a step ends this
+ * connection and no other; an `Error` is not contained. Holds no state: it asks each component and passes the answers
+ * on.
  */
 internal class Turn(
     private val c: ConnParts,
@@ -110,7 +111,7 @@ internal class Turn(
             Collected.Abandoned
         }
 
-    /** Inside: quiche reads a datagram at the start of [bytes] that came [from] on socket [on]; one after the end is only counted. */
+    /** Inside: quiche reads a datagram at [bytes]' start from [from] on socket [on]; one after the end is counted. */
     fun receive(
         bytes: NativeBytes,
         length: Int,
@@ -155,13 +156,12 @@ internal class Turn(
         }
     }
 
-    /** Inside: a client's second socket leaves from [to]; a connection that cannot follow it ends ([follow]). */
+    /** Inside: a client's second socket leaves from [to]; one it cannot follow is refused and it stays ([follow]). */
     fun moved(
         now: Nanos,
         to: MoveTo,
     ) = when (c.follow(now, to)) {
-        MoveAnswer.Following -> Unit
-        MoveAnswer.Refused -> finish(now, ConnEnd.LocalAddressGone)
+        MoveAnswer.Following, MoveAnswer.Refused -> Unit
         MoveAnswer.NoUsablePath -> finish(now, ConnEnd.NoUsablePath)
     }
 

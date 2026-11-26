@@ -100,11 +100,7 @@ internal class NwIo(
 
     override fun receiveSecond(into: ReceiveBatch): ReceiveBatchResult =
         when (val beside = second.load()) {
-            is NwSecond.Open ->
-                when (val got = beside.wire.receive(into, peer)) {
-                    is ReceiveBatchResult.Failed -> ReceiveBatchResult.Nothing
-                    is ReceiveBatchResult.Got, is ReceiveBatchResult.GotWithBacklog, is ReceiveBatchResult.Nothing -> got
-                }
+            is NwSecond.Open -> beside.wire.receive(into, peer)
             is NwSecond.None, is NwSecond.Starting, is NwSecond.Ready, is NwSecond.Failed -> ReceiveBatchResult.Nothing
         }
 

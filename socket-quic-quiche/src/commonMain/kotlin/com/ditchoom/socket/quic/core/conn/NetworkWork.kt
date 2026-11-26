@@ -46,6 +46,22 @@ internal class MovedWork(
     override fun gone(end: ConnEnd) = Unit
 }
 
+/** Inside: the loop could not open the socket a move asked for; the move is refused and the connection stays. */
+internal class MoveRefusedWork : ConnWork() {
+    override fun run(inside: Inside) = inside.moveRefused()
+
+    override fun gone(end: ConnEnd) = Unit
+}
+
+/** Inside: the loop lost the second socket [ticket] names, which died or could not be reopened; its move ends. */
+internal class SecondLostWork(
+    private val ticket: SocketTicket,
+) : ConnWork() {
+    override fun run(inside: Inside) = inside.secondLost(ticket)
+
+    override fun gone(end: ConnEnd) = Unit
+}
+
 /** Inside: the loop routed [spare] to this server connection; quiche hands them to the peer. */
 internal class IssueIdsWork(
     private val spare: List<SpareId>,
@@ -55,7 +71,9 @@ internal class IssueIdsWork(
     override fun gone(end: ConnEnd) = Unit
 }
 
-/** Inside: the network refused the first datagram of the connection it was handed; a handshake judges what that means. */
+/**
+ * Inside: the network refused the first datagram of the connection it was handed; a handshake judges what that means.
+ */
 internal class SendsRefusedWork : ConnWork() {
     override fun run(inside: Inside) = inside.sendsRefused()
 

@@ -233,13 +233,15 @@ class CoreSecondSocketVirtualTests {
             launch { runCatching { while (true) echoOne(serverSide) } }
             val first = pair.clientPort()
             move(pair)
-            launch {
-                while (true) {
-                    runCatching { echo(pair) }
-                    delay(ECHO_EVERY)
+            val echoing =
+                launch {
+                    while (true) {
+                        runCatching { echo(pair) }
+                        delay(ECHO_EVERY)
+                    }
                 }
-            }
             awaitMark(pair, "Abandoned", within = MOVE_GIVEN_UP)
+            echoing.cancel()
             pair.runFor(ECHO_EVERY)
             assertEquals(1, pair.clientSockets)
             assertEquals(first, pair.clientPort())

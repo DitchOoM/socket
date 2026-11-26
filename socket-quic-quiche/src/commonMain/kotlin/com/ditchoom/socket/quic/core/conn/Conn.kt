@@ -97,7 +97,7 @@ internal class Conn(
         touch()
     }
 
-    /** Loop thread: a datagram from [from] on socket [on] at the start of [bytes], read in the pass at [at]; copied for a caller inside. */
+    /** Loop thread: a datagram from [from] on socket [on] at [bytes]' start, read in the pass at [at]; copied for one inside. */
     fun received(
         bytes: NativeBytes,
         length: Int,

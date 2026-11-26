@@ -59,7 +59,7 @@ internal class Endpoint(
     }
 
     /** Whether the io holds datagrams the poller will never signal: the loop's next pass must not wait. */
-    fun hasBacklog(): Boolean = phase == Phase.Live && (input == ReceiveInput.Backlog || second.hasBacklog())
+    fun hasBacklog(): Boolean = phase == Phase.Live && (input == ReceiveInput.Backlog || second.input() == ReceiveInput.Backlog)
 
     /**
      * Receives up to [MAX_PER_PASS] datagrams and hands them to the route. A server then starts held handshakes a chunk
@@ -83,7 +83,7 @@ internal class Endpoint(
                         second.settle(this, poller, seats, route)
                         receiveWaiting(batch, counts, clock)
                     }
-                    Via.Probing -> second.receive(route, batch, counts, clock, readiness, MAX_PER_PASS)
+                    Via.Probing -> second.receive(route, batch, counts, clock, readiness, MAX_PER_PASS, poller, seats)
                 }
             is Route.Demux -> {
                 route.demux.passBegins()

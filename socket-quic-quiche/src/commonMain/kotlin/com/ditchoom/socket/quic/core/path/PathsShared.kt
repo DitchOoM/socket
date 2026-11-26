@@ -12,7 +12,10 @@ import com.ditchoom.socket.quic.core.udp.NativeBytes
 import com.ditchoom.socket.quic.core.udp.SocketTicket
 import kotlin.jvm.JvmInline
 
-/** Where one datagram quiche wrote goes: to [target] from the socket [socket] names, or nowhere, as no socket of ours holds its path. */
+/**
+ * Where one datagram quiche wrote goes: to [target] from the socket [socket] names, or nowhere, as no socket of ours
+ * holds its path.
+ */
 internal sealed interface Outgoing {
     class To(
         val target: SendTarget,

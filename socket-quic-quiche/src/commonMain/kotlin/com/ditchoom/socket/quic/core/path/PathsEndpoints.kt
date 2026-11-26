@@ -71,7 +71,10 @@ internal sealed interface Move {
         val on: Linked,
     ) : Move
 
-    /** A second socket leaves from [to], whose path is being validated; quiche's active path, and the carrying socket, are still [from]'s. */
+    /**
+     * A second socket leaves from [to], whose path is being validated; quiche's active path, and the carrying socket,
+     * are still [from]'s.
+     */
     class Probing(
         val from: Linked,
         val to: Linked,
@@ -80,7 +83,10 @@ internal sealed interface Move {
         val cadence: Cadence,
     ) : Move
 
-    /** A second socket leaves from [at], whose path is not being validated; quiche's active path, and the carrying socket, are still [from]'s. */
+    /**
+     * A second socket leaves from [at], whose path is not being validated; quiche's active path, and the carrying
+     * socket, are still [from]'s.
+     */
     class Stranded(
         val from: Linked,
         val at: LocalAddr,
@@ -133,16 +139,22 @@ internal fun Move.second(): LocalAddr =
         is Move.Stranded -> at
     }
 
+/** Which endpoint of a move a datagram is read on. */
+internal enum class ReadOn { Carrying, Second }
+
+/** Whether the second socket a loop lost was the one a move held, which then ended. */
+internal enum class SecondHeld { Lost, Stale }
+
 /**
- * Whether a datagram that arrived on socket [on] was read on this move's second endpoint. While a move waits for a
- * spare id, quiche has no path for the second endpoint, so what arrives there is read on the carrying path, which can
- * carry the id the peer sends.
+ * Which endpoint a datagram that arrived on socket [on] is read on. While a move waits for a spare id, quiche has no
+ * path for the second endpoint, so what arrives there is read on the carrying path, which can carry the id the peer
+ * sends.
  */
-internal fun Move.readsOnSecond(on: SocketTicket): Boolean =
+internal fun Move.readOn(on: SocketTicket): ReadOn =
     when (this) {
-        is Move.Settled -> false
-        is Move.Probing -> to.local.socket == on
-        is Move.Stranded -> why != Unprobed.NoSpareId && at.socket == on
+        is Move.Settled -> ReadOn.Carrying
+        is Move.Probing -> if (to.local.socket == on) ReadOn.Second else ReadOn.Carrying
+        is Move.Stranded -> if (why != Unprobed.NoSpareId && at.socket == on) ReadOn.Second else ReadOn.Carrying
     }
 
 /** Whether a path answered within a span. */
@@ -205,3 +217,15 @@ internal fun Previous.held(each: (LocalAddr) -> Unit) =
         is Previous.Held -> each(local)
         is Previous.None -> Unit
     }
+
+/** Retires the destination id [id] holds, if it holds one. */
+internal fun QuicheConnRef.retire(id: LinkedId) =
+    when (id) {
+        is LinkedId.Seq -> retire(id.seq)
+        is LinkedId.None -> Unit
+    }
+
+internal fun QuicheConnRef.retire(seq: Long) {
+    // A refusal leaves the id with quiche until the connection ends; no path uses it.
+    api.connRetireDcid(handle, seq)
+}
