@@ -46,7 +46,7 @@ internal fun ConnParts.secondLost(
 ): SecondLoss =
     when (val paths = slots.paths) {
         is Paths.Client ->
-            paths.paths.lost(now, ticket).also {
+            paths.paths.lost(now, ticket, life.view()).also {
                 when (it) {
                     SecondLoss.MoveEnded, SecondLoss.NoPathBack -> flight.path(now, PathMark.SecondLost)
                     SecondLoss.MovedBack -> flight.path(now, PathMark.SecondLost).also { resendNow() }

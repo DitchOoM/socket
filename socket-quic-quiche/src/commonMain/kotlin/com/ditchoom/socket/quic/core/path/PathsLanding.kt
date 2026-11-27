@@ -22,6 +22,9 @@ internal enum class SecondLoss {
     Stale,
 }
 
+/** Whether a held move may go this serve. */
+internal enum class HoldTurn { Runs, Rests }
+
 /** Whether the loop's promotion settled a landing. */
 internal enum class Promoted { Settled, Stale }
 
@@ -68,10 +71,21 @@ internal class MoveLandings(
             is MigrateOutcome.Migrated -> {
                 peer.requeue(landing.to.local)
                 q.retire(landing.to.dcidSeq)
+                // quiche names the id it came back on; one the old path held and no longer uses is left to no path.
+                if (back.dcidSeq != landing.from.dcidSeq) q.retire(landing.from.dcidSeq)
                 costs.spend(landing.to.local)
                 silence.migrated(now)
                 Back.Home(Move.Settled(Linked(landing.from.local, back.dcidSeq)))
             }
             is MigrateOutcome.Rejected -> Back.Refused
         }
+
+    /**
+     * The loop lost [landing]'s socket after the connection began to close: quiche is not migrated again, and the
+     * close goes out of the socket the loop carries on. The lost endpoint is kept for its release.
+     */
+    fun dropped(landing: Move.Landing): Move.Settled {
+        costs.spend(landing.to.local)
+        return Move.Settled(landing.from)
+    }
 }

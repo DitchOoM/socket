@@ -9,6 +9,7 @@ import com.ditchoom.socket.quic.ProbeOutcome
 import com.ditchoom.socket.quic.QuicheRecvInfo
 import com.ditchoom.socket.quic.connPeerMigrationPermission
 import com.ditchoom.socket.quic.core.life.ConnEnd
+import com.ditchoom.socket.quic.core.life.Life
 import com.ditchoom.socket.quic.core.life.PeerAddress
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.observe.Confined
@@ -135,17 +136,40 @@ internal class ClientPaths(
         }
     }
 
-    /** Each serve: a move waiting for a spare id goes once one came, and a move's path is validated ([MoveValidation]). */
-    fun step(now: Nanos): PathStep {
-        if (hold.step(now) == PathStep.NoUsablePath) return PathStep.NoUsablePath
+    /**
+     * Each serve with the connection in [life]: a move waiting for a spare id goes once one came ([holdTurn]), and a
+     * move's path is validated ([MoveValidation]).
+     */
+    fun step(
+        now: Nanos,
+        life: Life,
+    ): PathStep {
+        if (holdTurn(life) == HoldTurn.Runs && hold.step(now) == PathStep.NoUsablePath) return PathStep.NoUsablePath
         return validation.step(now)
     }
 
     /** Offers the time the next challenge, abandonment or probe of a move falls due; offers nothing when settled. */
-    fun offerWake(sink: WakeSink) {
-        hold.offerWake(sink)
+    fun offerWake(
+        sink: WakeSink,
+        life: Life,
+    ) {
+        if (holdTurn(life) == HoldTurn.Runs) hold.offerWake(sink)
         move.offerWake(sink)
     }
+
+    /**
+     * Whether a move held waiting may go, or wake the connection, now: not while a landing stands, whose end the move
+     * waits for, nor once the connection is closing, when it asks for no socket.
+     */
+    private fun holdTurn(life: Life): HoldTurn =
+        when (move) {
+            is Move.Landing -> HoldTurn.Rests
+            is Move.Settled, is Move.Unfinished ->
+                when (life) {
+                    is Life.Running -> HoldTurn.Runs
+                    is Life.Closing, is Life.Over -> HoldTurn.Rests
+                }
+        }
 
     /** The OS reports another usable network under the socket: the move is followed afresh ([Move.onNewNetwork]). */
     fun networkChanged(now: Nanos) = run { move = move.onNewNetwork(now) }
@@ -158,20 +182,26 @@ internal class ClientPaths(
         }
 
     /**
-     * The loop lost the second socket [ticket] names: the move it served ends where it started, and a landing on it
-     * migrates back to the socket the loop still carries on.
+     * The loop lost the second socket [ticket] names, the connection in [life]: the move it served ends where it
+     * started, and a landing on it migrates back to the socket the loop still carries on; once the connection is
+     * closing the landing only ends, its close going out of that socket.
      */
     fun lost(
         now: Nanos,
         ticket: SocketTicket,
+        life: Life,
     ): SecondLoss =
         when (val holding = move.holding(ticket)) {
             is Holding.Stale -> SecondLoss.Stale
             is Holding.Unfinished -> SecondLoss.MoveEnded.also { move = Move.Settled(costs.abandon(holding.move)) }
             is Holding.Landing ->
-                when (val back = landings.back(now, holding.landing)) {
-                    is Back.Home -> SecondLoss.MovedBack.also { move = back.settled }
-                    is Back.Refused -> SecondLoss.NoPathBack
+                when (life) {
+                    is Life.Running ->
+                        when (val back = landings.back(now, holding.landing)) {
+                            is Back.Home -> SecondLoss.MovedBack.also { move = back.settled }
+                            is Back.Refused -> SecondLoss.NoPathBack
+                        }
+                    is Life.Closing, is Life.Over -> SecondLoss.MoveEnded.also { move = landings.dropped(holding.landing) }
                 }
         }
 

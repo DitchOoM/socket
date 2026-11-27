@@ -4,6 +4,7 @@ import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicStatsRead
 import com.ditchoom.socket.quic.QuicheSendInfo
 import com.ditchoom.socket.quic.core.life.ConnEnd
+import com.ditchoom.socket.quic.core.life.Life
 import com.ditchoom.socket.quic.core.life.PeerAddress
 import com.ditchoom.socket.quic.core.life.RetiredId
 import com.ditchoom.socket.quic.core.life.SpareId
@@ -132,7 +133,7 @@ internal fun ConnParts.stepPaths(now: Nanos): PathStep =
         is Paths.Client -> {
             watchSilence(now, paths.paths.silence)
             stepRebinds(now, paths.paths)
-            val step = paths.paths.step(now)
+            val step = paths.paths.step(now, life.view())
             if (step != PathStep.Steady) slots.ack.mustWrite()
             when (step) {
                 PathStep.Steady, PathStep.NoUsablePath -> Unit
@@ -204,9 +205,10 @@ internal fun Paths.issue(spare: List<SpareId>) =
 internal fun Paths.offerWake(
     sink: WakeSink,
     readers: Int,
+    life: Life,
 ) = when (this) {
     is Paths.Client -> {
-        paths.offerWake(sink)
+        paths.offerWake(sink, life)
         paths.silence.offerWake(sink, readers)
         paths.rebinds.offerWake(sink)
     }
