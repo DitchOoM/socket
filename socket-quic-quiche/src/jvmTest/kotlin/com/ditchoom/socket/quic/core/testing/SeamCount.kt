@@ -135,7 +135,7 @@ internal class ClockSites {
                     "judged" -> ClockSite.Judge
                     else -> ClockSite.Op
                 }
-            "Endpoint" -> if (method == "receiveWaiting") ClockSite.Receive else ClockSite.Op
+            "CarriageIo" -> if (method == "readCarrying") ClockSite.Receive else ClockSite.Op
             "Ingress" -> ClockSite.DatagramIn
             else -> ClockSite.Op
         }
