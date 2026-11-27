@@ -205,16 +205,14 @@ internal class Endpoint(
         }
     }
 
-    /** A client's connection wants a socket on [bind]'s address, on a network assumed [prior]: see [SocketOwnership.move]. */
+    /** A client's connection wants socket [ticket] on [bind]'s address, assumed [prior]: see [SocketOwnership.move]. */
     fun move(
         poller: Poller,
         seats: Loop,
+        ticket: SocketTicket,
         bind: PathKey,
         prior: RttPrior,
-    ) = when (route) {
-        is Route.Fixed -> if (phase == Phase.Live) ownership.move(route) { second.open(this, poller, seats, route, bind, prior) } else Unit
-        is Route.Demux -> Unit
-    }
+    ) = if (phase == Phase.Live) ownership.move(route, ticket) { second.open(this, poller, seats, it, ticket, bind, prior) } else Unit
 
     /** The second socket [ticket] names carries from now on, polled as this endpoint's own token; a stale ticket is a no-op. */
     fun promote(

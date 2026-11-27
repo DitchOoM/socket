@@ -73,11 +73,12 @@ internal sealed interface MoveAsk {
     ) : MoveAsk
 }
 
-/** Inside: the loop refused the move the connection asked for, as [why] says; the connection stays. */
+/** Inside: the loop refused the socket [ticket] the connection asked for, as [why] says; the connection stays. */
 internal class MoveRefusedWork(
+    private val ticket: SocketTicket,
     private val why: MoveRefusal,
 ) : ConnWork() {
-    override fun run(inside: Inside) = inside.moveRefused(why)
+    override fun run(inside: Inside) = inside.moveRefused(ticket, why)
 
     override fun gone(end: ConnEnd) = Unit
 }

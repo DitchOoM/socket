@@ -2,6 +2,7 @@ package com.ditchoom.socket.quic.core.loop
 
 import com.ditchoom.socket.quic.core.conn.MoveRefusal
 import com.ditchoom.socket.quic.core.conn.MoveRefusedWork
+import com.ditchoom.socket.quic.core.udp.SocketTicket
 
 /**
  * Who owns the socket an endpoint carries its connection on. The loop reads it when the connection asks for a move or
@@ -19,13 +20,19 @@ internal sealed interface SocketOwnership {
 }
 
 /**
- * A move [fixed]'s connection asked for: [open] runs for an owned socket; on a lent one the move is refused
- * ([MoveRefusal.SocketLent]) and the connection stays on the socket it has.
+ * The move to socket [ticket] that [route]'s client connection asked for: [open] runs for an owned socket; on a lent one
+ * the move is refused, naming [ticket] ([MoveRefusal.SocketLent]), and the connection stays on the socket it has. A
+ * server's route has no move.
  */
 internal inline fun SocketOwnership.move(
-    fixed: Route.Fixed,
-    open: () -> Unit,
-) = when (this) {
-    is SocketOwnership.Owned -> open()
-    is SocketOwnership.Lent -> fixed.conn.submitFromLoop(MoveRefusedWork(MoveRefusal.SocketLent))
+    route: Route,
+    ticket: SocketTicket,
+    open: (Route.Fixed) -> Unit,
+) = when (route) {
+    is Route.Fixed ->
+        when (this) {
+            is SocketOwnership.Owned -> open(route)
+            is SocketOwnership.Lent -> route.conn.submitFromLoop(MoveRefusedWork(ticket, MoveRefusal.SocketLent))
+        }
+    is Route.Demux -> Unit
 }

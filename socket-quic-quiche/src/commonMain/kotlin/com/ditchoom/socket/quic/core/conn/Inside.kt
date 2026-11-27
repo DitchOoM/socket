@@ -11,6 +11,7 @@ import com.ditchoom.socket.quic.core.life.ConnLife
 import com.ditchoom.socket.quic.core.life.Life
 import com.ditchoom.socket.quic.core.life.SpareId
 import com.ditchoom.socket.quic.core.path.Rebind
+import com.ditchoom.socket.quic.core.path.SecondHeld
 import com.ditchoom.socket.quic.core.path.Want
 import com.ditchoom.socket.quic.core.sched.LoopPort
 import com.ditchoom.socket.quic.core.stream.StreamTable
@@ -87,9 +88,15 @@ internal class Inside(
             }
         }
 
-    /** The client's loop refused the move it was asked for, as [why] says: the connection stays on its socket. */
-    fun moveRefused(why: MoveRefusal) {
-        c.openRefused()
+    /**
+     * The client's loop refused the socket [ticket] it was asked for, as [why] says: the connection stays on its socket.
+     * A refusal of an ask it no longer awaits changes nothing.
+     */
+    fun moveRefused(
+        ticket: SocketTicket,
+        why: MoveRefusal,
+    ) {
+        if (c.openRefused(ticket) == SecondHeld.Stale) return
         c.flight.path(
             clock.now(),
             when (why) {

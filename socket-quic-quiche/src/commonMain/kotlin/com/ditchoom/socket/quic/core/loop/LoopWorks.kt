@@ -35,12 +35,16 @@ internal class RehomeWork(
     override fun gone(end: ConnEnd) = Unit
 }
 
-/** Any thread: [endpoint] opens a second socket on [bind]'s address, a new local endpoint (see [Endpoint.move]). */
+/**
+ * Any thread: [endpoint] opens a second socket, named [ticket], on [bind]'s address, a new local endpoint (see
+ * [Endpoint.move]).
+ */
 internal fun Loop.move(
     endpoint: Endpoint,
+    ticket: SocketTicket,
     bind: PathKey,
     prior: RttPrior,
-) = port.submit(MoveWork(this, endpoint, bind, prior))
+) = port.submit(MoveWork(this, endpoint, ticket, bind, prior))
 
 /** Any thread: [endpoint]'s second socket [ticket] names carries from now on (see [Endpoint.promote]). */
 internal fun Loop.promote(
@@ -54,14 +58,15 @@ internal fun Loop.closeSecond(
     ticket: SocketTicket,
 ) = port.submit(CloseSecondWork(this, endpoint, ticket))
 
-/** Loop work: a second socket is opened beside the carrying one, on a new local address. */
+/** Loop work: a second socket, named [ticket], is opened beside the carrying one, on a new local address. */
 internal class MoveWork(
     private val loop: Loop,
     private val endpoint: Endpoint,
+    private val ticket: SocketTicket,
     private val bind: PathKey,
     private val prior: RttPrior,
 ) : LoopWork() {
-    override fun run(port: LoopPort) = endpoint.move(loop.poller, loop, bind, prior)
+    override fun run(port: LoopPort) = endpoint.move(loop.poller, loop, ticket, bind, prior)
 
     override fun gone(end: ConnEnd) = Unit
 }

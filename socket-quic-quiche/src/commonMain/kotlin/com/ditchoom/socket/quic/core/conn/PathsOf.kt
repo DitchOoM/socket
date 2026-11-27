@@ -66,10 +66,10 @@ internal fun Paths.closeRedirect(): Outgoing =
         is Paths.Server -> Outgoing.Dropped
     }
 
-/** Whether the path's far end is validated: a client's socket not mid-move, a server's peer not on a new address. */
+/** Whether the path's far end reads validated: a client's path as its move reads it, a server's peer not on a new address. */
 internal fun Paths.address(): PeerAddress =
     when (this) {
-        is Paths.Client -> if (paths.unsettled()) PeerAddress.Unvalidated else PeerAddress.Validated
+        is Paths.Client -> paths.address()
         is Paths.Server -> paths.address()
     }
 
@@ -172,17 +172,17 @@ internal fun ConnParts.networkUsable(now: Nanos) {
     }
 }
 
-/** How an end quiche reported reads: a client whose socket moved and found no validated path did not merely go idle. */
+/** How an end quiche reported reads: a client idle while its path reads unvalidated ended with no usable path. */
 internal fun Paths.endOf(end: ConnEnd): ConnEnd =
     when (this) {
-        is Paths.Client -> if (end is ConnEnd.IdleTimeout && paths.unsettled()) ConnEnd.NoUsablePath else end
+        is Paths.Client -> if (end is ConnEnd.IdleTimeout && paths.address() == PeerAddress.Unvalidated) ConnEnd.NoUsablePath else end
         is Paths.Server -> end
     }
 
 /**
  * Inside: a client's second socket leaves from [to]'s address. The connection probes the path from it and migrates once
  * it is validated, the carrying socket carrying until then; before its handshake is confirmed (RFC 9000 §9), or when
- * the peer forbade migration, it cannot follow.
+ * the peer forbade migration, it cannot follow. A socket of an ask the connection no longer awaits changes nothing.
  */
 internal fun ConnParts.follow(
     now: Nanos,
@@ -193,20 +193,16 @@ internal fun ConnParts.follow(
             is Paths.Client -> paths.paths
             is Paths.Server -> return MoveAnswer.Following
         }
-    network.moved()
-    slots.ack.mustWrite()
-    val answer =
-        when (handshake.confirmation()) {
-            Confirmation.Pending -> client.decline(to.ticket)
-            Confirmation.Confirmed -> client.move(now, to.local, to.prior, to.ticket)
-        }
-    flight.path(
-        now,
+    val answer = client.move(now, to.local, to.prior, to.ticket, gate())
+    val mark =
         when (answer) {
             MoveAnswer.Following -> PathMark.Moved
             MoveAnswer.Refused, MoveAnswer.NoUsablePath -> PathMark.Refused
-        },
-    )
+            MoveAnswer.Stale -> return answer
+        }
+    network.moved()
+    slots.ack.mustWrite()
+    flight.path(now, mark)
     return answer
 }
 
@@ -288,7 +284,11 @@ internal enum class PathCalm { Settled, Moving }
 
 internal fun Paths.calm(): PathCalm =
     when (this) {
-        is Paths.Client -> if (paths.unsettled()) PathCalm.Moving else PathCalm.Settled
+        is Paths.Client ->
+            when (paths.address()) {
+                PeerAddress.Validated -> PathCalm.Settled
+                PeerAddress.Unvalidated -> PathCalm.Moving
+            }
         is Paths.Server ->
             when (paths.sorting()) {
                 is Sorting.Fixed -> PathCalm.Settled

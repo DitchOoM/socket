@@ -154,6 +154,13 @@ internal class VirtualPair private constructor(
     /** Whether the client's next sockets are made without waiting and then fail, as a Network.framework one can. */
     var opensArriveThenFail = false
 
+    /** Whether the client's next sockets are made without waiting and never get ready, as a Network.framework one awaiting a path. */
+    var opensStayInTheMaking = false
+
+    /** How many second sockets the client's loop asked its io for. */
+    var opensAsked = 0
+        private set
+
     /** Whether reopening the client's second socket fails, as at an address its new network does not hold. */
     var refuseSecondReopen = false
 
@@ -367,7 +374,11 @@ internal class VirtualPair private constructor(
             }
 
         override fun settleBeside(): Beside =
-            if (opensArriveThenFail) Beside.Refused(Thrown(java.io.IOException("the connection failed"))) else Beside.Unsupported
+            when {
+                opensStayInTheMaking -> Beside.Arriving
+                opensArriveThenFail -> Beside.Refused(Thrown(java.io.IOException("the connection failed")))
+                else -> Beside.Unsupported
+            }
 
         /** What waits for the client socket on [port], or for the server. */
         private fun receiveOn(
@@ -406,8 +417,9 @@ internal class VirtualPair private constructor(
             bind: PathKey,
             ticket: SocketTicket,
         ): Beside {
+            opensAsked++
             if (refuseOpens) return Beside.Refused(Thrown(java.net.BindException("Can't assign requested address")))
-            if (opensArriveThenFail) return Beside.Arriving
+            if (opensArriveThenFail || opensStayInTheMaking) return Beside.Arriving
             val key = clientKey.copy(port = movePorts.removeFirstOrNull() ?: (maxOf(clientKey.port, nextPort) + 1))
             nextPort = key.port
             // A second opened while one is still open would be a third socket.

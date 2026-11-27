@@ -161,7 +161,7 @@ internal class Turn(
         now: Nanos,
         to: MoveTo,
     ) = when (c.follow(now, to)) {
-        MoveAnswer.Following, MoveAnswer.Refused -> Unit
+        MoveAnswer.Following, MoveAnswer.Refused, MoveAnswer.Stale -> Unit
         MoveAnswer.NoUsablePath -> finish(now, ConnEnd.NoUsablePath)
     }
 

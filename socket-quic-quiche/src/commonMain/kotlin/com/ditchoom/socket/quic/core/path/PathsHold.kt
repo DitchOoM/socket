@@ -46,10 +46,11 @@ internal enum class Want {
  */
 internal sealed interface SocketAsk {
     /**
-     * A second socket on [bind]'s address, on a network assumed a round trip of [prior]; the loop answers with its
-     * ticket.
+     * A second socket on [bind]'s address, on a network assumed a round trip of [prior], named [ticket]; the loop
+     * answers naming [ticket], with the socket or a refusal.
      */
     class OpenBeside(
+        val ticket: SocketTicket,
         val bind: PathKey,
         val prior: RttPrior,
     ) : SocketAsk
@@ -66,14 +67,14 @@ internal sealed interface SocketAsk {
 }
 
 /**
- * Where a client's socket is wanted, and whether it may go yet. It goes through [ask], which opens a second socket
+ * Where a client's socket is wanted, and whether it may go yet. It goes through [open], which asks for a second socket
  * on an address and a port of its own, on a network assumed to have the given round trip. Inside the connection only.
  */
 @Confined
 internal class MoveHold(
     private val q: QuicheConnRef,
     private val ears: PeerHearing,
-    private val ask: (SocketAsk) -> Unit,
+    private val open: (PathKey, RttPrior) -> Unit,
 ) {
     var held: HeldMove = HeldMove.None
         private set
@@ -111,7 +112,7 @@ internal class MoveHold(
         prior: RttPrior,
     ): Want {
         held = HeldMove.None
-        ask(SocketAsk.OpenBeside(bind, prior))
+        open(bind, prior)
         return Want.Moving
     }
 

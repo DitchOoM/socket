@@ -9,14 +9,13 @@ import com.ditchoom.socket.quic.PeerMigrationPermission
 import com.ditchoom.socket.quic.ProbeOutcome
 import com.ditchoom.socket.quic.QuicheRecvInfo
 import com.ditchoom.socket.quic.connPeerMigrationPermission
+import com.ditchoom.socket.quic.core.life.PeerAddress
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.observe.Confined
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.time.RttPrior
 import com.ditchoom.socket.quic.core.time.WakeSink
 import com.ditchoom.socket.quic.core.udp.SocketTicket
-import com.ditchoom.socket.quic.decodePathKey
-import com.ditchoom.socket.quic.encodeToNative
 import kotlin.random.Random
 
 /**
@@ -30,10 +29,10 @@ internal class ClientPaths(
     /** The path the connection was opened on: its send info and statistics. */
     val opened: SinglePath,
     private val factory: BufferFactory,
-    private val ids: IdIssuer,
-    private val random: Random,
-    private val free: (QuicheRecvInfo, Made) -> Unit,
-    private val ask: (SocketAsk) -> Unit,
+    ids: IdIssuer,
+    random: Random,
+    free: (QuicheRecvInfo, Made) -> Unit,
+    ask: (SocketAsk) -> Unit,
     val silence: PathSilence,
 ) {
     private var move: Move = q.firstMove(opened)
@@ -42,21 +41,24 @@ internal class ClientPaths(
     private var carryingHeard = Answered.Not
     private val events = PathEvents(q, factory)
     private val peer = TowardPeer(q, opened)
-    private var previous: Previous = Previous.None
     private val ears = PeerHearing(q)
-    private val retiredIds = RetiredReader(factory)
+    private val costs = MoveCosts(q, ids, random, factory, free, ask)
 
-    /** Where the socket is wanted, and whether it waits to move there; a new move gives up the one under way first. */
+    /**
+     * Where the socket is wanted, and whether it waits to move there; a new move gives up the one under way first, and
+     * names its socket with the next ticket. From the ask on the move is open ([Move.Asked]).
+     */
     val hold =
-        MoveHold(q, ears) { asked ->
+        MoveHold(q, ears) { bind, prior ->
+            val ticket = costs.nextTicket()
             // Before the new socket's open is asked, so no promotion of the old probe can follow it to the loop.
-            if (asked is SocketAsk.OpenBeside) move = Move.Settled(abandon()).also { rebinds.opening() }
-            ask(asked)
+            move = Move.Asked(abandon(), ticket).also { rebinds.opening() }
+            costs.open(ticket, bind, prior)
         }
 
     /** The rebinds the active path's silence asks for, each through [hold]; one it gives up drops its move. */
     val rebinds: Rebinds =
-        Rebinds(q, silence, hold, { if (unsettled()) Moving.Open else Moving.Settled }, { move.carrying().key }) {
+        Rebinds(q, silence, hold, { move.moving(hold.held) }, { move.carrying().key }) {
             move = Move.Settled(abandon())
         }
 
@@ -82,25 +84,32 @@ internal class ClientPaths(
     fun fromSocket(): Outgoing.To = move.carrying().out
 
     /** The connection is established: the peer is given the spare ids a move needs. */
-    fun established(): Issued = ids.issueAll(q, random)
+    fun established(): Issued = costs.established()
 
-    /** The loop's second socket [ticket] leaves from [local], assumed [prior]: its path is probed, an earlier move dropped. */
+    /**
+     * The loop's second socket [ticket] leaves from [local], assumed [prior]: its path is probed, or, with [gate] shut or
+     * the peer forbidding migration, the socket is declined. A socket the connection no longer awaits changes nothing.
+     */
     fun move(
         now: Nanos,
         local: PathKey,
         prior: RttPrior,
         ticket: SocketTicket,
+        gate: MoveGate,
     ): MoveAnswer {
+        val asked =
+            when (val awaited = move.awaiting(ticket)) {
+                is Awaited.Ask -> awaited.asked
+                is Awaited.Stale -> return MoveAnswer.Stale
+            }
         when (q.api.connPeerMigrationPermission(q.handle)) {
-            is PeerMigrationPermission.Permitted -> Unit
-            is PeerMigrationPermission.Forbidden, is PeerMigrationPermission.NotYetNegotiated -> return decline(ticket)
+            is PeerMigrationPermission.Permitted -> if (gate == MoveGate.Shut) return decline(asked)
+            is PeerMigrationPermission.Forbidden, is PeerMigrationPermission.NotYetNegotiated -> return decline(asked)
         }
-        topUp()
+        costs.topUp()
         val hearing = ears.judge(now)
-        val sockAddr = local.encodeToNative(factory)
-        val at =
-            LocalAddr(q.api.decodePathKey(sockAddr.address), peer.recvInfoAt(sockAddr), Made.Here(sockAddr), prior, ticket, opened.target)
-        val from = abandon()
+        val at = peer.endpointAt(local, prior, ticket, factory)
+        val from = asked.from
         carryingHeard = Answered.Not
         return when (val probed = peer.probe(at)) {
             is ProbeOutcome.Probed -> {
@@ -123,7 +132,7 @@ internal class ClientPaths(
         return when (val moving = move) {
             is Move.Probing -> follow(now, moving)
             is Move.Stranded -> reprobe(now, moving)
-            is Move.Settled -> PathStep.Steady
+            is Move.Settled, is Move.Asked -> PathStep.Steady
         }
     }
 
@@ -136,26 +145,31 @@ internal class ClientPaths(
     /** The OS reports another usable network under the socket: the move is followed afresh ([Move.onNewNetwork]). */
     fun networkChanged(now: Nanos) = run { move = move.onNewNetwork(now) }
 
-    /** The connection cannot follow the second socket [ticket] names: the loop closes it, and the move is refused. */
-    fun decline(ticket: SocketTicket): MoveAnswer = MoveAnswer.Refused.also { ask(SocketAsk.CloseSecond(ticket)) }
+    /** The loop refused the socket [ticket] names: the move that asked for it ends, and the connection stays where it is. */
+    fun refused(ticket: SocketTicket): SecondHeld =
+        when (val awaited = move.awaiting(ticket)) {
+            is Awaited.Ask -> SecondHeld.Lost.also { move = Move.Settled(awaited.asked.from) }
+            is Awaited.Stale -> SecondHeld.Stale
+        }
 
     /** The loop lost the second socket [ticket] names: the move it served ends, and the connection stays where it is. */
-    fun lost(ticket: SocketTicket): SecondHeld {
-        if (move is Move.Settled || move.second().socket != ticket) return SecondHeld.Stale
-        move = Move.Settled(abandon())
-        return SecondHeld.Lost
+    fun lost(ticket: SocketTicket): SecondHeld = move.onLost(ticket).also { if (it == SecondHeld.Lost) move = Move.Settled(abandon()) }
+
+    /** The connection cannot follow the socket [asked] awaited: the loop closes it, and the move is refused. */
+    private fun decline(asked: Move.Asked): MoveAnswer {
+        move = Move.Settled(asked.from)
+        costs.close(asked.ticket)
+        return MoveAnswer.Refused
     }
 
-    /** Whether the socket's endpoint has no validated path yet: an idle end means no usable path was found. */
-    fun unsettled(): Boolean = move !is Move.Settled || hold.held is HeldMove.Waiting
+    /** Whether the path quiche carries on leaves from a validated endpoint ([Move.address]). */
+    fun address(): PeerAddress = move.address(hold.held)
 
     /** Hands [each] every endpoint this connection made, for its release, and frees the paths' own memory. */
     fun made(each: (LocalAddr) -> Unit) {
-        previous.held(each)
+        costs.release(each)
         move.locals(each)
         events.free()
-        ids.free()
-        retiredIds.free()
     }
 
     /**
@@ -175,7 +189,7 @@ internal class ClientPaths(
             move = Move.Settled(abandon())
             return PathStep.Abandoned
         }
-        topUp()
+        costs.topUp()
         val hearing = ears.judge(now)
         return when (stranded.why) {
             Unprobed.MigrationRefused -> migrate(now, stranded.from, stranded.at, LinkedId.None, stranded.retry.failed)
@@ -225,7 +239,7 @@ internal class ClientPaths(
 
     /**
      * The validation of [probing]'s path ended unanswered: the endpoint keeps the path's id and is probed again later, or,
-     * the [ABANDON_AFTER_FAILURES]th time with the carrying path answering through it, the move is given up ([dropSecond]).
+     * the [ABANDON_AFTER_FAILURES]th time with the carrying path answering through it, the move is given up ([MoveCosts.dropSecond]).
      */
     private fun giveUp(
         now: Nanos,
@@ -249,11 +263,11 @@ internal class ClientPaths(
     ): PathStep =
         when (val migrated = peer.migrate(to)) {
             is MigrateOutcome.Migrated -> {
-                ask(SocketAsk.Promote(to.socket))
+                costs.promote(to.socket)
                 // The old path's socket closes with the promotion: what it had in flight is resent from the new one now.
                 peer.requeue(from.local)
                 q.retire(from.dcidSeq)
-                spend(from.local)
+                costs.spend(from.local)
                 move = Move.Settled(Linked(to, migrated.dcidSeq))
                 silence.migrated(now)
                 PathStep.Migrated
@@ -265,33 +279,12 @@ internal class ClientPaths(
             }
         }
 
-    /** Hands the peer the ids the paths of moves to come use, one each, after reading out of quiche those it retired. */
-    private fun topUp() {
-        retiredIds.read(q)
-        ids.issueAll(q, random)
-    }
-
-    /** Ends an unfinished move ([dropSecond]); answers the path data still rides. */
+    /** Ends an unfinished move ([MoveCosts.dropSecond]); answers the path data still rides. */
     private fun abandon(): Linked =
         when (val now = move) {
             is Move.Settled -> now.on
-            is Move.Probing -> now.from.also { dropSecond(now.to.local, LinkedId.Seq(now.to.dcidSeq)) }
-            is Move.Stranded -> now.from.also { dropSecond(now.at, now.id) }
+            is Move.Asked -> now.from.also { costs.close(now.ticket) }
+            is Move.Probing -> now.from.also { costs.dropSecond(now.to.local, LinkedId.Seq(now.to.dcidSeq)) }
+            is Move.Stranded -> now.from.also { costs.dropSecond(now.at, now.id) }
         }
-
-    /** The second endpoint [local] is left: its path's id retired, its socket closed (once the loop's own close: a no-op), spent. */
-    private fun dropSecond(
-        local: LocalAddr,
-        id: LinkedId,
-    ) {
-        q.retire(id)
-        ask(SocketAsk.CloseSecond(local.socket))
-        spend(local)
-    }
-
-    /** [local] is left behind: it is kept as the previous endpoint, and the one kept before it is freed. */
-    private fun spend(local: LocalAddr) {
-        previous.held { left -> free(left.recvInfo, left.made) }
-        previous = Previous.Held(local)
-    }
 }
