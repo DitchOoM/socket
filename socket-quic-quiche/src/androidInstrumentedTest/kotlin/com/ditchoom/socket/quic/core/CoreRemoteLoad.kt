@@ -20,6 +20,7 @@ import com.ditchoom.socket.quic.QuicStreamLimit
 import com.ditchoom.socket.quic.ScopedReadResult
 import com.ditchoom.socket.quic.core.conn.MismatchResponse
 import com.ditchoom.socket.quic.core.edge.coreConnect
+import com.ditchoom.socket.quic.core.edge.openStream
 import com.ditchoom.socket.quic.loadQuicheApi
 import com.ditchoom.socket.quic.network
 import com.ditchoom.socket.quic.read
