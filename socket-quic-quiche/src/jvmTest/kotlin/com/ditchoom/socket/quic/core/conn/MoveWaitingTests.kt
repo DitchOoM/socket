@@ -8,6 +8,7 @@ import com.ditchoom.socket.quic.core.demux.BoundedIo
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.PeerAddress
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
+import com.ditchoom.socket.quic.core.path.MoveWanted
 import com.ditchoom.socket.quic.core.path.SocketAsk
 import com.ditchoom.socket.quic.core.path.Want
 import com.ditchoom.socket.quic.core.testing.ConnRig
@@ -62,7 +63,7 @@ class MoveWaitingTests {
     fun aMoveWaitingForASpareIdLeavesThePathCalm() {
         val paths = stubClientPaths(QuicheConnRef(StubQuicheApi(), QuicheConn(1L)))
         val client = (paths as Paths.Client).paths
-        assertEquals(Want.Waiting, client.hold.want(Nanos(0L), OTHER, RttPrior.CONFIGURED), "precondition: the move waits")
+        assertEquals(Want.Waiting, client.hold.want(Nanos(0L), MoveWanted(OTHER, RttPrior.CONFIGURED)), "precondition: the move waits")
         assertEquals(PathCalm.Settled, paths.calm(), "a move waiting for a spare id turned the ACK hold off")
         assertEquals(PeerAddress.Validated, paths.address())
     }

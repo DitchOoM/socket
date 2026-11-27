@@ -68,9 +68,9 @@ internal class CarriageIo(
     ) {
         val on =
             when (carriage) {
-                is Carriage.One -> carriage.carrying
-                is Carriage.Opening -> carriage.carrying
-                is Carriage.Two -> carriage.carrying
+                is Carriage.One -> carriage.carrying.ticket
+                is Carriage.Opening -> carriage.carrying.ticket
+                is Carriage.Two -> carriage.carrying.ticket
                 is Carriage.Lent -> SocketTicket.FIRST
                 is Carriage.Unplaced, is Carriage.Dead, is Carriage.Unpolled, is Carriage.Left -> return
             }

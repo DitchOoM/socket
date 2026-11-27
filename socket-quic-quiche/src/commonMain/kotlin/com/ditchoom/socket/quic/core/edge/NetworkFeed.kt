@@ -8,15 +8,16 @@ import com.ditchoom.socket.NetworkState
 import com.ditchoom.socket.networkId
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.RouteSource
+import com.ditchoom.socket.quic.core.conn.Carried
+import com.ditchoom.socket.quic.core.conn.CarriedCell
 import com.ditchoom.socket.quic.core.conn.HandshakeRule
 import com.ditchoom.socket.quic.core.conn.NetworkChange
-import com.ditchoom.socket.quic.core.path.HomeCell
-import com.ditchoom.socket.quic.core.path.Landed
 import com.ditchoom.socket.quic.core.path.PathNews
 import com.ditchoom.socket.quic.core.path.PathNewsCell
 import com.ditchoom.socket.quic.core.time.RttPrior
-import com.ditchoom.socket.quic.hostLiteral
+import com.ditchoom.socket.quic.core.udp.SocketTicket
 import com.ditchoom.socket.quic.toPathKey
+import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.udp.UdpSocket
 import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
@@ -29,26 +30,31 @@ import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.launch
 import kotlin.coroutines.CoroutineContext
 
-/** What a client's network feed acts on: the connection it tells, and the cells the connection tells it through. */
+/** What a client's network feed acts on: the connection it tells, and the cells it reads. */
 internal interface FeedTarget {
     /** What the connection's silence watch says of its path. */
     val news: PathNewsCell
 
-    /** Where the connection says its socket landed. */
-    val home: HomeCell
+    /** Which socket carries the connection, as its loop publishes it. */
+    val carried: CarriedCell
 
     fun network(change: NetworkChange)
 
     fun migrate(
         bind: PathKey,
         prior: RttPrior,
+        network: NetworkId,
     )
 
-    fun rehome()
+    fun rehome(
+        ticket: SocketTicket,
+        network: NetworkId,
+    )
 
     fun rebind(
         bind: PathKey,
         prior: RttPrior,
+        network: NetworkId,
     )
 }
 
@@ -58,7 +64,7 @@ internal class ClientFeed(
     private val parts: ClientParts,
 ) : FeedTarget {
     override val news: PathNewsCell get() = parts.news
-    override val home: HomeCell get() = parts.home
+    override val carried: CarriedCell get() = parts.carried
 
     override fun network(change: NetworkChange) = connection.network(change)
 
@@ -66,16 +72,21 @@ internal class ClientFeed(
     override fun migrate(
         bind: PathKey,
         prior: RttPrior,
+        network: NetworkId,
     ) {
-        parts.migrate(bind, prior)
+        parts.migrate(bind, prior, network)
     }
 
-    override fun rehome() = parts.rehome()
+    override fun rehome(
+        ticket: SocketTicket,
+        network: NetworkId,
+    ) = parts.rehome(ticket, network)
 
     override fun rebind(
         bind: PathKey,
         prior: RttPrior,
-    ) = parts.rebind(bind, prior)
+        network: NetworkId,
+    ) = parts.rebind(bind, prior, network)
 }
 
 /**
@@ -87,15 +98,15 @@ internal class ClientFeed(
  * under [OnMove.End]; no usable network is ridden out, bounded by the idle timeout. Each time the connection declares
  * its path silent it asks for a fresh port on the route's address ([FeedTarget.rebind]), however many declarations
  * came while the feed was busy, and the connection takes it only if the path is still silent when the ask arrives.
- * Where the socket is, the feed learns from the connection once a move landed ([HomeCell]). It runs on [context]: the
- * [setupLane], as its route probes and socket moves block, or the thread of a test that drives the loop on virtual
- * time, which also reads the address to move to without leaving that thread ([bindKey]).
+ * Where the socket is, the feed reads at each input from what its loop publishes ([FeedTarget.carried]), which wakes it
+ * at each change. It runs on [context]: the [setupLane], as its route probes and socket moves block, or the thread of a
+ * test that drives the loop on virtual time, which also reads the address to move to without leaving that thread
+ * ([bindKey]).
  */
 internal fun CoroutineScope.feedNetwork(
     monitor: NetworkMonitor,
     target: FeedTarget,
     routeSource: suspend () -> RouteSource,
-    boundHost: String,
     onMove: OnMove,
     context: CoroutineContext = setupLane,
     bindKey: suspend (String) -> PathKey = { host -> UdpSocket.resolve(host, 0).toPathKey() },
@@ -103,10 +114,9 @@ internal fun CoroutineScope.feedNetwork(
     // Read before the feed starts: what changes while it waits for its context is news, not where the socket opened.
     val opened = MonitorReading(monitor.state.value, monitor.linkAddresses.value)
     return launch(context + CoroutineName("quic-core/network")) {
-        val watch = HomeWatch(boundHost, opened.state.networkId, onMove)
+        val watch = HomeWatch(onMove)
         var judged = opened
         var silences = 0L
-        var settles = 0L
         val readings = combine(monitor.state, monitor.linkAddresses, ::MonitorReading).dropWhile { it == opened }
         val woken =
             flow {
@@ -117,18 +127,17 @@ internal fun CoroutineScope.feedNetwork(
                 }
             }
         merge(readings.map(FeedInput::Reading), woken).collect { input ->
-            when (val landed = target.home.read()) {
-                is Landed.Opened -> Unit
-                is Landed.At ->
-                    if (landed.settles != settles) {
-                        settles = landed.settles
-                        watch.landed(landed.local.hostLiteral(), judged.state.networkId, judged.links)
-                    }
-            }
             when (input) {
                 is FeedInput.Reading -> {
                     judged = input.reading
-                    target.act(watch.read(input.reading, routeSource), watch, judged, bindKey)
+                    when (val state = judged.state) {
+                        is NetworkState.Unknown -> Unit
+                        is NetworkState.Offline -> if (watch.offline() == HomeStep.Gone) target.network(NetworkChange.Gone)
+                        is NetworkState.Up -> {
+                            val now = Judged(judged, routeSource(), target.carried.read())
+                            target.act(watch.up(state.id, now.source, now.carried), now, bindKey)
+                        }
+                    }
                 }
                 is FeedInput.Woken -> Unit
             }
@@ -136,43 +145,53 @@ internal fun CoroutineScope.feedNetwork(
             // the network it waits for is back or the path answers: the connection declares a run silent only once.
             val told = target.news.told()
             if (told.news is PathNews.Silent && told.silences != silences) {
-                val step = watch.silent(routeSource())
+                val now = Judged(judged, routeSource(), target.carried.read())
+                val step = watch.silent(now.source)
                 if (step == HomeStep.Rebind) silences = told.silences
-                target.act(step, watch, judged, bindKey)
+                target.act(step, now, bindKey)
             }
         }
     }
 }
 
-/** What [step] asks of the connection, toward [HomeWatch.target] on the network [judged] names. */
+/** One reading of the monitor, the route to the peer asked for it, and the socket that carried as it was read. */
+private class Judged(
+    val reading: MonitorReading,
+    val source: RouteSource,
+    val carried: Carried,
+)
+
+/**
+ * What [step] asks of the connection: a move toward the address [now]'s route leaves from, on the network that carries
+ * it; a rehome of the socket that carried as [now] was read, on the network [now] names.
+ */
 private suspend fun FeedTarget.act(
     step: HomeStep,
-    watch: HomeWatch,
-    judged: MonitorReading,
+    now: Judged,
     bindKey: suspend (String) -> PathKey,
 ) {
-    val prior = RttPrior(HandshakeRule.priorOf(linkClassOf(judged.state.networkId)))
+    val named = now.reading.state.networkId
+    val prior = RttPrior(HandshakeRule.priorOf(linkClassOf(named)))
     when (step) {
         HomeStep.Stay -> Unit
         HomeStep.Usable -> network(NetworkChange.Usable)
         HomeStep.Gone -> network(NetworkChange.Gone)
         HomeStep.Moved -> network(NetworkChange.Moved)
-        HomeStep.Migrate -> migrate(bindKey(watch.target()), prior)
-        HomeStep.Rehome -> rehome()
-        HomeStep.Rebind -> rebind(bindKey(watch.target()), prior)
+        HomeStep.Migrate -> towardRoute(now, bindKey) { bind, network -> migrate(bind, prior, network) }
+        HomeStep.Rehome -> rehome(now.carried.ticket, named)
+        HomeStep.Rebind -> towardRoute(now, bindKey) { bind, network -> rebind(bind, prior, network) }
     }
 }
 
-/** One reading of the monitor, judged with the route to the peer asked afresh. */
-private suspend fun HomeWatch.read(
-    reading: MonitorReading,
-    routeSource: suspend () -> RouteSource,
-): HomeStep =
-    when (val state = reading.state) {
-        is NetworkState.Unknown -> HomeStep.Stay
-        is NetworkState.Offline -> offline()
-        is NetworkState.Up -> up(state.id, routeSource())
-    }
+/** Asks [ask] for a socket on the address [now]'s route leaves from, on the link the monitor says carries it. */
+private suspend inline fun towardRoute(
+    now: Judged,
+    bindKey: suspend (String) -> PathKey,
+    ask: (PathKey, NetworkId) -> Unit,
+) {
+    val host = towardOf(now.source, now.carried)
+    ask(bindKey(host), homeOf(host, now.reading.links, now.reading.state.networkId))
+}
 
 /** What the feed reads next: the monitor, or the connection's cells once it is woken. */
 private sealed interface FeedInput {

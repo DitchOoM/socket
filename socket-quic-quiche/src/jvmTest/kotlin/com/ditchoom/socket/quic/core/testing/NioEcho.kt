@@ -79,7 +79,19 @@ internal class NioEcho(
     val thread: Thread
 
     init {
-        loop.place(Endpoint(SocketRefs(SocketRef(server), SocketRef(server)), io, socket, Route.Fixed(conn, OwnBatch(send)), Runnable { }))
+        loop.place(
+            Endpoint(
+                SocketRefs(
+                    SocketRef(server),
+                    SocketRef(server),
+                ),
+                io,
+                socket,
+                Route.Fixed(conn, OwnBatch(send), unreadCarried()),
+                Runnable {
+                },
+            ),
+        )
         conn.start()
         thread = startLoopThread(loop, threadName)
     }

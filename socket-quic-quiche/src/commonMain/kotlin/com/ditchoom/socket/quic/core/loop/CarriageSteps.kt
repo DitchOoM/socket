@@ -9,6 +9,8 @@ import com.ditchoom.socket.quic.core.ready.Poller
 import com.ditchoom.socket.quic.core.udp.Beside
 import com.ditchoom.socket.quic.core.udp.Reopened
 import com.ditchoom.socket.quic.core.udp.SocketFault
+import com.ditchoom.socket.quic.core.udp.SocketTicket
+import com.ditchoom.socket.transport.NetworkId
 
 /**
  * Every transition of a client's [Carriage]: [event] in this state makes its changes to [endpoint]'s sockets through
@@ -44,7 +46,7 @@ internal fun Carriage.Single.held(
                 is SocketEvent.Placed ->
                     Step.Moves(
                         when (event.first) {
-                            is SocketOwnership.Owned -> ONE_FIRST
+                            is SocketOwnership.Owned -> placedOn(event.network)
                             is SocketOwnership.Lent -> Carriage.Lent
                         },
                         MoveFact.None,
@@ -54,11 +56,7 @@ internal fun Carriage.Single.held(
             }
         is Carriage.One ->
             when (event) {
-                is SocketEvent.Rehome ->
-                    when (val reopened = io.reopenCarrying(poller, token)) {
-                        is Reopened.SameEndpoint -> Step.Moves(this, MoveFact.CarryingRehomed)
-                        is Reopened.Refused -> reopenRefused(reopened)
-                    }
+                is SocketEvent.Rehome -> rehome(event, io, poller, token)
                 is SocketEvent.CarryingDied -> Step.Ends(Carriage.Dead, event.end)
                 is SocketEvent.Leave -> left(poller, token)
                 is SocketEvent.Placed -> Step.Same
@@ -83,6 +81,10 @@ internal fun Carriage.Single.held(
         is Carriage.Left -> Step.Same
     }
 
+/** An owned first socket placed on [network]; one on no named network is the shared [ONE_FIRST]. */
+private fun placedOn(network: NetworkId): Carriage.One =
+    if (network == NetworkId.Unidentified) ONE_FIRST else Carriage.One(Held(SocketTicket.FIRST, network))
+
 private fun Carriage.socketOn(
     event: SocketEvent,
     io: CarriageIo,
@@ -94,14 +96,7 @@ private fun Carriage.socketOn(
         is Carriage.Single -> held(event, io, poller, endpoint.token)
         is Carriage.Opening ->
             when (event) {
-                is SocketEvent.Rehome ->
-                    when (val reopened = io.reopenCarrying(poller, endpoint.token)) {
-                        is Reopened.SameEndpoint -> Step.Moves(this, MoveFact.CarryingRehomed)
-                        is Reopened.Refused -> {
-                            io.closeBeside()
-                            reopenRefused(reopened)
-                        }
-                    }
+                is SocketEvent.Rehome -> rehome(event, io, poller, endpoint.token)
                 is SocketEvent.CarryingDied -> {
                     io.closeBeside()
                     Step.Ends(Carriage.Dead, event.end)
@@ -112,7 +107,7 @@ private fun Carriage.socketOn(
             }
         is Carriage.Two ->
             when (event) {
-                is SocketEvent.Rehome -> rehomeBeside(io, poller, seats)
+                is SocketEvent.Rehome -> rehome(event, io, poller, seats)
                 is SocketEvent.CarryingDied -> {
                     io.dropBeside(poller, seats, token)
                     Step.Ends(Carriage.Dead, event.end)
@@ -126,7 +121,7 @@ private fun Carriage.socketOn(
     }
 
 /** The carrying socket, polled as [token], leaves the poller for good; the io's close closes every socket it holds. */
-private fun left(
+internal fun left(
     poller: Poller,
     token: Int,
 ): Step.Moves<Carriage.Left> {
@@ -135,7 +130,7 @@ private fun left(
 }
 
 /** The carrying socket could not be reopened: it is off the poller, its connection ends, and its io is still closed. */
-private fun reopenRefused(refused: Reopened.Refused): Step.Ends<Carriage.Unpolled> =
+internal fun reopenRefused(refused: Reopened.Refused): Step.Ends<Carriage.Unpolled> =
     Step.Ends(Carriage.Unpolled, ConnEnd.SocketFailed(SocketFault.ReopenRefused(refused.thrown)))
 
 private fun Carriage.moveOn(
@@ -158,7 +153,7 @@ private fun Carriage.moveOn(
                     Carriage.One(carrying).open(event, io, poller, seats, endpoint)
                 }
                 is MoveEvent.CloseSecond ->
-                    if (event.ticket == beside) {
+                    if (event.ticket == beside.ticket) {
                         io.closeBeside()
                         Step.Moves(Carriage.One(carrying), MoveFact.None)
                     } else {
@@ -173,14 +168,14 @@ private fun Carriage.moveOn(
                     Carriage.One(carrying).open(event, io, poller, seats, endpoint)
                 }
                 is MoveEvent.Promote ->
-                    if (event.ticket == beside) {
+                    if (event.ticket == beside.ticket) {
                         io.promote(poller, seats, endpoint.token, token)
-                        Step.Moves(Carriage.One(beside), MoveFact.Promoted(beside))
+                        Step.Moves(Carriage.One(beside), MoveFact.Promoted(beside.ticket))
                     } else {
                         Step.Same
                     }
                 is MoveEvent.CloseSecond ->
-                    if (event.ticket == beside) {
+                    if (event.ticket == beside.ticket) {
                         io.dropBeside(poller, seats, token)
                         Step.Moves(Carriage.One(carrying), MoveFact.None)
                     } else {
@@ -195,20 +190,25 @@ private fun Carriage.moveOn(
         is Carriage.Unplaced, is Carriage.Dead, is Carriage.Unpolled, is Carriage.Left -> Step.Same
     }
 
-/** A second socket is opened on the address [ask] names beside the carrying one, or the move is refused, typed. */
+/**
+ * A second socket is opened on the address [ask] names beside the carrying one, held on the network the ask named, or
+ * the move is refused, typed.
+ */
 private fun Carriage.One.open(
     ask: MoveEvent.OpenBeside,
     io: CarriageIo,
     poller: Poller,
     seats: Loop,
     endpoint: Endpoint,
-): Step.Kept<Carriage> =
-    when (val opened = io.openBeside(ask.bind, ask.ticket)) {
-        is Beside.Opened -> seat(Carriage.Opening(carrying, ask.ticket, ask.prior), opened.local, io, poller, seats, endpoint)
-        is Beside.Arriving -> Step.Moves(Carriage.Opening(carrying, ask.ticket, ask.prior), MoveFact.None)
+): Step.Kept<Carriage> {
+    val opening = Carriage.Opening(carrying, Held(ask.ticket, ask.network), ask.prior)
+    return when (val opened = io.openBeside(ask.bind, ask.ticket)) {
+        is Beside.Opened -> seat(opening, opened.local, io, poller, seats, endpoint)
+        is Beside.Arriving -> Step.Moves(opening, MoveFact.None)
         is Beside.Refused -> Step.Moves(this, MoveFact.Refused(ask.ticket, MoveRefusal.Unopened))
         is Beside.Unsupported -> Step.Moves(this, MoveFact.Refused(ask.ticket, MoveRefusal.NoSecond))
     }
+}
 
 /** The second socket [opening] names is open at [local]: it is seated, and the connection told it moved. */
 private fun seat(
@@ -222,8 +222,8 @@ private fun seat(
     val token = seats.seat(endpoint)
     io.seatBeside(poller, token)
     return Step.Moves(
-        Carriage.Two(opening.carrying, opening.beside, token),
-        MoveFact.Moved(MoveTo(local, opening.prior, opening.beside)),
+        Carriage.Two(opening.carrying, opening.beside, token, local),
+        MoveFact.Moved(MoveTo(local, opening.prior, opening.beside.ticket)),
     )
 }
 
@@ -239,9 +239,9 @@ private fun Carriage.besideOn(
             when (event) {
                 is BesideEvent.Made -> made(io, poller, seats, endpoint)
                 is BesideEvent.BesideLost ->
-                    if (event.ticket == beside) {
+                    if (event.ticket == beside.ticket) {
                         io.closeBeside()
-                        Step.Moves(Carriage.One(carrying), MoveFact.Refused(beside, MoveRefusal.Unopened))
+                        Step.Moves(Carriage.One(carrying), MoveFact.Refused(beside.ticket, MoveRefusal.Unopened))
                     } else {
                         Step.Same
                     }
@@ -249,9 +249,9 @@ private fun Carriage.besideOn(
         is Carriage.Two ->
             when (event) {
                 is BesideEvent.BesideLost ->
-                    if (event.ticket == beside) {
+                    if (event.ticket == beside.ticket) {
                         io.dropBeside(poller, seats, token)
-                        Step.Moves(Carriage.One(carrying), MoveFact.SecondLost(beside))
+                        Step.Moves(Carriage.One(carrying), MoveFact.SecondLost(beside.ticket))
                     } else {
                         Step.Same
                     }
@@ -270,20 +270,6 @@ private fun Carriage.Opening.made(
     when (val settled = io.settleBeside()) {
         is Beside.Opened -> seat(this, settled.local, io, poller, seats, endpoint)
         is Beside.Arriving -> Step.Same
-        is Beside.Refused -> Step.Moves(Carriage.One(carrying), MoveFact.Refused(beside, MoveRefusal.Unopened))
-        is Beside.Unsupported -> Step.Moves(Carriage.One(carrying), MoveFact.Refused(beside, MoveRefusal.NoSecond))
-    }
-
-/**
- * While a move is open the second socket holds the address the connection is moving to, so a changed network reopens
- * it; one that cannot be reopened is lost, and the connection stays where it is.
- */
-private fun Carriage.Two.rehomeBeside(
-    io: CarriageIo,
-    poller: Poller,
-    seats: Loop,
-): Step.Kept<Carriage> =
-    when (io.reopenBeside(poller, seats, token)) {
-        is Reopened.SameEndpoint -> Step.Moves(this, MoveFact.BesideRehomed)
-        is Reopened.Refused -> Step.Moves(Carriage.One(carrying), MoveFact.SecondLost(beside))
+        is Beside.Refused -> Step.Moves(Carriage.One(carrying), MoveFact.Refused(beside.ticket, MoveRefusal.Unopened))
+        is Beside.Unsupported -> Step.Moves(Carriage.One(carrying), MoveFact.Refused(beside.ticket, MoveRefusal.NoSecond))
     }

@@ -10,9 +10,11 @@ import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.ConnLife
 import com.ditchoom.socket.quic.core.life.Life
 import com.ditchoom.socket.quic.core.life.SpareId
+import com.ditchoom.socket.quic.core.path.MoveWanted
 import com.ditchoom.socket.quic.core.path.Rebind
 import com.ditchoom.socket.quic.core.path.SecondHeld
 import com.ditchoom.socket.quic.core.path.SecondLoss
+import com.ditchoom.socket.quic.core.path.Served
 import com.ditchoom.socket.quic.core.path.Want
 import com.ditchoom.socket.quic.core.sched.LoopPort
 import com.ditchoom.socket.quic.core.stream.StreamTable
@@ -68,14 +70,19 @@ internal class Inside(
 
     /**
      * The client's socket is wanted on [wanted]'s address: it moves once the path from there can be probed. A closing
-     * connection asks for no socket: quiche holds the close on the one it has.
+     * connection asks for no socket: quiche holds the close on the one it has. A want an open move already serves
+     * asks nothing: asking again would throw that move away.
      */
     fun moveWanted(wanted: MoveWanted) {
         when (life.view()) {
             is Life.Running -> Unit
             is Life.Closing, is Life.Over -> return
         }
-        c.renewRebinds(clock.now(), Rebind.To(wanted.bind, wanted.prior))
+        when (c.served(wanted)) {
+            Served.Already -> return
+            Served.Not -> Unit
+        }
+        c.renewRebinds(clock.now(), Rebind.To(wanted))
         when (c.want(clock.now(), wanted)) {
             Want.Moving, Want.Waiting -> Unit
             Want.NoUsablePath -> end(ConnEnd.NoUsablePath)

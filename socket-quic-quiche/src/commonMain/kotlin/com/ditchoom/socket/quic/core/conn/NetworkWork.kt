@@ -3,6 +3,7 @@ package com.ditchoom.socket.quic.core.conn
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.SpareId
+import com.ditchoom.socket.quic.core.path.MoveWanted
 import com.ditchoom.socket.quic.core.time.RttPrior
 import com.ditchoom.socket.quic.core.udp.SocketTicket
 
@@ -20,12 +21,6 @@ internal class MoveTo(
     val local: PathKey,
     val prior: RttPrior,
     val ticket: SocketTicket,
-)
-
-/** Where a client's socket is wanted: [bind]'s address, on a network assumed to have a round trip of [prior]. */
-internal class MoveWanted(
-    val bind: PathKey,
-    val prior: RttPrior,
 )
 
 /** Inside: the client's socket is wanted on another address ([Inside.moveWanted]). */

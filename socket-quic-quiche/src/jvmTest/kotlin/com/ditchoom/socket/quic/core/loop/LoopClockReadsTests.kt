@@ -21,6 +21,7 @@ import com.ditchoom.socket.quic.core.testing.VirtualClock
 import com.ditchoom.socket.quic.core.testing.loopOver
 import com.ditchoom.socket.quic.core.testing.nativeBytes
 import com.ditchoom.socket.quic.core.testing.testConn
+import com.ditchoom.socket.quic.core.testing.unreadCarried
 import com.ditchoom.socket.quic.core.time.ClockBase
 import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.Nanos
@@ -118,7 +119,19 @@ class LoopClockReadsTests {
             testConn(api, CoreTestRules, SendTarget.ConnectedPeer, TraceCapture.Off, loop, socket, clock, RecordingSink(), ConnCounts())
         val channel = DatagramChannel.open().also { channels.add(it) }
         val batch = OwnBatch(SendBatch(nativeBytes(MAX_DATAGRAMS * DATAGRAM), BatchLimits(MAX_DATAGRAMS, DATAGRAM)))
-        loop.attach(Endpoint(SocketRefs(SocketRef(channel), SocketRef(channel)), io, socket, Route.Fixed(conn, batch), Runnable { }))
+        loop.attach(
+            Endpoint(
+                SocketRefs(
+                    SocketRef(channel),
+                    SocketRef(channel),
+                ),
+                io,
+                socket,
+                Route.Fixed(conn, batch, unreadCarried()),
+                Runnable {
+                },
+            ),
+        )
         conn.start()
     }
 
@@ -157,7 +170,11 @@ class LoopClockReadsTests {
                         SocketRefs(SocketRef(channel), SocketRef(channel)),
                         io,
                         socket,
-                        Route.Fixed(conn, OwnBatch(SendBatch(nativeBytes(MAX_DATAGRAMS * DATAGRAM), BatchLimits(MAX_DATAGRAMS, DATAGRAM)))),
+                        Route.Fixed(
+                            conn,
+                            OwnBatch(SendBatch(nativeBytes(MAX_DATAGRAMS * DATAGRAM), BatchLimits(MAX_DATAGRAMS, DATAGRAM))),
+                            unreadCarried(),
+                        ),
                         Runnable { },
                     )
                 loop.attach(endpoint)

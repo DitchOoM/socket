@@ -5,11 +5,13 @@ import com.ditchoom.socket.NetworkMonitor
 import com.ditchoom.socket.NetworkState
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.RouteSource
+import com.ditchoom.socket.quic.core.conn.Carried
+import com.ditchoom.socket.quic.core.conn.CarriedCell
 import com.ditchoom.socket.quic.core.conn.NetworkChange
-import com.ditchoom.socket.quic.core.path.HomeCell
 import com.ditchoom.socket.quic.core.path.PathNews
 import com.ditchoom.socket.quic.core.path.PathNewsCell
 import com.ditchoom.socket.quic.core.time.RttPrior
+import com.ditchoom.socket.quic.core.udp.SocketTicket
 import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.transport.NetworkKind
 import kotlinx.coroutines.CoroutineScope
@@ -49,14 +51,15 @@ class NetworkFeedSilenceTests {
             target.news.tell(PathNews.Silent)
             settle()
             assertEquals(4, target.rebinds.size, "a silence declared while the feed was busy was lost")
-            target.home.settled(WIFI_KEY)
+            target.news.wake.poke()
             settle()
             assertEquals(4, target.rebinds.size, "a wake for something else asked again for the same silence")
         }
 
     /**
-     * A rebind toward cellular's address that the connection never landed leaves the socket where it was: the monitor
-     * then naming cellular, its route from that address, is a migration, never a reopen the platform would refuse.
+     * A rebind toward cellular's address that the connection never landed leaves the socket where it was, as the loop
+     * publishes it (nothing is written here): the monitor then naming cellular, its route from that address, is a
+     * migration, never a reopen the platform would refuse.
      */
     @Test
     fun aReadingAfterARebindTheConnectionDidNotTakeMigratesAndNeverReopens() =
@@ -98,7 +101,7 @@ class NetworkFeedSilenceTests {
 
     private class Target : FeedTarget {
         override val news = PathNewsCell()
-        override val home = HomeCell(news.wake)
+        override val carried = CarriedCell(news.wake, Carried(SocketTicket.FIRST, WIFI_KEY, WIFI))
         val rebinds = ArrayList<PathKey>()
         val migrates = ArrayList<PathKey>()
         var rehomes = 0
@@ -111,17 +114,22 @@ class NetworkFeedSilenceTests {
         override fun migrate(
             bind: PathKey,
             prior: RttPrior,
+            network: NetworkId,
         ) {
             migrates += bind
         }
 
-        override fun rehome() {
+        override fun rehome(
+            ticket: SocketTicket,
+            network: NetworkId,
+        ) {
             rehomes++
         }
 
         override fun rebind(
             bind: PathKey,
             prior: RttPrior,
+            network: NetworkId,
         ) {
             rebinds += bind
         }
@@ -140,7 +148,7 @@ class NetworkFeedSilenceTests {
         val monitor = Monitor()
         val target = Target()
         val scope = CoroutineScope(coroutineContext.minusKey(Job))
-        scope.feedNetwork(monitor, target, { route }, WIFI_ADDRESS, OnMove.Migrate, coroutineContext.minusKey(Job)) { host ->
+        scope.feedNetwork(monitor, target, { route }, OnMove.Migrate, coroutineContext.minusKey(Job)) { host ->
             if (host == CELLULAR_ADDRESS) CELLULAR_KEY else WIFI_KEY
         }
         try {

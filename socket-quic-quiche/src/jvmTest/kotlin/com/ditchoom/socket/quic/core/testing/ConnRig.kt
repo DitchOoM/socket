@@ -45,6 +45,7 @@ import com.ditchoom.socket.quic.core.loop.Loop
 import com.ditchoom.socket.quic.core.loop.OwnBatch
 import com.ditchoom.socket.quic.core.loop.Route
 import com.ditchoom.socket.quic.core.loop.SocketOwnership
+import com.ditchoom.socket.quic.core.loop.rehome
 import com.ditchoom.socket.quic.core.observe.ConnCounts
 import com.ditchoom.socket.quic.core.path.ClientPaths
 import com.ditchoom.socket.quic.core.path.IdIssuer
@@ -74,6 +75,8 @@ import com.ditchoom.socket.quic.core.udp.ReceiveBuffer
 import com.ditchoom.socket.quic.core.udp.SendBatch
 import com.ditchoom.socket.quic.core.udp.SockAddr
 import com.ditchoom.socket.quic.trace.TraceCapture
+import com.ditchoom.socket.transport.NetworkId
+import com.ditchoom.socket.transport.NetworkKind
 import kotlinx.coroutines.Runnable
 import java.nio.channels.DatagramChannel
 import kotlin.random.Random
@@ -243,15 +246,22 @@ internal class ConnRig(
     val loop = loopOver(poller, clock, maxDatagrams, time)
     val socket = SendPort(io, loop.port, lanes, RecordingWork(), loop.counts, loop.callerCounts)
     val conn: Conn = testConn(api, rules, target, capture, loop, socket, clock, sink, counts, access, peer, memory, silence, ask)
+
+    /** Which socket the loop says carries. */
+    val carried = unreadCarried()
+    private var networks = 0L
     val endpoint =
         Endpoint(
             SocketRefs(SocketRef(DatagramChannel.open()), SocketRef(DatagramChannel.open())),
             io,
             socket,
-            Route.Fixed(conn, OwnBatch(SendBatch(nativeBytes(maxDatagrams * 1500), BatchLimits(maxDatagrams, 1500)))),
+            Route.Fixed(conn, OwnBatch(SendBatch(nativeBytes(maxDatagrams * 1500), BatchLimits(maxDatagrams, 1500))), carried),
             Runnable { },
             ownership = ownership,
         )
+
+    /** The address of the socket the loop says carries is on a network none was on before: asked of the loop. */
+    fun rehome() = loop.rehome(endpoint, carried.read().ticket, NetworkId.Link(NetworkKind.Cellular, ++networks))
 
     init {
         loop.attach(endpoint)

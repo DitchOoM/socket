@@ -126,7 +126,7 @@ class CoreStrandedVirtualTests {
             assertEquals(7L, pair.clientSpareIds())
         }
 
-    private fun move(pair: VirtualPair) = pair.client.parts.migrate(ANY, RttPrior.CONFIGURED)
+    private fun move(pair: VirtualPair) = pair.client.parts.migrate(ANY, RttPrior.CONFIGURED, pair.freshNetwork())
 
     private suspend fun marks(pair: VirtualPair): List<String> {
         val recorded = ArrayList<TraceEvent>()

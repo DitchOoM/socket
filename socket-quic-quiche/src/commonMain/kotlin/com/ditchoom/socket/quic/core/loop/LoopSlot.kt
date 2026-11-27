@@ -1,5 +1,6 @@
 package com.ditchoom.socket.quic.core.loop
 
+import com.ditchoom.socket.quic.core.conn.CarriedCell
 import com.ditchoom.socket.quic.core.conn.Conn
 import com.ditchoom.socket.quic.core.conn.MoveRefusedWork
 import com.ditchoom.socket.quic.core.conn.MovedWork
@@ -38,10 +39,14 @@ internal sealed interface LoopSlot {
 
 /** Where an endpoint's datagrams go. */
 internal sealed interface Route {
-    /** A client's own connected socket carries exactly one connection, whose output collects in [out]. */
+    /**
+     * A client's own connected socket carries exactly one connection, whose output collects in [out]; which socket
+     * carries is published to [carried].
+     */
     class Fixed(
         val conn: Conn,
         val out: Outbox,
+        val carried: CarriedCell,
     ) : Route
 
     /**
@@ -89,6 +94,7 @@ internal fun Route.told(fact: MoveFact) {
         is MoveFact.Promoted -> conn.submitFromLoop(PromotedWork(fact.ticket))
         is MoveFact.SecondLost -> conn.submitFromLoop(SecondLostWork(fact.ticket))
         is MoveFact.CarryingRehomed, is MoveFact.BesideRehomed -> conn.submitFromLoop(NetworkWork(NetworkChange.Rehomed))
+        is MoveFact.OnNetwork -> conn.submitFromLoop(NetworkWork(NetworkChange.Usable))
     }
 }
 

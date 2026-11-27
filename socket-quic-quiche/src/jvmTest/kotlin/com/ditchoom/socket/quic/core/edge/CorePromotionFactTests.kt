@@ -50,7 +50,7 @@ class CorePromotionFactTests {
         VirtualPair.with(options, clientApi = { hook.over(it) }) { pair ->
             hook.then = {
                 pair.refuseSecondReopen = true
-                pair.client.parts.rehome()
+                pair.rehome()
             }
             assertStaysOnTheOldSocket(pair, hook)
         }
@@ -63,7 +63,7 @@ class CorePromotionFactTests {
         val serverSide = pair.accept()
         launch { runCatching { while (true) echoOne(serverSide) } }
         val first = pair.clientPort()
-        pair.client.parts.migrate(ANY, RttPrior.CONFIGURED)
+        pair.client.parts.migrate(ANY, RttPrior.CONFIGURED, MOVE_NETWORK)
         pair.runUntil(within = 5.seconds) { hook.migrations > 0 }
         pair.runFor(ECHO_EVERY)
         assertEquals(1, pair.clientSockets, "the lost socket was closed")

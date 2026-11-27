@@ -39,6 +39,8 @@ import com.ditchoom.socket.quic.replay.conditions.LOCALHOST
 import com.ditchoom.socket.quic.replay.conditions.ReplayClient
 import com.ditchoom.socket.quic.replay.conditions.replayClient
 import com.ditchoom.socket.quic.replay.conditions.replayServer
+import com.ditchoom.socket.transport.NetworkId
+import com.ditchoom.socket.transport.NetworkKind
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.cancel
@@ -54,6 +56,21 @@ import kotlin.time.Duration.Companion.seconds
 
 /** How a [VirtualPair] client's second socket reads: as a socket does, failing once after a read, or dead. */
 internal enum class SecondReads { Normally, FailAfterARead, Dead }
+
+/** The network a pair's test names for a move it asks for. */
+internal val MOVE_NETWORK: NetworkId = NetworkId.Link(NetworkKind.Wifi, 1L)
+
+/** The network a pair's test names for a rehome: another one than [MOVE_NETWORK]. */
+internal val REHOME_NETWORK: NetworkId = NetworkId.Link(NetworkKind.Cellular, 2L)
+
+/** The pair's client is told its socket's address is on [network] now, for the socket the loop says carries. */
+internal fun VirtualPair.rehome(network: NetworkId = REHOME_NETWORK) =
+    client.parts.rehome(
+        client.parts.carried
+            .read()
+            .ticket,
+        network,
+    )
 
 /** Which end of a [VirtualPair]. */
 internal enum class End { Client, Server }
@@ -173,6 +190,11 @@ internal class VirtualPair private constructor(
 
     /** The addresses the client's next second sockets bind to, as on another interface; its own address when empty. */
     val moveHosts = ArrayDeque<PathKey>()
+
+    private var moveNetworks = 0L
+
+    /** A network no move of this pair named before: a move toward it is a new ask, never one an open move serves. */
+    fun freshNetwork(): NetworkId = NetworkId.Link(NetworkKind.Wifi, 100L + ++moveNetworks)
 
     /** How the client's second socket reads. */
     var secondReads = SecondReads.Normally

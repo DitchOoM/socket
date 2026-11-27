@@ -3,6 +3,7 @@ package com.ditchoom.socket.quic.core.conn
 import com.ditchoom.socket.quic.core.life.Life
 import com.ditchoom.socket.quic.core.path.ClientPaths
 import com.ditchoom.socket.quic.core.path.MoveGate
+import com.ditchoom.socket.quic.core.path.MoveWanted
 import com.ditchoom.socket.quic.core.path.Rebind
 import com.ditchoom.socket.quic.core.path.Rebound
 import com.ditchoom.socket.quic.core.path.SecondHeld
@@ -17,7 +18,7 @@ internal fun ConnParts.rebind(
     now: Nanos,
     wanted: MoveWanted,
 ) = when (val paths = slots.paths) {
-    is Paths.Client -> if (running()) record(now, paths.paths.rebinds.asked(now, wanted.bind, wanted.prior, gate())) else Unit
+    is Paths.Client -> if (running()) record(now, paths.paths.rebinds.asked(now, wanted, gate())) else Unit
     is Paths.Server -> Unit
 }
 

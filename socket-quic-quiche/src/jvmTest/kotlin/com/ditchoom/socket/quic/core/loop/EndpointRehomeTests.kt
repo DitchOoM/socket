@@ -41,7 +41,7 @@ class EndpointRehomeTests {
         rig.pass(0)
         api.onProbeNow = { api.connSendQueue.addLast(60) }
 
-        rig.loop.rehome(rig.endpoint)
+        rig.rehome()
         rig.pass(10 * ms)
 
         assertEquals(1, io.reopens, "the socket was reopened")
@@ -58,7 +58,7 @@ class EndpointRehomeTests {
         val rig = ConnRig(StubQuicheApi(), io = io)
         rig.pass(0)
 
-        rig.loop.rehome(rig.endpoint)
+        rig.rehome()
         rig.pass(1 * ms)
 
         val fault = assertIs<SocketFault.ReopenRefused>(assertIs<ConnEnd.SocketFailed>(rig.sink.ended.single()).fault)

@@ -13,6 +13,7 @@ import com.ditchoom.socket.quic.core.testing.coreTest
 import com.ditchoom.socket.quic.core.time.RttPrior
 import com.ditchoom.socket.quic.core.udp.LentDrop
 import com.ditchoom.socket.quic.network
+import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.udp.UdpSocket
 import com.ditchoom.socket.udp.demultiplex
 import kotlin.test.Test
@@ -66,7 +67,7 @@ class CoreLentPeerTests {
                 )
                 assertTrue(eventually { lent.lentDrops(LentDrop.Foreign) == 1L }, "the stranger's datagram was counted")
                 assertSharedPortEchoes(lent.connection.public(), 0)
-                val asked = lent.parts.migrate(PathKey(4, 0, 0L, 0x7F000001L), RttPrior.CONFIGURED)
+                val asked = lent.parts.migrate(PathKey(4, 0, 0L, 0x7F000001L), RttPrior.CONFIGURED, NetworkId.Unidentified)
                 assertEquals<MoveRefusal>(MoveRefusal.SocketLent, assertIs<MoveAsk.Refused>(asked).why)
                 lent.connection.closeNow(QuicError.NoError)
             } finally {

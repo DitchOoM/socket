@@ -156,7 +156,7 @@ class CloseLingerVirtualTests {
     fun aCloseAskedInTheInstantTheSocketMovesEndsByTheCloseAndThePeerReadsIt() =
         VirtualPair.with(options) { pair ->
             val serverSide = pair.accept()
-            pair.client.parts.migrate(pair.client.local, RttPrior.CONFIGURED)
+            pair.client.parts.migrate(pair.client.local, RttPrior.CONFIGURED, MOVE_NETWORK)
             var returned = false
             launch {
                 pair.client.connection.close(QuicError.NoError)
@@ -180,7 +180,7 @@ class CloseLingerVirtualTests {
                 returned = true
             }
             pair.runUntil { returned }
-            pair.client.parts.migrate(pair.client.local, RttPrior.CONFIGURED)
+            pair.client.parts.migrate(pair.client.local, RttPrior.CONFIGURED, MOVE_NETWORK)
             pair.runUntil(within = 5.seconds) { !pair.client.scope.isActive }
             val end = assertIs<EdgeEnd.Ended>(pair.client.connection.end()).end
             assertEquals(QuicError.NoError, assertIs<ConnEnd.ByLocal>(end).error)

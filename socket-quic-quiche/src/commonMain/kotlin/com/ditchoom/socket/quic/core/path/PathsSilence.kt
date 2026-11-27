@@ -70,9 +70,6 @@ internal class PathSilence(
     private val watch = rule.watch
     private val cap = rule.probeCap.nanos
     private val cell = rule.news
-
-    /** Where the edge learns where the socket is. */
-    val home = rule.home
     private val read = Progress.Baselined()
     private var progress: Progress = Progress.Unread
     private val building = Run.Building()

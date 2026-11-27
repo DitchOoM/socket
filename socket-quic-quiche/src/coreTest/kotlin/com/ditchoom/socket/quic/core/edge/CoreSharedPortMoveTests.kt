@@ -11,9 +11,9 @@ import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicListener
 import com.ditchoom.socket.quic.QuicServe
 import com.ditchoom.socket.quic.QuicSessionStore
-import com.ditchoom.socket.quic.core.conn.MoveWanted
 import com.ditchoom.socket.quic.core.conn.MoveWantedWork
 import com.ditchoom.socket.quic.core.loop.LoopSet
+import com.ditchoom.socket.quic.core.path.MoveWanted
 import com.ditchoom.socket.quic.core.testing.coreTest
 import com.ditchoom.socket.quic.core.testing.platformQuicheApi
 import com.ditchoom.socket.quic.core.testing.platformTlsConfig

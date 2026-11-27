@@ -1,5 +1,8 @@
 package com.ditchoom.socket.quic.core.edge
 
+import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.Default
+import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.socket.InternetAccess
 import com.ditchoom.socket.NetworkMonitor
 import com.ditchoom.socket.NetworkState
@@ -78,7 +81,7 @@ class CoreCarriedTests {
             feed.start(this)
             pair.moveHosts.addLast(OTHER_KEY)
             val first = pair.clientPort()
-            pair.client.parts.migrate(OTHER_KEY, RttPrior.CONFIGURED)
+            pair.client.parts.migrate(OTHER_KEY, RttPrior.CONFIGURED, MOVE_NETWORK)
             pair.runUntil(within = 5.seconds) { pair.clientPort() != first && pair.clientSockets == 1 }
             pair.runFor(SETTLED)
             feed.monitor.state.value = NetworkState.Offline
@@ -103,13 +106,56 @@ class CoreCarriedTests {
     fun aRehomeNamingASocketPromotedAwayReopensNothing() =
         VirtualPair.with(options) { pair ->
             val first = pair.clientPort()
-            pair.client.parts.migrate(ANY, RttPrior.CONFIGURED)
+            val earlier =
+                pair.client.parts.carried
+                    .read()
+            pair.client.parts.migrate(ANY, RttPrior.CONFIGURED, MOVE_NETWORK)
             pair.runUntil(within = 5.seconds) { pair.clientPort() != first && pair.clientSockets == 1 }
+            assertTrue(
+                pair.client.parts.carried
+                    .read()
+                    .ticket != earlier.ticket,
+                "precondition: the loop published the promotion",
+            )
             pair.refuseCarryingReopen = true
-            pair.client.parts.rehome()
+            pair.client.parts.rehome(earlier.ticket, REHOME_NETWORK)
             pair.runFor(SETTLED)
             assertEquals(0, pair.carryingReopens, "the promoted socket was reopened for a rehome that named the old one")
             assertIs<EdgeEnd.Open>(pair.client.connection.end(), "a stale rehome ended the connection")
+        }
+
+    /**
+     * The path goes silent and the rebind toward cellular's address cannot open its socket: the socket stays on Wi-Fi,
+     * as the loop publishes it, so the monitor then naming cellular with the route from there is a move, asked again,
+     * never a reopen of the Wi-Fi socket on cellular.
+     */
+    @Test
+    fun aRebindThatDidNotLandLeavesTheNextReadingAMoveNeverAReopen() =
+        VirtualPair.with(options) { pair ->
+            pair.accept()
+            val feed = Feed(pair)
+            feed.start(this)
+            pair.refuseOpens = true
+            feed.route = FROM_OTHER
+            pair.deadClientPorts += pair.clientPort()
+            launch {
+                runCatching {
+                    while (true) {
+                        pair.client.connection
+                            .openStream()
+                            .write(payload(), 1.seconds)
+                    }
+                }
+            }
+            pair.runUntil(within = 20.seconds) { pair.opensAsked >= 1 }
+            pair.runFor(SETTLED)
+            assertTrue("RebindForbidden" !in marks(pair) && "OpenRefused" in marks(pair), "precondition: ${marks(pair)}")
+            val asked = pair.opensAsked
+            feed.monitor.state.value = NetworkState.Routable(CELLULAR, InternetAccess.Observed.Pending)
+            pair.runFor(SETTLED)
+            assertEquals(0, pair.carryingReopens, "the Wi-Fi socket was reopened on cellular")
+            assertTrue(pair.opensAsked > asked, "the handoff onto cellular was not asked as a move")
+            feed.stop()
         }
 
     /** The real feed of [pair]'s client, on the test's thread, over a scripted monitor and route. */
@@ -126,7 +172,6 @@ class CoreCarriedTests {
                     monitor,
                     ClientFeed(pair.client.connection, pair.client.parts),
                     { route },
-                    LOCALHOST,
                     OnMove.Migrate,
                     scope.coroutineContext.minusKey(Job),
                 ) { host -> InetSocketAddress(host, 0).toPathKey() }
@@ -152,7 +197,14 @@ class CoreCarriedTests {
         return recorded.filterIsInstance<TraceEvent.PathState>().map { it.phase }
     }
 
+    private fun payload(): PlatformBuffer =
+        BufferFactory.Default.allocate(PAYLOAD).apply {
+            repeat(PAYLOAD) { writeByte(it.toByte()) }
+            resetForRead()
+        }
+
     private companion object {
+        const val PAYLOAD = 600
         val SETTLED = 500.milliseconds
         val WIFI = NetworkId.Link(NetworkKind.Wifi, 1L)
         val CELLULAR = NetworkId.Link(NetworkKind.Cellular, 2L)

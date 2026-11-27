@@ -8,13 +8,14 @@ import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicConnectionIdentity
 import com.ditchoom.socket.quic.QuicRole
 import com.ditchoom.socket.quic.SendTarget
+import com.ditchoom.socket.quic.core.conn.Carried
+import com.ditchoom.socket.quic.core.conn.CarriedCell
 import com.ditchoom.socket.quic.core.conn.Conn
 import com.ditchoom.socket.quic.core.conn.ConnAddress
 import com.ditchoom.socket.quic.core.conn.ConnMemory
 import com.ditchoom.socket.quic.core.conn.ConnSide
 import com.ditchoom.socket.quic.core.conn.MoveAsk
 import com.ditchoom.socket.quic.core.conn.MoveRefusal
-import com.ditchoom.socket.quic.core.conn.MoveWanted
 import com.ditchoom.socket.quic.core.conn.MoveWantedWork
 import com.ditchoom.socket.quic.core.conn.RebindWork
 import com.ditchoom.socket.quic.core.conn.SlotRules
@@ -30,8 +31,9 @@ import com.ditchoom.socket.quic.core.loop.SocketOwnership
 import com.ditchoom.socket.quic.core.loop.closeSecond
 import com.ditchoom.socket.quic.core.loop.move
 import com.ditchoom.socket.quic.core.loop.promote
+import com.ditchoom.socket.quic.core.loop.rehome
 import com.ditchoom.socket.quic.core.observe.ConnCounts
-import com.ditchoom.socket.quic.core.path.HomeCell
+import com.ditchoom.socket.quic.core.path.MoveWanted
 import com.ditchoom.socket.quic.core.path.PathNewsCell
 import com.ditchoom.socket.quic.core.path.SilenceRule
 import com.ditchoom.socket.quic.core.path.SocketAsk
@@ -44,7 +46,9 @@ import com.ditchoom.socket.quic.core.time.RttPrior
 import com.ditchoom.socket.quic.core.udp.MAX_CACHED_TARGETS
 import com.ditchoom.socket.quic.core.udp.PeerKeys
 import com.ditchoom.socket.quic.core.udp.SockAddr
+import com.ditchoom.socket.quic.core.udp.SocketTicket
 import com.ditchoom.socket.quic.trace.TraceCapture
+import com.ditchoom.socket.transport.NetworkId
 import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.cancel
 
@@ -91,14 +95,17 @@ internal class ClientParts(
     val chain = KeptChain()
     private val edge = EdgeState(alpn.owner, capture, w.tickets, ChainHome.Kept(chain))
 
-    /** What the connection's silence watch says of its path, and where its socket landed: both wake its network feed. */
+    /** What the connection's silence watch says of its path, and which socket carries it: both wake its network feed. */
     val news = PathNewsCell()
-    val home = HomeCell(news.wake)
+
+    /** Which socket carries the connection, as the loop publishes it; the connect's socket until the loop says otherwise. */
+    val carried = CarriedCell(news.wake, Carried(SocketTicket.FIRST, w.socket.local(), w.openedOn))
 
     /** What the connection asks of its sockets, each loop work on [endpoint]. */
     private val ask: (SocketAsk) -> Unit = { asked ->
         when (asked) {
-            is SocketAsk.OpenBeside -> loop.move(endpoint, asked.ticket, asked.bind, asked.prior)
+            is SocketAsk.OpenBeside ->
+                loop.move(endpoint, asked.ticket, asked.wanted.bind, asked.wanted.prior, asked.wanted.network)
             is SocketAsk.Promote -> loop.promote(endpoint, asked.ticket)
             is SocketAsk.CloseSecond -> loop.closeSecond(endpoint, asked.ticket)
         }
@@ -126,7 +133,7 @@ internal class ClientParts(
                     ask,
                     w.access,
                     chainSourceOf(w.options, w.memory.factory()),
-                    SilenceRule(w.silence, probeCapOf(w.options), news, home),
+                    SilenceRule(w.silence, probeCapOf(w.options), news),
                     earlyPlanOf(QuicheConnRef(w.api, w.handle), w.offer, w.options.resumption, nativeOf(w.memory.factory())),
                 ),
             address =
@@ -183,7 +190,7 @@ internal class ClientParts(
             w.socket.hold(),
         )
 
-    private val route = Route.Fixed(conn, SharedBatch(w.running.out))
+    private val route = Route.Fixed(conn, SharedBatch(w.running.out), carried)
     private val endpoint = Endpoint(socketIo.refs, io, socket, route, released, w.readiness, ownership)
 
     /** Tests: the endpoint on the loop that carries this connection's sockets. */
@@ -206,11 +213,17 @@ internal class ClientParts(
         released.run()
     }
 
-    /** Any thread, after [start]: the socket is reopened on the network that carries its address now. */
-    fun rehome() = loop.rehome(endpoint)
+    /**
+     * Any thread, after [start]: the address of the socket [ticket] names is on [network] now, so the loop reopens it
+     * there if it still carries and was on another network.
+     */
+    fun rehome(
+        ticket: SocketTicket,
+        network: NetworkId,
+    ) = loop.rehome(endpoint, ticket, network)
 
     /**
-     * Any thread, after [start]: a second socket opens on [bind]'s address, on a network assumed to have a round trip
+     * Any thread, after [start]: a second socket opens on [bind]'s address, on [network], assumed to have a round trip
      * of [prior], once the connection can probe the path from there; the connection migrates to it once the path
      * validates, the old socket carrying until then. A connection on a lent socket is refused here, at once: no socket
      * can replace the caller's.
@@ -218,20 +231,23 @@ internal class ClientParts(
     fun migrate(
         bind: PathKey,
         prior: RttPrior,
+        network: NetworkId,
     ): MoveAsk =
         when (ownership) {
-            is SocketOwnership.Owned -> MoveAsk.Asked.also { conn.submit(MoveWantedWork(MoveWanted(bind, prior))) }
+            is SocketOwnership.Owned -> MoveAsk.Asked.also { conn.submit(MoveWantedWork(MoveWanted(bind, prior, network))) }
             is SocketOwnership.Lent -> LENT_REFUSED
         }
 
     /**
      * Any thread, after [start]: the path was read silent, so a second socket is wanted on a fresh port of [bind]'s
-     * address; the connection opens it only if the path is still silent and no move is open, and migrates as [migrate].
+     * address, on [network]; the connection opens it only if the path is still silent and no move is open, and
+     * migrates as [migrate].
      */
     fun rebind(
         bind: PathKey,
         prior: RttPrior,
-    ) = conn.submit(RebindWork(MoveWanted(bind, prior)))
+        network: NetworkId,
+    ) = conn.submit(RebindWork(MoveWanted(bind, prior, network)))
 
     private companion object {
         val LENT_REFUSED = MoveAsk.Refused(MoveRefusal.SocketLent)

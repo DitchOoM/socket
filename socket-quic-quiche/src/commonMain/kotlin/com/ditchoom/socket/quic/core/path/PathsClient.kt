@@ -54,18 +54,21 @@ internal class ClientPaths(
      * up: the move waits until the loop promoted or lost its socket.
      */
     val hold =
-        MoveHold(q, ears) { bind, prior ->
+        MoveHold(q, ears) { wanted ->
             when (val now = move) {
                 is Move.Landing -> Opening.AfterLanding
-                is Move.Settled -> ask(now.on, bind, prior)
+                is Move.Settled -> ask(now.on, wanted)
                 // Before the new socket's open is asked, so no promotion of the old probe can follow it to the loop.
-                is Move.Unfinished -> ask(costs.abandon(now), bind, prior)
+                is Move.Unfinished -> ask(costs.abandon(now), wanted)
             }
         }
 
+    /** Where the move last asked of the loop goes. */
+    private var toward: Toward = Toward.Nowhere
+
     /** The rebinds the active path's silence asks for, each through [hold]; one it gives up drops an unfinished move. */
     val rebinds: Rebinds =
-        Rebinds(q, silence, hold, { move.moving(hold.held) }, { move.carrying().key }) {
+        Rebinds(q, silence, hold, { move.moving(hold.held) }) {
             when (val now = move) {
                 is Move.Unfinished -> move = Move.Settled(costs.abandon(now))
                 is Move.Settled, is Move.Landing -> Unit
@@ -232,15 +235,36 @@ internal class ClientPaths(
         events.free()
     }
 
-    /** Asks the loop for the socket a move to [bind]'s address leaves from, the connection carrying on [from] until then. */
+    /**
+     * Whether a move open now already goes where [wanted] says, toward its address on its network: the move waiting for
+     * a spare id or a landing to end, else the one last asked while it is unfinished or landing.
+     */
+    fun serves(wanted: MoveWanted): Served {
+        val open =
+            when (val held = hold.held) {
+                is HeldMove.Waiting -> held.wanted
+                is HeldMove.None ->
+                    when (move) {
+                        is Move.Settled -> return Served.Not
+                        is Move.Unfinished, is Move.Landing ->
+                            when (val now = toward) {
+                                is Toward.Nowhere -> return Served.Not
+                                is Toward.To -> now.wanted
+                            }
+                    }
+            }
+        return open.serves(wanted)
+    }
+
+    /** Asks the loop for the socket a move where [wanted] says leaves from, the connection carrying on [from] until then. */
     private fun ask(
         from: Linked,
-        bind: PathKey,
-        prior: RttPrior,
+        wanted: MoveWanted,
     ): Opening {
         val ticket = costs.nextTicket()
         move = Move.Asked(from, ticket).also { rebinds.opening() }
-        costs.open(ticket, bind, prior)
+        toward = Toward.To(wanted)
+        costs.open(ticket, wanted)
         return Opening.Asked
     }
 }
