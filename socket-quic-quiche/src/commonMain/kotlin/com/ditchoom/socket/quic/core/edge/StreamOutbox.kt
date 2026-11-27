@@ -84,7 +84,7 @@ internal class StreamOutbox(
         if (taking == 0) return full
         val all = taking == bytes.remaining()
         memory().copyIn(bytes, queued, taking)
-        if (all && end == WriteEnd.Finish) state.compareAndSet(OutboxState.Open, OutboxState.FinishAsked)
+        if (all && end == WriteEnd.Finish) state.compareAndSet(OutboxState.Open, OutboxState.FinishAsked(queued + taking))
         tail.store(queued + taking)
         schedule()
         return if (all) StreamSend.Sent else full
@@ -94,7 +94,7 @@ internal class StreamOutbox(
         noteEnd()
         while (true) {
             when (val now = state.load()) {
-                is OutboxState.Open -> if (state.compareAndSet(now, OutboxState.FinishAsked)) break
+                is OutboxState.Open -> if (state.compareAndSet(now, OutboxState.FinishAsked(tail.load()))) break
                 is OutboxState.FinishAsked, is OutboxState.FinTaken, is OutboxState.ResetHere -> return StreamSend.NotSent.Finished
                 is OutboxState.Over -> return now.why
             }
@@ -220,9 +220,12 @@ internal class StreamOutbox(
                 val queued = tail.load()
                 val sent = head.load()
                 val waiting = (queued - sent).toInt()
-                val finishing = state.load() is OutboxState.FinishAsked
+                val now = state.load()
                 if (waiting == 0) {
-                    if (!finishing) return Retry.Settled
+                    when (stepEnd(now, sent, queued, 0)) {
+                        WriteEnd.More -> return Retry.Settled
+                        WriteEnd.Finish -> Unit
+                    }
                     val step = send.send(stream, 0L, 0, WriteEnd.Finish)
                     val code = step.code()
                     return when {
@@ -238,15 +241,15 @@ internal class StreamOutbox(
                     }
                 val at = (sent % OUTBOX_CAPACITY).toInt()
                 val length = minOf(waiting, OUTBOX_CAPACITY - at)
-                val last = finishing && length == waiting
-                val step = send.send(stream, memory.address + at, length, if (last) WriteEnd.Finish else WriteEnd.More)
+                val last = stepEnd(now, sent, queued, length)
+                val step = send.send(stream, memory.address + at, length, last)
                 val code = step.code()
                 when {
                     code > 0 -> {
                         head.store(sent + code)
                         wake()
                         listener.load().roomMade()
-                        if (last && code == length) return finTaken(table)
+                        if (last == WriteEnd.Finish && code == length) return finTaken(table)
                         if (code < length) return blocked(table)
                     }
                     code == 0 || code == QUICHE_ERR_DONE -> return blocked(table)

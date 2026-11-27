@@ -11,6 +11,7 @@ import com.ditchoom.socket.quic.StreamRoom
 import com.ditchoom.socket.quic.StreamSend
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.stream.SendRefusal
+import com.ditchoom.socket.quic.core.stream.WriteEnd
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 import com.ditchoom.socket.quic.core.udp.ReadAddress
 import kotlinx.coroutines.CancellableContinuation
@@ -21,8 +22,10 @@ import kotlin.concurrent.atomics.ExperimentalAtomicApi
 internal sealed interface OutboxState {
     data object Open : OutboxState
 
-    /** Our FIN is queued behind the bytes before it. */
-    data object FinishAsked : OutboxState
+    /** Our FIN is queued behind the bytes before it: it goes with the step whose bytes end at the queue's count [at]. */
+    class FinishAsked(
+        val at: Long,
+    ) : OutboxState
 
     /** quiche took our FIN. */
     data object FinTaken : OutboxState
@@ -96,6 +99,21 @@ internal fun copyIntoRing(
     into.write(from)
     from.setLimit(limit)
 }
+
+/**
+ * How the loop's step that hands quiche [length] bytes from the queue's count [sent] ends in [state], with [queued]
+ * the tail as the loop read it.
+ */
+internal fun stepEnd(
+    state: OutboxState,
+    sent: Long,
+    queued: Long,
+    length: Int,
+): WriteEnd =
+    when (state) {
+        is OutboxState.FinishAsked -> if (sent + length == queued) WriteEnd.Finish else WriteEnd.More
+        is OutboxState.Open, is OutboxState.FinTaken, is OutboxState.ResetHere, is OutboxState.Over -> WriteEnd.More
+    }
 
 /** What a wait for [wants] answers in [state], with [roomy] whether the queue is down to its low-water mark. */
 internal fun readiness(
