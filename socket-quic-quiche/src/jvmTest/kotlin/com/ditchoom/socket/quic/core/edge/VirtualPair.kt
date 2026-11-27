@@ -188,6 +188,13 @@ internal class VirtualPair private constructor(
     var carryingReopens = 0
         private set
 
+    /** How many times the client's loop reopened its second socket. */
+    var secondReopens = 0
+        private set
+
+    /** The ticket of the client's second socket, while the loop holds one. */
+    fun secondTicket(): SocketTicket = second?.ticket ?: throw AssertionError("no second socket")
+
     /** The addresses the client's next second sockets bind to, as on another interface; its own address when empty. */
     val moveHosts = ArrayDeque<PathKey>()
 
@@ -396,14 +403,16 @@ internal class VirtualPair private constructor(
                     }
             }
 
-        override fun reopenSecond(): Reopened =
-            if (refuseSecondReopen) {
+        override fun reopenSecond(): Reopened {
+            secondReopens++
+            return if (refuseSecondReopen) {
                 Reopened.Refused(
                     Thrown(java.net.BindException("Can't assign requested address")),
                 )
             } else {
                 Reopened.SameEndpoint
             }
+        }
 
         override fun settleBeside(): Beside =
             when {

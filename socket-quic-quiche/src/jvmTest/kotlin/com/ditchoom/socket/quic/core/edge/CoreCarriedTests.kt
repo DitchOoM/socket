@@ -158,6 +158,42 @@ class CoreCarriedTests {
             feed.stop()
         }
 
+    /**
+     * The network under the carrying socket's address changes while a move toward another one is open: the rehome names
+     * the carrying socket, which is leaving, so neither socket is reopened; the second keeps the network it was asked on.
+     */
+    @Test
+    fun aRehomeNamingTheCarryingSocketDuringAMoveReopensNeither() =
+        VirtualPair.with(options) { pair ->
+            val first = pair.clientPort()
+            pair.deadClientPorts += first + 1
+            pair.client.parts.migrate(ANY, RttPrior.CONFIGURED, MOVE_NETWORK)
+            pair.runUntil(within = 2.seconds) { pair.clientSockets == 2 }
+            pair.rehome()
+            pair.runFor(SETTLED)
+            assertEquals(0, pair.secondReopens, "the second socket was reopened for a rehome of the carrying one")
+            assertEquals(0, pair.carryingReopens, "the leaving carrying socket was reopened")
+            assertIs<EdgeEnd.Open>(pair.client.connection.end())
+        }
+
+    /** A rehome read before a promotion, on the network the promoted socket is on, still tells the connection it can send. */
+    @Test
+    fun aStaleRehomeOnTheCarriedNetworkStillTellsUsable() =
+        VirtualPair.with(options) { pair ->
+            val first = pair.clientPort()
+            val earlier =
+                pair.client.parts.carried
+                    .read()
+            pair.client.parts.migrate(ANY, RttPrior.CONFIGURED, MOVE_NETWORK)
+            pair.runUntil(within = 5.seconds) { pair.clientPort() != first && pair.clientSockets == 1 }
+            pair.runFor(SETTLED)
+            val usable = marks(pair).count { it == "Usable" }
+            pair.client.parts.rehome(earlier.ticket, MOVE_NETWORK)
+            pair.runFor(SETTLED)
+            assertEquals(usable + 1, marks(pair).count { it == "Usable" }, "the connection was never told it can send")
+            assertEquals(0, pair.carryingReopens)
+        }
+
     /** The real feed of [pair]'s client, on the test's thread, over a scripted monitor and route. */
     private class Feed(
         private val pair: VirtualPair,

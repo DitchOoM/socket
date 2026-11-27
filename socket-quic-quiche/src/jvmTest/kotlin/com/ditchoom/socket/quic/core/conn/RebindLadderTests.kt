@@ -325,6 +325,30 @@ class RebindLadderTests {
     }
 
     /**
+     * A rung after the first is asked later than the reading that named its network, which may have changed since (a
+     * re-association): it names no network, and the loop takes the one the next rehome names.
+     */
+    @Test
+    fun aLaterRungNamesNoNetwork() {
+        val f = Fixture()
+        f.goSilent()
+        f.work(RebindWork(MoveWanted(PORT_ZERO, RttPrior.CONFIGURED, ELSEWHERE)))
+        assertEquals(
+            ELSEWHERE,
+            f.asks
+                .filterIsInstance<SocketAsk.OpenBeside>()
+                .single()
+                .wanted.network,
+            "the first rung",
+        )
+        f.refuse()
+        f.runFor(1.seconds)
+        val later = f.asks.filterIsInstance<SocketAsk.OpenBeside>()
+        assertTrue(later.size >= 2, "precondition: a later rung was asked: ${f.asks}")
+        assertEquals(NetworkId.Unidentified, later.last().wanted.network, "a later rung named the network of an old reading")
+    }
+
+    /**
      * The loop refusing the first of two asks says nothing of the second: that move stays open, the edge is not told it
      * ended, the ladder asks nothing over it, and the socket the loop then opens for it is followed.
      */
