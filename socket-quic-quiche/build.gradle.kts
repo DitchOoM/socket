@@ -388,6 +388,10 @@ fun downloadQuicheSource(
     // RTT sample after confirmation, so retransmit gaps follow the caller's prior and growth rule until the
     // connection has a sample of its own. Idempotent, fails loudly on drift. See the KDoc.
     patchQuicheHandshakePtoCeiling(sourceDir)
+    // A client confirms its handshake when the peer acknowledges a 1-RTT packet (RFC 9001 §4.1.2), no send arms the
+    // Application Data PTO before confirmation, and a PTO with no space to probe counts nothing. Applied after
+    // patchQuicheHandshakePtoCeiling, whose PTO edits share the recovery functions. Idempotent, fails loudly on drift.
+    patchQuicheOneRttAckConfirms(sourceDir)
     // A path already validated is never failed by PATH_CHALLENGEs counted lost, and a connection left with no path
     // closes with NO_VIABLE_PATH instead of no error. Applied after patchQuicheRetireDcidNoRelink, whose edit of
     // the same branch it guards. Idempotent, fails loudly on drift. See the KDoc.
@@ -406,6 +410,12 @@ fun downloadQuicheSource(
     // NEW_TOKEN on both sides (RFC 9000 §8.1.3): a client keeps and sends tokens, a server sends them and lifts the
     // anti-amplification limit for a client that presented a valid one. Idempotent, fails loudly on drift. See the KDoc.
     patchQuicheNewTokenFfi(sourceDir)
+    // A resumed client takes the peer's stream limits from the handshake, not the larger of them and the ticket's, unless
+    // its early data was accepted (RFC 9000 §7.4.1). Idempotent, fails loudly on drift. See the KDoc.
+    patchQuicheResumedStreamLimitsFromTheHandshake(sourceDir)
+    // A client whose 0-RTT was rejected keeps none of its streams, when the connection asks (RFC 9001 §4.6.2): the core
+    // replays what it wrote. Idempotent, fails loudly on drift. See the KDoc.
+    patchQuicheRejectedEarlyDataIsDropped(sourceDir)
 
     // Name the patch set this tree now carries. The tree outlives the run (CI caches it with a
     // prefix fallback), so a reader that compiles it outside these tasks checks this stamp rather
@@ -426,6 +436,11 @@ val quicheSourceDigestStamp = ".socket-patch-digest"
  * Here `at` is written as the host's `CLOCK_UPTIME_RAW` reading (nanoseconds; `mach_absolute_time` converted, the
  * clock `System.nanoTime` reads on macOS) plus how far `at` is from quiche's own now, so a caller compares it with
  * its own monotonic clock directly. No assumption is made about `Instant`'s layout. Windows keeps upstream's zero.
+ *
+ * quiche's now is read first and the host clock after it, so a thread descheduled between the two reads moves `at`
+ * later by that pause, never earlier: `at` stays between the caller's clock readings around the write, which is how
+ * the core judges the first datagram to be on its clock. Read the other way round, the pause moved `at` before the
+ * write began, and the core judged that connection to be on another clock. The Windows conversion reads in this order too.
  *
  * Marker-guarded and loud in both directions: a re-run returns, a moved anchor throws, and an upstream that
  * converts the Apple instant itself throws, telling you to delete this patch.
@@ -457,10 +472,11 @@ fun patchQuichePacingTimeOnApple(sourceDir: File) {
         |// $marker: the instant as CLOCK_UPTIME_RAW nanoseconds, the clock a host's monotonic reads on Apple.
         |#[cfg(any(target_os = "macos", target_os = "ios"))]
         |fn std_time_to_c(time: &Instant, out: &mut timespec) {
+        |    // quiche's now before the host's: a pause between them makes `at` later, never earlier than the write.
+        |    let now = crate::now();
         |    let mut base: timespec = unsafe { std::mem::zeroed() };
         |    unsafe { libc::clock_gettime(libc::CLOCK_UPTIME_RAW, &mut base) };
         |    let base_nanos = base.tv_sec as i128 * 1_000_000_000 + base.tv_nsec as i128;
-        |    let now = crate::now();
         |    let ahead = match time.checked_duration_since(now) {
         |        Some(d) => d.as_nanos() as i128,
         |        None => -(now.saturating_duration_since(*time).as_nanos() as i128),
@@ -487,7 +503,7 @@ fun patchQuichePacingTimeOnApple(sourceDir: File) {
  * every Windows lane) and nothing was paced there.
  *
  * Here `at` is written as `QueryPerformanceCounter` scaled to nanoseconds, the reading `System.nanoTime` takes on
- * Windows, plus how far `at` is from quiche's own now, as the Apple conversion does.
+ * Windows, plus how far `at` is from quiche's own now, read in the order the Apple conversion reads them.
  *
  * Marker-guarded and loud in both directions: a re-run returns, a moved anchor throws, and an upstream that converts
  * the Windows instant itself throws, telling you to delete this patch.
@@ -526,12 +542,11 @@ fun patchQuichePacingTimeOnWindows(sourceDir: File) {
         |    }
         |    let mut count: i64 = 0;
         |    let mut frequency: i64 = 0;
-        |    unsafe {
-        |        QueryPerformanceCounter(&mut count);
-        |        QueryPerformanceFrequency(&mut frequency);
-        |    }
-        |    let base_nanos = if frequency > 0 { count as i128 * 1_000_000_000 / frequency as i128 } else { 0 };
+        |    unsafe { QueryPerformanceFrequency(&mut frequency) };
+        |    // quiche's now before the host's: a pause between them makes `at` later, never earlier than the write.
         |    let now = crate::now();
+        |    unsafe { QueryPerformanceCounter(&mut count) };
+        |    let base_nanos = if frequency > 0 { count as i128 * 1_000_000_000 / frequency as i128 } else { 0 };
         |    let ahead = match time.checked_duration_since(now) {
         |        Some(d) => d.as_nanos() as i128,
         |        None => -(now.saturating_duration_since(*time).as_nanos() as i128),
@@ -660,7 +675,7 @@ fun patchQuicheForCallerEntropy(sourceDir: File) {
  * It takes two losses: the receiver's ACK of the data and the sender's FIN-only packet. The sender
  * then declares both lost and retransmits them as one frame (offset 0, all the data, FIN set), every
  * byte of which the reader already has. Reproduced deterministically by
- * `MigrationSimTestSuite.aFinRetransmittedWithBytesTheReaderAlreadyConsumedEndsTheStream`, and seen as
+ * `QuichePatchStreamTests.aFinRetransmittedWithBytesTheReaderAlreadyConsumedEndsTheStream`, and seen as
  * a request that never ended on an 800 ms / 30 % loss sim path.
  *
  * The edit: such a frame is reduced to its empty FIN-carrying tail at the read offset — exactly the
@@ -696,7 +711,7 @@ fun patchQuicheDuplicateDataFinIsKept(sourceDir: File) {
                 "quiche bump moved or reshaped it — possibly fixing this upstream, which is the outcome we " +
                 "want. If a fully-duplicate frame carrying the FIN now leaves the stream readable at its end: " +
                 "DELETE this patch and its call site, and KEEP the regression guard " +
-                "MigrationSimTestSuite.aFinRetransmittedWithBytesTheReaderAlreadyConsumedEndsTheStream. " +
+                "QuichePatchStreamTests.aFinRetransmittedWithBytesTheReaderAlreadyConsumedEndsTheStream. " +
                 "Otherwise re-fit the anchor and re-verify with that guard before shipping.",
         )
     }
@@ -1066,8 +1081,8 @@ fun patchQuicheRecvGapCounter(sourceDir: File) {
  *    graceful close there is nothing left to wait for.
  *
  * Either way the peer reads the whole stream and never its end. Reproduced by
- * `MigrationSimTestSuite.aFinWrittenWhileAnEarlierRangeAwaitsRetransmissionIsStillSent` and
- * `aReplyEndsWithItsFinWhenTheServerClosesRightAfterWritingIt`.
+ * `QuichePatchStreamTests.aFinWrittenWhileAnEarlierRangeAwaitsRetransmissionIsStillSent` and
+ * `QuichePatchStreamTests.aFinLostBehindAcknowledgedDataIsSentAgain`.
  *
  * The edits: `SendBuf` gains `socket_fin_sent` (set when `emit` puts the FIN on a frame, cleared when the
  * ACK handler's loss arm sees a frame carrying it lost) and `socket_fin_acked` (set when the ACK handler
@@ -1193,7 +1208,10 @@ fun patchQuicheFinIsSentUntilAcknowledged(sourceDir: File) {
  * data the server cannot read yet: Finished, request, Finished, request, each interval double the last.
  * The quic-interop-runner's `handshakeloss` against quic-go: the lost Finished went out again 1, 5 and
  * 21 s later, quic-go dropped the handshake at 10 s, and the client idled out at 30 s. Reproduced by
- * `MigrationSimTestSuite.aLostFinishedIsSentAgainAtEveryPtoUntilTheHandshakeIsConfirmed`.
+ * `QuichePatchHandshakeTests.aPingInFlightDoesNotTakeAPtoFromTheLostFinished`: with a request in flight, a
+ * Handshake PTO probe re-sends the request too ([patchQuicheHandshakeProbeCarriesAppData]) and hides the
+ * split, so the test puts an ack-eliciting PING, which no probe re-sends, in flight instead.
+ * `aLostFinishedIsSentAgainAtEveryPtoUntilTheHandshakeIsConfirmed` stays green without this patch.
  *
  * A server confirms when it completes, so only a client's timing changes. Nothing is stranded meanwhile:
  * with no Handshake data in flight the server's own PTO re-sends HANDSHAKE_DONE, and its arrival
@@ -1213,7 +1231,7 @@ fun patchQuichePtoWaitsForConfirmation(sourceDir: File) {
             "$marker: `completed: self.is_established(),` not found exactly once in quiche's lib.rs — a quiche " +
                 "bump moved it, or upstream now gates the Application Data PTO on confirmation. If so, DELETE " +
                 "patchQuichePtoWaitsForConfirmation and KEEP " +
-                "MigrationSimTestSuite.aLostFinishedIsSentAgainAtEveryPtoUntilTheHandshakeIsConfirmed; otherwise " +
+                "QuichePatchHandshakeTests.aLostFinishedIsSentAgainAtEveryPtoUntilTheHandshakeIsConfirmed; otherwise " +
                 "re-fit the anchor.",
         )
     }
@@ -1240,6 +1258,12 @@ fun patchQuichePtoWaitsForConfirmation(sourceDir: File) {
  *
  * A packet that decrypts under the derived keys proves the peer holds them, so reading it before
  * confirmation weakens nothing.
+ *
+ * No unit test can guard this: quiche never starts a key update, so no pair of our own can send a packet in
+ * the flipped phase. The only guards are the interop gate's non-gating cells of our client against quinn,
+ * `handshakeloss` and `handshakecorruption` (test-harness/quic-interop/expectations.json); the gate's
+ * `keyupdate` cell runs the other direction (a peer's client updating against our server) and does not
+ * exercise this read.
  *
  * **Idempotent and loud in both directions** (the [patchQuicheForCallerClock] discipline).
  */
@@ -1286,7 +1310,7 @@ fun patchQuichePeerKeyUpdateReadBeforeConfirmation(sourceDir: File) {
  *    lost, the runner counted two handshakes for one connection.
  *  - A lost Finished likewise reached quic-go once per PTO, too rarely to beat its 10 s handshake limit.
  * RFC 9002 §6.2.4 has a probe carry unacknowledged data when there is any, and lets both probes carry
- * the same data. Reproduced by `MigrationSimTestSuite.bothProbesOfAPtoCarryALostClientHello` and
+ * the same data. Reproduced by `QuichePatchHandshakeTests.bothProbesOfAPtoCarryALostClientHello` and
  * `bothProbesOfAPtoCarryALostFinished`.
  *
  * The edit: just before `send_single` builds its CRYPTO frame, a probe (`loss_probes(epoch) > 0`) in a
@@ -1307,7 +1331,7 @@ fun patchQuicheHandshakeProbesCarryCrypto(sourceDir: File) {
             "$marker: the CRYPTO frame block of send_single was not found exactly once in quiche's lib.rs — a " +
                 "quiche bump moved it. Re-fit patchQuicheHandshakeProbesCarryCrypto (or delete it if quiche's " +
                 "PTO probes now all carry unacknowledged CRYPTO data) and re-verify with " +
-                "MigrationSimTestSuite.bothProbesOfAPtoCarryALostClientHello.",
+                "QuichePatchHandshakeTests.bothProbesOfAPtoCarryALostClientHello.",
         )
     }
     libRs.writeText(
@@ -1363,8 +1387,8 @@ fun patchQuicheHandshakeProbesCarryCrypto(sourceDir: File) {
  * re-sent its ClientHello at 106 ms and PING probes at 0.3, 0.7, 1.3, 2 and 4 s, each answered by an ACK
  * alone; the server's first PTO (1 s) re-sent only the ServerHello, lost again, and its second (2 s) only
  * the Handshake packets, which arrived and could not be decrypted. quic-go abandons a handshake at 10 s.
- * Reproduced by `MigrationSimTestSuite.aRepeatedClientHelloBringsTheServersLostFlightAgainAtOnce` and
- * `aServerPtoResendsTheWholeLostFlightNotOneSpaceOfIt`.
+ * Reproduced by `QuichePatchHandshakeTests.aRepeatedClientHelloBringsTheServersLostFlightAgainAtOnce` and
+ * `QuichePatchHandshakeTests.aServerPtoResendsTheWholeLostFlightNotOneSpaceOfIt`.
  *
  * Each space re-sends at most `SOCKET_FLIGHT_RESEND_CHUNK` bytes from its oldest unacknowledged offset —
  * one packet's worth, the bytes the peer is missing first — so a large certificate chain does not turn a
@@ -1390,8 +1414,8 @@ fun patchQuicheLostFlightIsResentWhole(sourceDir: File) {
                     "Re-fit patchQuicheLostFlightIsResentWhole (or delete it if quiche now re-sends its " +
                     "unacknowledged handshake CRYPTO data on a repeated ClientHello and coalesces every handshake " +
                     "space into its PTO probes) and re-verify with " +
-                    "MigrationSimTestSuite.aRepeatedClientHelloBringsTheServersLostFlightAgainAtOnce and " +
-                    "aServerPtoResendsTheWholeLostFlightNotOneSpaceOfIt. Anchor:\n$anchor",
+                    "QuichePatchHandshakeTests.aRepeatedClientHelloBringsTheServersLostFlightAgainAtOnce and " +
+                    "QuichePatchHandshakeTests.aServerPtoResendsTheWholeLostFlightNotOneSpaceOfIt. Anchor:\n$anchor",
             )
         }
         text = text.replace(anchor, replacement)
@@ -1521,7 +1545,7 @@ fun patchQuicheLostFlightIsResentWhole(sourceDir: File) {
  * 1, 3, 7 and 15 s, and quic-go's three acknowledgements of them were lost as well. quic-go re-sent only
  * its Finished, which the confirmed server could no longer read, and the connection idled out at 30 s.
  * RFC 9002 §6.2.4 has a probe carry new or previously sent data when there is any. Reproduced by
- * `MigrationSimTestSuite.everyServerPtoProbeCarriesAnUnacknowledgedHandshakeDone`.
+ * `QuichePatchHandshakeTests.everyServerPtoProbeCarriesAnUnacknowledgedHandshakeDone`.
  *
  * **Idempotent and loud** (the [patchQuicheForCallerClock] discipline).
  */
@@ -1545,7 +1569,7 @@ fun patchQuicheHandshakeDoneRidesEveryProbe(sourceDir: File) {
             "$marker: the HANDSHAKE_DONE block of send_single was not found exactly once in quiche's lib.rs — a " +
                 "quiche bump moved it. Re-fit patchQuicheHandshakeDoneRidesEveryProbe (or delete it if quiche's " +
                 "PTO probes now carry an unacknowledged HANDSHAKE_DONE) and re-verify with " +
-                "MigrationSimTestSuite.everyServerPtoProbeCarriesAnUnacknowledgedHandshakeDone.",
+                "QuichePatchHandshakeTests.everyServerPtoProbeCarriesAnUnacknowledgedHandshakeDone.",
         )
     }
     libRs.writeText(
@@ -1579,7 +1603,7 @@ fun patchQuicheHandshakeDoneRidesEveryProbe(sourceDir: File) {
  * quic-go (run 43559668153) the Finished went out again 8 s after it was lost, after quic-go's 5 s
  * handshake limit; against s2n-quic (run 43604040594) a request waited 25 s after HANDSHAKE_DONE, and the
  * read deadline fired first. Reproduced by
- * `MigrationSimTestSuite.theClientsPtoBackoffStartsAgainWhenItDiscardsItsHandshakeKeys`.
+ * `QuichePatchHandshakeTests.theClientsPtoBackoffStartsAgainWhenItDiscardsItsHandshakeKeys`.
  *
  * The edit adds `self.pto_count = 0` before the timer is re-armed, in both recovery implementations.
  *
@@ -1603,7 +1627,7 @@ fun patchQuichePtoBackoffResetsOnKeyDiscard(sourceDir: File) {
                 "$marker: the end of on_pkt_num_space_discarded was not found exactly once in ${file.name} — a " +
                     "quiche bump moved it, or upstream now resets the PTO backoff there. If so, DELETE " +
                     "patchQuichePtoBackoffResetsOnKeyDiscard and KEEP " +
-                    "MigrationSimTestSuite.theClientsPtoBackoffStartsAgainWhenItDiscardsItsHandshakeKeys; otherwise " +
+                    "QuichePatchHandshakeTests.theClientsPtoBackoffStartsAgainWhenItDiscardsItsHandshakeKeys; otherwise " +
                     "re-fit the anchor.",
             )
         }
@@ -1633,7 +1657,7 @@ fun patchQuichePtoBackoffResetsOnKeyDiscard(sourceDir: File) {
  * `handshakeloss` with our client against s2n-quic, quinn and rama (runs 43559668153, 43556869462,
  * 43569919260): the server confirmed, HANDSHAKE_DONE was lost, the client sent eight Handshake-only probes
  * over 19 s, and the read deadline or idle timeout fired. Reproduced by
- * `MigrationSimTestSuite.aHandshakeProbeCarriesTheRequestTheConfirmedServerNeverGot`.
+ * `QuichePatchHandshakeTests.aHandshakeProbeCarriesTheRequestTheConfirmedServerNeverGot`.
  *
  * The edits: `RecoveryOps` gains `socket_requeue_oldest_unacked_data`, which queues the frames of the
  * space's oldest packet carrying data that is neither acknowledged nor lost, unless frames are already
@@ -1665,7 +1689,7 @@ fun patchQuicheHandshakeProbeCarriesAppData(sourceDir: File) {
                 "$marker: `${anchor.trim().lines().first()}` not found exactly once in ${file.name} — a quiche " +
                     "bump moved it. Re-fit patchQuicheHandshakeProbeCarriesAppData, or delete it if quiche's " +
                     "Handshake PTO probes now carry the client's unacknowledged 1-RTT data. Either way keep " +
-                    "MigrationSimTestSuite.aHandshakeProbeCarriesTheRequestTheConfirmedServerNeverGot.",
+                    "QuichePatchHandshakeTests.aHandshakeProbeCarriesTheRequestTheConfirmedServerNeverGot.",
             )
         }
         file.writeText(text.replace(anchor, replacement))
@@ -1762,7 +1786,7 @@ fun patchQuicheHandshakeProbeCarriesAppData(sourceDir: File) {
  * whole datagram, request included (quic-interop-runner `handshakeloss`, our client against the quiche server,
  * run 43612995827). [patchQuicheCloseBeforeConfirmationAlsoInOneRtt] sends its 1-RTT CONNECTION_CLOSE copy
  * alone for the same reason. Reproduced by
- * `MigrationSimTestSuite.aHandshakeProbeCarriesTheRequestTheConfirmedServerNeverGot`.
+ * `QuichePatchHandshakeTests.aHandshakeProbeCarriesTheRequestTheConfirmedServerNeverGot`.
  *
  * The edit: the coalescing loop of `send_on_path` stops after a Handshake packet while an unconfirmed client
  * has Application Data frames queued for retransmission, so the next `send` call writes them alone.
@@ -1781,7 +1805,7 @@ fun patchQuicheProbeAppDataInItsOwnDatagram(sourceDir: File) {
             "$marker: the close-before-confirmation break in send_on_path's coalescing loop was not found exactly " +
                 "once in quiche's lib.rs — a quiche bump or a change to patchQuicheCloseBeforeConfirmationAlsoInOneRtt " +
                 "moved it. Re-fit patchQuicheProbeAppDataInItsOwnDatagram and re-verify with " +
-                "MigrationSimTestSuite.aHandshakeProbeCarriesTheRequestTheConfirmedServerNeverGot.",
+                "QuichePatchHandshakeTests.aHandshakeProbeCarriesTheRequestTheConfirmedServerNeverGot.",
         )
     }
     libRs.writeText(
@@ -1814,9 +1838,11 @@ fun patchQuicheProbeAppDataInItsOwnDatagram(sourceDir: File) {
  * outage is resent only once its acknowledgement arrives, a round trip late (`WalkConditionReplayTests`).
  *
  * RFC 9002 §6.2.4: probe packets MUST NOT be blocked by the congestion controller, and are at most two; this sends
- * exactly that, early, on the application's evidence instead of the timer's. It neither counts a PTO nor declares
- * any packet lost, so the congestion controller and the PTO backoff are untouched; the probes' acknowledgements
- * then drive ordinary loss detection for the rest. Both recovery implementations (`congestion` and `gcongestion`).
+ * exactly that, early, on the application's evidence instead of the timer's. With no packet number space allowed to
+ * probe (an unconfirmed client whose only data in flight is 1-RTT) it sets no probes. It neither counts a PTO nor
+ * declares any packet lost, so the congestion controller and the PTO backoff are untouched; the probes'
+ * acknowledgements then drive ordinary loss detection for the rest. Both recovery implementations (`congestion` and
+ * `gcongestion`).
  *
  * Marker-guarded and loud in both directions: a re-run returns, a moved anchor throws, and an upstream that exports
  * the same throws, telling you to delete this patch.
@@ -1869,7 +1895,11 @@ fun patchQuicheProbeNowFfi(sourceDir: File) {
         |        if self.bytes_in_flight.get() == 0 {
         |            return;
         |        }
-        |        let (_, e) = self.pto_time_and_space(handshake_status, now);
+        |        // No space may probe while the Application Data space waits for confirmation (RFC 9002 §6.2.1).
+        |        let e = match self.pto_time_and_space(handshake_status, now) {
+        |            (Some(_), e) => e,
+        |            (None, _) => return,
+        |        };
         |        let epoch = &mut self.epochs[e];
         |        epoch.loss_probes = MAX_PTO_PROBES_COUNT;
         |        if !epoch.lost_frames_pto.is_empty() {
@@ -1897,7 +1927,11 @@ fun patchQuicheProbeNowFfi(sourceDir: File) {
         |        if self.bytes_in_flight.get() == 0 {
         |            return;
         |        }
-        |        let (_, e) = self.pto_time_and_space(handshake_status, now);
+        |        // No space may probe while the Application Data space waits for confirmation (RFC 9002 §6.2.1).
+        |        let e = match self.pto_time_and_space(handshake_status, now) {
+        |            (Some(_), e) => e,
+        |            (None, _) => return,
+        |        };
         |        let epoch = &mut self.epochs[e];
         |        epoch.loss_probes = MAX_PTO_PROBES_COUNT;
         |        if !epoch.lost_frames_pto.is_empty() {
@@ -2231,6 +2265,173 @@ fun patchQuicheHandshakePtoCeiling(sourceDir: File) {
 }
 
 /**
+ * A client confirms its handshake when the peer acknowledges a packet it sent with 1-RTT keys (RFC 9001 §4.1.2),
+ * exactly as HANDSHAKE_DONE confirms it, and a PTO that finds no packet number space allowed to probe counts nothing.
+ *
+ * **Why.** [patchQuichePtoWaitsForConfirmation] holds a client's Application Data PTO until confirmation, which was
+ * HANDSHAKE_DONE alone. A peer that acknowledges the Finished in the Handshake space empties that space, and with its
+ * HANDSHAKE_DONE lost no space was left to probe. `send_single` built its own `HandshakeStatus` from
+ * `handshake_completed`, so each 1-RTT send still armed an Application PTO; when it fired, the recovery read
+ * `handshake_status()`, found no space, and probed Initial, whose keys are gone: a PTO counted, nothing sent, the timer
+ * cleared, and the client silent until its idle timeout (quic-interop-runner `handshakeloss`, our client against
+ * xquic). Reproduced by `OneRttAckConfirmsTests`.
+ *
+ * The edits:
+ *  - a connection records the first packet number it sends in a short header (`SocketFirstOneRtt`). An
+ *    Application-space ACK whose largest acknowledged packet is at or past it acknowledges a 1-RTT packet, not only
+ *    0-RTT ones, and confirms an unconfirmed client: `handshake_confirmed`, and the Handshake keys dropped, which
+ *    re-arms the timers with the Application Data PTO.
+ *  - `send_single` passes `handshake_status()` to recovery, so no send arms the Application Data PTO before
+ *    confirmation (RFC 9002 §6.2.1).
+ *  - `on_loss_detection_timeout`, in both recovery implementations, re-arms and returns without counting a PTO or
+ *    setting probes when `pto_time_and_space` finds no space; [patchQuicheProbeNowFfi]'s `socket_probe_now` returns.
+ *
+ * A 1-RTT acknowledgement proves the server has the client's Finished: a server does not process 1-RTT packets before
+ * its handshake completes (RFC 9001 §5.7), and completing confirms it.
+ *
+ * **Idempotent and loud** (the [patchQuicheForCallerClock] discipline).
+ */
+fun patchQuicheOneRttAckConfirms(sourceDir: File) {
+    val marker = "socket-one-rtt-ack-confirms"
+    val src = sourceDir.resolve("quiche/src")
+    val libRs = src.resolve("lib.rs")
+    val legacyRs = src.resolve("recovery/congestion/recovery.rs")
+    val gcongestionRs = src.resolve("recovery/gcongestion/recovery.rs")
+    if (listOf(libRs, legacyRs, gcongestionRs).any { !it.exists() }) return
+    if (libRs.readText().contains(marker)) return
+
+    fun replaceOnce(
+        file: File,
+        anchor: String,
+        replacement: String,
+    ) {
+        val text = file.readText()
+        if (text.split(anchor).size != 2) {
+            throw GradleException(
+                "$marker: `${anchor.trim().lines().first()}` not found exactly once in ${file.relativeTo(src)} — a " +
+                    "quiche bump moved it, or upstream now confirms a client's handshake on a 1-RTT acknowledgement. " +
+                    "Re-fit or delete patchQuicheOneRttAckConfirms, and keep OneRttAckConfirmsTests.",
+            )
+        }
+        file.writeText(text.replace(anchor, replacement))
+    }
+
+    val connectionDecl = "/// A QUIC connection.\npub struct Connection<F = DefaultBufFactory>\n"
+    replaceOnce(
+        libRs,
+        connectionDecl,
+        """
+        |// $marker: the first packet number a connection sent in a short header.
+        |#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        |enum SocketFirstOneRtt {
+        |    NotSent,
+        |    Sent(u64),
+        |}
+        |
+        |impl SocketFirstOneRtt {
+        |    fn on_sent(self, pn: u64) -> Self {
+        |        match self {
+        |            SocketFirstOneRtt::NotSent => SocketFirstOneRtt::Sent(pn),
+        |            sent => sent,
+        |        }
+        |    }
+        |
+        |    // Whether an Application-space ACK up to `largest_acked` acknowledges a 1-RTT packet, not only 0-RTT ones.
+        |    fn acked_by(self, largest_acked: u64) -> bool {
+        |        match self {
+        |            SocketFirstOneRtt::NotSent => false,
+        |            SocketFirstOneRtt::Sent(first) => largest_acked >= first,
+        |        }
+        |    }
+        |}
+        |
+        |
+        """.trimMargin() + connectionDecl,
+    )
+    val field = "    /// Whether the connection handshake has been completed.\n    handshake_completed: bool,\n"
+    replaceOnce(libRs, field, field + "\n    // $marker\n    socket_first_one_rtt: SocketFirstOneRtt,\n")
+    val init = "            handshake_completed: false,\n"
+    replaceOnce(libRs, init, init + "\n            socket_first_one_rtt: SocketFirstOneRtt::NotSent,\n")
+    replaceOnce(
+        libRs,
+        """
+        |        self.next_pkt_num += 1;
+        |
+        |        let handshake_status = recovery::HandshakeStatus {
+        |            has_handshake_keys: self.crypto_ctx[packet::Epoch::Handshake]
+        |                .has_keys(),
+        |            peer_verified_address: self.peer_verified_initial_address,
+        |            completed: self.handshake_completed,
+        |        };
+        |
+        """.trimMargin(),
+        """
+        |        self.next_pkt_num += 1;
+        |
+        |        // $marker
+        |        if pkt_type == Type::Short {
+        |            self.socket_first_one_rtt = self.socket_first_one_rtt.on_sent(pn);
+        |        }
+        |
+        |        // $marker: the status every other recovery call reads, so no send arms the
+        |        // Application Data PTO before confirmation (RFC 9002 §6.2.1).
+        |        let handshake_status = self.handshake_status();
+        |
+        """.trimMargin(),
+    )
+    val ackEnd =
+        """
+        |                    self.lost_count += lost_packets;
+        |                    self.lost_bytes += lost_bytes as u64;
+        |                    self.acked_bytes += acked_bytes as u64;
+        |                    self.spurious_lost_count += spurious_losses;
+        |                }
+        |
+        """.trimMargin()
+    replaceOnce(
+        libRs,
+        ackEnd + "            },\n",
+        ackEnd +
+            """
+            |
+            |                // $marker: an acknowledged 1-RTT packet confirms a client's handshake
+            |                // (RFC 9001 §4.1.2), as HANDSHAKE_DONE does.
+            |                if !self.is_server &&
+            |                    !self.handshake_confirmed &&
+            |                    epoch == packet::Epoch::Application &&
+            |                    self.socket_first_one_rtt.acked_by(largest_acked)
+            |                {
+            |                    self.peer_verified_initial_address = true;
+            |                    self.handshake_confirmed = true;
+            |                    self.drop_epoch_state(packet::Epoch::Handshake, now);
+            |                }
+            |            },
+            |
+            """.trimMargin(),
+    )
+    val probeSpace = "            let (_, e) = self.pto_time_and_space(handshake_status, now);\n\n            e\n"
+    val noSpace =
+        """
+        |            // $marker: no space may probe (the Application Data space waits for
+        |            // confirmation, RFC 9002 §6.2.1): no PTO is counted and no probe is set.
+        |            match self.pto_time_and_space(handshake_status, now) {
+        |                (Some(_), e) => e,
+        |                (None, _) => {
+        |                    self.set_loss_detection_timer(handshake_status, now);
+        |                    return OnLossDetectionTimeoutOutcome {
+        |                        lost_packets: 0,
+        |                        lost_bytes: 0,
+        |                    };
+        |                },
+        |            }
+        |
+        """.trimMargin()
+    replaceOnce(legacyRs, probeSpace, noSpace)
+    replaceOnce(gcongestionRs, probeSpace, noSpace)
+    logger.lifecycle("Patched quiche source: an acknowledged 1-RTT packet confirms a client's handshake")
+}
+
+/**
  * Export `quiche_conn_requeue_path`: every frame a path still owes the peer (in packets neither acknowledged nor
  * declared lost, and lost frames not yet resent) is queued for retransmission on the active path, now.
  *
@@ -2551,6 +2752,246 @@ fun patchQuicheProbeReplacesLeftPath(sourceDir: File) {
 }
 
 /**
+ * quiche applies the transport parameters a session ticket remembers when a client offers the ticket, then the server's
+ * handshake parameters through `update_peer_max_streams_bidi/uni`, which keep the larger value: a client that resumed
+ * with a ticket from a server that granted more streams opened more than the server it reached grants. RFC 9000 §7.4.1:
+ * the remembered values serve 0-RTT only, the client uses the new ones when the server rejects 0-RTT, and a server that
+ * accepts it must not reduce them, so with 0-RTT accepted the larger value is the new one. The other parameters quiche
+ * applies from a ticket are assigned from the handshake's already: `initial_max_data`, the stream data limits (new
+ * streams read `peer_transport_params`), `active_connection_id_limit` and `max_datagram_frame_size`.
+ */
+fun patchQuicheResumedStreamLimitsFromTheHandshake(sourceDir: File) {
+    val marker = "socket-resumed-stream-limits-from-the-handshake"
+    val libRs = sourceDir.resolve("quiche/src/lib.rs")
+    val streamRs = sourceDir.resolve("quiche/src/stream/mod.rs")
+    if (!libRs.exists() || !streamRs.exists()) return
+    if (libRs.readText().contains(marker)) return
+
+    fun replaceOnce(
+        file: File,
+        anchor: String,
+        replacement: String,
+    ) {
+        val text = file.readText()
+        if (text.split(anchor).size != 2) {
+            throw GradleException(
+                "$marker: `${anchor.trim().take(80)}` not found exactly once in ${file.name}: a quiche bump moved it. " +
+                    "Re-fit patchQuicheResumedStreamLimitsFromTheHandshake, or delete it if quiche applies the handshake's limits.",
+            )
+        }
+        file.writeText(text.replace(anchor, replacement))
+    }
+
+    replaceOnce(
+        streamRs,
+        "    pub fn update_peer_max_streams_uni(&mut self, v: u64) {\n",
+        """
+        |    // $marker: the peer's stream limits as its handshake parameters state them.
+        |    pub fn socket_set_peer_max_streams(&mut self, bidi: u64, uni: u64) {
+        |        self.peer_max_streams_bidi = bidi;
+        |        self.peer_max_streams_uni = uni;
+        |    }
+        |
+        |    pub fn update_peer_max_streams_uni(&mut self, v: u64) {
+        |
+        """.trimMargin(),
+    )
+    replaceOnce(
+        libRs,
+        "        self.process_peer_transport_params(peer_params)?;\n\n        self.parsed_peer_transport_params = true;\n",
+        """
+        |        // $marker: the handshake's stream limits replace a ticket's unless 0-RTT was accepted.
+        |        let socket_limits = (peer_params.initial_max_streams_bidi, peer_params.initial_max_streams_uni);
+        |        self.process_peer_transport_params(peer_params)?;
+        |        if self.handshake.early_data_reason() != SOCKET_EARLY_DATA_ACCEPTED {
+        |            self.streams.socket_set_peer_max_streams(socket_limits.0, socket_limits.1);
+        |        }
+        |
+        |        self.parsed_peer_transport_params = true;
+        |
+        """.trimMargin(),
+    )
+    // The server's early-data context carries the limits 0-RTT relies on, where quiche set the constant "quiche": a ticket
+    // issued under other limits then has its 0-RTT rejected (RFC 9001 §4.6.2), so a server never accepts 0-RTT with
+    // limits lower than the ones the client remembers (RFC 9000 §7.4.1).
+    replaceOnce(
+        libRs,
+        "    fn encode_transport_params(&mut self) -> Result<()> {\n        self.handshake.set_quic_transport_params(\n" +
+            "            &self.local_transport_params,\n            self.is_server,\n        )\n    }\n",
+        """
+        |    fn encode_transport_params(&mut self) -> Result<()> {
+        |        if self.is_server {
+        |            // $marker: the limits a client's 0-RTT relies on, in the early-data context.
+        |            let p = &self.local_transport_params;
+        |            let mut context = b"quiche".to_vec();
+        |            for v in [
+        |                p.initial_max_data,
+        |                p.initial_max_stream_data_bidi_local,
+        |                p.initial_max_stream_data_bidi_remote,
+        |                p.initial_max_stream_data_uni,
+        |                p.initial_max_streams_bidi,
+        |                p.initial_max_streams_uni,
+        |                p.active_conn_id_limit,
+        |                p.max_datagram_frame_size.map_or(0, |d| d + 1),
+        |            ] {
+        |                context.extend_from_slice(&v.to_be_bytes());
+        |            }
+        |            self.handshake.set_quic_early_data_context(&context)?;
+        |        }
+        |        self.handshake.set_quic_transport_params(
+        |            &self.local_transport_params,
+        |            self.is_server,
+        |        )
+        |    }
+        |
+        """.trimMargin(),
+    )
+    libRs.appendText(
+        """
+        |
+        |// $marker: BoringSSL's `ssl_early_data_accepted`.
+        |const SOCKET_EARLY_DATA_ACCEPTED: u32 = 2;
+        |
+        """.trimMargin(),
+    )
+}
+
+/**
+ * A client whose server rejected its 0-RTT keeps nothing of it (RFC 9001 §4.6.2: the client resets the state of all
+ * streams). quiche sends 0-RTT and 1-RTT in one packet number space (`Type::ZeroRTT => Epoch::Application` in packet.rs)
+ * and, on BoringSSL's `SSL_ERROR_EARLY_DATA_REJECTED`, only resets the TLS state (tls/mod.rs): the 0-RTT packets stay
+ * in flight, are declared lost once 1-RTT packets are acknowledged, and their STREAM frames are retransmitted in 1-RTT
+ * (`next_lost_frame` → `stream.send.retransmit` in `send_single`), so the early bytes reach the server under whatever
+ * it now negotiated. Here, at the reject, the client discards its application-space packets in flight (all 0-RTT: it has
+ * no 1-RTT keys yet), forgets every stream it opened together with its flow-control spend, so a stream it opens again
+ * is fresh under the handshake's limits, and takes the negotiated ALPN, so the caller can judge a replay at once.
+ *
+ * Inert unless the connection asked for it with `quiche_conn_reset_streams_on_early_data_reject`: a caller that
+ * does not replay what it wrote keeps quiche's re-send. Applied after [patchQuicheResumedStreamLimitsFromTheHandshake],
+ * whose `SOCKET_EARLY_DATA_ACCEPTED` it reads. Marker-guarded, loud on drift and on an upstream export.
+ */
+fun patchQuicheRejectedEarlyDataIsDropped(sourceDir: File) {
+    val marker = "socket-rejected-early-data-is-dropped"
+    val src = sourceDir.resolve("quiche/src")
+    val libRs = src.resolve("lib.rs")
+    val streamRs = src.resolve("stream/mod.rs")
+    val ffiRs = src.resolve("ffi.rs")
+    if (!libRs.exists() || !streamRs.exists() || !ffiRs.exists()) return
+    if (libRs.readText().contains(marker)) return
+    if (ffiRs.readText().contains("fn quiche_conn_reset_streams_on_early_data_reject")) {
+        throw GradleException("$marker: ffi.rs already exports quiche_conn_reset_streams_on_early_data_reject. DELETE this patch.")
+    }
+
+    fun insertBefore(
+        file: File,
+        anchor: String,
+        insert: String,
+    ) {
+        val text = file.readText()
+        if (text.split(anchor).size != 2) {
+            throw GradleException(
+                "$marker: `${anchor.trim().lines().first()}` not found exactly once in ${file.name}: a quiche bump or an " +
+                    "earlier patch moved it. Re-fit patchQuicheRejectedEarlyDataIsDropped and re-run EarlyDataReplayVirtualTests.",
+            )
+        }
+        file.writeText(text.replace(anchor, insert + anchor))
+    }
+
+    insertBefore(
+        streamRs,
+        "    fn tx_buffered_actual(&self) -> usize {\n",
+        """
+        |    // $marker: every stream this side opened is forgotten, as if never opened.
+        |    pub fn socket_drop_local_streams(&mut self, is_server: bool) {
+        |        let local: Vec<u64> =
+        |            self.streams.keys().copied().filter(|id| is_local(*id, is_server)).collect();
+        |        for id in local {
+        |            if let Some(stream) = self.streams.remove(&id) {
+        |                let key = Arc::clone(&stream.priority_key);
+        |                self.remove_readable(&key);
+        |                self.remove_writable(&key);
+        |                self.remove_flushable(&key);
+        |            }
+        |            self.almost_full.remove(&id);
+        |            self.blocked.remove(&id);
+        |            self.reset.remove(&id);
+        |            self.stopped.remove(&id);
+        |        }
+        |        self.local_opened_streams_bidi = 0;
+        |        self.local_opened_streams_uni = 0;
+        |        self.tx_buffered = self.tx_buffered_actual();
+        |    }
+        |
+        |
+        """.trimMargin(),
+    )
+    insertBefore(
+        libRs,
+        "    did_retry: bool,\n",
+        "    // $marker: whether a rejected 0-RTT resets every stream this client opened.\n    socket_drop_rejected_early_data: bool,\n\n",
+    )
+    insertBefore(libRs, "            did_retry: false,\n", "            socket_drop_rejected_early_data: false,\n")
+    insertBefore(
+        libRs,
+        "        let mut ex_data = tls::ExData {\n            application_protos: &self.application_protos,\n",
+        "        // $marker: whether this call starts in 0-RTT.\n        let socket_was_early = !self.is_server && self.handshake.is_in_early_data();\n\n",
+    )
+    insertBefore(
+        libRs,
+        "            return Ok(());\n        }\n\n        self.handshake_completed = self.handshake.is_completed();\n",
+        "            self.socket_on_early_data_reject(socket_was_early, now);\n\n",
+    )
+    insertBefore(
+        libRs,
+        "    fn drop_epoch_state(&mut self, epoch: packet::Epoch, now: Instant) {\n",
+        """
+        |    /// $marker: the caller replays what it wrote in 0-RTT, so a reject resets every stream it opened.
+        |    pub fn socket_reset_streams_on_early_data_reject(&mut self) {
+        |        self.socket_drop_rejected_early_data = true;
+        |    }
+        |
+        |    // $marker: the server rejected the 0-RTT this call began in: none of it is kept.
+        |    fn socket_on_early_data_reject(&mut self, was_early: bool, now: Instant) {
+        |        if !self.socket_drop_rejected_early_data ||
+        |            !was_early ||
+        |            self.handshake.is_in_early_data() ||
+        |            self.handshake.early_data_reason() == SOCKET_EARLY_DATA_ACCEPTED
+        |        {
+        |            return;
+        |        }
+        |        let handshake_status = self.handshake_status();
+        |        for (_, p) in self.paths.iter_mut() {
+        |            p.recovery.on_pkt_num_space_discarded(
+        |                packet::Epoch::Application,
+        |                handshake_status,
+        |                now,
+        |            );
+        |        }
+        |        self.streams.socket_drop_local_streams(self.is_server);
+        |        self.tx_data = 0;
+        |        self.last_tx_data = 0;
+        |        self.blocked_limit = None;
+        |        self.alpn = self.handshake.alpn_protocol().to_vec();
+        |        self.update_tx_cap();
+        |    }
+        |
+        |
+        """.trimMargin(),
+    )
+    ffiRs.appendText(
+        "\n" +
+            """
+            |// $marker: a rejected 0-RTT resets every stream this client opened; the caller replays them.
+            |#[no_mangle]
+            |pub extern "C" fn quiche_conn_reset_streams_on_early_data_reject(conn: &mut Connection) {
+            |    conn.socket_reset_streams_on_early_data_reject();
+            |}
+            """.trimMargin() + "\n",
+    )
+    logger.lifecycle("Patched quiche source: a rejected 0-RTT keeps none of its streams")
+}
+
+/**
  * NEW_TOKEN (RFC 9000 §8.1.3, §19.7) on both sides, with the token's format and crypto left to the application.
  * quiche 0.30 parses and checks the frame (non-empty, 1-RTT only, never from a client) but a client drops it ("TODO:
  * implement stateless retry"), a server never sends one, and the C API can neither put a token in a client's Initial
@@ -2568,6 +3009,7 @@ fun patchQuicheProbeReplacesLeftPath(sourceDir: File) {
  * Marker-guarded and loud in both directions: a re-run returns, a moved anchor throws, and an upstream that exports
  * any of the four throws, telling you to delete this patch.
  */
+
 fun patchQuicheNewTokenFfi(sourceDir: File) {
     val marker = "socket-new-token"
     val src = sourceDir.resolve("quiche/src")
@@ -2895,7 +3337,7 @@ fun patchQuicheValidatedPathSurvivesProbeLoss(sourceDir: File) {
  * 42326957428 before this change, 42363016612): the request reached the server at 5 s and was dropped,
  * the handshake completed at 17.6 s, quinn's next PTO fell at 30 s, and its 30 s idle timeout fired
  * first. Against quic-go (run 42345499750) the same dropped request left the client waiting on a PTO it
- * never armed. Reproduced by `MigrationSimTestSuite.aRequestThatArrivesBeforeTheFinishedIsServedOnceItDoes`.
+ * never armed. Reproduced by `QuichePatchHandshakeTests.aRequestThatArrivesBeforeTheFinishedIsServedOnceItDoes`.
  *
  * The edit: the existing 0-RTT buffer (`undecryptable_pkts`, `MAX_UNDECRYPTABLE_PACKETS` entries) also takes
  * a server's short-header packets while it is not established; at completion only the 0-RTT entries are
@@ -2920,7 +3362,7 @@ fun patchQuicheEarlyOneRttIsBuffered(sourceDir: File) {
                 "$marker: an anchor was not found exactly once in quiche's lib.rs — a quiche bump moved it. " +
                     "Re-fit patchQuicheEarlyOneRttIsBuffered (or delete it if quiche now buffers 1-RTT packets " +
                     "that arrive before its handshake completes) and re-verify with " +
-                    "MigrationSimTestSuite.aRequestThatArrivesBeforeTheFinishedIsServedOnceItDoes. Anchor:\n$anchor",
+                    "QuichePatchHandshakeTests.aRequestThatArrivesBeforeTheFinishedIsServedOnceItDoes. Anchor:\n$anchor",
             )
         }
         text = text.replace(anchor, replacement)
@@ -3014,7 +3456,7 @@ fun patchQuicheEarlyOneRttIsBuffered(sourceDir: File) {
  * dropped a client's. When only the datagram carrying the ServerHello was lost, the server had to send its
  * whole Handshake flight again after a PTO. In the quic-interop-runner the server's Handshake data reached
  * our client intact 1.1 s before the ServerHello and was dropped, and the handshake failed. Reproduced by
- * `MigrationSimTestSuite.aClientReadsTheHandshakePacketsThatArrivedBeforeTheServerHello`.
+ * `QuichePatchHandshakeTests.aClientReadsTheHandshakePacketsThatArrivedBeforeTheServerHello`.
  *
  * The edit, on [patchQuicheEarlyOneRttIsBuffered]'s buffer (`undecryptable_pkts`): a client that is not
  * established and has no Handshake key keeps a Handshake packet, first come, while fewer than
@@ -3044,7 +3486,7 @@ fun patchQuicheClientKeepsEarlyHandshakePackets(sourceDir: File) {
                 "$marker: an anchor was not found exactly once in quiche's lib.rs — a quiche bump (or a change to " +
                     "patchQuicheEarlyOneRttIsBuffered) moved it. Re-fit patchQuicheClientKeepsEarlyHandshakePackets " +
                     "(or delete it if quiche now buffers a client's early Handshake packets) and re-verify with " +
-                    "MigrationSimTestSuite.aClientReadsTheHandshakePacketsThatArrivedBeforeTheServerHello. Anchor:\n$anchor",
+                    "QuichePatchHandshakeTests.aClientReadsTheHandshakePacketsThatArrivedBeforeTheServerHello. Anchor:\n$anchor",
             )
         }
         text = text.replace(anchor, replacement)
@@ -3157,8 +3599,8 @@ fun patchQuicheClientKeepsEarlyHandshakePackets(sourceDir: File) {
  * coalesced as Handshake + 1-RTT (RFC 9000 §10.2.3). Our server had confirmed and discarded its
  * Handshake keys, so the Handshake packet was undecryptable, the 1-RTT packet behind it was dropped too,
  * and the server never saw the close: it retransmitted until its idle timeout. Reproduced by
- * `MigrationSimTestSuite.aOneRttPacketBehindAnUndecryptableHandshakePacketIsStillRead` and
- * `aCloseBehindAnUndecryptableHandshakePacketClosesTheConnection`.
+ * `QuichePatchHandshakeTests.aOneRttPacketBehindAnUndecryptableHandshakePacketIsStillRead` and
+ * `QuichePatchHandshakeTests.aCloseBehindAnUndecryptableHandshakePacketClosesTheConnection`.
  *
  * The edit: in `recv`'s `Err(Error::Done)` arm, re-read the unprotected long header of the packet that
  * failed (header protection covers neither the type bits nor the Length) and, for an Initial, 0-RTT or
@@ -3197,7 +3639,7 @@ fun patchQuicheCoalescedPacketsAfterAnUndecryptableOne(sourceDir: File) {
             "$marker: the `Err(Error::Done)` arm of Connection::recv was not found exactly once in quiche's " +
                 "lib.rs — a quiche bump changed it. If upstream now skips an unprocessable coalesced packet by " +
                 "its Length (RFC 9000 §12.2), DELETE patchQuicheCoalescedPacketsAfterAnUndecryptableOne and KEEP " +
-                "MigrationSimTestSuite.aOneRttPacketBehindAnUndecryptableHandshakePacketIsStillRead; otherwise " +
+                "QuichePatchHandshakeTests.aOneRttPacketBehindAnUndecryptableHandshakePacketIsStillRead; otherwise " +
                 "re-fit the anchor.",
         )
     }
@@ -3480,60 +3922,37 @@ fun patchQuicheRetiredCidRecvIsDrop(sourceDir: File) {
  * packets from quinn.
  *
  * quiche moves a lost packet's frames into the queue only when it next builds a packet, so the loss
- * writer is the one both traces hit: edit 2 re-queues only an ID that is still live. Edit 1 covers the
- * window after that move: the frames are queued, a congestion window just cut by the loss has no room to
- * send them, and the retirement arrives while they wait — a retirement drops the number from the queue.
- * RFC 9000 §19.15/§19.16: a retired ID is never used again, so advertising it again is pointless as well
- * as fatal here.
+ * writer is the one both traces hit: it re-queues only an ID that is still live. RFC 9000 §19.15/§19.16: a
+ * retired ID is never used again, so advertising it again is pointless as well as fatal here.
  *
- * Regression guards, outliving this patch, in `MigrationSimTestSuite` — each edit reverted alone turns
- * its guard red (`quiche_conn_send` answering -6, InvalidState):
- *  - edit 2: `theClientKeepsSendingAfterThePeerRetiresIdsItHadQueuedToAdvertiseAgain` (the `handshakeloss`
- *    order) and `theClientKeepsSendingWhenAPacketAdvertisingIdsThePeerAlreadyRetiredIsSentAgain` (the
- *    `handshakecorruption` order);
- *  - edit 1: `theClientKeepsSendingWhenThePeerRetiresIdsQueuedBehindAFullCongestionWindow`.
+ * A second edit, which took a retired ID's number out of the queue in `retire_scid`, is not carried: it
+ * matters only when the frames stay queued because the congestion window left after a loss is narrower than
+ * a NEW_CONNECTION_ID frame, and with the window cut as quiche cuts it, the narrowest a pair can stage is
+ * 532 bytes, so no test could ever go red without it.
+ *
+ * Regression guards in `QuichePatchCidRetirementTests`: with this patch reverted alone these go red
+ * (`quiche_conn_send` answering -6, InvalidState):
+ * `theClientKeepsSendingAfterThePeerRetiresIdsItHadQueuedToAdvertiseAgain` (the `handshakeloss` order),
+ * `theClientKeepsSendingWhenAPacketAdvertisingIdsThePeerAlreadyRetiredIsSentAgain` (the `handshakecorruption`
+ * order) and `theClientKeepsSendingWhenThePeerRetiresIdsQueuedBehindAFullCongestionWindow`.
  * Upstream at the time of writing has the same code. Idempotent and loud in both directions (the
  * [patchQuicheForCallerClock] discipline).
  */
 fun patchQuicheRetiredScidIsNotAdvertised(sourceDir: File) {
     val marker = "socket-retired-scid-is-not-advertised"
     val libRs = sourceDir.resolve("quiche/src/lib.rs")
-    val cidRs = sourceDir.resolve("quiche/src/cid.rs")
-    if (!libRs.exists() || !cidRs.exists()) return
+    if (!libRs.exists()) return
 
     fun missingAnchor(what: String): Nothing =
         throw GradleException(
             "$marker: $what was not found. A quiche bump moved or reshaped it — possibly fixing this " +
                 "upstream (a retired source connection id left queued for NEW_CONNECTION_ID makes every " +
                 "send() fail with InvalidState). If upstream fixed it: DELETE this patch and its call site, " +
-                "and KEEP the MigrationSimTestSuite.theClientKeepsSending* tests, the regression guards. " +
+                "and KEEP the QuichePatchCidRetirementTests.theClientKeepsSending* tests, the regression guards. " +
                 "Otherwise re-fit the anchor and re-run those tests before shipping.",
         )
 
-    // Edit 1 (cid.rs): a retirement takes the id's number out of the advertise queue — every copy, since a
-    // NEW_CONNECTION_ID lost twice is queued twice.
-    val cidText = cidRs.readText()
-    if (!cidText.contains(marker)) {
-        val anchor =
-            """
-            |            // Notifies the application.
-            |            self.retired_scids.push_back(e.cid);
-            """.trimMargin()
-        if (cidText.split(anchor).size != 2) missingAnchor("the retired-scid notification in retire_scid (quiche/src/cid.rs)")
-        val replacement =
-            """
-            |            // $marker: the peer has retired this id, so it must
-            |            // never be advertised again. Leaving its number queued makes send_single's
-            |            // get_new_connection_id_frame_for(seq)? fail every send() with InvalidState.
-            |            self.advertise_new_scid_seqs.retain(|s| *s != seq);
-            |
-            |            // Notifies the application.
-            |            self.retired_scids.push_back(e.cid);
-            """.trimMargin()
-        cidRs.writeText(cidText.replaceFirst(anchor, replacement))
-    }
-
-    // Edit 2 (lib.rs): a lost NEW_CONNECTION_ID is sent again only for an id that is still live — the peer
+    // A lost NEW_CONNECTION_ID is sent again only for an id that is still live — the peer
     // may have retired it after receiving the very packet we have now declared lost.
     val libText = libRs.readText()
     if (!libText.contains(marker)) {
@@ -3581,7 +4000,7 @@ fun patchQuicheRetiredScidIsNotAdvertised(sourceDir: File) {
  * `ok_or(InvalidState)` instead of `OutOfIdentifiers`, which the driver treats the same (best-effort).
  *
  * Regression guard, outliving this patch:
- * `MigrationSimTestSuite.aRepeatedRetirementOfAnIdTheClientAlreadyRetiredLeavesItOpen`. Upstream at the
+ * `QuichePatchCidRetirementTests.aRepeatedRetirementOfAnIdTheClientAlreadyRetiredLeavesItOpen`. Upstream at the
  * time of writing has the same code. Idempotent and loud in both directions.
  */
 fun patchQuicheRepeatedRetirementIsIgnored(sourceDir: File) {
@@ -3610,7 +4029,7 @@ fun patchQuicheRepeatedRetirementIsIgnored(sourceDir: File) {
             "$marker: BoundedConnectionIdSeqs::remove in quiche/src/cid.rs was not found. A quiche bump moved " +
                 "or reshaped it — possibly fixing this upstream (a repeated RETIRE_CONNECTION_ID with one id " +
                 "left closes the connection with PROTOCOL_VIOLATION). If upstream fixed it: DELETE this patch " +
-                "and its call site, and KEEP MigrationSimTestSuite.aRepeatedRetirementOfAnIdTheClientAlreadyRetiredLeavesItOpen. " +
+                "and its call site, and KEEP QuichePatchCidRetirementTests.aRepeatedRetirementOfAnIdTheClientAlreadyRetiredLeavesItOpen. " +
                 "Otherwise re-fit the anchor and re-run that test before shipping.",
         )
     }
@@ -3649,7 +4068,7 @@ fun patchQuicheRepeatedRetirementIsIgnored(sourceDir: File) {
  * decrypt: the server never learns the connection ended and keeps it — and every handler on it — until
  * its idle timeout. Measured on JVM loopback under load (`quiche_conn_peer_error` still null 5 s after
  * the client closed, the server retransmitting into the void) and reproduced deterministically by
- * `MigrationSimTestSuite.aClientThatClosesBeforeItsHandshakeIsConfirmedStillClosesTheServer`.
+ * `QuichePatchHandshakeTests.aClientThatClosesBeforeItsHandshakeIsConfirmedStillClosesTheServer`.
  *
  * RFC 9000 §10.2.3 allows exactly this: prior to confirmation "another CONNECTION_CLOSE frame MAY be sent
  * in a packet that uses a lower packet protection level". Sending both covers both peers: one that has
@@ -3681,7 +4100,7 @@ fun patchQuicheCloseBeforeConfirmationAlsoInOneRtt(sourceDir: File) {
                 "socket-close-before-confirmation: an anchor was not found exactly once in quiche's lib.rs. A " +
                     "quiche bump moved or reshaped the close path — possibly sending a pre-confirmation " +
                     "CONNECTION_CLOSE at 1-RTT upstream, which is the outcome we want. If so, DELETE this patch " +
-                    "and KEEP MigrationSimTestSuite.aClientThatClosesBeforeItsHandshakeIsConfirmedStillClosesTheServer; " +
+                    "and KEEP QuichePatchHandshakeTests.aClientThatClosesBeforeItsHandshakeIsConfirmedStillClosesTheServer; " +
                     "otherwise re-fit the anchor and re-verify with that test. Anchor:\n$anchor",
             )
         }
@@ -3839,7 +4258,7 @@ fun patchQuicheCloseBeforeConfirmationAlsoInOneRtt(sourceDir: File) {
  * follows from it: no path is created for such a packet and no id is linked. A retired id on a new
  * 4-tuple is still dropped, and every packet still has to decrypt.
  *
- * Reproduced by `MigrationSimTestSuite.packetsOnASlowerLeftPathAreReceivedAfterThePeerRetiresTheirConnectionId`.
+ * Reproduced by `QuichePatchCidRetirementTests.packetsOnASlowerLeftPathAreReceivedAfterThePeerRetiresTheirConnectionId`.
  * Applied after [patchQuicheRetiredCidRecvIsDrop] and [patchQuicheRetiredScidIsNotAdvertised], whose edits
  * its anchors include. Marker-guarded and loud: a re-run returns, a moved anchor throws.
  */
@@ -3861,7 +4280,7 @@ fun patchQuicheRetiredScidStillReceivedOnAHeldPath(sourceDir: File) {
                 "$marker: `${anchor.trim().lines().first()}` not found exactly once in ${file.name}: a quiche bump " +
                     "moved it. Re-fit patchQuicheRetiredScidStillReceivedOnAHeldPath, or delete it if quiche now " +
                     "receives a packet bearing a just-retired id on a path it holds. Either way keep " +
-                    "MigrationSimTestSuite.packetsOnASlowerLeftPathAreReceivedAfterThePeerRetiresTheirConnectionId.",
+                    "QuichePatchCidRetirementTests.packetsOnASlowerLeftPathAreReceivedAfterThePeerRetiresTheirConnectionId.",
             )
         }
         file.writeText(text.replace(anchor, replacement))
@@ -4122,7 +4541,7 @@ fun patchQuicheOrphanPathLoss(sourceDir: File) {
  * the path it was sent on and none is retransmitted. A frame whose packet did arrive is sent again, which
  * the peer discards as a duplicate. Which paths are evicted, and when, is unchanged.
  *
- * Reproduced by `MigrationSimTestSuite.streamDataInFlightOnAnEvictedPathIsStillDelivered`. Marker-guarded
+ * Reproduced by `QuichePatchEvictedPathTests.streamDataInFlightOnAnEvictedPathIsStillDelivered`. Marker-guarded
  * and loud: a re-run returns, a moved anchor throws.
  */
 fun patchQuicheEvictedPathFramesRequeued(sourceDir: File) {
@@ -4145,7 +4564,7 @@ fun patchQuicheEvictedPathFramesRequeued(sourceDir: File) {
                 "$marker: `${anchor.trim().lines().first()}` not found exactly once in ${file.name} — a quiche " +
                     "bump moved it. Re-fit patchQuicheEvictedPathFramesRequeued, or delete it if quiche now keeps " +
                     "a path with frames in flight or retransmits them when it evicts the path. Either way keep " +
-                    "MigrationSimTestSuite.streamDataInFlightOnAnEvictedPathIsStillDelivered.",
+                    "QuichePatchEvictedPathTests.streamDataInFlightOnAnEvictedPathIsStillDelivered.",
             )
         }
         file.writeText(text.replace(anchor, replacement))
@@ -4306,7 +4725,7 @@ fun patchQuicheEvictedPathFramesRequeued(sourceDir: File) {
  *  - The DCID refill loop skips such paths, or it would hand the retired slot straight back.
  * A new challenge on the path's 4-tuple (a NAT reusing the port) makes it answerable again.
  *
- * Reproduced by `MigrationSimTestSuite.lateChallengesFromAbandonedProbesLeaveTheServerRoomForANewPath`.
+ * Reproduced by `QuichePatchEvictedPathTests.lateChallengesFromAbandonedProbesLeaveTheServerRoomForANewPath`.
  * Applied after [patchQuicheRetireDcidNoRelink], whose refill filter it extends. Marker-guarded and loud:
  * a re-run returns, a moved anchor throws.
  */
@@ -4329,7 +4748,7 @@ fun patchQuicheServerReleasesAbandonedPaths(sourceDir: File) {
                     "bump or a change to patchQuicheRetireDcidNoRelink moved it. Re-fit " +
                     "patchQuicheServerReleasesAbandonedPaths, or delete it if quiche now releases a path its peer " +
                     "abandoned. Either way keep " +
-                    "MigrationSimTestSuite.lateChallengesFromAbandonedProbesLeaveTheServerRoomForANewPath.",
+                    "QuichePatchEvictedPathTests.lateChallengesFromAbandonedProbesLeaveTheServerRoomForANewPath.",
             )
         }
         file.writeText(text.replace(anchor, replacement))
@@ -4693,7 +5112,7 @@ fun patchQuicheForCallerClock(sourceDir: File) {
  * an already-applied marker returns; an anchor that has moved throws; and an upstream that has *fixed*
  * this — `#[repr(C)]` already above the struct without our marker — also throws, so a quiche bump surfaces
  * as a build failure telling you to delete this patch, never as a silent double-attribute or a no-op.
- * When that day comes the correct move is to **delete this patch and keep `PeerTransportParamsLayoutTestSuite`**:
+ * When that day comes the correct move is to **delete this patch and keep `CoreBackendBindingTests`**:
  * the patch is the workaround, the neighbour-field guard is the thing that proves the ABI is right, and it
  * is still the only check that can catch a future regression (see #388).
  */
@@ -4710,7 +5129,7 @@ fun patchQuicheTransportParamsRepr(sourceDir: File) {
                 "quiche/src/ffi.rs. Either a quiche bump moved/renamed the struct behind " +
                 "quiche_conn_peer_transport_params, or upstream fixed the missing #[repr(C)] and reshaped this " +
                 "code. If upstream fixed it: DELETE patchQuicheTransportParamsRepr and its call site, and KEEP " +
-                "PeerTransportParamsLayoutTestSuite — the guard is what proves the ABI, the patch was only the " +
+                "CoreBackendBindingTests — the guard is what proves the ABI, the patch was only the " +
                 "workaround. Otherwise re-fit the patch and re-verify the field order against " +
                 "quiche/include/quiche.h before shipping. See https://github.com/DitchOoM/socket/issues/388",
         )
@@ -4720,7 +5139,7 @@ fun patchQuicheTransportParamsRepr(sourceDir: File) {
             "socket-transport-params-repr-c (DitchOoM/socket#388): quiche's TransportParams already carries " +
                 "#[repr(C)] — upstream has fixed the layout bug this patch works around. DELETE " +
                 "patchQuicheTransportParamsRepr and its call site (do not double-apply the attribute), and KEEP " +
-                "PeerTransportParamsLayoutTestSuite, which is the regression guard and outlives the patch. " +
+                "CoreBackendBindingTests, which is the regression guard and outlives the patch. " +
                 "See https://github.com/DitchOoM/socket/issues/388",
         )
     }
@@ -6045,16 +6464,6 @@ afterEvaluate {
             environment("QUIC_RECVINFO_GUARD", "1")
         }
 
-        // --- Deep-fuzz iteration forwarding ---------------------------------------
-        // SimFuzzDeepRunTests reads SIM_FUZZ_ITERATIONS via System.getenv in the TEST
-        // worker, which inherits the DAEMON's environment — a step-level `env:` in CI
-        // is invisible to a daemon started by an earlier step. Read the CLIENT env via
-        // the provider API (config-cache aware) and forward it into the worker
-        // explicitly so the CI deep lane (build-linux) reliably gets its 2000 seeds.
-        providers.environmentVariable("SIM_FUZZ_ITERATIONS").orNull?.let {
-            environment("SIM_FUZZ_ITERATIONS", it)
-        }
-
         // --- Backend selector ---------------------------------------------------
         // By default this task resolves `loadQuicheApi()` to the base commonJvmMain
         // JNI loader: the java21/FFM compilation output is deliberately NOT on the
@@ -6546,6 +6955,7 @@ val stageCoreAndroidTests =
         from("src/jvmTest/kotlin/com/ditchoom/socket/quic/core") {
             include(
                 "testing/ConnRig.kt",
+                "testing/TestCarried.kt",
                 "testing/FlightEvidenceRule.kt",
                 "testing/EchoQuiche.kt",
                 "testing/NioEcho.kt",
@@ -6586,6 +6996,7 @@ val stageCoreAndroidTests =
                 "demux/CoreServerCloseTests.kt",
                 "demux/ServerShutdownTests.kt",
                 "demux/CoreServerAdmissionTests.kt",
+                "demux/RoutedEvidence.kt",
                 "demux/CoreServerStartupHerdTests.kt",
             )
             into("com/ditchoom/socket/quic/core")
@@ -8054,7 +8465,8 @@ android {
     }
     defaultConfig {
         minSdk = 28
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        // Reports the test process's heap first; see HeapCheckedTestRunner in src/androidInstrumentedTest.
+        testInstrumentationRunner = "com.ditchoom.socket.quic.HeapCheckedTestRunner"
         // Shipped in the AAR as proguard.txt: keeps JniQuicheApi's by-name JNI binding intact in any app
         // that minifies, whether or not it uses AGP's default rules. Without it (and without AGP's
         // default file) R8 renames the class and every QUIC call fails with UnsatisfiedLinkError —

@@ -5,6 +5,7 @@ import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.StubQuicheApi
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.stream.Retry
+import com.ditchoom.socket.quic.core.stream.StreamKind
 import com.ditchoom.socket.quic.core.stream.StreamTable
 import com.ditchoom.socket.quic.core.stream.Waiter
 import com.ditchoom.socket.quic.core.testing.ConnRig
@@ -84,7 +85,10 @@ class ConnTests {
             }
         rig.conn.submit(
             object : ConnWork() {
-                override fun run(inside: Inside) = inside.streams.waitToOpen(parked)
+                override fun run(inside: Inside) =
+                    inside.streams.opens
+                        .lane(StreamKind.Bidirectional)
+                        .wait(parked)
 
                 override fun gone(end: ConnEnd) = Unit
             },

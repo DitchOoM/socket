@@ -28,6 +28,7 @@ internal enum class ReleaseAsk { No, Yes }
 @Published
 internal class Release(
     private val q: QuicheConnRef,
+    private val qlog: Qlog,
 ) {
     private val state = AtomicReference<Freeing>(Freeing.Live)
 
@@ -46,6 +47,7 @@ internal class Release(
         val was = state.load()
         if (was !is Freeing.Requested || !state.compareAndSet(was, Freeing.Freed)) return
         q.api.connFree(q.handle)
+        qlog.closed()
         when (paths) {
             is Paths.Client -> paths.paths.made { local -> q.freeInfo(local.recvInfo, local.made) }
             is Paths.Server -> paths.paths.made { info, made -> q.freeInfo(info, made) }
@@ -73,9 +75,10 @@ internal fun QuicheConnRef.freeUnbuilt() = api.connFree(handle)
 /** How far [composedAround] got. */
 internal enum class Composed { Partly, Whole }
 
-/** Composes a connection around [first] with [compose]; if that does not return, [first]'s infos are freed here. */
+/** Composes a connection around [first] with [compose]; if that does not return, [first]'s infos are freed here and [qlog]'s record is settled. */
 internal inline fun QuicheConnRef.composedAround(
     first: SinglePath,
+    qlog: Qlog,
     compose: (SinglePath) -> Conn,
 ): Conn {
     var step = Composed.Partly
@@ -86,6 +89,7 @@ internal inline fun QuicheConnRef.composedAround(
             Composed.Partly -> {
                 api.recvInfoFree(first.recvInfo)
                 api.sendInfoFree(first.sendInfo)
+                qlog.closed()
             }
             Composed.Whole -> Unit
         }

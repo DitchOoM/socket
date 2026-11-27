@@ -472,6 +472,22 @@ JNIEXPORT jint JNICALL JNI_FN(nConnPathStats)(
 }
 
 /*
+ * nConnActivePathProbes: the active path's index in the top 16 bits and its total_pto_count in the low 48, packed in
+ * one jlong (QuicheApi.connActivePathProbes), or -1 when no path is active. One crossing and no Java array, so a
+ * timer wake that samples the path allocates nothing on either side.
+ */
+JNIEXPORT jlong JNICALL JNI_FN(nConnActivePathProbes)(JNIEnv *env, jclass cls, jlong conn) {
+    quiche_path_stats stats;
+    for (size_t index = 0;; index++) {
+        memset(&stats, 0, sizeof(stats));
+        if (quiche_conn_path_stats((const quiche_conn *)(uintptr_t)conn, index, &stats) < 0) return (jlong)-1;
+        if (stats.active) {
+            return (jlong)(((uint64_t)index << 48) | ((uint64_t)stats.total_pto_count & 0xFFFFFFFFFFFFULL));
+        }
+    }
+}
+
+/*
  * nConnPeerTransportParams slots (13), in quiche_transport_params declaration order:
  *   peer_max_idle_timeout, peer_max_udp_payload_size, peer_initial_max_data,
  *   peer_initial_max_stream_data_bidi_local, peer_initial_max_stream_data_bidi_remote,
@@ -538,6 +554,34 @@ JNIEXPORT jlong JNICALL JNI_FN(nConnDgramRecv)(
     return (jlong)quiche_conn_dgram_recv(
         (quiche_conn *)(uintptr_t)conn,
         (uint8_t *)(uintptr_t)buf, (size_t)buf_len);
+}
+
+/* Every queued datagram matches: dgram_purge_outgoing drops them all. */
+static bool purge_every_dgram(uint8_t *buf, size_t len) {
+    (void)buf;
+    (void)len;
+    return true;
+}
+
+/* The datagrams quiche's send queue holds, not yet written into a packet. */
+JNIEXPORT jlong JNICALL JNI_FN(nConnDgramSendQueueLen)(JNIEnv *env, jclass cls, jlong conn) {
+    (void)env; (void)cls;
+    return (jlong)quiche_conn_dgram_send_queue_len((quiche_conn *)(uintptr_t)conn);
+}
+
+/* Drops every datagram quiche's send queue holds; returns how many it held. */
+JNIEXPORT jlong JNICALL JNI_FN(nConnDgramPurgeOutgoing)(JNIEnv *env, jclass cls, jlong conn) {
+    (void)env; (void)cls;
+    quiche_conn *c = (quiche_conn *)(uintptr_t)conn;
+    ssize_t held = quiche_conn_dgram_send_queue_len(c);
+    quiche_conn_dgram_purge_outgoing(c, purge_every_dgram);
+    return (jlong)held;
+}
+
+/* The datagrams quiche's receive queue holds, not yet read. */
+JNIEXPORT jlong JNICALL JNI_FN(nConnDgramRecvQueueLen)(JNIEnv *env, jclass cls, jlong conn) {
+    (void)env; (void)cls;
+    return (jlong)quiche_conn_dgram_recv_queue_len((quiche_conn *)(uintptr_t)conn);
 }
 
 JNIEXPORT jlong JNICALL JNI_FN(nConnDgramRecvFrontLen)(JNIEnv *env, jclass cls, jlong conn) {
@@ -614,6 +658,10 @@ JNIEXPORT jboolean JNICALL JNI_FN(nConnIsInEarlyData)(JNIEnv *env, jclass cls, j
 
 JNIEXPORT jint JNICALL JNI_FN(nConnEarlyDataReason)(JNIEnv *env, jclass cls, jlong conn) {
     return (jint)quiche_conn_early_data_reason((const quiche_conn *)(uintptr_t)conn);
+}
+
+JNIEXPORT void JNICALL JNI_FN(nConnResetStreamsOnEarlyDataReject)(JNIEnv *env, jclass cls, jlong conn) {
+    quiche_conn_reset_streams_on_early_data_reject((quiche_conn *)(uintptr_t)conn);
 }
 
 JNIEXPORT jboolean JNICALL JNI_FN(nConnIsHandshakeConfirmed)(JNIEnv *env, jclass cls, jlong conn) {

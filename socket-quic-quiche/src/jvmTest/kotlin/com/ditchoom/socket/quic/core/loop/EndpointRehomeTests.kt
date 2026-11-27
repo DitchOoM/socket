@@ -1,12 +1,20 @@
 package com.ditchoom.socket.quic.core.loop
 
+import com.ditchoom.socket.quic.PathKey
+import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.StubQuicheApi
+import com.ditchoom.socket.quic.core.edge.CloseWork
 import com.ditchoom.socket.quic.core.life.ConnEnd
+import com.ditchoom.socket.quic.core.life.Life
 import com.ditchoom.socket.quic.core.testing.ConnRig
 import com.ditchoom.socket.quic.core.testing.FakeIo
+import com.ditchoom.socket.quic.core.testing.TEST_NETWORK
+import com.ditchoom.socket.quic.core.time.RttPrior
+import com.ditchoom.socket.quic.core.udp.Beside
 import com.ditchoom.socket.quic.core.udp.Reopened
 import com.ditchoom.socket.quic.core.udp.SendBatchResult
 import com.ditchoom.socket.quic.core.udp.SocketFault
+import com.ditchoom.socket.quic.core.udp.SocketTicket
 import com.ditchoom.socket.quic.core.udp.Thrown
 import com.ditchoom.socket.quic.trace.QuicTraceRecorder
 import com.ditchoom.socket.quic.trace.TraceCapture
@@ -41,7 +49,7 @@ class EndpointRehomeTests {
         rig.pass(0)
         api.onProbeNow = { api.connSendQueue.addLast(60) }
 
-        rig.loop.rehome(rig.endpoint)
+        rig.rehome()
         rig.pass(10 * ms)
 
         assertEquals(1, io.reopens, "the socket was reopened")
@@ -58,10 +66,46 @@ class EndpointRehomeTests {
         val rig = ConnRig(StubQuicheApi(), io = io)
         rig.pass(0)
 
-        rig.loop.rehome(rig.endpoint)
+        rig.rehome()
         rig.pass(1 * ms)
 
         val fault = assertIs<SocketFault.ReopenRefused>(assertIs<ConnEnd.SocketFailed>(rig.sink.ended.single()).fault)
         assertEquals(refusal, fault.thrown.throwable)
+    }
+
+    /** A connection past its close point has its socket reopened by no rehome: quiche holds its close on the socket it has. */
+    @Test
+    fun aRehomeAfterTheCloseReopensNothing() {
+        val io = FakeIo()
+        io.reopenAnswer = Reopened.Refused(Thrown(BindException("Address already in use")))
+        val rig = ConnRig(StubQuicheApi(), io = io)
+        rig.pass(0)
+        rig.conn.submit(CloseWork(QuicError.NoError))
+        rig.pass(1 * ms)
+        assertIs<Life.Closing>(rig.conn.life(), "precondition: the connection is closing")
+
+        rig.rehome()
+        rig.pass(2 * ms)
+
+        assertEquals(0, io.reopens, "the socket of a closed connection was reopened")
+    }
+
+    /** A promotion the loop runs after the connection's close point publishes nothing: nothing reads where it went. */
+    @Test
+    fun aPromotionAfterTheCloseIsNotPublished() {
+        val io = FakeIo().apply { besideAnswer = Beside.Opened(PathKey(4, 0, 0L, 0x7F000002L)) }
+        val rig = ConnRig(StubQuicheApi(), io = io)
+        rig.pass(0)
+        val second = SocketTicket.FIRST.next()
+        rig.loop.move(rig.endpoint, second, PathKey(4, 0, 0L, 0L), RttPrior.CONFIGURED, TEST_NETWORK)
+        rig.pass(1 * ms)
+        rig.conn.submit(CloseWork(QuicError.NoError))
+        rig.pass(2 * ms)
+        assertIs<Life.Closing>(rig.conn.life(), "precondition: the connection is closing")
+
+        rig.loop.promote(rig.endpoint, second)
+        rig.pass(3 * ms)
+
+        assertEquals(SocketTicket.FIRST, rig.carried.read().ticket, "a promotion past the close point was published")
     }
 }

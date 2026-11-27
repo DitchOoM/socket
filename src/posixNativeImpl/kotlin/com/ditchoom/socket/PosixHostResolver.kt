@@ -39,9 +39,12 @@ import platform.posix.socklen_t
  * The POSIX resolver: `getaddrinfo`, every record, on a blocking-IO thread the caller can cancel its wait
  * for (see [BlockingHostResolver]). A link-local scope is not carried.
  */
+internal val PosixHostResolver: HostResolver = blockingLookupResolver(PosixLookup::lookup)
+
+/** A [BlockingHostResolver] running [lookup] the way every POSIX resolver does: on [RESOLVER_PARALLELISM] threads of its own. */
 @OptIn(ExperimentalCoroutinesApi::class)
-internal val PosixHostResolver: HostResolver =
-    BlockingHostResolver(Dispatchers.IO.limitedParallelism(RESOLVER_PARALLELISM), PosixLookup::lookup)
+internal fun blockingLookupResolver(lookup: (host: String) -> Resolution): HostResolver =
+    BlockingHostResolver(Dispatchers.IO.limitedParallelism(RESOLVER_PARALLELISM), lookup)
 
 private object PosixLookup {
     /** `EAI_NONAME` is a name that does not exist; `EAI_AGAIN` is the resolver failing to answer, which a retry may cure. */

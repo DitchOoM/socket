@@ -24,6 +24,7 @@ import com.ditchoom.socket.quic.core.conn.FlightArena
 import com.ditchoom.socket.quic.core.conn.LoopMemory
 import com.ditchoom.socket.quic.core.conn.MismatchResponse
 import com.ditchoom.socket.quic.core.conn.Offer
+import com.ditchoom.socket.quic.core.conn.SendsAccess
 import com.ditchoom.socket.quic.core.conn.SessionScratch
 import com.ditchoom.socket.quic.core.demux.ServerConfig
 import com.ditchoom.socket.quic.core.edge.ClientParts
@@ -53,10 +54,16 @@ import com.ditchoom.socket.quic.core.loop.Readiness
 import com.ditchoom.socket.quic.core.loop.RunningLoop
 import com.ditchoom.socket.quic.core.loop.SpareMade
 import com.ditchoom.socket.quic.core.loop.jdkViewsOf
+import com.ditchoom.socket.quic.core.path.Silence
 import com.ditchoom.socket.quic.core.pool.FixedPool
 import com.ditchoom.socket.quic.core.pool.MemoryHold
 import com.ditchoom.socket.quic.core.ready.jdkStackOfThisRuntime
+import com.ditchoom.socket.quic.core.sched.CallerLanes
 import com.ditchoom.socket.quic.core.sched.CallerSend
+import com.ditchoom.socket.quic.core.sched.HandlerPool
+import com.ditchoom.socket.quic.core.sched.HandlerThreads
+import com.ditchoom.socket.quic.core.sched.PoolSlot
+import com.ditchoom.socket.quic.core.sched.SendRule
 import com.ditchoom.socket.quic.core.testing.FakePoller
 import com.ditchoom.socket.quic.core.testing.VirtualClock
 import com.ditchoom.socket.quic.core.time.WaitResolution
@@ -71,6 +78,7 @@ import com.ditchoom.socket.quic.core.udp.toPathKey
 import com.ditchoom.socket.quic.encodeAlpnList
 import com.ditchoom.socket.quic.generateScid
 import com.ditchoom.socket.quic.toNativeSockAddr
+import com.ditchoom.socket.transport.NetworkId
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.SupervisorJob
@@ -127,6 +135,8 @@ internal suspend fun replayServer(
         config = config,
         // Like the replay's client, no discovery: its probe on a moved path delays the first echo past the walks' bounds.
         datagramSize = DatagramSize.Configured,
+        // Callers send in place on every host, as on the replay's client and its one lane: a replay runs the same anywhere.
+        sends = SendRule.InPlace,
     )
 
 /**
@@ -142,6 +152,7 @@ internal fun replayClient(
     serverPort: Int,
     seed: Long,
     link: LinkClass,
+    openedOn: NetworkId = NetworkId.Unidentified,
 ): ReplayClient {
     val memory = EdgeMemory(factory)
     val limits = BatchLimits(maxDatagrams = BATCH, maxDatagramSize = DATAGRAM)
@@ -200,6 +211,7 @@ internal fun replayClient(
         ClientWiring(
             api,
             handle,
+            QuicSessionId("replay"),
             options,
             memory,
             RunningLoop(
@@ -209,10 +221,18 @@ internal fun replayClient(
                 MemoryHold(Runnable { }),
                 WaitResolution(1_000_000L),
                 LoopSend(replayBatch(memory)) { SpareMade.Made(replayBatch(memory)) },
-                FixedPool(
-                    1,
-                ) { CallerSend(it, SendBatch(memory.native(DATAGRAM * LANE_DATAGRAMS), BatchLimits(LANE_DATAGRAMS, DATAGRAM), lane = 1)) },
+                CallerLanes.Of(
+                    FixedPool(
+                        1,
+                    ) {
+                        CallerSend(
+                            it,
+                            SendBatch(memory.native(DATAGRAM * LANE_DATAGRAMS), BatchLimits(LANE_DATAGRAMS, DATAGRAM), lane = 1),
+                        )
+                    },
+                ),
                 FixedPool(1) { SessionScratch(it, memory.native(ClientSession.TICKET_BYTES)) },
+                PoolSlot(HandlerThreads.ByLoopCaller, "condition-replay-handler", HandlerPool.DEFAULT_STALL_BOUND),
             ),
             StackSocket.Jdk(JdkSocket(channel), loopIo, SocketBound(local.toPathKey(), GrantedBuffers(SocketBuffers.Default, 0, 0))),
             { io },
@@ -222,6 +242,7 @@ internal fun replayClient(
             scope,
             TEST_FLIGHT,
             handshake,
+            SendsAccess.NeverDenied,
             clock,
             Readiness.EveryPass,
             // Not the stream the client's first id came from: the ids it hands out must differ from it.
@@ -231,6 +252,9 @@ internal fun replayClient(
             planned.kept,
             plan.tokens,
             MismatchResponse.Fail,
+            // The scripted monitor's network changes, and the replay migrates: the path's silence is judged.
+            silence = Silence.On,
+            openedOn = openedOn,
         )
     val parts = ClientParts(wiring, peer, localAddress)
     val connection =

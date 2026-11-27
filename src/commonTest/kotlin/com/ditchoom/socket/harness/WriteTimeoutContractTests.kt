@@ -1,6 +1,8 @@
 package com.ditchoom.socket.harness
 
+import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Charset
+import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.toReadBuffer
 import com.ditchoom.socket.ClientSocket
@@ -13,6 +15,7 @@ import com.ditchoom.socket.connect
 import com.ditchoom.socket.networkCapabilities
 import com.ditchoom.socket.nonDrainingPeerIsReliable
 import com.ditchoom.socket.runTestNoTimeSkipping
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
@@ -192,6 +195,42 @@ class WriteTimeoutContractTests {
                     second.exceptionOrNull() is SocketClosedException,
                     "a write after a destructive write-timeout should throw SocketClosedException, not " +
                         "${second.exceptionOrNull()?.let { it::class.simpleName } ?: "succeed"} (RFC write §4)",
+                )
+            } finally {
+                client.close()
+                peer.close()
+            }
+        }
+
+    /**
+     * A caller's own deadline that expires while a bounded write is parked on back-pressure is the
+     * caller's cancellation, not the write's timeout: it surfaces as that cancellation, never as a
+     * [SocketTimeoutException] for a deadline that had not expired.
+     */
+    @Test
+    fun enclosingDeadlineDuringBoundedWriteIsTheCallersCancellation() =
+        runTestNoTimeSkipping {
+            if (!tcpAvailable() || !nonDrainingPeerIsReliable()) return@runTestNoTimeSkipping
+            val peer = NonDrainingPeer.start()
+            val config =
+                TransportConfig(writePolicy = WritePolicy.Bounded(watchdog), connectTimeout = 5.seconds, io = clientIo())
+            val client = ClientSocket.connect(peer.port, config = config)
+            try {
+                peer.awaitAccepted()
+                val chunk = BufferFactory.Default.allocate(256 * 1024)
+                val enclosing =
+                    runCatching {
+                        withTimeoutOrNull(deadline) {
+                            while (true) {
+                                chunk.position(0)
+                                client.write(chunk, watchdog)
+                            }
+                        }
+                    }
+                assertTrue(
+                    enclosing.isSuccess,
+                    "the enclosing deadline expired during a $watchdog-bounded write and surfaced as " +
+                        "${enclosing.exceptionOrNull()}, not as the caller's own timeout",
                 )
             } finally {
                 client.close()

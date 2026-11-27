@@ -4,12 +4,14 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.socket.quic.QuicError
-import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.ScopedReadResult
 import com.ditchoom.socket.quic.core.conn.CallerPlace
 import com.ditchoom.socket.quic.core.conn.Conn
 import com.ditchoom.socket.quic.core.conn.ConnWork
 import com.ditchoom.socket.quic.core.conn.Inside
 import com.ditchoom.socket.quic.core.life.ConnEnd
+import com.ditchoom.socket.quic.core.loop.LoopSet
+import com.ditchoom.socket.quic.core.sched.SendRule
 import com.ditchoom.socket.quic.read
 import com.ditchoom.socket.quic.skipOnMissingNativeLib
 import kotlinx.coroutines.Dispatchers
@@ -22,6 +24,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.random.Random
+import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
@@ -30,13 +33,19 @@ import kotlin.time.Duration.Companion.seconds
 
 /** Callers that are not on a main dispatcher enter the connection and send in place; the loop is woken far less. */
 class CallerInPlaceTests {
+    /** Loops whose sockets lend callers lanes, whatever this host's own rule. */
+    private val loops = LoopSet(1, sends = SendRule.InPlace)
+
+    @AfterTest
+    fun closeLoops() = loops.close()
+
     @Test
     fun callersOnDefaultSendInPlaceAndRarelyWakeTheLoop() =
         runBlocking {
             skipOnMissingNativeLib(CallerInPlaceTests::class) {
                 withEchoServer { port ->
                     val recorder = arrayOfNulls<RecordingIo>(1)
-                    val client = connectCore(port) { RecordingIo(it).also { io -> recorder[0] = io } }
+                    val client = connectCore(port, loops = loops) { RecordingIo(it).also { io -> recorder[0] = io } }
                     val io = recorder[0]!!
                     val connection = client.connection
                     val before = client.loop.callerCounts.loopWakes
@@ -50,14 +59,14 @@ class CallerInPlaceTests {
                     val enteredInPlace = client.conn.counts.enteredInPlace
                     val sendsByThread = io.sendsByThread()
                     val onCallers = sendsByThread.filterKeys { it.startsWith("DefaultDispatcher") }.values.sum()
-                    println(
+                    val breakdown =
                         "[core in-place] $ECHOES echoes of $ECHO_BYTES B: caller-caused loop wakes=$wakes, in-place sends=$inPlace, " +
                             "caller entries=$enteredInPlace, left for holder=${client.conn.counts.leftForHolder}, " +
                             "handed to loop=${client.conn.counts.handedToLoop}, deferred=${client.loop.callerCounts.sendsDeferred}, " +
-                            "sends by thread=$sendsByThread",
-                    )
+                            "sends by thread=$sendsByThread"
+                    println(breakdown)
                     assertTrue(inPlace > 0 && onCallers > 0, "callers sent in place: $sendsByThread")
-                    assertTrue(wakes < ECHOES / 2, "the loop was woken $wakes times by callers over $ECHOES echoes")
+                    assertTrue(wakes < ECHOES / 2, "the loop was woken $wakes times by callers over $ECHOES echoes; $breakdown")
                     connection.close(QuicError.NoError)
                 }
             }
@@ -75,7 +84,7 @@ class CallerInPlaceTests {
                         openStream().writeFully(bytes(payload), 10.seconds)
                     },
                 ) { port ->
-                    val client = connectCore(port)
+                    val client = connectCore(port, loops = loops, options = acceptingClientOptions)
                     val holder = HoldWork()
                     val held = holdAsCaller(client.conn, holder)
                     try {
@@ -93,7 +102,12 @@ class CallerInPlaceTests {
                     withTimeout(10.seconds) {
                         val stream = client.connection.acceptStream()
                         while (received.size() < payload.size) {
-                            if (stream.read(10.seconds) { received.write(it.readByteArray(it.remaining())) } !is ScopedRead.Data<*>) break
+                            if (stream.read(
+                                    10.seconds,
+                                ) { received.write(it.readByteArray(it.remaining())) } !is ScopedReadResult.Data<*>
+                            ) {
+                                break
+                            }
                         }
                     }
                     println(

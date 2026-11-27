@@ -15,6 +15,8 @@ internal class SocketReport(
     val granted: Granted,
     private val localPort: Int,
     private val tables: List<String> = LINUX_UDP_TABLES,
+    /** What the socket's own io drops. */
+    val io: IoDrops = IoDrops.Kernel,
 ) {
     /**
      * The drops of this socket: the sum over the rows of `/proc/net/udp` and `/proc/net/udp6` whose local port is

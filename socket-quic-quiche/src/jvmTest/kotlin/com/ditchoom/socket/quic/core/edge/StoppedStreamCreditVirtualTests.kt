@@ -7,8 +7,9 @@ import com.ditchoom.buffer.flow.HalfCloseable
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.Resettable
 import com.ditchoom.buffer.freeIfNeeded
-import com.ditchoom.socket.quic.FlowControl
+import com.ditchoom.socket.quic.IncomingStreams
 import com.ditchoom.socket.quic.QuicOptions
+import com.ditchoom.socket.quic.QuicStreamLimit
 import com.ditchoom.socket.quic.read
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.launch
@@ -31,7 +32,7 @@ class StoppedStreamCreditVirtualTests {
             verifyPeer = false,
             idleTimeout = 30.seconds,
             enablePmtuDiscovery = false,
-            flowControl = FlowControl(initialMaxStreamsBidi = LIMIT.toLong()),
+            incomingStreams = IncomingStreams.Accept(bidirectional = QuicStreamLimit(LIMIT.toUInt())),
         )
 
     @Test

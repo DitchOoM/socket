@@ -186,7 +186,7 @@ class RouteSourceResolutionTests {
             val peer = UdpSocket.resolve("127.0.0.1", PEER_PORT)
             val opener = ScriptedConnectedUdpOpener(peer.port, ProbeAnswer.Refuse(IllegalStateException("no probe here")))
             val factory =
-                UdpSocketChannelFactory(
+                DriverUdpChannelFactory(
                     peer = peer,
                     codec = SocketAddressCodec(hostOsSockAddrLayout()),
                     bufferFactory = BufferFactory.Default,
@@ -215,7 +215,7 @@ class RouteSourceResolutionTests {
     private fun factoryFor(
         peer: SocketAddress,
         opener: ConnectedUdpOpener,
-    ) = UdpSocketChannelFactory(
+    ) = DriverUdpChannelFactory(
         peer = peer,
         codec = SocketAddressCodec(hostOsSockAddrLayout()),
         bufferFactory = BufferFactory.Default,

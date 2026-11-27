@@ -1,6 +1,7 @@
 package com.ditchoom.socket.quic.core.conn
 
-import com.ditchoom.socket.quic.PeerCertPosition
+import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.Charset
 import com.ditchoom.socket.quic.PtoCeiling
 import com.ditchoom.socket.quic.QuicResumptionOutcome
 import com.ditchoom.socket.quic.core.life.HandshakeProgress
@@ -57,11 +58,17 @@ internal class Handshake(
     private val rule: HandshakeRule,
     private val startedNanos: Long,
     private val alpn: NativeBytes,
+    private val chain: ChainSource,
+    /** The memory the peer's leaf certificate is read into, to be hashed. */
+    private val factory: BufferFactory,
 ) {
     private val pending = Phase.Pending()
     private var phase: Phase = pending
 
     private var told = Told.Not
+
+    /** Whether the handshake completed and was reported, with what it settled. */
+    private var fate: HandshakeFate = HandshakeFate.NotCompleted
 
     /** quiche's PTO expiries seen while unconfirmed. */
     private var expiries = 0L
@@ -79,19 +86,13 @@ internal class Handshake(
         }
     }
 
-    /**
-     * Copies the peer's certificate at [position] into the native memory at [address] when it fits in [capacity] bytes;
-     * returns its length either way, or 0 when there is none there (quiche's snprintf contract).
-     */
-    fun peerCertificate(
-        position: PeerCertPosition,
-        address: Long,
-        capacity: Int,
-    ): Int =
-        when (position) {
-            is PeerCertPosition.Leaf -> q.api.connPeerCert(q.handle, address, capacity)
-            is PeerCertPosition.InChain -> q.api.connPeerCertChainAt(q.handle, position.index, address, capacity)
-        }
+    /** [HandshakeFate.Completed] once the completion was reported, which is before any end. */
+    fun fate(): HandshakeFate = fate
+
+    /** The completion was reported with [facts], the peer's chain delivered with them. */
+    fun reported(facts: HandshakeFacts) {
+        fate = HandshakeFate.Completed(facts)
+    }
 
     fun confirmation(): Confirmation =
         when (phase) {
@@ -166,7 +167,11 @@ internal class Handshake(
     /** The negotiated ALPN, copied into its scratch; its length. */
     fun alpn(): Int = q.api.connApplicationProto(q.handle, alpn.address, alpn.capacity)
 
-    /** Once, after [step] answered [HandshakeStep.JustEstablished]: the negotiated ALPN is copied into its scratch. */
+    /**
+     * Once, after [step] answered [HandshakeStep.JustEstablished], with quiche alive: what the handshake settled is copied
+     * out of quiche ([HandshakeFacts], and the peer's chain as [chain] says), for the report. The fate stays
+     * [HandshakeFate.NotCompleted] until the report was delivered ([reported]).
+     */
     fun report(
         now: Nanos,
         read: PathRead,
@@ -175,16 +180,29 @@ internal class Handshake(
         val sample = sampleOf(read)
         val probes = probesOf(read)
         val took = now.value - startedNanos
+        val peerChain = peerChainOf(chain, q, alpn)
+        val facts = HandshakeFacts(alpnText(), resumption, peerLeafOf(peerChain, q, alpn, factory))
         return ConnectReport(
             handshakeNanos = took,
-            alpnLength = alpn(),
+            facts = facts,
+            chain = peerChain,
             firstSample = sample,
             priorNanos = rule.priorNanos(),
             link = rule.link,
             probes = probes,
             pace = paceOf(sample, probes, took),
-            resumption = resumption,
         )
+    }
+
+    /** The negotiated ALPN as text: quiche's once the server's EncryptedExtensions were read. */
+    fun negotiated(): String = alpnText()
+
+    private fun alpnText(): String {
+        val length = alpn()
+        val text = alpn.owner
+        text.position(0)
+        text.setLimit(length)
+        return text.readString(length, Charset.UTF8)
     }
 
     /** Once, after [step] answered [HandshakeStep.DeadlinePassed], so the handshake never completed: what the peer answered. */

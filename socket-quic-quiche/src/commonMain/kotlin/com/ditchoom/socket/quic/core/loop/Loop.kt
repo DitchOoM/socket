@@ -1,7 +1,6 @@
 package com.ditchoom.socket.quic.core.loop
 
 import com.ditchoom.socket.quic.NextDue
-import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.Tier
 import com.ditchoom.socket.quic.core.life.Tiers
@@ -14,12 +13,12 @@ import com.ditchoom.socket.quic.core.observe.traced
 import com.ditchoom.socket.quic.core.pool.IntStack
 import com.ditchoom.socket.quic.core.ready.Poller
 import com.ditchoom.socket.quic.core.ready.ReadyTokens
+import com.ditchoom.socket.quic.core.sched.HandlerOutbox
 import com.ditchoom.socket.quic.core.sched.LoopPort
 import com.ditchoom.socket.quic.core.sched.SleepPlan
 import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.time.QuicheTime
-import com.ditchoom.socket.quic.core.time.RttPrior
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.Thrown
 import com.ditchoom.socket.quic.reportOnThisThread
@@ -40,17 +39,6 @@ private inline fun StopOutcome.then(step: () -> Unit): StopOutcome =
         }
     }
 
-private sealed interface Run {
-    data object Running : Run
-
-    class Closing(
-        val then: Runnable,
-    ) : Run
-
-    /** The stop began: what it releases is never released again, and the loop never runs another pass. */
-    data object Stopped : Run
-}
-
 /**
  * One platform thread's run-to-completion loop over its sockets. A pass: fire due deadlines, receive from every socket
  * that may hold datagrams, run work handed over, then serve each socket's connection and send its output. Other
@@ -61,8 +49,9 @@ private sealed interface Run {
 internal class Loop(
     val id: Int,
     val name: String,
-    private val poller: Poller,
-    private val clock: LoopClock,
+    internal val poller: Poller,
+    /** The loop's time, which its connections read too. */
+    val clock: LoopClock,
     private val receive: ReceiveBatch,
     /** What the loop frees when it stops: its receive memory. */
     private val freeOnStop: Runnable,
@@ -72,6 +61,9 @@ internal class Loop(
     val callerCounts = CallerCounts()
     val port = LoopPort(poller, callerCounts)
     val life = LoopLifeCell()
+
+    /** The lanes of handler pools whose steps a pass resumed, made ready together at the pass's end. */
+    val handlers = HandlerOutbox()
 
     /** Connections placed here, counted when placed and not when they end: what placement balances. */
     val connections = Counter()
@@ -83,16 +75,6 @@ internal class Loop(
 
     /** Any thread: [endpoint] joins this loop; its connection may start once this returns. */
     fun place(endpoint: Endpoint) = port.submit(PlaceWork(this, endpoint))
-
-    /** Any thread: [endpoint]'s socket is reopened on the network that carries its address now (see [Endpoint.rehome]). */
-    fun rehome(endpoint: Endpoint) = port.submit(RehomeWork(this, endpoint))
-
-    /** Any thread: [endpoint]'s socket is moved to [bind]'s address, a new local endpoint (see [Endpoint.move]). */
-    fun move(
-        endpoint: Endpoint,
-        bind: PathKey,
-        prior: RttPrior,
-    ) = port.submit(MoveWork(this, endpoint, bind, prior))
 
     /** Any thread: a connection its set placed here ended before it joined: the seat it was counted for is given back. */
     fun seatGivenBack() = connections.decrement()
@@ -174,10 +156,12 @@ internal class Loop(
 
     private fun passInside(now: Nanos): NextDue {
         counts.passed()
+        handlers.begin()
         port.fireDue(now)
         for (i in 0 until ready.count) {
             when (val slot = slots[ready.tokenAt(i)]) {
-                is LoopSlot.Taken -> slot.endpoint.readable()
+                is LoopSlot.Taken -> slot.endpoint.readable(Via.Carrying)
+                is LoopSlot.Second -> slot.endpoint.readable(Via.Probing)
                 is LoopSlot.Empty -> Unit
             }
         }
@@ -186,7 +170,11 @@ internal class Loop(
         budget.begin(now)
         for (i in slots.indices) {
             when (val slot = slots[i]) {
-                is LoopSlot.Taken -> receiveOn(slot.endpoint)
+                is LoopSlot.Taken -> {
+                    settleOn(slot.endpoint)
+                    receiveOn(slot.endpoint, Via.Carrying)
+                }
+                is LoopSlot.Second -> receiveOn(slot.endpoint, Via.Probing)
                 is LoopSlot.Empty -> Unit
             }
         }
@@ -195,34 +183,38 @@ internal class Loop(
         for (i in slots.indices) {
             when (val slot = slots[i]) {
                 is LoopSlot.Taken -> {
-                    when (slot.endpoint.serve(poller, now, port)) {
+                    when (slot.endpoint.serve(poller, this, now, port)) {
                         Stay.Left -> vacate(slot.endpoint)
                         Stay.Stays -> if (slot.endpoint.hasBacklog()) backlog = true
                     }
                 }
-                is LoopSlot.Empty -> Unit
+                is LoopSlot.Second, is LoopSlot.Empty -> Unit
             }
         }
+        handlers.end()
         val due = port.nextDue(now)
-        // Datagrams the io holds are invisible to the poller: with any, the next pass is due now (a poll of zero), whatever
-        // cut this one short (the per-pass bound included).
+        // Datagrams the io holds are invisible to the poller: with any, the next pass is due now, whatever cut this one short.
         return if (backlog) NextDue.at(now.value) else due
     }
 
     internal fun attach(endpoint: Endpoint) {
         val token = free.popOr { slots.size.also { slots.add(LoopSlot.Empty) } }
         slots[token] = LoopSlot.Taken(endpoint)
-        endpoint.placed(token)
-        poller.add(endpoint.socketRef, token)
+        endpoint.placed(token, poller, this)
+        poller.add(endpoint.refs.carrying, token)
     }
 
-    internal fun reopen(endpoint: Endpoint) = endpoint.rehome(poller)
+    /** A slot of [endpoint]'s second socket, which the poller reports as its [Via.Probing]; its token. */
+    internal fun seat(endpoint: Endpoint): Int {
+        val token = free.popOr { slots.size.also { slots.add(LoopSlot.Empty) } }
+        slots[token] = LoopSlot.Second(endpoint)
+        return token
+    }
 
-    internal fun moveTo(
-        endpoint: Endpoint,
-        bind: PathKey,
-        prior: RttPrior,
-    ) = endpoint.move(poller, bind, prior)
+    internal fun unseat(token: Int) {
+        slots[token] = LoopSlot.Empty
+        free.push(token)
+    }
 
     internal fun beginClosing(then: Runnable) {
         when (run) {
@@ -232,12 +224,24 @@ internal class Loop(
         }
     }
 
-    private fun receiveOn(endpoint: Endpoint) {
+    private fun receiveOn(
+        endpoint: Endpoint,
+        via: Via,
+    ) {
         try {
-            endpoint.receive(receive, counts, clock, budget)
+            endpoint.receive(via, receive, counts, clock, budget, poller, this)
         } catch (failure: Exception) {
             receive.release()
-            endpoint.ioThrew(Thrown(failure))
+            endpoint.ioThrew(Thrown(failure), via, poller, this)
+        }
+    }
+
+    /** A second socket being made is looked at: what its io throws is that socket's failure alone. */
+    private fun settleOn(endpoint: Endpoint) {
+        try {
+            endpoint.settle(poller, this)
+        } catch (failure: Exception) {
+            endpoint.ioThrew(Thrown(failure), Via.Probing, poller, this)
         }
     }
 
@@ -270,13 +274,14 @@ internal class Loop(
         if (run is Run.Stopped) return StopOutcome.AlreadyStopped
         run = Run.Stopped
         life.stopped()
-        var outcome: StopOutcome = StopOutcome.Clean
+        // A pass that threw left its resumed lanes unclaimed; what the stop resumes is queued as from any thread.
+        var outcome: StopOutcome = StopOutcome.Clean.then { handlers.end() }
         for (i in slots.indices) {
             val slot = slots[i]
             slots[i] = LoopSlot.Empty
             when (slot) {
-                is LoopSlot.Taken -> outcome = outcome.then { slot.endpoint.loopEnded(end, poller) }
-                is LoopSlot.Empty -> Unit
+                is LoopSlot.Taken -> outcome = outcome.then { slot.endpoint.loopEnded(end, poller, this) }
+                is LoopSlot.Second, is LoopSlot.Empty -> Unit
             }
         }
         slots.clear()

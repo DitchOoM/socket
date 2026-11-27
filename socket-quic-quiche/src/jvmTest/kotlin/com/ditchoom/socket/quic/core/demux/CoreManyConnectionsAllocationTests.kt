@@ -8,6 +8,7 @@ import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.core.edge.LOOP_THREAD
 import com.ditchoom.socket.quic.core.edge.connectCore
+import com.ditchoom.socket.quic.core.edge.openStream
 import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.testing.allocationSamples
 import com.ditchoom.socket.quic.core.testing.loopGateOfThisStack

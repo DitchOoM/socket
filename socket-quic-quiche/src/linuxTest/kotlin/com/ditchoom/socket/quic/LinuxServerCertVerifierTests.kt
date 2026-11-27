@@ -16,6 +16,14 @@ import platform.posix.fread
 
 /** Linux K/N member of [ServerCertVerifierTestSuite]. */
 class LinuxServerCertVerifierTests : ServerCertVerifierTestSuite() {
+    override suspend fun connectOneCandidate(
+        endpoint: QuicEndpoint,
+        serverName: String,
+        options: QuicOptions,
+        transport: com.ditchoom.socket.TransportConfig,
+        timeout: kotlin.time.Duration,
+    ): QuicScope = QuicheEngine.connect(QuicClientBinding.OwnSocket, endpoint, serverName, options, transport, timeout)
+
     private fun certPath(name: String): String {
         val candidates = listOf("testcerts/$name", "socket-quic-quiche/testcerts/$name")
         return candidates.firstOrNull { access(it, F_OK) == 0 }

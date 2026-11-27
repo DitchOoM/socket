@@ -320,6 +320,18 @@ interface QuicheApi {
             is MaxDatagramSize.Unavailable -> NO_DATAGRAM_ROOM
         }
 
+    /**
+     * Drops every datagram quiche's send queue holds, none of which is sent; returns how many. (Wraps
+     * `dgram_send_queue_len` and `dgram_purge_outgoing`.)
+     */
+    fun connDgramPurgeOutgoing(conn: QuicheConn): Int
+
+    /** The datagrams quiche's send queue holds, not yet written into a packet. (Wraps `dgram_send_queue_len`.) */
+    fun connDgramSendQueueLen(conn: QuicheConn): Int
+
+    /** The datagrams quiche's receive queue holds, not yet read. (Wraps `dgram_recv_queue_len`.) */
+    fun connDgramRecvQueueLen(conn: QuicheConn): Int
+
     /** True when at least one datagram is queued for receive. (Wraps `dgram_recv_front_len`.) */
     fun hasReadableDgram(conn: QuicheConn): Boolean
 
@@ -334,8 +346,8 @@ interface QuicheApi {
 
     /**
      * Whether the handshake is confirmed (RFC 9001 §4.1.2; `quiche_conn_is_handshake_confirmed`, a
-     * patched-in export). A server confirms when it completes; a client when HANDSHAKE_DONE arrives, one
-     * round trip after [connIsEstablished] turns true.
+     * patched-in export). A server confirms when it completes; a client when HANDSHAKE_DONE arrives or the
+     * server acknowledges one of its 1-RTT packets, one round trip after [connIsEstablished] turns true.
      */
     fun connIsHandshakeConfirmed(conn: QuicheConn): Boolean
 
@@ -435,6 +447,13 @@ interface QuicheApi {
      * patched-in export): why 0-RTT was accepted or not. Decoded by [QuicEarlyDataReason].
      */
     fun connEarlyDataReason(conn: QuicheConn): Int
+
+    /**
+     * A client whose server rejects its 0-RTT keeps none of it: its packets in flight are discarded and every stream it
+     * opened is forgotten, for the caller to replay (`quiche_conn_reset_streams_on_early_data_reject`, a patched-in
+     * export). Before the first send.
+     */
+    fun connResetStreamsOnEarlyDataReject(conn: QuicheConn)
 
     /**
      * Whether any stream still has data, or a FIN, this endpoint wrote and the peer has not acknowledged
@@ -1100,7 +1119,37 @@ interface QuicheApi {
             if (stats.active) return stats.rtt.inWholeNanoseconds
         }
     }
+
+    /**
+     * The connection's active path as one Long: its index in quiche's path table in the top 16 bits and its
+     * `total_pto_count` in the low 48 ([activePathProbesOf]), or [NO_ACTIVE_PATH] when no path is active. The real
+     * backends allocate nothing; this default, for test doubles, reads [connPathStats]. Same threading contract as
+     * [connStats].
+     */
+    fun connActivePathProbes(conn: QuicheConn): Long {
+        var index = 0L
+        while (true) {
+            val stats = connPathStats(conn, index) ?: return NO_ACTIVE_PATH
+            if (stats.active) return activePathProbesOf(index, stats.totalPtoCount)
+            index++
+        }
+    }
 }
+
+/** What [QuicheApi.connActivePathProbes] answers when no path is active. */
+internal const val NO_ACTIVE_PATH = -1L
+
+/** The low 48 bits of [QuicheApi.connActivePathProbes]: the active path's PTO expiries. */
+internal const val ACTIVE_PATH_PROBES_MASK = 0xFFFF_FFFF_FFFFL
+
+/** The shift that puts the active path's index in the top 16 bits of [QuicheApi.connActivePathProbes]. */
+internal const val ACTIVE_PATH_INDEX_SHIFT = 48
+
+/** [QuicheApi.connActivePathProbes]'s packing of the active path at [index] with [probes] PTO expiries. */
+internal fun activePathProbesOf(
+    index: Long,
+    probes: Long,
+): Long = (index shl ACTIVE_PATH_INDEX_SHIFT) or (probes and ACTIVE_PATH_PROBES_MASK)
 
 /** What [QuicheApi.connActivePathRttNanos] answers when the connection has no active path. */
 const val NO_RTT_NANOS = -1L

@@ -1,6 +1,7 @@
 package com.ditchoom.socket.http3
 
 import com.ditchoom.socket.TransportConfig
+import com.ditchoom.socket.http3.codec.Http3Request
 import com.ditchoom.socket.quic.MigrationResult
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.withQuicConnection

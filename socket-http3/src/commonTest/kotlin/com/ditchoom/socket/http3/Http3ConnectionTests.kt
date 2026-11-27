@@ -15,15 +15,43 @@ import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.pool.ThreadingMode
 import com.ditchoom.socket.TransportConfig
+import com.ditchoom.socket.http3.codec.CriticalStreamType
+import com.ditchoom.socket.http3.codec.HandwrittenHttp3FrameCodec
+import com.ditchoom.socket.http3.codec.Http3ErrorCode
+import com.ditchoom.socket.http3.codec.Http3Frame
+import com.ditchoom.socket.http3.codec.Http3Request
+import com.ditchoom.socket.http3.codec.Http3Setting
+import com.ditchoom.socket.http3.codec.Http3SettingId
+import com.ditchoom.socket.http3.codec.Http3StreamException
+import com.ditchoom.socket.http3.codec.Http3StreamId
+import com.ditchoom.socket.http3.codec.Http3StreamType
+import com.ditchoom.socket.http3.codec.Http3Violation
+import com.ditchoom.socket.http3.codec.QpackDecoder
+import com.ditchoom.socket.http3.codec.QpackDecoderInstruction
+import com.ditchoom.socket.http3.codec.QpackDecoderInstructionCodec
+import com.ditchoom.socket.http3.codec.QpackEncoderInstruction
+import com.ditchoom.socket.http3.codec.QpackEncoderInstructionCodec
+import com.ditchoom.socket.http3.codec.QpackFieldSectionCodec
+import com.ditchoom.socket.http3.codec.QpackHeaderField
+import com.ditchoom.socket.http3.codec.VarIntCodec
+import com.ditchoom.socket.http3.codec.WebTransportFailure
+import com.ditchoom.socket.http3.codec.WebTransportWire
 import com.ditchoom.socket.quic.QuicAppErrorCode
 import com.ditchoom.socket.quic.QuicByteStream
+import com.ditchoom.socket.quic.QuicCapabilities
 import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicCloseReason
+import com.ditchoom.socket.quic.QuicConnectionIdentity
+import com.ditchoom.socket.quic.QuicConnectionState
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicScope
+import com.ditchoom.socket.quic.QuicSessionId
+import com.ditchoom.socket.quic.QuicStatsRead
 import com.ditchoom.socket.quic.QuicStreamAbort
 import com.ditchoom.socket.quic.QuicStreamException
 import com.ditchoom.socket.quic.QuicStreamId
+import com.ditchoom.socket.quic.QuicUnreadAtClose
+import com.ditchoom.socket.quic.QuicWireConnectionId
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.TimeoutCancellationException
@@ -197,6 +225,21 @@ class Http3ConnectionTests {
         ) : this(delegate, outgoing, incoming.asFlow(), bidi)
 
         override val bufferFactory: BufferFactory = BufferFactory.Default
+
+        override val state: kotlinx.coroutines.flow.StateFlow<QuicConnectionState> =
+            kotlinx.coroutines.flow.MutableStateFlow(QuicConnectionState.Established("h3"))
+        override val unreadAtClose: kotlinx.coroutines.flow.StateFlow<QuicUnreadAtClose> =
+            kotlinx.coroutines.flow.MutableStateFlow(QuicUnreadAtClose.ConnectionOpen)
+        override val identity: QuicConnectionIdentity =
+            QuicConnectionIdentity(QuicSessionId("fake"), QuicWireConnectionId.Known("fake"))
+        override val capabilities: QuicCapabilities = QuicCapabilities.None
+
+        override suspend fun stats(): QuicStatsRead = QuicStatsRead.Ended
+
+        override suspend fun close(error: QuicError) {
+            closeErrorCode.complete(0L)
+        }
+
         val remainingUniStreams get() = outgoing.size
 
         /** The application error code of the client's CONNECTION_CLOSE (RFC 9114 §8), once it aborts. */
@@ -459,7 +502,7 @@ class Http3ConnectionTests {
                     failure.violation,
                     "the push must fail by the deadline's name, not ${failure.violation}",
                 )
-            assertEquals(QuicStreamId(11), violation.streamId, "the violation must name the stalled push stream")
+            assertEquals(Http3StreamId(11), violation.streamId, "the violation must name the stalled push stream")
             assertEquals(15.seconds, violation.deadline, "the violation must carry the deadline that expired")
             assertEquals(Http3ErrorCode.REQUEST_CANCELLED, failure.errorCode)
             assertEquals(
@@ -838,7 +881,7 @@ class Http3ConnectionTests {
                                 id = 11,
                                 prefix =
                                     listOf(Http3StreamType.QPACK_DECODER.toInt()) +
-                                        decoderBytes(QpackDecoderInstruction.StreamCancellation(QuicStreamId(0))),
+                                        decoderBytes(QpackDecoderInstruction.StreamCancellation(Http3StreamId(0))),
                             ),
                         ),
                     )

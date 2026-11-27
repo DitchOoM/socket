@@ -6,11 +6,14 @@ import com.ditchoom.socket.quic.core.conn.Conn
 import com.ditchoom.socket.quic.core.conn.ConnWork
 import com.ditchoom.socket.quic.core.conn.Inside
 import com.ditchoom.socket.quic.core.life.ConnEnd
+import com.ditchoom.socket.quic.core.loop.LoopSet
+import com.ditchoom.socket.quic.core.sched.SendRule
 import com.ditchoom.socket.quic.skipOnMissingNativeLib
 import kotlinx.coroutines.runBlocking
 import java.lang.management.ManagementFactory
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
+import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -20,12 +23,18 @@ import kotlin.test.assertTrue
  * submitted over and over, so anything counted is the in-place path's own.
  */
 class CallerInPlaceAllocationTests {
+    /** Loops whose sockets lend callers lanes, whatever this host's own rule. */
+    private val loops = LoopSet(1, sends = SendRule.InPlace)
+
+    @AfterTest
+    fun closeLoops() = loops.close()
+
     @Test
     fun enteringServingAndLeavingAConnectionAllocatesNothingOnTheCallersThread() =
         runBlocking {
             skipOnMissingNativeLib(CallerInPlaceAllocationTests::class) {
                 withEchoServer { port ->
-                    val client = connectCore(port)
+                    val client = connectCore(port, loops = loops)
                     val measured = CompletableFuture<Double>()
                     val caller =
                         Thread {

@@ -4,37 +4,51 @@ import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicStatsRead
 import com.ditchoom.socket.quic.QuicheSendInfo
 import com.ditchoom.socket.quic.core.life.ConnEnd
+import com.ditchoom.socket.quic.core.life.Life
+import com.ditchoom.socket.quic.core.life.PeerAddress
 import com.ditchoom.socket.quic.core.life.RetiredId
 import com.ditchoom.socket.quic.core.life.SpareId
-import com.ditchoom.socket.quic.core.path.MoveAnswer
 import com.ditchoom.socket.quic.core.path.Outgoing
 import com.ditchoom.socket.quic.core.path.PathRead
 import com.ditchoom.socket.quic.core.path.PathStep
+import com.ditchoom.socket.quic.core.path.Rebind
 import com.ditchoom.socket.quic.core.path.RecvFrom
 import com.ditchoom.socket.quic.core.path.Sorting
-import com.ditchoom.socket.quic.core.path.Want
 import com.ditchoom.socket.quic.core.path.Window
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.time.WakeSink
 import com.ditchoom.socket.quic.core.udp.NativeBytes
+import com.ditchoom.socket.quic.core.udp.SocketTicket
 
 // What every role's paths answer, asked the same way: each is one `when` over the slot.
 
-/** What quiche is told about a datagram that came from [from]. */
-internal fun Paths.recvFrom(from: PathKey): RecvFrom =
+/**
+ * What quiche is told about a datagram that came from [from] on socket [on] at [now]; a client's path answered then.
+ */
+internal fun Paths.recvFrom(
+    from: PathKey,
+    now: Nanos,
+    on: SocketTicket,
+): RecvFrom =
     when (this) {
-        is Paths.Client -> paths.recvFrom()
+        is Paths.Client -> paths.recvFrom(on, now)
         is Paths.Server -> paths.recvInfo(from)
     }
 
-/** Hands quiche the datagram of [length] bytes at the start of [bytes] that came [from], unless no path takes it. */
+/**
+ * Hands quiche the datagram of [length] bytes at the start of [bytes] that came [from] on [on] at [now], unless no path
+ * takes it.
+ */
 internal fun ConnParts.feed(
     bytes: NativeBytes,
     length: Int,
     from: PathKey,
-) = when (val info = slots.paths.recvFrom(from)) {
+    now: Nanos,
+    on: SocketTicket,
+) = when (val info = slots.paths.recvFrom(from, now, on)) {
     is RecvFrom.Info -> {
         slots.ack.received()
+        life.heard()
         ingress.direct(bytes, length, info.recvInfo, flight)
     }
     is RecvFrom.TooManyAddresses -> ingress.refused(length, from, flight)
@@ -50,6 +64,13 @@ internal fun Paths.closeRedirect(): Outgoing =
         is Paths.Server -> Outgoing.Dropped
     }
 
+/** Whether the path's far end reads validated: a client's path as its move reads it, a server's peer not on a new address. */
+internal fun Paths.address(): PeerAddress =
+    when (this) {
+        is Paths.Client -> paths.address()
+        is Paths.Server -> paths.address()
+    }
+
 /** Where a datagram quiche wrote for the path [address] names goes: a client's own address, a server's peer's. */
 internal fun Paths.outgoing(address: Long): Outgoing =
     when (this) {
@@ -59,7 +80,7 @@ internal fun Paths.outgoing(address: Long): Outgoing =
 
 internal fun Paths.sendInfo(): QuicheSendInfo =
     when (this) {
-        is Paths.Client -> paths.sendInfo
+        is Paths.Client -> paths.opened.sendInfo
         is Paths.Server -> paths.sendInfo
     }
 
@@ -78,39 +99,46 @@ internal fun Paths.sorting(): Sorting =
 /** The statistics of the path the connection was opened on. */
 internal fun Paths.read(): PathRead =
     when (this) {
-        is Paths.Client -> paths.read()
+        is Paths.Client -> paths.opened.read()
         is Paths.Server -> paths.read()
     }
 
 /** The connection's statistics, read now. */
 internal fun Paths.stats(): QuicStatsRead =
     when (this) {
-        is Paths.Client -> paths.stats()
+        is Paths.Client -> paths.opened.stats()
         is Paths.Server -> paths.stats()
     }
 
-/** The connection is established: each role hands out, or asks the loop for, the ids a move needs. */
+/**
+ * The connection is established: each role hands out, or asks the loop for, the ids a move needs; a client's watch
+ * reads its baseline.
+ */
 internal fun Paths.established() =
     when (this) {
         is Paths.Client -> {
             paths.established()
-            Unit
+            paths.silence.baseline()
         }
         is Paths.Server -> paths.established()
     }
 
 /**
  * Inside, each serve: reads the paths' news. A client that just migrated has quiche send its probes on the new path
- * at once, so what the old path lost is resent now rather than at its next timer.
+ * at once, so what the old path lost is resent now rather than at its next timer. A client's silence watch is served
+ * first ([watchSilence]).
  */
 internal fun ConnParts.stepPaths(now: Nanos): PathStep =
     when (val paths = slots.paths) {
         is Paths.Client -> {
-            val step = paths.paths.step(now)
+            watchSilence(now, paths.paths.silence)
+            stepRebinds(now, paths.paths)
+            val step = paths.paths.step(now, life.view())
             if (step != PathStep.Steady) slots.ack.mustWrite()
             when (step) {
                 PathStep.Steady, PathStep.NoUsablePath -> Unit
                 PathStep.ProbeFailed -> flight.path(now, PathMark.ProbeFailed)
+                PathStep.Abandoned -> flight.path(now, PathMark.Abandoned)
                 PathStep.Challenged -> flight.path(now, PathMark.Challenged)
                 PathStep.Reprobed -> {
                     flight.path(now, PathMark.Reprobed)
@@ -137,73 +165,17 @@ internal fun ConnParts.networkUsable(now: Nanos) {
     slots.ack.mustWrite()
     timer.nudge()
     when (val paths = slots.paths) {
-        is Paths.Client -> paths.paths.networkChanged(now)
+        is Paths.Client -> paths.paths.networkChanged(now).also { paths.paths.rebinds.renewed(now, Rebind.Same) }
         is Paths.Server -> Unit
     }
 }
 
-/** How an end quiche reported reads: a client whose socket moved and found no validated path did not merely go idle. */
+/** How an end quiche reported reads: a client's idle timeout as its move reads it ([ClientPaths.idleEnd]). */
 internal fun Paths.endOf(end: ConnEnd): ConnEnd =
     when (this) {
-        is Paths.Client -> if (end is ConnEnd.IdleTimeout && paths.unsettled()) ConnEnd.NoUsablePath else end
+        is Paths.Client -> if (end is ConnEnd.IdleTimeout) paths.idleEnd() else end
         is Paths.Server -> end
     }
-
-/**
- * Inside: a client's socket now leaves from [local]. The connection probes the path from it and migrates once it is
- * validated; before its handshake is confirmed (RFC 9000 §9), or when the peer forbade migration, it cannot follow.
- */
-internal fun ConnParts.follow(
-    now: Nanos,
-    to: MoveTo,
-): MoveAnswer {
-    val client =
-        when (val paths = slots.paths) {
-            is Paths.Client -> paths.paths
-            is Paths.Server -> return MoveAnswer.Following
-        }
-    network.moved()
-    slots.ack.mustWrite()
-    val answer =
-        when (handshake.confirmation()) {
-            Confirmation.Pending -> MoveAnswer.Refused
-            Confirmation.Confirmed -> client.move(now, to.local, to.prior)
-        }
-    flight.path(
-        now,
-        when (answer) {
-            MoveAnswer.Following -> PathMark.Moved
-            MoveAnswer.Refused, MoveAnswer.NoUsablePath -> PathMark.Refused
-        },
-    )
-    return answer
-}
-
-/**
- * Inside: a client's socket is wanted on [wanted]'s address. Before its handshake is confirmed it moves at once and the
- * connection, which cannot follow it (RFC 9000 §9), ends; after, it moves once the path from there can be probed.
- */
-internal fun ConnParts.want(
-    now: Nanos,
-    wanted: MoveWanted,
-): Want {
-    val client =
-        when (val paths = slots.paths) {
-            is Paths.Client -> paths.paths
-            is Paths.Server -> return Want.Moving
-        }
-    val want =
-        when (handshake.confirmation()) {
-            Confirmation.Pending -> client.hold.moveNow(wanted.bind, wanted.prior)
-            Confirmation.Confirmed -> client.hold.want(now, wanted.bind, wanted.prior)
-        }
-    when (want) {
-        Want.Moving -> Unit
-        Want.Waiting -> flight.path(now, PathMark.Held)
-        Want.NoUsablePath -> flight.path(now, PathMark.Refused)
-    }
-    return want
-}
 
 /** Any thread: how many new ids the loop should route to a server connection; taken once. */
 internal fun Paths.idsWanted(): Int =
@@ -226,19 +198,33 @@ internal fun Paths.issue(spare: List<SpareId>) =
         is Paths.Server -> paths.issue(spare)
     }
 
-/** Offers the wake times of the paths: a client whose move found no path is probed again when its retry falls due. */
-internal fun Paths.offerWake(sink: WakeSink) =
-    when (this) {
-        is Paths.Client -> paths.offerWake(sink)
-        is Paths.Server -> Unit
+/**
+ * Offers the wake times of the paths: a client whose move found no path is probed again when its retry falls due, and
+ * its silence watch wakes for its probe and its verdicts while [readers] reads wait.
+ */
+internal fun Paths.offerWake(
+    sink: WakeSink,
+    readers: Int,
+    life: Life,
+) = when (this) {
+    is Paths.Client -> {
+        paths.offerWake(sink, life)
+        paths.silence.offerWake(sink, readers)
+        paths.rebinds.offerWake(sink)
     }
+    is Paths.Server -> Unit
+}
 
 /** Whether a client's socket is moving, or a server's peer is on more than one address. */
 internal enum class PathCalm { Settled, Moving }
 
 internal fun Paths.calm(): PathCalm =
     when (this) {
-        is Paths.Client -> if (paths.unsettled()) PathCalm.Moving else PathCalm.Settled
+        is Paths.Client ->
+            when (paths.address()) {
+                PeerAddress.Validated -> PathCalm.Settled
+                PeerAddress.Unvalidated -> PathCalm.Moving
+            }
         is Paths.Server ->
             when (paths.sorting()) {
                 is Sorting.Fixed -> PathCalm.Settled

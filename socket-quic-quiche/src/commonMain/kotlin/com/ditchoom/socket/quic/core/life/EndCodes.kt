@@ -25,6 +25,8 @@ internal fun ConnEnd.flightCode(): Int =
         is ConnEnd.ServerClosedUnsettled -> 15
         is ConnEnd.NoUsablePath -> 16
         is ConnEnd.HandshakeSendRefused -> 17
+        is ConnEnd.AccessDenied -> 18
+        is ConnEnd.EarlyDataRejected -> 19
     }
 
 /** The wire error this end carries, as a number, for the flight record; zero when it carries none. */
@@ -32,11 +34,11 @@ internal fun ConnEnd.errorCode(): Long =
     when (this) {
         is ConnEnd.ByPeer -> error.code
         is ConnEnd.ByLocal -> error.code
-        is ConnEnd.IdleTimeout, is ConnEnd.HandshakeTimedOut, is ConnEnd.HandshakeSendRefused, is ConnEnd.SocketFailed,
-        is ConnEnd.ProcessingFailed,
+        is ConnEnd.IdleTimeout, is ConnEnd.HandshakeTimedOut, is ConnEnd.HandshakeSendRefused, is ConnEnd.AccessDenied,
+        is ConnEnd.SocketFailed, is ConnEnd.ProcessingFailed,
         is ConnEnd.CallerFailed, is ConnEnd.LoopFailed, is ConnEnd.LoopStopped, is ConnEnd.ServerClosed,
         is ConnEnd.NoErrorRecorded, is ConnEnd.Released, is ConnEnd.NetworkLost, is ConnEnd.LocalAddressGone,
-        is ConnEnd.ServerClosedUnsettled, is ConnEnd.NoUsablePath,
+        is ConnEnd.ServerClosedUnsettled, is ConnEnd.NoUsablePath, is ConnEnd.EarlyDataRejected,
         -> 0L
     }
 
@@ -45,10 +47,10 @@ internal fun ConnEnd.kind(): EndKind =
     when (this) {
         is ConnEnd.ByPeer -> if (error is QuicError.NoError) EndKind.Normal else EndKind.Abnormal
         is ConnEnd.ByLocal -> if (error is QuicError.NoError) EndKind.Normal else EndKind.Abnormal
-        is ConnEnd.IdleTimeout, is ConnEnd.HandshakeTimedOut, is ConnEnd.HandshakeSendRefused, is ConnEnd.SocketFailed,
-        is ConnEnd.ProcessingFailed,
+        is ConnEnd.IdleTimeout, is ConnEnd.HandshakeTimedOut, is ConnEnd.HandshakeSendRefused, is ConnEnd.AccessDenied,
+        is ConnEnd.SocketFailed, is ConnEnd.ProcessingFailed,
         is ConnEnd.CallerFailed, is ConnEnd.LoopFailed, is ConnEnd.NoErrorRecorded, is ConnEnd.NetworkLost,
-        is ConnEnd.LocalAddressGone, is ConnEnd.ServerClosedUnsettled, is ConnEnd.NoUsablePath,
+        is ConnEnd.LocalAddressGone, is ConnEnd.ServerClosedUnsettled, is ConnEnd.NoUsablePath, is ConnEnd.EarlyDataRejected,
         -> EndKind.Abnormal
         is ConnEnd.LoopStopped, is ConnEnd.ServerClosed, is ConnEnd.Released -> EndKind.Normal
     }

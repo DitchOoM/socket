@@ -5,7 +5,7 @@ import com.ditchoom.buffer.deterministic
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.http3.HTTP3_ALPN
-import com.ditchoom.socket.http3.Http3Request
+import com.ditchoom.socket.http3.codec.Http3Request
 import com.ditchoom.socket.http3.withHttp3Connection
 import com.ditchoom.socket.http3.withHttp3Server
 import com.ditchoom.socket.quic.QuicOptions

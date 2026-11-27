@@ -63,7 +63,7 @@ sealed interface MigrationPolicy {
      * A radio that is not there fails the connect with a [PinnedRadioUnavailableException]; one that
      * goes away later ends the connection as any dead path does, by idle timeout or a failed send.
      * Where the engine cannot pin ([EngineCapabilities.pinnableRadios]), or the connection rides a port
-     * it does not own, the connect is refused with a [PinnedRadioRefusedException] before any socket
+     * it does not own, the connect is refused with a [QuicRefusedException] before any socket
      * opens.
      *
      * | Platform | How the path is pinned |
@@ -81,7 +81,7 @@ sealed interface MigrationPolicy {
 
 /**
  * Which [NetworkMonitor] a connection observes — for [MigrationPolicy.Automatic], for
- * [QuicConnection.networkAtClose], and (when [com.ditchoom.socket.quic.trace.QuicTraceCapture]
+ * [QuicScope.networkAtClose], and (when [com.ditchoom.socket.quic.trace.QuicTraceCapture]
  * asks) for the trace's NET/NET_CAP lines. One monitor per connection, resolved once at connect and
  * shared by all three, so the observation sequence they report indexes the same stream.
  *

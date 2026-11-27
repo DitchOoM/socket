@@ -23,23 +23,28 @@ import com.ditchoom.socket.quic.QuicheApi
 import com.ditchoom.socket.quic.RouteSource
 import com.ditchoom.socket.quic.UdpBatching
 import com.ditchoom.socket.quic.UdpSocketChannelFactory
+import com.ditchoom.socket.quic.clientAlpnOffer
+import com.ditchoom.socket.quic.core.conn.AccessGuard
 import com.ditchoom.socket.quic.core.conn.ClientTokens
 import com.ditchoom.socket.quic.core.conn.FlightSize
 import com.ditchoom.socket.quic.core.conn.MismatchResponse
+import com.ditchoom.socket.quic.core.conn.accessGuardOfThisPlatform
+import com.ditchoom.socket.quic.core.conn.probing
+import com.ditchoom.socket.quic.core.conn.sendsAccess
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.loop.Placement
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 import com.ditchoom.socket.quic.core.udp.SocketBuffers
 import com.ditchoom.socket.quic.core.udp.SocketPeer
-import com.ditchoom.socket.quic.core.udp.SocketReport
 import com.ditchoom.socket.quic.encodeToNative
 import com.ditchoom.socket.quic.generateScid
-import com.ditchoom.socket.quic.hostLiteral
 import com.ditchoom.socket.quic.hostSockAddrLayout
-import com.ditchoom.socket.quic.nameQlog
+import com.ditchoom.socket.quic.keyLogDirectory
+import com.ditchoom.socket.quic.nameTrafficSecretsLog
 import com.ditchoom.socket.quic.resolveNetworkMonitor
 import com.ditchoom.socket.quic.toPathKey
+import com.ditchoom.socket.quic.traceRecorderFor
 import com.ditchoom.socket.quic.wireClientConnectivityTap
 import com.ditchoom.socket.udp.SocketAddressCodec
 import com.ditchoom.socket.udp.UdpSocket
@@ -78,11 +83,16 @@ internal suspend fun coreConnect(
     datagramSize: DatagramSize = DatagramSize.Probed,
     tokens: ClientTokens = ClientTokens.NotKept,
     mismatch: MismatchResponse = MismatchResponse.Unpaced,
+    access: AccessGuard = accessGuardOfThisPlatform,
 ): CoreClient {
+    // Before the setup lane, a socket or a file: a connect whose option values cannot be honoured opens nothing.
+    verdictOn(options).orRefuse()
+    // A session whose protocol the options do not list fails here too, before a route is asked for.
+    clientAlpnOffer(options)
     val began = TimeSource.Monotonic.markNow()
     val peerHost = peerHostFor(host)
     val unstarted = ClientSetup.Unstarted(EdgeMemory(factory))
-    val sized = options.sizedBy(datagramSize)
+    val sized = ride.optionsFor(options.sizedBy(datagramSize))
     // Read once the lane is left: a caller cancelled meanwhile never sees the started client, but must end it.
     var setup: ClientSetup = unstarted
     try {
@@ -109,11 +119,11 @@ internal suspend fun coreConnect(
                     ride,
                     tokens,
                     mismatch,
+                    access,
                     moved = { setup = it },
                 )
             }
-        val client = started.established(sized.resumption, timeout)
-        client.connection.verifyServer(serverName, sized, HandshakeBudget(timeout, began))
+        val client = started.established(serverName, sized, timeout, HandshakeBudget(timeout, began))
         return client.also { setup = ClientSetup.Established }
     } finally {
         setup.endFailed()
@@ -142,9 +152,13 @@ private suspend fun OnSetupLane.connectOnLane(
     ride: ClientRide,
     tokens: ClientTokens,
     mismatch: MismatchResponse,
+    access: AccessGuard,
     /** Told each time what the setup made passes to a new releaser; last, right before the connection starts. */
     moved: (ClientSetup) -> Unit,
 ): StartedClient {
+    // The application's trace factory runs here, on the setup lane and not on the caller's thread, and before anything opens.
+    val capture = traceRecorderFor(options)
+    val keyLogDirectory = keyLogDirectory()
     val peer = UdpSocket.resolve(peerHost, port)
     val peerKey = peer.toPathKey()
     val codec = SocketAddressCodec(hostSockAddrLayout)
@@ -159,28 +173,36 @@ private suspend fun OnSetupLane.connectOnLane(
                     Raised.SocketRefused(NativeSocketRefusal(placed.refusal)),
                     QuicCloseCircumstance.HandshakeFailed,
                 )
+            is Placement.ThreadRefused -> loopThreadRefused(placed.thrown.throwable)
         }
     val seated = ClientSetup.Seated(memory, running.loop)
     moved(seated)
     val socket =
         when (ride) {
             is ClientRide.OwnSocket -> {
+                val turn = access.probing(peerKey)
                 val bindHost =
                     when (val source = routeSource(route)) {
                         is RouteSource.Resolved -> source.host
                         is RouteSource.PlatformAssigned -> anyHostFor(peer)
-                        is RouteSource.Unresolved -> raise(Raised.RouteUnresolved(source.reason), QuicCloseCircumstance.HandshakeFailed)
+                        is RouteSource.Unresolved ->
+                            raise(
+                                unresolved(source.reason, peerKey, access, turn),
+                                QuicCloseCircumstance.HandshakeFailed,
+                            )
                     }
                 val bind = UdpSocket.resolve(bindHost, 0).toPathKey()
                 openStackSocket(running.io, memory, bind, SocketPeer.Connected(peerKey), buffers, batching, CLIENT_BATCH)
             }
             is ClientRide.NetworkFramework -> withTimeout(timeout) { ride.connector.connect(host, port) }
+            is ClientRide.Lent -> ride.socketTo(peer, peerKey, factory)
         }
     val opened = ClientSetup.Opened(seated, socket)
     moved(opened)
     val local = socket.local()
     val monitor = resolveNetworkMonitor(options.networkMonitor)
-    val handshake = clientHandshakeRule(options, linkClassOf(monitor.state.value.networkId))
+    val openedOn = monitor.state.value.networkId
+    val handshake = clientHandshakeRule(options, linkClassOf(openedOn))
     val peerSockAddr = codec.encodeToNative(peer, factory)
     moved(ClientSetup.PeerEncoded(opened, peerSockAddr))
     val localSockAddr = local.encodeToNative(factory)
@@ -219,6 +241,7 @@ private suspend fun OnSetupLane.connectOnLane(
                 ClientWiring(
                     api,
                     handle,
+                    QuicSessionId(scidHex),
                     options,
                     memory,
                     running,
@@ -230,12 +253,17 @@ private suspend fun OnSetupLane.connectOnLane(
                     scope,
                     flight,
                     handshake,
+                    access.sendsAccess(peerKey),
+                    clock = running.loop.clock,
                     readiness = socket.readiness(),
                     offer = offer,
                     tickets = plan.home,
                     kept = planned.kept,
                     tokens = plan.tokens,
                     mismatch = mismatch,
+                    capture = capture,
+                    silence = ride.silenceOn(options.migration, monitor),
+                    openedOn = openedOn,
                 ),
                 peerSockAddr,
                 localSockAddr,
@@ -244,25 +272,21 @@ private suspend fun OnSetupLane.connectOnLane(
     moved(ClientSetup.Built(built))
     val connection = built.connection(factory, peer, QuicConnectionIdentity(QuicSessionId(scidHex), QuicWireConnectionId.Known(scidHex)))
     wireClientConnectivityTap(options, built.capture, connection, monitor)
-    api.nameQlog(handle, built.capture, QuicRole.Client, QuicSessionId(scidHex))
-    val started = StartedClient(CoreClient(connection, built.conn, running.loop, SocketReport(socket.granted(), local.port)), offer)
+    api.nameTrafficSecretsLog(handle, built.capture, QuicRole.Client, keyLogDirectory) { QuicSessionId(scidHex) }
+    val started =
+        StartedClient(
+            CoreClient(connection, built.conn, running.loop, socket.report(local.port), built),
+            offer,
+            ServerCheck(connection, built.conn, built.chain),
+        )
     // Placing the endpoint hands the memory to the loop, whose release of the connection frees it, whatever happens next.
     moved(ClientSetup.Started(started))
     built.start()
-    scope.feedNetwork(monitor, connection, built, { routeSource(route) }, local.hostLiteral(), onMoveOf(options.migration))
+    ride.followsNetwork {
+        scope.feedNetwork(monitor, ClientFeed(connection, built), { routeSource(route) }, onMoveOf(options.migration))
+    }
     return started
 }
-
-private fun hex(buffer: com.ditchoom.buffer.PlatformBuffer): String {
-    val out = StringBuilder(buffer.remaining() * 2)
-    for (i in buffer.position() until buffer.limit()) {
-        val b = buffer.get(i).toInt() and 0xFF
-        out.append(HEX[b ushr 4]).append(HEX[b and 0xF])
-    }
-    return out.toString()
-}
-
-private const val HEX = "0123456789abcdef"
 
 /** The wildcard of [peer]'s family: an IPv6 peer needs an IPv6 socket on the native stack. */
 private fun anyHostFor(peer: SocketAddress): String = if (peer.family == AddressFamily.IPv6) "::" else "0.0.0.0"

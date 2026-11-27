@@ -177,6 +177,20 @@ class QlogDirectoryTests {
     }
 
     @Test
+    fun anEarlierProcessesQlogListedWithWindowsSeparatorsIsCountedByItsConnectionName() {
+        val dir = directory(segmentBytes = 10_000, connectionSegments = 100, directoryBytes = 50_000)
+        dir.adopt(
+            listOf(
+                QlogFile("D:\\qlog\\quiche-server-aa.sqlog", 10_000),
+                QlogFile("D:\\qlog\\quiche-server-aa_seg0002.sqlog", 10_000),
+                QlogFile("D:\\qlog\\qlog-budget.log", 99_999),
+            ),
+        )
+        assertEquals(QlogEvent.Inherited(connections = 1, files = 2, bytes = 20_000), events.single())
+        assertEquals(listOf("quiche-server-aa"), dir.names())
+    }
+
+    @Test
     fun theRealWalkFitsInsideItsOwnBudget() {
         val budget = QlogBudget.forWalk(minutes = 4500, echoInterval = 250.milliseconds, lanes = 1)
 

@@ -1,4 +1,11 @@
+@file:OptIn(ExperimentalDatagramApi::class)
+
 package com.ditchoom.socket.quic
+
+import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.flow.ExperimentalDatagramApi
+import com.ditchoom.buffer.flow.SocketAddress
+import com.ditchoom.socket.udp.SocketAddressCodec
 
 /**
  * Opens additional client UDP sockets for connection migration (RFC 9000 §9).
@@ -48,32 +55,6 @@ interface UdpChannelFactory {
 }
 
 /**
- * Whether a [UdpChannelFactory] can bind a caller-chosen local endpoint.
- *
- * A sealed pair rather than a `Boolean` because the two cases carry different *reasons* and a boolean
- * named `honorsLocalEndpoint` would be one more capability flag of exactly the kind this refactor is
- * deleting. It is also the value a diagnostic wants to print.
- */
-@InternalQuicApi
-sealed interface LocalEndpointSupport {
-    /**
-     * The platform binds what it is told (POSIX `bind` before `connect`) — JVM/Android via NIO, Linux
-     * via io_uring. Any `localHost`/`localPort` request is honoured exactly.
-     */
-    data object Bindable : LocalEndpointSupport
-
-    /**
-     * The platform chooses the local endpoint itself and a request cannot change it — Apple, where
-     * `UdpSocket.connect` hands off to `NWConnection` and NW owns endpoint assignment.
-     *
-     * The default request (`null`, `0`) is still fully served: "let the platform pick" is precisely what
-     * this platform does, and it is what automatic migration asks for. Only an *explicit* endpoint is
-     * unserviceable, and the driver refuses that rather than pretending.
-     */
-    data object PlatformAssigned : LocalEndpointSupport
-}
-
-/**
  * A freshly-opened migration path: the channel plus its pinned local sockaddr and a hook to free that
  * sockaddr's backing memory. The driver decodes [localSockAddrAddress] into a [PathKey] to route
  * datagrams to this socket.
@@ -93,3 +74,52 @@ class NewPath(
     val localEndpoint: QuicLocalEndpoint,
     val release: () -> Unit,
 )
+
+/**
+ * The [UdpChannelFactory] a [QuicheDriver] is given: [UdpSocketChannelFactory]'s sockets, opened as the
+ * driver's migration paths. The path's local sockaddr is encoded via [codec] into pinned native memory
+ * that the driver decodes into a [PathKey] to route datagrams to the socket, and frees via
+ * [NewPath.release] when the path is torn down.
+ */
+@OptIn(InternalQuicApi::class)
+internal class DriverUdpChannelFactory(
+    peer: SocketAddress,
+    codec: SocketAddressCodec,
+    bufferFactory: BufferFactory,
+    recvBufferFactory: BufferFactory,
+    receiveBufferSize: Int,
+    localEndpointSupport: LocalEndpointSupport,
+    openChannel: ConnectedUdpOpener = ConnectedUdpOpener.Platform,
+) : UdpSocketChannelFactory(
+        peer,
+        codec,
+        bufferFactory,
+        recvBufferFactory,
+        receiveBufferSize,
+        localEndpointSupport,
+        openChannel,
+    ),
+    UdpChannelFactory {
+    override fun openingWith(opener: ConnectedUdpOpener): DriverUdpChannelFactory =
+        DriverUdpChannelFactory(peer, codec, bufferFactory, recvBufferFactory, receiveBufferSize, localEndpointSupport, opener)
+
+    override suspend fun openPath(
+        localHost: String?,
+        localPort: Int,
+    ): NewPath {
+        val channel =
+            openChannel.open(peer.host, peer.port, bindHostFor(localHost), localPort, receiveBufferSize, recvBufferFactory)
+        val local = channel.localAddress.orNull() ?: error("connected migration path has no local address")
+        val encoded = codec.encodeToNative(local, bufferFactory)
+        return NewPath(
+            channel = DatagramChannelUdpChannel(channel),
+            localSockAddrAddress = encoded.address,
+            localSockAddrLength = encoded.length,
+            // The same resolved local address the sockaddr above encodes, in presentation form —
+            // `UdpSocket.connect` reports it on every platform, Apple included, which is what makes
+            // Succeeded name a real endpoint even where the platform picked it.
+            localEndpoint = QuicLocalEndpoint(local.host, local.port),
+            release = { encoded.free() },
+        )
+    }
+}

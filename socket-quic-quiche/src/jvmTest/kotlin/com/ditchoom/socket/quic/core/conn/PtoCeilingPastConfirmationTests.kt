@@ -1,5 +1,6 @@
 package com.ditchoom.socket.quic.core.conn
 
+import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.socket.quic.LinkClass
 import com.ditchoom.socket.quic.PtoCeiling
 import com.ditchoom.socket.quic.QuicStreamId
@@ -13,6 +14,7 @@ import com.ditchoom.socket.quic.core.testing.nativeBytes
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.udp.SockAddr
 import com.ditchoom.socket.quic.jvmMigrationSimEnv
+import com.ditchoom.socket.quic.network
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -100,7 +102,7 @@ class PtoCeilingPastConfirmationTests {
         val client =
             Client(
                 pair,
-                pair.onClock(pair.client) { Handshake(q, rule, 0L, nativeBytes(255)) },
+                pair.onClock(pair.client) { Handshake(q, rule, 0L, nativeBytes(255), ChainSource.NotAsked, BufferFactory.network()) },
                 SinglePath(q, SockAddr(0L, 0), SockAddr(0L, 0), SendTarget.ConnectedPeer),
             )
         val first = pair.sends(pair.client)

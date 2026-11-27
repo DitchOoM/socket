@@ -16,7 +16,7 @@ import com.ditchoom.buffer.flow.SocketAddress
 internal sealed interface ClientPathOrigin {
     /** The connection owns its socket. [factory] opened the primary path and opens every later one. */
     class Owned(
-        val factory: UdpSocketChannelFactory,
+        val factory: DriverUdpChannelFactory,
     ) : ClientPathOrigin
 
     /**
@@ -44,7 +44,7 @@ internal class ClientPath(
  */
 internal suspend fun QuicClientBinding.openClientPath(
     peer: SocketAddress,
-    ownFactory: () -> UdpSocketChannelFactory,
+    ownFactory: () -> DriverUdpChannelFactory,
 ): ClientPath =
     when (this) {
         QuicClientBinding.OwnSocket -> {
@@ -99,7 +99,7 @@ internal fun QuicClientBinding.transportOptionsFor(options: QuicOptions): QuicOp
  */
 internal fun ClientPathOrigin.migrationCapability(
     policy: MigrationPolicy,
-    supported: (UdpSocketChannelFactory) -> MigrationCapability.Supported,
+    supported: (DriverUdpChannelFactory) -> MigrationCapability.Supported,
 ): MigrationCapability =
     when (this) {
         is ClientPathOrigin.Owned -> clientMigrationCapability(policy) { supported(factory) }

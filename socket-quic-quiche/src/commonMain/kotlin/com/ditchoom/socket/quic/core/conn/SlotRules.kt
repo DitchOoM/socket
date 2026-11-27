@@ -1,8 +1,13 @@
 package com.ditchoom.socket.quic.core.conn
 
 import com.ditchoom.socket.quic.LinkClass
-import com.ditchoom.socket.quic.core.life.CloseRule
+import com.ditchoom.socket.quic.QuicAppErrorCode
+import com.ditchoom.socket.quic.core.life.CloseChoice
+import com.ditchoom.socket.quic.core.life.DrainUntil
+import com.ditchoom.socket.quic.core.time.Nanos
+import com.ditchoom.socket.quic.core.time.Span
 import com.ditchoom.socket.quic.core.time.WaitResolution
+import com.ditchoom.socket.quic.core.time.since
 import kotlin.jvm.JvmInline
 
 /** Whether a connection obeys the send times quiche's pacer gives each datagram. */
@@ -80,11 +85,70 @@ internal value class AckDelayCap private constructor(
 internal sealed interface DatagramRule {
     data object Off : DatagramRule
 
-    /** Datagrams that arrive while no receive waits are kept, [bound] at most, the oldest dropped first. */
+    /**
+     * Datagrams that arrive while no receive waits are kept, [bound] at most, the oldest dropped first, and dropped
+     * undelivered past [incoming]. Up to [sendBound] wait to be sent; a send past it goes as [overflow] says, and one
+     * older than [outgoing] at the head of the queue is dropped.
+     */
     class On(
         val bound: Int,
+        val incoming: AgeBound,
+        val sendBound: Int,
+        val overflow: Overflow,
+        val outgoing: AgeBound,
     ) : DatagramRule
 }
+
+/**
+ * The datagrams quiche's own send queue holds for its next packets: enough to fill one with small datagrams, or a few
+ * when eviction or an outgoing age must reach nearly every queued datagram; never more than half of [DatagramRule.On.sendBound].
+ */
+internal fun DatagramRule.On.quicheHandOff(): Int {
+    val wanted =
+        when (overflow) {
+            Overflow.EvictOldest -> SHORT_HAND_OFF
+            Overflow.RefuseNew ->
+                when (outgoing) {
+                    is AgeBound.Within -> SHORT_HAND_OFF
+                    is AgeBound.Unbounded -> LONG_HAND_OFF
+                }
+        }
+    return minOf(wanted, sendBound / 2).coerceAtLeast(1)
+}
+
+/**
+ * The smallest send depth: one datagram in quiche's hand-off, one at the door, and one in the core's queue, so an
+ * evicting queue whose path is full always has a queued datagram to evict.
+ */
+internal const val MIN_SEND_DEPTH = 3
+
+private const val SHORT_HAND_OFF = 4
+private const val LONG_HAND_OFF = 32
+
+/** What a full datagram send queue does with one more. */
+internal enum class Overflow { RefuseNew, EvictOldest }
+
+/** How long a queued datagram stays worth delivering. */
+internal sealed interface AgeBound {
+    data object Unbounded : AgeBound
+
+    /** One queued longer than [age] is dropped when it reaches the head of its queue. */
+    class Within(
+        val age: Span,
+    ) : AgeBound
+}
+
+/** Whether a datagram queued at [queuedAt] is past this bound at [now]. */
+internal fun AgeBound.expired(
+    queuedAt: Nanos,
+    now: Nanos,
+): Expiry =
+    when (this) {
+        is AgeBound.Unbounded -> Expiry.Fresh
+        is AgeBound.Within -> if (now.since(queuedAt) > age) Expiry.Expired else Expiry.Fresh
+    }
+
+internal enum class Expiry { Fresh, Expired }
 
 /** Whether an idle connection is pinged. */
 internal sealed interface KeepAliveRule {
@@ -101,22 +165,25 @@ internal class SlotRules(
     val pacing: PacingRule,
     val ack: AckRule,
     val handshake: HandshakeRule,
-    val close: CloseRule,
+    /** What a close with NO_ERROR asks for, the server's close of each connection included. */
+    val close: CloseChoice,
     val datagrams: DatagramRule = DatagramRule.Off,
     val keepAlive: KeepAliveRule = KeepAliveRule.Off,
     val earlyData: EarlyDataRule = EarlyDataRule.Refused,
+    /** The code our side of a stream is reset with when a write that ends it stops part way. */
+    val writeCut: QuicAppErrorCode = QuicAppErrorCode(0L),
 ) {
     companion object {
         /**
          * A loop whose waits wake within a millisecond, quiche's own RFC 9002 handshake with no deadline, a graceful
-         * close that waits for what was written to be acknowledged, at most the default idle timeout, and an ACK that
-         * waits until the end of its pass for a reply queued in it.
+         * close that waits for what was written to be acknowledged, at most the default limit, and an ACK that waits
+         * until the end of its pass for a reply queued in it.
          */
         val Default =
             forWaits(
                 WaitResolution(1_000_000L),
                 HandshakeRule(PtoRule.Rfc9002, HandshakeBound.UntilClosed, LinkClass.Unknown),
-                CloseRule.UntilAcknowledged(DEFAULT_IDLE_NANOS),
+                CloseChoice.Graceful(CloseChoice.DEFAULT_LIMIT_NANOS, DrainUntil.Acknowledged),
             )
 
         /**
@@ -127,12 +194,13 @@ internal class SlotRules(
         fun forWaits(
             waits: WaitResolution,
             handshake: HandshakeRule,
-            close: CloseRule,
+            close: CloseChoice,
             datagrams: DatagramRule = DatagramRule.Off,
             keepAlive: KeepAliveRule = KeepAliveRule.Off,
             earlyData: EarlyDataRule = EarlyDataRule.Refused,
             ack: AckRule = AckRule.UntilPassEnds,
             mismatch: MismatchResponse = MismatchResponse.Unpaced,
+            writeCut: QuicAppErrorCode = QuicAppErrorCode(0L),
         ) = SlotRules(
             PacingRule.ByQuiche(allowanceNanos = waits.nanos, mismatch = mismatch),
             ack,
@@ -141,8 +209,7 @@ internal class SlotRules(
             datagrams,
             keepAlive,
             earlyData,
+            writeCut,
         )
-
-        private const val DEFAULT_IDLE_NANOS = 30_000_000_000L
     }
 }

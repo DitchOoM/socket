@@ -1,6 +1,6 @@
 package com.ditchoom.socket.quic.core.edge
 
-/** What a client connection's datagrams ride: chosen once per platform. */
+/** What a client connection's datagrams ride: chosen once per platform, or lent by the caller. */
 internal sealed interface ClientRide {
     /** A UDP socket of the loop's own stack. */
     data object OwnSocket : ClientRide
@@ -8,6 +8,14 @@ internal sealed interface ClientRide {
     /** A Network.framework connection, which follows the device's paths and brings up the radio it needs. */
     class NetworkFramework(
         val connector: NwConnector,
+    ) : ClientRide
+
+    /**
+     * A channel the caller bound and keeps, shared with whatever else runs on its port: the connection never closes it,
+     * never moves off it, and never follows the network itself.
+     */
+    class Lent(
+        val channel: LentChannel,
     ) : ClientRide
 }
 

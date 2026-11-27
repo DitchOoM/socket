@@ -11,6 +11,7 @@ import com.ditchoom.socket.quic.core.observe.ConnCounts
 import com.ditchoom.socket.quic.core.testing.nativeBytes
 import com.ditchoom.socket.quic.core.testing.testLoopMemory
 import com.ditchoom.socket.quic.core.time.Nanos
+import com.ditchoom.socket.quic.core.udp.SocketTicket
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -28,10 +29,10 @@ class IngressTests {
         val slots = shared.slots
         val ingress = Ingress(q, shared, BufferFactory.Default, counts, { Nanos(0) })
 
-        val first = assertIs<CopiedWork>(ingress.copy(datagram, 16, FROM))
+        val first = assertIs<CopiedWork>(ingress.copy(datagram, 16, FROM, SocketTicket.FIRST))
         assertEquals(16, slots[0].length)
         assertEquals(15, slots[0].bytes.byteAt(15))
-        assertIs<CopiedWork>(ingress.copy(datagram, 16, FROM))
+        assertIs<CopiedWork>(ingress.copy(datagram, 16, FROM, SocketTicket.FIRST))
         assertEquals(2L, counts.datagramsCopied)
 
         first.gone(ConnEnd.Released)
@@ -44,9 +45,9 @@ class IngressTests {
         val one = Ingress(q, shared, BufferFactory.Default, counts, { Nanos(0) })
         val other = Ingress(QuicheConnRef(StubQuicheApi(), QuicheConn(2L)), shared, BufferFactory.Default, ConnCounts(), { Nanos(0) })
 
-        val held = assertIs<CopiedWork>(one.copy(datagram, 16, FROM))
+        val held = assertIs<CopiedWork>(one.copy(datagram, 16, FROM, SocketTicket.FIRST))
         assertEquals(0, shared.slots.available(), "one connection's copy holds the loop's only slot")
-        assertIs<CopiedWork>(other.copy(datagram, 16, FROM))
+        assertIs<CopiedWork>(other.copy(datagram, 16, FROM, SocketTicket.FIRST))
         assertEquals(0, shared.slots.available(), "the other connection's copy took memory of its own")
         held.gone(ConnEnd.Released)
         assertEquals(1, shared.slots.available())
@@ -55,7 +56,7 @@ class IngressTests {
     @Test
     fun aFactoryWithoutNativeMemoryDropsTheDatagramAndCountsIt() {
         val ingress = Ingress(q, testLoopMemory(copies = 0), BufferFactory.managed(), counts, { Nanos(0) })
-        assertSame(Copy.Dropped, ingress.copy(datagram, 16, FROM))
+        assertSame(Copy.Dropped, ingress.copy(datagram, 16, FROM, SocketTicket.FIRST))
         assertEquals(1L, counts.datagramsDropped)
     }
 }

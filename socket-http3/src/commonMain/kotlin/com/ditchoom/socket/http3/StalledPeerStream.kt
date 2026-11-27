@@ -1,5 +1,7 @@
 package com.ditchoom.socket.http3
 
+import com.ditchoom.socket.http3.codec.Http3StreamException
+import com.ditchoom.socket.http3.codec.Http3Violation
 import com.ditchoom.socket.quic.QuicByteStream
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
@@ -37,7 +39,7 @@ internal suspend fun abandonStalledStream(
     cause: TimeoutCancellationException,
 ): Http3StreamException {
     currentCoroutineContext().ensureActive()
-    val failure = Http3StreamException(Http3Violation.PeerStreamDeadlineExpired(stream.streamId, deadline, cause))
+    val failure = Http3StreamException(Http3Violation.PeerStreamDeadlineExpired(stream.streamId.toHttp3StreamId(), deadline, cause))
     stream.resetQuietly(failure.errorCode)
     return failure
 }

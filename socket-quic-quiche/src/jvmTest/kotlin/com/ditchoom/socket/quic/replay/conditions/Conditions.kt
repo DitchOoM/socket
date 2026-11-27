@@ -29,6 +29,11 @@ internal data class Conditions(
     val echoBytes: Int = PROBE_ECHO_BYTES,
     /** How both ends retransmit their handshake. */
     val handshakePacing: HandshakePacing = HandshakePacing.Adaptive(),
+    /**
+     * When every client address in use goes dark for good, the OS saying nothing: an access point or a NAT that stops
+     * forwarding for the sockets it knows. A socket opened afterwards carries.
+     */
+    val strands: List<Duration> = emptyList(),
 )
 
 /** The walk probe's echo size. */
@@ -125,6 +130,8 @@ internal sealed interface LinkWindow {
         val delay: DelayRange,
         val lossToPeer: PerMille,
         val lossFromPeer: PerMille,
+        /** The share of datagrams delivered twice, the second copy within the window's delay range after the first. */
+        val duplicate: PerMille = PerMille(0),
     ) : LinkWindow
 }
 

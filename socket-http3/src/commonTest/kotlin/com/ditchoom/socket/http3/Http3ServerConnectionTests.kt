@@ -14,11 +14,35 @@ import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.pool.ThreadingMode
 import com.ditchoom.socket.TransportConfig
+import com.ditchoom.socket.http3.codec.HandwrittenHttp3FrameCodec
+import com.ditchoom.socket.http3.codec.Http3ErrorCode
+import com.ditchoom.socket.http3.codec.Http3Frame
+import com.ditchoom.socket.http3.codec.Http3Setting
+import com.ditchoom.socket.http3.codec.Http3SettingId
+import com.ditchoom.socket.http3.codec.Http3StreamException
+import com.ditchoom.socket.http3.codec.Http3StreamId
+import com.ditchoom.socket.http3.codec.Http3StreamType
+import com.ditchoom.socket.http3.codec.Http3Violation
+import com.ditchoom.socket.http3.codec.QpackDecoder
+import com.ditchoom.socket.http3.codec.QpackDecoderInstruction
+import com.ditchoom.socket.http3.codec.QpackDecoderInstructionCodec
+import com.ditchoom.socket.http3.codec.QpackEncoder
+import com.ditchoom.socket.http3.codec.QpackEncoderInstruction
+import com.ditchoom.socket.http3.codec.QpackEncoderInstructionCodec
+import com.ditchoom.socket.http3.codec.QpackFieldSectionCodec
+import com.ditchoom.socket.http3.codec.QpackHeaderField
 import com.ditchoom.socket.quic.QuicByteStream
+import com.ditchoom.socket.quic.QuicCapabilities
 import com.ditchoom.socket.quic.QuicCloseReason
+import com.ditchoom.socket.quic.QuicConnectionIdentity
+import com.ditchoom.socket.quic.QuicConnectionState
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicScope
+import com.ditchoom.socket.quic.QuicSessionId
+import com.ditchoom.socket.quic.QuicStatsRead
 import com.ditchoom.socket.quic.QuicStreamId
+import com.ditchoom.socket.quic.QuicUnreadAtClose
+import com.ditchoom.socket.quic.QuicWireConnectionId
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -209,6 +233,21 @@ class Http3ServerConnectionTests {
     ) : QuicScope,
         CoroutineScope by delegate {
         override val bufferFactory: BufferFactory = BufferFactory.Default
+
+        override val state: kotlinx.coroutines.flow.StateFlow<QuicConnectionState> =
+            kotlinx.coroutines.flow.MutableStateFlow(QuicConnectionState.Established("h3"))
+        override val unreadAtClose: kotlinx.coroutines.flow.StateFlow<QuicUnreadAtClose> =
+            kotlinx.coroutines.flow.MutableStateFlow(QuicUnreadAtClose.ConnectionOpen)
+        override val identity: QuicConnectionIdentity =
+            QuicConnectionIdentity(QuicSessionId("fake"), QuicWireConnectionId.Known("fake"))
+        override val capabilities: QuicCapabilities = QuicCapabilities.None
+
+        override suspend fun stats(): QuicStatsRead = QuicStatsRead.Ended
+
+        override suspend fun close(error: QuicError) {
+            closeErrorCode.complete(0L)
+        }
+
         val closeErrorCode = CompletableDeferred<Long>()
 
         override suspend fun openUniStream(): QuicByteStream = outgoing.removeFirst()
@@ -633,7 +672,11 @@ class Http3ServerConnectionTests {
             val clientEncoder = QpackEncoder(peerMaxCapacity = 4096, peerMaxBlockedStreams = 100) { clientInstructions += it }
             clientEncoder.setCapacity(4096)
             val section =
-                clientEncoder.encodeSection(getPseudoFields + QpackHeaderField("x-after-silence", "applied"), QuicStreamId(0), BufferPool())
+                clientEncoder.encodeSection(
+                    getPseudoFields + QpackHeaderField("x-after-silence", "applied"),
+                    Http3StreamId(0),
+                    BufferPool(),
+                )
             val setCapacity = clientInstructions.first()
             val inserts = clientInstructions.drop(1)
             assertTrue(setCapacity is QpackEncoderInstruction.SetCapacity, "sanity: the encoder announces its capacity first")
@@ -659,7 +702,7 @@ class Http3ServerConnectionTests {
                     silence = 20.seconds,
                     // The client abandoning a section's references (§4.4.2) — nothing for the server to act on
                     // (it has no encoder: the client advertised capacity 0), but the pump must still be reading.
-                    afterSilence = decoderBytes(QpackDecoderInstruction.StreamCancellation(QuicStreamId(0))),
+                    afterSilence = decoderBytes(QpackDecoderInstruction.StreamCancellation(Http3StreamId(0))),
                     stayOpenFor = 1.hours,
                     endsWith = StreamEnding.ConnectionGone(),
                 )
@@ -1046,7 +1089,7 @@ class Http3ServerConnectionTests {
                     clientQpackStream(
                         id = 10,
                         type = Http3StreamType.QPACK_DECODER,
-                        instruction = decoderBytes(QpackDecoderInstruction.SectionAck(QuicStreamId(0))),
+                        instruction = decoderBytes(QpackDecoderInstruction.SectionAck(Http3StreamId(0))),
                     ),
                 )
             },
@@ -1088,7 +1131,7 @@ class Http3ServerConnectionTests {
             val clientEncoder = QpackEncoder(peerMaxCapacity = 4096, peerMaxBlockedStreams = 100) { clientInstructions += it }
             clientEncoder.setCapacity(4096)
             val section =
-                clientEncoder.encodeSection(getPseudoFields + QpackHeaderField("x-dynamic", "referenced"), QuicStreamId(0), BufferPool())
+                clientEncoder.encodeSection(getPseudoFields + QpackHeaderField("x-dynamic", "referenced"), Http3StreamId(0), BufferPool())
             assertTrue(
                 clientInstructions.drop(1).isNotEmpty(),
                 "sanity: the section must reference dynamic-table inserts, or its decode would not block",
@@ -1174,7 +1217,7 @@ class Http3ServerConnectionTests {
             SilentThenSpeakingStream(
                 first = listOf(Http3StreamType.QPACK_DECODER.toInt()),
                 silence = 20.seconds,
-                afterSilence = decoderBytes(QpackDecoderInstruction.StreamCancellation(QuicStreamId(0))),
+                afterSilence = decoderBytes(QpackDecoderInstruction.StreamCancellation(Http3StreamId(0))),
                 endsWith = StreamEnding.ConnectionGone(),
             )
         return runServer(
@@ -1306,7 +1349,7 @@ class Http3ServerConnectionTests {
                 clientQpackStream(
                     id = 10,
                     type = Http3StreamType.QPACK_DECODER,
-                    instruction = decoderBytes(QpackDecoderInstruction.StreamCancellation(QuicStreamId(0))),
+                    instruction = decoderBytes(QpackDecoderInstruction.StreamCancellation(Http3StreamId(0))),
                 ),
             ),
             qpackCapacity = 4096,

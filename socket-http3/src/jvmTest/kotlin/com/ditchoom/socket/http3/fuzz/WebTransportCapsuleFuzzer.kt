@@ -6,9 +6,9 @@ import com.ditchoom.buffer.Default
 import com.ditchoom.buffer.pool.BufferPool
 import com.ditchoom.buffer.pool.ThreadingMode
 import com.ditchoom.buffer.stream.StreamProcessor
-import com.ditchoom.socket.http3.CapsuleParse
-import com.ditchoom.socket.http3.Http3StreamException
-import com.ditchoom.socket.http3.WebTransportWire
+import com.ditchoom.socket.http3.codec.CapsuleParse
+import com.ditchoom.socket.http3.codec.Http3StreamException
+import com.ditchoom.socket.http3.codec.WebTransportWire
 
 /**
  * Coverage-guided **Jazzer** fuzz target over the WebTransport-over-HTTP/3 **Capsule Protocol** parser

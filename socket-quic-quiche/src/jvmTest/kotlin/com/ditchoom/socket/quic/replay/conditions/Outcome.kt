@@ -65,7 +65,28 @@ internal class Replayed(
     val established: List<Duration>,
     /** The path marks of the client's flight recording, on the recording's own clock. */
     val pathMarks: List<PathMarkAt>,
+    /** When each [Workload.Download] was read to its end, on the script's clock. */
+    val downloaded: List<Duration> = emptyList(),
+    /** What the client's silence watch said of its path, each change with when, on the script's clock. */
+    val news: List<PathMarkAt> = emptyList(),
+    /** When each datagram reached the client's socket, on the script's clock. */
+    val clientArrivals: List<Duration> = emptyList(),
+    /** How many datagrams the link delivered twice. */
+    val duplicated: Int = 0,
+    /** Whether each datagram the client sent, in the order of [clientSends], left a socket a move opened. */
+    val clientSendsMoved: List<Boolean> = emptyList(),
+    /** Each read the client's silence watch made of its active path's PTO expiries, on the script's clock. */
+    val probes: List<ProbeRead> = emptyList(),
 ) {
+    /** When the client's path was declared silent, on the script's clock. */
+    fun silentAt(): List<Duration> = news.filter { it.phase == "Silent" }.map { it.at }
+
+    /** How many fresh ports the client's silent path asked for: each opens a socket, so each is one of [moves]. */
+    fun rebinds(): Int = pathMarks.count { it.phase == "Rebind" }
+
+    /** The moves the monitor's news asked for: [moves] less the silence's [rebinds]. */
+    fun routeMoves(): Int = moves - rebinds()
+
     /** How long the first move took from its socket moving to its migration, or nothing if it never migrated. */
     fun moveToMigrated(): Duration? {
         val moved = pathMarks.firstOrNull { it.phase == "Moved" } ?: return null
@@ -79,9 +100,32 @@ internal class Replayed(
     }
 
     fun describe(): String =
-        "${conditions.name}: $outcome, reopens=$reopens, moves=$moves, usable again ${conditions.usableAgain()}, " +
+        "${conditions.name}: $outcome, reopens=$reopens, moves=$moves (rebinds ${rebinds()}), usable again ${conditions.usableAgain()}, " +
             "last echoes ${echoes.takeLast(LAST_ECHOES)}"
 }
+
+/** What the replayed client's application does once its connection is up. */
+internal sealed interface Workload {
+    /** The walk probe's echo, every [Conditions.echoEvery]. */
+    data object Echo : Workload
+
+    /** One request, then [bytes] from the server on the same stream, read while nothing of the client's is in flight. */
+    data class Download(
+        val bytes: Int,
+    ) : Workload
+
+    /** [PROBE_ECHO_BYTES] written every [every], never waiting for an answer and never reading; the server drops them. */
+    data class Writes(
+        val every: Duration,
+    ) : Workload
+}
+
+/** One read of the active path's PTO expiries: quiche's path [index] and its [expiries] so far, [at] on the script's clock. */
+internal data class ProbeRead(
+    val at: Duration,
+    val index: Long,
+    val expiries: Long,
+)
 
 /** A path mark of the client's flight recording: its [phase] and when, on the recording's clock. */
 internal data class PathMarkAt(

@@ -24,6 +24,9 @@
 set -uo pipefail
 
 attempts="${GRADLE_RETRY_ATTEMPTS:-3}"
+# The Gradle to run: the wrapper by default. A job that runs the runner's own `gradle` (setup-gradle's, with
+# no wrapper distribution to download) names it here, so its build is retried the same way.
+gradle_command="${GRADLE_RETRY_COMMAND:-./gradlew}"
 # X's last: BSD mktemp (macOS) only replaces trailing X's.
 log="$(mktemp "${RUNNER_TEMP:-/tmp}/gradle-retry.log.XXXXXX")"
 trap 'rm -f "$log"' EXIT
@@ -55,15 +58,19 @@ transient+="|${plugin_failure}"
 # The portal answers 303 and sends Gradle on to Maven Central, which is where a refusal (403, 429) happens, and
 # Gradle's own message names no status; so the probe follows the redirect and reports the final host's answer.
 # GRADLE_RETRY_PROBE swaps curl out for tests/gradle-retry.test.sh.
+# Both the marker's POM and its jar are probed: with the POM cached, the jar (which exists nowhere, so
+# Gradle keeps only a 24-hour "not found" for it) is the request Gradle makes.
 probe_plugin_portal() {
-  local group name version url
+  local group name version url extension
   sed -n "s/.*could not resolve plugin artifact '\([^']*\)'.*/\1/p" "$log" | sort -u |
     while IFS=: read -r group name version; do
-      url="https://plugins.gradle.org/m2/${group//.//}/${name}/${version}/${name}-${version}.pom"
-      echo "::warning::plugin portal probe for ${group}:${name}:${version}: GET ${url}"
-      ${GRADLE_RETRY_PROBE:-curl} -sSL -o /dev/null --max-time 20 \
-        -w 'status=%{http_code} final=%{url_effective} redirects=%{num_redirects} remote_ip=%{remote_ip} connect=%{time_connect}s total=%{time_total}s\n' "$url" 2>&1 ||
-        echo "::warning::plugin portal probe failed (exit $?)"
+      for extension in pom jar; do
+        url="https://plugins.gradle.org/m2/${group//.//}/${name}/${version}/${name}-${version}.${extension}"
+        echo "::warning::plugin portal probe for ${group}:${name}:${version}: GET ${url}"
+        ${GRADLE_RETRY_PROBE:-curl} -sSL -o /dev/null --max-time 20 \
+          -w 'status=%{http_code} final=%{url_effective} redirects=%{num_redirects} remote_ip=%{remote_ip} connect=%{time_connect}s total=%{time_total}s\n' "$url" 2>&1 ||
+          echo "::warning::plugin portal probe failed (exit $?)"
+      done
     done
 }
 backoff_unit="${GRADLE_RETRY_BACKOFF_SECONDS:-30}"
@@ -77,9 +84,10 @@ fold_status_lines() {
        END { if (NR > 0) print line }' "$1"
 }
 
-# Gradle caches a repository's "not found" answer, so a retry after an unresolved plugin re-asks every
-# repository (--refresh-dependencies) instead of re-reading the first attempt's answer. It also runs with
-# --stacktrace: Gradle puts the cause (the HTTP status, the timeout) only in the stack trace.
+# A retry after an unresolved plugin runs with --stacktrace, where Gradle puts the cause when it reports
+# one. It does not refresh dependencies: Gradle does not cache a failed request, so the retry re-asks for
+# it anyway, and --refresh-dependencies re-asks for every cached module as well (about 90x the requests
+# to configure this build, half of them forwarded to Maven Central).
 # `${extra[@]+...}` keeps bash 3.2 (macOS) happy under `set -u` while the array is empty.
 extra=()
 # Lists what the Gradle cache holds for each plugin the failed build could not resolve, so a cached
@@ -96,7 +104,7 @@ show_cached_plugin_entries() {
 }
 
 for i in $(seq 1 "$attempts"); do
-  if ./gradlew "$@" ${extra[@]+"${extra[@]}"} 2>&1 | tee "$log"; then
+  if "$gradle_command" "$@" ${extra[@]+"${extra[@]}"} 2>&1 | tee "$log"; then
     exit 0
   fi
   # Folded once: piping into `grep -q` under pipefail fails the pipeline when grep exits before awk
@@ -109,7 +117,7 @@ for i in $(seq 1 "$attempts"); do
   if grep -qE "$plugin_failure" <<<"$folded"; then
     probe_plugin_portal
     show_cached_plugin_entries
-    extra=(--refresh-dependencies --stacktrace)
+    extra=(--stacktrace)
   fi
   if [ "$i" -lt "$attempts" ]; then
     backoff=$((i * backoff_unit))

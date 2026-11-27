@@ -8,7 +8,6 @@ import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicOptions
-import com.ditchoom.socket.quic.core.conn.DropWhy
 import com.ditchoom.socket.quic.core.time.RttPrior
 import com.ditchoom.socket.quic.read
 import com.ditchoom.socket.testkit.trace.TraceEvent
@@ -60,26 +59,7 @@ class CoreMoveBackVirtualTests {
             assertEquals(emptyList(), serverDrops, "the server had a socket for every datagram it wrote to its peer")
         }
 
-    @Test
-    fun whatQuicheWritesForThePathTheSocketLeftIsRecordedAsDroppedWithItsAddress() =
-        VirtualPair.with(options) { pair ->
-            val serverSide = pair.accept()
-            launch { runCatching { while (true) echoOne(serverSide) } }
-            val left = pair.clientPort()
-            move(pair)
-            pair.runUntil { pair.clientPort() != left }
-            // Written while the new path is probed, for the path quiche is still active on, whose socket is gone.
-            var echoed = 0
-            launch { echoed = echo(pair) }
-            pair.runUntil(within = 5.seconds) { echoed > 0 }
-            assertEquals(PAYLOAD, echoed, "what was dropped was resent from the new path")
-            var drops = emptyList<TraceEvent.Drop>()
-            launch { drops = flight(pair).filterIsInstance<TraceEvent.Drop>() }
-            pair.runUntil { drops.isNotEmpty() }
-            assertTrue(drops.all { it.type == DropWhy.NoSocketForPath.type && it.message.contains(" address 4:$left:") }, "$drops")
-        }
-
-    private fun move(pair: VirtualPair) = pair.client.parts.migrate(ANY, RttPrior.CONFIGURED)
+    private fun move(pair: VirtualPair) = pair.client.parts.migrate(ANY, RttPrior.CONFIGURED, pair.freshNetwork())
 
     private suspend fun flight(pair: VirtualPair): List<TraceEvent> = flight(pair.client.connection)
 

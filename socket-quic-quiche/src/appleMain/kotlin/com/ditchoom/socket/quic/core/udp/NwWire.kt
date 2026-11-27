@@ -58,16 +58,21 @@ internal class NwWire(
     /** Arms the first receive, once the connection is ready. */
     fun start() = receiveOne()
 
-    fun send(batch: SendBatch): SendBatchResult {
+    /** Sends the [count] pending datagrams of [batch] from its [skip]th on; a partial answer counts from [skip]. */
+    fun send(
+        batch: SendBatch,
+        skip: Int,
+        count: Int,
+    ): SendBatchResult {
         when (life.view()) {
             is NwState.Ended -> return SendBatchResult.Partial(0, UdpError.SocketClosed)
             is NwState.Ready, is NwState.Starting -> Unit
         }
-        val pending = batch.pending
+        val pending = count
         var handed = 0
         connection.batch {
             while (handed < pending && inFlight.incrementAndFetch() <= MAX_IN_FLIGHT) {
-                sendOne(batch.storage.address + batch.offsetOf(handed), batch.lengthOf(handed))
+                sendOne(batch.storage.address + batch.offsetOf(skip + handed), batch.lengthOf(skip + handed))
                 handed++
             }
         }

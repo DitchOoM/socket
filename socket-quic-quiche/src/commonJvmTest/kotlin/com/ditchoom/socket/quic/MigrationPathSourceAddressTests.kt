@@ -12,6 +12,9 @@ import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
+/** The receive buffer the sockets are opened with: one datagram. */
+private const val RECEIVE_BUFFER_SIZE = 1350
+
 /**
  * A migrating connection must be able to open **many** paths to the same peer.
  *
@@ -124,12 +127,12 @@ class MigrationPathSourceAddressTests {
         }
 
     private fun factoryFor(peer: SocketAddress) =
-        UdpSocketChannelFactory(
+        DriverUdpChannelFactory(
             peer = peer,
             codec = SocketAddressCodec(hostOsSockAddrLayout()),
             bufferFactory = BufferFactory.Default,
             recvBufferFactory = BufferFactory.Default,
-            receiveBufferSize = QuicheDriver.MAX_DATAGRAM_SIZE,
+            receiveBufferSize = RECEIVE_BUFFER_SIZE,
             localEndpointSupport = LocalEndpointSupport.Bindable,
         )
 

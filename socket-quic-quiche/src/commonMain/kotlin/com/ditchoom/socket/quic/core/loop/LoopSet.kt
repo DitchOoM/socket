@@ -4,7 +4,6 @@ package com.ditchoom.socket.quic.core.loop
 
 import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.socket.quic.QuicheApi
-import com.ditchoom.socket.quic.SocketRefusal
 import com.ditchoom.socket.quic.core.conn.ClientSession
 import com.ditchoom.socket.quic.core.conn.FlightArena
 import com.ditchoom.socket.quic.core.conn.LoopMemory
@@ -19,6 +18,13 @@ import com.ditchoom.socket.quic.core.ready.PollerOpened
 import com.ditchoom.socket.quic.core.ready.jdkPoller
 import com.ditchoom.socket.quic.core.ready.netStackOfThisRuntime
 import com.ditchoom.socket.quic.core.sched.CallerSend
+import com.ditchoom.socket.quic.core.sched.HandlerPool
+import com.ditchoom.socket.quic.core.sched.HandlerThreads
+import com.ditchoom.socket.quic.core.sched.PoolSlot
+import com.ditchoom.socket.quic.core.sched.SendRule
+import com.ditchoom.socket.quic.core.sched.callerLanesOf
+import com.ditchoom.socket.quic.core.sched.laneCount
+import com.ditchoom.socket.quic.core.sched.sendRuleOfThisRuntime
 import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.MonotonicClock
 import com.ditchoom.socket.quic.core.time.QuicheTime
@@ -32,26 +38,8 @@ import com.ditchoom.socket.quic.core.udp.ReceiveBuffer
 import com.ditchoom.socket.quic.core.udp.SendBatch
 import kotlinx.coroutines.Runnable
 import kotlin.concurrent.atomics.AtomicArray
-import kotlin.concurrent.atomics.AtomicInt
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
-import kotlin.concurrent.atomics.fetchAndIncrement
-
-/** What [LoopSet.place] answers. */
-internal sealed interface Placement {
-    class Placed(
-        val running: RunningLoop,
-    ) : Placement
-
-    data object SetClosed : Placement
-
-    /** The factory makes memory a JDK socket cannot read into. */
-    data object NotJdkMemory : Placement
-
-    /** The native stack could not open the loop's poller. */
-    class PollerRefused(
-        val refusal: SocketRefusal,
-    ) : Placement
-}
+import kotlin.time.Duration
 
 private sealed interface Slot {
     data object Unstarted : Slot
@@ -76,8 +64,17 @@ internal class LoopSet(
     private val flightArenaBytes: Int = LoopMemory.ARENA_BYTES,
     /** The stack every loop of this set and every socket on them use. */
     val stack: NetStack = netStackOfThisRuntime,
+    /** Which threads send on this set's sockets. */
+    private val sends: SendRule = sendRuleOfThisRuntime,
+    /** A handler step that holds a thread of the set's pool longer than this is reported, and only reported. */
+    handlerStallBound: Duration = HandlerPool.DEFAULT_STALL_BOUND,
+    /** Starts a loop's thread. */
+    private val starter: (Loop, String) -> LoopStart = ::startLoop,
 ) {
     private val slots = AtomicArray(Array<Slot>(size) { Slot.Unstarted })
+
+    /** The threads that run handlers of this set's connections, started by the first; stopped with the set. */
+    val handlers = PoolSlot(HandlerThreads.Own(HandlerPool.CLIENT_THREADS), HANDLER_THREAD_PREFIX, handlerStallBound)
 
     /** Any thread: the loop for the next connection, counted against it, started if it had not started. */
     fun place(
@@ -138,6 +135,7 @@ internal class LoopSet(
                 is Slot.Unstarted, is Slot.Closed -> Unit
             }
         }
+        handlers.stop()
     }
 
     private fun start(
@@ -151,7 +149,7 @@ internal class LoopSet(
         val buffers =
             List(limits.maxDatagrams) { ReceiveBuffer(it, memory.need(MAX_DATAGRAM) { return memory.freed(Placement.NotJdkMemory) }) }
         val sendBytes = memory.need(SEND_BYTES) { return memory.freed(Placement.NotJdkMemory) }
-        val laneBytes = List(LOOP_LANES) { memory.need(LANE_BYTES) { return memory.freed(Placement.NotJdkMemory) } }
+        val laneBytes = List(sends.laneCount(LOOP_LANES)) { memory.need(LANE_BYTES) { return memory.freed(Placement.NotJdkMemory) } }
         val io =
             when (stack) {
                 is NetStack.Jdk ->
@@ -163,7 +161,7 @@ internal class LoopSet(
                     LoopIo.Native(
                         stack.shim,
                         memory.need(NativeIo.RECV_RECORD * NativeIo.MAX_RECEIVE) { return memory.freed(Placement.NotJdkMemory) },
-                        List(1 + LOOP_LANES) {
+                        List(1 + laneBytes.size) {
                             val datagrams = if (it == 0) SEND_LIMITS.maxDatagrams else LANE_LIMITS.maxDatagrams
                             memory.need(NativeIo.SEND_RECORD * datagrams) { return memory.freed(Placement.NotJdkMemory) }
                         },
@@ -218,18 +216,31 @@ internal class LoopSet(
                 hold = hold,
                 waits = waitsOf(stack),
                 out = out,
-                lanes = FixedPool(LOOP_LANES) { CallerSend(it, SendBatch(laneBytes[it], LANE_LIMITS, lane = it + 1)) },
+                lanes = callerLanesOf(laneBytes.size) { CallerSend(it, SendBatch(laneBytes[it], LANE_LIMITS, lane = it + 1)) },
                 sessions = FixedPool(sessionBytes.size) { SessionScratch(it, sessionBytes[it]) },
+                handlers = handlers,
             )
-        if (!slots.compareAndSetAt(index, seen, Slot.Running(running))) {
+        val taken = Slot.Running(running)
+        if (!slots.compareAndSetAt(index, seen, taken)) {
             loop.close(Runnable { })
-            startLoop(loop, name)
+            begin(loop, name)
             return place(factory, api)
         }
         loop.connections.increment()
-        startLoop(loop, name)
-        return Placement.Placed(running)
+        return when (val started = begin(loop, name)) {
+            is LoopStart.Started -> Placement.Placed(running)
+            is LoopStart.Refused -> {
+                slots.compareAndSetAt(index, taken, Slot.Unstarted)
+                Placement.ThreadRefused(started.thrown)
+            }
+        }
     }
+
+    /** Starts [loop]'s thread; a thread the platform refused never runs the loop, so the loop is stopped here and frees what it holds. */
+    private fun begin(
+        loop: Loop,
+        name: String,
+    ): LoopStart = starter(loop, name).also { if (it is LoopStart.Refused) loop.stopHere() }
 
     companion object {
         /** The loops every client connection shares unless it is given a set of its own. */
@@ -237,6 +248,9 @@ internal class LoopSet(
 
         /** The prefix of every client loop thread's name; the loop's own number follows. */
         const val THREAD_PREFIX = "quic-core-client"
+
+        /** The prefix of every client handler thread's name. */
+        const val HANDLER_THREAD_PREFIX = "quic-core-client-handler"
     }
 }
 
@@ -246,14 +260,6 @@ internal fun waitsOf(stack: NetStack): WaitResolution =
         is NetStack.Jdk -> stack.waits
         is NetStack.Native -> stack.waits
     }
-
-/** Numbers loops, so each loop's turns are its own in a connection's owner word. */
-@Published
-internal object LoopIds {
-    private val sequence = AtomicInt(1)
-
-    fun next(): Int = sequence.fetchAndIncrement()
-}
 
 /** The number of loops [LoopSet.shared] spreads connections over. */
 internal const val DEFAULT_CLIENT_LOOPS = 2

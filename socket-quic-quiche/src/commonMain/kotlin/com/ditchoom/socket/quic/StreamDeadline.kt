@@ -66,7 +66,16 @@ internal suspend fun <T> withDeadlineOn(
     val nanos = timeout.inWholeNanoseconds
     if (!timeout.isFinite() || nanos >= NEVER_NANOS) return coroutineScope(block)
     val placement = currentCoroutineContext().boundPlacement()
-    val bound = StreamBound(timer.queue, timer.dueAfter(nanos))
+    // A bound on a scheduler of the caller's is never published, so it is made on a queue of its own: on the timer's
+    // it would be counted there as held, and its disarm as owed a sweep, for a node the timer thread never sees.
+    val bound =
+        StreamBound(
+            when (placement) {
+                BoundPlacement.OnTheTimer -> timer.queue
+                is BoundPlacement.OnAScheduler -> DeadlineQueue()
+            },
+            timer.dueAfter(nanos),
+        )
     return try {
         coroutineScope {
             bound.bind(this)

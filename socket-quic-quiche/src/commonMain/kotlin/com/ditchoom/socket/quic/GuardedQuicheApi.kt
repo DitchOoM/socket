@@ -131,6 +131,21 @@ internal class GuardedQuicheApi(
         return delegate.connDgramRecv(conn, buf, bufLen)
     }
 
+    override fun connDgramPurgeOutgoing(conn: QuicheConn): Int {
+        guard.assertOnLoop(LoopSite.Quiche)
+        return delegate.connDgramPurgeOutgoing(conn)
+    }
+
+    override fun connDgramSendQueueLen(conn: QuicheConn): Int {
+        guard.assertOnLoop(LoopSite.Quiche)
+        return delegate.connDgramSendQueueLen(conn)
+    }
+
+    override fun connDgramRecvQueueLen(conn: QuicheConn): Int {
+        guard.assertOnLoop(LoopSite.Quiche)
+        return delegate.connDgramRecvQueueLen(conn)
+    }
+
     override fun hasReadableDgram(conn: QuicheConn): Boolean {
         guard.assertOnLoop(LoopSite.Quiche)
         return delegate.hasReadableDgram(conn)
@@ -197,6 +212,11 @@ internal class GuardedQuicheApi(
     override fun connEarlyDataReason(conn: QuicheConn): Int {
         guard.assertOnLoop(LoopSite.Quiche)
         return delegate.connEarlyDataReason(conn)
+    }
+
+    override fun connResetStreamsOnEarlyDataReject(conn: QuicheConn) {
+        guard.assertOnLoop(LoopSite.Quiche)
+        delegate.connResetStreamsOnEarlyDataReject(conn)
     }
 
     override fun connStreamDataUnacknowledged(conn: QuicheConn): Boolean {
@@ -556,5 +576,10 @@ internal class GuardedQuicheApi(
     override fun connActivePathRttNanos(conn: QuicheConn): Long {
         guard.assertOnLoop(LoopSite.Quiche)
         return delegate.connActivePathRttNanos(conn)
+    }
+
+    override fun connActivePathProbes(conn: QuicheConn): Long {
+        guard.assertOnLoop(LoopSite.Quiche)
+        return delegate.connActivePathProbes(conn)
     }
 }

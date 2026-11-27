@@ -9,11 +9,13 @@ import com.ditchoom.socket.quic.QuichePathEventType
 import com.ditchoom.socket.quic.QuicheRecvInfo
 import com.ditchoom.socket.quic.ReplySource
 import com.ditchoom.socket.quic.SendTarget
+import com.ditchoom.socket.quic.core.life.PeerAddress
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.life.RetiredId
 import com.ditchoom.socket.quic.core.life.SpareId
 import com.ditchoom.socket.quic.core.observe.Confined
 import com.ditchoom.socket.quic.core.observe.Published
+import com.ditchoom.socket.quic.core.udp.SocketTicket
 import com.ditchoom.socket.quic.decodePathKey
 import com.ditchoom.socket.quic.encodeToNative
 import kotlin.concurrent.atomics.AtomicInt
@@ -100,7 +102,7 @@ internal class ServerPaths(
     val retired: IdsRetired,
     private val free: (QuicheRecvInfo, Made) -> Unit,
 ) {
-    private val firstTo = Outgoing.To(first.target)
+    private val firstTo = Outgoing.To(first.target, SocketTicket.FIRST)
     private val fixed = Sorting.Fixed(firstTo)
     private val peers = ArrayList<PeerAddr>(1)
     private var events: EventMemory = EventMemory.None
@@ -130,7 +132,7 @@ internal class ServerPaths(
         if (peers.size == MAX_PEERS && !evictOne()) return RecvFrom.TooManyAddresses
         val sockAddr = from.encodeToNative(factory)
         val recvInfo = q.api.recvInfoNew(sockAddr.address, sockAddr.length, first.local.address, first.local.length)
-        val target = Outgoing.To(SendTarget.ServerReply(to = from, from = ReplySource.Recorded(localKey)))
+        val target = Outgoing.To(SendTarget.ServerReply(to = from, from = ReplySource.Recorded(localKey)), SocketTicket.FIRST)
         val peer = PeerAddr(from, q.api.decodePathKey(sockAddr.address), recvInfo, target, Made.Here(sockAddr))
         peer.checking(PeerCheck.Validating)
         peers.add(peer)
@@ -174,8 +176,8 @@ internal class ServerPaths(
         while (true) {
             val type =
                 when (val news = scratch.next(q)) {
-                    is PathNews.Event -> news.type
-                    is PathNews.Drained -> return
+                    is EventNext.Event -> news.type
+                    is EventNext.Drained -> return
                 }
             val settles =
                 type == QuichePathEventType.Validated || type == QuichePathEventType.FailedValidation || type == QuichePathEventType.Closed
@@ -206,6 +208,9 @@ internal class ServerPaths(
         }
         return false
     }
+
+    /** Whether the peer's address is validated: not while a new address of its is (RFC 9000 §8.1, §9.3). */
+    fun address(): PeerAddress = if (validating()) PeerAddress.Unvalidated else PeerAddress.Validated
 
     private fun validating(): Boolean {
         for (i in peers.indices) if (peers[i].check == PeerCheck.Validating) return true

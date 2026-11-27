@@ -194,7 +194,7 @@ class QuicMigrationLoopbackTests {
                     for (j in 0 until take) acc[got + j] = chunk.readByte()
                     take
                 }
-            if (resp !is ScopedRead.Data) return "no_data"
+            if (resp !is ScopedReadResult.Data) return "no_data"
             got += resp.value
         }
         return acc.decodeToString()
@@ -230,7 +230,7 @@ class QuicMigrationLoopbackTests {
                             connections {
                                 val stream = acceptStream()
                                 while (true) {
-                                    if (stream.read(8.seconds) { stream.write(it, 5.seconds) } !is ScopedRead.Data) break
+                                    if (stream.read(8.seconds) { stream.write(it, 5.seconds) } !is ScopedReadResult.Data) break
                                 }
                                 stream.close()
                             }
@@ -307,7 +307,7 @@ class QuicMigrationLoopbackTests {
                                     while (true) {
                                         // Echo inside the read scope: write is zero-copy and takes no
                                         // ownership, the scope releases the read buffer on exit (#538).
-                                        if (stream.read(8.seconds) { stream.write(it, 5.seconds) } !is ScopedRead.Data) break
+                                        if (stream.read(8.seconds) { stream.write(it, 5.seconds) } !is ScopedReadResult.Data) break
                                     }
                                     stream.close()
                                 }
@@ -353,7 +353,7 @@ class QuicMigrationLoopbackTests {
                     for (j in 0 until take) acc[got + j] = chunk.readByte()
                     take to chunk.remaining()
                 }
-            assertTrue(resp is ScopedRead.Data, "stream ended early after $got/${payload.size} bytes")
+            assertTrue(resp is ScopedReadResult.Data, "stream ended early after $got/${payload.size} bytes")
             val (take, leftOver) = resp.value
             got += take
             if (got == payload.size && leftOver > 0) {

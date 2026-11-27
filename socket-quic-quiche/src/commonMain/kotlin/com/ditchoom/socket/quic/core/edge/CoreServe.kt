@@ -15,12 +15,17 @@ import com.ditchoom.socket.quic.core.demux.Demux
 import com.ditchoom.socket.quic.core.demux.ServerConfig
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.loop.Loop
+import com.ditchoom.socket.quic.core.loop.LoopStart
+import com.ditchoom.socket.quic.core.loop.startLoop
 import com.ditchoom.socket.quic.core.observe.Published
 import com.ditchoom.socket.quic.core.observe.ServerCounts
 import com.ditchoom.socket.quic.core.ready.NetStack
 import com.ditchoom.socket.quic.core.ready.netStackOfThisRuntime
+import com.ditchoom.socket.quic.core.sched.HandlerPool
 import com.ditchoom.socket.quic.core.sched.LoopPort
 import com.ditchoom.socket.quic.core.sched.LoopWork
+import com.ditchoom.socket.quic.core.sched.SendRule
+import com.ditchoom.socket.quic.core.sched.sendRuleOfThisRuntime
 import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.MonotonicClock
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
@@ -28,6 +33,7 @@ import com.ditchoom.socket.quic.core.udp.SocketBuffers
 import com.ditchoom.socket.quic.core.udp.SocketReport
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.ChannelResult
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.consumeAsFlow
 import kotlinx.coroutines.withContext
@@ -58,21 +64,33 @@ internal class CoreServer(
     /** The socket's granted buffer sizes, and its drop count on demand. */
     val socket: SocketReport,
     private val stopped: CompletableDeferred<Unit>,
+    /** The threads its connections' application code runs on. */
+    val handlers: HandlerPool,
+    /** Whose socket the server reads: its close waits until a lent one is free again. */
+    private val hold: ChannelHold = ChannelHold.Owned,
 ) {
     private val closing = CloseCell(ShutServer(parts, stopped))
 
-    /** The next established connection; a closed-channel exception once the server stopped. */
+    /**
+     * The next established connection; a closed-channel exception once the server stopped. Each connection is offered from
+     * its own lane of the server's pool, so connections are accepted in an order that may differ from the one they were
+     * established in.
+     */
     suspend fun accept(): CoreConnection = accepted.receive()
+
+    /** The next established connection, or the channel's closed result once the server stopped. */
+    suspend fun next(): ChannelResult<CoreConnection> = accepted.receiveCatching()
 
     fun connections(): Flow<CoreConnection> = accepted.consumeAsFlow()
 
     /**
      * Stops accepting, closes every connection with its CONNECTION_CLOSE sent, and returns once the loop has stopped and
-     * closed its socket. The loop owns the socket, so nothing here waits for a receive.
+     * closed its socket; a lent channel is free again by then, so the next serve or connect on it succeeds at once.
      */
     suspend fun close() {
         closing.begin(loop.port)
         stopped.await()
+        hold.letGo()
     }
 }
 
@@ -125,10 +143,71 @@ internal suspend fun coreServe(
     batching: UdpBatching = options.udpBatching,
     datagramSize: DatagramSize = DatagramSize.Probed,
     mismatch: MismatchResponse = MismatchResponse.Unpaced,
+    sends: SendRule = sendRuleOfThisRuntime,
+    starter: (Loop, String) -> LoopStart = ::startLoop,
 ): CoreServer =
-    withContext(setupLane) {
+    coreServe(
+        ServerPort.Bound(bind),
+        tls,
+        options,
+        factory,
+        api,
+        readPolicy,
+        writePolicy,
+        config,
+        wrapIo,
+        buffers,
+        clock,
+        driver,
+        stack,
+        batching,
+        datagramSize,
+        mismatch,
+        sends,
+        starter,
+    )
+
+/**
+ * Serves on [channel], which the caller lent and keeps: the server reads and writes it, never closes it, and runs with
+ * the options [onLentChannel] gives. [wrapIo] may wrap the channel's batch interface, as [coreServe]'s does.
+ */
+internal suspend fun coreServeLent(
+    channel: LentChannel,
+    tls: QuicTlsConfig,
+    options: QuicOptions,
+    factory: BufferFactory,
+    api: QuicheApi,
+    readPolicy: ReadPolicy,
+    writePolicy: WritePolicy,
+    config: ServerConfig = ServerConfig(),
+    wrapIo: (DatagramBatchIo) -> DatagramBatchIo = { it },
+): CoreServer = coreServe(ServerPort.Lent(channel), tls, options.onLentChannel(), factory, api, readPolicy, writePolicy, config, wrapIo)
+
+private suspend fun coreServe(
+    port: ServerPort,
+    tls: QuicTlsConfig,
+    options: QuicOptions,
+    factory: BufferFactory,
+    api: QuicheApi,
+    readPolicy: ReadPolicy,
+    writePolicy: WritePolicy,
+    config: ServerConfig,
+    wrapIo: (DatagramBatchIo) -> DatagramBatchIo,
+    buffers: SocketBuffers = SocketBuffers.Default,
+    clock: LoopClock = MonotonicClock,
+    driver: LoopDriver = LoopDriver.OwnThread,
+    stack: NetStack = netStackOfThisRuntime,
+    batching: UdpBatching = options.udpBatching,
+    datagramSize: DatagramSize = DatagramSize.Probed,
+    mismatch: MismatchResponse = MismatchResponse.Unpaced,
+    sends: SendRule = sendRuleOfThisRuntime,
+    starter: (Loop, String) -> LoopStart = ::startLoop,
+): CoreServer {
+    // Before the setup lane, a socket or a file: a serve whose option values cannot be honoured opens nothing.
+    verdictOn(options).orRefuse()
+    return withContext(setupLane) {
         ServerSetup(
-            bind,
+            port,
             tls,
             options.sizedBy(datagramSize),
             factory,
@@ -143,8 +222,14 @@ internal suspend fun coreServe(
             stack,
             batching,
             mismatch,
+            sends,
+            starter,
         ).start()
     }
+}
 
 /** The name of the server loop's thread. */
 internal const val SERVER_THREAD = "quic-core-server"
+
+/** The prefix of the names of a server's handler threads; the thread's number follows. */
+internal const val SERVER_HANDLER_THREAD = "quic-core-server-handler"

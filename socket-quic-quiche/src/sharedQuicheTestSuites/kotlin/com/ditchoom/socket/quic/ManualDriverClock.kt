@@ -144,7 +144,7 @@ internal class ManualDriverClock : DriverClock {
      * where the branch suspends inside [withBound] and stays there — this call deadlocks against the very
      * condition the test is setting up. Fire it from its own coroutine in that case
      * (`val firing = async { clock.fireExpectingNoRearm(d) }`) and synchronise on the effect.
-     * Measured while writing `SendStallBoundTests`: inline hangs, detached does not.
+     * Measured: inline hangs, detached does not.
      */
     suspend fun fireExpectingNoRearm(by: Duration) {
         consumeInitialArm()

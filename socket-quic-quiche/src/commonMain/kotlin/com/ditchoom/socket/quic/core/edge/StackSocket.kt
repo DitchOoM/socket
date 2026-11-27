@@ -1,16 +1,22 @@
 package com.ditchoom.socket.quic.core.edge
 
+import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.socket.quic.NativeSocketRefusal
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.UdpBatching
 import com.ditchoom.socket.quic.core.loop.LoopIo
 import com.ditchoom.socket.quic.core.loop.Readiness
+import com.ditchoom.socket.quic.core.loop.SocketOwnership
 import com.ditchoom.socket.quic.core.ready.SocketRef
+import com.ditchoom.socket.quic.core.ready.SocketRefs
+import com.ditchoom.socket.quic.core.ready.notPolledRef
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 import com.ditchoom.socket.quic.core.udp.Granted
 import com.ditchoom.socket.quic.core.udp.GrantedBuffers
 import com.ditchoom.socket.quic.core.udp.GroRequest
+import com.ditchoom.socket.quic.core.udp.IoDrops
+import com.ditchoom.socket.quic.core.udp.LentDrops
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 import com.ditchoom.socket.quic.core.udp.NativeIo
 import com.ditchoom.socket.quic.core.udp.NativeOpened
@@ -18,12 +24,14 @@ import com.ditchoom.socket.quic.core.udp.NativeSocket
 import com.ditchoom.socket.quic.core.udp.PeerKeys
 import com.ditchoom.socket.quic.core.udp.SocketBuffers
 import com.ditchoom.socket.quic.core.udp.SocketPeer
+import com.ditchoom.socket.quic.core.udp.SocketReport
 import com.ditchoom.socket.quic.isWildcard
 
 /**
  * A socket opened for a loop, on that loop's stack: a JDK channel beside the loop's receive views, or a `qnet` socket
- * beside the loop's receive records, or a client's Network.framework connection, which reports its own readiness.
- * Each variant carries what only its own stack has, so a socket of one stack can never be put on a loop of another.
+ * beside the loop's receive records, or a client's Network.framework connection, which reports its own readiness; or a
+ * channel the caller lent, which rides any stack. Each variant carries what only its own stack has, so a socket of one
+ * stack can never be put on a loop of another.
  */
 internal sealed interface StackSocket {
     class Jdk(
@@ -43,7 +51,43 @@ internal sealed interface StackSocket {
         /** The local address the connection's path leaves from. */
         val local: PathKey,
     ) : StackSocket
+
+    /**
+     * A channel the caller lent, on any loop's stack: no poller watches it and the core never closes it. [local] is the
+     * address the caller bound; its io's slots come from [factory], and what it drops is counted in [drops].
+     */
+    class Lent(
+        val channel: LentChannel,
+        val peers: LentPeers,
+        val local: PathKey,
+        val factory: BufferFactory,
+        val drops: LentDrops = LentDrops(),
+    ) : StackSocket
 }
+
+/** This socket's granted buffers, bound to [port], with what the kernel and its own io drop. */
+internal fun StackSocket.report(port: Int): SocketReport = SocketReport(granted(), port, io = ioDrops())
+
+/** Whose this socket is, as its connection's or listener's close and statistics see it. */
+internal fun StackSocket.hold(): ChannelHold =
+    when (this) {
+        is StackSocket.Jdk, is StackSocket.Native, is StackSocket.Network -> ChannelHold.Owned
+        is StackSocket.Lent -> ChannelHold.Lent(channel.claim, drops)
+    }
+
+/** What this socket's own io drops: counted for a lent channel, the kernel's alone otherwise. */
+internal fun StackSocket.ioDrops(): IoDrops =
+    when (this) {
+        is StackSocket.Jdk, is StackSocket.Native, is StackSocket.Network -> IoDrops.Kernel
+        is StackSocket.Lent -> IoDrops.Lent(drops)
+    }
+
+/** Who owns this socket: the loop, or the caller who lent it. */
+internal fun StackSocket.ownership(): SocketOwnership =
+    when (this) {
+        is StackSocket.Jdk, is StackSocket.Native, is StackSocket.Network -> SocketOwnership.Owned
+        is StackSocket.Lent -> SocketOwnership.Lent
+    }
 
 /** Where a socket was bound, and the buffer sizes the operating system granted it. */
 internal class SocketBound(
@@ -56,21 +100,23 @@ internal fun StackSocket.local(): PathKey =
         is StackSocket.Jdk -> bound.local
         is StackSocket.Native -> bound.local
         is StackSocket.Network -> local
+        is StackSocket.Lent -> local
     }
 
 internal fun StackSocket.granted(): Granted =
     when (this) {
         is StackSocket.Jdk -> Granted.Reported(bound.granted)
         is StackSocket.Native -> Granted.Reported(bound.granted)
-        is StackSocket.Network -> Granted.NotReported
+        is StackSocket.Network, is StackSocket.Lent -> Granted.NotReported
     }
 
-/** Closes a socket whose io never reached a loop: a setup that failed before its connection started. */
+/** Closes a socket whose io never reached a loop: a setup that failed before its connection started. A lent one stays open. */
 internal fun StackSocket.close() {
     when (this) {
         is StackSocket.Jdk -> closeJdkSocket(socket)
         is StackSocket.Native -> socket.cell.close { fd -> loop.shim.close(fd) }
         is StackSocket.Network -> closeNwSocket(socket)
+        is StackSocket.Lent -> Unit
     }
 }
 
@@ -78,13 +124,13 @@ internal fun StackSocket.close() {
 internal fun StackSocket.readiness(): Readiness =
     when (this) {
         is StackSocket.Jdk, is StackSocket.Native -> Readiness.Polled
-        is StackSocket.Network -> Readiness.EveryPass
+        is StackSocket.Network, is StackSocket.Lent -> Readiness.EveryPass
     }
 
-/** A socket's batch io and the handle its loop's poller watches. */
+/** A socket's batch io and the handles its loop's poller watches. */
 internal class SocketIo(
     val io: DatagramBatchIo,
-    val ref: SocketRef,
+    val refs: SocketRefs,
 )
 
 /**
@@ -102,9 +148,10 @@ internal fun StackSocket.ioOf(
         is StackSocket.Jdk -> jdkSocketIo(this, sends, maxPeersCached)
         is StackSocket.Native -> {
             val native = NativeIo(loop.shim, socket, loop.sendRecords, loop.receiveRecords, PeerKeys(peerSets))
-            SocketIo(native, descriptorRef(native))
+            SocketIo(native, SocketRefs(descriptorRef(native), secondDescriptorRef(native)))
         }
         is StackSocket.Network -> nwSocketIo(this, wake)
+        is StackSocket.Lent -> SocketIo(LentIo(channel, peers, factory, drops, wake), SocketRefs(notPolledRef(), notPolledRef()))
     }
 
 /**
@@ -188,6 +235,9 @@ internal expect fun jdkSocketIo(
 
 /** The handle the poller watches for a native socket: its descriptor now, read again after a reopen. */
 internal expect fun descriptorRef(io: NativeIo): SocketRef
+
+/** The handle the poller watches for a native socket's second descriptor, read when it is added. */
+internal expect fun secondDescriptorRef(io: NativeIo): SocketRef
 
 /** A client's Network.framework connection: made only on Apple's Kotlin/Native targets. */
 internal expect class NwSocket

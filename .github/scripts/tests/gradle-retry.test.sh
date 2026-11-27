@@ -192,6 +192,8 @@ run "$fixtures/plugin-unresolved" 1
 check "an unresolved settings plugin is retried" 0 2 "$RC" "$N" "$OUT" "transient repository failure"
 check "an unresolved settings plugin probes its portal marker" 0 2 "$RC" "$N" "$OUT" "PROBED https://plugins.gradle.org/m2/com/gradle/develocity/com.gradle.develocity.gradle.plugin/4.3/com.gradle.develocity.gradle.plugin-4.3.pom"
 check "the probe follows the portal's redirect to the host that answers" 0 2 "$RC" "$N" "$OUT" "FLAGS -sSL"
+# A cached marker's metadata needs no request; its jar (which exists nowhere) is what Gradle asks for again.
+check "an unresolved plugin probes its marker jar too" 0 2 "$RC" "$N" "$OUT" "PROBED https://plugins.gradle.org/m2/com/gradle/develocity/com.gradle.develocity.gradle.plugin/4.3/com.gradle.develocity.gradle.plugin-4.3.jar"
 unset GRADLE_RETRY_PROBE
 
 # The retry after an unresolved plugin asks Gradle for the stack trace, which carries the cause.
@@ -206,10 +208,11 @@ EOF
 chmod +x "$tmp/gradlew"
 OUT="$(cd "$tmp" && RUNNER_TEMP="$tmp" GRADLE_RETRY_BACKOFF_SECONDS=0 GRADLE_RETRY_PROBE=true bash "$script" help 2>&1)"
 RC=$?; N="$(cat "$tmp/n")"; rm -rf "$tmp"
-check "the retry after an unresolved plugin refreshes dependencies and runs with --stacktrace" 0 2 "$RC" "$N" "$OUT" "ARGS: help --refresh-dependencies --stacktrace"
+check "the retry after an unresolved plugin runs with --stacktrace" 0 2 "$RC" "$N" "$OUT" "ARGS: help --stacktrace"
 
-# The retry after a plugin failure must re-ask the repositories (--refresh-dependencies); the first
-# attempt must not carry it.
+# No attempt refreshes dependencies: Gradle does not cache a failed request, so a retry re-asks
+# the repository anyway, and --refresh-dependencies would re-ask for every cached module too (619
+# requests instead of 7 to configure this build, 306 of them forwarded to Maven Central).
 run_args() { # <failure-text-file> -> OUT/RC/N; the fake gradle prints its arguments each run
   local text="$1" tmp; tmp="$(mktemp -d)"
   cat >"$tmp/gradlew" <<EOF2
@@ -224,8 +227,8 @@ EOF2
   RC=$?; N="$(cat "$tmp/n")"; rm -rf "$tmp"
 }
 run_args "$fixtures/plugin-unresolved"
-check "the retry after a plugin failure refreshes dependencies" 0 2 "$RC" "$N" "$OUT" "GRADLE-ARGS[2]: help --refresh-dependencies --stacktrace"
-if grep -qF "GRADLE-ARGS[1]: help" <<<"$OUT"; then echo "ok: the first attempt does not refresh"; pass=$((pass + 1)); else echo "FAIL: first attempt args"; indent "$OUT"; fail=$((fail + 1)); fi
+check "the retry after a plugin failure adds only --stacktrace" 0 2 "$RC" "$N" "$OUT" "GRADLE-ARGS[2]: help --stacktrace"
+if grep -qF -- "--refresh-dependencies" <<<"$OUT"; then echo "FAIL: an attempt refreshed dependencies"; indent "$OUT"; fail=$((fail + 1)); else echo "ok: no attempt refreshes dependencies"; pass=$((pass + 1)); fi
 
 # A transient failure whose log is far larger than a pipe buffer still classifies as transient: the
 # match sits on the first line, so a reader that stops there must not turn the rest into a failure.

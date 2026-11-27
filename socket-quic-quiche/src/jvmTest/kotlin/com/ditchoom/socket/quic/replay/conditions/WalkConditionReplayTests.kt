@@ -44,19 +44,19 @@ class WalkConditionReplayTests {
      */
     @Test
     fun aWifiFlapBackWithANewPrivacyAddressMigratesToIt() {
-        survivesTheMoves(pixelWifiFlapCoreV6, moves = 1)
+        survivesTheMoves(pixelWifiFlapCoreV6, moves = 1, rebinds = 0)
     }
 
     /** Samsung, Wi-Fi fading for 12 s until cellular takes the route from another address: the connection moves there. */
     @Test
     fun wifiFadingToCellularMigratesWhenCellularTakesTheRoute() {
-        survivesTheMoves(samsungWifiToCellular, moves = 1)
+        survivesTheMoves(samsungWifiToCellular, moves = 1, rebinds = 2)
     }
 
     /** Samsung, cellular to Wi-Fi with no outage: the connection moves to Wi-Fi's address at once. */
     @Test
     fun cellularToWifiMigratesWhenWifiTakesTheRoute() {
-        survivesTheMoves(samsungCellularToWifi, moves = 1)
+        survivesTheMoves(samsungCellularToWifi, moves = 1, rebinds = 0)
     }
 
     /**
@@ -66,7 +66,7 @@ class WalkConditionReplayTests {
     @Test
     fun aThreeSecondFlapToCellularAndBackMigratesEachWay() {
         val conditions = iphoneWifiCellularFlap
-        val replayed = survivesTheMoves(conditions, moves = 2)
+        val replayed = survivesTheMoves(conditions, moves = 2, rebinds = 0)
         val gap = (replayed.outcome as Outcome.Survived).longestGap
         val bound = conditions.echoEvery + conditions.roundTrip() * 2
         assertTrue(gap <= bound, "an echo waited $gap, over $bound: ${replayed.describe()}")
@@ -79,6 +79,7 @@ class WalkConditionReplayTests {
     private fun survivesTheMoves(
         conditions: Conditions,
         moves: Int,
+        rebinds: Int,
     ): Replayed {
         val twoRoundTrips = conditions.roundTrip() * 2
         val replayed =
@@ -89,7 +90,9 @@ class WalkConditionReplayTests {
                     longestGapAtMost = usableAt(conditions) - disrupted(conditions) + conditions.echoEvery + twoRoundTrips,
                 ),
             )
-        assertEquals(moves, replayed.moves, "the socket moved to each new address once: ${replayed.describe()}")
+        // The silence before the OS spoke asked for a fresh port this many times, each one socket.
+        assertEquals(rebinds, replayed.rebinds(), "the silence's rebinds: ${replayed.describe()}")
+        assertEquals(moves, replayed.routeMoves(), "the socket moved to each new address once: ${replayed.describe()}")
         return replayed
     }
 

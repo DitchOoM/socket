@@ -11,10 +11,8 @@ import com.ditchoom.socket.quic.core.conn.ConnWork
 import com.ditchoom.socket.quic.core.conn.HeldTake
 import com.ditchoom.socket.quic.core.conn.Inside
 import com.ditchoom.socket.quic.core.life.ConnEnd
-import com.ditchoom.socket.quic.core.observe.CallerSide
 import com.ditchoom.socket.quic.core.observe.Confined
 import com.ditchoom.socket.quic.core.stream.InHand
-import com.ditchoom.socket.quic.core.stream.ReadChunk
 import com.ditchoom.socket.quic.core.stream.Retry
 import com.ditchoom.socket.quic.core.stream.Side
 import com.ditchoom.socket.quic.core.stream.StreamEntry
@@ -23,33 +21,11 @@ import com.ditchoom.socket.quic.core.stream.Streams
 import com.ditchoom.socket.quic.core.stream.Waiter
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 import kotlinx.coroutines.currentCoroutineContext
+import kotlin.coroutines.CoroutineContext
 import kotlin.time.Duration
 
 /**
- * The buffer a read holds until it hands it to its caller, already made into the answer the bytes will be:
- * [ReadAnswer.Data]; [None] once handed over or freed.
- */
-internal sealed interface Spare {
-    data object None : Spare
-}
-
-/** How many bytes a stream's next read asks for. Its reader's: a stream has one reader at a time. */
-@CallerSide
-internal class ReadSizing {
-    var chunk: ReadChunk = ReadChunk.Initial
-        private set
-
-    /** A read that [asked] for its chunk got [got] bytes: the next read's size follows [ReadChunk.after]. */
-    fun read(
-        asked: ReadChunk,
-        got: Int,
-    ) {
-        chunk = asked.after(asked.bytes, got)
-    }
-}
-
-/**
- * Reads the next chunk, sized by [sizing], into a buffer the caller's thread takes from [idle] or [factory] when it makes
+ * Reads the next chunk, sized by [streamReads], into a buffer the caller's thread takes from [idle] or [factory] when it makes
  * the read; the caller owns a returned buffer. First runs as work inside the connection, then waits parked on its
  * stream until data, its deadline, its caller's cancellation or the connection's end.
  *
@@ -68,15 +44,15 @@ internal class ReadOp(
     private val conn: Conn,
     private val edge: EdgeState,
     factory: BufferFactory,
-    private val sizing: ReadSizing,
+    private val streamReads: StreamReads,
 ) : ConnWork(),
     Waiter,
     Bounded {
     private val idle = edge.reads
-    private val asked = sizing.chunk
+    private val asked = streamReads.chunk
     private var spare: Spare = idle.take(asked.bytes, factory)
     private var lease: Lease = Lease.None
-    private val hand = Hand<ReadAnswer>()
+    internal val hand = Hand<ReadAnswer>()
 
     // ---- the caller's side ----
 
@@ -88,8 +64,39 @@ internal class ReadOp(
         val context = currentCoroutineContext()
         val answer = hand.await(context) { cancelled() }
         try {
-            if (answer is ReadAnswer.Data) sizing.read(asked, answer.buffer.remaining())
+            when (answer) {
+                is ReadAnswer.Data -> streamReads.read(asked, answer.buffer.remaining())
+                is ReadAnswer.Reset -> streamReads.reset.met(answer.code)
+                is ReadAnswer.End, is ReadAnswer.Failed, is ReadAnswer.Cancelled -> Unit
+            }
             return resultOf(answer, context)
+        } finally {
+            hand.taken()
+            edge.returned(stream)
+        }
+    }
+
+    /**
+     * [answer] with the read's own answer as it is, for a caller that reports failures as values. Inline, so it runs in
+     * its caller's suspend frame and makes none of its own.
+     */
+    suspend inline fun taken(): ReadAnswer {
+        val context = currentCoroutineContext()
+        return took(hand.await(context) { cancelled() }, context)
+    }
+
+    /** The caller, once [answer] landed for its read: the stream's read count moves, and the answer is the caller's. */
+    internal fun took(
+        answer: ReadAnswer,
+        context: CoroutineContext,
+    ): ReadAnswer {
+        try {
+            when (answer) {
+                is ReadAnswer.Data -> streamReads.read(asked, answer.buffer.remaining())
+                is ReadAnswer.Reset -> streamReads.reset.met(answer.code)
+                is ReadAnswer.End, is ReadAnswer.Failed, is ReadAnswer.Cancelled -> Unit
+            }
+            return liveOr(answer, context)
         } finally {
             hand.taken()
             edge.returned(stream)
@@ -99,12 +106,12 @@ internal class ReadOp(
     /** Any thread: whether the caller still has to take bytes this read handed it. */
     override fun inHand(): InHand = if (hand.current() is ReadAnswer.Data) InHand.Yes else InHand.No
 
-    /** The cancelling thread: a read not answered yet is answered Cancelled and handed back to the connection. */
-    private fun cancelled() {
-        when (hand.answer(ReadAnswer.Cancelled)) {
-            Landed.First -> conn.submit(Withdraw(), CallerPlace.HandToLoop)
-            Landed.Late -> Unit
-        }
+    /**
+     * The cancelling thread: a read not answered yet is answered Cancelled and handed back to the connection,
+     * ahead of anything its caller does once it resumes.
+     */
+    internal fun cancelled() {
+        hand.answer(ReadAnswer.Cancelled) { conn.submit(Withdraw(), CallerPlace.HandToLoop) }
     }
 
     // ---- the connection's side, inside ----
@@ -113,7 +120,7 @@ internal class ReadOp(
         guarded(::failed) {
             when (val state = inside.streams.state) {
                 is Streams.Ended -> return connectionEnded(state.end)
-                is Streams.Open -> Unit
+                is Streams.Live -> Unit
             }
             if (hand.landed(ReadAnswer.Cancelled)) return release()
             if (inside.streams.isSpent(stream)) {
@@ -151,7 +158,7 @@ internal class ReadOp(
             when (val held = edge.take(stream)) {
                 is HeldTake.Bytes -> ReadAnswer.Data(held.buffer)
                 is HeldTake.Finished -> ReadAnswer.End
-                is HeldTake.Reset -> ReadAnswer.Reset
+                is HeldTake.Reset -> ReadAnswer.Reset(held.code)
                 is HeldTake.Closed -> ReadAnswer.Failed(Raised.ConnEnded(end), QuicCloseCircumstance.Ended)
             },
         )
@@ -193,9 +200,9 @@ internal class ReadOp(
                     buffer.freeNativeMemory()
                     settle(ReadAnswer.Failed(Raised.ConnEnded(ConnEnd.Released), QuicCloseCircumstance.Released))
                 },
-                reset = {
-                    entry.receiveEnded(Side.Reset)
-                    discard(ReadAnswer.Reset)
+                reset = { code ->
+                    entry.receiveEnded(Side.Reset(code))
+                    discard(ReadAnswer.Reset(code))
                 },
                 error = { code ->
                     buffer.freeNativeMemory()

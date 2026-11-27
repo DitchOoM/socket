@@ -1,5 +1,8 @@
 package com.ditchoom.socket.quic.core.life
 
+import com.ditchoom.socket.quic.QuicAccessDenial
+import com.ditchoom.socket.quic.QuicEarlyDataChange
+import com.ditchoom.socket.quic.QuicEarlyDataRejection
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.core.udp.SendRefusal
 import com.ditchoom.socket.quic.core.udp.SocketFault
@@ -29,6 +32,11 @@ internal sealed interface ConnEnd {
     class HandshakeSendRefused(
         val progress: HandshakeProgress,
         val refusal: SendRefusal,
+    ) : ConnEnd
+
+    /** A client's handshake ended at once because the system withholds network access from the app, as [denial] says. */
+    class AccessDenied(
+        val denial: QuicAccessDenial,
     ) : ConnEnd
 
     class SocketFailed(
@@ -71,4 +79,10 @@ internal sealed interface ConnEnd {
 
     /** No path the connection could send on was left: every one it had failed, or none it moved to was validated. */
     data object NoUsablePath : ConnEnd
+
+    /** A client's server rejected its 0-RTT for [reason] and changed what its early bytes relied on ([change]): not replayed. */
+    class EarlyDataRejected(
+        val reason: QuicEarlyDataRejection,
+        val change: QuicEarlyDataChange,
+    ) : ConnEnd
 }

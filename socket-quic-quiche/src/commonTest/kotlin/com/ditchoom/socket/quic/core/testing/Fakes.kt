@@ -19,8 +19,8 @@ import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.udp.Addressed
 import com.ditchoom.socket.quic.core.udp.BatchCapability
 import com.ditchoom.socket.quic.core.udp.BatchLimits
+import com.ditchoom.socket.quic.core.udp.Beside
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
-import com.ditchoom.socket.quic.core.udp.Moved
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.ReceiveBatchResult
@@ -29,6 +29,7 @@ import com.ditchoom.socket.quic.core.udp.SendBatch
 import com.ditchoom.socket.quic.core.udp.SendBatchResult
 import com.ditchoom.socket.quic.core.udp.SocketClosed
 import com.ditchoom.socket.quic.core.udp.SocketProbe
+import com.ditchoom.socket.quic.core.udp.SocketTicket
 import com.ditchoom.socket.quic.network
 
 /** A [Poller] that only counts the wakes it is asked for. */
@@ -91,7 +92,16 @@ internal class FakeIo : DatagramBatchIo {
         return onSend(batch.pending)
     }
 
-    override fun receive(into: ReceiveBatch): ReceiveBatchResult = ReceiveBatchResult.Nothing
+    /** What a read of the carrying socket throws, if anything; the test may change it. */
+    var receiveThrows: Exception? = null
+    var receives = 0
+        private set
+
+    override fun receive(into: ReceiveBatch): ReceiveBatchResult {
+        receives++
+        receiveThrows?.let { throw it }
+        return ReceiveBatchResult.Nothing
+    }
 
     override fun probe(): SocketProbe = probeAnswer
 
@@ -105,16 +115,79 @@ internal class FakeIo : DatagramBatchIo {
         return reopenAnswer
     }
 
-    /** What [moveTo] answers; the test may change it. */
-    var moveAnswer: Moved = Moved.Unsupported
+    /** What [openBeside] answers; the test may change it. */
+    var besideAnswer: Beside = Beside.Unsupported
     val movedTo = ArrayList<PathKey>()
 
-    override fun moveTo(bind: PathKey): Moved {
+    /** The ticket each [openBeside] named, in order. */
+    val openedAs = ArrayList<SocketTicket>()
+
+    /** What [settleBeside] answers while a socket is made; the test may change it. */
+    var settleAnswer: Beside = Beside.Unsupported
+
+    /** How many times the second socket, open or being made, was closed. */
+    var secondsClosed = 0
+        private set
+
+    override fun openBeside(
+        bind: PathKey,
+        ticket: SocketTicket,
+    ): Beside {
         movedTo += bind
-        return moveAnswer
+        openedAs += ticket
+        return besideAnswer
     }
 
-    override fun close(): SocketClosed = SocketClosed
+    /** What [settleBeside], [closeSecond] and [receiveSecond] throw, if anything; the test may change them. */
+    var settleThrows: Exception? = null
+    var closeSecondThrows: Exception? = null
+    var secondReceiveThrows: Exception? = null
+
+    override fun settleBeside(): Beside {
+        settleThrows?.let { throw it }
+        return settleAnswer
+    }
+
+    override fun closeSecond() {
+        secondsClosed++
+        closeSecondThrows?.let { throw it }
+    }
+
+    /** What [receiveSecond] answers; the test may change it. */
+    var secondReceiveAnswer: ReceiveBatchResult = ReceiveBatchResult.Nothing
+    var secondReceives = 0
+        private set
+
+    override fun receiveSecond(into: ReceiveBatch): ReceiveBatchResult {
+        secondReceives++
+        secondReceiveThrows?.let { throw it }
+        return secondReceiveAnswer
+    }
+
+    /** What [reopenSecond] answers; the test may change it. */
+    var reopenSecondAnswer: Reopened = Reopened.SameEndpoint
+    var secondReopens = 0
+        private set
+
+    override fun reopenSecond(): Reopened {
+        secondReopens++
+        return reopenSecondAnswer
+    }
+
+    var promotes = 0
+        private set
+
+    override fun promote() {
+        promotes++
+    }
+
+    var closes = 0
+        private set
+
+    override fun close(): SocketClosed {
+        closes++
+        return SocketClosed
+    }
 }
 
 /** Loop work that records what happened to it. */

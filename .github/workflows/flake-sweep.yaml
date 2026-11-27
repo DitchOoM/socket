@@ -52,7 +52,7 @@ jobs:
       ref: main
       iterations: ${{ inputs.iterations || '20' }}
       gradle_task: ":socket-quic-quiche:jvmTest"
-      test_filter: "com.ditchoom.socket.quic.QuicLocalServerTests"
+      test_filter: "com.ditchoom.socket.quic.core.demux.CoreServerEchoTests"
 
   migration-sim:
     name: "Migration simulator"
@@ -96,7 +96,7 @@ jobs:
           # says so rather than reading as 0/0.
           LEGS: |
             JvmFailedProbeConnectionIdTests (#583)|${{ needs.failed-probe-cid.result }}|${{ needs.failed-probe-cid.outputs.fails }}|${{ needs.failed-probe-cid.outputs.total }}
-            QuicLocalServerTests (#356)|${{ needs.local-server.result }}|${{ needs.local-server.outputs.fails }}|${{ needs.local-server.outputs.total }}
+            CoreServerEchoTests (#356)|${{ needs.local-server.result }}|${{ needs.local-server.outputs.fails }}|${{ needs.local-server.outputs.total }}
             JvmMigrationSimTests|${{ needs.migration-sim.result }}|${{ needs.migration-sim.outputs.fails }}|${{ needs.migration-sim.outputs.total }}
             JvmHttp3LoopbackTest (#450)|${{ needs.http3-loopback.result }}|${{ needs.http3-loopback.outputs.fails }}|${{ needs.http3-loopback.outputs.total }}
             JvmWebTransportTest (#292/#367)|${{ needs.webtransport.result }}|${{ needs.webtransport.outputs.fails }}|${{ needs.webtransport.outputs.total }}

@@ -23,6 +23,20 @@ import platform.Network.nw_connection_batch
 import platform.Network.nw_connection_t
 import platform.posix.memcpy
 
+/** One state change of a Network.framework connection, as its state handler reports it. */
+internal class NwChange(
+    /** `nw_connection_state_t`. */
+    val state: Int,
+    /** Network.framework's error domain of the change's error, none when it carries none. */
+    val domain: Int,
+    /** The error's code in [domain]. */
+    val code: Int,
+    /** `nw_path_status_t` of the connection's current path. */
+    val pathStatus: Int,
+    /** `nw_path_unsatisfied_reason_t` of that path. */
+    val unsatisfied: Int,
+)
+
 /**
  * A client's Network.framework UDP connection through the `NwUdp` helpers of `:socket-udp`: plain UDP, no DTLS, on
  * Network.framework's own queue. The C surface's absent values end here; what leaves is typed.
@@ -30,9 +44,9 @@ import platform.posix.memcpy
 internal class NwConnection private constructor(
     private val conn: nw_connection_t,
 ) {
-    /** Starts it; [changed] is told every state change: `nw_connection_state_t`, error domain, error code, path status. */
-    fun start(changed: (Int, Int, Int, Int) -> Unit) {
-        nw_udp_set_state_handler(conn) { state, domain, code, _, path, _, _ -> changed(state, domain, code, path) }
+    /** Starts it; [changed] is told every state change. */
+    fun start(changed: (NwChange) -> Unit) {
+        nw_udp_set_state_handler(conn) { state, domain, code, _, path, reason, _ -> changed(NwChange(state, domain, code, path, reason)) }
         nw_udp_start(conn)
     }
 

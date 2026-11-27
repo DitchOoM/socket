@@ -57,5 +57,42 @@ check "a run stopped before the inputs arrived says so" \
   "of 400s: 0-400s taking the lane inputs, not yet taken" \
   "$(test_run_time_split "" 400)"
 
+# A stream that died is not a stalled run (run 45222410247, API 35): the streamed logcat ended a second
+# after it started, while the device's own logcat kept logging tests. A fake device answers the direct read.
+herd="aThousandClientsThatStartTogether(com.ditchoom.socket.quic.core.demux.CoreServerStartupHerdTests)"
+printf '%s\n' "11-23 17:03:09.890  1404  1600 V MediaProvider: onCreate() for external.db" >"$tmp/dead-stream.txt"
+DEVICE_EVENTS=""
+DEVICE_STATUS=0
+adb() {
+  case "$*" in
+    "logcat -d -v threadtime TestRunner:I *:S")
+      [ -n "$DEVICE_EVENTS" ] && printf '%s\r\n' "$DEVICE_EVENTS"
+      [ "$DEVICE_STATUS" = "0" ] || echo "adb: device 'emulator-5554' not found" >&2
+      return "$DEVICE_STATUS"
+      ;;
+  esac
+  return 1
+}
+timeout() { shift; "$@"; }
+device_event="11-23 17:08:40.114  4120  4141 I TestRunner: started: $herd"
+DEVICE_EVENTS=$'11-23 17:08:39.950  4120  4141 I TestRunner: finished: x(Y)\n'"$device_event"
+IFS=$'\t' read -r verdict last < <(device_stall_check "$tmp/dead-stream.txt" "")
+check "a dead stream with tests still logged on the device is progress" "progress" "$verdict"
+check "the device's last event is what the next check compares against" "$device_event" "$last"
+IFS=$'\t' read -r verdict last < <(device_stall_check "$tmp/dead-stream.txt" "$device_event")
+check "a device with no event since the last check is stalled too" \
+  "the device's own logcat has no later test event either" "$verdict"
+DEVICE_STATUS=1
+IFS=$'\t' read -r verdict last < <(device_stall_check "$tmp/dead-stream.txt" "")
+check "a device that cannot be read says so" "the device's own logcat could not be read either (adb exit 1)" "$verdict"
+DEVICE_STATUS=0
+cp "$tmp/logcat.txt" "$tmp/live-stream.txt"
+DEVICE_EVENTS="$(last_test_event <"$tmp/live-stream.txt")"
+IFS=$'\t' read -r verdict last < <(device_stall_check "$tmp/live-stream.txt" "")
+check "a stream that holds the device's last event is a real stall" \
+  "the device's own logcat has no later test event either" "$verdict"
+check "the last event of a logcat is its last started or finished line" \
+  "11-19 08:21:38.303  4022  4041 I TestRunner: started: $running" "$(last_test_event <"$tmp/logcat.txt")"
+
 echo "android-test-watchdog: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

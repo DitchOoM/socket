@@ -4,31 +4,27 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.flow.HalfCloseable
 import com.ditchoom.buffer.flow.ReadResult
-import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.freeIfNeeded
-import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicError
-import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.core.demux.withCoreEchoServer
 import com.ditchoom.socket.quic.core.ready.NetStack
 import com.ditchoom.socket.quic.core.ready.netStackOfThisRuntime
+import com.ditchoom.socket.quic.core.testing.PerfGates
 import com.ditchoom.socket.quic.core.testing.allocationSamples
 import com.ditchoom.socket.quic.core.testing.withDescriptorsAbove127
 import com.ditchoom.socket.quic.network
 import com.ditchoom.socket.quic.read
 import com.ditchoom.socket.quic.skipOnMissingNativeLib
-import com.ditchoom.socket.quic.withQuicServer
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import java.lang.management.ManagementFactory
 import java.time.Instant
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.Continuation
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.startCoroutine
@@ -138,6 +134,23 @@ class CoreQuicAllocationTests {
                                 report.where,
                             ),
                     )
+                    val test = name.replace(' ', '-')
+                    PerfGates.record(
+                        CoreQuicAllocationTests::class.java,
+                        test,
+                        "loop-bytes",
+                        report.loop,
+                        loopGate.toDouble(),
+                        "B-per-echo",
+                    )
+                    PerfGates.record(
+                        CoreQuicAllocationTests::class.java,
+                        test,
+                        "caller-bytes",
+                        report.caller,
+                        callerGate.toDouble(),
+                        "B-per-echo",
+                    )
                     client.connection.close(QuicError.NoError)
                     dispatcher.close()
                     assertTrue(
@@ -183,30 +196,7 @@ class CoreQuicAllocationTests {
 
     /** An echo server that finishes its side of a stream once the client finishes its own, so streams are released. */
     internal suspend fun withClosingEchoServer(body: suspend CoroutineScope.(port: Int) -> Unit) {
-        withQuicServer(port = 0, tlsConfig = coreTlsConfig(), quicOptions = coreTestOptions) {
-            coroutineScope {
-                val server =
-                    launch(Dispatchers.IO) {
-                        connections {
-                            while (true) {
-                                val stream = acceptStream()
-                                launch {
-                                    // The client closing the connection ends the read with a QuicCloseException; uncaught here it would end the
-                                    // whole process on Android.
-                                    try {
-                                        while (stream.read(10.seconds) { stream.writeFully(it, 10.seconds) } is ScopedRead.Data<*>) Unit
-                                    } catch (closed: QuicCloseException) {
-                                        // The peer is gone: the echo is over.
-                                    }
-                                    stream.close()
-                                }
-                            }
-                        }
-                    }
-                body(port)
-                server.cancel()
-            }
-        }
+        withCoreEchoServer { server -> body(server.port) }
     }
 
     private class Report(
@@ -252,11 +242,17 @@ class CoreQuicAllocationTests {
             }
         java.nio.file.Files
             .delete(dump)
+
+        // The loop's few bytes per echo are listed on their own: the caller's sites crowd them out of the overall top.
+        fun top(
+            of: Map<String, Long>,
+            count: Int,
+        ) = of.entries
+            .sortedByDescending { it.value }
+            .take(count)
+            .joinToString("\n") { "  ${it.value / MEASURED} B/echo (${it.value} B) ${it.key}" }
         val where =
-            sites.entries
-                .sortedByDescending { it.value }
-                .take(30)
-                .joinToString("\n") { "  ${it.value / MEASURED} B/echo ${it.key}" }
+            top(sites, 30) + "\n  on the loop:\n" + top(sites.filterKeys { it.startsWith("[$LOOP_THREAD") }, 15)
         return Report(loop, caller, callerCore.toDouble() / MEASURED, where)
     }
 
@@ -301,14 +297,26 @@ internal class ArrayQueueDispatcher(
     name: String,
 ) : CoroutineDispatcher() {
     private val queue = ArrayBlockingQueue<Runnable>(QUEUE)
-    private val thread =
+
+    /** Tasks dispatched and not yet taken, counted beside the queue so a probe reads it without taking the queue's lock. */
+    private val queued = AtomicInteger()
+
+    /** The one thread the tasks run on. */
+    val thread =
         Thread({
             try {
-                while (true) queue.take().run()
+                while (true) {
+                    val task = queue.take()
+                    queued.decrementAndGet()
+                    task.run()
+                }
             } catch (_: InterruptedException) {
                 // closed
             }
         }, name).apply { isDaemon = true }
+
+    /** How many tasks wait for [thread]. */
+    val depth: Int get() = queued.get()
 
     init {
         thread.start()
@@ -317,7 +325,10 @@ internal class ArrayQueueDispatcher(
     override fun dispatch(
         context: CoroutineContext,
         block: Runnable,
-    ) = queue.put(block)
+    ) {
+        queued.incrementAndGet()
+        queue.put(block)
+    }
 
     fun close() = thread.interrupt()
 

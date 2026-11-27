@@ -197,9 +197,12 @@ class QlogDirectory(
             events += QlogEvent.Inherited(inherited.size, inherited.sumOf { it.parts.size }, inherited.sumOf { it.bytes })
         }
 
-        /** `<name>.sqlog` is segment 1 of `name`, `<name>_segNNNN.sqlog` segment NNNN; any other file is not a record. */
+        /**
+         * `<name>.sqlog` is segment 1 of `name`, `<name>_segNNNN.sqlog` segment NNNN; any other file is not a record. The
+         * file name follows the path's last `/` or `\` (Windows lists a directory with `\`).
+         */
         private fun parse(filePath: String): ParsedName {
-            val fileName = filePath.substringAfterLast('/')
+            val fileName = filePath.substringAfterLast('/').substringAfterLast('\\')
             if (!fileName.endsWith(SUFFIX)) return ParsedName.NotARecord
             val stem = fileName.removeSuffix(SUFFIX)
             val marker = stem.lastIndexOf(SEGMENT_MARKER)

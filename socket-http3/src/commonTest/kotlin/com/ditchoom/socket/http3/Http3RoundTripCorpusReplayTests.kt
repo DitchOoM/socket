@@ -1,5 +1,6 @@
 package com.ditchoom.socket.http3
 
+import com.ditchoom.socket.http3.codec.Http3FuzzGenerators
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 

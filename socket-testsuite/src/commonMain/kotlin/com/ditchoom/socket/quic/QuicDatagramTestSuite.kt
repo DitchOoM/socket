@@ -28,7 +28,7 @@ import kotlin.time.Duration.Companion.seconds
  *
  * Datagrams are unreliable, but a single datagram over loopback with no impairment does not drop, so
  * the round-trip assertions are deterministic. Control-flow/ownership edge cases live in the
- * platform-agnostic [QuicDatagramAdapterTests].
+ * platform-agnostic `CoreDatagramTests`.
  *
  * No settle delay between `launch { connections { … } }` and the first client (issue #305) — see
  * [QuicServerTestSuite]'s class doc for why one was never needed. The one delay left here is the

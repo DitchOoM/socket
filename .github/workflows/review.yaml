@@ -36,6 +36,26 @@ jobs:
             echo "== $t"
             bash "$t"
           done
+      - name: Set up JDK 21
+        uses: actions/setup-java@v6
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+      - name: No public entry point depends on a 4.x internal
+        run: |
+          set -euo pipefail
+          java scripts/EntryPointIsolationCheck.java --selftest
+          java scripts/EntryPointIsolationCheck.java .
+      - name: Core and shared QUIC code use no 4.x-only declaration
+        run: |
+          set -euo pipefail
+          java scripts/SharedOutOf4xCheck.java --selftest
+          java scripts/SharedOutOf4xCheck.java .
+      - name: HTTP3 codec layer names no QUIC type
+        run: |
+          set -euo pipefail
+          java scripts/Http3CodecIsolationCheck.java --selftest
+          java scripts/Http3CodecIsolationCheck.java .
 
   build-linux:
     needs: version
@@ -326,7 +346,9 @@ jobs:
       # and its AGP version comes from gradle/libs.versions.toml (see its settings.gradle.kts).
       - name: Assemble the minSdk 28 consumer app
         run: |
-          ./gradlew -p .ci/android-minsdk-consumer assembleDebug \
+          # Its own build resolves a plugin classpath the main build's warmed cache does not hold, so it fetches
+          # from Central: a 429 there is retried (run 44965408142), anything else fails at once.
+          .github/scripts/gradle-retry.sh -p .ci/android-minsdk-consumer assembleDebug \
             -PsocketVersion="${RESOLVED_VERSION}" \
             -PmavenRepoPath=/tmp/maven-local-merged \
             --no-daemon
@@ -394,9 +416,13 @@ jobs:
           restore-keys: |
             gradle-macos-kn-
             gradle-macos-
+      # Retried on a transient repository answer only (.github/scripts/gradle-retry.sh): what the restored
+      # cache lacks comes from Central, which answered 429 for two plugin-classpath jars in job 138223363838.
       - name: Apple K/N link gate (macosArm64 + iosSimulatorArm64)
+        env:
+          GRADLE_RETRY_COMMAND: gradle
         run: |
-          gradle -p .ci/consumer-smoke macosArm64TestBinaries iosSimulatorArm64TestBinaries \
+          .github/scripts/gradle-retry.sh -p .ci/consumer-smoke macosArm64TestBinaries iosSimulatorArm64TestBinaries \
             -PsocketVersion="${RESOLVED_VERSION}" \
             -PmavenRepoPath=/tmp/maven-local-merged \
             --no-daemon
@@ -543,6 +569,11 @@ jobs:
   # quiche patch is tested by the pull request that changes it. They start with the run and wait only for
   # the natives artifacts (await-natives), not for the rest of build-linux and build-apple.
   quic-interop:
+    # packages: read pulls the held haproxy image (test-harness/quic-interop/peer-images.json) from GHCR.
+    permissions:
+      contents: read
+      actions: read
+      packages: read
     uses: ./.github/workflows/quic-interop-gate.yaml
     with:
       version: "0.0.0-interop"
@@ -649,10 +680,22 @@ jobs:
           producer: "quiche natives (Linux/Android/Windows)"
           github-token: ${{ github.token }}
       - name: Download Windows quiche native lib
+        id: windows-natives-download
+        continue-on-error: true
         uses: actions/download-artifact@v8
         with:
           name: quiche-windows-natives
           path: socket-quic-quiche/libs/quiche/windows-x64/lib
+      # See .github/scripts/artifact-download-retry.sh: the action answered "Artifact not found" 5 s after
+      # await-artifact saw the artifact finalized (run 45455922692), the service lagging its own listing.
+      - name: Retry the Windows quiche native lib download
+        if: steps.windows-natives-download.outcome == 'failure'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          "$GITHUB_WORKSPACE/.github/scripts/artifact-download-retry.sh" \
+            quiche-windows-natives socket-quic-quiche/libs/quiche/windows-x64/lib
       # The download above can succeed with an artifact that is empty or wrong (`if-no-files-found:
       # ignore` on the producer side means "upload nothing" is a possible shape), so assert the file
       # itself before handing the run to Gradle — a `Could not find quiche_jni.dll` deep inside a
@@ -681,8 +724,19 @@ jobs:
         with:
           mode: start
           enabled: ${{ matrix.jfr }}
+      # The runner's cores, memory, load and VM type at both ends of the test step, beside the JVM logs
+      # (see .github/scripts/runner-facts.sh), so a stall in between can be weighed against the host.
+      - name: Runner facts (start)
+        continue-on-error: true
+        shell: bash
+        run: bash .github/scripts/runner-facts.sh start build/jvm-logs/runner-facts.txt
       - name: Run JVM tests
         run: ./gradlew :jvmTest :socket-quic-quiche:jvmTest --no-configuration-cache ${{ matrix.args }}
+      - name: Runner facts (end)
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: bash .github/scripts/runner-facts.sh end build/jvm-logs/runner-facts.txt
       # The job log carries only pass/fail per test; a skip's [TEST-SKIPPED] marker and a test's own
       # diagnostics live in the XML's system-out, which is otherwise lost with the runner.
       - name: Upload Windows test results
@@ -694,7 +748,21 @@ jobs:
             build/test-results/jvmTest
             socket-quic-quiche/build/test-results/jvmTest
             socket-quic-quiche/build/core-flight
+            build/jvm-logs
+            socket-quic-quiche/build/jvm-logs
           if-no-files-found: warn
+
+      # Every gated count and allocation, whatever the outcome: perf-trend.py (review.yaml's perf-trend job) compares
+      # them with earlier runs. Written by the tests' PerfGates; absent when coreAllocationTest did not run.
+      - name: Upload perf gates
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: perf-gates-windows${{ matrix.jfr == 'true' && '-jfr' || '' }}${{ matrix.launcher == '25' && '-jdk25' || '' }}
+          path: socket-quic-quiche/build/perf-gates/
+          retention-days: 30
+          if-no-files-found: ignore
       - name: Flight recorder ring (on failure)
         if: ${{ (failure() || cancelled()) && matrix.jfr == 'true' }}
         continue-on-error: true
@@ -702,6 +770,46 @@ jobs:
         with:
           mode: collect
           artifact-name: jfr-ring-windows-jvm
+
+  # The trend of every gated count and allocation (coreAllocationTest's PerfGates records), merged into one
+  # `perf-gates` artifact per run and compared with the median of the last 10 successful runs on the integration
+  # branch: a PR into an `integrate/*` branch against that branch's own runs, any other PR against its own earlier
+  # runs. A WARNING for now (job summary table + ::warning::), never a failure: it flags a number that rose more than
+  # 5% and more than 0.05 above that median, which each gate's own margin lets through.
+  perf-trend:
+    name: "Perf gate trend"
+    needs: [build-linux, build-apple, build-windows]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - name: Download this run's perf gates
+        uses: actions/download-artifact@v8
+        with:
+          pattern: perf-gates-*
+          path: /tmp/perf-gates
+          digest-mismatch: warn
+        continue-on-error: true
+      - name: Merge
+        run: python3 -I .github/scripts/perf-trend.py merge --out /tmp/perf-gates.json /tmp/perf-gates
+      - name: Upload merged perf gates
+        uses: actions/upload-artifact@v7
+        with:
+          name: perf-gates
+          path: /tmp/perf-gates.json
+          retention-days: 90
+      - name: Compare with earlier runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TREND_BRANCH: ${{ startsWith(github.base_ref, 'integrate/') && github.base_ref || github.head_ref }}
+        run: |
+          python3 -I .github/scripts/perf-trend.py compare --current /tmp/perf-gates.json \
+            --repo "$GITHUB_REPOSITORY" --branch "$TREND_BRANCH" --workflow review.yaml --artifact perf-gates \
+            --runs 10 --fraction 0.05 --absolute 0.05 --min-history 3 --mode warn --summary "$GITHUB_STEP_SUMMARY"
 
   docs:
     name: "Validate Docs Generation"

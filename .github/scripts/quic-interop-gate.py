@@ -15,7 +15,8 @@ Expectations (test-harness/quic-interop/expectations.json) map direction -> peer
   "pass"                         must succeed
   "unsupported"                  one side does not implement it
   {"known-failure": <reason>}    fails today, for the stated reason
-  {"flaky": <reason>}            passes, or fails for the stated reason
+  {"flaky": <reason>}            passes, or fails for the stated reason; a proven flaky reason may add
+                                 "pass-signature": {"kind": ...}, and then a pass must match it too
 where <reason> is {"why": "<why>", "signature": {"kind": ..., ...}} (proven: a failure must match the
 signature in the cell's evidence, written by quic-interop-evidence.py; a failure that does not is a REGRESSION;
 SIGNATURES lists the kinds and what each checks) or "<why>" (unproven: any failure is accepted). Unproven is a
@@ -29,6 +30,8 @@ expectation is NEW. REGRESSION, NEW and MISSING always fail the gate; STALE fail
 
 Subcommands:
   retry <expectations> <direction> <peer> <runner.json>   tests to run once more: expected to pass, did not
+  ran <runner.json>                                       exits 1 when every test was skipped (the runner found the
+                                                          peer not compliant): the cell did not run, so it is no result
   judge <expectations> <results-dir> [--stale=warn|fail] [--record=<file>]
 """
 import enum
@@ -124,6 +127,47 @@ class MigrationRefusedPeerForbids:
         refused = [m for m in test_evidence.get("migrations", []) if m["succeeded"] == 0 and m.get("first_unmoved") == "PeerForbids"]
         if forbidden and refused:
             return Matched("peer sets disable_active_migration; our first move: PeerForbids")
+        return NotMatched()
+
+
+class MigrationOutOfIdsPeerRetiredNothing:
+    """Our client made one move fewer than the peer's active_connection_id_limit, then answered its next move with
+    NoSpareConnectionId: the peer never retired an id of ours unasked, so the client counts every path it left as
+    still held by the peer (the original one too) and the limit as reached."""
+
+    kind = "migration-out-of-ids-peer-retired-nothing"
+
+    def __init__(self, fields):
+        no_fields(self.kind, fields)
+
+    def match(self, test_evidence, peer_role):
+        connections = test_evidence.get("connections", [])
+        if not connections or any(c["peer_unasked_retirements"] for c in connections):
+            return NotMatched()
+        limits = {c["remote_active_connection_id_limit"] for c in connections}
+        for m in test_evidence.get("migrations", []):
+            if m.get("first_unmoved") == "NoSpareConnectionId" and {m["succeeded"] + 1} == limits:
+                return Matched(
+                    f"no unasked RETIRE_CONNECTION_ID from the peer; {m['succeeded']} moves, then NoSpareConnectionId "
+                    f"at its active_connection_id_limit {m['succeeded'] + 1}"
+                )
+        return NotMatched()
+
+
+class MigrationPeerRetiredUnasked:
+    """A pass signature: every move succeeded on a connection whose peer retired an id of ours that no Retire Prior
+    To of ours asked for, which tells our client the peer frees the paths it leaves."""
+
+    kind = "migration-peer-retired-unasked"
+
+    def __init__(self, fields):
+        no_fields(self.kind, fields)
+
+    def match(self, test_evidence, peer_role):
+        retired = sum(c["peer_unasked_retirements"] for c in test_evidence.get("connections", []))
+        moved = [m for m in test_evidence.get("migrations", []) if m["attempted"] > 0 and m["succeeded"] == m["attempted"]]
+        if retired and moved:
+            return Matched(f"the peer retired {retired} id(s) of ours unasked; {moved[0]['succeeded']} of {moved[0]['attempted']} moves")
         return NotMatched()
 
 
@@ -639,6 +683,30 @@ class PeerServerDidNotChallengeNewPathFirst:
         return NotMatched()
 
 
+class PeerChallengeNeverReachedOurOpenConnection:
+    """The runner failed a rebinding test because a PATH_CHALLENGE of the peer's got no PATH_RESPONSE, while our
+    client finished every request, exited 0 and closed with NO_ERROR, and answered every challenge that reached the
+    connection while it was open: the unanswered one was addressed to a connection we had already closed."""
+
+    kind = "peer-challenge-never-reached-our-open-connection"
+
+    def __init__(self, fields):
+        no_fields(self.kind, fields)
+
+    def match(self, test_evidence, peer_role):
+        unanswered = test_evidence.get("runner", {}).get("unanswered_path_challenges", 0)
+        if peer_role != "server" or not unanswered or test_evidence.get("exits", {}).get("client") != 0:
+            return NotMatched()
+        for c in test_evidence.get("connections", []):
+            closed = bool(c["local_closes"]) and all(close["code"] == 0 for close in c["local_closes"])
+            if closed and c["our_streams_unfinished"] == 0 and c["path_challenges_rx"] == c["path_responses_tx"]:
+                return Matched(
+                    f"{c['qlog']}: the runner saw {unanswered} PATH_CHALLENGE(s) without a response; we answered all "
+                    f"{c['path_responses_tx']} that reached us and had closed with NO_ERROR, our client exited 0"
+                )
+        return NotMatched()
+
+
 class EndedBy(enum.Enum):
     """How a connection whose peer went missing ended: our idle timer expired (RFC 9000 §10.1), the peer's own
     report names the connection among those it gave up on (we then closed with the rest of the endpoint), or the
@@ -748,6 +816,33 @@ class PeerPacketsLostWhileWeProbedOnTime:
         return NotMatched()
 
 
+class PeerResentZeroRttItDeclaredLost:
+    """The runner failed the peer's client for sending too much in 1-RTT packets (it re-sent its early request data
+    there), and the client had declared its own 0-RTT STREAM data lost, on the connection it resumed, before the
+    first acknowledgement of the application space reached it, while our server had received 0-RTT packets and
+    dropped none: the data was not lost, the client's loss timer fired on a guessed RTT (RFC 9002 §6.2.2) before
+    any ACK could arrive."""
+
+    kind = "peer-resent-0rtt-it-declared-lost"
+
+    def __init__(self, fields):
+        no_fields(self.kind, fields)
+
+    def match(self, test_evidence, peer_role):
+        if not test_evidence.get("runner", {}).get("one_rtt_overrun"):
+            return NotMatched()
+        resumed = [r for r in test_evidence.get("peer_resumed_connections", []) if r["lost_stream_before_first_ack"] > 0]
+        connections = test_evidence.get("connections", [])
+        received = sum(c.get("rx_0rtt_packets", 0) for c in connections)
+        dropped = sum(c.get("dropped_0rtt_packets", 0) for c in connections)
+        if resumed and received > 0 and dropped == 0:
+            return Matched(
+                f"the client declared {resumed[0]['lost_stream_before_first_ack']} STREAM tokens of its 0-RTT data lost "
+                f"before any ACK; we received {received} 0-RTT packets and dropped none"
+            )
+        return NotMatched()
+
+
 class AnyOf:
     """The cell has more than one proven failure; a failure must match one of the listed signatures (each a
     {"kind": ..., ...fields} of another kind)."""
@@ -798,6 +893,8 @@ SIGNATURES = {
         PeerExceededStreamLimit,
         PeerProcessDied,
         MigrationRefusedPeerForbids,
+        MigrationOutOfIdsPeerRetiredNothing,
+        MigrationPeerRetiredUnasked,
         FrameEncodingErrorFromZeroLengthCidPeer,
         PeerSilentUntilOurTimeout,
         PeerNeverResentServerHello,
@@ -815,6 +912,7 @@ SIGNATURES = {
         PeerLeftARequestUnfinished,
         PeerRequestNeverArrived,
         PeerServerDidNotChallengeNewPathFirst,
+        PeerChallengeNeverReachedOurOpenConnection,
         PeerHandshakePacketsNeverArrived,
         PeerGoneWhileWeProbed,
         PeerClientHelloNeverCompleted,
@@ -825,25 +923,34 @@ SIGNATURES = {
         PeerGaveUpWhileWeWereAmplificationLimited,
         PeerMoveNeverReachedUs,
         PeerPacketsLostWhileWeProbedOnTime,
+        PeerResentZeroRttItDeclaredLost,
         AnyOf,
     )
 }
 
 
+def signature_of(raw):
+    fields = dict(raw)
+    kind = fields.pop("kind", "")
+    if kind not in SIGNATURES:
+        raise ExpectationError(f"unknown signature kind {kind!r}; known: {sorted(SIGNATURES)}")
+    return SIGNATURES[kind](fields)
+
+
 class Reason:
-    """Why a cell is a known failure or flaky; proven when it carries a signature."""
+    """Why a cell is a known failure or flaky; proven when it carries a signature. A flaky reason may also carry a
+    pass signature: then a pass is accepted only when the evidence shows it."""
 
     def __init__(self, raw):
+        self.pass_signature = None
         if isinstance(raw, str):
             self.why, self.signature = raw, None
             return
-        if not isinstance(raw, dict) or set(raw) != {"why", "signature"}:
-            raise ExpectationError(f"a reason is a string or {{why, signature}}, got {raw!r}")
-        fields = dict(raw["signature"])
-        kind = fields.pop("kind", "")
-        if kind not in SIGNATURES:
-            raise ExpectationError(f"unknown signature kind {kind!r}; known: {sorted(SIGNATURES)}")
-        self.why, self.signature = raw["why"], SIGNATURES[kind](fields)
+        if not isinstance(raw, dict) or set(raw) - {"pass-signature"} != {"why", "signature"}:
+            raise ExpectationError(f"a reason is a string or {{why, signature[, pass-signature]}}, got {raw!r}")
+        self.why, self.signature = raw["why"], signature_of(raw["signature"])
+        if "pass-signature" in raw:
+            self.pass_signature = signature_of(raw["pass-signature"])
 
 
 def runner_results(path):
@@ -885,7 +992,10 @@ def expectation(exp, direction, peer, test):
     if isinstance(value, str):
         return value, Reason("")
     (kind, raw), = value.items()
-    return kind, Reason(raw)
+    reason = Reason(raw)
+    if reason.pass_signature is not None and kind != "flaky":
+        raise ExpectationError(f"{direction} {peer} {test}: only a flaky cell takes a pass-signature")
+    return kind, reason
 
 
 def peer_role(direction):
@@ -913,6 +1023,21 @@ def cmd_retry(args):
     return 0
 
 
+def cmd_ran(args):
+    (results_path,) = args
+    actual = list(runner_results(results_path).values())
+    if any(r != "skipped" for r in actual):
+        return 0
+    print(f"no test ran: {len(actual)} of {len(actual)} skipped")
+    return 1
+
+
+def retry_results(results_dir, direction, peer):
+    """{test: result} of the one retry the cell's job ran, empty when it ran none."""
+    path = os.path.join(results_dir, f"{direction}__{peer}.retry")
+    return runner_results(path) if os.path.exists(path) else {}
+
+
 def load_cells(results_dir):
     """{(direction, peer, test): (result, detail)} with a passing retry turning a failure into 'retried'."""
     cells = {}
@@ -922,8 +1047,7 @@ def load_cells(results_dir):
             continue
         direction, peer = m.groups()
         first = runner_results(os.path.join(results_dir, name))
-        retry_path = os.path.join(results_dir, f"{direction}__{peer}.retry")
-        retried = runner_results(retry_path) if os.path.exists(retry_path) else {}
+        retried = retry_results(results_dir, direction, peer)
         for test, result in first.items():
             if result == "failed" and retried.get(test) == "succeeded":
                 cells[(direction, peer, test)] = ("retried", "failed once, passed on retry")
@@ -936,16 +1060,43 @@ def load_cells(results_dir):
     return cells
 
 
-def judge_failure(kind, reason, test_evidence, role):
-    """(verdict, accepted, note) for a failed cell expected to fail (known-failure) or allowed to (flaky)."""
+def failed_attempts(test_evidence, retry_result):
+    """[(label, evidence)] for every attempt of a failed cell that failed: the first, and the retry when it failed too
+    (its evidence is test_evidence["retry"], absent when the extractor was not given the retry's logs)."""
+    attempts = [("attempt 1", test_evidence)]
+    if retry_result == "failed":
+        attempts.append(("attempt 2", (test_evidence or {}).get("retry")))
+    return attempts
+
+
+def judge_failure(kind, reason, attempts, role):
+    """(verdict, accepted, note) for a failed cell expected to fail (known-failure) or allowed to (flaky). Every
+    failed attempt must show the signature: one that does not is a regression, however the others look."""
     if reason.signature is None:
         return f"{kind} (unproven)", True, reason.why
+    shown = []
+    for label, evidence in attempts:
+        if evidence is None:
+            what = f"evidence of {label}" if len(attempts) > 1 else "evidence"
+            return "REGRESSION", False, f"no {what} to check the {reason.signature.kind} signature against"
+        result = reason.signature.match(evidence, role)
+        if not isinstance(result, Matched):
+            which = f" in {label}" if len(attempts) > 1 else ""
+            return "REGRESSION", False, f"failed{which}, but not as {reason.signature.kind}: {reason.why}"
+        shown.append(result.shown)
+    if len(attempts) == 1:
+        return f"{kind} (signature)", True, shown[0]
+    return f"{kind} (signature)", True, "; ".join(f"{label}: {text}" for (label, _), text in zip(attempts, shown))
+
+
+def judge_pass(reason, test_evidence, role):
+    """(verdict, accepted, note) for a passed flaky cell whose reason carries a pass signature."""
     if test_evidence is None:
-        return "REGRESSION", False, f"no evidence to check the {reason.signature.kind} signature against"
-    result = reason.signature.match(test_evidence, role)
+        return "REGRESSION", False, f"no evidence to check the {reason.pass_signature.kind} pass signature against"
+    result = reason.pass_signature.match(test_evidence, role)
     if isinstance(result, Matched):
-        return f"{kind} (signature)", True, result.shown
-    return "REGRESSION", False, f"failed, but not as {reason.signature.kind}: {reason.why}"
+        return "flaky (pass signature)", True, result.shown
+    return "REGRESSION", False, f"passed, but not as {reason.pass_signature.kind}: {reason.why}"
 
 
 def judge_cell(kind, result):
@@ -1004,10 +1155,14 @@ def cmd_judge(args):
     for (direction, peer, test), (result, detail) in sorted(cells.items()):
         kind, reason = expectation(exp, direction, peer, test)
         note = reason.why or detail
+        # The active-migration pseudo-test is judged on the transfer it ran in.
+        ran = "transfer" if test == MIGRATION_TEST else test
+        test_evidence = evidence.get((direction, peer), {}).get(ran)
         if kind in ("known-failure", "flaky") and result == "failed":
-            # The active-migration pseudo-test is judged on the transfer it ran in.
-            ran = "transfer" if test == MIGRATION_TEST else test
-            verdict, accepted, note = judge_failure(kind, reason, evidence.get((direction, peer), {}).get(ran), peer_role(direction))
+            attempts = failed_attempts(test_evidence, retry_results(results_dir, direction, peer).get(test))
+            verdict, accepted, note = judge_failure(kind, reason, attempts, peer_role(direction))
+        elif kind == "flaky" and reason.pass_signature is not None and result in ("succeeded", "retried"):
+            verdict, accepted, note = judge_pass(reason, test_evidence, peer_role(direction))
         else:
             verdict, accepted = judge_cell(kind, result)
         if verdict == "STALE" and stale == "warn":
@@ -1072,10 +1227,10 @@ def cmd_judge(args):
 
 
 def main(argv):
-    if len(argv) < 2 or argv[1] not in ("retry", "judge"):
+    if len(argv) < 2 or argv[1] not in ("retry", "ran", "judge"):
         print(__doc__, file=sys.stderr)
         return 2
-    return {"retry": cmd_retry, "judge": cmd_judge}[argv[1]](argv[2:])
+    return {"retry": cmd_retry, "ran": cmd_ran, "judge": cmd_judge}[argv[1]](argv[2:])
 
 
 if __name__ == "__main__":

@@ -10,12 +10,13 @@ import com.ditchoom.socket.quic.QuicResumptionOutcome
 import com.ditchoom.socket.quic.QuicSessionMemory
 import com.ditchoom.socket.quic.QuicSessionStore
 import com.ditchoom.socket.quic.QuicSessionTicketState
-import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.ScopedReadResult
 import com.ditchoom.socket.quic.core.demux.withCoreEchoServer
 import com.ditchoom.socket.quic.core.edge.EdgeEnd
 import com.ditchoom.socket.quic.core.edge.ReceivedBytes
 import com.ditchoom.socket.quic.core.edge.connectCore
 import com.ditchoom.socket.quic.core.edge.coreTestOptions
+import com.ditchoom.socket.quic.core.edge.openStream
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.testing.coreTest
@@ -55,7 +56,7 @@ class CoreClientServerTests {
                 val received = ReceivedBytes(PAYLOAD)
                 coroutineScope {
                     val reader =
-                        async { while (stream.read(10.seconds) { received.add(it) } is ScopedRead.Data<*>) Unit }
+                        async { while (stream.read(10.seconds) { received.add(it) } is ScopedReadResult.Data<*>) Unit }
                     stream.writeFully(
                         BufferFactory.network().allocate(PAYLOAD).apply {
                             writeBytes(payload)

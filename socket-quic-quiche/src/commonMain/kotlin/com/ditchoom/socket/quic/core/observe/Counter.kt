@@ -15,6 +15,10 @@ internal class Counter {
         total.fetchAndAdd(count.toLong())
     }
 
+    fun add(count: Long) {
+        total.fetchAndAdd(count)
+    }
+
     fun increment() {
         total.fetchAndAdd(1L)
     }

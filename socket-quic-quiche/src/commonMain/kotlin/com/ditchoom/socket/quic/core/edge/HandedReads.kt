@@ -24,6 +24,8 @@ internal class HandedReads {
             reads.removeFirst()
             streams.takeOldest()
         }
+        // A stream's own reader lends one buffer again and again: it is held here once, however often it lends.
+        for (index in reads.indices) if (reads[index] === read) return
         reads.addLast(read)
         streams.addLast(stream.id)
     }

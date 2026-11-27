@@ -11,13 +11,16 @@ import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.WritePolicy
 import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.socket.quic.FlowControl
+import com.ditchoom.socket.quic.IncomingStreams
 import com.ditchoom.socket.quic.MigrationPolicy
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicOptions
-import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.QuicStreamLimit
+import com.ditchoom.socket.quic.ScopedReadResult
 import com.ditchoom.socket.quic.core.conn.MismatchResponse
 import com.ditchoom.socket.quic.core.edge.coreConnect
+import com.ditchoom.socket.quic.core.edge.openStream
 import com.ditchoom.socket.quic.loadQuicheApi
 import com.ditchoom.socket.quic.network
 import com.ditchoom.socket.quic.read
@@ -159,7 +162,7 @@ class CoreRemoteLoad {
                             var got = 0
                             while (got < 64) {
                                 val r = stream.read(30.seconds) { got += it.remaining() }
-                                if (r !is ScopedRead.Data<*>) error("stream ended after $got of 64 bytes")
+                                if (r !is ScopedReadResult.Data<*>) error("stream ended after $got of 64 bytes")
                             }
                             val dt = System.nanoTime() - t0
                             if (t0 >= warmEnd && counts[i] < MAX_SAMPLES) latencies[i][counts[i]++] = dt
@@ -222,8 +225,8 @@ class CoreRemoteLoad {
                         initialMaxData = 64L * 1024 * 1024,
                         initialMaxStreamDataBidiLocal = 16L * 1024 * 1024,
                         initialMaxStreamDataBidiRemote = 16L * 1024 * 1024,
-                        initialMaxStreamsBidi = 1_000_000,
                     ),
+                incomingStreams = IncomingStreams.Accept(bidirectional = QuicStreamLimit(1_000_000u)),
             )
     }
 }

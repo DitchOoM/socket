@@ -10,103 +10,59 @@ import com.ditchoom.buffer.flow.DatagramSendOptions
 import com.ditchoom.buffer.flow.ExperimentalDatagramApi
 import com.ditchoom.buffer.flow.SocketAddress
 import com.ditchoom.socket.AttemptVerdict
-import com.ditchoom.socket.HostResolver
 import com.ditchoom.socket.IpFamily
-import com.ditchoom.socket.NameResolution
 import com.ditchoom.socket.ResolvedAddress
 import com.ditchoom.socket.TransportConfig
 import com.ditchoom.socket.transport.NetworkKind
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
-import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * A connect pinned to a radio the engine cannot pin is refused, typed, before anything is resolved or
- * dialled — and a refusal or a radio that never appeared is not retried at the peer's other addresses.
+ * A connect pinned to a radio the stack cannot pin is refused, typed, and a refusal or a radio that never appeared
+ * is not retried at the peer's other addresses.
  */
 class PinnedRadioTests {
     private val pinned = QuicOptions(alpnProtocols = listOf("test"), migration = MigrationPolicy.Pinned(NetworkKind.Cellular))
-
-    /** Counts what a connect reached: a resolution, and an engine attempt. */
-    private class RecordingEngine(
-        override val capabilities: EngineCapabilities,
-    ) : QuicEngine {
-        var attempts = 0
-
-        override suspend fun connect(
-            binding: QuicClientBinding,
-            endpoint: QuicEndpoint,
-            serverName: String,
-            quicOptions: QuicOptions,
-            transport: TransportConfig,
-            timeout: Duration,
-        ): QuicConnection {
-            attempts++
-            throw UnsupportedOperationException("no connection is established here")
-        }
-
-        override suspend fun bind(
-            binding: QuicPortBinding,
-            tlsConfig: QuicTlsConfig,
-            quicOptions: QuicOptions,
-            timeout: Duration,
-        ): QuicServer = throw UnsupportedOperationException("not a server")
-    }
 
     private fun capabilities(vararg radios: NetworkKind.Radio) =
         EngineCapabilities(supportsMigration = true, supportsDatagrams = true, supportsServer = true, pinnableRadios = radios.toSet())
 
     @Test
-    fun anEngineThatCannotPinIsRefusedBeforeTheNameIsResolvedOrDialled() =
-        runQuicTest {
-            var resolutions = 0
-            val transport =
-                TransportConfig(
-                    nameResolution =
-                        NameResolution.Via(
-                            HostResolver {
-                                resolutions++
-                                error("a refused connect must not resolve")
-                            },
-                        ),
-                )
-            val engine = RecordingEngine(capabilities(NetworkKind.Wifi))
-            val refused =
-                assertFailsWith<PinnedRadioRefusedException> {
-                    engine.connect(QuicClientBinding.OwnSocket, QuicPeer.Named("example.test", 443), pinned, transport, 5.seconds)
-                }
-            assertEquals(NetworkKind.Cellular, refused.radio)
-            assertEquals(PinnedRadioRefusal.EngineCannotPin, refused.refusal)
-            assertEquals(0, resolutions)
-            assertEquals(0, engine.attempts)
-        }
+    fun aStackThatCannotPinIsRefusedWithTheRadio() {
+        val refused =
+            assertFailsWith<QuicRefusedException> {
+                capabilities(NetworkKind.Wifi).requirePinnable(QuicClientBinding.OwnSocket, pinned)
+            }
+        assertEquals<QuicRefusal>(
+            QuicRefusal.RadioNotPinnable(NetworkKind.Cellular, PinnedRadioRefusal.EngineCannotPin),
+            refused.refusal,
+        )
+    }
 
     @Test
-    fun anEngineThatCanPinDialsThePinnedConnect() =
+    fun aStackThatCanPinDialsThePinnedConnectOnce() =
         runQuicTest {
-            val engine = RecordingEngine(capabilities(NetworkKind.Wifi, NetworkKind.Cellular))
+            capabilities(NetworkKind.Wifi, NetworkKind.Cellular).requirePinnable(QuicClientBinding.OwnSocket, pinned)
             val endpoint = QuicEndpoint(ResolvedAddress("192.0.2.1", IpFamily.V4), 443)
+            var attempts = 0
             assertFailsWith<UnsupportedOperationException> {
-                engine.connect(
-                    QuicClientBinding.OwnSocket,
-                    QuicPeer.Candidates(listOf(endpoint), "example.test"),
-                    pinned,
-                    TransportConfig(),
-                    5.seconds,
-                )
+                QuicPeer.Candidates(listOf(endpoint), "example.test").raceCandidates<Unit>(TransportConfig(), close = { }) {
+                    attempts++
+                    throw UnsupportedOperationException("no connection is established here")
+                }
             }
-            assertEquals(1, engine.attempts)
+            assertEquals(1, attempts)
         }
 
     @Test
     fun aSharedPortCannotBePinned() {
         val refused =
-            assertFailsWith<PinnedRadioRefusedException> {
+            assertFailsWith<QuicRefusedException> {
                 capabilities(NetworkKind.Cellular).requirePinnable(QuicClientBinding.Shared(UnusedChannel()), pinned)
             }
-        assertEquals(PinnedRadioRefusal.SharedPort, refused.refusal)
+        assertEquals<QuicRefusal>(QuicRefusal.RadioNotPinnable(NetworkKind.Cellular, PinnedRadioRefusal.SharedPort), refused.refusal)
     }
 
     @Test
@@ -119,7 +75,7 @@ class PinnedRadioTests {
     @Test
     fun onlyAPathTheRadioLacksToOneAddressIsWorthAnotherCandidate() {
         val radio = NetworkKind.Wifi
-        assertEquals(AttemptVerdict.Fatal, quicConnectVerdict(PinnedRadioRefusedException(radio, PinnedRadioRefusal.EngineCannotPin)))
+        assertEquals(AttemptVerdict.Fatal, quicConnectVerdict(notPinnable(radio, PinnedRadioRefusal.EngineCannotPin)))
         assertEquals(
             AttemptVerdict.TryOthers,
             quicConnectVerdict(PinnedRadioUnavailableException(radio, PinnedRadioUnavailable.NoPath(RuntimeException("unsatisfied")))),

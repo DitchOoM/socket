@@ -17,45 +17,6 @@ import com.ditchoom.socket.testkit.trace.TracePath
 import com.ditchoom.socket.testkit.trace.TraceSink
 import kotlin.time.Duration.Companion.nanoseconds
 
-/** A change of a connection's path, as its flight recording names it. */
-internal enum class PathMark {
-    /** The client's socket moved to a new local address and the path from it is probed. */
-    Moved,
-
-    /** The probed path was validated and the connection migrated to it. */
-    Migrated,
-
-    /** The client's socket moved, and the connection could not follow it. */
-    Refused,
-
-    /** Quiche gave up validating the probed path, or closed it; the endpoint waits to be probed again. */
-    ProbeFailed,
-
-    /** A stranded endpoint was probed again, or tried to be. */
-    Reprobed,
-
-    /** The path being validated was asked for a fresh PATH_CHALLENGE. */
-    Challenged,
-
-    /** The client's socket was wanted on another address and waits where it is for a spare id from the peer. */
-    Held,
-}
-
-/** Why a connection dropped a datagram, as its flight recording names it: a trace line `DROP <type> <detail>`. */
-internal enum class DropWhy {
-    /** Quiche wrote it for a path no socket of ours holds: a client's own address that is gone, or a server's unknown peer. */
-    NoSocketForPath,
-
-    /** It came from a peer address beyond the most a server connection follows. */
-    TooManyPeerAddresses,
-    ;
-
-    /** The trace's [TraceEvent.Drop.type]: this reason's qualified name. */
-    val type: String get() = DROP_TYPE_PREFIX + name
-}
-
-private const val DROP_TYPE_PREFIX = "com.ditchoom.socket.quic.core.conn.DropWhy."
-
 /** The trace's [TraceEvent.Error.type] for a [PacingClockMismatch]: its qualified name. */
 private const val PACING_MISMATCH_TYPE = "com.ditchoom.socket.quic.core.conn.PacingClockMismatch"
 
@@ -66,10 +27,11 @@ internal class FlightSize(
 
 /**
  * A connection's flight recorder. Every datagram in and out, and every network change the connection is told of
- * (written to a trace as a path-state line named for the change, such as `Rehomed`), is recorded on the hot path into a preallocated ring, and its payload into the loop's shared [FlightArena], allocating nothing. The recording is
- * written in the trace grammar of [com.ditchoom.socket.quic.trace.QuicTraceRecorder] (v1) only off that path: after
- * a turn when the connection's [TraceCapture] is on, and into any [TraceSink] on demand, so the existing trace
- * tools and the schedule replay read core recordings unchanged. Inside the connection only.
+ * (written to a trace as a path-state line named for the change, such as `Rehomed`), is recorded on the hot path into a
+ * preallocated ring, and its payload into the loop's shared [FlightArena], allocating nothing. The recording is written
+ * in the trace grammar of [com.ditchoom.socket.quic.trace.QuicTraceRecorder] (v1) only off that path: after a turn when
+ * the connection's [TraceCapture] is on, and into any [TraceSink] on demand, so the existing trace tools and the
+ * schedule replay read core recordings unchanged. Inside the connection only.
  */
 @Confined
 internal class ConnFlight(
@@ -121,7 +83,7 @@ internal class ConnFlight(
         lo: Long,
     ) = ring.put(FlightKind.DatagramDropped, now.value, why.ordinal, ring.bindAddress(family, port, hi, lo), peerId, length, 0L, 0L)
 
-    /** The connection's first datagram was stamped [offsetNanos] off the loop's clock at [now] (ahead when positive): another clock's reading. */
+    /** The first datagram was stamped [offsetNanos] off the loop's clock at [now] (ahead when positive): another clock's. */
     fun pacingClockMismatch(
         now: Nanos,
         offsetNanos: Long,

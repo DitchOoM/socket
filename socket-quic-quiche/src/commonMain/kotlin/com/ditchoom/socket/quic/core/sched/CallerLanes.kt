@@ -4,6 +4,7 @@ import com.ditchoom.socket.quic.core.observe.Link
 import com.ditchoom.socket.quic.core.observe.LoopOnly
 import com.ditchoom.socket.quic.core.pool.FixedPool
 import com.ditchoom.socket.quic.core.pool.Pooled
+import com.ditchoom.socket.quic.core.udp.NativeBytes
 import com.ditchoom.socket.quic.core.udp.SendBatch
 
 /** What a socket lends the threads that send in place: a pool of lanes, or nothing. */
@@ -14,6 +15,27 @@ internal sealed interface CallerLanes {
         val pool: FixedPool<CallerSend>,
     ) : CallerLanes
 }
+
+/** [count] lanes made by [make]: [CallerLanes.None] when [count] is zero, as [SendRule.laneCount] gives for [SendRule.ByLoop]. */
+internal fun callerLanesOf(
+    count: Int,
+    make: (index: Int) -> CallerSend,
+): CallerLanes = if (count == 0) CallerLanes.None else CallerLanes.Of(FixedPool(count, make))
+
+/** The lanes lent. */
+internal val CallerLanes.size: Int
+    get() =
+        when (this) {
+            is CallerLanes.None -> 0
+            is CallerLanes.Of -> pool.size
+        }
+
+/** The memory each lane collects datagrams into, in lane order. */
+internal fun CallerLanes.storages(): List<NativeBytes> =
+    when (this) {
+        is CallerLanes.None -> emptyList()
+        is CallerLanes.Of -> List(pool.size) { pool[it].batch.storage }
+    }
 
 /** What follows a lane in the chain of lanes still holding datagrams the network has not taken. */
 internal sealed interface LaneLink {

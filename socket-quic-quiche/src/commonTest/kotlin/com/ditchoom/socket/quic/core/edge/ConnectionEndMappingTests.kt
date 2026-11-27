@@ -1,10 +1,15 @@
 package com.ditchoom.socket.quic.core.edge
 
+import com.ditchoom.socket.NetworkAccess
 import com.ditchoom.socket.quic.LinkClass
+import com.ditchoom.socket.quic.QuicAccessDenial
+import com.ditchoom.socket.quic.QuicAccessRemedy
 import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicCloseReason
 import com.ditchoom.socket.quic.QuicConnectionEnd
+import com.ditchoom.socket.quic.QuicEarlyDataChange
+import com.ditchoom.socket.quic.QuicEarlyDataRejection
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicHandshakeReached
 import com.ditchoom.socket.quic.QuicRttSample
@@ -22,6 +27,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertSame
+import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.milliseconds
 
 class ConnectionEndMappingTests {
@@ -57,6 +63,8 @@ class ConnectionEndMappingTests {
             ConnEnd.LocalAddressGone,
             ConnEnd.NoUsablePath,
             ConnEnd.HandshakeSendRefused(progress, SendRefusal.PermissionDenied),
+            ConnEnd.AccessDenied(QuicAccessDenial.AndroidPermissionNotHeld),
+            ConnEnd.EarlyDataRejected(QuicEarlyDataRejection.DeclinedByPeer, QuicEarlyDataChange.UnidirectionalStreams(4, 1, 2)),
         )
 
     /** Exhaustive without `else`: a new [ConnEnd] does not compile until it is numbered here and sampled above. */
@@ -79,6 +87,8 @@ class ConnectionEndMappingTests {
             is ConnEnd.LocalAddressGone -> 14
             is ConnEnd.NoUsablePath -> 15
             is ConnEnd.HandshakeSendRefused -> 16
+            is ConnEnd.AccessDenied -> 17
+            is ConnEnd.EarlyDataRejected -> 18
         }
 
     /** The public variant each end must map to, numbered as [variant] numbers ends. */
@@ -101,6 +111,8 @@ class ConnectionEndMappingTests {
             is QuicConnectionEnd.LocalAddressGone -> 14
             is QuicConnectionEnd.NoUsablePath -> 15
             is QuicConnectionEnd.HandshakeSendRefused -> 16
+            is QuicConnectionEnd.AccessDenied -> 17
+            is QuicConnectionEnd.EarlyDataRejected -> 18
             is QuicConnectionEnd.ReasonOnly -> -1
         }
 
@@ -126,6 +138,20 @@ class ConnectionEndMappingTests {
             assertEquals(thrown.end.closeReason, thrown.closeReason)
             assertEquals(closeReasonOf(end), thrown.closeReason)
         }
+    }
+
+    @Test
+    fun aDenialCrossesWholeAndTheCloseNamesTheAccessAndItsRemedy() {
+        val thrown =
+            assertIs<QuicCloseException>(
+                endedWith(ConnEnd.AccessDenied(QuicAccessDenial.MacosNoRouteOnLink), QuicCloseCircumstance.HandshakeFailed),
+            )
+        assertSame(QuicAccessDenial.MacosNoRouteOnLink, assertIs<QuicConnectionEnd.AccessDenied>(thrown.end).denial)
+        assertEquals(QuicCloseReason.Unspecified, thrown.closeReason, "no CONNECTION_CLOSE was exchanged and nothing timed out")
+        val message = thrown.message.orEmpty()
+        assertTrue(NetworkAccess.LocalNetwork.description in message, message)
+        assertEquals(QuicAccessRemedy.AllowLocalNetworkInMacosSettings, QuicAccessDenial.MacosNoRouteOnLink.remedy)
+        assertTrue("Local Network" in message, message)
     }
 
     @Test

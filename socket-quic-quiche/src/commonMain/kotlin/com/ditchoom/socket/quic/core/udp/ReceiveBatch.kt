@@ -27,6 +27,15 @@ internal class ReceiveBatch(
     /** A buffer to receive the next datagram into, or [Taken.Empty] when the batch is full or the pool is empty. */
     fun take(): Taken = if (held.size == limits.maxDatagrams) Taken.Empty else pool.tryTake()
 
+    /**
+     * A buffer to copy the next datagram into, for an io with no receive records of its own: from the pool, else from a
+     * slot a native socket armed, which its next arm refills. [Taken.Empty] only when the batch is full.
+     */
+    fun takeToCopyInto(): Taken {
+        val taken = take()
+        return if (taken is ReceiveBuffer || held.size == limits.maxDatagrams) taken else slots.takeArmed()
+    }
+
     /** A buffer from [take] that received nothing. */
     fun giveBack(buffer: ReceiveBuffer) = pool.give(buffer)
 

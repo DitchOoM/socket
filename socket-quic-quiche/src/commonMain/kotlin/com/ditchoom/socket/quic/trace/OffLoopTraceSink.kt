@@ -2,12 +2,13 @@
 
 package com.ditchoom.socket.quic.trace
 
-import com.ditchoom.socket.quic.serverReceiveDispatcher
 import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.testkit.trace.TraceSink
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.IO
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
@@ -30,7 +31,7 @@ import kotlin.time.Duration.Companion.seconds
  * A [TraceSink] is application code, and the transport never runs application code on its own threads.
  * On JVM/Android a connection's events are recorded on its event loop, which serves other connections
  * too. So [emit] only queues the event on [delivery], without blocking or suspending, and returns. The
- * queue's one delivery coroutine, on the application's dispatcher (`Dispatchers.IO` on JVM/Android),
+ * queue's one delivery coroutine, on `Dispatchers.IO`,
  * calls each sink. A sink may block without stalling any connection.
  *
  * **Order.** Every capture of the process shares one queue ([TraceDeliveryQueue.Shared]), so events reach
@@ -171,6 +172,6 @@ internal class TraceDeliveryQueue(
         const val DEFAULT_CAPACITY = 65_536
 
         /** The process-wide queue every production capture delivers through. */
-        val Shared: TraceDeliveryQueue by lazy { TraceDeliveryQueue(serverReceiveDispatcher) }
+        val Shared: TraceDeliveryQueue by lazy { TraceDeliveryQueue(Dispatchers.IO) }
     }
 }

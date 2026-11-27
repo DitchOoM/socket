@@ -15,8 +15,10 @@ import com.ditchoom.socket.quic.core.pool.FixedPool
 import com.ditchoom.socket.quic.core.ready.NativePoller
 import com.ditchoom.socket.quic.core.ready.PollerOpened
 import com.ditchoom.socket.quic.core.ready.SocketRef
+import com.ditchoom.socket.quic.core.ready.SocketRefs
 import com.ditchoom.socket.quic.core.sched.CallerLanes
 import com.ditchoom.socket.quic.core.sched.SendPort
+import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.MonotonicClock
 import com.ditchoom.socket.quic.core.udp.BatchLimits
 import com.ditchoom.socket.quic.core.udp.NativeIo
@@ -41,6 +43,8 @@ import java.util.function.IntSupplier
 internal class NativeEcho(
     threadName: String,
     ceiling: UdpBatching = UdpBatching.Newest,
+    /** The clock quiche stamps its datagrams on: the loop's, as libquiche's. */
+    private val stamp: LoopClock = MonotonicClock,
 ) {
     private val shim = loadNetShim()
     private val limits = BatchLimits(maxDatagrams = 64, maxDatagramSize = 1500)
@@ -106,7 +110,7 @@ internal class NativeEcho(
         conn =
             testConn(
                 // quiche stamps its datagrams on the clock the loop reads, as libquiche does.
-                EchoQuiche(StubQuicheApi(MonotonicClock)),
+                EchoQuiche(StubQuicheApi(stamp)),
                 CoreTestRules,
                 SendTarget.ServerReply(client.toPathKey(), ReplySource.Undecodable),
                 TraceCapture.Off,
@@ -116,7 +120,15 @@ internal class NativeEcho(
                 sink,
                 ConnCounts(),
             )
-        loop.place(Endpoint(SocketRef(IntSupplier { io.descriptor() }), io, sendPort, Route.Fixed(conn, OwnBatch(send)), Runnable { }))
+        loop.place(
+            Endpoint(
+                SocketRefs(SocketRef(IntSupplier { io.descriptor() }), SocketRef(IntSupplier { io.secondDescriptor() })),
+                io,
+                sendPort,
+                Route.Fixed(conn, OwnBatch(send), unreadCarried()),
+                Runnable { },
+            ),
+        )
         conn.start()
         thread = startLoopThread(loop, threadName)
         return this

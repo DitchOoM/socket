@@ -5,7 +5,7 @@ import com.ditchoom.socket.quic.core.observe.Confined
 /** A set of primitive longs for one thread, over a [LongObjectMap]: no key is boxed. */
 @Confined
 internal class LongSet {
-    private val map = LongObjectMap<Present>()
+    private val map = LongObjectMap(Present)
 
     fun add(key: Long) {
         map[key] = Present
@@ -18,6 +18,8 @@ internal class LongSet {
 
     fun isNotEmpty(): Boolean = map.size > 0
 
+    fun clear() = map.clear()
+
     private object Present
 }
 
@@ -29,6 +31,9 @@ internal class LongQueue {
     private var count = 0
 
     fun isNotEmpty(): Boolean = count > 0
+
+    /** How many values the queue holds. */
+    val size: Int get() = count
 
     fun addLast(value: Long) {
         if (count == ring.size) grow()

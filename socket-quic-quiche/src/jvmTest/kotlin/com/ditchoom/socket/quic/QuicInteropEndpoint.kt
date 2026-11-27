@@ -4,6 +4,7 @@ import com.ditchoom.buffer.Charset
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.socket.quic.trace.QlogDeclaration
 import com.ditchoom.socket.quic.trace.QuicConnectionCapture
 import com.ditchoom.socket.quic.trace.QuicTraceCapture
 import com.ditchoom.socket.testkit.trace.TraceSink
@@ -36,13 +37,15 @@ import kotlin.time.TimeSource
  *  - `connectionmigration`: the runner's migration test is the server's preferred_address, which quiche
  *    does not advertise. The CLIENT is handed `transfer` there, so our client against a peer that
  *    advertises one is reported as a failure, which is accurate: it does not move to it.
- *  - `keyupdate`, `chacha20`, `ecn`, `v2`: quiche exposes no per-connection control for them.
+ *  - `chacha20`, `ecn`, `v2`: quiche exposes no per-connection control for them.
+ *  - `keyupdate`: served as `transfer` (the peer's client starts the updates and quiche follows them); as a
+ *    client this endpoint answers [UNSUPPORTED], because quiche never starts a key update.
  *  - `http3`: socket-http3 can serve it; wiring it in here is a follow-up.
  *
  * The client's tests and its `CLIENT_PARAMS` (`migrate=active`) are described at [runInteropClient]; the
  * server's `SERVER_PARAMS` (`streams=raised`) at [InteropStreamLimit].
  */
-private val serverTests = setOf("handshake", "transfer", "multiconnect", "resumption", "zerortt")
+private val serverTests = setOf("handshake", "transfer", "multiconnect", "resumption", "zerortt", "keyupdate")
 
 /**
  * This library as a [quic-interop-runner](https://github.com/quic-interop/quic-interop-runner) endpoint,
@@ -74,7 +77,7 @@ fun main() {
     val code =
         when (role) {
             "server" -> if (test in serverTests) runServer(test, recorder) else UNSUPPORTED
-            "client" -> runClient()
+            "client" -> if (test == "keyupdate") UNSUPPORTED else runClient()
             else -> {
                 System.err.println("ROLE must be client or server, was '$role'")
                 1
@@ -293,6 +296,8 @@ private suspend fun QuicScope.serveRequest(
                 .removePrefix("GET")
                 .trim()
                 .trimStart('/')
+        // Ties a request the peer reports giving up on, which it names by path, to the connection that served it.
+        println("REQUEST session=${identity.session.hex} path=/$path")
         val file = www.resolve(path).canonicalFile
         if (!file.path.startsWith(www.canonicalPath) || !file.isFile) {
             stream.reset(0x10C) // H3_REQUEST_REJECTED's value; hq-interop has no status line to send
@@ -391,7 +396,7 @@ private sealed interface TraceDirectory {
                         val writer = BudgetedTraceWriter(file("server").bufferedWriter(), SERVER_TRACE_BUDGET)
                         serverWriters.add(writer)
                         QuicConnectionCapture(writer.sink)
-                    }),
+                    }, QlogDeclaration.NotBudgeted),
             )
 
         override fun flushServerTraces() = serverWriters.forEach(BudgetedTraceWriter::flush)
@@ -414,7 +419,13 @@ private class FileConnectionCapture(
 ) : InteropConnectionCapture {
     private val writer = BudgetedTraceWriter(file.bufferedWriter(), Long.MAX_VALUE)
 
-    override fun options(base: QuicOptions): QuicOptions = base.copy(trace = QuicTraceCapture({ QuicConnectionCapture(writer.sink) }))
+    override fun options(base: QuicOptions): QuicOptions =
+        base.copy(
+            trace =
+                QuicTraceCapture({
+                    QuicConnectionCapture(writer.sink)
+                }, QlogDeclaration.NotBudgeted),
+        )
 
     override fun keep() = writer.close()
 

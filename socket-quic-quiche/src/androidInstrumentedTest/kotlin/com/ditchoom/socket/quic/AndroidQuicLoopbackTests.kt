@@ -55,7 +55,7 @@ class AndroidQuicLoopbackTests {
         // Scoped read (#538): decode inside the block, buffer released on the way out — read
         // transfers ownership and no collector will reclaim what a pool never gets back.
         val resp = read(5.seconds) { it.readString(it.remaining(), Charset.UTF8) }
-        return if (resp is ScopedRead.Data) resp.value else "no_data"
+        return if (resp is ScopedReadResult.Data) resp.value else "no_data"
     }
 
     /** Verify 127.0.0.2 is bindable (Linux/Android: yes by default for 127.0.0.0/8). */
@@ -91,7 +91,7 @@ class AndroidQuicLoopbackTests {
                                         // Echo inside the read scope: write is zero-copy and takes no
                                         // ownership, the scope releases the read buffer on exit (#538).
                                         val data = stream.read(8.seconds) { stream.write(it, 5.seconds) }
-                                        if (data !is ScopedRead.Data) break
+                                        if (data !is ScopedReadResult.Data) break
                                     }
                                     stream.close()
                                 }

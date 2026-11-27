@@ -10,7 +10,6 @@ import com.ditchoom.buffer.flow.Resettable
 import com.ditchoom.buffer.flow.WritePolicy
 import kotlin.concurrent.Volatile
 import kotlin.time.Duration
-import kotlin.time.Duration.Companion.seconds
 
 /**
  * Platform-agnostic interface for a QUIC stream backed by a quiche connection.
@@ -53,7 +52,7 @@ interface QuicheStreamAdapter {
      * bound until the process dies of `std::bad_alloc`.
      *
      * Callers that do not keep the bytes should not be releasing anything by
-     * hand — use the scoped `read(deadline) { … }` (`ScopedRead`, in
+     * hand — use the scoped `read(deadline) { … }` (`ScopedReadResult`, in
      * `:socket-quic`), which releases on every exit path including exception
      * and cancellation. The codec/mux path already honors ownership without it:
      * a `CodecConnection` hands the buffer to its `StreamProcessor`, which takes
@@ -161,7 +160,7 @@ class QuicheStreamByteStream(
      * an unreleased buffer permanently costs a pool slot. See
      * [QuicheStreamAdapter.streamRead] for the full contract.
      *
-     * **Prefer the scoped `read(deadline) { … }`** (`ScopedRead`, in
+     * **Prefer the scoped `read(deadline) { … }`** (`ScopedReadResult`, in
      * `:socket-quic`) unless the bytes genuinely have to outlive the call: it
      * releases on every exit path, including exception and cancellation, so the
      * release is not the caller's to remember. This overload stays for the
@@ -223,6 +222,6 @@ class QuicheStreamByteStream(
 
     companion object {
         /** Default per-call deadline for a request/response-shaped stream (`QuicOptions.persistentStreams = false`). */
-        val DEFAULT_STREAM_DEADLINE: Duration = 15.seconds
+        val DEFAULT_STREAM_DEADLINE: Duration = com.ditchoom.socket.quic.DEFAULT_STREAM_DEADLINE
     }
 }

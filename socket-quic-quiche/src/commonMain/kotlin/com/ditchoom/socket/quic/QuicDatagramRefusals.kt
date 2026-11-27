@@ -5,22 +5,27 @@ internal sealed interface DatagramRefusal {
     /** Datagrams are off here, or the peer never advertised support for them. */
     data object NotNegotiated : DatagramRefusal
 
-    /** quiche's send queue is full; nothing was queued. */
+    /** The send queue is full; nothing was queued. */
     data object QueueFull : DatagramRefusal
+
+    /** Another receive of the connection's datagrams is under way: they have one receiver at a time. */
+    data object ReceiverBusy : DatagramRefusal
 
     /** quiche refused it with [code]. */
     class Quiche(
         val code: Int,
-    ) : DatagramRefusal
+    ) : DatagramRefusal {
+        override fun toString() = "Quiche(code=$code)"
+    }
 }
 
-/** What a datagram call raises when the connection cannot carry it: [refusal] says why. */
+/** What a datagram call raises when the connection cannot carry it: [refusal] says why, and so does its message. */
 internal class QuicDatagramRefused(
     val refusal: DatagramRefusal,
-) : IllegalStateException()
+) : IllegalStateException("datagram refused: $refusal")
 
 /** A datagram of [size] bytes does not fit the path as it stands, which carries [maxBytes]. */
 internal class QuicDatagramTooLarge(
     val size: Int,
     val maxBytes: Int,
-) : IllegalArgumentException()
+) : IllegalArgumentException("datagram of $size bytes is larger than the $maxBytes the path carries")

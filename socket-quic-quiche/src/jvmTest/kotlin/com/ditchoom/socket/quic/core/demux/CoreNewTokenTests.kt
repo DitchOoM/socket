@@ -15,6 +15,7 @@ import com.ditchoom.socket.quic.core.conn.ClientTokens
 import com.ditchoom.socket.quic.core.edge.connectCore
 import com.ditchoom.socket.quic.core.edge.coreTestOptions
 import com.ditchoom.socket.quic.core.edge.echoOver
+import com.ditchoom.socket.quic.core.edge.openStream
 import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.testing.platformQuicheApi
 import kotlinx.coroutines.runBlocking

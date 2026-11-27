@@ -8,10 +8,7 @@ import org.junit.runner.RunWith
  * [JvmQuicServerLifecycleTestSuite] / [LinuxQuicServerLifecycleTests] / [AppleQuicServerLifecycleTests].
  *
  * Inherits every black-box lifecycle invariant (close returns promptly, blocking handlers terminate,
- * rapid bind/close cycles don't hang, the incoming-streams flow completes on connection close). The
- * JVM-only reflection assertion on `serverJob` state lives in [JvmQuicServerLifecycleTestSuite] and is
- * deliberately not mirrored here — like Linux/Apple, Android relies on the externally observable
- * consequences of the same invariant.
+ * rapid bind/close cycles don't hang, the incoming-streams flow completes on connection close).
  */
 @RunWith(AndroidJUnit4::class)
 class AndroidQuicServerLifecycleTests : QuicServerLifecycleTestSuite() {

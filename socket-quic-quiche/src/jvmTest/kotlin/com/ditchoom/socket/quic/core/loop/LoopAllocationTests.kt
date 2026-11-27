@@ -5,14 +5,20 @@ import com.ditchoom.socket.quic.core.testing.NioEcho
 import com.ditchoom.socket.quic.core.testing.allocationSamples
 import com.ditchoom.socket.quic.core.testing.assumeNativeStack
 import com.ditchoom.socket.quic.core.testing.withDescriptorsAbove127
+import com.ditchoom.socket.quic.core.time.LoopClock
+import com.ditchoom.socket.quic.core.time.MonotonicClock
+import com.ditchoom.socket.quic.core.time.Nanos
 import java.lang.management.ManagementFactory
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.nio.channels.DatagramChannel
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.milliseconds
 
 /**
  * What the loop thread allocates per datagram it receives and sends, measured with the JVM's per-thread allocation
@@ -36,6 +42,79 @@ class LoopAllocationTests {
         withDescriptorsAbove127 { measure(Stack.Native) }
     }
 
+    /**
+     * quiche stamps one datagram [HOLD] past the turn's clock reading, as it does when the loop stalls more than the
+     * pacing allowance between the two (CI, Apple FFM and JNI: a `ConnTimer` lambda on the echo's loop thread). The
+     * connection holds its sending and arms its deadline for the first time, mid-traffic; that arming allocates nothing.
+     * A first echo runs the same hold so that every class on its path is loaded before the measured one.
+     */
+    @Test
+    fun onTheNativeStackAConnectionsFirstPacingHoldAllocatesNothing() {
+        assumeNativeStack()
+        heldEcho(AheadOnce(), HeldRun.LoadsClasses)
+        heldEcho(AheadOnce(), HeldRun.Measured)
+    }
+
+    private enum class HeldRun { LoadsClasses, Measured }
+
+    /** A stamp clock that reads one datagram [HOLD] ahead, once [hold] is called; every other one on the loop's clock. */
+    private class AheadOnce : LoopClock {
+        private val state = AtomicInteger(OFF)
+
+        fun hold() = state.set(ARMED)
+
+        fun held(): Boolean = state.get() == SPENT
+
+        override fun now(): Nanos =
+            if (state.compareAndSet(ARMED, SPENT)) Nanos(MonotonicClock.now().value + HOLD.inWholeNanoseconds) else MonotonicClock.now()
+
+        private companion object {
+            const val OFF = 0
+            const val ARMED = 1
+            const val SPENT = 2
+        }
+    }
+
+    private fun heldEcho(
+        stamp: AheadOnce,
+        run: HeldRun,
+    ) {
+        val client = DatagramChannel.open()
+        val echo = NativeEcho(HELD_NAME, stamp = stamp)
+        client.connect(echo.address)
+        echo.start(client.localAddress as InetSocketAddress)
+        val threads = ManagementFactory.getThreadMXBean() as com.sun.management.ThreadMXBean
+        val out = ByteBuffer.allocateDirect(1200)
+        val back = ByteBuffer.allocateDirect(1500)
+
+        fun echoes(times: Int) =
+            repeat(times) {
+                out.clear()
+                client.write(out)
+                back.clear()
+                client.read(back)
+            }
+        try {
+            echoes(WARM_UP)
+            val before = threads.getThreadAllocatedBytes(echo.thread.id)
+            stamp.hold()
+            echoes(HELD_WINDOW)
+            val allocated = threads.getThreadAllocatedBytes(echo.thread.id) - before
+            assertTrue(stamp.held(), "quiche stamped a datagram ahead in the window")
+            when (run) {
+                HeldRun.LoadsClasses -> Unit
+                HeldRun.Measured ->
+                    assertEquals(0L, allocated, "the loop thread allocated over a window with the connection's first pacing hold")
+            }
+        } finally {
+            val closed = CompletableFuture<Unit>()
+            echo.loop.close { closed.complete(Unit) }
+            closed.get(5, TimeUnit.SECONDS)
+            echo.thread.join(5_000)
+            client.close()
+        }
+    }
+
     private enum class Stack { Jdk, Native }
 
     private class Running(
@@ -51,7 +130,7 @@ class LoopAllocationTests {
                     val server = DatagramChannel.open().bind(InetSocketAddress("127.0.0.1", 0))
                     server.configureBlocking(false)
                     client.connect(server.localAddress)
-                    val nio = NioEcho(server, client.localAddress as InetSocketAddress, "core-loop-alloc")
+                    val nio = NioEcho(server, client.localAddress as InetSocketAddress, LOOP_NAME)
                     Running(nio.loop, nio.thread)
                 }
                 Stack.Native -> {
@@ -90,12 +169,13 @@ class LoopAllocationTests {
                 .createTempFile("core-loop", ".jfr")
         recording.dump(dump)
         val sites = HashMap<String, Long>()
-        allocationSamples(dump) { it == "core-loop-alloc" }.forEach { e ->
+        allocationSamples(dump) { it == LOOP_NAME }.forEach { e ->
             val frames =
                 e.stackTrace?.frames.orEmpty().take(6).joinToString(" < ") {
                     "${it.method.type.name.substringAfterLast('.')}.${it.method.name}"
                 }
-            sites.merge("${e.getClass("objectClass").name} @ $frames", e.getLong("weight"), Long::plus)
+            // Which thread of that name: the echo's own loop thread is [echo.thread]'s id.
+            sites.merge("[tid ${e.thread?.javaThreadId}] ${e.getClass("objectClass").name} @ $frames", e.getLong("weight"), Long::plus)
         }
         val whereFrom =
             sites.entries
@@ -118,13 +198,24 @@ class LoopAllocationTests {
         )
         when (stack) {
             Stack.Native -> {
-                assertTrue(sites.isEmpty(), "the loop thread allocated on the native stack:\n%s".format(whereFrom))
+                assertTrue(
+                    sites.isEmpty(),
+                    "the loop thread (tid ${echo.thread.id}) allocated on the native stack; live threads of its name: %s\n%s"
+                        .format(
+                            Thread
+                                .getAllStackTraces()
+                                .keys
+                                .filter { it.name == LOOP_NAME }
+                                .map { it.id },
+                            whereFrom,
+                        ),
+                )
                 assertTrue(perEcho < 1.0, "the loop thread allocated %.1f bytes per echoed datagram:\n%s".format(perEcho, whereFrom))
                 return
             }
             Stack.Jdk -> Unit
         }
-        val notTheSelectorsBoxing = sites.keys.filterNot { it.startsWith(BOXED_KEY) && it.contains(SELECTOR_FRAME) }
+        val notTheSelectorsBoxing = sites.keys.filterNot { it.substringAfter("] ").startsWith(BOXED_KEY) && it.contains(SELECTOR_FRAME) }
         assertTrue(
             notTheSelectorsBoxing.isEmpty(),
             "the loop thread allocated at a site other than the JDK selector's boxing:\n%s".format(whereFrom),
@@ -144,12 +235,12 @@ class LoopAllocationTests {
      */
     private fun nativeEchoAbove127(): NativeEcho {
         val low = ArrayList<NativeEcho>()
-        var echo = NativeEcho("core-loop-alloc")
+        var echo = NativeEcho(LOOP_NAME)
         while (echo.descriptor <= 127) {
             System.err.println("LoopAllocationTests: the echo socket took freed descriptor ${echo.descriptor}; opening another")
             low += echo
             assertTrue(low.size < LOW_DESCRIPTOR_RETRIES, "the echo socket took a descriptor at or below 127 $LOW_DESCRIPTOR_RETRIES times")
-            echo = NativeEcho("core-loop-alloc")
+            echo = NativeEcho(LOOP_NAME)
         }
         low.forEach { spare ->
             spare.start(InetSocketAddress("127.0.0.1", DISCARD_PORT))
@@ -162,6 +253,10 @@ class LoopAllocationTests {
     }
 
     private companion object {
+        const val LOOP_NAME = "core-loop-alloc"
+        const val HELD_NAME = "core-loop-held"
+        const val HELD_WINDOW = 2_000
+        val HOLD = 3.milliseconds
         const val LOW_DESCRIPTOR_RETRIES = 16
         const val DISCARD_PORT = 9
         const val BOXED_INTEGER_BYTES = 16

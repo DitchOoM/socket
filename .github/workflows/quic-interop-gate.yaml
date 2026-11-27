@@ -12,6 +12,8 @@ name: QUIC interop gate
 #
 # Every cell job also writes <direction>__<peer>.evidence.json (quic-interop-evidence.py: facts from our
 # endpoint's qlog and the runner's output), which the gate checks each known failure's signature against.
+# A test that failed twice carries the retry's own record under "retry", and the gate requires each failed
+# attempt to show the signature.
 #
 # A cell expected to pass that fails twice (one retry) fails the gate, so does a peer that produced no
 # result and a cell with no expectation. A known failure that starts passing is STALE and fails the gate, so
@@ -64,6 +66,8 @@ on:
 permissions:
   contents: read
   actions: read
+  # The held haproxy image is a private package of this organisation (ghcr.io/ditchoom/haproxy-qns).
+  packages: read
 
 env:
   ORG_GRADLE_PROJECT_version: ${{ inputs.version }}
@@ -113,9 +117,26 @@ jobs:
           path: /tmp/quic-interop-image.tar.zst
           retention-days: 3
 
+  # The PPA's tshark, fetched once per run for every cell. See fetch-ppa-tshark.sh for why this uses
+  # Launchpad's API and file server rather than the PPA's apt archive (2026-11-23: the archive answered 503
+  # for every cell of run 45187417720 while the file server kept serving the same .debs).
+  tshark:
+    name: "tshark (wireshark-dev PPA)"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Fetch the PPA's tshark packages
+        run: .github/scripts/fetch-ppa-tshark.sh /tmp/tshark-debs
+      - uses: actions/upload-artifact@v7
+        with:
+          name: quic-interop-tshark-debs
+          path: /tmp/tshark-debs
+          retention-days: 3
+
   cell:
     name: "${{ matrix.direction }} · ${{ matrix.peer }}"
-    needs: [plan, image]
+    needs: [plan, image, tshark]
     runs-on: ubuntu-24.04
     timeout-minutes: 150
     strategy:
@@ -146,10 +167,19 @@ jobs:
           zstd -dc /tmp/quic-interop-image.tar.zst | docker load
           sudo modprobe ip6table_filter
 
+      # A held peer image (peer-images.json) is a private package of this organisation; the job's token reads it.
+      - name: Log in to GHCR for held peer images
+        run: echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: quic-interop-tshark-debs
+          path: /tmp/tshark-debs
+
       # tshark decodes the captures the runner judges rebinding and handshakes from. See quic-interop.yaml's
       # history for why the issued connection id length must stay below 20.
-      # Every cell job starts this at once, and Launchpad's API answers some of them 500
-      # (GPGKeyTemporarilyNotFoundError) under that burst, so the PPA and apt steps are retried with backoff.
+      # The PPA's own packages come from the tshark job's artifact, so no cell contacts Launchpad. Only their
+      # Ubuntu dependencies come from the archive, and the update and install are retried with backoff.
       - name: Install the runner and tshark
         run: |
           set -euo pipefail
@@ -163,23 +193,27 @@ jobs:
             "$@"
           }
           sleep $((RANDOM % 30))
-          retry sudo add-apt-repository -y ppa:wireshark-dev/stable
-          # Error-Mode=any: a source that answers 503 fails the update, so it is retried. Without it apt-get exits 0
-          # and the install takes Ubuntu's own tshark (4.2), whose dissector cannot follow a rebound path: every
-          # our-server rebind cell then fails "did not contain a PATH_CHALLENGE" (run 44069038229).
-          retry sudo apt-get update -o APT::Update::Error-Mode=any
+          retry sudo apt-get update
           echo "wireshark-common wireshark-common/install-setuid boolean false" | sudo debconf-set-selections
-          retry sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tshark
+          # Installing the .debs by path pins the PPA's build. Ubuntu's own tshark (4.2) has a dissector that
+          # cannot follow a rebound path: every our-server rebind cell then fails "did not contain a
+          # PATH_CHALLENGE" (run 44069038229). The version check below keeps that from passing silently.
+          retry sudo DEBIAN_FRONTEND=noninteractive apt-get install -y /tmp/tshark-debs/*.deb
           installed=$(dpkg-query -W -f='${Version}' tshark)
           case "$installed" in
-            *~ppa*) echo "tshark $installed from the wireshark-dev PPA" ;;
+            "$(cat /tmp/tshark-debs/VERSION)") echo "tshark $installed from the wireshark-dev PPA" ;;
             *) echo "::error title=tshark is not the PPA's::installed $installed; the rebind cells need the PPA's dissector"; exit 1 ;;
           esac
-          git clone --depth 1 https://github.com/quic-interop/quic-interop-runner.git /tmp/runner
+          # The runner and every peer image are pinned (test-harness/quic-interop/peer-images.json): a peer's new
+          # :latest is a pull request of its own (quic-interop-peer-pins.yaml), never a change inside a gate run.
+          pins="$GITHUB_WORKSPACE/test-harness/quic-interop/peer-images.json"
+          git clone https://github.com/quic-interop/quic-interop-runner.git /tmp/runner
+          git -C /tmp/runner checkout --quiet "$(jq -r .runner "$pins")"
           pip install -r /tmp/runner/requirements.txt
           # Without this the runner dies about once in ten runs on a tshark that exited normally.
           python3 "$GITHUB_WORKSPACE/.github/scripts/patch-pyshark-reap.py"
           cd /tmp/runner
+          python3 "$GITHUB_WORKSPACE/.github/scripts/quic-interop-pins.py" apply "$pins" /tmp/runner
           FILE=implementations_quic.json
           [ -f "$FILE" ] || FILE=implementations.json
           jq --arg img "$IMAGE" '. + {"ditchoom": {"image": $img, "url": "https://github.com/DitchOoM/socket", "role": "both"}}' \
@@ -191,6 +225,8 @@ jobs:
         working-directory: /tmp/runner
         run: |
           set -uo pipefail
+          # A whole cell's test list runs in under 15 minutes when nothing is held (every cell of run 45941749259).
+          RUNNER_BOUND=30m
           results="$GITHUB_WORKSPACE/interop-results"
           mkdir -p "$results" /tmp/interop
           exp="$GITHUB_WORKSPACE/test-harness/quic-interop/expectations.json"
@@ -220,14 +256,60 @@ jobs:
             echo "::error::the interop runner wrote no results for $(basename "$json") (exit $rc); see $(basename "$report") in the results artifact"
             sed -n '1,40p' "$report"
           }
-          run_pair() { # <tests> <logs> <json> [runner role flags...]
-            local t=$1 logs=$2 json=$3 log="${3%.json}.runner.log" rc
-            shift 3
-            # run.py exits non-zero when a test fails, and this step runs under `bash -e`.
-            rc=0
-            python3 run.py "$@" -t "$t" -l "$logs" -j "$json" -d 2>&1 | tee "$log" || rc=$?
-            [ -s "$json" ] || runner_crash "$logs" "$json" "$rc" "$log"
+          # A container Docker cannot kill holds `docker compose` and the runner with it, past any test's own
+          # limit (run 45941749259: neqo's server ignored SIGKILL after our client exited 0, and the cell sat
+          # silent until the job timed out). Each runner invocation is bounded; on the bound, what held it is
+          # recorded, every container is removed, and the invocation runs once more only if Docker recovered.
+          runner_wedged() { # <json> <attempt>
+            local report="${1%.json}.runner-wedged-$2.txt"
+            {
+              echo "the runner passed its ${RUNNER_BOUND} bound (attempt $2)"
+              echo "== containers"; docker ps -a --format '{{.ID}} {{.Image}} {{.Status}} {{.Names}}'
+              echo "== processes in uninterruptible sleep"
+              ps -eo pid,ppid,stat,wchan:32,etime,args | awk 'NR == 1 || $3 ~ /^D/'
+              echo "== kernel: hung tasks"
+              sudo dmesg -T 2>/dev/null | grep -i -E 'hung_task|blocked for more than|task .* D ' | tail -40 || true
+            } > "$report" 2>&1
+            echo "::error title=interop runner wedged::$(basename "$1") attempt $2; see $(basename "$report") in the results artifact"
+            sed -n '1,30p' "$report"
+            docker ps -aq | xargs -r timeout 60 docker rm -f >/dev/null 2>&1 || true
+            [ -z "$(docker ps -aq)" ]
           }
+          run_pair() { # <tests> <logs> <json> [runner role flags...]
+            local t=$1 logs=$2 json=$3 log="${3%.json}.runner.log" rc attempt
+            shift 3
+            for attempt in 1 2; do
+              # run.py exits non-zero when a test fails, and this step runs under `bash -e`.
+              rc=0
+              # Unbuffered, so the log's timestamps are when each line was written, not when a buffer filled.
+              PYTHONUNBUFFERED=1 timeout --kill-after=2m "$RUNNER_BOUND" \
+                python3 run.py "$@" -t "$t" -l "$logs" -j "$json" -d 2>&1 | tee "$log" || rc=$?
+              [ "$rc" = 124 ] || [ "$rc" = 137 ] || break
+              runner_wedged "$json" "$attempt" || break
+              rm -rf "$logs" "$json"
+            done
+            if [ ! -s "$json" ]; then
+              runner_crash "$logs" "$json" "$rc" "$log"
+            elif ! why=$(python3 "$gate" ran "$json"); then
+              # The runner skips every test of a peer it found "not compliant", an image it could not pull
+              # included, and exits 0: a run of only skipped tests is the cell not running, which fails it here.
+              echo "::error title=interop cell did not run::$(basename "$json"): $why"
+              not_run+=("$(basename "$json")")
+            fi
+          }
+          not_run=()
+          # The runner pulls through docker compose with no retry, so one DNS timeout on the runner VM reads as a
+          # peer that is not compliant. Every image a cell needs is pulled first, each with its own retries.
+          impl=implementations_quic.json
+          [ -f "$impl" ] || impl=implementations.json
+          peer_image=$(jq -er --arg p "$PEER" '.[$p].image' "$impl")
+          for img in "$peer_image" $(grep -oE '^\s*image: *[^$[:space:]]+' docker-compose.yml | awk '{print $2}' | sort -u); do
+            for attempt in 1 2 3 4; do
+              docker pull --quiet "$img" && break
+              [ "$attempt" = 4 ] && { echo "::error title=peer image did not pull::$img, after $attempt attempts"; exit 1; }
+              sleep $((attempt * 15))
+            done
+          done
           case "$DIRECTION" in
             our-client) roles=(-c ditchoom -s "$PEER") ;;
             our-server) roles=(-s ditchoom -c "$PEER") ;;
@@ -247,7 +329,7 @@ jobs:
             fi
           fi
           evidence="$GITHUB_WORKSPACE/.github/scripts/quic-interop-evidence.py"
-          python3 -I "$evidence" /tmp/interop/logs "$DIRECTION" "$PEER" "$results/${DIRECTION}__${PEER}.evidence.json"
+          python3 -I "$evidence" /tmp/interop/logs "$DIRECTION" "$PEER" "$results/${DIRECTION}__${PEER}.evidence.json" /tmp/interop/logs-retry
           if [ "$DIRECTION" = our-server ] && [ -z "$TESTS" ]; then
             # The runner's compose file hands the server container SERVER_PARAMS from this environment.
             export SERVER_PARAMS=streams=raised
@@ -260,7 +342,7 @@ jobs:
               fi
             fi
             unset SERVER_PARAMS
-            python3 -I "$evidence" /tmp/interop/logs-raised-streams "$raised" "$PEER" "$results/${raised}__${PEER}.evidence.json"
+            python3 -I "$evidence" /tmp/interop/logs-raised-streams "$raised" "$PEER" "$results/${raised}__${PEER}.evidence.json" /tmp/interop/logs-raised-streams-retry
           fi
           if [ "$DIRECTION" = our-client ] && [ -z "$TESTS" ]; then
             # The runner's compose file hands the client container CLIENT_PARAMS from this environment.
@@ -286,6 +368,7 @@ jobs:
             fi
           done > "$results/${DIRECTION}__${PEER}.reasons.txt" || true
           ls -la "$results"
+          [ "${#not_run[@]}" -eq 0 ] || { echo "::error::no test ran in: ${not_run[*]}"; exit 1; }
 
       - uses: actions/upload-artifact@v7
         if: ${{ !cancelled() }}

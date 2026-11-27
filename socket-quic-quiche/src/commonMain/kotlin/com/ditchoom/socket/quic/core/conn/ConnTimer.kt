@@ -4,6 +4,7 @@ import com.ditchoom.socket.quic.NO_TIMEOUT_NANOS
 import com.ditchoom.socket.quic.Rearmable
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.observe.Confined
+import com.ditchoom.socket.quic.core.observe.TimerCounts
 import com.ditchoom.socket.quic.core.sched.LoopPort
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.time.WakeSink
@@ -14,7 +15,7 @@ import kotlin.time.Duration.Companion.nanoseconds
 /** Whether quiche's own timer has fallen due. */
 internal enum class TimerDue { Due, NotYet }
 
-/** The connection's deadline: made by the first arming, with the action every arming runs, and re-armed in place after. */
+/** The connection's deadline: made once, with the action every arming runs, and re-armed in place after. */
 private sealed interface TimerDeadline {
     data object Unmade : TimerDeadline
 
@@ -34,14 +35,21 @@ internal class ConnTimer(
     private val q: QuicheConnRef,
     private val port: LoopPort,
     val sink: WakeSink,
+    private val counts: TimerCounts = TimerCounts(),
 ) {
     private var deadline: TimerDeadline = TimerDeadline.Unmade
+
+    /** A serve ended with the connection open, and may re-arm next. */
+    fun served() {
+        counts.served()
+    }
 
     /** Re-arms after a turn at [now]; [fire] runs on the loop when the deadline falls due. */
     fun rearm(
         now: Nanos,
         fire: Runnable,
     ) {
+        counts.rearmed()
         val wait = q.api.connTimeoutNanos(q.handle)
         val asked = sink.state()
         val offered = sink.earliest()
@@ -53,6 +61,7 @@ internal class ConnTimer(
             }
         val made = made(fire)
         if (made.wanted().fold(none = { false }, at = { it <= due.value })) return
+        counts.moved()
         port.arm(made, due)
     }
 
@@ -67,10 +76,19 @@ internal class ConnTimer(
         }
         val made = made(fire)
         if (made.wanted().fold(none = { false }, at = { it == due.value })) return
+        counts.moved()
         port.arm(made, due)
     }
 
-    /** The deadline, made on the first arming with [fire]: a connection's every arming passes the same action. */
+    /**
+     * Makes the deadline with [fire], the action of the connection's every arming, when the connection is built: a
+     * first arming made on the loop mid-traffic (a pacing hold) would allocate there.
+     */
+    fun make(fire: Runnable) {
+        made(fire)
+    }
+
+    /** The deadline, made by [make] or else by the first arming, with [fire]. */
     private fun made(fire: Runnable): Rearmable =
         when (val d = deadline) {
             is TimerDeadline.Made -> d.deadline

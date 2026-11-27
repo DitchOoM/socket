@@ -23,6 +23,7 @@ import com.ditchoom.socket.quic.core.testing.assumeNativeStack
 import com.ditchoom.socket.quic.core.testing.platformQuicheApi
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 import com.ditchoom.socket.quic.network
+import com.ditchoom.socket.quic.trace.QlogDeclaration
 import com.ditchoom.socket.quic.trace.QlogTarget
 import com.ditchoom.socket.quic.trace.QuicConnectionCapture
 import com.ditchoom.socket.quic.trace.QuicTraceCapture
@@ -151,6 +152,7 @@ class CoreConnectSetupFailureTests {
                                 qlog = QlogTarget.File(File(qlogDir, "client.sqlog").path),
                             )
                         },
+                        qlog = QlogDeclaration.NotBudgeted,
                         recordNetworkObservations = true,
                     )
                 val failed =

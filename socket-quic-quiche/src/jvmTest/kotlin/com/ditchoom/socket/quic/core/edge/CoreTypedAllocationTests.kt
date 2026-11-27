@@ -10,7 +10,10 @@ import com.ditchoom.buffer.codec.PeekResult
 import com.ditchoom.buffer.codec.WireSize
 import com.ditchoom.buffer.stream.StreamProcessor
 import com.ditchoom.socket.quic.QuicError
-import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.ScopedReadResult
+import com.ditchoom.socket.quic.core.loop.LoopSet
+import com.ditchoom.socket.quic.core.sched.SendRule
+import com.ditchoom.socket.quic.core.sched.sendRuleOfThisRuntime
 import com.ditchoom.socket.quic.core.testing.allocationSamples
 import com.ditchoom.socket.quic.core.testing.loopGateOfThisStack
 import com.ditchoom.socket.quic.core.testing.withDescriptorsAbove127
@@ -73,34 +76,49 @@ private object TickCodec : Codec<Tick> {
  * counter after warm-up, as [CoreQuicAllocationTests] measures a byte-stream echo. The caller's total is split into what
  * the codec and its value force (encoding, frame detection and decoding the same message with no transport, measured the
  * same way) and what is left, which is the transport's: the suspend calls of [TypedQuicStream.send] and
- * [TypedQuicStream.receive], the [ScopedRead] that carries a message, and the continuation of a call that has to wait.
- * A send that quiche takes at once and a receive of a frame already buffered allocate no continuation.
+ * [TypedQuicStream.receive], the [ScopedReadResult] that carries a message, and the continuation of a call that has to wait.
+ * A receive of a frame already buffered allocates no continuation, nor, where callers send in place
+ * ([SendRule.InPlace]), does a send that quiche takes at once; under [SendRule.ByLoop] every send waits for the loop.
  */
 class CoreTypedAllocationTests {
     @Test
-    fun aPingPongEchoAllocatesTheCodecsAndTheWaitsContinuations() = measure("ping-pong", batch = 1, callerGate = PING_PONG_GATE)
+    fun aPingPongEchoAllocatesTheCodecsAndTheWaitsContinuations() =
+        measure("ping-pong", batch = 1, callerGate = PING_PONG_GATE, sends = sendRuleOfThisRuntime)
 
     @Test
-    fun anEchoOfFramesAlreadyBufferedAllocatesLittleBeyondTheCodec() = measure("pipelined", batch = BATCH, callerGate = PIPELINED_GATE)
+    fun anEchoOfFramesAlreadyBufferedAllocatesLittleBeyondTheCodecWhereCallersSendInPlace() =
+        measure("pipelined in place", batch = BATCH, callerGate = pipelinedGateOf(SendRule.InPlace), sends = SendRule.InPlace)
+
+    @Test
+    fun anEchoOfFramesAlreadyBufferedAllocatesLittleBeyondTheCodecWhereTheLoopSendsEverything() =
+        measure("pipelined by loop", batch = BATCH, callerGate = pipelinedGateOf(SendRule.ByLoop), sends = SendRule.ByLoop)
+
+    private fun pipelinedGateOf(rule: SendRule): Int =
+        when (rule) {
+            is SendRule.InPlace -> PIPELINED_GATE
+            is SendRule.ByLoop -> PIPELINED_BY_LOOP_GATE
+        }
 
     private fun measure(
         name: String,
         batch: Int,
         callerGate: Int,
+        sends: SendRule,
     ) = runBlocking {
         withDescriptorsAbove127 {
             skipOnMissingNativeLib(CoreTypedAllocationTests::class) {
-                withCoreServer(onConnection = { connection ->
+                withCoreServer(sends = sends, onConnection = { connection ->
                     val stream = connection.acceptTypedStream(TickCodec)
                     while (true) {
                         when (val read = stream.receive()) {
-                            is ScopedRead.Data -> stream.send(read.value)
+                            is ScopedReadResult.Data -> stream.send(read.value)
                             else -> break
                         }
                     }
                     stream.close()
                 }) { server ->
-                    val client = connectCore(server.port, factory = BufferFactory.network())
+                    val loops = LoopSet(1, sends = sends)
+                    val client = connectCore(server.port, loops = loops, factory = BufferFactory.network())
                     val dispatcher = TypedCallerDispatcher(CALLER_THREAD)
                     val done = CompletableFuture<kotlin.Result<Report>>()
                     suspend { run(client, batch) }.startCoroutine(Continuation(dispatcher + Job()) { done.complete(it) })
@@ -111,6 +129,7 @@ class CoreTypedAllocationTests {
                     )
                     client.connection.close(QuicError.NoError)
                     dispatcher.close()
+                    loops.close()
                     val loopGate = loopGateOfThisStack(LOOP_GATE, JDK_LOOP_GATE)
                     assertTrue(
                         report.loop <= loopGate && report.caller <= callerGate,
@@ -139,7 +158,7 @@ class CoreTypedAllocationTests {
         val stream = client.connection.openTypedStream(TickCodec)
         for (round in 0 until WARM_UP / batch) {
             for (i in 0 until batch) stream.send(Tick(i.toLong()))
-            for (i in 0 until batch) check((stream.receive() as ScopedRead.Data<Tick>).value.n == i.toLong())
+            for (i in 0 until batch) check((stream.receive() as ScopedReadResult.Data<Tick>).value.n == i.toLong())
         }
         val codecBytes = codecOnly(threads)
         val loopId = threadId(client.loop.name)
@@ -152,7 +171,7 @@ class CoreTypedAllocationTests {
         val from = Instant.now()
         for (round in 0 until MEASURED / batch) {
             for (i in 0 until batch) stream.send(Tick(i.toLong()))
-            for (i in 0 until batch) check((stream.receive() as ScopedRead.Data<Tick>).value.n == i.toLong())
+            for (i in 0 until batch) check((stream.receive() as ScopedReadResult.Data<Tick>).value.n == i.toLong())
         }
         val callerBytes = (threads.getThreadAllocatedBytes(callerId) - callerBefore).toDouble() / MEASURED
         val loopBytes = (threads.getThreadAllocatedBytes(loopId) - loopBefore).toDouble() / MEASURED
@@ -242,6 +261,9 @@ class CoreTypedAllocationTests {
         const val JDK_LOOP_GATE = 48
         const val PING_PONG_GATE = 520
         const val PIPELINED_GATE = 270
+
+        /** Each send's wait: its continuation, its dispatch and its cancellation handler, 346 B/echo in all on a Mac. */
+        const val PIPELINED_BY_LOOP_GATE = 400
         const val BATCH = 32
     }
 }

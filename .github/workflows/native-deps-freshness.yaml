@@ -584,6 +584,15 @@ jobs:
         continue-on-error: true
         run: ./gradlew resolveAllDependencies --no-configuration-cache
 
+      # The Apple twin of the Linux job's plugin-classpath warm: review.yaml's Apple K/N link gate configures
+      # .ci/consumer-smoke, whose classpath (Kotlin's plugin alone) settles on kotlinx-coroutines-core-jvm 1.8.0
+      # and error_prone_annotations 2.27.0, which the main build's conflict resolution replaces (1.9.0, 2.36.0).
+      # Neither jar was in `gradle-macos-kn-`, so every Apple link gate fetched both from Central (job
+      # 138223363838: 429 on both). `buildEnvironment` resolves that classpath and none of socket's artifacts.
+      - name: Warm the consumer-smoke build's plugin classpath
+        continue-on-error: true
+        run: ./gradlew -p .ci/consumer-smoke buildEnvironment -PsocketVersion=0.0.0 -PmavenRepoPath=/tmp/none --no-daemon
+
       # Every module's macOS arm64 main + test compilation, which is what build-apple's K/N shards and
       # the docs/review jobs restore klibs for, and the first K/N compiler run, which fills ~/.konan
       # with the distribution and its LLVM/libffi/lldb dependencies. After the quiche warm above,

@@ -15,7 +15,11 @@ internal abstract class ConnWork : InboxItem<ConnWork>() {
 
 /** Whether the thread that hands a connection work may run that work itself. */
 internal enum class CallerPlace {
-    /** Any thread but a main thread: enters a free connection, serves it and sends its output in place. */
+    /**
+     * Any thread but a main thread: enters a free connection, serves it and sends its output in place, from a lane of
+     * the connection's socket. A socket under [com.ditchoom.socket.quic.core.sched.SendRule.ByLoop] lends none, and
+     * the work goes to the loop.
+     */
     MayEnter,
 
     /** A main or UI thread, or the loop itself: leaves the work for the loop, which makes the system calls. */

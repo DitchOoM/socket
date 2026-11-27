@@ -1,117 +1,193 @@
 package com.ditchoom.socket.quic
 
-import kotlinx.coroutines.flow.StateFlow
+import com.ditchoom.buffer.BufferFactory
+import com.ditchoom.buffer.ReadBuffer
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
 
 /**
- * An established QUIC connection — extends [QuicScope] with lifecycle management. This is the
- * SPI return type of [QuicEngine.connect]: a backend module (e.g. `socket-quic-quiche`)
- * implements it, and the [withQuicConnection] wrapper consumes it.
+ * A QUIC connection whose handshake completed. Every call suspends, never blocks a thread, and is safe from a main
+ * thread; a call resumes on its caller's dispatcher.
  *
- * Users normally never name this type — they interact via [QuicScope] inside [withQuicConnection]
- * or [QuicServer.connections] blocks, which own [close]. It is public only so the engine SPI can
- * cross the module boundary between an engine module and the default bundle.
+ * A connection the peer has already closed is still handed out: its first read or write answers the end, and
+ * [handshake] stays readable.
  */
-interface QuicConnection : QuicScope {
-    /** Current connection state (used by the withQuicConnection/withQuicServer wrappers for lifecycle management). */
-    val state: StateFlow<QuicConnectionState>
+interface QuicConnection {
+    val identity: QuicConnectionIdentity
+
+    /** What the completed handshake settled. Readable for as long as the connection is referenced, ended or not. */
+    val handshake: QuicHandshakeFacts
+
+    /** Makes the native memory a [QuicSendStream] writes from. */
+    val bufferFactory: BufferFactory
+
+    /** Whether the connection is open, or how it ended. */
+    fun life(): QuicConnectionLife
+
+    /** Suspends until the connection has ended, and returns how. */
+    suspend fun awaitEnd(): QuicConnectionEnd
 
     /**
-     * What this connection still holds for its application once [state] is
-     * [QuicConnectionState.Closed] — see [QuicUnreadAtClose]. Settled before [state] reads Closed, so
-     * an observer that saw Closed reads the settled value. [runUntilClosed] keeps a block running on a
-     * dead connection until this reaches [QuicUnreadAtClose.AllRead].
-     *
-     * Required, with no default, for the reason [identity] is: a backend that cannot say whether it is
-     * holding received bytes should fail to compile rather than claim it is not.
+     * Opens a bidirectional stream, waiting at the peer's stream limit as the connection's [StreamOpenPolicy] says, and
+     * answers the stream or why none was opened. The stream is reset with the connection if it is still open when the
+     * connection's block ends.
      */
-    val unreadAtClose: StateFlow<QuicUnreadAtClose>
+    suspend fun openStream(): StreamOpen<QuicStream>
 
     /**
-     * Which connection this is — the stable session id plus the current wire CID.
-     *
-     * Deliberately lives here rather than on [QuicConnectionState]: identity belongs to a connection
-     * *instance*, while a state is a lifecycle *value* that is compared by equality (golden traces and
-     * the fuzz determinism invariant both do exactly that). Folding an instance id into a value type
-     * would make every state comparison identity-sensitive, and would force doubles with no real
-     * connection to fabricate one.
-     *
-     * Required, with no default, for the reason Phase 3 made the migration capability required: a
-     * backend that cannot answer should fail to compile rather than silently report nothing.
-     *
-     * Readable after [state] reaches [QuicConnectionState.Closed], from any thread: it then answers the
-     * identity the connection had when it closed ([runUntilClosed] attributes its close with it).
+     * Opens a bidirectional stream and runs [block] on it, placed by the library; answers [block]'s value, or why no
+     * stream was opened, in which case [block] did not run. When [block] returns, a sending direction still open is
+     * finished and a receiving direction not read to its end is stopped; when it throws, both are reset with
+     * [QuicAbortCodes.handlerFailed] and the exception reaches the caller.
      */
-    override val identity: QuicConnectionIdentity
+    suspend fun <R> openStream(block: suspend (QuicStream) -> R): StreamOpen<R>
+
+    /** Opens a stream this side only sends on. Waits and answers as [openStream] does. */
+    suspend fun openSendStream(): StreamOpen<QuicSendStream>
+
+    /** Opens a stream this side only sends on and runs [block] on it, as [openStream] does for both directions. */
+    suspend fun <R> openSendStream(block: suspend (QuicSendStream) -> R): StreamOpen<R>
 
     /**
-     * What this connection's data plane requires of caller-supplied buffers — see
-     * [QuicCapabilities.requiresNativeMemoryBuffers].
+     * Runs [handler] once for every stream the peer opens, placed by the library, and returns how the connection ended
+     * once it has and every handler has returned. Handlers of one connection never run at the same time.
      *
-     * Required, with no default, for the same reason as [identity]: a backend hands buffer addresses
-     * to native code or it does not, and one that cannot say which should fail to compile rather than
-     * inherit a claim. A double with no engine behind it answers [QuicCapabilities.None], which for it
-     * is the truth.
+     * When [handler] returns, the stream is completed as [openStream]'s block form completes it; when it throws, the
+     * stream is reset with [QuicAbortCodes.handlerFailed], and the other streams and the connection go on. Once the
+     * connection ends no stream call waits, and each handler runs to its own return.
+     *
+     * @throws QuicStreamsAlreadyHandledException when another call is handling this connection's streams.
      */
-    override val capabilities: QuicCapabilities
+    suspend fun handleStreams(handler: suspend (QuicIncomingStream) -> Unit): QuicConnectionEnd
 
     /**
-     * What the network was doing, for correlating this connection against a
-     * [com.ditchoom.socket.NetworkMonitor].
-     *
-     * Readable at any time. While the connection is live this reports the *current* observation — a
-     * preview of what a close would record. Once the connection reaches
-     * [QuicConnectionState.Closed] it is **frozen** at the value observed then, so reading it after
-     * the fact still answers "what was the network doing when this died?" rather than "what is it
-     * doing now?".
-     *
-     * Defaults to [NetworkAtClose.NotObserved] — the truthful answer for a connection nothing is
-     * observing: a test double, or a **server-accepted** connection, which has no local client network
-     * path to correlate against (the same reason automatic migration is client-only).
-     *
-     * A client connection resolves [QuicOptions.networkMonitor] **once**, at connect, and hands that one
-     * instance to auto-migration, to the trace tap, and to this correlation. Sharing the instance is the
-     * invariant, not an optimisation: a second monitor would report an `ObservationSequence` indexing a
-     * different stream than the one that triggered the migration — two unrelated counters that look
-     * joinable. A connection whose resolved monitor is [com.ditchoom.socket.NetworkMonitor.AlwaysAvailable]
-     * reports [NetworkAtClose.NotObserved], which that monitor's own KDoc names as the honest case.
+     * Closes the connection as [choice] says and returns how the close went, once the connection has ended. A write, an
+     * open or a datagram that comes after this call is refused at once.
      */
-    override val networkAtClose: NetworkAtClose get() = NetworkAtClose.NotObserved
+    suspend fun close(choice: QuicCloseChoice = QuicCloseChoice.Graceful()): QuicCloseOutcome
 
-    /**
-     * Derived from [state]: every driver-backed connection publishes the handshake's negotiated
-     * protocol in [QuicConnectionState.Established], so one default here covers all platforms.
-     * Readable while the connection is established — which is always the case inside the
-     * scope blocks where user code runs.
-     */
-    override val negotiatedAlpn: String
-        get() =
-            when (val s = state.value) {
-                is QuicConnectionState.Established -> s.negotiatedAlpn
-                else -> error("negotiatedAlpn is only available while the connection is established (state: $s)")
-            }
+    /** The connection's counters and its active path's estimates. Nothing is counted for it while nobody asks. */
+    suspend fun stats(): QuicStatsRead
 
-    /**
-     * Derived from [state] like [negotiatedAlpn]: the driver publishes the handshake's resumption outcome
-     * in [QuicConnectionState.Established]. Readable while the connection is established.
-     */
-    override val resumption: QuicResumptionOutcome
-        get() =
-            when (val s = state.value) {
-                is QuicConnectionState.Established -> s.resumption
-                is QuicConnectionState.Closed -> throw QuicCloseException(s.reason, RESUMPTION_UNAVAILABLE)
-                QuicConnectionState.Idle, QuicConnectionState.Handshaking, QuicConnectionState.Draining ->
-                    throw QuicCloseException(QuicCloseReason.Unspecified, "$RESUMPTION_UNAVAILABLE (state: $s)")
-            }
-
-    /** Close the connection with a QUIC error. Called by the scope when the block ends. */
-    suspend fun close(error: QuicError = QuicError.NoError)
-
-    /**
-     * Application-coded connection close (RFC 9000 §19.19). Delegates to [close] with a
-     * [QuicError.ApplicationError], which the driver maps to `quiche_conn_close(app = true, …)` so
-     * [errorCode] travels on the wire. One default here covers every platform [QuicConnection].
-     */
-    override suspend fun closeWithError(errorCode: Long) = close(QuicError.ApplicationError(errorCode))
+    /** The connection's RFC 9221 datagrams, both ways. */
+    val datagrams: QuicDatagrams
 }
 
-private const val RESUMPTION_UNAVAILABLE = "resumption is only available while the connection is established"
+/**
+ * Sends a connection's RFC 9221 datagrams. A send never suspends and never throws: it copies the datagram into the
+ * connection's send queue, or answers why not. A datagram is never retransmitted.
+ */
+interface QuicDatagramSender {
+    /** Queues [payload]'s remaining bytes as one datagram; [payload] is the caller's again, unmoved, when this returns. */
+    fun send(payload: ReadBuffer): DatagramSend
+
+    /**
+     * Queues [prefix]'s remaining bytes then [payload]'s as one datagram, joined in the one copy into the queue; a
+     * [DatagramSend.NotSent.TooLarge] reports the room left for [payload].
+     */
+    fun send(
+        prefix: ReadBuffer,
+        payload: ReadBuffer,
+    ): DatagramSend
+}
+
+/**
+ * A connection's RFC 9221 datagrams: [send] as [QuicDatagramSender] says, and [receive] in batches. A datagram is never
+ * retransmitted, and one that arrives while the receive queue is full is dropped and counted.
+ */
+interface QuicDatagrams : QuicDatagramSender {
+    /**
+     * Suspends until a datagram arrived, then runs [block] once with every datagram the connection holds, read in place
+     * in its receive queue, and answers what it made of them. One receive runs at a time: another while it runs answers
+     * [DatagramReceive.NotReceived.ReceiverBusy]. The batch is valid only inside [block]. A receive cancelled before
+     * the batch is taken takes nothing.
+     */
+    suspend fun <R> receive(block: (QuicDatagramBatch) -> R): DatagramReceive<R>
+
+    /**
+     * Receives batch after batch, [each] datagram in turn on the thread the receive resumed on, until no datagram will
+     * arrive, and answers why; it holds the receiver throughout. The buffer [each] sees is valid only during that call.
+     */
+    suspend fun receiveEach(each: (ReadBuffer) -> Unit): DatagramReceive.NotReceived {
+        val take: (QuicDatagramBatch) -> Unit = { batch -> batch.forEach(each) }
+        while (true) {
+            when (val received = receive(take)) {
+                is DatagramReceive.Batch -> Unit
+                is DatagramReceive.NotReceived -> return received
+            }
+        }
+    }
+}
+
+/** What a connection's completed handshake settled. */
+class QuicHandshakeFacts(
+    /** The one protocol both sides agreed on (RFC 7301). */
+    val negotiatedAlpn: String,
+    /** How the handshake used a session ticket. */
+    val resumption: QuicResumptionOutcome,
+    /** The certificate the peer presented, by the SHA-256 of its leaf. */
+    val peerLeaf: QuicPeerLeaf,
+)
+
+/** The leaf certificate a connection's peer presented in its handshake. */
+sealed interface QuicPeerLeaf {
+    /** The peer presented a certificate; [sha256] is the SHA-256 of its leaf's DER encoding. */
+    class Presented(
+        val sha256: CertificateHash,
+    ) : QuicPeerLeaf {
+        override fun toString(): String = "Presented($sha256)"
+    }
+
+    /** The peer presented none: a client asked for no certificate, or quiche could not hand it over. */
+    data object NotPresented : QuicPeerLeaf
+}
+
+/** Whether a connection is open, or how it ended. */
+sealed interface QuicConnectionLife {
+    data object Open : QuicConnectionLife
+
+    class Ended(
+        val end: QuicConnectionEnd,
+    ) : QuicConnectionLife
+}
+
+/** How [QuicConnection.close] closes. */
+sealed interface QuicCloseChoice {
+    /**
+     * Delivers everything written before the close, then closes with no error: as soon as the peer has acknowledged it,
+     * and [limit] after the close at the latest. A [limit] that is not positive is reached at once.
+     */
+    class Graceful(
+        val limit: Duration = DEFAULT_LIMIT,
+    ) : QuicCloseChoice
+
+    /** Closes at once with [error]; what was not delivered is abandoned. Cuts short a graceful close that is waiting. */
+    class Immediate(
+        val error: QuicError = QuicError.NoError,
+    ) : QuicCloseChoice
+
+    companion object {
+        /** The longest a graceful close waits unless the caller says otherwise. */
+        val DEFAULT_LIMIT: Duration = 10.seconds
+    }
+}
+
+/** How a [QuicConnection.close] went. */
+sealed interface QuicCloseOutcome {
+    /** Everything written before the close was acknowledged, and then the connection closed. */
+    data object Drained : QuicCloseOutcome
+
+    /** The graceful close's limit passed first: the connection closed then, and what was undelivered is abandoned. */
+    class LimitReached : QuicCloseOutcome
+
+    /** The connection closed at once: an immediate close, or one that cut a graceful close short. */
+    data object Immediate : QuicCloseOutcome
+
+    /** The connection had ended, or was ending, another way: [end] says how. */
+    class EndedFirst(
+        val end: QuicConnectionEnd,
+    ) : QuicCloseOutcome
+}
+
+/** A second [QuicConnection.handleStreams] while a first is still handling the connection's streams. */
+class QuicStreamsAlreadyHandledException : IllegalStateException("this connection's streams are already handled")

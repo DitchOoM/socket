@@ -14,6 +14,7 @@ import com.ditchoom.socket.quic.core.edge.CoreClient
 import com.ditchoom.socket.quic.core.edge.coreConnect
 import com.ditchoom.socket.quic.core.edge.coreTestOptions
 import com.ditchoom.socket.quic.core.edge.echoOver
+import com.ditchoom.socket.quic.core.edge.openStream
 import com.ditchoom.socket.quic.core.edge.withEchoServer
 import com.ditchoom.socket.quic.core.testing.LoopScheduling
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
@@ -22,9 +23,11 @@ import com.ditchoom.socket.quic.core.udp.ReceiveBatchResult
 import com.ditchoom.socket.quic.loadQuicheApi
 import com.ditchoom.socket.quic.skipOnMissingNativeLib
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
@@ -58,35 +61,48 @@ class SharedClientLoopTests {
                         val echoed = AtomicIntegerArray(CONNECTIONS)
                         val scheduled = LoopScheduling.snapshot()
                         val began = System.nanoTime()
-                        try {
-                            withTimeout(120.seconds) {
-                                withContext(Dispatchers.Default) {
-                                    clients
-                                        .mapIndexed { index, client ->
-                                            async {
-                                                val stream = client.connection.openStream()
-                                                val payload = Random(index).nextBytes(PAYLOAD)
-                                                while (echoed.get(index) < ECHOES) {
-                                                    val round = echoed.get(index)
-                                                    assertContentEquals(payload, echoOver(stream, payload), "connection $index echo $round")
-                                                    echoed.incrementAndGet(index)
-                                                }
-                                            }
-                                        }.awaitAll()
-                                }
-                            }
-                        } catch (timedOut: TimeoutCancellationException) {
-                            // Whether the echoes were still advancing, and what the loops did, when the bound ran out.
+
+                        fun stalled(window: Long): AssertionError {
+                            // Where the echoes stood, and what the loops did, when none had advanced for a whole window.
                             val counts = (0 until CONNECTIONS).map { echoed.get(it) }
-                            throw AssertionError(
-                                "echoes done per connection: min ${counts.min()}, max ${counts.max()}, total ${counts.sum()} of " +
-                                    "${CONNECTIONS * ECHOES} after ${(System.nanoTime() - began) / NANOS_PER_SECOND} s; " +
+                            return AssertionError(
+                                "no echo completed for $window s: echoes done per connection: min ${counts.min()}, max ${counts.max()}, " +
+                                    "total ${counts.sum()} of ${CONNECTIONS * ECHOES} " +
+                                    "after ${(System.nanoTime() - began) / NANOS_PER_SECOND} s; " +
                                     "loops ${loops.countsOfStarted().joinToString {
                                         "[${it.passes} passes took ${it.passNanos / NANOS_PER_MILLI} ms, " +
                                             "${it.waits} waits took ${it.waitNanos / NANOS_PER_MILLI} ms, ${it.datagramsIn} in, ${it.datagramsOut} out]"
                                     }}; scheduling ${LoopScheduling.since(scheduled)}",
-                                timedOut,
                             )
+                        }
+                        // Bounded by progress, not by a total: this proves every echo byte-exact on shared loops, and a
+                        // host's speed varies (the same run took 67 s and 131 s on API 29 emulators). A hang stops advancing.
+                        coroutineScope {
+                            val watch =
+                                launch(Dispatchers.Default) {
+                                    var last = -1
+                                    while (true) {
+                                        delay(STALL_WINDOW_SECONDS.seconds)
+                                        val total = (0 until CONNECTIONS).sumOf { echoed.get(it) }
+                                        if (total == last) throw stalled(STALL_WINDOW_SECONDS)
+                                        last = total
+                                    }
+                                }
+                            withContext(Dispatchers.Default) {
+                                clients
+                                    .mapIndexed { index, client ->
+                                        async {
+                                            val stream = client.connection.openStream()
+                                            val payload = Random(index).nextBytes(PAYLOAD)
+                                            while (echoed.get(index) < ECHOES) {
+                                                val round = echoed.get(index)
+                                                assertContentEquals(payload, echoOver(stream, payload), "connection $index echo $round")
+                                                echoed.incrementAndGet(index)
+                                            }
+                                        }
+                                    }.awaitAll()
+                            }
+                            watch.cancel()
                         }
                         println(
                             "[shared client loops] ${CONNECTIONS * ECHOES} echoes took " +
@@ -304,6 +320,7 @@ class SharedClientLoopTests {
         const val NANOS_PER_MILLI = 1_000_000L
         const val NANOS_PER_SECOND = 1_000_000_000L
         const val PAYLOAD = 100
+        const val STALL_WINDOW_SECONDS = 20L
         val NOT_PLANTED = IllegalStateException()
     }
 

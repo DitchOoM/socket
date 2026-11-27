@@ -2,13 +2,12 @@ package com.ditchoom.socket.quic.core.demux
 
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.core.edge.connectCore
-import com.ditchoom.socket.quic.core.edge.coreTestOptions
 import com.ditchoom.socket.quic.core.edge.echoOver
+import com.ditchoom.socket.quic.core.edge.openStream
 import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.observe.LoopCounts
 import com.ditchoom.socket.quic.core.testing.LoopScheduling
 import com.ditchoom.socket.quic.core.udp.buffers
-import com.ditchoom.socket.quic.withQuicConnection
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -23,9 +22,8 @@ import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
-import kotlin.time.Duration.Companion.seconds
 
-/** The JVM-only rows of the core client against the core server: 1,024 connections, a wildcard server, the 4.x client. */
+/** The JVM-only rows of the core client against the core server: 1,024 connections and a wildcard server. */
 class CoreServerEchoTests {
     @get:org.junit.Rule
     val noLeak: org.junit.rules.TestRule = NoServerLoopLeft()
@@ -35,22 +33,6 @@ class CoreServerEchoTests {
 
     @AfterTest
     fun closeLoops() = loops.close()
-
-    @Test
-    fun theFourPointXClientEchoesThroughTheCoreServer() =
-        runBlocking {
-            withCoreEchoServer { server ->
-                for (size in listOf(1_024, 1 shl 20)) {
-                    val payload = Random(size).nextBytes(size)
-                    val echoed =
-                        withQuicConnection("127.0.0.1", server.port, coreTestOptions, timeout = 20.seconds) {
-                            echoOver(openStream(), payload)
-                        }
-                    assertContentEquals(payload, echoed, "4.x echo of $size bytes")
-                }
-                assertEquals(2L, server.counts.accepted)
-            }
-        }
 
     @Test
     fun aThousandAndTwentyFourConcurrentConnectionsEchoOnOneServerLoop() = concurrentEchoes(1_024)

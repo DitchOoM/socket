@@ -6,12 +6,11 @@ import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicCloseReason
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicUnreadAtClose
-import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.ScopedReadResult
 import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.testing.coreTest
 import com.ditchoom.socket.quic.network
 import com.ditchoom.socket.quic.read
-import com.ditchoom.socket.quic.runUntilClosed
 import kotlinx.coroutines.awaitCancellation
 import kotlin.test.AfterTest
 import kotlin.test.Test
@@ -23,8 +22,8 @@ import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TimeSource
 
 /**
- * A core connection's [com.ditchoom.socket.quic.QuicConnection.unreadAtClose] tracks the connection: open while it is,
- * and settled once it ends, so `runUntilClosed` cancels a block on a connection the peer closed promptly instead of
+ * A core connection's [com.ditchoom.socket.quic.QuicScope.unreadAtClose] tracks the connection: open while it is,
+ * and settled once it ends, so `runUntilEnded` cancels a block on a connection the peer closed promptly instead of
  * waiting out its linger.
  */
 class CoreUnreadAtCloseTests {
@@ -39,9 +38,14 @@ class CoreUnreadAtCloseTests {
             withCoreServer(onConnection = { connection -> connection.close(QuicError.NoError) }) { server ->
                 val client = connectCore(server.port, loops = loops)
                 val connection = client.connection
-                assertEquals<QuicUnreadAtClose>(QuicUnreadAtClose.ConnectionOpen, connection.unreadAtClose.value)
+                // The close may land before the connect returns: then the connection is handed over ended, all read.
+                val unread = connection.unreadAtClose.value
+                assertTrue(
+                    unread is QuicUnreadAtClose.ConnectionOpen || connection.end() is EdgeEnd.Ended,
+                    "nothing is unread at a close that has not happened: $unread",
+                )
                 val began = TimeSource.Monotonic.markNow()
-                val closed = assertFailsWith<QuicCloseException> { connection.runUntilClosed(LINGER) { awaitCancellation() } }
+                val closed = assertFailsWith<QuicCloseException> { connection.runUntilEnded(LINGER) { awaitCancellation() } }
                 val took = began.elapsedNow()
                 assertIs<QuicCloseReason.ByPeer>(closed.closeReason)
                 assertTrue(took < LINGER / 4, "the block ended $took after the peer closed; the linger is $LINGER")
@@ -64,14 +68,14 @@ class CoreUnreadAtCloseTests {
                 )
                 connection.close(QuicError.NoError)
             }) { server ->
-                val client = connectCore(server.port, loops = loops)
+                val client = connectCore(server.port, loops = loops, options = acceptingClientOptions)
                 val connection = client.connection
                 var replied = -1
                 val began = TimeSource.Monotonic.markNow()
                 assertFailsWith<QuicCloseException> {
-                    connection.runUntilClosed(LINGER) {
+                    connection.runUntilEnded(LINGER) {
                         val stream = acceptStream()
-                        stream.read(10.seconds) { replied = it.readByte().toInt() }.also { assertIs<ScopedRead.Data<*>>(it) }
+                        stream.read(10.seconds) { replied = it.readByte().toInt() }.also { assertIs<ScopedReadResult.Data<*>>(it) }
                         awaitCancellation()
                     }
                 }

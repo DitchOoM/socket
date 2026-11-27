@@ -1,8 +1,9 @@
 package com.ditchoom.socket.quic.core.edge
 
 import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.socket.quic.ConnectionEarlyDataScope
+import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicCloseCircumstance
+import com.ditchoom.socket.quic.QuicEarlyDataScope
 import com.ditchoom.socket.quic.QuicResumption
 import com.ditchoom.socket.quic.QuicSessionTicket
 import com.ditchoom.socket.quic.core.conn.FirstFlight
@@ -50,7 +51,9 @@ private fun offered(
 /**
  * Runs the caller's [QuicResumption.ResumeWithEarlyData] block once, where [offer] says it belongs: before the first
  * flight when quiche took the ticket, so its writes go as 0-RTT, and after [awaitEstablished] otherwise, as ordinary
- * data. [awaitEstablished] runs exactly once either way.
+ * data, so never before the server passed its check. [awaitEstablished] runs exactly once either way. Run after it, the
+ * block meeting the connection's end does not fail the connect: the next operation reports the end, as it would had
+ * the end come after the block.
  */
 internal suspend fun CoreConnection.runEarlyData(
     resumption: QuicResumption,
@@ -62,7 +65,7 @@ internal suspend fun CoreConnection.runEarlyData(
             QuicResumption.None, is QuicResumption.Resume -> return awaitEstablished()
             is QuicResumption.ResumeWithEarlyData -> resumption.write
         }
-    val scope = ConnectionEarlyDataScope(this)
+    val scope = CoreEarlyDataScope(this)
     when (flightOf(offer)) {
         FirstFlight.HeldForEarlyData -> {
             try {
@@ -75,13 +78,37 @@ internal suspend fun CoreConnection.runEarlyData(
         // quiche refused the ticket, so there is no 0-RTT: the block's bytes are ordinary data.
         FirstFlight.Immediate -> {
             awaitEstablished()
-            scope.block()
+            outlivingTheEnd({ end() is EdgeEnd.Ended }) { scope.block() }
         }
     }
+}
+
+/** The part of a core connection a [QuicResumption.ResumeWithEarlyData] block sees: its two ways to open a stream. */
+private class CoreEarlyDataScope(
+    private val connection: CoreConnection,
+) : QuicEarlyDataScope {
+    override val bufferFactory: BufferFactory get() = connection.bufferFactory
+
+    override suspend fun openStream(): QuicByteStream = connection.halves.let { it.public(it.openBidirectional()) }
+
+    override suspend fun openUniStream(): QuicByteStream = connection.halves.let { it.public(it.openSendOnly()) }
 }
 
 private fun flightOf(offer: Offer): FirstFlight =
     when (offer) {
         is Offer.Offered -> offer.flight
         is Offer.NoTicket, is Offer.Unusable -> FirstFlight.Immediate
+    }
+
+/**
+ * Memory with an address from [factory], the one a connection's datagrams already proved addressable; memory without
+ * one raises, as the connect's own allocations do.
+ */
+internal fun nativeOf(factory: BufferFactory): (Int) -> NativeBytes =
+    { size ->
+        val buffer = factory.allocate(size)
+        when (val addressed = NativeBytes.of(buffer)) {
+            is Addressed.Native -> addressed.bytes
+            is Addressed.NotAddressable -> raise(Raised.FactoryNotNative(buffer), QuicCloseCircumstance.HandshakeFailed)
+        }
     }

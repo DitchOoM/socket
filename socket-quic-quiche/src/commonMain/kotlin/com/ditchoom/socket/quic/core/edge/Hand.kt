@@ -5,6 +5,7 @@ package com.ditchoom.socket.quic.core.edge
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.socket.quic.QuicAppErrorCode
 import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.core.observe.Published
 import kotlinx.coroutines.InternalCoroutinesApi
@@ -94,6 +95,35 @@ internal value class Hand<A : HandAnswer> private constructor(
         }
     }
 
+    /**
+     * Lands [answer] and, when it is the first, runs [ahead] before a waiting caller resumes with it: what [ahead] queues
+     * is ahead of anything the resumed caller does next.
+     */
+    fun answer(
+        answer: A,
+        ahead: () -> Unit,
+    ): Landed {
+        while (true) {
+            when (val now = phase.load()) {
+                is HandAnswer -> return Landed.Late
+                is HandPhase.Out ->
+                    if (phase.compareAndSet(now, answer)) {
+                        ahead()
+                        return Landed.First
+                    }
+                is HandPhase.Waiting ->
+                    if (phase.compareAndSet(now, answer)) {
+                        try {
+                            ahead()
+                        } finally {
+                            now.caller.resume(answer)
+                        }
+                        return Landed.First
+                    }
+            }
+        }
+    }
+
     /** Whether [answer] is the one that landed. */
     fun landed(answer: A): Boolean = phase.load() === answer
 
@@ -136,7 +166,10 @@ internal sealed interface ReadAnswer : HandAnswer {
 
     data object End : ReadAnswer
 
-    data object Reset : ReadAnswer
+    /** The peer reset its side of the stream with [code]. */
+    class Reset(
+        val code: QuicAppErrorCode,
+    ) : ReadAnswer
 
     class Failed(
         val failure: OpFailure,
@@ -145,6 +178,16 @@ internal sealed interface ReadAnswer : HandAnswer {
 
     /** The caller's job was cancelled first: the connection takes the read back and frees what it would have handed over. */
     data object Cancelled : ReadAnswer
+}
+
+/** [answer] for a caller whose context is [context] still active; a caller cancelled meanwhile frees the buffer and raises. */
+internal fun liveOr(
+    answer: ReadAnswer,
+    context: CoroutineContext,
+): ReadAnswer {
+    if (context.isActive && answer !is ReadAnswer.Cancelled) return answer
+    if (answer is ReadAnswer.Data) answer.buffer.freeIfNeeded()
+    raiseCancelled(context)
 }
 
 /** What [answer] gives a caller whose context is [context]; a caller cancelled meanwhile frees the buffer and raises. */

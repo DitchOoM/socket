@@ -36,6 +36,9 @@ sealed interface QuicStreamReadError {
      */
     data object InvalidStreamState : QuicStreamReadError
 
+    /** A read came while another read of the same stream was still out, its block included: a stream has one reader at a time. */
+    data object ReadInProgress : QuicStreamReadError
+
     /**
      * Any other quiche stream-recv code, kept raw in quiche's own namespace rather than renamed.
      *

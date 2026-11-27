@@ -2,6 +2,8 @@ package com.ditchoom.socket.quic
 
 import com.ditchoom.buffer.flow.ReadPolicy
 import com.ditchoom.buffer.flow.WritePolicy
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * Platform-neutral bindings for quiche config calls.
@@ -96,7 +98,7 @@ internal fun resolveVerifyPeer(options: QuicOptions): Boolean =
  * [QuicOptions.persistentStreams].
  */
 internal fun resolveStreamReadPolicy(options: QuicOptions): ReadPolicy =
-    if (options.persistentStreams) ReadPolicy.UntilClosed else ReadPolicy.Bounded(QuicheStreamByteStream.DEFAULT_STREAM_DEADLINE)
+    if (options.persistentStreams) ReadPolicy.UntilClosed else ReadPolicy.Bounded(DEFAULT_STREAM_DEADLINE)
 
 /**
  * The [WritePolicy] every stream on a connection built from [options] gets. Deliberately NOT gated on
@@ -107,8 +109,7 @@ internal fun resolveStreamReadPolicy(options: QuicOptions): ReadPolicy =
  * control never reopens — is a real condition worth surfacing as an error, unlike a read simply
  * waiting for the next message on an otherwise-idle persistent stream.
  */
-internal fun resolveStreamWritePolicy(options: QuicOptions): WritePolicy =
-    WritePolicy.Bounded(QuicheStreamByteStream.DEFAULT_STREAM_DEADLINE)
+internal fun resolveStreamWritePolicy(options: QuicOptions): WritePolicy = WritePolicy.Bounded(DEFAULT_STREAM_DEADLINE)
 
 /**
  * Whether a quiche config for [role] enables 0-RTT. A server accepts it when [QuicOptions.enableEarlyData]
@@ -150,8 +151,21 @@ internal fun applyQuicOptions(
     calls.setInitialMaxStreamDataBidiLocal(fc.initialMaxStreamDataBidiLocal)
     calls.setInitialMaxStreamDataBidiRemote(fc.initialMaxStreamDataBidiRemote)
     calls.setInitialMaxStreamDataUni(fc.initialMaxStreamDataUni)
-    calls.setInitialMaxStreamsBidi(fc.initialMaxStreamsBidi)
-    calls.setInitialMaxStreamsUni(fc.initialMaxStreamsUni)
+    when (val incoming = options.incomingStreams) {
+        is IncomingStreams.Refuse -> {
+            calls.setInitialMaxStreamsBidi(0L)
+            calls.setInitialMaxStreamsUni(0L)
+        }
+        is IncomingStreams.Accept -> {
+            calls.setInitialMaxStreamsBidi(incoming.bidirectional.streams.toLong())
+            calls.setInitialMaxStreamsUni(incoming.unidirectional.streams.toLong())
+        }
+        // The legacy QuicScope stacks accept on both sides; the core resolves it by role before it gets here.
+        is IncomingStreams.ByRole -> {
+            calls.setInitialMaxStreamsBidi(QuicStreamLimit.Default.streams.toLong())
+            calls.setInitialMaxStreamsUni(QuicStreamLimit.Default.streams.toLong())
+        }
+    }
     calls.setMaxConnectionWindow(fc.maxConnectionWindow)
     calls.setMaxStreamWindow(fc.maxStreamWindow)
 
@@ -206,3 +220,6 @@ internal fun trafficSecretsNameable(options: QuicOptions): Boolean =
             EnvironmentSetting.Unset -> false
             is EnvironmentSetting.Value -> true
         }
+
+/** The per-call deadline of a request/response-shaped stream (`QuicOptions.persistentStreams = false`). */
+internal val DEFAULT_STREAM_DEADLINE: Duration = 15.seconds

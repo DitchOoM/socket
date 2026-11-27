@@ -1,7 +1,7 @@
 package com.ditchoom.socket.quic
 
 /**
- * wasmJs has no QUIC engine at all — `defaultQuicEngine` is an `UnsupportedQuicEngine` (no raw UDP
+ * wasmJs has no QUIC engine at all — it has no QUIC stack (no raw UDP
  * access in WASM environments), so `connect()` throws before any certificate is presented and
  * [QuicOptions.serverCertificateHashes] is never consulted.
  *

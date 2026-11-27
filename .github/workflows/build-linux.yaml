@@ -971,6 +971,12 @@ jobs:
           lane: linux-checks
           restored-exact: ${{ steps.pr_bc.outputs.exact-hit }}
 
+      # The runner's cores, memory, load and VM type at both ends of the test step, beside the JVM logs
+      # (see .github/scripts/runner-facts.sh), so a stall in between can be weighed against the host.
+      - name: Runner facts (start)
+        continue-on-error: true
+        shell: bash
+        run: bash .github/scripts/runner-facts.sh start build/jvm-logs/runner-facts.txt
       - name: Run checks and tests
         timeout-minutes: 45
         env:
@@ -1099,6 +1105,11 @@ jobs:
           fi
           exit "$RC"
 
+      - name: Runner facts (end)
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: bash .github/scripts/runner-facts.sh end build/jvm-logs/runner-facts.txt
       - name: Upload hang thread-dump (if any)
         if: always()
         uses: actions/upload-artifact@v7
@@ -1284,6 +1295,7 @@ jobs:
             **/build/reports/tests/
             **/build/test-results/
             **/build/core-flight/
+            **/build/jvm-logs/
             **/hs_err_pid*.log
             **/replay_pid*.log
             /tmp/cores/core.*
@@ -1405,7 +1417,6 @@ jobs:
           # (recv_info UAF) was first caught, so it arms core capture + --no-daemon.
           - name: "JNI"
             args: ""
-            sim-fuzz: "2000"
             test-launcher-jdk: ""
             core-dump: "true"
             audit: "false"
@@ -1418,7 +1429,6 @@ jobs:
           # client), which had a SIGSEGV that the old silent JNI fallback hid.
           - name: "FFM"
             args: "-PquicheJvmBackend=ffm"
-            sim-fuzz: "2000"
             test-launcher-jdk: ""
             core-dump: "false"
             audit: "false"
@@ -1435,12 +1445,8 @@ jobs:
           # audit "captures the JDK17 backend run (the last full jvmTest)". Auditing exactly
           # one leg also keeps the `quic-audit-linux-jvm` artifact name unique across the
           # matrix — review.yaml / merged.yaml collect `quic-audit-*` with merge-multiple.
-          #
-          # SIM_FUZZ_ITERATIONS is deliberately NOT set here, matching the monolith: the
-          # deep-fuzz lane rides the two JDK-21 backends only.
           - name: "JDK 17 / JNI"
             args: "-PjvmTestLauncher=17 -Porg.gradle.java.installations.fromEnv=JAVA_HOME_17_X64"
-            sim-fuzz: ""
             test-launcher-jdk: "17"
             core-dump: "false"
             audit: "true"
@@ -1453,11 +1459,10 @@ jobs:
           # the one that executes them. The build/toolchain stays on 21; only this Test task runs on
           # 25, found via the JAVA_HOME_25_X64 install from setup-java.
           #
-          # No deep-fuzz seeds, ring, recorder or audit here, as on the JDK 17 leg: those ride the
+          # No ring, recorder or audit here, as on the JDK 17 leg: those ride the
           # JDK 21 legs, and this one answers a single question, whether the suite passes on 25.
           - name: "JDK 25 / FFM"
             args: "-PquicheJvmBackend=ffm -PjvmTestLauncher=25 -Porg.gradle.java.installations.fromEnv=JAVA_HOME_25_X64"
-            sim-fuzz: ""
             test-launcher-jdk: "25"
             core-dump: "false"
             audit: "false"
@@ -1506,6 +1511,24 @@ jobs:
               -keystore "$JAVA_HOME/lib/security/cacerts" \
               -storepass changeit -noprompt
 
+      # The restored Gradle cache serves every plugin this build requests without a repository, judged
+      # with the network closed and the cache's "not found" answers expired (plugins-from-cache.sh).
+      - name: Resolve the build's plugins from the Gradle cache with the network closed
+        timeout-minutes: 5
+        run: .github/scripts/plugins-from-cache.sh ${{ matrix.leg.args }} -PlinuxTargets=false ${{ inputs.gradle-args }}
+
+      # Everything the tests need that is not test execution: every JVM module's main and test classes
+      # and the staged quiche natives. Its own limit keeps a slow runner's compile time out of the test
+      # step's budget; the test step reruns the same tasks and finds them up to date. The core-dump leg
+      # compiles in a --no-daemon build like its test step, so no daemon with another core ulimit exists.
+      - name: Compile the JVM tests and stage the natives (${{ matrix.leg.name }})
+        timeout-minutes: 12
+        run: |
+          nodaemon=""
+          if [ "${{ matrix.leg.core-dump }}" = "true" ]; then nodaemon="--no-daemon"; fi
+          .github/scripts/gradle-retry.sh :socket-quic-quiche:jvmTestClasses :socket-quic-quiche:stageQuicheNativeResources \
+            ${{ matrix.leg.args }} -PlinuxTargets=false $nodaemon --no-configuration-cache ${{ inputs.gradle-args }}
+
       # Flight Recorder ring on the test worker (`jfr` matrix flag): the FFM leg is traced, the JNI,
       # JDK 17 and JDK 25 legs are not, so the recorder is never the only configuration this lane has run. JNI is
       # traced in checks-tests (above) and FFM here, which is what covers both backends.
@@ -1514,6 +1537,12 @@ jobs:
           mode: start
           enabled: ${{ matrix.leg.jfr }}
 
+      # The runner's cores, memory, load and VM type at both ends of the test step, beside the JVM logs
+      # (see .github/scripts/runner-facts.sh), so a stall in between can be weighed against the host.
+      - name: Runner facts (start)
+        continue-on-error: true
+        shell: bash
+        run: bash .github/scripts/runner-facts.sh start build/jvm-logs/runner-facts.txt
       # The quiche_conn_recv SIGABRT that previously required continue-on-error
       # was a JVM-side sockaddr lifetime bug (DirectByteBuffer Cleaner freeing
       # the buffer that quiche_recv_info held a raw pointer to); fixed in 5e55a5f.
@@ -1522,7 +1551,7 @@ jobs:
       #
       # timeout-minutes caps a single hanging socket-quic test so it can't burn the
       # job timeout and wipe subsequent steps. On run 26467344275 step 29 hung 53min
-      # on QuicLocalServerTests.serverAcceptsConnection before this guard existed.
+      # on a local-server echo test before this guard existed.
       #
       # ⚠️ 24, not 8, and it must stay ~3x whatever the unscaled figure would be.
       # This workflow sets QUIC_TEST_TIME_SCALE=3 at workflow level, which triples
@@ -1553,12 +1582,6 @@ jobs:
       - name: Run socket-quic-quiche JVM tests (${{ matrix.leg.name }})
         timeout-minutes: 24
         env:
-          # W5 deep-fuzz lane: 2000 Tier-A seeds through SimFuzzDeepRunTests (~1-2s;
-          # virtual time). Without this the deep lane never runs anywhere and only the
-          # 25-seed commonTest smoke guards the fuzzer. Forwarded into the test worker
-          # by the quiche build script (daemon env is not step env). Empty on the JDK-17
-          # leg, which is how the monolith had it, and on the JDK-25 leg.
-          SIM_FUZZ_ITERATIONS: ${{ matrix.leg.sim-fuzz }}
           # Every leg builds its own natives and inventoried zero skips.
           SOCKET_REQUIRE_ALL_TESTS: "1"
         run: |
@@ -1586,6 +1609,11 @@ jobs:
               --continue --no-configuration-cache ${{ inputs.gradle-args }}
           fi
 
+      - name: Runner facts (end)
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: bash .github/scripts/runner-facts.sh end build/jvm-logs/runner-facts.txt
       - name: Runner health
         if: ${{ always() }}
         continue-on-error: true
@@ -1763,12 +1791,25 @@ jobs:
             **/build/reports/tests/
             **/build/test-results/
             **/build/core-flight/
+            **/build/jvm-logs/
             **/hs_err_pid*.log
             **/replay_pid*.log
             /tmp/cores/core.*
             /tmp/cores/bt/*.txt
             socket-quic-quiche/libs/quiche/linux-x64/lib/libquiche_jni.so
           retention-days: 90
+          if-no-files-found: ignore
+
+      # Every gated count and allocation, whatever the outcome: perf-trend.py (review.yaml's perf-trend job) compares
+      # them with earlier runs. Written by the tests' PerfGates; absent when coreAllocationTest did not run.
+      - name: Upload perf gates
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: perf-gates-linux-${{ strategy.job-index }}
+          path: socket-quic-quiche/build/perf-gates/
+          retention-days: 30
           if-no-files-found: ignore
 
   # ── Stage 2b'': every other module's JVM suite, on a JDK 21 launcher ─────────────────────────────
@@ -1824,6 +1865,12 @@ jobs:
       - name: Start QPACK differential oracle (ls-qpack)
         run: socket-http3/qpack-diff/run-qpack-diff.sh start
 
+      # The runner's cores, memory, load and VM type at both ends of the test step, beside the JVM logs
+      # (see .github/scripts/runner-facts.sh), so a stall in between can be weighed against the host.
+      - name: Runner facts (start)
+        continue-on-error: true
+        shell: bash
+        run: bash .github/scripts/runner-facts.sh start build/jvm-logs/runner-facts.txt
       # -PquicEchoAllArches=true: harnessUp dependsOn quicEchoJar, which stages both Linux arches into
       # the quic-echo image, exactly as in checks-tests. -PlinuxTargets=false: JVM-only, as in
       # quiche-jvm. :socket-quic-quiche is absent from the list on purpose (see the job header).
@@ -1849,6 +1896,11 @@ jobs:
             --continue --no-configuration-cache ${{ inputs.gradle-args }} 2>&1 | tee /tmp/gradle-jdk21.log
           exit "${PIPESTATUS[0]}"
 
+      - name: Runner facts (end)
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: bash .github/scripts/runner-facts.sh end build/jvm-logs/runner-facts.txt
       # The permanent proof that this job ran on 21. The root build script logs the launcher it
       # resolved for every jvmTest task and fails a task whose launcher is not the requested one; here
       # the log must name every module this job asked for, each on a 21.x runtime, and no task may
@@ -1883,6 +1935,7 @@ jobs:
             **/build/reports/tests/
             **/build/test-results/
             **/build/core-flight/
+            **/build/jvm-logs/
             **/hs_err_pid*.log
             **/replay_pid*.log
           retention-days: 90
@@ -2622,11 +2675,9 @@ jobs:
   # + MALLOC_PERTURB_ + glibc.malloc.check=3 on the forked test worker. We re-run
   # only the recv-path robustness + concurrency-soak suites (the allocation-heavy
   # native paths) so a regression aborts the JVM with a diagnostic instead of
-  # silently corrupting state. These three suites are in-process (client+server +
+  # silently corrupting state. These suites are in-process (client+server +
   # classpath certs), so `jvmTest`'s best-effort harnessUp bring-up is incidental —
-  # the tests themselves need no Docker peer. StaleConnectionDiagnosticTests is
-  # included because the still-open intermittent JNI SIGABRT (exit 134, no failing
-  # JUnit case) was last seen *near* it — a teardown-heavy suite.
+  # the tests themselves need no Docker peer.
   malloc-check:
     name: "QUIC malloc-check (Linux x64)"
     needs: natives
@@ -2646,8 +2697,22 @@ jobs:
       # run against the SHIPPED libquiche_jni.so/libquiche.so, not a locally rebuilt one (#338).
       - uses: ./.github/actions/linux-quiche-env
 
-      # ⚠️ 24, not 8: this is the most deadline-heavy lane in the workflow (QuicConcurrencySoakTests
-      # + StaleConnectionDiagnosticTests) and QUIC_TEST_TIME_SCALE=3 triples every `.scaled` budget
+      # Everything the tests need that is not test execution (see the same step in quiche-jvm): its own
+      # limit, so compile time is not spent from the test step's budget. --no-daemon like the test step.
+      - name: Compile the JVM tests and stage the natives
+        timeout-minutes: 12
+        run: |
+          .github/scripts/gradle-retry.sh :socket-quic-quiche:jvmTestClasses :socket-quic-quiche:stageQuicheNativeResources \
+            -PquicMallocCheck --no-daemon --no-configuration-cache ${{ inputs.gradle-args }}
+
+      # The runner's cores, memory, load and VM type at both ends of the test step, beside the JVM logs
+      # (see .github/scripts/runner-facts.sh), so a stall in between can be weighed against the host.
+      - name: Runner facts (start)
+        continue-on-error: true
+        shell: bash
+        run: bash .github/scripts/runner-facts.sh start build/jvm-logs/runner-facts.txt
+      # ⚠️ 24, not 8: this is the most deadline-heavy lane in the workflow (QuicConcurrencySoakTests)
+      # and QUIC_TEST_TIME_SCALE=3 triples every `.scaled` budget
       # it waits on. A step timeout CANCELS the step, so tripping this lid yields a truncated test
       # report AND loses the core dump this lane exists to capture — strictly worse signal than the
       # slow-but-complete run it would be pre-empting. Keep at ~3x the unscaled figure.
@@ -2667,9 +2732,13 @@ jobs:
           .github/scripts/gradle-retry.sh :socket-quic-quiche:jvmTest -PquicMallocCheck --continue --no-daemon \
             --tests "com.ditchoom.socket.quic.QuicMalformedPacketTests" \
             --tests "com.ditchoom.socket.quic.QuicConcurrencySoakTests" \
-            --tests "com.ditchoom.socket.quic.StaleConnectionDiagnosticTests" \
             --no-configuration-cache ${{ inputs.gradle-args }}
 
+      - name: Runner facts (end)
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: bash .github/scripts/runner-facts.sh end build/jvm-logs/runner-facts.txt
       # Native-crash post-mortem: if the worker dumped a core, load it in gdb and print
       # every thread's backtrace into the live log AND a file. With the JNI shim built
       # frame-pointer-preserving and only `--strip-debug`'d (function symbols kept), these
@@ -2729,6 +2798,7 @@ jobs:
             **/build/reports/tests/
             **/build/test-results/
             **/build/core-flight/
+            **/build/jvm-logs/
             **/hs_err_pid*.log
             **/replay_pid*.log
             /tmp/cores/core.*

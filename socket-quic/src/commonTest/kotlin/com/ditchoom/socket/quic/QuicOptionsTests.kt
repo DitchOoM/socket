@@ -58,20 +58,6 @@ class QuicOptionsTests {
     }
 
     @Test
-    fun negativeFlowControlStreamsBidi_throws() {
-        assertFailsWith<IllegalArgumentException> {
-            FlowControl(initialMaxStreamsBidi = -1)
-        }
-    }
-
-    @Test
-    fun negativeFlowControlStreamsUni_throws() {
-        assertFailsWith<IllegalArgumentException> {
-            FlowControl(initialMaxStreamsUni = -1)
-        }
-    }
-
-    @Test
     fun negativeIdleTimeout_throws() {
         assertFailsWith<IllegalArgumentException> {
             QuicOptions(alpnProtocols = listOf("h3"), idleTimeout = (-1).seconds)
@@ -99,10 +85,16 @@ class QuicOptionsTests {
     }
 
     @Test
-    fun zeroStreamLimits_succeeds() {
-        val fc = FlowControl(initialMaxStreamsBidi = 0, initialMaxStreamsUni = 0)
-        kotlin.test.assertEquals(0, fc.initialMaxStreamsBidi)
-        kotlin.test.assertEquals(0, fc.initialMaxStreamsUni)
+    fun incomingStreamsAreDecidedByRoleUnlessChosen() {
+        kotlin.test.assertEquals<IncomingStreams>(IncomingStreams.ByRole, QuicOptions(alpnProtocols = listOf("h3")).incomingStreams)
+        val accept = IncomingStreams.Accept(QuicStreamLimit(0u), QuicStreamLimit(3u))
+        kotlin.test.assertEquals(accept, QuicOptions(alpnProtocols = listOf("h3"), incomingStreams = accept).incomingStreams)
+    }
+
+    @Test
+    fun abortCodesAreComparedByValue() {
+        kotlin.test.assertEquals(QuicAbortCodes(), QuicAbortCodes())
+        kotlin.test.assertEquals(QuicOptions(alpnProtocols = listOf("h3")), QuicOptions(alpnProtocols = listOf("h3")))
     }
 
     @Test

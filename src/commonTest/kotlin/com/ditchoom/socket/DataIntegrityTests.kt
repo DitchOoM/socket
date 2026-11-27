@@ -5,7 +5,10 @@ import com.ditchoom.buffer.Default
 import com.ditchoom.data.readBuffer
 import com.ditchoom.data.readString
 import com.ditchoom.data.writeString
+import com.ditchoom.socket.testkit.scaled
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlin.random.Random
@@ -13,7 +16,10 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeSource
 
 /**
  * Tests for data integrity and large data transfers.
@@ -259,51 +265,96 @@ class DataIntegrityTests {
     @Test
     fun partialReadHandling() =
         runTestNoTimeSkipping {
-            val server = ServerSocket.allocate()
-            val serverFlow = server.bind()
-            val clientConnected = Mutex(locked = true)
+            readPacedParts(pause = 50.milliseconds, readDeadline = 1.seconds)
+        }
 
-            val serverJob =
-                launch(Dispatchers.Default) {
-                    serverFlow.collect { client ->
-                        // The reader can hold all three parts before the last write returns here, and the
-                        // test then cancels this job inside it: the close must not depend on that write.
-                        try {
-                            clientConnected.unlock()
-                            // Send data in parts with delays
-                            client.writeString("PART1")
-                            kotlinx.coroutines.delay(50)
-                            client.writeString("PART2")
-                            kotlinx.coroutines.delay(50)
-                            client.writeString("PART3")
-                        } finally {
-                            client.close()
+    /**
+     * The peer pauses longer than each read's deadline, so reads expire between parts — what a runner
+     * that stops scheduling the test process does to [partialReadHandling]. An expired read deadline
+     * abandons only the wait: the parts still arrive whole and in order.
+     */
+    @Test
+    fun partsArrivingAfterAReadDeadlineAreStillRead() =
+        runTestNoTimeSkipping {
+            readPacedParts(pause = 400.milliseconds, readDeadline = 150.milliseconds)
+        }
+
+    /** A server writes [PACED_PARTS] one at a time, [pause] apart, then closes; the client reads them all. */
+    private suspend fun CoroutineScope.readPacedParts(
+        pause: Duration,
+        readDeadline: Duration,
+    ) {
+        val server = ServerSocket.allocate()
+        val serverFlow = server.bind()
+        val clientConnected = Mutex(locked = true)
+
+        val serverJob =
+            launch(Dispatchers.Default) {
+                serverFlow.collect { client ->
+                    // The reader can hold all the parts before the last write returns here, and the
+                    // test then cancels this job inside it: the close must not depend on that write.
+                    try {
+                        clientConnected.unlock()
+                        PACED_PARTS.forEachIndexed { index, part ->
+                            if (index > 0) delay(pause)
+                            client.writeString(part)
                         }
+                    } finally {
+                        client.close()
                     }
-                }
-
-            val client = ClientSocket.allocate(TransportConfig(connectTimeout = 5.seconds))
-            client.open(server.port(), hostname = "127.0.0.1")
-            clientConnected.lockWithTimeout()
-
-            // Read all data - may come in chunks
-            val allData = StringBuilder()
-            while (true) {
-                try {
-                    val chunk = client.readString(deadline = 1.seconds)
-                    allData.append(chunk)
-                    if (allData.toString() == "PART1PART2PART3") break
-                } catch (e: SocketClosedException) {
-                    break
                 }
             }
 
-            assertEquals("PART1PART2PART3", allData.toString(), "All parts should be received")
+        val client = ClientSocket.allocate(TransportConfig(connectTimeout = 5.seconds))
+        client.open(server.port(), hostname = "127.0.0.1")
+        clientConnected.lockWithTimeout()
 
-            client.close()
-            server.close()
-            serverJob.cancel()
+        val expected = PACED_PARTS.joinToString("")
+        val received = client.readUntil(expected.length, readDeadline, budget = 10.seconds.scaled)
+        assertEquals(expected, received.text, "All parts should be received; $received")
+
+        client.close()
+        server.close()
+        serverJob.cancel()
+    }
+
+    /** What [readUntil] collected, and how many of its reads ended at their deadline. */
+    private class Received(
+        val text: String,
+        val expiredDeadlines: Int,
+        val elapsed: Duration,
+    ) {
+        override fun toString() = "received '$text' in $elapsed, $expiredDeadlines read deadline(s) expired"
+    }
+
+    /**
+     * Reads until [length] characters have arrived, the stream ends, or [budget] is spent. A read whose
+     * [readDeadline] expires is not a failure: the next read collects the same bytes. [budget] is
+     * checked between reads rather than wrapped around them, so it can never cancel a read mid-flight.
+     */
+    private suspend fun ClientSocket.readUntil(
+        length: Int,
+        readDeadline: Duration,
+        budget: Duration,
+    ): Received {
+        val text = StringBuilder()
+        var expiredDeadlines = 0
+        val started = TimeSource.Monotonic.markNow()
+        while (text.length < length && started.elapsedNow() < budget) {
+            try {
+                text.append(readString(deadline = readDeadline))
+            } catch (_: SocketTimeoutException) {
+                expiredDeadlines++
+            } catch (_: SocketClosedException) {
+                break
+            }
         }
+        return Received(text.toString(), expiredDeadlines, started.elapsedNow())
+    }
+
+    private companion object {
+        val PACED_PARTS = listOf("PART1", "PART2", "PART3")
+    }
 
     @Test
     fun nullBytesInData() =

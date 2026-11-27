@@ -94,6 +94,6 @@ internal fun <T> coreTest(
         return runBlocking(block = body).also { FailureEvidence.passed() }
     } catch (failure: Throwable) {
         val written = FailureEvidence.failed(test)
-        throw AssertionError(FailureEvidence.message(written, failure.message), failure)
+        throw AssertionError(FailureEvidence.message(written, failure.message ?: failure.toString()), failure)
     }
 }

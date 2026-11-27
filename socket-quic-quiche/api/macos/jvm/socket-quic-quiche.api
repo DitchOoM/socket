@@ -83,6 +83,10 @@ public final class com/ditchoom/socket/quic/DriverClock$DefaultImpls {
 	public static fun withBound-KLykuaI (Lcom/ditchoom/socket/quic/DriverClock;JLkotlin/jvm/functions/Function1;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 }
 
+public final class com/ditchoom/socket/quic/DriverClockKt {
+	public static final fun QuicTraceRecorder (Lcom/ditchoom/socket/testkit/trace/TraceSink;Lcom/ditchoom/socket/quic/DriverClock;)Lcom/ditchoom/socket/quic/trace/QuicTraceRecorder;
+}
+
 public final class com/ditchoom/socket/quic/DriverStreamAdapter : com/ditchoom/socket/quic/QuicheStreamAdapter {
 	public fun <init> (Lcom/ditchoom/socket/quic/QuicheDriver;Lcom/ditchoom/socket/quic/StreamSlot;)V
 	public fun releaseUndeliveredReads ()V
@@ -166,6 +170,7 @@ public final class com/ditchoom/socket/quic/JniQuicheApi : com/ditchoom/socket/q
 	public fun configSetMaxStreamWindow-656eFbI (JJ)V
 	public fun configSetTicketKey-ZPdP-6U (JJI)I
 	public fun configVerifyPeer-656eFbI (JZ)V
+	public fun connActivePathProbes-ObL0uzk (J)J
 	public fun connActivePathRttNanos-ObL0uzk (J)J
 	public fun connActiveScids-ObL0uzk (J)I
 	public fun connApplicationProto-RTtnfzo (JJI)I
@@ -173,9 +178,12 @@ public final class com/ditchoom/socket/quic/JniQuicheApi : com/ditchoom/socket/q
 	public fun connClose-7TBY80c (JLcom/ditchoom/socket/quic/QuicError;)I
 	public fun connDgramMaxWritableBytes-ObL0uzk (J)I
 	public fun connDgramMaxWritableLen-ObL0uzk (J)Lcom/ditchoom/socket/quic/MaxDatagramSize;
+	public fun connDgramPurgeOutgoing-ObL0uzk (J)I
 	public fun connDgramRecv-RTtnfzo (JJI)Lcom/ditchoom/socket/quic/StreamRecvResult;
+	public fun connDgramRecvQueueLen-ObL0uzk (J)I
 	public fun connDgramRecvStep-19tTNE0 (JJI)J
 	public fun connDgramSend-RTtnfzo (JJI)I
+	public fun connDgramSendQueueLen-ObL0uzk (J)I
 	public fun connDrainRetiredScids-RTtnfzo (JJI)I
 	public fun connEarlyDataReason-ObL0uzk (J)I
 	public fun connFree-ObL0uzk (J)V
@@ -209,6 +217,7 @@ public final class com/ditchoom/socket/quic/JniQuicheApi : com/ditchoom/socket/q
 	public fun connRecv-LflwuVw (JJIJ)I
 	public fun connRecvGaps-ObL0uzk (J)J
 	public fun connRequeuePath-oJNOU9g (JJIJI)I
+	public fun connResetStreamsOnEarlyDataReject-ObL0uzk (J)V
 	public fun connRetireDcid-7TBY80c (JJ)I
 	public fun connRetiredScids-ObL0uzk (J)I
 	public fun connScidsLeft-ObL0uzk (J)J
@@ -574,6 +583,15 @@ public final class com/ditchoom/socket/quic/QuicConnStats {
 	public fun toString ()Ljava/lang/String;
 }
 
+public final class com/ditchoom/socket/quic/QuicCoreEntryKt {
+	public static final fun connectQuicOnCore-gwCluXo (Lcom/ditchoom/socket/quic/QuicPeer;Lcom/ditchoom/socket/quic/QuicOptions;Lcom/ditchoom/socket/TransportConfig;JLkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static final fun connectQuicOnCore-myKFqkg (Lcom/ditchoom/buffer/flow/AddressedDatagramChannel;Lcom/ditchoom/socket/quic/QuicEndpoint;Ljava/lang/String;Lcom/ditchoom/socket/quic/QuicOptions;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static final fun connectQuicOnCore-zkXUZaI (Lcom/ditchoom/socket/quic/QuicPeer;Lcom/ditchoom/socket/quic/QuicOptions;Lcom/ditchoom/socket/TransportConfig;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static final fun serveQuicOnCore (ILjava/lang/String;Lcom/ditchoom/socket/quic/QuicTlsConfig;Lcom/ditchoom/socket/quic/QuicOptions;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static final fun serveQuicOnCore (ILjava/lang/String;Lcom/ditchoom/socket/quic/QuicTlsConfig;Lcom/ditchoom/socket/quic/QuicOptions;Lkotlin/jvm/functions/Function2;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public static final fun serveQuicOnCore (Lcom/ditchoom/buffer/flow/AddressedDatagramChannel;Lcom/ditchoom/socket/quic/QuicTlsConfig;Lcom/ditchoom/socket/quic/QuicOptions;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+}
+
 public final class com/ditchoom/socket/quic/QuicPathStats {
 	public synthetic fun <init> (JZJJJJJJJJJJJJJJJJLkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun component1 ()J
@@ -688,6 +706,7 @@ public abstract interface class com/ditchoom/socket/quic/QuicheApi {
 	public abstract fun configSetMaxStreamWindow-656eFbI (JJ)V
 	public abstract fun configSetTicketKey-ZPdP-6U (JJI)I
 	public abstract fun configVerifyPeer-656eFbI (JZ)V
+	public fun connActivePathProbes-ObL0uzk (J)J
 	public fun connActivePathRttNanos-ObL0uzk (J)J
 	public fun connActiveScids-ObL0uzk (J)I
 	public fun connApplicationProto-RTtnfzo (JJI)I
@@ -695,9 +714,12 @@ public abstract interface class com/ditchoom/socket/quic/QuicheApi {
 	public abstract fun connClose-7TBY80c (JLcom/ditchoom/socket/quic/QuicError;)I
 	public fun connDgramMaxWritableBytes-ObL0uzk (J)I
 	public abstract fun connDgramMaxWritableLen-ObL0uzk (J)Lcom/ditchoom/socket/quic/MaxDatagramSize;
+	public abstract fun connDgramPurgeOutgoing-ObL0uzk (J)I
 	public abstract fun connDgramRecv-RTtnfzo (JJI)Lcom/ditchoom/socket/quic/StreamRecvResult;
+	public abstract fun connDgramRecvQueueLen-ObL0uzk (J)I
 	public fun connDgramRecvStep-19tTNE0 (JJI)J
 	public abstract fun connDgramSend-RTtnfzo (JJI)I
+	public abstract fun connDgramSendQueueLen-ObL0uzk (J)I
 	public fun connDrainRetiredScids-RTtnfzo (JJI)I
 	public abstract fun connEarlyDataReason-ObL0uzk (J)I
 	public abstract fun connFree-ObL0uzk (J)V
@@ -731,6 +753,7 @@ public abstract interface class com/ditchoom/socket/quic/QuicheApi {
 	public abstract fun connRecv-LflwuVw (JJIJ)I
 	public abstract fun connRecvGaps-ObL0uzk (J)J
 	public abstract fun connRequeuePath-oJNOU9g (JJIJI)I
+	public abstract fun connResetStreamsOnEarlyDataReject-ObL0uzk (J)V
 	public abstract fun connRetireDcid-7TBY80c (JJ)I
 	public fun connRetiredScids-ObL0uzk (J)I
 	public abstract fun connScidsLeft-ObL0uzk (J)J
@@ -787,6 +810,7 @@ public abstract interface class com/ditchoom/socket/quic/QuicheApi {
 public final class com/ditchoom/socket/quic/QuicheApi$DefaultImpls {
 	public static fun clearThreadVirtualTime (Lcom/ditchoom/socket/quic/QuicheApi;)V
 	public static fun configLogKeys-N7TAlBc (Lcom/ditchoom/socket/quic/QuicheApi;J)V
+	public static fun connActivePathProbes-ObL0uzk (Lcom/ditchoom/socket/quic/QuicheApi;J)J
 	public static fun connActivePathRttNanos-ObL0uzk (Lcom/ditchoom/socket/quic/QuicheApi;J)J
 	public static fun connActiveScids-ObL0uzk (Lcom/ditchoom/socket/quic/QuicheApi;J)I
 	public static fun connApplicationProto-RTtnfzo (Lcom/ditchoom/socket/quic/QuicheApi;JJI)I
@@ -1016,16 +1040,13 @@ public final class com/ditchoom/socket/quic/QuicheDriver$Companion {
 	public final fun getCapabilities ()Lcom/ditchoom/socket/quic/QuicCapabilities;
 }
 
-public final class com/ditchoom/socket/quic/QuicheEngine : com/ditchoom/socket/quic/QuicEngine {
+public final class com/ditchoom/socket/quic/QuicheEngine {
 	public static final field INSTANCE Lcom/ditchoom/socket/quic/QuicheEngine;
-	public fun bind-myKFqkg (ILjava/lang/String;Lcom/ditchoom/socket/quic/QuicTlsConfig;Lcom/ditchoom/socket/quic/QuicOptions;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
-	public fun bind-zkXUZaI (Lcom/ditchoom/socket/quic/QuicPortBinding;Lcom/ditchoom/socket/quic/PeerCertificate;Lcom/ditchoom/socket/quic/QuicOptions;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
-	public fun bind-zkXUZaI (Lcom/ditchoom/socket/quic/QuicPortBinding;Lcom/ditchoom/socket/quic/QuicTlsConfig;Lcom/ditchoom/socket/quic/QuicOptions;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
-	public fun connect-myKFqkg (Ljava/lang/String;ILcom/ditchoom/socket/quic/QuicOptions;Lcom/ditchoom/socket/TransportConfig;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
-	public fun connect-x2RqbK4 (Lcom/ditchoom/socket/quic/QuicClientBinding;Lcom/ditchoom/socket/quic/QuicEndpoint;Ljava/lang/String;Lcom/ditchoom/socket/quic/QuicOptions;Lcom/ditchoom/socket/TransportConfig;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
-	public fun connect-x2RqbK4 (Lcom/ditchoom/socket/quic/QuicClientBinding;Ljava/lang/String;ILcom/ditchoom/socket/quic/QuicOptions;Lcom/ditchoom/socket/TransportConfig;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
-	public fun getCapabilities ()Lcom/ditchoom/socket/quic/EngineCapabilities;
-	public fun getPeerCertificates ()Lcom/ditchoom/socket/quic/PeerCertificateSupport;
+	public final fun bind-zkXUZaI (Lcom/ditchoom/socket/quic/QuicPortBinding;Lcom/ditchoom/socket/quic/PeerCertificate;Lcom/ditchoom/socket/quic/QuicOptions;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun bind-zkXUZaI (Lcom/ditchoom/socket/quic/QuicPortBinding;Lcom/ditchoom/socket/quic/QuicTlsConfig;Lcom/ditchoom/socket/quic/QuicOptions;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun connect-x2RqbK4 (Lcom/ditchoom/socket/quic/QuicClientBinding;Lcom/ditchoom/socket/quic/QuicEndpoint;Ljava/lang/String;Lcom/ditchoom/socket/quic/QuicOptions;Lcom/ditchoom/socket/TransportConfig;JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun getCapabilities ()Lcom/ditchoom/socket/quic/EngineCapabilities;
+	public final fun getPeerCertificates ()Lcom/ditchoom/socket/quic/PeerCertificateSupport;
 }
 
 public abstract interface class com/ditchoom/socket/quic/QuicheMemory {
@@ -1506,9 +1527,14 @@ public final class com/ditchoom/socket/quic/UnresolvedRouteSourceException : jav
 	public final fun getReason ()Lcom/ditchoom/socket/quic/RouteProbeFailure;
 }
 
+public final class com/ditchoom/socket/quic/trace/DriverTraceRecordingKt {
+	public static final fun wrapUdpChannel (Lcom/ditchoom/socket/quic/trace/QuicTraceRecorder;Lcom/ditchoom/socket/quic/UdpChannel;Lcom/ditchoom/socket/quic/PathKey;)Lcom/ditchoom/socket/quic/UdpChannel;
+	public static synthetic fun wrapUdpChannel$default (Lcom/ditchoom/socket/quic/trace/QuicTraceRecorder;Lcom/ditchoom/socket/quic/UdpChannel;Lcom/ditchoom/socket/quic/PathKey;ILjava/lang/Object;)Lcom/ditchoom/socket/quic/UdpChannel;
+}
+
 public final class com/ditchoom/socket/quic/trace/QuicTraceRecorder {
-	public fun <init> (Lcom/ditchoom/socket/testkit/trace/TraceSink;Lcom/ditchoom/socket/quic/DriverClock;)V
-	public synthetic fun <init> (Lcom/ditchoom/socket/testkit/trace/TraceSink;Lcom/ditchoom/socket/quic/DriverClock;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun <init> (Lcom/ditchoom/socket/testkit/trace/TraceSink;Lkotlin/time/TimeMark;)V
+	public synthetic fun <init> (Lcom/ditchoom/socket/testkit/trace/TraceSink;Lkotlin/time/TimeMark;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun closeError (Lcom/ditchoom/socket/quic/QuicError;)V
 	public final fun connectionState (Lcom/ditchoom/socket/quic/QuicConnectionState;)V
 	public final fun drop (Ljava/lang/Throwable;)V
@@ -1524,9 +1550,7 @@ public final class com/ditchoom/socket/quic/trace/QuicTraceRecorder {
 	public final fun stats (Lcom/ditchoom/socket/quic/QuicPathStats;)V
 	public final fun streamLoss (JILcom/ditchoom/socket/quic/trace/StreamLossCause;)V
 	public final fun trafficSecretsRefused (Ljava/lang/String;)V
-	public final fun wrap (Lcom/ditchoom/socket/quic/UdpChannel;Lcom/ditchoom/socket/quic/PathKey;)Lcom/ditchoom/socket/quic/UdpChannel;
 	public final fun wrap (Lcom/ditchoom/socket/transport/Liveness;)Lcom/ditchoom/socket/transport/Liveness;
-	public static synthetic fun wrap$default (Lcom/ditchoom/socket/quic/trace/QuicTraceRecorder;Lcom/ditchoom/socket/quic/UdpChannel;Lcom/ditchoom/socket/quic/PathKey;ILjava/lang/Object;)Lcom/ditchoom/socket/quic/UdpChannel;
 }
 
 public abstract interface class com/ditchoom/socket/quic/trace/StreamLossCause {

@@ -110,6 +110,8 @@ internal class DeadlineSlot(
         is ReadOp -> operation.expired(inside)
         is WriteOp -> operation.expired(inside)
         is StreamTransfer -> operation.expired(inside)
+        is OpenOp -> operation.expired(inside)
+        is ReadInbox -> operation.expired(inside)
         is Bounded.NoOperation -> Unit
     }
 }

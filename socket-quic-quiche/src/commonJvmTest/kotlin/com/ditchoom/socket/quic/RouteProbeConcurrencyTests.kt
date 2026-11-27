@@ -33,6 +33,9 @@ import kotlin.test.assertTrue
 import kotlin.test.fail
 import kotlin.time.Duration.Companion.milliseconds
 
+/** The receive buffer the probes' sockets are opened with: one datagram. */
+private const val RECEIVE_BUFFER_SIZE = 1350
+
 /**
  * Concurrent route probes never share a 4-tuple, without a lock.
  *
@@ -143,7 +146,8 @@ class RouteProbeConcurrencyTests {
                 assertEquals(
                     emptyList(),
                     lost,
-                    "$host: ${lost.size} of ${outcomes.size} probes failed: " + lost.take(3).joinToString { it.reason.describe() },
+                    "$host: ${lost.size} of ${outcomes.size} probes failed: " + lost.take(3).joinToString { it.reason.describe() } +
+                        lost.take(1).joinToString { it.refusalTrace() },
                 )
             }
         }
@@ -179,8 +183,38 @@ class RouteProbeConcurrencyTests {
                 emptyList(),
                 lost,
                 "${lost.size} of ${outcomes.size} route probes lost their draw (#547): " +
-                    lost.take(3).joinToString { it.reason.describe() },
+                    lost.take(3).joinToString { it.reason.describe() } + lost.take(1).joinToString { it.refusalTrace() + udpTable() },
             )
+        }
+
+    /**
+     * On Windows, how many UDP endpoints this process and the host hold, and the excluded port ranges:
+     * whether a `WSAENOBUFS` refusal was the dynamic port range running out or something else. Read only
+     * after a loss.
+     */
+    private fun udpTable(): String {
+        if (!System.getProperty("os.name").orEmpty().startsWith("Windows")) return ""
+        val pid = ProcessHandle.current().pid().toString()
+        val endpoints = run("netstat", "-ano", "-p", "UDP").lines().filter { it.trim().startsWith("UDP") }
+        val ours = endpoints.count { it.trim().split(Regex("\\s+")).lastOrNull() == pid }
+        return "\nUDP endpoints: this process $ours, host ${endpoints.size}\n" +
+            run("netsh", "int", "ipv4", "show", "dynamicport", "udp") +
+            run("netsh", "int", "ipv4", "show", "excludedportrange", "udp")
+    }
+
+    private fun run(vararg command: String): String =
+        runCatching {
+            val process = ProcessBuilder(*command).redirectErrorStream(true).start()
+            val output = process.inputStream.bufferedReader().readText()
+            process.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)
+            output
+        }.getOrElse { "${command.joinToString(" ")} failed: $it\n" }
+
+    /** The first refusal's whole chain, the JDK's exception and the `Net` frame that raised it included. */
+    private fun RouteSource.Unresolved.refusalTrace(): String =
+        when (reason) {
+            is RouteProbeFailure.ProbeRefused -> "\n" + reason.cause.stackTraceToString()
+            is RouteProbeFailure.SourceAddressUnknown, is RouteProbeFailure.SourceAddressUnnamed -> ""
         }
 
     /** Refuses the first [refusals] probes with [refusal], then serves. */
@@ -254,7 +288,7 @@ class RouteProbeConcurrencyTests {
         codec = SocketAddressCodec(hostOsSockAddrLayout()),
         bufferFactory = BufferFactory.Default,
         recvBufferFactory = BufferFactory.Default,
-        receiveBufferSize = QuicheDriver.MAX_DATAGRAM_SIZE,
+        receiveBufferSize = RECEIVE_BUFFER_SIZE,
         localEndpointSupport = LocalEndpointSupport.Bindable,
         openChannel = opener,
     )

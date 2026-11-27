@@ -37,6 +37,14 @@ sealed interface QuicConnectionEnd {
         val refusal: QuicSendRefusal,
     ) : QuicConnectionEnd
 
+    /**
+     * The handshake ended before its bound because the operating system withholds network access from this app:
+     * [denial] says which access, how that is known, and its remedy.
+     */
+    data class AccessDenied(
+        val denial: QuicAccessDenial,
+    ) : QuicConnectionEnd
+
     /** The connection's UDP socket failed as [fault] says. */
     class SocketFailed(
         val fault: QuicSocketFault,
@@ -81,6 +89,16 @@ sealed interface QuicConnectionEnd {
     /** No path the connection could send on was left. */
     data object NoUsablePath : QuicConnectionEnd
 
+    /**
+     * The server rejected the client's 0-RTT for [reason] and changed what the early bytes relied on, as [change] says:
+     * nothing written in the [QuicResumption.ResumeWithEarlyData] block reached the server, and the client ended the
+     * connection rather than replay it (RFC 9001 §4.6.2). Connect again; the block runs again on that connection.
+     */
+    data class EarlyDataRejected(
+        val reason: QuicEarlyDataRejection,
+        val change: QuicEarlyDataChange,
+    ) : QuicConnectionEnd
+
     /** An engine that records only the close reason ended the connection with [reason]. */
     data class ReasonOnly(
         val reason: QuicCloseReason,
@@ -100,7 +118,9 @@ val QuicConnectionEnd.closeReason: QuicCloseReason
             is QuicConnectionEnd.ServerClosed -> QuicCloseReason.ByLocal(QuicError.NoError)
             is QuicConnectionEnd.ServerClosedUnsettled -> QuicCloseReason.ByLocal(QuicError.ServerStoppedBeforeCloseSent)
             is QuicConnectionEnd.NoUsablePath -> QuicCloseReason.ByLocal(QuicError.NoViablePath)
+            is QuicConnectionEnd.EarlyDataRejected -> QuicCloseReason.ByLocal(QuicError.NoError)
             is QuicConnectionEnd.ReasonOnly -> reason
+            is QuicConnectionEnd.AccessDenied,
             is QuicConnectionEnd.SocketFailed, is QuicConnectionEnd.CallerFailed, is QuicConnectionEnd.LoopFailed,
             is QuicConnectionEnd.LoopStopped, is QuicConnectionEnd.NoErrorRecorded, is QuicConnectionEnd.Released,
             is QuicConnectionEnd.NetworkLost, is QuicConnectionEnd.LocalAddressGone,
@@ -172,6 +192,11 @@ sealed interface QuicSocketFault {
 
     /** The local address changed and no socket could be opened at the new one. */
     class MoveRefused(
+        val thrown: Throwable,
+    ) : QuicSocketFault
+
+    /** No socket could be opened at the address asked for; [thrown] is why: the address is in use, or not this host's. */
+    class OpenRefused(
         val thrown: Throwable,
     ) : QuicSocketFault
 

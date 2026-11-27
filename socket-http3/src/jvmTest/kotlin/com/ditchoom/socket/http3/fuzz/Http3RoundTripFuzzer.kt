@@ -1,12 +1,12 @@
 package com.ditchoom.socket.http3.fuzz
 
-import com.ditchoom.socket.http3.Http3FuzzGenerators
+import com.ditchoom.socket.http3.codec.Http3FuzzGenerators
 import kotlinx.coroutines.runBlocking
 
 /**
  * Coverage-guided **Jazzer** fuzz target for the *round-trip* invariant — the encoder-side twin of
  * [Http3CodecFuzzer] (which fuzzes the decoder). The driver's `byte[]` is wrapped in a [ByteEntropy] and
- * fed to the shared [Http3FuzzGenerators], which build a structurally **valid** [com.ditchoom.socket.http3.Http3Frame]
+ * fed to the shared [Http3FuzzGenerators], which build a structurally **valid** [com.ditchoom.socket.http3.codec.Http3Frame]
  * or QPACK header list. Each is run through `encode → decode`; the assert oracles inside the generators
  * require the result to come back EQUAL.
  *

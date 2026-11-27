@@ -151,14 +151,14 @@ class AndroidQuicMigrationTests {
         write(out, 5.seconds)
     }
 
-    private suspend fun QuicByteStream.receive(deadline: Duration): ScopedRead<String> =
+    private suspend fun QuicByteStream.receive(deadline: Duration): ScopedReadResult<String> =
         read(deadline) {
             it.readString(it.remaining(), Charset.UTF8)
         }
 
     private suspend fun QuicByteStream.assertEchoes(payload: String) {
         send(payload)
-        assertEquals(ScopedRead.Data(payload), receive(5.seconds))
+        assertEquals(ScopedReadResult.Data(payload), receive(5.seconds))
     }
 
     /** Nothing may come back while the block holds: the echo of what was sent during it is dropped. */
@@ -213,7 +213,7 @@ class AndroidQuicMigrationTests {
                 assertTheBlockDroppedTheAppsDatagrams()
                 control.unblockUdp()
                 // Retransmission carries part2 once the block lifts, and its echo arrives.
-                assertEquals(ScopedRead.Data("part2"), stream.receive(10.seconds))
+                assertEquals(ScopedReadResult.Data("part2"), stream.receive(10.seconds))
                 stream.close()
             }
         }

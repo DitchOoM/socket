@@ -81,18 +81,18 @@ sealed interface QuicCloseLinger {
 
     /**
      * Hold the CONNECTION_CLOSE until the peer has acknowledged everything the connection wrote on its
-     * streams — every byte and every FIN — or until the connection ends on its own, whichever comes first,
-     * and at most the connection's [QuicOptions.idleTimeout].
+     * streams — every byte and every FIN — or until the connection ends on its own, whichever comes first.
+     * On the core engine it waits at most ten seconds, and a write after the close is refused at
+     * once; on the legacy driver, at most the connection's
+     * [QuicOptions.idleTimeout].
      *
-     * Unlike [UntilPeerDone]'s fixed bound, this waits exactly as long as delivery takes: a reply on a
-     * path slow or lossy enough to need more than a fixed wait is still delivered whole. The idle timeout
-     * bounds it because a peer that acknowledges nothing for that long would have ended the connection
-     * anyway.
+     * It returns as soon as delivery is done: the limit is a cap for a peer that stops acknowledging,
+     * not a delay.
      */
     data object UntilAcknowledged : QuicCloseLinger
 
     companion object {
-        /** The default: [UntilAcknowledged] — a reply is never cut short by a fixed wait. */
+        /** The default: [UntilAcknowledged]. */
         val Default: QuicCloseLinger = UntilAcknowledged
     }
 }
@@ -107,10 +107,6 @@ data class FlowControl(
     val initialMaxStreamDataBidiRemote: Long = 1_048_576,
     /** Max data on a unidirectional stream (bytes). */
     val initialMaxStreamDataUni: Long = 1_048_576,
-    /** Maximum concurrent bidirectional streams the peer may open. */
-    val initialMaxStreamsBidi: Long = 100,
-    /** Maximum concurrent unidirectional streams the peer may open. */
-    val initialMaxStreamsUni: Long = 100,
     /**
      * The ceiling the connection-level receive window auto-tunes up to (bytes). The window starts at
      * [initialMaxData] and grows only while the peer keeps it full, so this is memory a connection can
@@ -130,8 +126,6 @@ data class FlowControl(
         require(initialMaxStreamDataBidiLocal >= 0) { "initialMaxStreamDataBidiLocal must be non-negative" }
         require(initialMaxStreamDataBidiRemote >= 0) { "initialMaxStreamDataBidiRemote must be non-negative" }
         require(initialMaxStreamDataUni >= 0) { "initialMaxStreamDataUni must be non-negative" }
-        require(initialMaxStreamsBidi >= 0) { "initialMaxStreamsBidi must be non-negative" }
-        require(initialMaxStreamsUni >= 0) { "initialMaxStreamsUni must be non-negative" }
         require(maxConnectionWindow > 0) { "maxConnectionWindow must be positive" }
         require(maxStreamWindow > 0) { "maxStreamWindow must be positive" }
     }
@@ -149,15 +143,25 @@ data class FlowControl(
  * Unreliable DATAGRAM frame support (RFC 9221). Present (non-null on [QuicOptions.datagrams])
  * means the endpoint advertises `max_datagram_frame_size` and maintains datagram queues.
  *
- * Both queues are bounded; when full, quiche drops the **oldest** datagram — the unreliable,
- * lossy semantics RFC 9221 and WebTransport expect. This is also the backpressure mechanism:
- * a slow receiver simply loses old datagrams rather than growing memory without bound.
+ * Both queues are bounded. A full receive queue drops its **oldest** datagram for the newest, so a
+ * slow receiver loses old datagrams rather than growing memory without bound; a full send queue does
+ * what [overflow] says. These are WebTransport's four datagram knobs, its two high-water marks and two
+ * maximum ages, beside the overflow rule.
  */
 data class DatagramOptions(
-    /** Max datagrams buffered for receive before quiche drops the oldest. */
+    /** The receive queue's high-water mark: datagrams kept for a receiver; past it the oldest is dropped and counted. */
     val recvQueueLen: Int = 1024,
-    /** Max datagrams buffered for send before quiche drops the oldest. */
-    val sendQueueLen: Int = 1024,
+    /**
+     * The send queue's high-water mark: datagrams queued to be sent, those already handed to the QUIC stack for its next
+     * packets included; past it [overflow] decides. The core engine refuses a depth below 3.
+     */
+    val sendQueueLen: Int = 128,
+    /** What a send does when the send queue is at its high-water mark. */
+    val overflow: DatagramOverflow = DatagramOverflow.RefuseNew,
+    /** How long a datagram may wait in the send queue; one older when it reaches the head is dropped and counted. */
+    val outgoingMaxAge: DatagramMaxAge = DatagramMaxAge.Unbounded,
+    /** How long a received datagram may wait for a receiver; one older when it would be delivered is dropped and counted. */
+    val incomingMaxAge: DatagramMaxAge = DatagramMaxAge.Unbounded,
 ) {
     init {
         require(recvQueueLen > 0) { "recvQueueLen must be positive" }
@@ -263,13 +267,15 @@ data class QuicOptions(
      */
     val streamOpenPolicy: StreamOpenPolicy = StreamOpenPolicy.UntilClosed,
     /**
-     * **Server-side only**: when an accepted connection may send its CONNECTION_CLOSE after the
-     * [QuicScope] handler returns — see [QuicCloseLinger]. Defaults to [QuicCloseLinger.Default]
-     * (linger until the peer has acknowledged everything written, bounded by [idleTimeout]), so a reply
-     * that is slow or lost on the wire is still delivered instead of dying with the connection.
+     * When a connection may send its CONNECTION_CLOSE after a close with [QuicError.NoError] — see
+     * [QuicCloseLinger]. Defaults to [QuicCloseLinger.Default] (linger until the peer has acknowledged
+     * everything written), so a reply that is slow or lost on the wire is still delivered instead of
+     * dying with the connection.
      *
-     * Ignored for the client role, where the application decides when to call
-     * [QuicConnection.close] and nothing closes the connection behind its back.
+     * On the core engine it applies to every such close, a client's and a server's, the close of each
+     * connection at server shutdown included, and waits at most ten seconds (or the
+     * [QuicCloseLinger.UntilPeerDone] bound); server shutdown waits that long plus one second. On the
+     * legacy driver it applies only when a server's handler returns, bounded by [idleTimeout].
      */
     val closeLinger: QuicCloseLinger = QuicCloseLinger.Default,
     /** Maximum UDP payload size (bytes). Must be >= 1200 per RFC 9000. */
@@ -288,7 +294,7 @@ data class QuicOptions(
     val migration: MigrationPolicy = MigrationPolicy.Automatic,
     /**
      * Which [com.ditchoom.socket.NetworkMonitor] this connection observes — for
-     * [MigrationPolicy.Automatic], for [QuicConnection.networkAtClose], and for the trace's NET/NET_CAP
+     * [MigrationPolicy.Automatic], for [QuicScope.networkAtClose], and for the trace's NET/NET_CAP
      * lines when [trace] asks for them. Resolved **once per connection** and shared by all three, so the
      * observation sequence they report indexes one stream rather than three unrelated ones.
      *
@@ -452,10 +458,11 @@ data class QuicOptions(
     val resumption: QuicResumption = QuicResumption.None,
     /**
      * **Client-side, under [MigrationPolicy.Automatic]**: whether a second link is kept attached for a
-     * dead path to move onto. Defaults to [StandbyLink.KeepCellularReady]; a no-op off Android. Ignored
+     * dead path to move onto. Defaults to [StandbyLink.OnDemand]; the core refuses [StandbyLink.KeepCellularReady] with
+     * [QuicRefusal.StandbyLinkNotHeld]. Ignored
      * for the server role and under every other [MigrationPolicy], none of which migrates on its own.
      */
-    val standbyLink: StandbyLink = StandbyLink.KeepCellularReady,
+    val standbyLink: StandbyLink = StandbyLink.OnDemand,
     /**
      * **Client-side**: verifiers consulted in order with the server's whole certificate chain after the
      * handshake and before the connection is handed to the caller; the first rejection fails the connect.
@@ -480,6 +487,10 @@ data class QuicOptions(
      * process's memory by default; [QuicSessionStore.NotKept] opts out. Ignored for the server role.
      */
     val sessionStore: QuicSessionStore = QuicSessionStore.Default,
+    /** Which streams the peer may open, and how many of each at once: the stream limits this endpoint advertises. */
+    val incomingStreams: IncomingStreams = IncomingStreams.ByRole,
+    /** The application error codes the library resets a stream with when it must do so itself. */
+    val abortCodes: QuicAbortCodes = QuicAbortCodes(),
 ) {
     init {
         require(alpnProtocols.isNotEmpty()) { "QUIC requires at least one ALPN protocol" }

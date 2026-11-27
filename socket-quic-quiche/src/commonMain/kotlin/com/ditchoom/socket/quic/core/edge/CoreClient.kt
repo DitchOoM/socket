@@ -11,4 +11,6 @@ internal class CoreClient(
     val loop: Loop,
     /** The socket's granted buffer sizes, and its drop count on demand. */
     val socket: SocketReport,
+    /** The connection's parts on its loop, which a move is asked of. */
+    val parts: ClientParts,
 )

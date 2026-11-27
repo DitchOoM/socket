@@ -95,7 +95,7 @@ class ResourceLeakTests {
             serverSide.close()
         }
 
-    // --- QuicConnection lifecycle ---
+    // --- QuicScope lifecycle ---
 
     @Test
     fun connection_openAndCloseStream_noLeaks() =

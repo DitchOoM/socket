@@ -68,7 +68,7 @@ class QuicAutoMigrationTests {
                     for (j in 0 until take) acc[got + j] = chunk.readByte()
                     take
                 }
-            if (resp !is ScopedRead.Data) return "no_data"
+            if (resp !is ScopedReadResult.Data) return "no_data"
             got += resp.value
         }
         return acc.decodeToString()
@@ -97,7 +97,7 @@ class QuicAutoMigrationTests {
 
     /** Notes this connection's state and path state as they change, and quiche's spare ids and paths each second. */
     private fun QuicScope.capturedInto(capture: FailureCapture) {
-        (this as? QuicConnection)?.let { connection -> launch { connection.state.collect { capture.note("client state $it") } } }
+        (this as? QuicScope)?.let { connection -> launch { connection.state.collect { capture.note("client state $it") } } }
         launch { pathState.collect { capture.note("client path $it") } }
         val driver = (this as? QuicheBackedConnection)?.quicheDriver ?: return capture.note("no driver behind $this")
         launch {
@@ -153,7 +153,7 @@ class QuicAutoMigrationTests {
                                     while (true) {
                                         // Echo inside the read scope: write is zero-copy and takes no
                                         // ownership, the scope releases the read buffer on exit (#538).
-                                        if (stream.read(8.seconds) { stream.write(it, 5.seconds) } !is ScopedRead.Data) break
+                                        if (stream.read(8.seconds) { stream.write(it, 5.seconds) } !is ScopedReadResult.Data) break
                                     }
                                     stream.close()
                                 }

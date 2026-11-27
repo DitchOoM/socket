@@ -9,24 +9,18 @@ import com.ditchoom.socket.ServerCertificateRejection
 import com.ditchoom.socket.quic.CertificateHashVerification
 import com.ditchoom.socket.quic.PeerCertificate
 import com.ditchoom.socket.quic.PeerCertificateSupport
-import com.ditchoom.socket.quic.QuicCloseReason
-import com.ditchoom.socket.quic.QuicConnectionState
-import com.ditchoom.socket.quic.QuicEngine
 import com.ditchoom.socket.quic.QuicError
-import com.ditchoom.socket.quic.QuicOptions
-import com.ditchoom.socket.quic.QuicPortBinding
-import com.ditchoom.socket.quic.QuicScope
-import com.ditchoom.socket.quic.QuicServer
-import com.ditchoom.socket.quic.QuicTlsConfig
-import com.ditchoom.socket.quic.QuicheEngine
+import com.ditchoom.socket.quic.QuicheApi
+import com.ditchoom.socket.quic.QuicheConn
 import com.ditchoom.socket.quic.ServerCertVerdict
 import com.ditchoom.socket.quic.ServerCertVerifier
 import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.testing.coreTest
 import com.ditchoom.socket.quic.core.testing.currentThreadName
+import com.ditchoom.socket.quic.core.testing.platformPeerCertificates
+import com.ditchoom.socket.quic.core.testing.platformQuicheApi
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.awaitCancellation
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeout
 import kotlin.test.AfterTest
 import kotlin.test.Test
@@ -37,7 +31,6 @@ import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import kotlin.test.fail
-import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -56,11 +49,17 @@ class CorePeerVerificationTests {
         coreTest("CorePeerVerificationTests.aClientPinnedToAnotherCertificateFailsTypedAndSendsBadCertificate") {
             mint().use { pinned ->
                 mint().use { served ->
-                    val ended = CompletableDeferred<QuicCloseReason>()
-                    withMintedCoreServer(served, onConnection = { connection ->
-                        val closed = connection.state.first { it is QuicConnectionState.Closed } as QuicConnectionState.Closed
-                        ended.complete(closed.reason)
-                    }) { port ->
+                    // What the server was told is read from its quiche, not from an offered connection: the client's close can
+                    // reach the server with its Finished, and a connection that ends in the serve that completes its handshake
+                    // is never offered.
+                    val told = CompletableDeferred<QuicError>()
+                    val quiche = platformQuicheApi()
+                    val serverApi =
+                        object : QuicheApi by quiche {
+                            override fun connPeerError(conn: QuicheConn): QuicError? =
+                                quiche.connPeerError(conn).also { error -> if (error != null) told.complete(error) }
+                        }
+                    withMintedCoreServer(served, api = serverApi, onConnection = { awaitCancellation() }) { port ->
                         val failure =
                             assertFailsWith<CertificateHashPinningException> {
                                 connectCore(
@@ -72,9 +71,9 @@ class CorePeerVerificationTests {
                         val mismatch = assertIs<CertificateHashPinningFailure.HashMismatch>(failure.failure)
                         assertEquals(1, mismatch.pinnedCount)
                         assertTrue(mismatch.computedLeafHash.startsWith("sha-256:"), mismatch.computedLeafHash)
-                        assertEquals<QuicCloseReason>(
-                            QuicCloseReason.ByPeer(QuicError.CryptoError(BAD_CERTIFICATE)),
-                            withTimeout(10.seconds) { ended.await() },
+                        assertEquals<QuicError>(
+                            QuicError.CryptoError(BAD_CERTIFICATE),
+                            withTimeout(10.seconds) { told.await() },
                             "the server is told why: CONNECTION_CLOSE with the bad_certificate alert",
                         )
                     }
@@ -168,61 +167,26 @@ class CorePeerVerificationTests {
 }
 
 /** A fresh W3C-conformant self-signed certificate. */
-private suspend fun mint(): PeerCertificate =
-    when (val support = QuicheEngine.peerCertificates) {
+internal suspend fun mint(): PeerCertificate =
+    when (val support = platformPeerCertificates()) {
         is PeerCertificateSupport.Available -> support.mint()
-        PeerCertificateSupport.Unavailable -> fail("the quiche engine mints peer certificates on every platform the core runs on")
+        PeerCertificateSupport.Unavailable -> fail("the platform mints peer certificates on every platform the core runs on")
     }
 
-private fun bytesOf(buffer: com.ditchoom.buffer.ReadBuffer): ByteArray {
+internal fun bytesOf(buffer: com.ditchoom.buffer.ReadBuffer): ByteArray {
     val view = buffer.slice()
     return view.readByteArray(view.remaining())
 }
 
 /**
  * Serves [certificate] from a core server for the length of [body], which gets its port. The certificate's key exists
- * as files only while a [QuicEngine.bind] taking a [QuicTlsConfig] runs, which is where the core server loads it.
+ * as files only while the core server loads it.
  */
-private suspend fun withMintedCoreServer(
+internal suspend fun withMintedCoreServer(
     certificate: PeerCertificate,
+    api: QuicheApi = platformQuicheApi(),
     onConnection: suspend kotlinx.coroutines.CoroutineScope.(CoreConnection) -> Unit,
     body: suspend (port: Int) -> Unit,
 ) {
-    val engine = CoreServingEngine(onConnection, body)
-    engine.bind(QuicPortBinding.Own(0, "127.0.0.1"), certificate, coreTestOptions, 10.seconds)
-    engine.outcome.getOrThrow()
-}
-
-/** An engine whose bind runs a core server and the test's body inside it, while the minted key's files exist. */
-private class CoreServingEngine(
-    private val onConnection: suspend kotlinx.coroutines.CoroutineScope.(CoreConnection) -> Unit,
-    private val body: suspend (port: Int) -> Unit,
-) : QuicEngine by QuicheEngine {
-    var outcome: Result<Unit> = Result.failure(IllegalStateException("bind never ran"))
-
-    override suspend fun bind(
-        binding: QuicPortBinding,
-        certificate: PeerCertificate,
-        quicOptions: QuicOptions,
-        timeout: Duration,
-    ): QuicServer = super<QuicEngine>.bind(binding, certificate, quicOptions, timeout)
-
-    override suspend fun bind(
-        binding: QuicPortBinding,
-        tlsConfig: QuicTlsConfig,
-        quicOptions: QuicOptions,
-        timeout: Duration,
-    ): QuicServer {
-        outcome = runCatching { withCoreServer(tls = tlsConfig, onConnection = onConnection) { server -> body(server.port) } }
-        return NoServer
-    }
-}
-
-/** What [CoreServingEngine.bind] returns: the core server it ran has already closed. */
-private object NoServer : QuicServer {
-    override val port: Int = 0
-
-    override suspend fun connections(handler: suspend QuicScope.() -> Unit) = Unit
-
-    override suspend fun close() = Unit
+    certificate.withPemFiles { tls -> withCoreServer(tls = tls, api = api, onConnection = onConnection) { server -> body(server.port) } }
 }

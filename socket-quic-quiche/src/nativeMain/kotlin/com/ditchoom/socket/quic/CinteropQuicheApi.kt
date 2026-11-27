@@ -44,9 +44,12 @@ import com.ditchoom.socket.quic.quiche.quiche_conn_application_proto
 import com.ditchoom.socket.quic.quiche.quiche_conn_available_dcids
 import com.ditchoom.socket.quic.quiche.quiche_conn_close
 import com.ditchoom.socket.quic.quiche.quiche_conn_dgram_max_writable_len
+import com.ditchoom.socket.quic.quiche.quiche_conn_dgram_purge_outgoing
 import com.ditchoom.socket.quic.quiche.quiche_conn_dgram_recv
 import com.ditchoom.socket.quic.quiche.quiche_conn_dgram_recv_front_len
+import com.ditchoom.socket.quic.quiche.quiche_conn_dgram_recv_queue_len
 import com.ditchoom.socket.quic.quiche.quiche_conn_dgram_send
+import com.ditchoom.socket.quic.quiche.quiche_conn_dgram_send_queue_len
 import com.ditchoom.socket.quic.quiche.quiche_conn_early_data_reason
 import com.ditchoom.socket.quic.quiche.quiche_conn_free
 import com.ditchoom.socket.quic.quiche.quiche_conn_handshake_pto_ceiling_held
@@ -77,6 +80,7 @@ import com.ditchoom.socket.quic.quiche.quiche_conn_readable
 import com.ditchoom.socket.quic.quiche.quiche_conn_recv
 import com.ditchoom.socket.quic.quiche.quiche_conn_recv_gaps
 import com.ditchoom.socket.quic.quiche.quiche_conn_requeue_path
+import com.ditchoom.socket.quic.quiche.quiche_conn_reset_streams_on_early_data_reject
 import com.ditchoom.socket.quic.quiche.quiche_conn_retire_dcid
 import com.ditchoom.socket.quic.quiche.quiche_conn_retired_scid_iter
 import com.ditchoom.socket.quic.quiche.quiche_conn_retired_scids
@@ -147,6 +151,7 @@ import kotlinx.cinterop.ptr
 import kotlinx.cinterop.rawValue
 import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.sizeOf
+import kotlinx.cinterop.staticCFunction
 import kotlinx.cinterop.toCPointer
 import kotlinx.cinterop.toKString
 import kotlinx.cinterop.value
@@ -405,7 +410,7 @@ internal object CinteropQuicheApi : QuicheApi, QuicheRandomPin, QuicheClockPin {
                 ).toInt()
             // quiche fills out_error_code only on STREAM_STOPPED / STREAM_RESET.
             val peerCode =
-                if (result == QuicheDriver.QUICHE_ERR_STREAM_STOPPED || result == QuicheDriver.QUICHE_ERR_STREAM_RESET) {
+                if (result == QUICHE_ERR_STREAM_STOPPED || result == QUICHE_ERR_STREAM_RESET) {
                     QuicAppErrorCode(errorCode.value.toLong())
                 } else {
                     null
@@ -750,6 +755,16 @@ internal object CinteropQuicheApi : QuicheApi, QuicheRandomPin, QuicheClockPin {
         return if (raw < 0) NO_DATAGRAM_ROOM else raw.toInt()
     }
 
+    override fun connDgramPurgeOutgoing(conn: QuicheConn): Int {
+        val held = quiche_conn_dgram_send_queue_len(conn.handle.toCPointer()!!)
+        quiche_conn_dgram_purge_outgoing(conn.handle.toCPointer()!!, staticCFunction { _, _ -> true })
+        return held.toInt()
+    }
+
+    override fun connDgramSendQueueLen(conn: QuicheConn): Int = quiche_conn_dgram_send_queue_len(conn.handle.toCPointer()!!).toInt()
+
+    override fun connDgramRecvQueueLen(conn: QuicheConn): Int = quiche_conn_dgram_recv_queue_len(conn.handle.toCPointer()!!).toInt()
+
     override fun hasReadableDgram(conn: QuicheConn): Boolean = quiche_conn_dgram_recv_front_len(conn.handle.toCPointer()!!) >= 0
 
     override fun connDgramMaxWritableLen(conn: QuicheConn): MaxDatagramSize {
@@ -807,6 +822,9 @@ internal object CinteropQuicheApi : QuicheApi, QuicheRandomPin, QuicheClockPin {
     override fun connIsInEarlyData(conn: QuicheConn): Boolean = quiche_conn_is_in_early_data(conn.handle.toCPointer()!!)
 
     override fun connEarlyDataReason(conn: QuicheConn): Int = quiche_conn_early_data_reason(conn.handle.toCPointer()!!).toInt()
+
+    override fun connResetStreamsOnEarlyDataReject(conn: QuicheConn) =
+        quiche_conn_reset_streams_on_early_data_reject(conn.handle.toCPointer()!!)
 
     override fun connStreamDataUnacknowledged(conn: QuicheConn): Boolean =
         quiche_conn_stream_data_unacknowledged(conn.handle.toCPointer()!!)
@@ -1436,6 +1454,17 @@ internal object CinteropQuicheApi : QuicheApi, QuicheRandomPin, QuicheClockPin {
                 index++
             }
             NO_RTT_NANOS
+        }
+
+    override fun connActivePathProbes(conn: QuicheConn): Long =
+        memScoped {
+            val out = alloc<quiche_path_stats>()
+            var index = 0L
+            while (quiche_conn_path_stats(conn.handle.toCPointer()!!, index.convert(), out.ptr) >= 0) {
+                if (out.active) return@memScoped activePathProbesOf(index, out.total_pto_count.toLong())
+                index++
+            }
+            NO_ACTIVE_PATH
         }
 
     private const val QUICHE_ERR_DONE = -1

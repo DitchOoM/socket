@@ -33,7 +33,7 @@ internal fun traceRecorderFor(quicOptions: QuicOptions): TraceCapture =
  * Client-side connectivity tap (RFC §5.1): when the capture opt-in asked for network observations,
  * record [monitor]'s capability once (NET_CAP), then collect its single `state` flow into [recorder] for
  * the connection's lifetime (NET — one collector, so the recorded stream is time-ordered rather than
- * scheduling-interleaved). [scope] is the connection itself (every `QuicConnection` is a
+ * scheduling-interleaved). [scope] is the connection itself (every `QuicScope` is a
  * [CoroutineScope]), so the collector is cancelled when the connection closes.
  *
  * [monitor] is the connection's **own** resolved monitor, passed in rather than read from a field on

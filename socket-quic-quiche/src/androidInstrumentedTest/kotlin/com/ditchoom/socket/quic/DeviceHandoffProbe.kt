@@ -26,6 +26,7 @@ import com.ditchoom.socket.CellularStandby
 import com.ditchoom.socket.NetworkMonitor
 import com.ditchoom.socket.installAndroidApplicationContext
 import com.ditchoom.socket.quic.trace.QlogBudget
+import com.ditchoom.socket.quic.trace.QlogDeclaration
 import com.ditchoom.socket.quic.trace.QlogDirectory
 import com.ditchoom.socket.quic.trace.QlogTarget
 import com.ditchoom.socket.quic.trace.QuicConnectionCapture
@@ -111,7 +112,7 @@ import kotlin.time.TimeSource
  * adb -s <serial> shell am instrument -w \
  *   -e class com.ditchoom.socket.quic.DeviceHandoffProbe \
  *   -e probeHost 192.0.2.1,2001:db8::1 -e probePort 44433 -e probeMinutes 12 \
- *   com.ditchoom.socket.quic.quiche.test/androidx.test.runner.AndroidJUnitRunner
+ *   com.ditchoom.socket.quic.quiche.test/com.ditchoom.socket.quic.HeapCheckedTestRunner
  * ```
  *
  * `probeHost` is a comma-separated list, one lane per host, all running at once: each lane keeps its
@@ -376,6 +377,7 @@ class DeviceHandoffProbe {
                                         },
                                 )
                             },
+                            qlog = QlogDeclaration.NotBudgeted,
                             // The connectivity stream is half of every migration question — which
                             // trigger fired, and whether the platform had even noticed the link yet.
                             recordNetworkObservations = true,
@@ -1079,9 +1081,9 @@ private class QuicEchoStream(
     override suspend fun read(deadline: Duration): StreamReply =
         try {
             when (val resp = stream.read(deadline) { it.readString(it.remaining(), Charset.UTF8) }) {
-                is ScopedRead.Data -> StreamReply.Echoed(resp.value)
-                ScopedRead.End -> StreamReply.PeerEnded
-                ScopedRead.Reset -> StreamReply.PeerReset
+                is ScopedReadResult.Data -> StreamReply.Echoed(resp.value)
+                ScopedReadResult.End -> StreamReply.PeerEnded
+                ScopedReadResult.Reset -> StreamReply.PeerReset
             }
         } catch (e: TimeoutCancellationException) {
             // The deadline is where "late" begins, not where an exchange fails: the reply is still

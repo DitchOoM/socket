@@ -9,6 +9,7 @@ import com.ditchoom.socket.quic.QuicheRecvInfo
 import com.ditchoom.socket.quic.core.edge.CoreConnection
 import com.ditchoom.socket.quic.core.edge.connectCore
 import com.ditchoom.socket.quic.core.edge.echoOver
+import com.ditchoom.socket.quic.core.edge.openStream
 import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.loadQuicheApi
 import kotlinx.coroutines.Dispatchers

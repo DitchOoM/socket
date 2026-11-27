@@ -3,6 +3,7 @@ import org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget
 import java.net.URI
 import java.security.MessageDigest
 import java.util.concurrent.Callable
+import java.util.concurrent.atomic.AtomicLong
 
 plugins {
     alias(libs.plugins.kotlin.multiplatform)
@@ -878,6 +879,55 @@ project(":socket-quic-quiche") {
             showStandardStreams = true
         }
     }
+    // Gates that time the core against the wall clock (the datagram drop gate's full-speed reader, the lost-wakeup and
+    // deadline tests) run in a JVM of their own after every other Test task in the build: no thread a thousand earlier
+    // tests left behind, no other worker JVM, competes for the runner's 3 vCPUs. OpDeadlineAllocationTests matches the
+    // names but stays in coreAllocationTest: an allocation gate runs without the CI-only recv_info guard.
+    val timingSensitive =
+        listOf(
+            "com.ditchoom.socket.quic.core.edge.DatagramBatchReceiveCountsTests",
+            // Measures the process's native footprint across ten thousand reads against the wall clock.
+            "com.ditchoom.socket.quic.core.edge.CoreStreamReadMemorySoakTests",
+            // The stall probe's own tests time a sleep, a spin and full collections against its 1 ms sampler.
+            "com.ditchoom.socket.quic.core.testing.StallProbeTests",
+            "com.ditchoom.socket.quic.core.testing.ProcessCpuTests",
+            "*Deadline*Tests",
+            "*Wakeup*Tests",
+        )
+    tasks.register<Test>("timingSensitiveTest") {
+        description = "Runs the wall-clock timing gates alone, after every other Test task"
+        group = "verification"
+        dependsOn("compileTestKotlinJvm", "prepareQuicheNativeLib", "stageQuicheNativeResources")
+        maxParallelForks = 1
+        mustRunAfter(rootProject.allprojects.map { p -> p.tasks.withType<Test>().matching { it.name != name || p != project } })
+        testLogging {
+            events("passed", "skipped", "failed")
+            exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+            showStandardStreams = true
+        }
+        // A filter that stops matching (a renamed class) must fail here, not leave a green task that ran nothing.
+        val ran = AtomicLong()
+        addTestListener(
+            object : TestListener {
+                override fun beforeSuite(suite: TestDescriptor) = Unit
+
+                override fun beforeTest(testDescriptor: TestDescriptor) = Unit
+
+                override fun afterTest(
+                    testDescriptor: TestDescriptor,
+                    result: TestResult,
+                ) = Unit
+
+                override fun afterSuite(
+                    suite: TestDescriptor,
+                    result: TestResult,
+                ) {
+                    if (suite.parent == null) ran.set(result.testCount)
+                }
+            },
+        )
+        doLast { check(ran.get() > 0) { "timingSensitiveTest ran no test: its filter matches no class" } }
+    }
     afterEvaluate {
         dependencies.add("jvmTestImplementation", libs.lincheck)
         dependencies.add(
@@ -897,7 +947,7 @@ project(":socket-quic-quiche") {
         }
         dependencies.add("jvmTestImplementation", "org.junit.vintage:junit-vintage-engine:5.11.4")
         dependencies.add("jvmTestImplementation", "org.junit.platform:junit-platform-launcher:1.11.4")
-        for (name in listOf("jvmTest", "lincheckTest", "mainThreadSafetyTest", "coreAllocationTest")) {
+        for (name in listOf("jvmTest", "lincheckTest", "mainThreadSafetyTest", "coreAllocationTest", "timingSensitiveTest")) {
             tasks.named<Test>(name) { useJUnitPlatform() }
         }
         val jvmTestTask = tasks.named<Test>("jvmTest").get()
@@ -922,16 +972,35 @@ project(":socket-quic-quiche") {
             javaLauncher.set(jvmTestTask.javaLauncher)
             jvmArgumentProviders.add(CommandLineArgumentProvider { jvmTestTask.jvmArgs.orEmpty() })
             doFirst { environment(jvmTestTask.environment - "QUIC_RECVINFO_GUARD") }
+            // Assertions turn on coroutine debug mode, which names each coroutine's thread per step: not the production path.
+            systemProperty("kotlinx.coroutines.debug", "off")
+            // Extra JVM flags for a diagnostic run, e.g. -PallocTestJvmArgs=-XX:-UseTLAB for an exact per-object breakdown
+            // or -PallocTestJvmArgs=-XX:-DoEscapeAnalysis to see what the JIT removes.
+            providers.gradleProperty("allocTestJvmArgs").orNull?.let { extra -> jvmArgs(extra.split(" ")) }
             filter { includeTestsMatching("com.ditchoom.socket.quic.core.*AllocationTests") }
+        }
+        // jvmTest's own conditions, recv_info guard included; the allocation gates among the names stay in coreAllocationTest.
+        tasks.named<Test>("timingSensitiveTest") {
+            testClassesDirs = jvmTestTask.testClassesDirs
+            classpath = files(Callable { jvmTestTask.classpath })
+            javaLauncher.set(jvmTestTask.javaLauncher)
+            jvmArgumentProviders.add(CommandLineArgumentProvider { jvmTestTask.jvmArgs.orEmpty() })
+            systemProperties(jvmTestTask.systemProperties)
+            doFirst { environment(jvmTestTask.environment) }
+            filter {
+                timingSensitive.forEach(::includeTestsMatching)
+                excludeTestsMatching("com.ditchoom.socket.quic.core.*AllocationTests")
+            }
         }
         tasks.named<Test>("jvmTest") {
             filter {
                 excludeTestsMatching("*Lincheck*")
                 excludeTestsMatching("*MainThreadSafety*")
                 excludeTestsMatching("com.ditchoom.socket.quic.core.*AllocationTests")
+                timingSensitive.forEach(::excludeTestsMatching)
                 isFailOnNoMatchingTests = false
             }
-            finalizedBy("coreAllocationTest")
+            finalizedBy("coreAllocationTest", "timingSensitiveTest")
         }
     }
 }
@@ -1111,6 +1180,37 @@ allprojects {
             showCauses = true
             showStackTraces = true
             exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+        }
+    }
+}
+
+// Every JVM test worker logs its safepoints and collections to build/jvm-logs/, size-capped, so a stall can be
+// explained afterwards: a pause covering it, or none. CI uploads the directory with a failed run's reports, and
+// StallProbe (socket-quic-quiche's jvmTest) reads its own worker's safepoint log. `-PjvmLogs=false` turns it off.
+// The path is relative to the worker's directory: -Xlog splits its option on ':', so a Windows drive letter breaks it.
+val jvmLogs =
+    providers.gradleProperty("jvmLogs").orElse("true").get().let {
+        it.toBooleanStrictOrNull() ?: error("-PjvmLogs must be true or false, got '$it'")
+    }
+if (jvmLogs) {
+    allprojects {
+        tasks.withType<Test>().configureEach {
+            val logs = layout.buildDirectory.dir("jvm-logs")
+            val worker = this
+            doFirst { logs.get().asFile.mkdirs() }
+            jvmArgumentProviders.add(
+                CommandLineArgumentProvider {
+                    val dir =
+                        worker.workingDir
+                            .toPath()
+                            .relativize(logs.get().asFile.toPath())
+                            .toString()
+                            .replace('\\', '/')
+                    listOf("safepoint*", "gc*").map { tags ->
+                        "-Xlog:$tags:file=$dir/${tags.trimEnd('*')}-%p.log:uptime,level,tags:filecount=2,filesize=4m"
+                    }
+                },
+            )
         }
     }
 }

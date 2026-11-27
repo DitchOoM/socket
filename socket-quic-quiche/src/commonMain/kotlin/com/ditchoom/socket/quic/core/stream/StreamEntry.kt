@@ -1,5 +1,6 @@
 package com.ditchoom.socket.quic.core.stream
 
+import com.ditchoom.socket.quic.QuicAppErrorCode
 import com.ditchoom.socket.quic.QuicStreamId
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.observe.Confined
@@ -17,8 +18,10 @@ internal sealed interface Side {
     /** Receiving: every byte up to the peer's FIN was read. Sending: our FIN went to quiche. */
     data object Finished : Ended
 
-    /** Receiving: the peer reset its side. Sending: we reset ours. */
-    data object Reset : Ended
+    /** Receiving: the peer reset its side with [code]. Sending: we reset ours with [code]. */
+    class Reset(
+        val code: QuicAppErrorCode,
+    ) : Ended
 
     /** Receiving: we told the peer to stop sending. Sending: the peer told us to. */
     data object Stopped : Ended
@@ -31,34 +34,62 @@ internal sealed interface Side {
      * peer's writes go on and its credit comes back, until the peer's FIN or reset ends this direction.
      */
     data object Abandoned : Side
+
+    /** A direction of a unidirectional stream this side takes no part in: over from the start. */
+    data object NotPart : Ended
+}
+
+/** How many of a connection's streams have a reader parked: a read waiting on the peer. */
+@Confined
+internal class ParkedReads {
+    var waiting = 0
+        private set
+
+    fun parked() {
+        waiting++
+    }
+
+    fun left() {
+        waiting--
+    }
 }
 
 /**
- * One stream: its parked reader and writer, and how far each side got. Reused for a later stream once
- * this one is spent, so a new stream allocates no entry.
+ * One stream, of [shape]: its parked reader and writer, and how far each side got; a direction the shape takes no part
+ * in is over from the start. A parked reader is counted in [reads]. Reused for a later stream once this one is spent,
+ * so a new stream allocates no entry.
  */
 @Confined
 internal class StreamEntry(
     id: QuicStreamId,
+    shape: StreamShape,
+    private val reads: ParkedReads,
 ) {
     var id: QuicStreamId = id
         private set
     var reader: Waiter = Nobody
-        private set
+        private set(now) {
+            if (field === Nobody && now !== Nobody) reads.parked()
+            if (field !== Nobody && now === Nobody) reads.left()
+            field = now
+        }
     var writer: Waiter = Nobody
         private set
-    var received: Side = Side.Open
+    var received: Side = shape.receiving()
         private set
-    var sent: Side = Side.Open
+    var sent: Side = shape.sending()
         private set
 
-    /** The entry, at rest, becomes [stream]'s. */
-    fun reuse(stream: QuicStreamId): StreamEntry {
+    /** The entry, at rest, becomes [stream]'s, of [shape]. */
+    fun reuse(
+        stream: QuicStreamId,
+        shape: StreamShape,
+    ): StreamEntry {
         id = stream
         reader = Nobody
         writer = Nobody
-        received = Side.Open
-        sent = Side.Open
+        received = shape.receiving()
+        sent = shape.sending()
         return this
     }
 

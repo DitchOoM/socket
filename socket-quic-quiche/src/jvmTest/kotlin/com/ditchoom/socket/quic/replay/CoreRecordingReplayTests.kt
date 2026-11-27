@@ -10,20 +10,23 @@ import com.ditchoom.socket.quic.QuicCloseException
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicRole
 import com.ditchoom.socket.quic.QuicheApi
+import com.ditchoom.socket.quic.QuicheConfig
 import com.ditchoom.socket.quic.QuicheConn
 import com.ditchoom.socket.quic.QuicheRecvInfo
 import com.ditchoom.socket.quic.QuicheSendInfo
-import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.ScopedReadResult
 import com.ditchoom.socket.quic.core.conn.FlightSize
 import com.ditchoom.socket.quic.core.conn.MismatchResponse
 import com.ditchoom.socket.quic.core.demux.ServerConfig
 import com.ditchoom.socket.quic.core.edge.DatagramSize
 import com.ditchoom.socket.quic.core.edge.TestCertificate
+import com.ditchoom.socket.quic.core.edge.acceptStream
 import com.ditchoom.socket.quic.core.edge.coreConnect
 import com.ditchoom.socket.quic.core.edge.coreServe
 import com.ditchoom.socket.quic.core.edge.coreTestOptions
 import com.ditchoom.socket.quic.core.edge.coreTlsConfig
 import com.ditchoom.socket.quic.core.edge.echoOver
+import com.ditchoom.socket.quic.core.edge.openStream
 import com.ditchoom.socket.quic.core.testing.flightDirectory
 import com.ditchoom.socket.quic.core.testing.makeDirectories
 import com.ditchoom.socket.quic.core.testing.writeTextFile
@@ -35,6 +38,7 @@ import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.ReceiveBatchResult
 import com.ditchoom.socket.quic.core.udp.SendBatch
 import com.ditchoom.socket.quic.core.udp.SendBatchResult
+import com.ditchoom.socket.quic.core.udp.SocketClosed
 import com.ditchoom.socket.quic.core.udp.toPathKey
 import com.ditchoom.socket.quic.jvmMigrationSimEnv
 import com.ditchoom.socket.quic.loadQuicheApi
@@ -57,6 +61,7 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
@@ -81,8 +86,17 @@ class CoreRecordingReplayTests {
         /** Every datagram the client handed the link, lost or not. */
         val sent: Int get() = ordinal
 
+        /** What the link counted, in order: for a failure's report, which datagram its recording lacks and when it left. */
+        val handed = CopyOnWriteArrayList<Handed>()
+
         /** How many datagrams each receive call returned, in order. */
         val received = CopyOnWriteArrayList<Int>()
+
+        /** Whether the client's socket is still open: it closes once the connection's linger is over. */
+        @Volatile var socket = Socket.Open
+            private set
+
+        override fun close(): SocketClosed = real.close().also { socket = Socket.Closed }
 
         /** Where a stalling host's two stalls stand. */
         @Volatile private var stall = Stall.Ahead
@@ -92,8 +106,9 @@ class CoreRecordingReplayTests {
             when (host) {
                 ClientHost.StalledAroundConfirmation -> PAST_THE_PROBE
                 ClientHost.StalledPastItsNextProbe -> PAST_THE_NEXT_PROBE
-                ClientHost.Fast, ClientHost.SlowToRead, ClientHost.SlowToAnswer, ClientHost.LateForTimers, ClientHost.ColdToSend ->
-                    Duration.ZERO
+                ClientHost.Fast, ClientHost.SlowToRead, ClientHost.SlowToAnswer, ClientHost.LateForTimers, ClientHost.ColdToSend,
+                ClientHost.SlowToSetUp, ClientHost.SlowAfterItsTimer,
+                -> Duration.ZERO
             }
 
         override fun receive(into: ReceiveBatch): ReceiveBatchResult =
@@ -118,6 +133,13 @@ class CoreRecordingReplayTests {
                 }
             for (n in 0 until batch.pending) {
                 val this0 = ordinal++
+                handed +=
+                    Handed(
+                        this0,
+                        System.nanoTime(),
+                        Thread.currentThread().name,
+                        hexOf(batch.storage, batch.offsetOf(n), batch.lengthOf(n)),
+                    )
                 if (dropped.isEmpty() && this0 >= HANDSHAKE_DATAGRAMS && batch.lengthOf(n) >= DATA) {
                     dropped += this0
                     continue
@@ -192,6 +214,41 @@ class CoreRecordingReplayTests {
 
     private fun linesOf(recording: List<TraceEvent>): String = recording.joinToString(separator = "\n", postfix = "\n")
 
+    /** A datagram the link counted: its [ordinal], the [nanos] it was counted at, the [thread] that handed it, and its payload. */
+    private class Handed(
+        val ordinal: Int,
+        val nanos: Long,
+        val thread: String,
+        val hex: String,
+    )
+
+    /**
+     * Which datagrams the link counted that [recording] does not hold, and when each was counted against [snapshotNanos],
+     * the time the recording was read: a datagram counted before it and missing was never recorded, one counted after it
+     * left once the recording was taken.
+     */
+    private fun unrecorded(
+        link: LossyLink,
+        recording: List<TraceEvent>,
+        snapshotNanos: Long,
+    ): String {
+        val held =
+            recording
+                .filterIsInstance<TraceEvent.DgramOut>()
+                .groupingBy { it.payloadHex }
+                .eachCount()
+                .toMutableMap()
+        val missing =
+            link.handed.filter { sent ->
+                val left = held[sent.hex] ?: 0
+                if (left > 0) held[sent.hex] = left - 1
+                left == 0
+            }
+        return missing.joinToString(prefix = "link datagrams the recording lacks: [", postfix = "]") {
+            "#${it.ordinal} ${it.hex.length / 2} bytes ${(it.nanos - snapshotNanos) / NANOS_PER_MILLI} ms from the snapshot on ${it.thread}"
+        }
+    }
+
     private class Recorded(
         val client: List<TraceEvent>,
         val server: List<TraceEvent>,
@@ -199,6 +256,8 @@ class CoreRecordingReplayTests {
     )
 
     private enum class Stall { Ahead, ReadLate, Over }
+
+    private enum class Socket { Open, Closed }
 
     /** How the client's host treats it. */
     private enum class ClientHost {
@@ -215,6 +274,12 @@ class CoreRecordingReplayTests {
 
         /** Its first send call reaches quiche [ENTRY] after the host read its clock for it, as a cold downcall does. */
         ColdToSend,
+
+        /** It takes [SETUP] to make its quiche connection after the trace's recorder was made for it. */
+        SlowToSetUp,
+
+        /** It holds its thread for [LATE] after running quiche's timeout, before it writes what the timeout made. */
+        SlowAfterItsTimer,
 
         /**
          * After its payload is lost, it reads the server's next datagrams [PAST_THE_PROBE] late, past when the probe for
@@ -254,7 +319,7 @@ class CoreRecordingReplayTests {
                 val stream = connection.acceptStream()
                 // The client closing the connection ends the echo; it is not a failure.
                 try {
-                    while (stream.read(10.seconds) { stream.writeFully(it, 10.seconds) } is ScopedRead.Data<*>) Unit
+                    while (stream.read(10.seconds) { stream.writeFully(it, 10.seconds) } is ScopedReadResult.Data<*>) Unit
                 } catch (closed: QuicCloseException) {
                     Unit
                 }
@@ -274,6 +339,8 @@ class CoreRecordingReplayTests {
                             ClientHost.SlowToAnswer -> SlowToAnswer(loadQuicheApi())
                             ClientHost.LateForTimers -> LateForTimers(loadQuicheApi())
                             ClientHost.ColdToSend -> ColdToSend(loadQuicheApi())
+                            ClientHost.SlowToSetUp -> SlowToSetUp(loadQuicheApi())
+                            ClientHost.SlowAfterItsTimer -> SlowAfterItsTimer(loadQuicheApi())
                             ClientHost.Fast,
                             ClientHost.SlowToRead,
                             ClientHost.StalledAroundConfirmation,
@@ -292,8 +359,11 @@ class CoreRecordingReplayTests {
             // Recordings reach their sinks off the loop: give them a moment to arrive.
             delay(500.milliseconds)
             client.connection.close(QuicError.NoError)
-            // close() returns once the CONNECTION_CLOSE is sent; its record reaches the sink off the loop after that.
+            // close() returns once the CONNECTION_CLOSE is sent, but the client lingers (RFC 9000 §10.2.1) and repeats
+            // its close unprompted until the linger is over and its socket closes: only then has it sent its last
+            // datagram. Each record reaches the sink off the loop after that.
             withTimeoutOrNull(5.seconds) {
+                while (link[0]!!.socket == Socket.Open) delay(10.milliseconds)
                 while (clientRecording.count { it is TraceEvent.DgramOut } < link[0]!!.sent) delay(10.milliseconds)
             }
             // The server closing first would never read the client's close, and the conversion would have it lost: the
@@ -310,11 +380,14 @@ class CoreRecordingReplayTests {
             server.close()
         }
         recordings = Recorded(clientRecording.toList(), serverRecording.toList(), link[0]!!.dropped.size)
+        val snapshotNanos = System.nanoTime()
         assertEquals(1, link[0]!!.dropped.size, "the link lost the client's data datagram")
+        assertEquals(Socket.Closed, link[0]!!.socket, "the client's linger ended and closed its socket")
         assertEquals(
             link[0]!!.sent,
             clientRecording.count { it is TraceEvent.DgramOut },
-            "the client's recording holds every datagram it sent; receive calls returned ${link[0]!!.received}",
+            "the client's recording holds every datagram it sent; receive calls returned ${link[0]!!.received}; " +
+                unrecorded(link[0]!!, clientRecording.toList(), snapshotNanos),
         )
         return Recorded(clientRecording.toList(), serverRecording.toList(), link[0]!!.dropped.size)
     }
@@ -484,6 +557,53 @@ class CoreRecordingReplayTests {
         }
 
     /**
+     * A host that took [SETUP] between making the trace's recorder and making its connection, as a Windows runner took
+     * 35 ms: the datagrams and the states its recording holds count from one origin, so its close is recorded as closing
+     * before its linger repeats it, and the replay follows it whole (CI Windows: the Closed state, stamped 36 ms late,
+     * took two of the close's repeats into the connection: "expected:<1> but was:<3>").
+     */
+    @Test
+    fun aRunWhoseClientWasSlowToSetUpIsFollowedWholeByItsReplayTwice() =
+        replayTest("aRunWhoseClientWasSlowToSetUpIsFollowedWholeByItsReplayTwice") {
+            val recorded = recordAnEcho(ClientHost.SlowToSetUp)
+            val finished = recorded.client.filterIsInstance<TraceEvent.DgramOut>()[HANDSHAKE_DATAGRAMS - 1].at
+            val established =
+                recorded.client
+                    .filterIsInstance<TraceEvent.State>()
+                    .first { it.name.endsWith(".Established") }
+                    .at
+            assertTrue(
+                established >= finished && established - finished < SETUP,
+                "the client recorded itself established at $established, after its handshake's last datagram at $finished",
+            )
+            assertFollowedWholeTwice(scheduleOf(recorded))
+        }
+
+    /**
+     * A host that stalled between running quiche's timeout and writing the probe it made: its recording has the timer
+     * fire, then the probe leave [LATE] later, stamped by quiche as it wrote it. The replay's client writes the probe when
+     * the recording's did, not when its timer ran (CI macOS JDK 25 FFM: a timer recorded at 55.90 ms, its probe at
+     * 70.71 ms, "our datagram 4 [OneRtt] was sent at 55.81 ms, the capture's at 70.62 ms").
+     */
+    @Test
+    fun aRunWhoseClientWasSlowAfterItsTimerIsFollowedWholeByItsReplayTwice() =
+        replayTest("aRunWhoseClientWasSlowAfterItsTimerIsFollowedWholeByItsReplayTwice") {
+            val recorded = recordAnEcho(ClientHost.SlowAfterItsTimer)
+            val fired =
+                recorded.client
+                    .filterIsInstance<TraceEvent.TimerFired>()
+                    .first()
+                    .at
+            val probe =
+                recorded.client
+                    .filterIsInstance<TraceEvent.DgramOut>()
+                    .first { it.at > fired }
+                    .at
+            assertTrue(probe - fired >= LATE, "the probe left $probe, at least $LATE after its timer ran at $fired")
+            assertFollowedWholeTwice(scheduleOf(recorded))
+        }
+
+    /**
      * A host stalled past its next probe as well: by the time it reads the server's answer to its first probe, the next
      * has fallen due, but the answer acknowledges what it would probe, so the host never runs that timer, and its
      * recording holds no firing after the first probe's. The replay's client, with no recorded firing left, fired the
@@ -601,6 +721,187 @@ class CoreRecordingReplayTests {
             assertFollowedWholeTwice(schedule)
         }
 
+    /**
+     * The server took 1.32 ms to answer the client's handshake datagram, and said so in its acknowledgement's delay. The
+     * client read that answer 60 ms late, so its round trip was long enough for quiche to take the delay off it, and its
+     * probe fell due 1.49 ms before a round trip with no delay in it would have had it. The replay's modelled peer
+     * answered on arrival, reporting no delay: its client's probe fell due past the recorded firing and was never sent
+     * (CI Linux JDK 25 FFM: "our datagram 4 [OneRtt], captured at 98.58 ms, was not sent" at 110.26 ms).
+     */
+    @Test
+    fun aPeerThatAnsweredLateIsReplayedWithTheAcknowledgementDelayItReported() =
+        replayTest("aPeerThatAnsweredLateIsReplayedWithTheAcknowledgementDelayItReported") {
+            fun at(nanos: Long) = nanos.nanoseconds
+            val oneRtt = listOf(PacketKind.OneRtt)
+            val schedule =
+                CaptureSchedule(
+                    name = "core client stalled 60 ms after its payload was lost, its server 1.32 ms to answer",
+                    ours = QuicRole.Client,
+                    alpn = coreTestOptions.alpnProtocols.single(),
+                    ourTransport = TransportSetup(idleTimeout = coreTestOptions.idleTimeout),
+                    peerTransport = TransportSetup(idleTimeout = coreTestOptions.idleTimeout),
+                    peerPackets = PeerPackets.AsQuiche,
+                    peerApp = PeerApp.Echoes,
+                    ourApp = OurApp.Reads,
+                    steps =
+                        listOf(
+                            Step.OursSent(at(0), listOf(PacketKind.Initial), Fate.Delivered(at(562_347))),
+                            Step.PeerSent(at(1_465_642), listOf(PacketKind.Initial, PacketKind.Handshake), Fate.Delivered(at(1_661_641))),
+                            Step.PeerSent(at(1_465_642), listOf(PacketKind.Handshake), Fate.Delivered(at(1_661_641))),
+                            Step.OursSent(
+                                at(2_729_985),
+                                listOf(PacketKind.Initial, PacketKind.Handshake, PacketKind.OneRtt),
+                                Fate.Delivered(at(2_889_303)),
+                            ),
+                            Step.OursDid(at(3_004_991), OurAction.Write(stream = 0, bytes = PAYLOAD, end = StreamEnd.Open)),
+                            Step.OursSent(at(3_004_991), oneRtt, Fate.Lost),
+                            Step.PeerSent(at(4_212_632), oneRtt, Fate.Delivered(at(64_660_759))),
+                            Step.PeerSent(at(4_423_921), oneRtt, Fate.Delivered(at(64_913_196))),
+                            Step.PeerSent(at(33_084_924), oneRtt, Fate.Delivered(at(64_913_196))),
+                            Step.OursSent(at(64_996_883), oneRtt, Fate.Delivered(at(65_164_943)), Carries.AcksOnly),
+                            Step.OursSent(at(98_579_641), oneRtt, Fate.Delivered(at(98_803_767))),
+                            Step.PeerSent(at(98_952_612), oneRtt, Fate.Delivered(at(99_148_822))),
+                            Step.PeerSent(at(99_657_220), oneRtt, Fate.Delivered(at(99_850_332))),
+                            Step.OursSent(at(99_891_134), oneRtt, Fate.Delivered(at(99_891_134)), Carries.AcksOnly),
+                            Step.OursDid(at(600_207_275), OurAction.Close),
+                            Step.OursSent(at(600_207_275), oneRtt, Fate.Delivered(at(600_771_323)), Carries.AcksOnly),
+                        ),
+                    established = Moment.At(at(2_729_985)),
+                    end = ConnectionEnd.ClosedByUs(at(600_207_275)),
+                    runsFor = at(600_207_275),
+                    tolerance = SendTimeTolerance(),
+                    idsAtEstablishment = SPARE_IDS,
+                    ourTimers = OurTimers.AsRecorded(listOf(at(98_579_641))),
+                )
+            recordings = Recorded(emptyList(), emptyList(), 1)
+            assertFollowedWholeTwice(schedule)
+        }
+
+    /**
+     * Kept recordings of clients that never ran quiche's timeout: each read the server's next datagrams late, and what
+     * it read made the probe it was owed unnecessary. A replay runs no timer its recording does not hold, so it sends
+     * what was recorded and nothing more (CI: "our datagram 4 [OneRtt] is one more than the capture holds" at 38.61 ms,
+     * and "our datagram 3 [Handshake]" at 9.43 ms).
+     */
+    @Test
+    fun aClientThatRanNoTimerIsReplayedRunningNone() =
+        replayTest("aClientThatRanNoTimerIsReplayedRunningNone") {
+            for (kept in listOf("no-timer-run-one-rtt", "no-timer-run-handshake")) {
+                val client = keptRecording("$kept.client.trace")
+                assertTrue(client.none { it is TraceEvent.TimerFired }, "$kept: the recorded client ran no timer")
+                assertFollowedWholeTwice(scheduleOf(Recorded(client, keptRecording("$kept.server.trace"), 1)))
+            }
+        }
+
+    /**
+     * A kept recording whose client read the server's datagram and sent its acknowledgement in one turn, both stamped
+     * with that turn's one clock reading. The acknowledgement follows the datagram it acknowledges in the schedule, so
+     * the replay sends it (CI: "captured acknowledgements not sent: our datagrams [3]", then "our datagram 4 [OneRtt],
+     * captured at 62.54 ms, was not sent").
+     */
+    @Test
+    fun anAnswerSentInTheTurnThatReadItsDatagramIsReplayedAfterThatDatagram() =
+        replayTest("anAnswerSentInTheTurnThatReadItsDatagramIsReplayedAfterThatDatagram") {
+            val client = keptRecording("same-turn-answer.client.trace")
+            val read = client.filterIsInstance<TraceEvent.DgramIn>()
+            assertTrue(
+                client.filterIsInstance<TraceEvent.DgramOut>().any { out -> read.any { it.at == out.at } },
+                "the recording holds a datagram read and one sent at the same instant",
+            )
+            assertFollowedWholeTwice(scheduleOf(Recorded(client, keptRecording("same-turn-answer.server.trace"), 1)))
+        }
+
+    /** A kept CI recording whose client's probe left 14.8 ms after its timer ran (macOS JDK 25 FFM). */
+    @Test
+    fun aProbeWrittenLateAfterItsTimerIsReplayedWhenItWasWritten() =
+        replayTest("aProbeWrittenLateAfterItsTimerIsReplayedWhenItWasWritten") {
+            assertFollowedWholeTwice(
+                scheduleOf(Recorded(keptRecording("probe-written-late.client.trace"), keptRecording("probe-written-late.server.trace"), 1)),
+            )
+        }
+
+    /**
+     * A kept CI recording (macOS JDK 21 FFM) whose client's write reached quiche with its handshake probe due: one turn ran
+     * the timeout and took the write, and quiche coalesced the Handshake probe with the payload's 1-RTT packet. The write is
+     * replayed in that turn, so the replay's probe carries the payload too.
+     */
+    @Test
+    fun aWriteTakenInItsProbesTurnIsCoalescedWithTheProbe() =
+        replayTest("aWriteTakenInItsProbesTurnIsCoalescedWithTheProbe") {
+            assertFollowedWholeTwice(
+                scheduleOf(
+                    Recorded(
+                        keptRecording("write-with-handshake-probe.client.trace"),
+                        keptRecording("write-with-handshake-probe.server.trace"),
+                        1,
+                    ),
+                ),
+            )
+        }
+
+    /**
+     * A kept CI recording (macOS JDK 21 FFM) whose client read nothing for 165 ms after its stall, then read its server's
+     * probes and resent its lost payload on the acknowledgement they carried, running no timer. The modelled peer stands in
+     * for each probe with one it wrote after reading what the captured server had read, so its last probe acknowledges
+     * the client's datagram as the server's did, and the replay's client finds the payload lost and resends it too.
+     */
+    @Test
+    fun aLossFoundOnALateAcknowledgementIsResentInTheReplay() =
+        replayTest("aLossFoundOnALateAcknowledgementIsResentInTheReplay") {
+            assertFollowedWholeTwice(
+                scheduleOf(
+                    Recorded(
+                        keptRecording("loss-found-on-a-late-ack.client.trace"),
+                        keptRecording("loss-found-on-a-late-ack.server.trace"),
+                        1,
+                    ),
+                ),
+            )
+        }
+
+    /**
+     * A kept CI recording (macOS JDK 21 FFM, PR 1053) whose client lost its payload and ran quiche's timeout at 35.03 ms,
+     * its last recorded firing, to probe; the replay's quiche, its RTT estimated from recorded times, was due at 37.30 ms
+     * and so never ran it: the ACK delay of its second sample sat 72 µs past the edge of RFC 9002's subtraction. The
+     * replay brings its timer forward to the recorded firing and follows the recording whole.
+     */
+    @Test
+    fun aTimerTheRecordingRanBeforeTheReplaysFellDueRunsAtTheRecordedFiring() =
+        replayTest("aTimerTheRecordingRanBeforeTheReplaysFellDueRunsAtTheRecordedFiring") {
+            assertFollowedWholeTwice(
+                scheduleOf(
+                    Recorded(
+                        keptRecording("timer-fired-before-replay-due.client.trace"),
+                        keptRecording("timer-fired-before-replay-due.server.trace"),
+                        1,
+                    ),
+                ),
+            )
+        }
+
+    /**
+     * A kept CI recording (macOS JDK 21 FFM) of a slow client on the lossy link: its payload (datagram 2) was lost and it
+     * retransmitted at 206.75 ms, when quiche's timeout ran. The replay follows it whole.
+     */
+    @Test
+    fun aSlowClientsRetransmitAfterALostPayloadIsFollowedWholeByItsReplayTwice() =
+        replayTest("aSlowClientsRetransmitAfterALostPayloadIsFollowedWholeByItsReplayTwice") {
+            assertFollowedWholeTwice(
+                scheduleOf(
+                    Recorded(
+                        keptRecording("slow-client-lossy-retransmit.client.trace"),
+                        keptRecording("slow-client-lossy-retransmit.server.trace"),
+                        1,
+                    ),
+                ),
+            )
+        }
+
+    private fun keptRecording(name: String): List<TraceEvent> =
+        TraceEvent.parseAll(
+            assertNotNull(this::class.java.classLoader.getResource("replay-recordings/$name"), "no kept recording $name").readText(),
+        )
+
     /** Whether a call has reached quiche yet. */
     private enum class Calls { Cold, Warm }
 
@@ -634,6 +935,36 @@ class CoreRecordingReplayTests {
                 NO_TIMEOUT_NANOS, FALLEN_DUE -> wait
                 else -> wait + LATE.inWholeNanoseconds
             }
+    }
+
+    /** quiche that holds its thread for [LATE] after each timeout it runs. */
+    private class SlowAfterItsTimer(
+        private val real: QuicheApi,
+    ) : QuicheApi by real {
+        override fun connOnTimeout(conn: QuicheConn) {
+            real.connOnTimeout(conn)
+            Thread.sleep(LATE.inWholeMilliseconds)
+        }
+    }
+
+    /** quiche that takes [SETUP] to make a connection. */
+    private class SlowToSetUp(
+        private val real: QuicheApi,
+    ) : QuicheApi by real {
+        override fun connect(
+            serverNameAddr: Long,
+            serverNameLen: Int,
+            scidAddr: Long,
+            scidLen: Int,
+            localAddr: Long,
+            localAddrLen: Int,
+            peerAddr: Long,
+            peerAddrLen: Int,
+            config: QuicheConfig,
+        ): QuicheConn {
+            Thread.sleep(SETUP.inWholeMilliseconds)
+            return real.connect(serverNameAddr, serverNameLen, scidAddr, scidLen, localAddr, localAddrLen, peerAddr, peerAddrLen, config)
+        }
     }
 
     /** quiche that, after each datagram it reads, holds its thread for [SLOW]: the host's work before quiche answers. */
@@ -727,33 +1058,35 @@ class CoreRecordingReplayTests {
             assertFollowedWholeTwice(scheduleOf(recorded, lingered, recorded.server + lateSent))
         }
 
-    /** The client's application wrote the payload on its first stream when its first datagram carrying data left. */
+    /**
+     * The client's application wrote the payload on its first stream when its first datagram carrying it left: the first
+     * after the handshake's at least [DATA] long, the one the link loses. It may lead with a Handshake probe the same turn
+     * coalesced with it.
+     */
     private fun writeOf(recording: List<TraceEvent>): RecordingToSchedule.RecordedAction {
         val first =
             recording
                 .filterIsInstance<TraceEvent.DgramOut>()
-                .filter {
-                    isShortHeader(
-                        it.payloadHex,
-                    ) &&
-                        it.len >= DATA
-                }.minBy { it.at }
+                .drop(HANDSHAKE_DATAGRAMS)
+                .first { it.len >= DATA }
         return RecordingToSchedule.RecordedAction(first.at, OurAction.Write(stream = 0, bytes = PAYLOAD, end = StreamEnd.Open))
     }
 
-    /** Whether a datagram, in hex, starts with a short header (RFC 9000 §17.3): a packet of the connection's 1-RTT space. */
-    private fun isShortHeader(hex: String): Boolean = hex.take(2).toInt(HEX) and LONG_HEADER_BIT == 0
-
     private companion object {
-        const val HEX = 16
-        const val LONG_HEADER_BIT = 0x80
-
         /** The handshake's datagrams of the client: its Initial, then its Initial and Handshake coalesced. */
         const val HANDSHAKE_DATAGRAMS = 2
 
         /** A datagram this long carries the payload; acknowledgements are far shorter, and the handshake's come first. */
         const val DATA = 500
         const val PAYLOAD = 600
+
+        const val NANOS_PER_MILLI = 1_000_000L
+
+        fun hexOf(
+            bytes: NativeBytes,
+            offset: Int,
+            length: Int,
+        ): String = (offset until offset + length).joinToString("") { "%02x".format(bytes.byteAt(it)) }
 
         /** The spare ids a core client hands its peer as its handshake completes, with the default limit of 8. */
         const val SPARE_IDS = 7
@@ -769,6 +1102,9 @@ class CoreRecordingReplayTests {
 
         /** Longer than the replay's tolerance of a send's time: a replay that fires when due leaves the recording. */
         val LATE = 20.milliseconds
+
+        /** Longer than the close's linger takes to repeat it twice. */
+        val SETUP = 40.milliseconds
 
         /** Trebled from a first round trip into its probe, far past the replay's precision on a timer. */
         val ENTRY = 3.milliseconds

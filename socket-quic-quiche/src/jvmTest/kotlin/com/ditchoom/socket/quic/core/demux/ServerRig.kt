@@ -18,6 +18,7 @@ import com.ditchoom.socket.quic.core.observe.ServerCounts
 import com.ditchoom.socket.quic.core.pool.FixedPool
 import com.ditchoom.socket.quic.core.pool.MemoryHold
 import com.ditchoom.socket.quic.core.ready.SocketRef
+import com.ditchoom.socket.quic.core.ready.SocketRefs
 import com.ditchoom.socket.quic.core.sched.CallerLanes
 import com.ditchoom.socket.quic.core.sched.CallerSend
 import com.ditchoom.socket.quic.core.sched.Entrant
@@ -77,7 +78,12 @@ internal class BoundedIo(
         if (waiting.size >= kernelBuffer) kernelDrops++ else waiting.addLast(Arrival(bytes, from))
     }
 
+    /** Runs at each send, on the sending thread: a test holds a caller inside its connection here. */
+    @Volatile
+    var onSend: () -> Unit = {}
+
     override fun send(batch: SendBatch): SendBatchResult {
+        onSend()
         for (n in 0 until batch.pending) {
             val storage = batch.storage.owner
             storage.setLimit(batch.offsetOf(n) + batch.lengthOf(n))
@@ -113,9 +119,6 @@ internal class BoundedIo(
     override fun probe(): SocketProbe = SocketProbe.Open
 
     override fun reopen(): Reopened = Reopened.SameEndpoint
-
-    override fun moveTo(bind: com.ditchoom.socket.quic.PathKey): com.ditchoom.socket.quic.core.udp.Moved =
-        com.ditchoom.socket.quic.core.udp.Moved.Unsupported
 
     override fun close(): SocketClosed {
         events.add(CLOSED)
@@ -189,7 +192,19 @@ internal class ServerRig(
                 accepted += peer
                 val sink = RecordingSink()
                 sinks += sink
-                Opened(build.build(sink, com.ditchoom.socket.quic.trace.TraceCapture.Off).also { conns += it }, Runnable { })
+                Opened(
+                    build
+                        .build(
+                            sink,
+                            com.ditchoom.socket.quic.trace.TraceCapture.Off,
+                            com.ditchoom.socket.quic
+                                .QuicSessionId("rig"),
+                        ).also {
+                            conns +=
+                                it
+                        },
+                    Runnable { },
+                )
             },
         )
     val admission =
@@ -211,10 +226,11 @@ internal class ServerRig(
             loop.port,
             clock,
             counts,
+            CoreTestRules.close,
         )
     val endpoint =
         Endpoint(
-            SocketRef(DatagramChannel.open()),
+            SocketRefs(SocketRef(DatagramChannel.open()), SocketRef(DatagramChannel.open())),
             io,
             socket,
             Route.Demux(demux, OwnBatch(SendBatch(nativeBytes(64 * 1500), BatchLimits(64, 1500)))),

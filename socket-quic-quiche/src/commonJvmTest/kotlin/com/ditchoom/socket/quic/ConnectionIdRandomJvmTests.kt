@@ -10,7 +10,6 @@ class ConnectionIdRandomJvmTests {
     @Test
     fun theProductionDefaultIsSecureRandom() {
         assertIs<SecureJvmRandom>(connectionIdRandom)
-        assertIs<SecureJvmRandom>(QuicheDriverTuning().random)
     }
 
     @Test

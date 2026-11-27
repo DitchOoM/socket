@@ -175,6 +175,9 @@ internal class DeadlineQueue(
     /** Nodes the timer thread has moved from the inbox into its heap so far. */
     private val drained = AtomicLong(0L)
 
+    /** Nodes made so far, each for one arming; a test counts armings per operation by it. */
+    val madeTotal: Long get() = armed.load()
+
     /** Deadlines the timer thread has taken off the inbox so far; a test uses it to see a pass has run. */
     val drainedTotal: Long get() = drained.load()
 

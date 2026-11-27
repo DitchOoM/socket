@@ -46,14 +46,7 @@ class ApplePinnedRadioTests {
             val start = TimeSource.Monotonic.markNow()
             val failure =
                 assertFailsWith<PinnedRadioUnavailableException> {
-                    QuicheEngine.connect(
-                        QuicClientBinding.OwnSocket,
-                        DOC_PEER,
-                        443,
-                        opts.copy(migration = MigrationPolicy.Pinned(NetworkKind.Cellular)),
-                        TransportConfig(),
-                        15.seconds,
-                    )
+                    connectRaced(DOC_PEER, 443, opts.copy(migration = MigrationPolicy.Pinned(NetworkKind.Cellular)))
                 }
             val elapsed = start.elapsedNow()
             assertEquals(NetworkKind.Cellular, failure.radio)
@@ -84,14 +77,7 @@ class ApplePinnedRadioTests {
                     }
                 val pinned = opts.copy(migration = MigrationPolicy.Pinned(NetworkKind.Wifi))
                 val conn =
-                    QuicheEngine.connect(
-                        QuicClientBinding.OwnSocket,
-                        wifiAddress,
-                        server.port,
-                        pinned,
-                        TransportConfig(),
-                        15.seconds,
-                    )
+                    connectRaced(wifiAddress, server.port, pinned)
                 try {
                     val stream = conn.openStream()
                     val sendBuf = BufferFactory.deterministic().allocate(6)
@@ -99,7 +85,7 @@ class ApplePinnedRadioTests {
                     sendBuf.resetForRead()
                     stream.write(sendBuf, 5.seconds)
                     val response = stream.read(5.seconds) { it.readString(it.remaining(), Charset.UTF8) }
-                    assertEquals("pinned", assertIs<ScopedRead.Data<String>>(response).value)
+                    assertEquals("pinned", assertIs<ScopedReadResult.Data<String>>(response).value)
                     stream.close()
                     assertEquals(MigrationResult.Unmoved.Impossible.PolicyForbids, conn.migrate(MigrationTarget.FreshLocalEndpoint))
                 } finally {
@@ -130,4 +116,18 @@ class ApplePinnedRadioTests {
         /** RFC 5737 TEST-NET-1: a connected UDP socket sends nothing, so it is never contacted. */
         const val DOC_PEER = "192.0.2.1"
     }
+}
+
+/** A legacy connect to [host]:[port], its candidates raced; a radio the stack cannot pin is refused first. */
+private suspend fun connectRaced(
+    host: String,
+    port: Int,
+    options: QuicOptions,
+): QuicScope {
+    QuicheEngine.capabilities.requirePinnable(QuicClientBinding.OwnSocket, options)
+    return QuicPeer
+        .Named(host, port)
+        .raceCandidates(TransportConfig(), close = { late: QuicScope -> late.close() }) { endpoint ->
+            QuicheEngine.connect(QuicClientBinding.OwnSocket, endpoint, host, options, TransportConfig(), 15.seconds)
+        }.connection
 }

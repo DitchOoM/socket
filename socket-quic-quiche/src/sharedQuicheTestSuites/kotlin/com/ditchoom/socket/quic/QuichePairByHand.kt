@@ -119,9 +119,9 @@ internal class QuichePairByHand private constructor(
         clientAddrs.map { api.recvInfoNew(it.address, it.length, serverAddr.address, serverAddr.length) }
     private val sendInfo = api.sendInfoNew()
     private val seqOut = bufferFactory.allocate(8)
-    private val eventLocal = bufferFactory.allocate(QuicheDriver.SOCKADDR_STORAGE_SIZE)
+    private val eventLocal = bufferFactory.allocate(SOCKADDR_STORAGE_SIZE)
     private val eventLocalLen = bufferFactory.allocate(4)
-    private val eventPeer = bufferFactory.allocate(QuicheDriver.SOCKADDR_STORAGE_SIZE)
+    private val eventPeer = bufferFactory.allocate(SOCKADDR_STORAGE_SIZE)
     private val eventPeerLen = bufferFactory.allocate(4)
     private val cidRandom = Random(CID_SEED)
     private var now: Duration = Duration.ZERO
@@ -296,10 +296,10 @@ internal class QuichePairByHand private constructor(
     private val sendEnds = mutableMapOf<QuicheConn, Int>()
 
     /**
-     * What [conn]'s last `quiche_conn_send` in [sends] answered: [QuicheDriver.QUICHE_ERR_DONE] when it had
+     * What [conn]'s last `quiche_conn_send` in [sends] answered: [QUICHE_ERR_DONE] when it had
      * nothing more to send, any other negative code when quiche refused to send at all.
      */
-    fun lastSendEnd(conn: QuicheConn): Int = sendEnds[conn] ?: QuicheDriver.QUICHE_ERR_DONE
+    fun lastSendEnd(conn: QuicheConn): Int = sendEnds[conn] ?: QUICHE_ERR_DONE
 
     /** What one `quiche_conn_send` gave: a datagram and the time quiche's pacer wants it on the wire, or nothing. */
     sealed interface Written {
@@ -414,8 +414,8 @@ internal class QuichePairByHand private constructor(
         var issued = 0
         while (issued++ < atMost && at(lead(conn)) { api.connScidsLeft(conn) } > 0L) {
             val scid = generateScid(bufferFactory, cidRandom)
-            val token = bufferFactory.allocate(QuicheDriver.STATELESS_RESET_TOKEN_LEN)
-            repeat(QuicheDriver.STATELESS_RESET_TOKEN_LEN) { token.writeByte(cidRandom.nextInt(256).toByte()) }
+            val token = bufferFactory.allocate(STATELESS_RESET_TOKEN_LEN)
+            repeat(STATELESS_RESET_TOKEN_LEN) { token.writeByte(cidRandom.nextInt(256).toByte()) }
             token.resetForRead()
             val rc =
                 at(lead(conn)) {
@@ -617,6 +617,8 @@ internal class QuichePairByHand private constructor(
         private const val CID_SEED = 0x434944L
         private const val MAX_DATAGRAM = 1500
         private const val READ_CHUNK = 65536
+        private const val SOCKADDR_STORAGE_SIZE = 128
+        private const val STATELESS_RESET_TOKEN_LEN = 16
         private const val MAX_SETTLE_ROUNDS = 64
     }
 }

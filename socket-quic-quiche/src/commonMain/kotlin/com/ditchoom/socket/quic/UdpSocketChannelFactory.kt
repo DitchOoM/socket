@@ -16,15 +16,14 @@ import kotlin.coroutines.cancellation.CancellationException
 import kotlin.jvm.JvmInline
 
 /**
- * Common [UdpChannelFactory] over `:socket-udp`. Opens every connected [UdpSocket.connect]
- * channel a client connection uses — the primary path it starts on ([openPrimaryChannel]) and
- * each additional path it migrates onto ([openPath]) — each bound to a chosen local endpoint. One
- * instance per connection, so every socket it hands out is bound by one source-address discipline.
+ * Common over `:socket-udp`. Opens every connected [UdpSocket.connect] channel a client connection
+ * uses — the primary path it starts on ([openPrimaryChannel]) and each path after it — each bound to a
+ * chosen local endpoint, and answers which source address the route to [peer] leaves from
+ * ([routeSourceAddress]). One instance per connection, so every socket it hands out is bound by one
+ * source-address discipline.
  *
  * [peer] is already resolved, so reconnecting passes its numeric [SocketAddress.host] and is a literal
- * parse to the same address (no DNS). The new path's local sockaddr is encoded via [codec] into pinned
- * native memory that the driver decodes into a [PathKey] to route datagrams to this socket; the driver
- * frees it via [NewPath.release] when the path is torn down.
+ * parse to the same address (no DNS).
  *
  * [recvBufferFactory] is the driver's `recvBufPool` (a [BufferFactory]): the migrated path's channel
  * allocates each datagram from it so a migrated path is as copy-free as the primary. [bufferFactory] is
@@ -44,15 +43,15 @@ import kotlin.jvm.JvmInline
  * decision no test can drive stays wrong under a green suite.
  */
 @OptIn(InternalQuicApi::class)
-internal class UdpSocketChannelFactory(
-    private val peer: SocketAddress,
-    private val codec: SocketAddressCodec,
-    private val bufferFactory: BufferFactory,
-    private val recvBufferFactory: BufferFactory,
-    private val receiveBufferSize: Int,
-    override val localEndpointSupport: LocalEndpointSupport,
-    private val openChannel: ConnectedUdpOpener = ConnectedUdpOpener.Platform,
-) : UdpChannelFactory {
+internal open class UdpSocketChannelFactory(
+    protected val peer: SocketAddress,
+    protected val codec: SocketAddressCodec,
+    protected val bufferFactory: BufferFactory,
+    protected val recvBufferFactory: BufferFactory,
+    protected val receiveBufferSize: Int,
+    val localEndpointSupport: LocalEndpointSupport,
+    protected val openChannel: ConnectedUdpOpener = ConnectedUdpOpener.Platform,
+) {
     /**
      * Open the connection's **primary** path: the socket `quiche_connect` is handed, whose local
      * sockaddr becomes `recv_info.to`, and which carries every datagram until the connection migrates.
@@ -98,28 +97,8 @@ internal class UdpSocketChannelFactory(
      * This factory with every socket — route probe and path alike — opened through [opener] instead.
      * A standby link's factory: the same peer, codec and buffers, with sockets pinned to that link.
      */
-    internal fun openingWith(opener: ConnectedUdpOpener): UdpSocketChannelFactory =
+    internal open fun openingWith(opener: ConnectedUdpOpener): UdpSocketChannelFactory =
         UdpSocketChannelFactory(peer, codec, bufferFactory, recvBufferFactory, receiveBufferSize, localEndpointSupport, opener)
-
-    override suspend fun openPath(
-        localHost: String?,
-        localPort: Int,
-    ): NewPath {
-        val channel =
-            openChannel.open(peer.host, peer.port, bindHostFor(localHost), localPort, receiveBufferSize, recvBufferFactory)
-        val local = channel.localAddress.orNull() ?: error("connected migration path has no local address")
-        val encoded = codec.encodeToNative(local, bufferFactory)
-        return NewPath(
-            channel = DatagramChannelUdpChannel(channel),
-            localSockAddrAddress = encoded.address,
-            localSockAddrLength = encoded.length,
-            // The same resolved local address the sockaddr above encodes, in presentation form —
-            // `UdpSocket.connect` reports it on every platform, Apple included, which is what makes
-            // Succeeded name a real endpoint even where the platform picked it.
-            localEndpoint = QuicLocalEndpoint(local.host, local.port),
-            release = { encoded.free() },
-        )
-    }
 
     /**
      * The local host every socket this factory opens binds: [localHost] when the caller named one, and
@@ -133,7 +112,7 @@ internal class UdpSocketChannelFactory(
      * probe failed" and "this platform names the endpoint itself" would send the failure down the
      * unnamed-bind branch. A new member must state its own answer here rather than inherit one.
      */
-    private suspend fun bindHostFor(localHost: String?): String? {
+    protected suspend fun bindHostFor(localHost: String?): String? {
         if (localHost != null) return localHost
         return when (val source = routeSourceAddress()) {
             is RouteSource.Resolved -> source.host

@@ -9,6 +9,7 @@ import com.ditchoom.socket.quic.SendTarget
 import com.ditchoom.socket.quic.StubQuicheApi
 import com.ditchoom.socket.quic.core.observe.ConnCounts
 import com.ditchoom.socket.quic.core.ready.SocketRef
+import com.ditchoom.socket.quic.core.ready.SocketRefs
 import com.ditchoom.socket.quic.core.sched.CallerLanes
 import com.ditchoom.socket.quic.core.sched.SendPort
 import com.ditchoom.socket.quic.core.testing.CoreTestRules
@@ -20,6 +21,7 @@ import com.ditchoom.socket.quic.core.testing.VirtualClock
 import com.ditchoom.socket.quic.core.testing.loopOver
 import com.ditchoom.socket.quic.core.testing.nativeBytes
 import com.ditchoom.socket.quic.core.testing.testConn
+import com.ditchoom.socket.quic.core.testing.unreadCarried
 import com.ditchoom.socket.quic.core.time.ClockBase
 import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.Nanos
@@ -117,7 +119,19 @@ class LoopClockReadsTests {
             testConn(api, CoreTestRules, SendTarget.ConnectedPeer, TraceCapture.Off, loop, socket, clock, RecordingSink(), ConnCounts())
         val channel = DatagramChannel.open().also { channels.add(it) }
         val batch = OwnBatch(SendBatch(nativeBytes(MAX_DATAGRAMS * DATAGRAM), BatchLimits(MAX_DATAGRAMS, DATAGRAM)))
-        loop.attach(Endpoint(SocketRef(channel), io, socket, Route.Fixed(conn, batch), Runnable { }))
+        loop.attach(
+            Endpoint(
+                SocketRefs(
+                    SocketRef(channel),
+                    SocketRef(channel),
+                ),
+                io,
+                socket,
+                Route.Fixed(conn, batch, unreadCarried()),
+                Runnable {
+                },
+            ),
+        )
         conn.start()
     }
 
@@ -153,10 +167,14 @@ class LoopClockReadsTests {
                 val channel = DatagramChannel.open().also { channels.add(it) }
                 val endpoint =
                     Endpoint(
-                        SocketRef(channel),
+                        SocketRefs(SocketRef(channel), SocketRef(channel)),
                         io,
                         socket,
-                        Route.Fixed(conn, OwnBatch(SendBatch(nativeBytes(MAX_DATAGRAMS * DATAGRAM), BatchLimits(MAX_DATAGRAMS, DATAGRAM)))),
+                        Route.Fixed(
+                            conn,
+                            OwnBatch(SendBatch(nativeBytes(MAX_DATAGRAMS * DATAGRAM), BatchLimits(MAX_DATAGRAMS, DATAGRAM))),
+                            unreadCarried(),
+                        ),
                         Runnable { },
                     )
                 loop.attach(endpoint)

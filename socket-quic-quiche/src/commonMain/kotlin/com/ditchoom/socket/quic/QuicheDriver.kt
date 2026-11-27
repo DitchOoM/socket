@@ -28,6 +28,7 @@ import com.ditchoom.socket.quic.trace.StreamLossCause
 import com.ditchoom.socket.quic.trace.TraceCapture
 import com.ditchoom.socket.quic.trace.record
 import com.ditchoom.socket.quic.trace.recordOr
+import com.ditchoom.socket.quic.trace.wrapUdpChannel
 import com.ditchoom.socket.udp.DatagramSendError
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineName
@@ -150,7 +151,7 @@ class QuicheDriver(
      * that quietly cannot migrate: a new platform, backend, or test double does not compile until it
      * states which case applies.
      *
-     * `internal` rather than `private` so `QuicCapabilityConformanceTestSuite` can read the **claim** a
+     * `internal` rather than `private` so a test can read the **claim** a
      * live connection was built with and check it against what that connection actually does. A
      * declaration nothing verifies is just a comment the compiler happens to type-check, and stating it
      * wrongly costs nothing until something measures it. Internal, so this stays inside the module — the
@@ -315,7 +316,7 @@ class QuicheDriver(
             if (api.connStreamDataUnacknowledged(conn)) SentStreamData.AwaitingAcknowledgement else SentStreamData.Acknowledged
     }
 
-    /** [QuicConnection.unreadAtClose] for every connection this driver backs; settled in [transitionToClosed]. */
+    /** [QuicScope.unreadAtClose] for every connection this driver backs; settled in [transitionToClosed]. */
     val unreadAtClose: StateFlow<QuicUnreadAtClose> = _unreadAtClose
 
     /**
@@ -922,7 +923,7 @@ class QuicheDriver(
      * buffer stays mapped for the life of the process, no collector involved. Even the collector-owned
      * `BufferFactory.Default` only substitutes one unbounded growth for another: the collector
      * schedules itself on managed-heap pressure, which a pointer-sized wrapper in front of 64 KB does
-     * not produce. The scoped `read(deadline) { … }` (`ScopedRead`, in `:socket-quic`) is what makes the
+     * not produce. The scoped `read(deadline) { … }` (`ScopedReadResult`, in `:socket-quic`) is what makes the
      * release automatic.
      *
      * MultiThreaded mode: stream readers acquire on their own coroutines; consumers release on
@@ -1198,7 +1199,7 @@ class QuicheDriver(
     private fun tapChannel(
         channel: UdpChannel,
         key: PathKey,
-    ): UdpChannel = capture.recordOr(channel) { r -> r.wrap(channel, key.takeIf { k -> k.family != 0 }) }
+    ): UdpChannel = capture.recordOr(channel) { r -> r.wrapUdpChannel(channel, key.takeIf { k -> k.family != 0 }) }
 
     // The primary path's local sockaddr, or null when this driver has no migration wiring. Reading it
     // through the sealed capability is what retires the `0L`-means-absent sentinel: in the Supported
@@ -2816,13 +2817,12 @@ class QuicheDriver(
     /** What the peer is known to do with the paths this client leaves. See [PeerPathRoom]. */
     private var peerPathRoom: PeerPathRoom = PeerPathRoom.Kept(emptySet())
 
-    /** How many of our source ids this client has asked the peer to retire (Retire Prior To), and how many it has retired. */
-    private var retirementsAsked = 0L
-    private var retirementsSeen = 0L
+    /** Our source ids quiche holds and the Retire Prior To it has sent: which of the peer's retirements were asked for. */
+    private val ourSourceIds = OurSourceIds()
 
     /**
      * Start the migration that arrived before the handshake confirmed, on the turn that confirms it —
-     * the turn whose packet carried HANDSHAKE_DONE. Costs one lane check when nothing waits.
+     * the turn whose packet carried HANDSHAKE_DONE or acknowledged a 1-RTT packet. Costs one lane check when nothing waits.
      */
     private fun resumeMigrationAwaitingConfirmation() {
         val waiting =
@@ -3122,7 +3122,6 @@ class QuicheDriver(
      * A stream the peer opens on a server whose handshake is still in progress arrived in 0-RTT: the
      * client's 1-RTT packets cannot be read before the server's handshake completes.
      */
-    @OptIn(QuicEngineSpi::class)
     private fun originOfPeerStream(): QuicStreamOrigin =
         when (role) {
             QuicRole.Client -> QuicStreamOrigin.Confirmed
@@ -3164,7 +3163,7 @@ class QuicheDriver(
                     readNegotiatedAlpn(),
                     QuicEarlyDataReason.outcome(role, sessionOffer, api.connIsResumed(conn), api.connEarlyDataReason(conn)),
                 )
-            handshakeLatch.value = HandshakeRecord.Settled(established.negotiatedAlpn, established.resumption)
+            handshakeLatch.value = HandshakeRecord.Settled(established.negotiatedAlpn, established.resumption, LeafCert.NotPresented)
             _state.value = established
             handshakeSettled.complete(HandshakeSettled.Confirmed(established.resumption))
             qlogEstablished()
@@ -3184,12 +3183,10 @@ class QuicheDriver(
             // The server sends its tickets after the handshake; one length read per wake until the first
             // arrives, and the newest is latched again at close.
             if (_sessionTicket.value is QuicSessionTicketState.NotIssued) refreshSessionTicket()
-            val issued = issueSpareCids()
+            // Retirements first: quiche applied them when it read the datagram, before any id issued here, and
+            // [ourSourceIds] judges each against the Retire Prior To quiche had then.
             val retired = drainRetiredScids()
-            retirementsSeen += retired
-            // More retirements than this client asked for: the peer retires the ids of paths a client leaves
-            // on its own, so it frees those paths and has room for any number of moves.
-            if (retirementsSeen > retirementsAsked) peerPathRoom = PeerPathRoom.Freed(peerPathRoom.movedTo)
+            val issued = issueSpareCids()
             // The routing table is set to what quiche says, not adjusted by what just happened: the
             // two counts only decide WHETHER to look, never what the answer is.
             projectSourceIds(setMayHaveMoved = issued > 0 || retired > 0)
@@ -3203,7 +3200,7 @@ class QuicheDriver(
     /**
      * The handshake's negotiated ALPN protocol (`quiche_conn_application_proto`), read once at the
      * Handshaking→Established edge and published in [QuicConnectionState.Established] — the value
-     * behind [QuicConnection.negotiatedAlpn] and the server-side ALPN demux (`connectionsByAlpn`).
+     * behind [QuicScope.negotiatedAlpn] and the server-side ALPN demux (`connectionsByAlpn`).
      * Empty when the backend does not expose it (a [QuicheApi] test double using the interface
      * default). RFC 7301 caps an identifier at 255 bytes, so one fixed allocation never re-tries.
      */
@@ -4355,7 +4352,6 @@ class QuicheDriver(
                     peerHoldsAnUnusedIdOfOurs() -> LeftPathSourceId.Settled
                     issueOneScid() >= 0 -> {
                         count++
-                        retirementsAsked++
                         LeftPathSourceId.Settled
                     }
                     else -> LeftPathSourceId.Owed
@@ -4414,9 +4410,12 @@ class QuicheDriver(
                 true,
                 addr(seqScratch),
             )
+        if (rc >= 0) {
+            quicheOwesAFlush = true // NEW_CONNECTION_ID is queued
+            ourSourceIds.issued(scid.readLong(), scid.readLong(), peerSourceIdLimit())
+        }
         scid.freeNativeMemory()
         token.freeNativeMemory()
-        if (rc >= 0) quicheOwesAFlush = true // NEW_CONNECTION_ID is queued
         return rc
     }
 
@@ -4450,11 +4449,41 @@ class QuicheDriver(
             if (yielded > count) {
                 capture.record { it.error(RetiredScidOverflow(yielded, count)) }
             }
-            minOf(yielded, count)
+            val drained = minOf(yielded, count)
+            judgeRetirements(slots, drained)
+            drained
         } finally {
             slots.freeNativeMemory()
         }
     }
+
+    /**
+     * Mark the peer as freeing the paths a client leaves once it retires an id of ours that no Retire Prior To
+     * asked for (RFC 9000 §19.16): a peer may ignore the ask (mvfst) and still retire a left path's id, so it is
+     * the id retired that tells, not how many.
+     */
+    private fun judgeRetirements(
+        slots: PlatformBuffer,
+        drained: Int,
+    ) {
+        for (i in 0 until drained) {
+            val at = i * RETIRED_SCID_SLOT_BYTES
+            val retirement =
+                if ((slots[at].toInt() and 0xFF) == QUIC_ISSUED_CONN_ID_LEN) {
+                    ourSourceIds.peerRetired(slots.getLong(at + 1), slots.getLong(at + 1 + Long.SIZE_BYTES))
+                } else {
+                    ourSourceIds.peerRetiredHandshakeId()
+                }
+            if (retirement == PeerRetirement.Unasked) peerPathRoom = PeerPathRoom.Freed(peerPathRoom.movedTo)
+        }
+    }
+
+    /** The peer's `active_connection_id_limit`: quiche's own floor of 2 until the peer's parameters arrive. */
+    private fun peerSourceIdLimit(): Long =
+        when (val params = api.connPeerTransportParams(conn)) {
+            PeerTransportParams.NotYetNegotiated -> OurSourceIds.QUICHE_MIN_PEER_LIMIT
+            is PeerTransportParams.Negotiated -> params.activeConnIdLimit
+        }
 
     /**
      * How many source CIDs the last [projectSourceIds] published. Compared against
@@ -4884,7 +4913,7 @@ class QuicheDriver(
      * single-threaded, never off-loop. [PeerTransportParams.NotYetNegotiated] until the handshake has
      * processed them, and once the connection is torn down.
      *
-     * Exists for `PeerTransportParamsLayoutTestSuite`, which asserts the *neighbours* of
+     * Exists for `CoreBackendBindingTests`, which asserts the *neighbours* of
      * `disable_active_migration` against the values this connection configured. That is the only thing
      * that catches the quiche ABI defect this module patches around
      * (`patchQuicheTransportParamsRepr`): the flag itself is a silent kill switch, so a wrong read
@@ -4998,15 +5027,8 @@ class QuicheDriver(
          */
         internal const val MAX_COMMANDS_PER_TURN = 64
 
-        /**
-         * What every driver-backed connection declares to its callers. All three bindings —
-         * FFM, JNI, cinterop — pass `quiche_conn_stream_send` / `quiche_conn_dgram_send` a raw
-         * address and a length, so a caller-supplied buffer must expose one; there is no copy at the
-         * boundary on any platform. Stated once here, and answered identically by the client
-         * connections on JVM/Android, Linux and Apple and by the server-side [DriverQuicConnection],
-         * because it is a property of the engine binding, not of the platform.
-         */
-        val capabilities: QuicCapabilities = QuicCapabilities(requiresNativeMemoryBuffers = true)
+        /** What every driver-backed connection declares to its callers; see [quicheCapabilities]. */
+        val capabilities: QuicCapabilities = quicheCapabilities
 
         /**
          * How many consecutive receive failures a path's reader tolerates before it stops.
@@ -5161,20 +5183,20 @@ class QuicheDriver(
          * should retry once the peer's `MAX_STREAM_DATA` / `MAX_DATA` reopens the window. (The read path
          * already maps it to [StreamRecvResult.Done].)
          */
-        const val QUICHE_ERR_DONE = -1
+        const val QUICHE_ERR_DONE = com.ditchoom.socket.quic.QUICHE_ERR_DONE
 
         /**
          * `QUICHE_ERR_STREAM_STOPPED` (quiche.h). The peer sent STOP_SENDING (RFC 9000 §19.5): it no
          * longer wants what we are writing to THIS stream. A stream-level event — the connection is
          * healthy — so a stream *write* hitting it raises [QuicStreamException], not [QuicCloseException].
          */
-        const val QUICHE_ERR_STREAM_STOPPED = -15
+        const val QUICHE_ERR_STREAM_STOPPED = com.ditchoom.socket.quic.QUICHE_ERR_STREAM_STOPPED
 
         /**
          * `QUICHE_ERR_STREAM_RESET` (quiche.h). The peer sent RESET_STREAM (RFC 9000 §19.4) on THIS
          * stream. Like [QUICHE_ERR_STREAM_STOPPED], stream-scoped — the connection survives.
          */
-        const val QUICHE_ERR_STREAM_RESET = -16
+        const val QUICHE_ERR_STREAM_RESET = com.ditchoom.socket.quic.QUICHE_ERR_STREAM_RESET
 
         /**
          * `QUICHE_ERR_INVALID_STREAM_STATE` (quiche.h) — one of only two `stream_recv` codes
@@ -5648,24 +5670,6 @@ class DriverStreamAdapter(
         }
     }
 }
-
-/**
- * The raw address of a buffer the **driver** allocated for itself — the UDP send buffer, packet
- * buffers from the receive pool, sockaddr / CID / token scratch, the stream-read pool.
- *
- * Every factory a driver is built from passed `TransportConfig.quicBufferFactory()`'s
- * `requireNativeMemory()` probe at setup, so a `null` here is a broken invariant — a factory that
- * answered the probe natively and then handed out a heap buffer — never a caller's mistake. Hence
- * [checkNotNull] with the invariant spelled out, in contrast to the typed
- * [QuicNativeMemoryRequiredException] that [DriverStreamAdapter.streamWrite] and
- * [DriverDatagramAdapter.send] give a **caller-fed** buffer: exactly those two take a buffer from a
- * public API; every other site is on memory the driver allocated.
- */
-internal fun PlatformBuffer.driverOwnedNativeAddress(): Long =
-    checkNotNull(nativeMemoryAccess) {
-        "driver-owned ${this::class.simpleName} has no native memory: the connection's BufferFactory " +
-            "passed requireNativeMemory() at setup and then allocated a heap buffer — a factory that lies to the probe"
-    }.nativeAddress
 
 /**
  * quiche yielded more retired connection IDs than the count it reported a moment earlier, so the

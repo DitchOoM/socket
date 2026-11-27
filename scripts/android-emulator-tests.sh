@@ -51,8 +51,41 @@ failed_test_names() {
   done
 }
 
-adb root || true
-adb wait-for-device
+mkdir -p emulator-diagnostics
+
+# ADB INSTALL GUARD: A STALLED TEST-APK INSTALL IS RECORDED, THEN RETRIED PUSHED
+# ------------------------------------------------------------------------------
+# The streamed `adb install` AGP's test engine runs has stalled on the API-24 emulator four times
+# since the AGP 9.5.1 bump (runs 42324622569, 42382561575, 42434499783, 42513600114), and the
+# engine cannot be given a deadline or install options (WATCHDOG below). So on CI the SDK's `adb`,
+# which is the binary the engine runs, is replaced by scripts/adb-install-guard.sh. It passes every
+# other command to the real adb, recording each in emulator-diagnostics/adb-journal.txt. It goes in
+# first, so the journal also holds this script's own commands from `adb root` on. An install with no
+# result after ADB_GUARD_STALL_S is recorded to emulator-diagnostics/install-stall-<n>.txt, killed,
+# and retried once with `--no-streaming -r`. A recovered stall is reported as a ::warning:: below and
+# its capture uploaded even on a green run, so every occurrence adds evidence.
+#
+# Only on GitHub Actions: on a workstation this would rewrite the developer's own SDK.
+ADB_GUARD_STALL_S="${ANDROID_ADB_GUARD_STALL_S:-60}"
+ADB_GUARD_RETRY_S="${ANDROID_ADB_GUARD_RETRY_S:-120}"
+if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+  SDK_ADB="${ANDROID_HOME:?ANDROID_HOME is not set}/platform-tools/adb"
+  if [ ! -e "$SDK_ADB.real" ]; then
+    mv "$SDK_ADB" "$SDK_ADB.real"
+  fi
+  sed -e "s#@REAL_ADB@#$SDK_ADB.real#" \
+    -e "s#@DIAG_DIR@#$PWD/emulator-diagnostics#" \
+    -e "s#@STALL_S@#$ADB_GUARD_STALL_S#" \
+    -e "s#@RETRY_S@#$ADB_GUARD_RETRY_S#" \
+    scripts/adb-install-guard.sh >"$SDK_ADB"
+  chmod +x "$SDK_ADB"
+  echo "adb install guard in place: $SDK_ADB -> $SDK_ADB.real (stall ${ADB_GUARD_STALL_S}s, retry ${ADB_GUARD_RETRY_S}s)"
+fi
+
+# No device command runs until the adbd that `adb root` restarted answers steadily (see the file).
+# shellcheck source=scripts/android-adb-root.sh
+source "$(dirname "${BASH_SOURCE[0]}")/android-adb-root.sh"
+adb_root_settled "$API_LEVEL" 60
 
 # Logcat is the diagnostics transport on Android. An instrumented test runs in the app process,
 # so its stdout goes to logcat and NEVER reaches the Gradle-side test XML — which is why the
@@ -63,13 +96,40 @@ adb wait-for-device
 # STREAMED to a file, not dumped at the end: :socket-http3 runs early and three more modules'
 # instrumented suites log for minutes after it, so a report sitting in the ring buffer can be
 # evicted before any end-of-run `logcat -d`. A reader started here cannot lose it. The buffer is
-# still grown + cleared as insurance for the streamer's own startup window.
+# still grown + cleared as insurance for the streamer's own startup window. The reader is supervised
+# (scripts/android-logcat-stream.sh): one that ends is started again from the last line written.
 adb logcat -G 64M || true
 adb logcat -c || true
-mkdir -p emulator-diagnostics
 LOGCAT_FILE="emulator-diagnostics/logcat-api${API_LEVEL}.txt"
-adb logcat -v threadtime > "$LOGCAT_FILE" &
+LOGCAT_STREAM_RECORD="emulator-diagnostics/logcat-stream-api${API_LEVEL}.txt"
+: >"$LOGCAT_FILE"
+: >"$LOGCAT_STREAM_RECORD"
+# shellcheck source=scripts/android-logcat-stream.sh
+source "$(dirname "${BASH_SOURCE[0]}")/android-logcat-stream.sh"
+logcat_stream_supervise "$LOGCAT_FILE" "$LOGCAT_STREAM_RECORD" &
 LOGCAT_PID=$!
+
+# THE HEAP THE TESTS GET
+# ----------------------
+# An app's heap is the zygote's, and the API 29 zygote can start before init sets dalvik.vm.heapsize, leaving every
+# app the 16 MB fallback (see scripts/android-zygote-heap.sh). That is checked and repaired here, before any test. The
+# properties and the zygote's reservation are kept for every run, in the job log and beside the logcat; the quiche
+# test process also reports its own heap at start (HeapCheckedTestRunner).
+# shellcheck source=scripts/android-zygote-heap.sh
+source "$(dirname "${BASH_SOURCE[0]}")/android-zygote-heap.sh"
+ensure_zygote_heap "$API_LEVEL"
+HEAP_FILE="emulator-diagnostics/heap-api${API_LEVEL}.txt"
+{
+  if PROPS=$(adb shell getprop 2>&1); then
+    grep -E 'dalvik\.vm\.heap|ro\.config\.low_ram|ro\.product\.ram|qemu\.dalvik' <<<"$PROPS" || echo "(getprop answered with no heap properties)"
+  else
+    echo "(getprop failed: $(head -c 200 <<<"$PROPS" | tr '\n' ' '))"
+  fi
+  echo "zygote heap reservation: $(reservation_text "$(zygote_heap_reservation)")"
+  adb shell head -n 3 /proc/meminfo 2>/dev/null || true
+} > "$HEAP_FILE"
+echo "heap properties (API ${API_LEVEL}):"
+sed 's/^/  /' "$HEAP_FILE"
 
 # NO TEST RUNS ON AN EMULATOR WITHOUT A NETWORK
 # ---------------------------------------------
@@ -152,7 +212,7 @@ fi
 #     included. The engine gives `adb install` no deadline: AGP 9.5.1 writes the install timeout
 #     as `android-test.install-timeout-ms[<serial>]`, and the engine reads the key without the
 #     serial, so `android.experimental.testOptions.installApkTimeout` has no effect. The ADB
-#     INSTALL GUARD below handles a stalled install first (record, kill, one pushed retry, at most
+#     INSTALL GUARD above handles a stalled install first (record, kill, one pushed retry, at most
 #     ~3 min); this threshold is the backstop for when that did not end it.
 #   * no test has started or finished for TEST_STALL_S. The longest test gives itself 120 s of
 #     echoes; the longest gap between test events on the slowest API 29 runner seen (run
@@ -234,6 +294,8 @@ capture_hang() {
     echo "running test (from the streamed logcat): $(running_test)"
     echo "instrumentation package: ${pkg:-none running}"
     echo "last streamed logcat line: $(tail -1 "$LOGCAT_FILE" 2>/dev/null)"
+    echo "the stream's reader ended $(logcat_stream_ends "$LOGCAT_STREAM_RECORD") time(s):"
+    cat "$LOGCAT_STREAM_RECORD" 2>/dev/null || true
 
     echo
     echo "--- host: adb, Java and emulator processes ---"
@@ -283,6 +345,7 @@ capture_hang() {
 # Watches Gradle (pid $1) until it exits or is declared hung. On a hang: capture, annotate, stop it.
 watch_test_run() {
   local gradle_pid="$1" install_age install_cmd why events seen=-1 progressed=$SECONDS
+  local device_seen="" device_last verdict
   while kill -0 "$gradle_pid" 2>/dev/null; do
     why=""
     install_age=""
@@ -292,11 +355,26 @@ watch_test_run() {
     if [ "$events" != "$seen" ] || [ -n "${install_age:-}" ]; then
       seen=$events
       progressed=$SECONDS
+      # The stream carries the progress again, so its last event is the baseline once more.
+      device_seen=""
     fi
     if [ -n "${install_age:-}" ] && [ "$install_age" -ge "$INSTALL_STALL_S" ]; then
       why="an APK install has not finished after ${install_age}s: ${install_cmd##* }"
     else
       why=$(test_run_hang "$SECONDS" $((SECONDS - progressed)) "$TEST_STALL_S" "$TEST_BUDGET_S" "$(running_test)")
+    fi
+    # A stall in the stream is a stall only if the device's own logcat agrees.
+    if [[ "$why" == "no test started or finished"* ]]; then
+      IFS=$'\t' read -r verdict device_last < <(device_stall_check "$LOGCAT_FILE" "$device_seen") || true
+      if [ "$verdict" = "progress" ]; then
+        echo "::warning title=Streamed logcat is behind the device (API ${API_LEVEL})::$(gh_escape "No test event reached the streamed logcat for $((SECONDS - progressed))s, but the device's own logcat has one: ${device_last}
+The stream's reader ended $(logcat_stream_ends "$LOGCAT_STREAM_RECORD") time(s) (${LOGCAT_STREAM_RECORD}). The run goes on.")"
+        device_seen=$device_last
+        progressed=$SECONDS
+        why=""
+      else
+        why="${why}; ${verdict}. The stream's reader ended $(logcat_stream_ends "$LOGCAT_STREAM_RECORD") time(s)"
+      fi
     fi
     if [ -n "$why" ]; then
       TEST_RUN_HUNG=1
@@ -370,34 +448,6 @@ capture_no_tests_ran() {
     capture_section "runner processes by memory" 5 bash -c "ps -eo pid,rss,etime,args --sort=-rss | head -15 | cut -c1-300"
   } >"$NO_TESTS_FILE" 2>&1
 }
-
-# ADB INSTALL GUARD: A STALLED TEST-APK INSTALL IS RECORDED, THEN RETRIED PUSHED
-# ------------------------------------------------------------------------------
-# The streamed `adb install` AGP's test engine runs has stalled on the API-24 emulator four times
-# since the AGP 9.5.1 bump (runs 42324622569, 42382561575, 42434499783, 42513600114), and the
-# engine cannot be given a deadline or install options (WATCHDOG above). So on CI the SDK's `adb`,
-# which is the binary the engine runs, is replaced by scripts/adb-install-guard.sh. It passes every
-# other command to the real adb, recording each in $ADB_JOURNAL. An install with no result after ADB_GUARD_STALL_S is
-# recorded to emulator-diagnostics/install-stall-<n>.txt, killed, and retried once with
-# `--no-streaming -r`. A recovered stall is reported as a ::warning:: below and its capture uploaded
-# even on a green run, so every occurrence adds evidence.
-#
-# Only on GitHub Actions: on a workstation this would rewrite the developer's own SDK.
-ADB_GUARD_STALL_S="${ANDROID_ADB_GUARD_STALL_S:-60}"
-ADB_GUARD_RETRY_S="${ANDROID_ADB_GUARD_RETRY_S:-120}"
-if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
-  SDK_ADB="${ANDROID_HOME:?ANDROID_HOME is not set}/platform-tools/adb"
-  if [ ! -e "$SDK_ADB.real" ]; then
-    mv "$SDK_ADB" "$SDK_ADB.real"
-  fi
-  sed -e "s#@REAL_ADB@#$SDK_ADB.real#" \
-    -e "s#@DIAG_DIR@#$PWD/emulator-diagnostics#" \
-    -e "s#@STALL_S@#$ADB_GUARD_STALL_S#" \
-    -e "s#@RETRY_S@#$ADB_GUARD_RETRY_S#" \
-    scripts/adb-install-guard.sh >"$SDK_ADB"
-  chmod +x "$SDK_ADB"
-  echo "adb install guard in place: $SDK_ADB -> $SDK_ADB.real (stall ${ADB_GUARD_STALL_S}s, retry ${ADB_GUARD_RETRY_S}s)"
-fi
 
 # There is no `adb reverse tcp:<quic port>` here: QUIC is UDP and adb reverse only handles TCP.
 # This lane runs on an EMULATOR, which is the one device kind with a built-in `10.0.2.2` alias for
@@ -589,9 +639,14 @@ LOGCAT_LINES=0
 if [ -s "$LOGCAT_FILE" ]; then
   LOGCAT_LINES=$(wc -l <"$LOGCAT_FILE" | tr -d ' ')
 fi
-echo "logcat capture (API ${API_LEVEL}): ${LOGCAT_LINES} lines -> ${LOGCAT_FILE}"
+LOGCAT_STREAM_ENDS=$(logcat_stream_ends "$LOGCAT_STREAM_RECORD")
+echo "logcat capture (API ${API_LEVEL}): ${LOGCAT_LINES} lines -> ${LOGCAT_FILE}; the reader ended and was restarted ${LOGCAT_STREAM_ENDS} time(s)"
 if [ "$LOGCAT_LINES" = "0" ]; then
   echo "::warning::logcat capture is EMPTY — the Android H3Loopback failure-diagnostics transport is broken"
+fi
+if [ "$LOGCAT_STREAM_ENDS" != "0" ]; then
+  echo "::warning title=Logcat reader restarted (API ${API_LEVEL})::$(gh_escape "The streamed logcat's reader ended ${LOGCAT_STREAM_ENDS} time(s) and was resumed from its last line each time:
+$(head -c 1500 "$LOGCAT_STREAM_RECORD")")"
 fi
 
 # Per-connection CPU of the core's concurrent echo test (CoreServerEchoTests prints it on pass and fail), inline so

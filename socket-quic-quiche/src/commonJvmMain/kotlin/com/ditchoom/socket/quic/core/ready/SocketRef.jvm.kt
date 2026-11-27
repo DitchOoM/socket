@@ -16,6 +16,10 @@ internal actual class SocketRef private constructor(
     constructor(channel: SelectableChannel) : this(Supplier { channel })
 
     constructor(descriptor: IntSupplier) : this(SocketHandle.Descriptor(descriptor))
+
+    companion object {
+        val NotPolled = SocketRef(SocketHandle.NotPolled)
+    }
 }
 
 /** The JDK stack watches a channel, the native stack a descriptor; each stack builds only its own. */
@@ -27,10 +31,15 @@ internal sealed interface SocketHandle {
     class Descriptor(
         val current: IntSupplier,
     ) : SocketHandle
+
+    /** A socket neither stack's poller watches: one lent by the caller, whose io wakes the loop itself. */
+    data object NotPolled : SocketHandle
 }
 
 internal actual fun SocketRef.pollHandle(): PollHandle =
     when (val socket = handle) {
         is SocketHandle.Descriptor -> PollHandle.Descriptor(socket.current.asInt)
-        is SocketHandle.Channel -> PollHandle.NotPolled
+        is SocketHandle.Channel, is SocketHandle.NotPolled -> PollHandle.NotPolled
     }
+
+internal actual fun notPolledRef(): SocketRef = SocketRef.NotPolled

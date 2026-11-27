@@ -21,7 +21,10 @@ sealed interface QuicCloseCircumstance {
     /** The connection was released before the operation ran. */
     data object Released : QuicCloseCircumstance
 
-    /** The connection ended and the operation found it closed. */
+    /**
+     * The connection ended, or passed its close point, and the operation found it so: after a close nothing more is
+     * accepted, and [QuicCloseException.end] is the end that close asked for.
+     */
     data object Ended : QuicCloseCircumstance
 
     /** The thrower described the close in its own message; nothing more is known by type. */

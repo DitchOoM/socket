@@ -19,10 +19,14 @@ internal sealed interface HandshakeRecord {
     /** The handshake has not completed. */
     data object Pending : HandshakeRecord
 
-    /** The handshake completed with [negotiatedAlpn], and used a session ticket as [resumption] says. */
+    /**
+     * The handshake completed with [negotiatedAlpn], used a session ticket as [resumption] says, and the peer presented
+     * [leaf].
+     */
     data class Settled(
         val negotiatedAlpn: String,
         val resumption: QuicResumptionOutcome,
+        val leaf: LeafCert,
     ) : HandshakeRecord
 }
 

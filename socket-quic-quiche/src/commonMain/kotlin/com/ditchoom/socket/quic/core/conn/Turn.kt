@@ -2,7 +2,7 @@ package com.ditchoom.socket.quic.core.conn
 
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicError
-import com.ditchoom.socket.quic.core.life.CloseHow
+import com.ditchoom.socket.quic.core.life.CloseChoice
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.Ending
 import com.ditchoom.socket.quic.core.life.Life
@@ -20,6 +20,7 @@ import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 import com.ditchoom.socket.quic.core.udp.SendBatch
+import com.ditchoom.socket.quic.core.udp.SocketTicket
 import com.ditchoom.socket.quic.core.udp.Thrown
 import com.ditchoom.socket.testkit.trace.TraceSink
 import kotlinx.coroutines.Runnable
@@ -28,9 +29,9 @@ import kotlinx.coroutines.Runnable
 internal enum class Collected { Everything, MoreWaiting, Abandoned }
 
 /**
- * The order of one serve, and the connection-tier containment site: an exception thrown by work or by a step ends
- * this connection and no other; an `Error` is not contained. Holds no state: it asks each component and passes the
- * answers on.
+ * The order of one serve, and the connection-tier containment site: an exception thrown by work or by a step ends this
+ * connection and no other; an `Error` is not contained. Holds no state: it asks each component and passes the answers
+ * on.
  */
 internal class Turn(
     private val c: ConnParts,
@@ -42,6 +43,9 @@ internal class Turn(
     private val paths: Paths = c.slots.paths
 
     fun push(work: ConnWork): Pushed = c.inbox.push(work)
+
+    /** Makes the connection's deadline with [fire], before it is ever armed. */
+    fun makeTimer(fire: Runnable) = c.timer.make(fire)
 
     fun requestRelease(then: Runnable) = c.release.request(then)
 
@@ -107,43 +111,38 @@ internal class Turn(
             Collected.Abandoned
         }
 
-    /** Inside: quiche reads a datagram at the start of [bytes] that came [from]; one after the end is only counted. */
+    /** Inside: quiche reads a datagram at [bytes]' start from [from] on socket [on]; one after the end is counted. */
     fun receive(
         bytes: NativeBytes,
         length: Int,
         from: PathKey,
         now: Nanos,
+        on: SocketTicket,
     ) {
         if (c.life.view() is Life.Over) {
             c.flight.datagramIn(now, bytes, 0, length)
-            return c.life.linger.late()
+            return c.life.linger.late(length)
         }
         traced(TraceSection.ConnReceive) {
             try {
-                c.feed(bytes, length, from)
+                c.feed(bytes, length, from, now, on)
                 c.slots.keepAlive.touched(now)
-                c.slots.datagrams.received()
+                c.slots.datagrams.received(now)
+                c.settleEarly(now).ifRefused { finish(now, it) }
             } catch (failure: Exception) {
                 fail(now, failure)
             }
         }
     }
 
-    /** Loop thread, with a caller inside: the datagram is copied into work for that caller. */
-    fun copy(
-        bytes: NativeBytes,
-        length: Int,
-        from: PathKey,
-    ): Copy = c.ingress.copy(bytes, length, from)
+    /** The loop's way in for datagrams: whether one goes to quiche now or is copied into work, and the copy. */
+    fun ingress(): Ingress = c.ingress
 
     /**
      * Inside, at [now]: the connection's deadline fell due. While unconfirmed, the handshake counts quiche's PTO expiries.
      * The recording takes [now]: a replay runs quiche's timeout when this host did, however late it woke.
      */
-    fun expire(now: Nanos) {
-        if (c.life.view() !is Life.Open) return
-        c.expired(now, paths)
-    }
+    fun expire(now: Nanos) = if (c.life.view() is Life.Open) c.expired(now, paths) else Unit
 
     fun network(
         now: Nanos,
@@ -157,13 +156,12 @@ internal class Turn(
         }
     }
 
-    /** Inside: a client's socket now leaves from [to]; a connection that cannot follow it ends ([follow]). */
+    /** Inside: a client's second socket leaves from [to]; one it cannot follow is refused and it stays ([follow]). */
     fun moved(
         now: Nanos,
         to: MoveTo,
     ) = when (c.follow(now, to)) {
-        MoveAnswer.Following -> Unit
-        MoveAnswer.Refused -> finish(now, ConnEnd.LocalAddressGone)
+        MoveAnswer.Following, MoveAnswer.Refused, MoveAnswer.Stale -> Unit
         MoveAnswer.NoUsablePath -> finish(now, ConnEnd.NoUsablePath)
     }
 
@@ -179,30 +177,31 @@ internal class Turn(
     /** Any thread: the ids this connection's peer retired, taken once. */
     fun idsRetired(): List<RetiredId> = c.slots.paths.idsRetired()
 
-    /** Any thread: the bytes one datagram may carry as of the connection's last turn, or 0. */
-    fun datagramMaxBytes(): Int = c.slots.datagrams.maxBytes()
+    /** Any thread: the connection's datagrams, for the queue a caller offers sends to. */
+    fun datagrams(): Datagrams = c.slots.datagrams
+
+    /** Once the loop is quiet: where the connection's close stands at [now]. */
+    fun lingerView(now: Nanos) = LingerView(now, c.life.view(), c.life.linger.wire(), c.timer.armed(now))
 
     fun dump(sink: TraceSink) = c.flight.dump(sink)
 
-    /** Inside: the connection ends with [end], once. The sink publishes the end first, so a resumed caller can read it; then work fails. */
+    /** Inside: the connection ends with [end], once ([ending], then [ended]); what quiche held for reads goes with it. */
     fun finish(
         now: Nanos,
         end: ConnEnd,
     ) {
-        if (c.life.end(end) == Ending.Already) return
-        c.timer.disarm()
-        c.recordEnd(now, end)
+        val first =
+            when (val ending = c.ending(now, end)) {
+                is Ending.First -> ending
+                is Ending.Already -> return
+            }
         val held =
             try {
                 c.heldAtEnd(HoldAtEnd.ReadOut)
             } catch (again: Exception) {
                 c.heldAtEnd(HoldAtEnd.LiveOnly)
             }
-        c.sink.ended(end, held)
-        c.inbox.shut(end) { it.gone(end) }
-        c.streams.endAll(end)
-        c.slots.datagrams.endAll(end)
-        c.flight.toTrace()
+        c.ended(end, held, first.outcome)
     }
 
     /** Inside for good, nobody else can enter: a linger still running is cut, and quiche's memory is freed. */
@@ -217,20 +216,19 @@ internal class Turn(
         now: Nanos,
         out: SendBatch,
     ): Collected {
-        when (c.handshakeStep(now, paths)) {
-            HandshakeStep.Handshaking, HandshakeStep.JustEstablished, HandshakeStep.Established -> Unit
-            HandshakeStep.DeadlinePassed -> {
-                val end = c.handshakeEnd(now, paths)
-                c.life.close(QuicError.NoError, end, CloseHow.Now, now)
+        when (val served = c.handshakeStep(now, paths)) {
+            is HandshakeServe.Open -> Unit
+            is HandshakeServe.Over -> {
+                val end = c.handshakeEnd(served, now, paths)
+                c.closeHandshake(end, now)
                 finish(now, end)
                 return Collected.Everything
             }
         }
-        c.life.flushStep(now)
-        when (c.life.observe()) {
+        when (val quiche = c.life.observe()) {
             LifeStep.Open -> Unit
-            LifeStep.Closed -> {
-                finish(now, paths.endOf(c.network.endOf(c.life.quicheEnd())))
+            LifeStep.Draining, LifeStep.Closed -> {
+                finish(now, c.quicheEnded(now, quiche, paths))
                 return Collected.Everything
             }
         }
@@ -240,19 +238,20 @@ internal class Turn(
         }
         if (c.firstFlight() == FlightGate.Held) return Collected.Everything
         c.ackStep(now).let { if (it != AckStep.Write) return it.collected() }
-        val wrote =
-            when (val pacing = c.slots.pacing) {
-                is Pacing.Unpaced -> c.egress.write(out, paths, c.flight)
-                is Pacing.ByQuiche -> c.egress.writePaced(out, paths, pacing.pacer, c.flight)
-            }
+        val wrote = c.writeOut(out, paths)
         c.wrote(now)
+        if (c.flushStep(now, out, paths) == LifeStep.Closed) {
+            finish(now, c.quicheEnded(now, LifeStep.Closed, paths))
+            return Collected.Everything
+        }
         if (c.life.linger.sending() && c.keepClose(now, out) == CloseSent.Yes) {
             when (val life = c.life.view()) {
-                is Life.Closing -> finish(now, life.end)
+                is Life.Closing -> finish(now, endOf(life))
                 is Life.Running, is Life.Over -> Unit
             }
         }
-        if (wrote == Wrote.ClockMismatch) finish(now, c.egress.mismatchEnd())
+        // A clock mismatch or a refused datagram is our own failure: the peer is told with INTERNAL_ERROR, as for any processing failure.
+        wrote.ends(c.egress, ours = { fail(now, it) }, refused = { finish(now, c.closeRefused(now)) })
         return wrote.collected()
     }
 
@@ -290,7 +289,7 @@ internal class Turn(
         if (c.life.view() is Life.Over) return
         val end = ConnEnd.ProcessingFailed(Thrown(failure))
         try {
-            c.life.close(QuicError.ProcessingFailed, end, CloseHow.Now, now)
+            c.close(CloseChoice.Immediate(QuicError.ProcessingFailed), end, now)
         } catch (late: Exception) {
             failure.addSuppressed(late)
         }

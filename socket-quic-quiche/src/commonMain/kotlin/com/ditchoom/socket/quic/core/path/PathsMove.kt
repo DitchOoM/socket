@@ -1,44 +1,10 @@
 package com.ditchoom.socket.quic.core.path
 
-import com.ditchoom.socket.quic.EncodedSockAddr
-import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicPathStats
-import com.ditchoom.socket.quic.QuicheRecvInfo
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.time.Nanos
-import com.ditchoom.socket.quic.core.time.RttPrior
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
-
-/**
- * One local endpoint of a client: its address as quiche reads it ([key]), and the receive info for datagrams that
- * arrive on it. [made] says whose its sockaddr and receive info are, and so who frees them; [prior] is the round trip
- * quiche assumes for the path from here until it has a sample.
- */
-internal class LocalAddr(
-    val key: PathKey,
-    val recvInfo: QuicheRecvInfo,
-    val made: Made,
-    val prior: RttPrior,
-) {
-    val info = RecvFrom.Info(recvInfo)
-}
-
-/** Who made a [LocalAddr]'s sockaddr and receive info. */
-internal sealed interface Made {
-    /** The connect's own, freed with the path the connection was opened on. */
-    data object ByEdge : Made
-
-    class Here(
-        val sockAddr: EncodedSockAddr,
-    ) : Made
-}
-
-/** A local endpoint and the destination connection id quiche linked to its path: the two never separate. */
-internal class Linked(
-    val local: LocalAddr,
-    val dcidSeq: Long,
-)
 
 /** When a stranded client probes its endpoint again, and how many probes of the move have found no path. */
 internal class Retry(
@@ -73,66 +39,21 @@ internal class Cadence private constructor(
     }
 }
 
-/** Whether a stranded endpoint's path holds a destination id. */
-internal sealed interface LinkedId {
-    data object None : LinkedId
-
-    class Seq(
-        val seq: Long,
-    ) : LinkedId
-}
-
-/** Why a moved socket's endpoint has no path being validated. */
-internal enum class Unprobed { NoSpareId, ValidationFailed, MigrationRefused }
-
-/** Where a client's path stands. Every destination id it holds is in exactly one [Linked]; the step that drops one retires it. */
-internal sealed interface Move {
-    /** The connection's one path leaves from [on]. */
-    class Settled(
-        val on: Linked,
-    ) : Move
-
-    /** The socket moved to [to], whose path is being validated; quiche's active path is still [from]. */
-    class Probing(
-        val from: Linked,
-        val to: Linked,
-        /** The probes of this move that found no path. */
-        val failed: Int,
-        val cadence: Cadence,
-    ) : Move
-
-    /** The socket moved to [at], whose path is not being validated; quiche's active path is still [from]. */
-    class Stranded(
-        val from: Linked,
-        val at: LocalAddr,
-        val why: Unprobed,
-        val retry: Retry,
-        /** The id quiche linked to [at]'s path, kept so the path can be probed again. */
-        val id: LinkedId,
-    ) : Move
-}
-
-/**
- * This move on another usable network: what failed on the network before says nothing of this one, so a stranded
- * endpoint is probed again at [now] and the move backs off afresh.
- */
-internal fun Move.onNewNetwork(now: Nanos): Move =
-    when (this) {
-        is Move.Stranded -> Move.Stranded(from, at, why, Retry(now, 0), id)
-        is Move.Probing -> Move.Probing(from, to, 0, cadence)
-        is Move.Settled -> this
-    }
-
 /** What a client asked to move answers. */
 internal enum class MoveAnswer {
     /** The new endpoint's path is being validated, or has no spare id to be. */
     Following,
 
-    /** The peer forbade migration: the connection cannot follow its socket. */
+    /**
+     * The peer forbade migration, or the handshake is unconfirmed: the connection cannot follow its socket, and stays.
+     */
     Refused,
 
     /** The peer gave no spare id and is silent, so none can come: the connection cannot follow its socket. */
     NoUsablePath,
+
+    /** The socket is not the one the connection awaits: an earlier ask's, given up or replaced. Nothing changes. */
+    Stale,
 }
 
 /** What one serve's look at the paths found. */
@@ -142,6 +63,9 @@ internal enum class PathStep {
 
     /** Quiche gave up validating the probed path, or closed it. */
     ProbeFailed,
+
+    /** The move was given up: its path failed validation again while the carrying path kept answering. */
+    Abandoned,
 
     /** A stranded endpoint was probed again. */
     Reprobed,
@@ -153,44 +77,11 @@ internal enum class PathStep {
     NoUsablePath,
 }
 
-/** Hands [each] every endpoint this move holds. */
-internal fun Move.locals(each: (LocalAddr) -> Unit) {
-    when (this) {
-        is Move.Settled -> each(on.local)
-        is Move.Probing -> {
-            each(from.local)
-            each(to.local)
-        }
-        is Move.Stranded -> {
-            each(from.local)
-            each(at)
-        }
-    }
-}
-
-/** The endpoint the socket leaves from while this move stands. */
-internal fun Move.socketAt(): LocalAddr =
-    when (this) {
-        is Move.Settled -> on.local
-        is Move.Probing -> to.local
-        is Move.Stranded -> at
-    }
-
-/**
- * The endpoint a datagram that arrives is read on: the socket's. While a move waits for a spare id, quiche has no path
- * for the socket's endpoint, so the datagram is read on the old path, which can carry the id the peer sends.
- */
-internal fun Move.receivesAt(): LocalAddr =
-    when (this) {
-        is Move.Stranded -> if (why == Unprobed.NoSpareId) from.local else at
-        is Move.Settled, is Move.Probing -> socketAt()
-    }
-
 /** This stranded move after another probe found no path: retried at the next backoff step. */
 internal fun Move.Stranded.again(
     q: QuicheConnRef,
     now: Nanos,
-): Move.Stranded = Move.Stranded(from, at, why, q.retryAt(now, retry.failed + 1), id)
+): Move.Stranded = Move.Stranded(from, at, why, q.retryAt(now, retry.failed + 1), id, toward)
 
 /**
  * When a stranded endpoint is probed again after [failed] probes of its move found no path: one PTO of the path the
@@ -247,6 +138,12 @@ internal fun QuicheConnRef.activeBasePto(): Long {
     }
     return NEW_PATH_PTO_NANOS
 }
+
+/**
+ * How many validations of one move may fail, the carrying path answering through the last, before the move is given up
+ * and its socket closed: the old path demonstrably works and the new one demonstrably does not.
+ */
+internal const val ABANDON_AFTER_FAILURES = 3
 
 /** RFC 9002 §6.2.1's PTO from the path's RTT estimate, before any doubling. */
 private fun basePto(stats: QuicPathStats): Long =

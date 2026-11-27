@@ -12,23 +12,28 @@ import com.ditchoom.socket.quic.core.path.ClientPaths
 import com.ditchoom.socket.quic.core.path.IdIssuer
 import com.ditchoom.socket.quic.core.path.IdsRetired
 import com.ditchoom.socket.quic.core.path.IdsWanted
+import com.ditchoom.socket.quic.core.path.PathSilence
 import com.ditchoom.socket.quic.core.path.ServerPaths
+import com.ditchoom.socket.quic.core.path.SilenceRule
 import com.ditchoom.socket.quic.core.path.SinglePath
+import com.ditchoom.socket.quic.core.path.SocketAsk
 import com.ditchoom.socket.quic.core.pool.FixedPool
 import com.ditchoom.socket.quic.core.sched.Entrant
 import com.ditchoom.socket.quic.core.sched.LoopPort
 import com.ditchoom.socket.quic.core.sched.SendPort
 import com.ditchoom.socket.quic.core.sched.WorkInbox
+import com.ditchoom.socket.quic.core.stream.EarlyCopy
 import com.ditchoom.socket.quic.core.stream.StreamIo
 import com.ditchoom.socket.quic.core.stream.StreamTable
 import com.ditchoom.socket.quic.core.time.ClockBase
 import com.ditchoom.socket.quic.core.time.LoopClock
+import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.time.QuicheTime
-import com.ditchoom.socket.quic.core.time.RttPrior
 import com.ditchoom.socket.quic.core.time.WakeSink
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 import com.ditchoom.socket.quic.core.udp.SockAddr
 import com.ditchoom.socket.quic.trace.TraceCapture
+import com.ditchoom.socket.quic.trace.recordOr
 import kotlin.random.Random
 
 /** The memory one connection is built with: what its loop's connections share, and its own ALPN scratch. */
@@ -44,7 +49,9 @@ internal sealed interface ConnSide {
     /**
      * A client draws the ids it hands its peer from [ids], offered quiche [offer] before its first flight, and copies
      * its server's session ticket through one of its loop's [scratch] slots; what it took from its stores, [kept], goes
-     * back if it never sent; its server's NEW_TOKEN token goes to [tokens]; its socket is moved by [mover].
+     * back if it never sent; its server's NEW_TOKEN token goes to [tokens]; its loop's sockets are asked through [ask]; a handshake
+     * the system refused every send of is judged by [access]; its server's certificates are copied at completion as
+     * [chain] says; its path's silence is watched as [silence] says; its 0-RTT bytes are kept for a replay as [early] says.
      */
     class Client(
         val ids: Random,
@@ -52,7 +59,11 @@ internal sealed interface ConnSide {
         val scratch: FixedPool<SessionScratch>,
         val kept: KeptTicket,
         val tokens: TokenHome,
-        val mover: (PathKey, RttPrior) -> Unit,
+        val ask: (SocketAsk) -> Unit,
+        val access: SendsAccess,
+        val chain: ChainSource,
+        val silence: SilenceRule,
+        val early: EarlyPlan,
     ) : ConnSide
 
     /** A server hands its peer the ids its loop routes to it. */
@@ -77,6 +88,7 @@ internal fun buildConn(
     memory: ConnMemory,
     flight: FlightSize,
     capture: TraceCapture,
+    qlog: Qlog,
     port: LoopPort,
     socket: SendPort,
     clock: LoopClock,
@@ -85,7 +97,7 @@ internal fun buildConn(
     loopEntrant: Entrant,
     counts: ConnCounts,
 ): Conn =
-    q.composedAround(SinglePath(q, address.peer, address.local, address.target)) { first ->
+    q.composedAround(SinglePath(q, address.peer, address.local, address.target), qlog) { first ->
         composed(
             rules,
             q,
@@ -94,6 +106,7 @@ internal fun buildConn(
             memory,
             flight,
             capture,
+            qlog,
             port,
             socket,
             clock,
@@ -113,6 +126,7 @@ private fun composed(
     memory: ConnMemory,
     flight: FlightSize,
     capture: TraceCapture,
+    qlog: Qlog,
     port: LoopPort,
     socket: SendPort,
     clock: LoopClock,
@@ -150,7 +164,8 @@ private fun composed(
                                 IdIssuer(memory.factory),
                                 side.ids,
                                 { info, made -> q.freeInfo(info, made) },
-                                side.mover,
+                                side.ask,
+                                PathSilence(q, side.silence),
                             ),
                         )
                     is ConnSide.Server ->
@@ -170,41 +185,76 @@ private fun composed(
                 },
             resumption =
                 when (side) {
-                    is ConnSide.Client -> Resumption.Client(ClientSession(q, side.offer, side.scratch, side.kept, side.tokens))
+                    is ConnSide.Client ->
+                        Resumption.Client(
+                            ClientSession(q, side.offer, side.scratch, side.kept, side.tokens, side.chain),
+                            side.early,
+                        )
                     is ConnSide.Server -> Resumption.Server(ServerSession(q, rules.earlyData))
                 },
             datagrams =
                 when (val r = rules.datagrams) {
                     is DatagramRule.Off -> Datagrams.Off
-                    is DatagramRule.On -> Datagrams.On(DatagramBox(q, r.bound, memory.factory, counts))
+                    is DatagramRule.On ->
+                        Datagrams.On(
+                            DatagramBox(q, r.bound, r.incoming, memory.factory, counts),
+                            r.sender(q, memory.factory, clock, counts),
+                        )
                 },
             keepAlive =
                 when (val r = rules.keepAlive) {
                     is KeepAliveRule.Off -> KeepAlive.Off
                     is KeepAliveRule.Every -> KeepAlive.Every(KeepAliveTimer(q, r.intervalNanos))
                 },
+            qlog = qlog,
         )
     val parts =
         ConnParts(
             role = side.role(),
-            life = ConnLife(q, Linger(q, rules.close, memory.factory, counts)),
-            handshake = Handshake(q, rules.handshake, clock.now().value, memory.alpn),
-            streams = StreamTable(q, StreamIo(q), side.role(), memory.shared.drains),
-            timer = ConnTimer(q, port, WakeSink()),
+            life = ConnLife(q, Linger(memory.factory, counts), rules.close),
+            handshake = Handshake(q, rules.handshake, clock.now().value, memory.alpn, side.chainSource(), memory.factory),
+            streams = StreamTable(q, StreamIo(q, rules.writeCut), side.role(), memory.shared.drains, side.earlyCopy()),
+            timer = ConnTimer(q, port, WakeSink(), counts.timer),
             ingress = Ingress(q, memory.shared, memory.factory, counts, turnClock),
             egress = Egress(q, counts, turnClock),
-            release = Release(q),
+            release = Release(q, qlog),
             network = NetworkWatch(),
-            flight = ConnFlight(flight, memory.shared.arena, address.peerKey, capture, clock.now().value),
+            flight = ConnFlight(flight, memory.shared.arena, address.peerKey, capture, flightOrigin(capture, clock.now())),
             inbox = WorkInbox(),
             slots = chosen,
             sink = sink,
             ackReads = AckHoldReads(q),
             sends = socket.ledger,
-            endHold = EndHold(StreamIo(q), memory.factory),
+            access =
+                when (side) {
+                    is ConnSide.Client -> side.access
+                    is ConnSide.Server -> SendsAccess.NeverDenied
+                },
+            endHold = EndHold(StreamIo(q, rules.writeCut), memory.factory),
         )
     return Conn(Turn(parts, turnClock, port), port, socket, turnClock, loopEntrant, counts)
 }
+
+/**
+ * What the connection's flight recording counts from, read at [now] on the loop's clock: the trace recorder's origin when
+ * a trace is on, so the datagrams it records and the states the recorder stamps share one timeline; [now] when it is off.
+ */
+private fun flightOrigin(
+    capture: TraceCapture,
+    now: Nanos,
+): Long = capture.recordOr(now.value) { now.value - it.now().inWholeNanoseconds }
+
+private fun ConnSide.chainSource(): ChainSource =
+    when (this) {
+        is ConnSide.Client -> chain
+        is ConnSide.Server -> ChainSource.NotAsked
+    }
+
+private fun ConnSide.earlyCopy(): EarlyCopy =
+    when (this) {
+        is ConnSide.Client -> early.copy()
+        is ConnSide.Server -> EarlyCopy.Off
+    }
 
 private fun ConnSide.role(): QuicRole =
     when (this) {

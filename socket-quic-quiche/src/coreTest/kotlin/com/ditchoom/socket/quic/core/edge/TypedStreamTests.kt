@@ -4,8 +4,9 @@ import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.buffer.flow.HalfCloseable
 import com.ditchoom.buffer.flow.ReadResult
 import com.ditchoom.buffer.flow.writeFully
+import com.ditchoom.socket.quic.QuicAppErrorCode
 import com.ditchoom.socket.quic.QuicError
-import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.ScopedReadResult
 import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.path.IdIssuer
 import com.ditchoom.socket.quic.core.testing.coreTest
@@ -31,7 +32,7 @@ class TypedStreamTests {
     @AfterTest
     fun closeLoops() = loops.close()
 
-    private suspend fun <T : Any> ScopedRead<T>.value(): T = (assertIs<ScopedRead.Data<T>>(this)).value
+    private suspend fun <T : Any> ScopedReadResult<T>.value(): T = (assertIs<ScopedReadResult.Data<T>>(this)).value
 
     private fun notes(count: Int) = List(count) { Note(it, "note-$it-" + "x".repeat(it % 97)) }
 
@@ -42,7 +43,7 @@ class TypedStreamTests {
                 val stream = connection.acceptTypedStream(NoteCodec)
                 while (true) {
                     when (val read = stream.receive()) {
-                        is ScopedRead.Data -> stream.send(read.value)
+                        is ScopedReadResult.Data -> stream.send(read.value)
                         else -> break
                     }
                 }
@@ -56,7 +57,7 @@ class TypedStreamTests {
                     assertEquals(note, stream.receive().value())
                 }
                 stream.finish()
-                assertEquals(ScopedRead.End, stream.receive())
+                assertEquals(ScopedReadResult.End, stream.receive())
                 stream.close()
                 client.connection.close(QuicError.NoError)
             }
@@ -69,7 +70,7 @@ class TypedStreamTests {
                 val stream = connection.acceptTypedStream(NoteCodec)
                 while (true) {
                     when (val read = stream.receive()) {
-                        is ScopedRead.Data -> stream.send(read.value)
+                        is ScopedReadResult.Data -> stream.send(read.value)
                         else -> break
                     }
                 }
@@ -114,7 +115,7 @@ class TypedStreamTests {
                 assertEquals(bytewise, stream.receive().value())
                 for (note in several) assertEquals(note, stream.receive().value())
                 assertEquals(spanning, stream.receive().value())
-                assertEquals(ScopedRead.End, stream.receive())
+                assertEquals(ScopedReadResult.End, stream.receive())
                 stream.close()
                 client.connection.close(QuicError.NoError)
             }
@@ -129,7 +130,7 @@ class TypedStreamTests {
                 val stream = connection.acceptTypedStream(NoteCodec)
                 reading.await()
                 var count = 0
-                while (stream.receive() is ScopedRead.Data) count++
+                while (stream.receive() is ScopedReadResult.Data) count++
                 received.complete(count)
             }) { server ->
                 val client = connectCore(server.port, loops = loops)
@@ -171,6 +172,25 @@ class TypedStreamTests {
                 assertIs<TypedFailure.Oversized>(assertFailsWith<QuicTypedStreamException> { stream.receive() }.failure)
                 assertEquals(ReadResult.Reset, withTimeout(10.seconds) { sawReset.await() })
                 stream.close()
+                client.connection.close(QuicError.NoError)
+            }
+        }
+
+    @Test
+    fun aTypedStreamThePeerResetReadsAsResetWithThePeersCode() =
+        coreTest("TypedStreamTests.aTypedStreamThePeerResetReadsAsResetWithThePeersCode") {
+            withCoreServer(onConnection = { connection ->
+                val stream = connection.acceptStream()
+                stream.read(10.seconds)
+                stream.reset(PEER_RESET_CODE)
+            }) { server ->
+                val client = connectCore(server.port, loops = loops)
+                val stream = client.connection.openTypedStream(NoteCodec)
+                assertIs<PeerReset.NotMet>(stream.peerReset())
+                stream.send(Note(0, "go"))
+                assertEquals<ScopedReadResult<Note>>(ScopedReadResult.Reset, withTimeout(10.seconds) { stream.receive() })
+                assertEquals(QuicAppErrorCode(PEER_RESET_CODE), assertIs<PeerReset.Reset>(stream.peerReset()).code)
+                // The peer stopped our side too, so the stream is not finished: the connection's close ends it.
                 client.connection.close(QuicError.NoError)
             }
         }
@@ -253,7 +273,7 @@ class TypedStreamTests {
             val tracked = TrackedFactory()
             withCoreServer(onConnection = { connection ->
                 val stream = connection.acceptTypedStream(NoteCodec)
-                while (stream.receive() is ScopedRead.Data) Unit
+                while (stream.receive() is ScopedReadResult.Data) Unit
                 stream.close()
             }) { server ->
                 val client = connectCore(server.port, loops = loops, factory = tracked)
@@ -350,6 +370,7 @@ class TypedStreamTests {
 
     private companion object {
         const val FRAMES = 24
+        const val PEER_RESET_CODE = 0x10cL
         const val WARM_UP_ID = 1_000
     }
 }

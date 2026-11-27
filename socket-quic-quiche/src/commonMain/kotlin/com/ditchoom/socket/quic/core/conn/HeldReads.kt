@@ -4,13 +4,22 @@ package com.ditchoom.socket.quic.core.conn
 
 import com.ditchoom.buffer.PlatformBuffer
 import com.ditchoom.buffer.freeIfNeeded
+import com.ditchoom.socket.quic.QuicAppErrorCode
 import com.ditchoom.socket.quic.QuicStreamId
 import com.ditchoom.socket.quic.core.observe.Published
 import kotlin.concurrent.atomics.AtomicInt
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 
-/** How the peer's side of a held stream stood at the end: still open, finished by its FIN, or reset. */
-internal enum class HeldEnd { Open, Finished, Reset }
+/** How the peer's side of a held stream stood at the end: still open, finished by its FIN, or reset with a code. */
+internal sealed interface HeldEnd {
+    data object Open : HeldEnd
+
+    data object Finished : HeldEnd
+
+    class Reset(
+        val code: QuicAppErrorCode,
+    ) : HeldEnd
+}
 
 /** What a read after the end takes for its stream. */
 internal sealed interface HeldTake {
@@ -22,7 +31,10 @@ internal sealed interface HeldTake {
     /** The peer's FIN, or a stream that was already spent at the end. */
     data object Finished : HeldTake
 
-    data object Reset : HeldTake
+    /** The peer reset the stream with [code]. */
+    class Reset(
+        val code: QuicAppErrorCode,
+    ) : HeldTake
 
     /** Nothing more: the stream was open at the end and its peer had not finished it, so the read meets the close. */
     data object Closed : HeldTake
@@ -53,9 +65,9 @@ internal class HeldStream(
             }
             if (at == chunks.size) next.compareAndSet(at, at + 1)
             return when (end) {
-                HeldEnd.Open -> HeldTake.Closed
-                HeldEnd.Finished -> HeldTake.Finished
-                HeldEnd.Reset -> HeldTake.Reset
+                is HeldEnd.Open -> HeldTake.Closed
+                is HeldEnd.Finished -> HeldTake.Finished
+                is HeldEnd.Reset -> HeldTake.Reset(end.code)
             }
         }
     }
@@ -65,7 +77,7 @@ internal class HeldStream(
         val at = next.load()
         return when {
             at < chunks.size -> Owed.Yes
-            at > chunks.size || end == HeldEnd.Open -> Owed.No
+            at > chunks.size || end is HeldEnd.Open -> Owed.No
             else -> Owed.Yes
         }
     }
@@ -78,23 +90,27 @@ internal class HeldStream(
 }
 
 /**
- * What a connection held for its readers when it ended, by stream, and the streams that were still [live] then: a read
- * of a stream nothing was held for reads its end when the stream was already spent, as before the end, and meets the
- * close when it was live. Built once inside at the end, immutable after; any thread reads it.
+ * What a connection held for its readers when it ended, by stream, and what a read of each stream still [live] then
+ * takes when nothing was held for it: the close for a receiving side still open, else the end that side already had,
+ * its FIN or its reset, as before the end. A stream already spent reads its end. Built once inside at the end,
+ * immutable after; any thread reads it.
  */
 internal class HeldReads(
     private val held: Map<Long, HeldStream>,
-    private val live: Set<Long>,
+    private val live: Map<Long, HeldTake>,
 ) {
     /** The streams that still owe their reader something. */
     fun owing(): Set<QuicStreamId> = held.filterValues { it.owed() == Owed.Yes }.keys.mapTo(HashSet()) { QuicStreamId(it) }
 
     fun take(stream: QuicStreamId): HeldTake {
-        val one = held.getOrElse(stream.id) { return if (stream.id in live) HeldTake.Closed else HeldTake.Finished }
+        val one = held.getOrElse(stream.id) { return live.getOrElse(stream.id) { HeldTake.Finished } }
         return one.take()
     }
 
     fun owed(stream: QuicStreamId): Owed = held.getOrElse(stream.id) { return Owed.No }.owed()
 
     fun free(stream: QuicStreamId) = held.getOrElse(stream.id) { return }.free()
+
+    /** The connection was released: what no read took is freed; a read after this meets the close. */
+    fun freeAll() = held.values.forEach { it.free() }
 }

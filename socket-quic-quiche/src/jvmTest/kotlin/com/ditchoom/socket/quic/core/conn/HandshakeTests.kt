@@ -1,5 +1,6 @@
 package com.ditchoom.socket.quic.core.conn
 
+import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.socket.quic.LinkClass
 import com.ditchoom.socket.quic.PtoCeiling
 import com.ditchoom.socket.quic.QuicFullHandshakeReason
@@ -18,6 +19,7 @@ import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.time.WakeSink
 import com.ditchoom.socket.quic.core.time.WakeState
 import com.ditchoom.socket.quic.core.udp.SockAddr
+import com.ditchoom.socket.quic.network
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -43,7 +45,7 @@ class HandshakeTests {
     private fun handshake(
         rule: HandshakeRule = wifi,
         startedNanos: Long = 0L,
-    ) = Handshake(q, rule, startedNanos, nativeBytes(255))
+    ) = Handshake(q, rule, startedNanos, nativeBytes(255), ChainSource.NotAsked, BufferFactory.network())
 
     /** Each ceiling quiche was given, as (first, growth, max) nanoseconds. */
     private fun ceilings(): List<Triple<Long, Int, Long>> =

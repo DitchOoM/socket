@@ -20,14 +20,16 @@ package com.ditchoom.socket.udp
  *   at the call, never discarded.
  * - **JVM / Android**: `BindException` (`EADDRINUSE` from either the bind or the connect — the JDK
  *   raises the same type for both, which is why [AddressInUse] does not say which), the JDK's typed
- *   unreachable exception, and the `strerror` phrases the untyped `SocketException` carries.
+ *   unreachable exception, and the phrases the untyped `SocketException` carries. Each phrase renders
+ *   one errno, so the member carries the host's number for it (a `WSAE*` code on Windows).
  * - **Apple (Network.framework)**: the connection's terminal `failed` state, reported in NW's own
  *   `(domain, code)` namespace as [PlatformError] — a POSIX-domain error carries the errno as its
  *   code — or [SocketUnavailable] when NW would not create the connection at all.
  * - **Node**: the `error` event's `code` name; [Transport] when it is none of the recognised names.
  *
- * [OsError] is never constructed on JVM/Android or Node (they have no errno to carry; their raw
- * member is [Transport]); [PlatformError] only on Apple; [Transport] never on the POSIX backends.
+ * [OsError] is never constructed on JVM/Android or Node (an unrecognised phrase or name has no
+ * number to give; their raw member is [Transport]); [PlatformError] only on Apple; [Transport] never
+ * on the POSIX backends.
  */
 sealed interface UdpConnectError {
     /**
@@ -81,8 +83,8 @@ sealed interface UdpConnectError {
 
     /**
      * Any other POSIX failure, carrying the raw `errno` rather than a rendered message. Never
-     * constructed on JVM/Android or Node, which have no errno to carry — their raw member is
-     * [Transport].
+     * constructed on JVM/Android or Node, whose unrecognised failures carry no number — their raw
+     * member is [Transport].
      */
     data class OsError(
         val errno: Int,

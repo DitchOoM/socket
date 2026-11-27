@@ -8,3 +8,7 @@ internal actual class SocketRef(
 }
 
 internal actual fun SocketRef.pollHandle(): PollHandle = handle()
+
+private val notPolled = SocketRef { PollHandle.NotPolled }
+
+internal actual fun notPolledRef(): SocketRef = notPolled

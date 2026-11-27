@@ -11,6 +11,7 @@ import com.ditchoom.socket.SocketClosedException
 import com.ditchoom.socket.SocketTimeoutException
 import com.ditchoom.socket.TimeoutContext
 import com.ditchoom.socket.TransportConfig
+import com.ditchoom.socket.WithinDeadline
 import com.ditchoom.socket.nio.util.ReadPacing
 import com.ditchoom.socket.nio.util.SelectorLoop
 import com.ditchoom.socket.nio.util.SelectorLoopGroup
@@ -21,20 +22,19 @@ import com.ditchoom.socket.nio.util.write
 import com.ditchoom.socket.nio.util.writeBlocking
 import com.ditchoom.socket.offTheAndroidMainThread
 import com.ditchoom.socket.translateRead
+import com.ditchoom.socket.withinDeadline
 import com.ditchoom.socket.wrapJvmException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withTimeout
 import java.io.IOException
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
@@ -177,17 +177,13 @@ abstract class BaseClientSocket(
     private suspend fun blockingReadRaw(deadline: Duration): ReadBuffer =
         readMutex.withLock {
             val inFlight = inFlightBlockingRead ?: startBlockingRead().also { inFlightBlockingRead = it }
-            val bytesRead =
+            val waited =
                 try {
                     if (deadline.isInfinite()) {
-                        inFlight.deferred.await()
+                        WithinDeadline.Completed(inFlight.deferred.await())
                     } else {
-                        withTimeout(deadline) { inFlight.deferred.await() }
+                        withinDeadline(deadline) { inFlight.deferred.await() }
                     }
-                } catch (e: TimeoutCancellationException) {
-                    // Our deadline elapsed: orphan the read (keep the buffer + single-flight state) and
-                    // abandon only the wait. The next read() re-awaits this same background read.
-                    throw SocketTimeoutException(TimeoutContext.Read(deadline))
                 } catch (e: CancellationException) {
                     // close() cancels the background read's scope; the waiter itself was not cancelled.
                     // Passing that CancellationException on would end the caller's coroutine silently,
@@ -206,6 +202,13 @@ abstract class BaseClientSocket(
                     inFlightBlockingRead = null
                     inFlight.buffer.freeNativeMemory()
                     throw e
+                }
+            val bytesRead =
+                when (waited) {
+                    is WithinDeadline.Completed -> waited.value
+                    // Our deadline elapsed: orphan the read (keep the buffer + single-flight state) and
+                    // abandon only the wait. The next read() re-awaits this same background read.
+                    WithinDeadline.Expired -> throw SocketTimeoutException(TimeoutContext.Read(deadline))
                 }
             inFlightBlockingRead = null
             if (bytesRead < 0) {
@@ -338,14 +341,20 @@ abstract class BaseClientSocket(
                     }
                     total
                 }
-            try {
-                if (deadline.isInfinite()) deferred.await() else withTimeout(deadline) { deferred.await() }
-            } catch (e: TimeoutCancellationException) {
+            if (deadline.isInfinite()) {
+                deferred.await()
+            } else {
                 // Bounded deadline elapsed: destructive. Cancel the background write and close the
-                // channel (which unblocks its parked syscall), then surface the typed Write timeout.
-                deferred.cancel()
-                close()
-                throw SocketTimeoutException(TimeoutContext.Write(deadline), cause = e)
+                // channel (which unblocks its parked syscall), then surface the typed Write timeout. A
+                // caller's enclosing timeout is a cancellation from outside and closes nothing.
+                when (val waited = withinDeadline(deadline) { deferred.await() }) {
+                    is WithinDeadline.Completed -> waited.value
+                    WithinDeadline.Expired -> {
+                        deferred.cancel()
+                        close()
+                        throw SocketTimeoutException(TimeoutContext.Write(deadline))
+                    }
+                }
             }
         }
 

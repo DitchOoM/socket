@@ -1,0 +1,2 @@
+# Uses of a 4.x declaration by a file that outlives the 4.x stack: <file><TAB><name>. Only shrinks:
+# scripts/SharedOutOf4xCheck.java fails on a stale entry. Core files (package quic.core) are never listed here.

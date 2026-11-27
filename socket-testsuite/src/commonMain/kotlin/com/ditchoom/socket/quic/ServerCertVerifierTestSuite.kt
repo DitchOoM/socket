@@ -21,6 +21,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -42,6 +43,15 @@ abstract class ServerCertVerifierTestSuite {
 
     /** The text of `two-cert-chain.crt`. */
     abstract fun twoCertificateChainPem(): String
+
+    /** One legacy connect to [endpoint] with no bound but [timeout]: the stack's own, not a runner's. */
+    protected abstract suspend fun connectOneCandidate(
+        endpoint: QuicEndpoint,
+        serverName: String,
+        options: QuicOptions,
+        transport: TransportConfig,
+        timeout: Duration,
+    ): QuicScope
 
     // Split by markers rather than a regex: DOT_MATCHES_ALL is JVM-only, and this compiles for every target.
     private fun expectedChainDer(): List<ReadBuffer> =
@@ -175,8 +185,7 @@ abstract class ServerCertVerifierTestSuite {
                         val outcome =
                             withTimeoutOrNull(budget + 10.seconds.scaled) {
                                 runCatching {
-                                    defaultQuicEngine.connect(
-                                        QuicClientBinding.OwnSocket,
+                                    connectOneCandidate(
                                         QuicEndpoint(ResolvedAddress("127.0.0.1", IpFamily.V4), port),
                                         "127.0.0.1",
                                         silent,

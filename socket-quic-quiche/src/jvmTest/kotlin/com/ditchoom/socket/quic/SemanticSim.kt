@@ -85,7 +85,7 @@ import kotlin.time.Duration.Companion.seconds
  *
  * Everything on OUR side of the FFI was always virtual-time-drivable — driver loops, the pipe's
  * impairment `delay()`s, `withTimeout` establishment bounds — and a LOSSLESS handshake completes
- * entirely under `runTest` virtual time (`SemanticSimTests.lossless_handshake_completes_under_virtual_time`),
+ * entirely under `runTest` virtual time,
  * being a pure event cascade through channels that never waits on a quiche timer.
  */
 internal class SemanticSimScope(

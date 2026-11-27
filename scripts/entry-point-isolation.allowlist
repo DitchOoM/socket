@@ -1,0 +1,5 @@
+# Current violations of scripts/EntryPointIsolationCheck.java: <file><TAB><4.x symbol>.
+# Remove an entry when its reference is gone. The check fails on a stale entry and on any unlisted violation.
+socket-quic-default/src/commonJvmMain/kotlin/com/ditchoom/socket/quic/QuicStack.commonJvm.kt	QuicheEngine
+socket-quic-default/src/linuxMain/kotlin/com/ditchoom/socket/quic/QuicStack.linux.kt	QuicheEngine
+socket-quic-default/src/quicheAppleMain/kotlin/com/ditchoom/socket/quic/QuicStack.quicheApple.kt	QuicheEngine

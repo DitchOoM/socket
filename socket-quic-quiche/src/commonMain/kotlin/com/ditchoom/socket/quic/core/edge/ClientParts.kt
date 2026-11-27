@@ -6,31 +6,49 @@ import com.ditchoom.socket.quic.EncodedSockAddr
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicCloseCircumstance
 import com.ditchoom.socket.quic.QuicConnectionIdentity
+import com.ditchoom.socket.quic.QuicRole
 import com.ditchoom.socket.quic.SendTarget
+import com.ditchoom.socket.quic.core.conn.Carried
+import com.ditchoom.socket.quic.core.conn.CarriedCell
 import com.ditchoom.socket.quic.core.conn.Conn
 import com.ditchoom.socket.quic.core.conn.ConnAddress
 import com.ditchoom.socket.quic.core.conn.ConnMemory
 import com.ditchoom.socket.quic.core.conn.ConnSide
-import com.ditchoom.socket.quic.core.conn.MoveWanted
+import com.ditchoom.socket.quic.core.conn.MoveAsk
+import com.ditchoom.socket.quic.core.conn.MoveRefusal
 import com.ditchoom.socket.quic.core.conn.MoveWantedWork
+import com.ditchoom.socket.quic.core.conn.RebindWork
 import com.ditchoom.socket.quic.core.conn.SlotRules
 import com.ditchoom.socket.quic.core.conn.buildConn
+import com.ditchoom.socket.quic.core.conn.earlyPlanOf
+import com.ditchoom.socket.quic.core.conn.nameQlog
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.loop.Endpoint
 import com.ditchoom.socket.quic.core.loop.Route
 import com.ditchoom.socket.quic.core.loop.SharedBatch
 import com.ditchoom.socket.quic.core.loop.SocketDiedNotice
+import com.ditchoom.socket.quic.core.loop.SocketOwnership
+import com.ditchoom.socket.quic.core.loop.closeSecond
+import com.ditchoom.socket.quic.core.loop.move
+import com.ditchoom.socket.quic.core.loop.promote
+import com.ditchoom.socket.quic.core.loop.rehome
 import com.ditchoom.socket.quic.core.observe.ConnCounts
+import com.ditchoom.socket.quic.core.path.MoveWanted
+import com.ditchoom.socket.quic.core.path.PathNewsCell
+import com.ditchoom.socket.quic.core.path.SilenceRule
+import com.ditchoom.socket.quic.core.path.SocketAsk
 import com.ditchoom.socket.quic.core.pool.Hold
 import com.ditchoom.socket.quic.core.sched.CallerLanes
 import com.ditchoom.socket.quic.core.sched.Entrant
 import com.ditchoom.socket.quic.core.sched.SendPort
+import com.ditchoom.socket.quic.core.sched.storages
 import com.ditchoom.socket.quic.core.time.RttPrior
 import com.ditchoom.socket.quic.core.udp.MAX_CACHED_TARGETS
 import com.ditchoom.socket.quic.core.udp.PeerKeys
 import com.ditchoom.socket.quic.core.udp.SockAddr
+import com.ditchoom.socket.quic.core.udp.SocketTicket
 import com.ditchoom.socket.quic.trace.TraceCapture
-import com.ditchoom.socket.quic.traceRecorderFor
+import com.ditchoom.socket.transport.NetworkId
 import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.cancel
 
@@ -52,30 +70,57 @@ internal class ClientParts(
         }
     }
 
-    private val lanes = w.running.lanes
+    private val ownership = w.socket.ownership()
+
+    // Only the loop sends on a lent channel: its io takes one sender at a time.
+    private val lanes =
+        when (ownership) {
+            is SocketOwnership.Owned -> w.running.lanes
+            is SocketOwnership.Lent -> CallerLanes.None
+        }
     private val socketIo =
         w.socket.ioOf(
-            listOf(w.running.out.first.storage) + List(lanes.size) { lanes[it].batch.storage },
+            listOf(w.running.out.first.storage) + lanes.storages(),
             MAX_CACHED_TARGETS,
             PeerKeys.CLIENT_SETS,
             w.running.loop.port::poke,
         )
     private val io = w.wrapIo(socketIo.io)
     private val loop = w.running.loop
-    private val socket = SendPort(io, loop.port, CallerLanes.Of(lanes), SocketDiedNotice(), loop.counts, loop.callerCounts)
+    private val socket = SendPort(io, loop.port, lanes, SocketDiedNotice(), loop.counts, loop.callerCounts)
     private val alpn = w.memory.native(MAX_ALPN)
-    val capture: TraceCapture = traceRecorderFor(w.options)
-    private val edge = EdgeState(alpn.owner, capture, w.tickets)
+    val capture: TraceCapture = w.capture
+
+    /** The server's certificates the handshake copies for the connect's check. */
+    val chain = KeptChain()
+    private val edge = EdgeState(alpn.owner, capture, w.tickets, ChainHome.Kept(chain))
+
+    /** What the connection's silence watch says of its path, and which socket carries it: both wake its network feed. */
+    val news = PathNewsCell()
+
+    /** Which socket carries the connection, as the loop publishes it; the connect's socket until the loop says otherwise. */
+    val carried = CarriedCell(news.wake, Carried(SocketTicket.FIRST, w.socket.local(), w.openedOn))
+
+    /** What the connection asks of its sockets, each loop work on [endpoint]. */
+    private val ask: (SocketAsk) -> Unit = { asked ->
+        when (asked) {
+            is SocketAsk.OpenBeside ->
+                loop.move(endpoint, asked.ticket, asked.wanted.bind, asked.wanted.prior, asked.wanted.network)
+            is SocketAsk.Promote -> loop.promote(endpoint, asked.ticket)
+            is SocketAsk.CloseSecond -> loop.closeSecond(endpoint, asked.ticket)
+        }
+    }
     val conn: Conn =
         buildConn(
             rules =
                 SlotRules.forWaits(
                     w.running.waits,
                     w.handshake,
-                    closeRuleOf(w.options),
+                    closeChoiceOf(w.options),
                     datagramRuleOf(w.options),
                     keepAliveRuleOf(w.options),
                     mismatch = w.mismatch,
+                    writeCut = w.options.abortCodes.writeCut,
                 ),
             q = QuicheConnRef(w.api, w.handle),
             side =
@@ -85,7 +130,11 @@ internal class ClientParts(
                     w.running.sessions,
                     w.kept,
                     w.tokens,
-                    { bind, prior -> loop.move(endpoint, bind, prior) },
+                    ask,
+                    w.access,
+                    chainSourceOf(w.options, w.memory.factory()),
+                    SilenceRule(w.silence, probeCapOf(w.options), news),
+                    earlyPlanOf(QuicheConnRef(w.api, w.handle), w.offer, w.options.resumption, nativeOf(w.memory.factory())),
                 ),
             address =
                 ConnAddress(
@@ -98,6 +147,7 @@ internal class ClientParts(
             memory = ConnMemory(w.running.shared, w.memory.factory(), alpn),
             flight = w.flight,
             capture = capture,
+            qlog = w.api.nameQlog(w.handle, capture, QuicRole.Client, w.session),
             port = loop.port,
             socket = socket,
             clock = w.clock,
@@ -124,9 +174,27 @@ internal class ClientParts(
         factory: BufferFactory,
         remote: SocketAddress,
         identity: QuicConnectionIdentity,
-    ): CoreConnection = CoreConnection(conn, edge, factory, remote, identity, w.readPolicy, w.writePolicy, w.scope)
+    ): CoreConnection =
+        CoreConnection(
+            conn,
+            edge,
+            factory,
+            remote,
+            identity,
+            w.readPolicy,
+            w.writePolicy,
+            w.options.streamOpenPolicy.toDeadline(),
+            w.scope,
+            HandlerSeat(w.running.handlers.pool(::poolContained), loop.handlers, identity.session),
+            w.options.abortCodes,
+            w.socket.hold(),
+        )
 
-    private val endpoint = Endpoint(socketIo.ref, io, socket, Route.Fixed(conn, SharedBatch(w.running.out)), released, w.readiness)
+    private val route = Route.Fixed(conn, SharedBatch(w.running.out), carried)
+    private val endpoint = Endpoint(socketIo.refs, io, socket, route, released, w.readiness, ownership)
+
+    /** Tests: the endpoint on the loop that carries this connection's sockets. */
+    internal val loopEndpoint: Endpoint get() = endpoint
 
     /** The endpoint joins its loop and the connection's first flight goes out in the loop's next pass. */
     fun start() {
@@ -136,8 +204,8 @@ internal class ClientParts(
 
     /**
      * The setup's thread, only if [start] never ran: closes the socket, gives back the loop's seat and releases the
-     * connection here, which hands an unsent ticket back and frees quiche's connection, the sockaddrs, the scope and the
-     * memory.
+     * connection here, which hands an unsent ticket back and frees quiche's connection, the sockaddrs, the scope and
+     * the memory.
      */
     fun releaseUnstarted() {
         io.close()
@@ -145,19 +213,46 @@ internal class ClientParts(
         released.run()
     }
 
-    /** Any thread, after [start]: the socket is reopened on the network that carries its address now. */
-    fun rehome() = loop.rehome(endpoint)
+    /**
+     * Any thread, after [start]: the address of the socket [ticket] names is on [network] now, so the loop reopens it
+     * there if it still carries and was on another network.
+     */
+    fun rehome(
+        ticket: SocketTicket,
+        network: NetworkId,
+    ) = loop.rehome(endpoint, ticket, network)
 
     /**
-     * Any thread, after [start]: the socket moves to [bind]'s address, on a network assumed to have a round trip of
-     * [prior], once the connection can probe the path from there, and the connection migrates with it.
+     * Any thread, after [start]: a second socket opens on [bind]'s address, on [network], assumed to have a round trip
+     * of [prior], once the connection can probe the path from there; the connection migrates to it once the path
+     * validates, the old socket carrying until then. A connection on a lent socket is refused here, at once: no socket
+     * can replace the caller's.
      */
     fun migrate(
         bind: PathKey,
         prior: RttPrior,
-    ) = conn.submit(MoveWantedWork(MoveWanted(bind, prior)))
+        network: NetworkId,
+        named: NetworkId = network,
+    ): MoveAsk =
+        when (ownership) {
+            is SocketOwnership.Owned -> MoveAsk.Asked.also { conn.submit(MoveWantedWork(MoveWanted(bind, prior, network, named))) }
+            is SocketOwnership.Lent -> LENT_REFUSED
+        }
+
+    /**
+     * Any thread, after [start]: the path was read silent, so a second socket is wanted on a fresh port of [bind]'s
+     * address, on [network]; the connection opens it only if the path is still silent and no move is open, and
+     * migrates as [migrate].
+     */
+    fun rebind(
+        bind: PathKey,
+        prior: RttPrior,
+        network: NetworkId,
+    ) = conn.submit(RebindWork(MoveWanted(bind, prior, network)))
 
     private companion object {
+        val LENT_REFUSED = MoveAsk.Refused(MoveRefusal.SocketLent)
+
         const val MAX_ALPN = 255
     }
 }

@@ -6,6 +6,7 @@ import com.ditchoom.socket.quic.QuicheConn
 import com.ditchoom.socket.quic.QuicheRecvInfo
 import com.ditchoom.socket.quic.core.edge.connectCore
 import com.ditchoom.socket.quic.core.edge.echoOver
+import com.ditchoom.socket.quic.core.edge.openStream
 import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
@@ -106,7 +107,7 @@ class CoreServerAdmissionTests {
                     delay(100.milliseconds)
                     waited++
                 }
-                assertEquals(0, server.parts.connections, "connections still routed after every peer left")
+                assertEquals(0, server.parts.connections, "connections still routed after every peer left: ${routedEvidence(server.parts)}")
             }
         }
 

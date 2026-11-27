@@ -295,7 +295,7 @@ class FfmQuicheApi private constructor(
             StreamRecvResult.Data(raw.toInt(), fin)
         } else if (raw == QUICHE_ERR_DONE) {
             StreamRecvResult.Done
-        } else if (raw.toInt() == QuicheDriver.QUICHE_ERR_STREAM_RESET) {
+        } else if (raw.toInt() == QUICHE_ERR_STREAM_RESET) {
             StreamRecvResult.Reset(QuicAppErrorCode(out.errorCode.get(JAVA_LONG, 0)))
         } else {
             StreamRecvResult.Error(raw.toInt())
@@ -320,7 +320,7 @@ class FfmQuicheApi private constructor(
             ) as Long
         return if (raw >= 0) {
             StreamRecvStep.data(raw.toInt(), out.fin.get(JAVA_BOOLEAN, 0))
-        } else if (raw.toInt() == QuicheDriver.QUICHE_ERR_STREAM_RESET) {
+        } else if (raw.toInt() == QUICHE_ERR_STREAM_RESET) {
             StreamRecvStep.reset(QuicAppErrorCode(out.errorCode.get(JAVA_LONG, 0)))
         } else {
             StreamRecvStep.error(raw.toInt())
@@ -348,7 +348,7 @@ class FfmQuicheApi private constructor(
             ).toInt()
         // quiche fills out_error_code only on STREAM_STOPPED / STREAM_RESET, and it is read only then.
         val errorCode =
-            if (result == QuicheDriver.QUICHE_ERR_STREAM_STOPPED || result == QuicheDriver.QUICHE_ERR_STREAM_RESET) {
+            if (result == QUICHE_ERR_STREAM_STOPPED || result == QUICHE_ERR_STREAM_RESET) {
                 QuicAppErrorCode(errOut.get(JAVA_LONG, 0))
             } else {
                 null
@@ -689,6 +689,16 @@ class FfmQuicheApi private constructor(
         return if (raw < 0) NO_DATAGRAM_ROOM else raw.toInt()
     }
 
+    override fun connDgramPurgeOutgoing(conn: QuicheConn): Int {
+        val held = ConnCalls.hConnDgramSendQueueLen.invokeExact(conn.handle) as Long
+        ConnCalls.hConnDgramPurgeOutgoing.invokeExact(conn.handle, ConnCalls.purgeEveryDgram)
+        return held.toInt()
+    }
+
+    override fun connDgramSendQueueLen(conn: QuicheConn): Int = (ConnCalls.hConnDgramSendQueueLen.invokeExact(conn.handle) as Long).toInt()
+
+    override fun connDgramRecvQueueLen(conn: QuicheConn): Int = (HotCalls.hConnDgramRecvQueueLen.invokeExact(conn.handle) as Long).toInt()
+
     override fun hasReadableDgram(conn: QuicheConn): Boolean = (HotCalls.hConnDgramRecvFrontLen.invokeExact(conn.handle) as Long) >= 0
 
     override fun connDgramMaxWritableLen(conn: QuicheConn): MaxDatagramSize {
@@ -743,6 +753,10 @@ class FfmQuicheApi private constructor(
     override fun connIsInEarlyData(conn: QuicheConn): Boolean = ConnCalls.hIsInEarlyData.invokeExact(conn.handle) as Boolean
 
     override fun connEarlyDataReason(conn: QuicheConn): Int = ConnCalls.hEarlyDataReason.invokeExact(conn.handle) as Int
+
+    override fun connResetStreamsOnEarlyDataReject(conn: QuicheConn) {
+        ConnCalls.hResetStreamsOnEarlyDataReject.invokeExact(conn.handle)
+    }
 
     override fun connStreamDataUnacknowledged(conn: QuicheConn): Boolean =
         HotCalls.hStreamDataUnacknowledged.invokeExact(conn.handle) as Boolean
@@ -1375,6 +1389,16 @@ class FfmQuicheApi private constructor(
         return NO_RTT_NANOS
     }
 
+    override fun connActivePathProbes(conn: QuicheConn): Long {
+        val out = outParams.get().pathStats
+        var index = 0L
+        while (HotCalls.hConnPathStats.invokeExact(conn.handle, index, out.address()) as Int >= 0) {
+            if (out.get(JAVA_BOOLEAN, 280)) return activePathProbesOf(index, out.get(JAVA_LONG, 320))
+            index++
+        }
+        return NO_ACTIVE_PATH
+    }
+
     companion object {
         /**
          * One immortal global-scope segment spanning the whole address space (`NULL.reinterpret(MAX)`), so
@@ -1409,7 +1433,7 @@ class FfmQuicheApi private constructor(
         // `TransportParams` (patchQuicheTransportParamsRepr in build.gradle.kts). Upstream omits it, and
         // repr(Rust) sinks the 1-byte bool to offset 96 while sizeof stays 104 — so a stale libquiche
         // makes this read peer_active_conn_id_limit as the bool and silently disables migration.
-        // `PeerTransportParamsLayoutTestSuite` asserts the neighbour fields against configured values, which
+        // `CoreBackendBindingTests` asserts the neighbour fields against configured values, which
         // is the only thing that catches it (a size assertion cannot).
         private const val TRANSPORT_PARAMS_SIZE = 104L
         private const val TRANSPORT_PARAMS_DISABLE_ACTIVE_MIGRATION_OFFSET = 80L

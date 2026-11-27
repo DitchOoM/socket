@@ -41,9 +41,10 @@ internal sealed interface Paths {
 }
 
 internal sealed interface Resumption {
-    /** A client: the session it offered, its first flight's gate, and the ticket its server issues. */
+    /** A client: the session it offered, its first flight's gate, the ticket its server issues, and its 0-RTT's [early] bytes. */
     class Client(
         val session: ClientSession,
+        val early: EarlyPlan,
     ) : Resumption
 
     /** A server: whether it accepted the client's 0-RTT, and how its handshake used the client's ticket. */
@@ -55,9 +56,10 @@ internal sealed interface Resumption {
 internal sealed interface Datagrams {
     data object Off : Datagrams
 
-    /** RFC 9221 datagrams are carried: [box] holds what arrives and sends what is handed it. */
+    /** RFC 9221 datagrams are carried: [box] holds what arrives, and [out] sends what is queued. */
     class On(
         val box: DatagramBox,
+        val out: DatagramSender,
     ) : Datagrams
 }
 
@@ -78,4 +80,5 @@ internal class ConnSlots(
     val resumption: Resumption,
     val datagrams: Datagrams,
     val keepAlive: KeepAlive,
+    val qlog: Qlog,
 )

@@ -1,5 +1,6 @@
 package com.ditchoom.socket.quic.core.sched
 
+import com.ditchoom.socket.quic.NextDue
 import com.ditchoom.socket.quic.core.observe.CallerCounts
 import com.ditchoom.socket.quic.core.observe.LoopCounts
 import com.ditchoom.socket.quic.core.pool.FixedPool
@@ -102,6 +103,44 @@ class SendPortTests {
         lane.batch.commit(100, com.ditchoom.socket.quic.SendTarget.ConnectedPeer)
         assertEquals(LaneSent.SocketDied, socket.sendInPlace(lane))
         assertIs<SocketHealth.Dead>(socket.health())
+    }
+
+    /** The first refusal reaches the loop whichever thread's send drew it, once; the loop hands it to the connection. */
+    @Test
+    fun theFirstRefusalOfACallersInPlaceSendWakesTheLoopWithNewsTakenOnce() {
+        io.onSend = { SendBatchResult.Partial(0, UdpError.PermissionDenied) }
+        assertEquals(SleepPlan.Await, port.beginSleep(NextDue.None))
+        port.endSleep()
+        val lane = assertIs<CallerSend>(socket.takeLane())
+        lane.batch.commit(100, com.ditchoom.socket.quic.SendTarget.ConnectedPeer)
+        socket.sendInPlace(lane)
+
+        assertEquals(SleepPlan.Skip, port.beginSleep(NextDue.None), "the loop runs a pass for the news")
+        port.endSleep()
+        assertEquals(RefusalNews.Due, socket.ledger.takeNews())
+        assertEquals(RefusalNews.None, socket.ledger.takeNews())
+
+        socket.flush(batchWith(1))
+        assertEquals(RefusalNews.None, socket.ledger.takeNews(), "a later refusal is not news")
+        assertEquals(SleepPlan.Await, port.beginSleep(NextDue.None))
+    }
+
+    @Test
+    fun theFirstRefusalOfTheLoopsFlushIsNewsWithoutAWake() {
+        io.onSend = { SendBatchResult.Partial(0, UdpError.HostUnreachable) }
+        socket.flush(batchWith(2))
+
+        assertEquals(SleepPlan.Await, port.beginSleep(NextDue.None), "the loop is in its pass already")
+        assertEquals(RefusalNews.Due, socket.ledger.takeNews())
+    }
+
+    @Test
+    fun aSocketTheNetworkTookFromFirstHasNoRefusalNews() {
+        socket.flush(batchWith(1))
+        io.onSend = { SendBatchResult.Partial(0, UdpError.PermissionDenied) }
+        socket.flush(batchWith(1))
+
+        assertEquals(RefusalNews.None, socket.ledger.takeNews())
     }
 
     @Test

@@ -46,7 +46,7 @@ internal class SelectorPoller(
         when (val handle = socket.handle) {
             is SocketHandle.Channel -> keys.add(handle.current.get().register(selector, SelectionKey.OP_READ))
             // A descriptor belongs to the native stack's poller; no stack builds one for this selector.
-            is SocketHandle.Descriptor -> Unit
+            is SocketHandle.Descriptor, is SocketHandle.NotPolled -> Unit
         }
     }
 

@@ -36,9 +36,9 @@ data class QuicCloseContext(
 /**
  * Assemble the post-mortem for [reason] from this connection's identity and its network correlation.
  *
- * Takes the reason as a parameter rather than reading [QuicConnection.state] so it is usable from a
+ * Takes the reason as a parameter rather than reading [QuicScope.state] so it is usable from a
  * state collector that already has the [QuicConnectionState.Closed] in hand, with no second read that
  * could observe a different value.
  */
-fun QuicConnection.closeContext(reason: QuicCloseReason): QuicCloseContext =
+fun QuicScope.closeContext(reason: QuicCloseReason): QuicCloseContext =
     QuicCloseContext(identity = identity, reason = reason, network = networkAtClose)

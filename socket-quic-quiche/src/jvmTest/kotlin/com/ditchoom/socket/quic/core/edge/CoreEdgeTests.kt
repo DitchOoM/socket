@@ -14,13 +14,13 @@ import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicStreamClosedException
 import com.ditchoom.socket.quic.QuicStreamSide
-import com.ditchoom.socket.quic.QuicTlsConfig
-import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.ScopedReadResult
 import com.ditchoom.socket.quic.core.conn.MismatchResponse
+import com.ditchoom.socket.quic.core.demux.echoStream
+import com.ditchoom.socket.quic.core.demux.withCoreStreamServer
 import com.ditchoom.socket.quic.loadQuicheApi
 import com.ditchoom.socket.quic.read
 import com.ditchoom.socket.quic.skipOnMissingNativeLib
-import com.ditchoom.socket.quic.withQuicServer
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
@@ -117,14 +117,14 @@ class CoreEdgeTests {
     fun aHandshakeTheClientRejectsRaisesTheHandshakeFailedCircumstanceWithTheCloseReason() =
         runBlocking {
             skipOnMissingNativeLib(CoreEdgeTests::class) {
-                withQuicServer(port = 0, tlsConfig = tlsConfig(), quicOptions = options) {
+                withCoreStreamServer(options = options, onStream = {}) { server ->
                     val failure =
                         assertFailsWith<QuicCloseException> {
                             withContext(Dispatchers.IO) {
                                 coreConnect(
                                     mismatch = MismatchResponse.Fail,
                                     host = "127.0.0.1",
-                                    port = port,
+                                    port = server.port,
                                     serverName = "localhost",
                                     options = options.copy(verifyPeer = true),
                                     factory = BufferFactory.Default,
@@ -150,7 +150,7 @@ class CoreEdgeTests {
             val reader =
                 async {
                     while (received.size() < payload.size) {
-                        if (stream.read(10.seconds) { received.write(it.readByteArray(it.remaining())) } !is ScopedRead.Data<*>) break
+                        if (stream.read(10.seconds) { received.write(it.readByteArray(it.remaining())) } !is ScopedReadResult.Data<*>) break
                     }
                 }
             stream.writeFully(bytes(payload), 10.seconds)
@@ -165,31 +165,18 @@ class CoreEdgeTests {
         body: suspend kotlinx.coroutines.CoroutineScope.(CoreConnection) -> Unit,
     ) = runBlocking {
         skipOnMissingNativeLib(CoreEdgeTests::class) {
-            withQuicServer(port = 0, tlsConfig = tlsConfig(), quicOptions = options) {
-                val release = CompletableDeferred<Unit>()
-                val server =
-                    launch(Dispatchers.IO) {
-                        connections {
-                            while (true) {
-                                val stream = acceptStream()
-                                launch {
-                                    if (serverHolds) release.await()
-                                    // The client closing the connection ends the echo; it is not a failure of the server.
-                                    try {
-                                        while (stream.read(10.seconds) { stream.writeFully(it, 10.seconds) } is ScopedRead.Data<*>) Unit
-                                    } catch (closed: com.ditchoom.socket.quic.QuicCloseException) {
-                                        Unit
-                                    }
-                                }
-                            }
-                        }
-                    }
+            val release = CompletableDeferred<Unit>()
+            val serve: suspend (QuicByteStream) -> Unit = { stream ->
+                if (serverHolds) release.await()
+                echoStream(stream)
+            }
+            withCoreStreamServer(options = options, onStream = serve) { server ->
                 withContext(Dispatchers.IO) {
                     val connection =
                         coreConnect(
                             mismatch = MismatchResponse.Fail,
                             host = "127.0.0.1",
-                            port = port,
+                            port = server.port,
                             serverName = "localhost",
                             options = options,
                             factory = BufferFactory.Default,
@@ -205,7 +192,6 @@ class CoreEdgeTests {
                         if (closeAtEnd) connection.close(QuicError.NoError)
                     }
                 }
-                server.cancel()
             }
         }
     }
@@ -215,8 +201,6 @@ class CoreEdgeTests {
             writeBytes(payload)
             resetForRead()
         }
-
-    private fun tlsConfig(): QuicTlsConfig = coreTlsConfig()
 }
 
 private suspend fun <T> coroutineScopeOf(block: suspend kotlinx.coroutines.CoroutineScope.() -> T): T =

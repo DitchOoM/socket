@@ -9,19 +9,16 @@ import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.buffer.freeIfNeeded
 import com.ditchoom.socket.quic.QuicByteStream
 import com.ditchoom.socket.quic.QuicError
-import com.ditchoom.socket.quic.ScopedRead
+import com.ditchoom.socket.quic.ScopedReadResult
 import com.ditchoom.socket.quic.core.conn.CallerPlace
 import com.ditchoom.socket.quic.core.conn.ConnWork
 import com.ditchoom.socket.quic.core.conn.Inside
+import com.ditchoom.socket.quic.core.demux.withCoreStreamServer
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.network
 import com.ditchoom.socket.quic.read
 import com.ditchoom.socket.quic.skipOnMissingNativeLib
-import com.ditchoom.socket.quic.withQuicServer
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
@@ -39,7 +36,7 @@ class TerminalStreamTests {
     fun streamsThePeerResetsLeaveTheTable() =
         withServer(handle = { stream ->
             // An HTTP/3-style cancel of the response: the request is read to its end, the answer is reset.
-            while (stream.read(10.seconds) { } is ScopedRead.Data<*>) Unit
+            while (stream.read(10.seconds) { } is ScopedReadResult.Data<*>) Unit
             (stream as Resettable).reset(PEER_CODE)
         }) { client ->
             repeat(STREAMS) {
@@ -142,22 +139,10 @@ class TerminalStreamTests {
         body: suspend CoroutineScope.(CoreClient) -> Unit,
     ) = runBlocking {
         skipOnMissingNativeLib(TerminalStreamTests::class) {
-            withQuicServer(port = 0, tlsConfig = coreTlsConfig(), quicOptions = coreTestOptions) {
-                coroutineScope {
-                    val server =
-                        launch(Dispatchers.IO) {
-                            connections {
-                                while (true) {
-                                    val stream = acceptStream()
-                                    launch { runCatching { handle(stream) } }
-                                }
-                            }
-                        }
-                    val client = connectCore(port, factory = BufferFactory.network())
-                    body(client)
-                    client.connection.close(QuicError.NoError)
-                    server.cancel()
-                }
+            withCoreStreamServer(onStream = { stream -> runCatching { handle(stream) } }) { server ->
+                val client = connectCore(server.port, factory = BufferFactory.network())
+                body(client)
+                client.connection.close(QuicError.NoError)
             }
         }
     }
@@ -171,7 +156,7 @@ class TerminalStreamTests {
         const val PEER_WRITES = 64
 
         suspend fun echo(stream: QuicByteStream) {
-            while (stream.read(10.seconds) { stream.writeFully(it, 10.seconds) } is ScopedRead.Data<*>) Unit
+            while (stream.read(10.seconds) { stream.writeFully(it, 10.seconds) } is ScopedReadResult.Data<*>) Unit
             stream.close()
         }
     }

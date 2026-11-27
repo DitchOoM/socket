@@ -279,7 +279,7 @@ abstract class SourceIdReadbackTestSuite {
         }
     }
 
-    private fun ScopedRead<String>.text(): String = if (this is ScopedRead.Data) value else "no_data"
+    private fun ScopedReadResult<String>.text(): String = if (this is ScopedReadResult.Data) value else "no_data"
 
     private suspend fun QuicByteStream.echo(payload: String): String {
         val out = BufferFactory.deterministic().allocate(payload.length)

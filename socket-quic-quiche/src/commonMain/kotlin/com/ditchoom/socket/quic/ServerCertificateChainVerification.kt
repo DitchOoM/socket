@@ -16,8 +16,12 @@ import kotlin.time.TimeMark
 // A real certificate is a few KiB and a real chain three or four deep; the caps only stop a hostile peer
 // from making this client allocate without bound. Over either, the connect fails closed.
 private const val INITIAL_CERT_CAPACITY = 4096
-private const val MAX_CERT_CAPACITY = 1 shl 16 // 64 KiB
-private const val MAX_CHAIN_LENGTH = 16
+
+/** The largest certificate a client reads from its server: 64 KiB. */
+internal const val MAX_CERT_CAPACITY = 1 shl 16
+
+/** The most certificates a client reads from its server's chain. */
+internal const val MAX_CHAIN_LENGTH = 16
 
 /** Where the server's chain is validated against a trust store. */
 internal sealed interface PlatformChainTrust {

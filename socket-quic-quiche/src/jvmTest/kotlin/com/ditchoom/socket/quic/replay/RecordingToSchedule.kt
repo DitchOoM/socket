@@ -14,8 +14,8 @@ import kotlin.time.Duration
  * keep clocks of their own; they are aligned on the first datagram both hold, as sent at the time it arrived (a
  * loopback or in-memory link). A datagram is found by its bytes wherever it travelled: the four-tuple each record carries is
  * not in the schedule, so a connection whose client changed address converts like any other, and its replay follows
- * the datagrams, not the path they took. Where our recording says when its host ran quiche's timeout, our replayed
- * timers fire when that host next ran one ([OurTimers.AsRecorded]).
+ * the datagrams, not the path they took. Our recording holds every time its host ran quiche's timeout, so our replayed
+ * timers fire when that host next ran one, and never past the last ([OurTimers.AsRecorded]).
  */
 internal object RecordingToSchedule {
     /** What a conversion made. */
@@ -130,16 +130,13 @@ internal object RecordingToSchedule {
         recording.filterIsInstance<TraceEvent.State>().firstOrNull { it.name.endsWith(CLOSED) && it.detail?.startsWith(LOCAL) == true }
 
     /**
-     * When our endpoint's host ran quiche's timeout, from our first datagram. A recording that says, as the core's flight
-     * recorder does, is replayed with our timers firing at those times; one that does not, with them firing when due.
+     * When our endpoint's host ran quiche's timeout, from our first datagram. The core's flight recorder records every
+     * time it runs it, so a recording with none is of a host that ran none: its replay runs none either.
      */
     private fun timersOf(
         recording: List<TraceEvent>,
         start: Duration,
-    ): OurTimers {
-        val firings = recording.filterIsInstance<TraceEvent.TimerFired>().map { it.at - start }
-        return if (firings.isEmpty()) OurTimers.WhenDue else OurTimers.AsRecorded(firings.sorted())
-    }
+    ): OurTimers = OurTimers.AsRecorded(recording.filterIsInstance<TraceEvent.TimerFired>().map { it.at - start }.sorted())
 
     /** Takes each recorded datagram once, oldest first, by its bytes. */
     private class Matcher(
@@ -162,12 +159,15 @@ internal object RecordingToSchedule {
 
     private fun bytesOf(hex: String): ByteArray = ByteArray(hex.length / 2) { hex.substring(2 * it, 2 * it + 2).toInt(HEX).toByte() }
 
-    /** At one instant: what our endpoint did, then what it sent, then what it received. */
+    /**
+     * At one instant, as one turn of our endpoint runs them: what it received, then what it did, then what it sent. A
+     * turn reads its clock once, so a datagram it read and the answer it sent in that turn carry the same time.
+     */
     private fun orderOf(step: Step): Int =
         when (step) {
-            is Step.OursDid -> 0
-            is Step.OursSent -> 1
-            is Step.PeerSent -> 2
+            is Step.PeerSent -> 0
+            is Step.OursDid -> 1
+            is Step.OursSent -> 2
         }
 
     private const val HEX = 16

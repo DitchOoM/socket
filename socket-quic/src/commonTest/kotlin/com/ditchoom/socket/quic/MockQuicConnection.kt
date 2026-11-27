@@ -16,7 +16,7 @@ import kotlinx.coroutines.flow.consumeAsFlow
 import kotlin.coroutines.CoroutineContext
 
 /**
- * In-memory [QuicConnection] for testing. Supports:
+ * In-memory [QuicScope] for testing. Supports:
  * - Opening client-initiated streams (returns bidirectional in-memory pairs)
  * - Injecting peer-initiated streams
  * - State transitions
@@ -24,7 +24,9 @@ import kotlin.coroutines.CoroutineContext
  */
 class MockQuicConnection(
     initialState: QuicConnectionState = QuicConnectionState.Established("h3"),
-) : QuicConnection {
+) : QuicScope {
+    override suspend fun stats(): QuicStatsRead = QuicStatsRead.Ended
+
     private val mockScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     override val coroutineContext: CoroutineContext = mockScope.coroutineContext
     override val bufferFactory: BufferFactory = BufferFactory.Default

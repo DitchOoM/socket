@@ -4,7 +4,7 @@ import com.ditchoom.socket.TransportConfig
 import kotlin.time.Duration
 
 /**
- * Apple/native [QuicEngine] backed by Cloudflare quiche (K/N cinterop into the Apple `libquiche.a`).
+ * Apple/native QUIC stack backed by Cloudflare quiche (K/N cinterop into the Apple `libquiche.a`).
  * Mirrors the linux [QuicheEngine]. The `withQuicConnection` / `withQuicServer` wrappers (in
  * `:socket-quic-default`) own the lifecycle; this engine just builds + establishes.
  *
@@ -15,8 +15,8 @@ import kotlin.time.Duration
  * Network.framework reports path changes and so keeps connection migration reactive on iOS. The
  * server binds a dual-stack POSIX socket, which is what an unconnected `recvfrom` accept loop needs.
  */
-object QuicheEngine : QuicEngine {
-    override val capabilities: EngineCapabilities =
+object QuicheEngine {
+    val capabilities: EngineCapabilities =
         EngineCapabilities(
             supportsMigration = true,
             supportsDatagrams = true,
@@ -27,16 +27,16 @@ object QuicheEngine : QuicEngine {
             pinnableRadios = applePinnableRadios,
         )
 
-    override val peerCertificates: PeerCertificateSupport = PeerCertificateSupport.Available(SecurityFrameworkPeerCertificateBackend)
+    val peerCertificates: PeerCertificateSupport = PeerCertificateSupport.Available(SecurityFrameworkPeerCertificateBackend)
 
-    override suspend fun connect(
+    suspend fun connect(
         binding: QuicClientBinding,
         endpoint: QuicEndpoint,
         serverName: String,
         quicOptions: QuicOptions,
         transport: TransportConfig,
         timeout: Duration,
-    ): QuicConnection {
+    ): QuicScope {
         capabilities.requirePinnable(binding, quicOptions)
         // Opt-in capture (QuicOptions.trace): record QUIC traffic via the driver seam, then tap the
         // client's NetworkMonitor into the same recorder. Off (trace == null) → tuning is the default.
@@ -65,7 +65,7 @@ object QuicheEngine : QuicEngine {
         return connection
     }
 
-    override suspend fun bind(
+    suspend fun bind(
         binding: QuicPortBinding,
         tlsConfig: QuicTlsConfig,
         quicOptions: QuicOptions,
@@ -79,4 +79,12 @@ object QuicheEngine : QuicEngine {
                 traceRecorderFor(quicOptions)
             }),
         )
+
+    /** [bind] presenting [certificate], written to PEM files only while the bind reads them. */
+    suspend fun bind(
+        binding: QuicPortBinding,
+        certificate: PeerCertificate,
+        quicOptions: QuicOptions,
+        timeout: Duration,
+    ): QuicServer = certificate.withPemFiles { tls -> bind(binding, tls, quicOptions, timeout) }
 }

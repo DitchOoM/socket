@@ -3,7 +3,7 @@ package com.ditchoom.socket.quic
 import com.ditchoom.socket.transport.NetworkKind
 import kotlin.time.Duration
 
-/** Why a [MigrationPolicy.Pinned] connect was refused before any socket opened. */
+/** Why a [MigrationPolicy.Pinned] connect was refused before any socket opened; [QuicRefusal.RadioNotPinnable] carries it. */
 sealed interface PinnedRadioRefusal {
     /** This engine cannot pin a socket to the radio on this platform — see [EngineCapabilities.pinnableRadios]. */
     data object EngineCannotPin : PinnedRadioRefusal
@@ -11,15 +11,6 @@ sealed interface PinnedRadioRefusal {
     /** The connection rides a port someone else owns ([QuicClientBinding.Shared]); its socket is not this connection's to pin. */
     data object SharedPort : PinnedRadioRefusal
 }
-
-/**
- * A connect pinned to [radio] that cannot be pinned, for [refusal]. Raised before any socket opens, and
- * identically at every candidate endpoint, so a raced connect reports it once.
- */
-class PinnedRadioRefusedException(
-    val radio: NetworkKind.Radio,
-    val refusal: PinnedRadioRefusal,
-) : UnsupportedOperationException("a connection cannot be pinned to $radio here: $refusal")
 
 /** Why a [MigrationPolicy.Pinned] connection could not open its path on its radio. */
 sealed interface PinnedRadioUnavailable {
@@ -77,9 +68,9 @@ fun EngineCapabilities.requirePinnable(
             is MigrationPolicy.Pinned -> policy.radio
             MigrationPolicy.Forbidden, MigrationPolicy.Manual, MigrationPolicy.Automatic -> return
         }
-    if (radio !in pinnableRadios) throw PinnedRadioRefusedException(radio, PinnedRadioRefusal.EngineCannotPin)
+    if (radio !in pinnableRadios) throw notPinnable(radio, PinnedRadioRefusal.EngineCannotPin)
     when (binding) {
         QuicClientBinding.OwnSocket -> Unit
-        is QuicClientBinding.Shared -> throw PinnedRadioRefusedException(radio, PinnedRadioRefusal.SharedPort)
+        is QuicClientBinding.Shared -> throw notPinnable(radio, PinnedRadioRefusal.SharedPort)
     }
 }

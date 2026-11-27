@@ -1,6 +1,8 @@
 package com.ditchoom.socket.quic.core.edge
 
+import com.ditchoom.socket.quic.QuicAppErrorCode
 import com.ditchoom.socket.quic.QuicCloseCircumstance
+import com.ditchoom.socket.quic.QuicStreamId
 import com.ditchoom.socket.quic.core.conn.CallerPlace
 import com.ditchoom.socket.quic.core.conn.Conn
 import com.ditchoom.socket.quic.core.conn.ConnWork
@@ -9,15 +11,33 @@ import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.observe.Confined
 import com.ditchoom.socket.quic.core.stream.Opened
 import com.ditchoom.socket.quic.core.stream.Retry
+import com.ditchoom.socket.quic.core.stream.SendRefusal
+import com.ditchoom.socket.quic.core.stream.Sender
+import com.ditchoom.socket.quic.core.stream.StreamKind
 import com.ditchoom.socket.quic.core.stream.StreamTable
 import com.ditchoom.socket.quic.core.stream.Streams
 import com.ditchoom.socket.quic.core.stream.Waiter
+import com.ditchoom.socket.quic.core.stream.sender
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
+import kotlin.coroutines.CoroutineContext
+import kotlin.time.Duration
+
+/** What an open came to, for a caller that reports a refused open as a value. */
+internal sealed interface OpenSettled {
+    class Stream(
+        val id: QuicStreamId,
+    ) : OpenSettled
+
+    class NotOpened(
+        val answer: OpenAnswer.Failed,
+    ) : OpenSettled
+}
 
 /**
- * Opens the next bidirectional stream. At the peer's stream limit it waits, behind any open already waiting, until
- * the peer grants another stream or the connection ends.
+ * Opens the next stream of [kind]. At the peer's stream limit of that kind it waits, behind any open of the kind already
+ * waiting, until the peer grants another stream, the connection ends, or [bound] passes; a bound that passes fails it
+ * as a write's passed deadline fails, and no id is spent.
  *
  * The connection lands the answer in the open's [Hand], so answering allocates nothing; the caller wraps the stream on
  * its own thread. A cancellation that comes first resumes the caller at once and hands the open back to the connection.
@@ -26,10 +46,15 @@ import kotlinx.coroutines.isActive
  */
 @Confined
 internal class OpenOp(
+    private val kind: StreamKind,
+    private val bound: Duration,
+    private val deadlines: OpDeadlines,
     private val conn: Conn,
 ) : ConnWork(),
-    Waiter {
-    private val hand = Hand<OpenAnswer>()
+    Waiter,
+    Bounded {
+    internal val hand = Hand<OpenAnswer>()
+    private var lease: Lease = Lease.None
 
     /** The id of the stream opened, written before [OpenAnswer.Opened] lands and read by the caller after. */
     private var opened = 0L
@@ -40,55 +65,124 @@ internal class OpenOp(
     suspend fun answer(): Long {
         val context = currentCoroutineContext()
         return when (val answer = hand.await(context) { cancelled() }) {
-            is OpenAnswer.Opened -> if (context.isActive) opened else raiseCancelled(context)
+            is OpenAnswer.Opened -> if (context.isActive) opened else unclaimed(context)
             is OpenAnswer.Failed -> raiseFailure(answer.failure, answer.during)
             is OpenAnswer.Cancelled -> raiseCancelled(context)
         }
     }
 
-    /** The cancelling thread: an open not answered yet is answered Cancelled and handed back to the connection. */
-    private fun cancelled() {
-        when (hand.answer(OpenAnswer.Cancelled)) {
-            Landed.First -> conn.submit(Withdraw(), CallerPlace.HandToLoop)
-            Landed.Late -> Unit
+    /** [answer] with a refused open as a value; a cancelled caller raises as [answer] does. */
+    suspend fun settled(): OpenSettled = settled({ OpenSettled.Stream(it) }, { OpenSettled.NotOpened(it) })
+
+    /**
+     * [settled] as [opened] of the stream's id or [notOpened] of the refusal, with no answer object between. Inline, so
+     * it runs in its caller's suspend frame and makes none of its own.
+     */
+    suspend inline fun <T> settled(
+        opened: (QuicStreamId) -> T,
+        notOpened: (OpenAnswer.Failed) -> T,
+    ): T {
+        val context = currentCoroutineContext()
+        return when (val answer = hand.await(context) { cancelled() }) {
+            is OpenAnswer.Opened -> opened(openedFor(context))
+            is OpenAnswer.Failed -> notOpened(answer)
+            is OpenAnswer.Cancelled -> raiseCancelled(context)
         }
+    }
+
+    /** The id opened, for a caller still active in [context]; a caller cancelled meanwhile gives the stream back and raises. */
+    internal fun openedFor(context: CoroutineContext): QuicStreamId = if (context.isActive) QuicStreamId(opened) else unclaimed(context)
+
+    /** A stream was opened for a caller cancelled meanwhile: the connection gives it back, and the caller is cancelled. */
+    private fun unclaimed(context: CoroutineContext): Nothing {
+        conn.submit(ResetWork(QuicStreamId(opened), UNCLAIMED), CallerPlace.HandToLoop)
+        raiseCancelled(context)
+    }
+
+    /**
+     * The cancelling thread: an open not answered yet is answered Cancelled and handed back to the connection,
+     * ahead of anything its caller does once it resumes.
+     */
+    internal fun cancelled() {
+        hand.answer(OpenAnswer.Cancelled) { conn.submit(Withdraw(), CallerPlace.HandToLoop) }
     }
 
     // ---- the connection's side, inside ----
 
     override fun run(inside: Inside) =
         guarded(::failed) {
-            when (val state = inside.streams.state) {
-                is Streams.Ended -> return connectionEnded(state.end)
+            when (val sender = inside.streams.sender()) {
+                is Sender.Refused -> return refused(sender.why)
                 is Streams.Open -> Unit
             }
-            if (inside.streams.opensWaiting() > 0 || retry(inside.streams) == Retry.Again) inside.streams.waitToOpen(this)
+            val lane = inside.streams.opens.lane(kind)
+            if (lane.waits() > 0 || retry(inside.streams) == Retry.Again) {
+                lane.wait(this)
+                lease = deadlines.arm(this, bound, inside)
+            }
         }
 
     override fun retry(table: StreamTable): Retry {
         if (hand.landed(OpenAnswer.Cancelled)) return Retry.Settled
-        return when (table.tryOpen()) {
+        val send =
+            when (val sender = table.sender()) {
+                is Streams.Open -> sender.send
+                is Sender.Refused -> {
+                    refused(sender.why)
+                    return Retry.Settled
+                }
+            }
+        return when (table.tryOpen(kind, send)) {
             Opened.AtLimit -> Retry.Again
             Opened.Opened -> {
                 opened = table.lastOpened().id
-                hand.answer(OpenAnswer.Opened)
+                lease = deadlines.disarm(lease)
+                when (hand.answer(OpenAnswer.Opened)) {
+                    Landed.First -> Unit
+                    // Cancelled first: nobody will take the stream, so it goes back now.
+                    Landed.Late -> table.resetBothWays(QuicStreamId(opened), UNCLAIMED)
+                }
                 Retry.Settled
             }
         }
     }
 
-    override fun connectionEnded(end: ConnEnd) {
-        hand.answer(OpenAnswer.Failed(Raised.ConnEnded(end), QuicCloseCircumstance.Ended))
-    }
+    override fun connectionEnded(end: ConnEnd) = settle(OpenAnswer.Failed(Raised.ConnEnded(end), QuicCloseCircumstance.Ended))
 
     override fun gone(end: ConnEnd) = connectionEnded(end)
 
-    private fun failed(failure: Exception) {
-        hand.answer(OpenAnswer.Failed(Raised.Thrown(failure), QuicCloseCircumstance.Ended))
+    /** Inside: the bound passed while the open still waited for the peer's credit. */
+    fun expired(inside: Inside) {
+        if (!hand.isOpen()) return
+        inside.streams.opens
+            .lane(kind)
+            .withdraw(this)
+        settle(OpenAnswer.Failed(OpFailure.DeadlinePassed(bound), QuicCloseCircumstance.Ended))
+    }
+
+    /** The open came after the close point, or after the end: [why]. */
+    private fun refused(why: SendRefusal) = settle(OpenAnswer.Failed(why.raised(), QuicCloseCircumstance.Ended))
+
+    private fun failed(failure: Exception) = settle(OpenAnswer.Failed(Raised.Thrown(failure), QuicCloseCircumstance.Ended))
+
+    /** Lands [answer], first one only, with the deadline given back. */
+    private fun settle(answer: OpenAnswer) {
+        lease = deadlines.disarm(lease)
+        hand.answer(answer)
+    }
+
+    private companion object {
+        /** The code a stream opened for nobody is given back with: it carries no application meaning. */
+        val UNCLAIMED = QuicAppErrorCode(0L)
     }
 
     private inner class Withdraw : ConnWork() {
-        override fun run(inside: Inside) = inside.streams.withdrawOpen(this@OpenOp)
+        override fun run(inside: Inside) {
+            inside.streams.opens
+                .lane(kind)
+                .withdraw(this@OpenOp)
+            lease = deadlines.disarm(lease)
+        }
 
         override fun gone(end: ConnEnd) = Unit
     }

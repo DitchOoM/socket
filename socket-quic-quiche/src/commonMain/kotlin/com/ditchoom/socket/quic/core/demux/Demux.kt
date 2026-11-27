@@ -2,6 +2,8 @@ package com.ditchoom.socket.quic.core.demux
 
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.core.conn.Collected
+import com.ditchoom.socket.quic.core.conn.LingerView
+import com.ditchoom.socket.quic.core.life.CloseChoice
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.Life
 import com.ditchoom.socket.quic.core.observe.LoopOnly
@@ -14,6 +16,7 @@ import com.ditchoom.socket.quic.core.udp.NativeBytes
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.Room
 import com.ditchoom.socket.quic.core.udp.SendBatch
+import com.ditchoom.socket.quic.core.udp.SocketTicket
 
 /** Whether an Initial that would start a handshake is held for later or started now. */
 private enum class Mode {
@@ -39,13 +42,14 @@ internal class Demux(
     private val port: LoopPort,
     private val clock: LoopClock,
     private val counts: ServerCounts,
+    close: CloseChoice,
 ) {
     private val header = PacketHeader()
     private val table = RouteTable<ServerPeer>()
     private val spares = SpareRoutes(table, admission)
     private val peers = ArrayList<ServerPeer>()
     private val ended = EndedIds(ENDED_IDS)
-    private val life = ServerLife()
+    private val life = ServerLife(close)
     private val tick = PassTick()
     private var mode = Mode.Receiving
 
@@ -54,6 +58,9 @@ internal class Demux(
 
     /** The connection ids routed, spare ids included: read it on the loop, or once the server is quiet. */
     val routes: Int get() = table.size
+
+    /** Once the server is quiet: where each connection still routed stands, for evidence when one stays. */
+    fun routedViews(): List<LingerView> = peers.map { it.conn.lingerView() }
 
     fun phase(): ServerPhase = life.view()
 
@@ -190,7 +197,7 @@ internal class Demux(
         at: Nanos,
     ) {
         counts.routedOne()
-        peer.conn.received(datagram, length, from, at)
+        peer.conn.received(datagram, length, from, at, SocketTicket.FIRST)
     }
 
     /** An Initial that names no connection: a new one, if the server takes it. */
@@ -241,7 +248,7 @@ internal class Demux(
         peer.routed(table.add(admission.newCid, peer), original)
         peer.listedAt(peers.size)
         peers.add(peer)
-        peer.conn.received(datagram, length, from, at)
+        peer.conn.received(datagram, length, from, at, SocketTicket.FIRST)
     }
 
     /** [peer] ended: its routes go, and its memory is released once nobody is inside it. */

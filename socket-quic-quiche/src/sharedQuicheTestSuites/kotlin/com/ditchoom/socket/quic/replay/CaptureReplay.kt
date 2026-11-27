@@ -1,12 +1,14 @@
 package com.ditchoom.socket.quic.replay
 
 import com.ditchoom.socket.quic.FlowControl
+import com.ditchoom.socket.quic.IncomingStreams
 import com.ditchoom.socket.quic.MigrationPolicy
 import com.ditchoom.socket.quic.MigrationSimEnv
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.QuicRole
 import com.ditchoom.socket.quic.QuicStreamId
+import com.ditchoom.socket.quic.QuicStreamLimit
 import com.ditchoom.socket.quic.QuicheConn
 import com.ditchoom.socket.quic.QuichePairByHand
 import com.ditchoom.socket.quic.migrationSimOptions
@@ -239,7 +241,9 @@ internal class ReplayReport(
  * The peer is modelled: a quiche endpoint that receives what the captured peer received, when it did,
  * and transmits only when the capture shows the peer transmitting. Its packets stand in for the
  * captured peer's in order within each packet number space, so a peer that coalesces differently from
- * quiche is still followed. A captured peer datagram with nothing waiting to stand in for it is a
+ * quiche is still followed. It answers what reached it when the captured peer next sent, not on arrival: the
+ * acknowledgement delay it reports, which our endpoint takes off its round trip, is then the captured peer's.
+ * A captured peer datagram with nothing waiting to stand in for it is a
  * retransmission, and the modelled peer's loss timer is brought forward to produce one. What the
  * captured peer stopped doing, the modelled peer stops doing: its own timers never fire.
  *
@@ -281,9 +285,8 @@ private fun TransportSetup.toOptions(alpn: String): QuicOptions =
                 initialMaxStreamDataBidiLocal = maxStreamDataBidiLocal,
                 initialMaxStreamDataBidiRemote = maxStreamDataBidiRemote,
                 initialMaxStreamDataUni = maxStreamDataUni,
-                initialMaxStreamsBidi = maxStreamsBidi,
-                initialMaxStreamsUni = maxStreamsUni,
             ),
+        incomingStreams = IncomingStreams.Accept(QuicStreamLimit(maxStreamsBidi.toUInt()), QuicStreamLimit(maxStreamsUni.toUInt())),
     )
 
 private class CaptureReplay(
@@ -294,6 +297,9 @@ private class CaptureReplay(
     private enum class Side { Ours, Peer }
 
     private enum class PeerState { Answering, Gone }
+
+    /** Whether the modelled peer has answered everything that reached it, or holds input until the captured peer next sends. */
+    private enum class PeerInput { Answered, Held }
 
     /** Whether our endpoint's timers run and its output is taken, or it is still working on what it was handed. */
     private enum class OurEndpoint { Free, Busy }
@@ -374,6 +380,7 @@ private class CaptureReplay(
     private var end: ConnectionEnd = ConnectionEnd.Open
     private var peerHeardFirst: Moment = Moment.Never
     private var peerState = PeerState.Answering
+    private var peerInput = PeerInput.Answered
     private var phase: Phase = Phase.OnCapture
     private var events = 0
     private var ourWork = OurEndpoint.Free
@@ -576,10 +583,20 @@ private class CaptureReplay(
      * them sooner would move every timer armed from them. When the capture's next step is a datagram of ours, our endpoint
      * writes at its time; when it is more input, our endpoint takes that first, as the capture's did before it sent
      * anything. Meanwhile the network and the peer go on, and our endpoint's timers wait for its work, as a busy one's do.
+     *
+     * A recorded timer that fires before that write ran in the same work, after the read and before the write: the
+     * capture's endpoint wrote nothing between, so what it wrote holds both the answer and what the timeout made.
      */
     private fun answer() {
         when (val next = schedule.steps.drop(stepNext).firstOrNull { !(it is Step.PeerSent && it.fate == Fate.Lost) }) {
             is Step.OursSent -> {
+                val fires = recordedTimerFires()
+                if (fires < next.at) {
+                    if (fires > now) background(fires, endpoint = OurEndpoint.Busy)
+                    if (phase != Phase.OnCapture || end != ConnectionEnd.Open) return free()
+                    fireOurTimer()
+                    if (ourWork == OurEndpoint.Busy) return
+                }
                 if (next.at > now) background(next.at, endpoint = OurEndpoint.Busy)
                 free()
             }
@@ -587,6 +604,41 @@ private class CaptureReplay(
             null -> free()
         }
     }
+
+    /**
+     * Our timeout just ran: what it made is written when the capture's endpoint wrote it, when that is the capture's next
+     * datagram of ours, with nothing between but our endpoint's own actions, and no recorded timer runs before it. A host
+     * can stall between running quiche's timeout and writing its probe, and quiche stamps the probe as it writes it, so
+     * writing it sooner would move every timer armed from it. An action between is taken in the same turn, before the
+     * write, as a host whose loop ran the timeout and the application's work in one pass did: our endpoint stays busy
+     * until the action is performed.
+     */
+    private fun writeWhenCaptured() {
+        val ahead = schedule.steps.drop(stepNext).filterNot { it is Step.PeerSent && it.fate == Fate.Lost }
+        val actions = ahead.takeWhile { it is Step.OursDid }.size
+        val next = ahead.getOrNull(actions)
+        if (next !is Step.OursSent || (actions == 0 && next.at <= now)) return
+        val firings =
+            when (val timers = schedule.ourTimers) {
+                OurTimers.WhenDue -> return
+                is OurTimers.AsRecorded -> timers.firings
+            }
+        if (firings.any { it > now + TIMER_PRECISION && it < next.at }) return
+        if (actions == 0) background(next.at, endpoint = OurEndpoint.Busy) else ourWork = OurEndpoint.Busy
+    }
+
+    /** quiche's timeout runs once, as the core's does: what it re-arms overdue fires after its probes are sent. */
+    private fun fireOurTimer() {
+        if (timerAt(ours) > now + TIMER_PRECISION) pair.bringTimerForward(ours) else pair.runTimeout(ours)
+        writeWhenCaptured()
+    }
+
+    /** When our endpoint's next timer fires on a capture whose host's firings are recorded; never, on one whose are not. */
+    private fun recordedTimerFires(): Duration =
+        when (schedule.ourTimers) {
+            OurTimers.WhenDue -> Duration.INFINITE
+            is OurTimers.AsRecorded -> ourTimerFires()
+        }
 
     /** Our endpoint's work is done: its timers run again and what it wrote is taken. */
     private fun free() {
@@ -618,6 +670,8 @@ private class CaptureReplay(
                 is ConnectionEnd.ClosedByUs -> captured.at + schedule.tolerance.after(captured.at - anchor)
                 is ConnectionEnd.ClosedByPeer -> captured.at + schedule.tolerance.after(captured.at - anchor)
             }
+        // The captured peer sent nothing more: what reached the modelled peer since, it reads now.
+        answerHeld()
         free()
         background(until)
         if (phase != Phase.OnCapture || !nothingUncaptured()) return
@@ -672,7 +726,11 @@ private class CaptureReplay(
                     peerSends(peerSend.first(), peerNext - 1)
                 }
                 // quiche's timeout runs once, as the core's does: what it re-arms overdue fires after its probes are sent.
-                else -> pair.runTimeout(ours)
+                else -> {
+                    fireOurTimer()
+                    // The timeout's turn holds an action of ours: what it made is written once that is performed.
+                    if (ourWork == OurEndpoint.Busy) return
+                }
             }
             when (endpoint) {
                 OurEndpoint.Free -> {
@@ -688,6 +746,7 @@ private class CaptureReplay(
     private fun runHealthy(healthy: Beyond.HealthyPath) {
         // What the modelled peer was never asked for was never sent; a live peer retransmits by itself.
         standIns.values.forEach { it.clear() }
+        answerHeld()
         while (written.isNotEmpty()) sendHealthy(written.removeFirst().bytes, Side.Peer)
         val remaining = ArrayDeque(schedule.steps.drop(stepNext).filterIsInstance<Step.OursDid>())
         val until = now + healthy.runFor
@@ -741,6 +800,12 @@ private class CaptureReplay(
      * When our endpoint's next timer fires: when it falls due, or when the capture's host next ran a timer from then on;
      * never on the capture when its host ran none from then on. A firing within [TIMER_PRECISION] before it is the one the
      * capture's timer fired at, a hair before the replay's is due.
+     *
+     * When the replay's timer falls due past the last recorded firing, it is brought forward to the next one still ahead:
+     * the core records a firing only when quiche's own timer was due, so the capture's was due then. The replay's estimate of the path
+     * stands on recorded times, and quiche subtracts the peer's ACK delay from an RTT sample only when the sample is at
+     * least the minimum RTT plus that delay (RFC 9002 §5.3): a delay within microseconds of that edge, which recorded times
+     * cannot settle, moves the PTO by the whole delay.
      */
     private fun ourTimerFires(): Duration {
         val due = timerAt(ours)
@@ -748,7 +813,9 @@ private class CaptureReplay(
             OurTimers.WhenDue -> due
             is OurTimers.AsRecorded -> {
                 // The recording holds every timer its host ran: one that ran none after this fell due ran none at all.
-                val next = timers.firings.firstOrNull { it >= due - TIMER_PRECISION } ?: return Duration.INFINITE
+                val next =
+                    timers.firings.firstOrNull { it >= due - TIMER_PRECISION }
+                        ?: return timers.firings.firstOrNull { it > now && due.isFinite() } ?: Duration.INFINITE
                 val fires = maxOf(due, next)
                 val missed = timers.firings.lastOrNull { it < due - TIMER_PRECISION }
                 if (due.isFinite() && missed != null && fires > due) timersThatMissed += TimerMissed(due, missed, fires)
@@ -793,12 +860,27 @@ private class CaptureReplay(
                 if (peerState == PeerState.Answering) {
                     if (peerHeardFirst == Moment.Never) peerHeardFirst = Moment.At(now)
                     pair.deliver(listOf(datagram), peer)
-                    collectPeer()
-                    readAtPeer()
-                    collectPeer()
+                    when (phase) {
+                        Phase.OnCapture -> peerInput = PeerInput.Held
+                        is Phase.Beyond -> answerAtPeer()
+                    }
                 }
         }
     }
+
+    /** The modelled peer writes what it has to say to what reached it, then reads it, then writes again. */
+    private fun answerAtPeer() {
+        peerInput = PeerInput.Answered
+        collectPeer()
+        readAtPeer()
+        collectPeer()
+    }
+
+    private fun answerHeld() =
+        when (peerInput) {
+            PeerInput.Held -> answerAtPeer()
+            PeerInput.Answered -> Unit
+        }
 
     private fun noteOurState() {
         if (established == Moment.Never && pair.established(ours)) {
@@ -920,6 +1002,7 @@ private class CaptureReplay(
         step: Step.PeerSent,
         ordinal: Int,
     ) {
+        answerHeld()
         if (step.fate != Fate.Lost) retransmitFor(step.shape)
         val flights =
             step.shape.map { kind ->
@@ -955,17 +1038,26 @@ private class CaptureReplay(
 
     private fun isLongHeader(packet: ByteArray): Boolean = packet[0].toInt() and 0x80 != 0
 
-    /** Bring the modelled peer's loss timer forward until it holds a stand-in for each of [shape], if it will. */
+    /**
+     * Bring the modelled peer's loss timer forward until it holds a stand-in for each of [shape], if it will. A timer run
+     * here stands in for what the captured peer sent now: the probes it wrote beyond that are lost on the way, so none of
+     * them stands in later for a datagram the captured peer wrote after reading more of ours.
+     */
     private fun retransmitFor(shape: List<PacketKind>) {
+        val wanted = shape.groupingBy { it }.eachCount()
+        val held = standIns.mapValues { (kind, waiting) -> maxOf(waiting.size, wanted[kind] ?: 0) }
         repeat(PEER_RETRANSMISSIONS) {
-            val wanted = shape.groupingBy { it }.eachCount()
-            if (wanted.all { (kind, count) -> standIns.getValue(kind).size >= count }) return
+            if (wanted.all { (kind, count) -> standIns.getValue(kind).size >= count }) return trimTo(held)
             when (pair.bringTimerForward(peer)) {
-                QuichePairByHand.Timer.Unarmed -> return
+                QuichePairByHand.Timer.Unarmed -> return trimTo(held)
                 is QuichePairByHand.Timer.DueIn -> collectPeer()
             }
         }
+        trimTo(held)
     }
+
+    private fun trimTo(held: Map<PacketKind, Int>) =
+        standIns.forEach { (kind, waiting) -> while (waiting.size > held.getValue(kind)) waiting.removeLast() }
 
     /** [bytes] with the packets at [packets] made unreadable; padding after the last packet stays. */
     private fun damage(
@@ -989,8 +1081,8 @@ private class CaptureReplay(
         const val PRIMARY_ENDPOINT = 0
 
         /**
-         * How far the replay's deadlines may stand from the capture's: its modelled peer's acknowledgement delays and
-         * quiche's own clock reads differ from the capture's by microseconds; a host's stall lasts milliseconds.
+         * How far the replay's deadlines may stand from the capture's: quiche's own clock reads differ from the
+         * capture's by microseconds; a host's stall lasts milliseconds.
          */
         val TIMER_PRECISION = 1.milliseconds
 

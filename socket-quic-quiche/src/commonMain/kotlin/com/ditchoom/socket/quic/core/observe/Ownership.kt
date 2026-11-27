@@ -20,3 +20,13 @@ internal annotation class CallerSide
 
 /** An intrusive link written only by the queue that owns the item. */
 internal annotation class Link
+
+/**
+ * A sealed state with one holder: only the file [owner] names (a path under core, such as `loop/Seat.kt`) may declare
+ * a mutable holder of it, a `var` or an atomic cell. Anywhere else it is passed as a value, published, or named by a
+ * ticket.
+ */
+@Target(AnnotationTarget.CLASS)
+internal annotation class SingleOwner(
+    val owner: String,
+)

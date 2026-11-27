@@ -73,7 +73,7 @@ abstract class QuicPassiveMigrationTestSuite {
         // driver's pool on the way out — read transfers ownership, and no collector owns what a
         // `deterministic()` factory hands back.
         val resp = read(readTimeout) { it.readString(it.remaining(), Charset.UTF8) }
-        return if (resp is ScopedRead.Data) resp.value else "no_data"
+        return if (resp is ScopedReadResult.Data) resp.value else "no_data"
     }
 
     @Test

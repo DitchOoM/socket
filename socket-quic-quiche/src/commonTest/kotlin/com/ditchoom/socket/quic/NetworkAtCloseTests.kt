@@ -27,7 +27,7 @@ import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TimeMark
 
 /**
- * [QuicConnection.networkAtClose] — the correlation Phase 3b specified and deferred.
+ * [QuicScope.networkAtClose] — the correlation Phase 3b specified and deferred.
  *
  * The load-bearing property is the **freeze**: once a connection is closed, this must answer "what was
  * the network doing when this died?", not "what is it doing now?". A test that reads the value

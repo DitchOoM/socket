@@ -1,0 +1,7 @@
+client  | 2026-11-26T17:37:40.875238Z DEBUG neqo_transport::connection: [Client 962ed853df4d0f9e97] Rx ACK space=ap, ranges=[0..=0]
+client  | 2026-11-26T17:37:40.883997Z DEBUG neqo_transport::connection: [Client 58028b24b8e2d20c] Enabled 0-RTT
+client  | 2026-11-26T17:37:40.888909Z  INFO neqo_transport::path: [pri-path:58028b24b8e2d20c 0.0.0.0:38906->193.167.100.100:443] discarding a packet without an RTT estimate; guessing RTT=879.272µs
+client  | 2026-11-26T17:37:40.928220Z DEBUG neqo_transport::connection: [Client 58028b24b8e2d20c] Rx ACK space=ap, ranges=[0..=1]
+2026-11-26 17:37:41,868 Container exits: b'\x1b[Kclient exited with code 0'
+2026-11-26 17:37:43,136 1-RTT size: 7564
+2026-11-26 17:37:43,136 Client sent too much data in 1-RTT packets.

@@ -3,7 +3,7 @@
 ADB="${ADB:-$HOME/Library/Android/sdk/platform-tools/adb}"
 SERIAL="${SERIAL:-RFCX70ZEM6N}"
 PKG="com.ditchoom.socket.quic.quiche.test"
-RUNNER="$PKG/androidx.test.runner.AndroidJUnitRunner"
+RUNNER="$PKG/com.ditchoom.socket.quic.HeapCheckedTestRunner"
 PROBE_CLASS="com.ditchoom.socket.quic.DeviceHandoffProbe"
 DEVICE_LOG="/sdcard/Android/data/$PKG/files/quic-handoff-probe.log"
 DEVICE_TRACES="/sdcard/Android/data/$PKG/files/traces"

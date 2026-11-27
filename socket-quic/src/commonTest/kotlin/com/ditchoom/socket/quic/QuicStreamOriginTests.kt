@@ -20,7 +20,6 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
 /** The read gate of a [QuicStreamOrigin.Early] stream, against a scripted confirmation. */
-@OptIn(QuicEngineSpi::class)
 class QuicStreamOriginTests {
     /** A stream over an in-memory pair whose peer has already written "hi", gated by [confirmation]. */
     private suspend fun stream(origin: (CompletableDeferred<Unit>) -> QuicStreamOrigin): Pair<QuicByteStream, CompletableDeferred<Unit>> {

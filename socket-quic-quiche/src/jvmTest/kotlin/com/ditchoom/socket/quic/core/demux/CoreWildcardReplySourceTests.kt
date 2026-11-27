@@ -8,6 +8,7 @@ import com.ditchoom.socket.quic.RouteSource
 import com.ditchoom.socket.quic.core.edge.coreConnect
 import com.ditchoom.socket.quic.core.edge.coreTestOptions
 import com.ditchoom.socket.quic.core.edge.echoOver
+import com.ditchoom.socket.quic.core.edge.openStream
 import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.quic.core.testing.assumeWildcardRepliesLeaveFromArrival
 import com.ditchoom.socket.quic.core.testing.coreTest
