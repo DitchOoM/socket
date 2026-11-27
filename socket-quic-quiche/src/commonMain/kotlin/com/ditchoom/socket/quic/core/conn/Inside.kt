@@ -87,8 +87,11 @@ internal class Inside(
             }
         }
 
-    /** The client's loop refused the move it was asked for, as [why] says: the connection stays on its socket. */
-    fun moveRefused(why: MoveRefusal) {
+    /** The client's loop refused the socket [ticket] it was asked for, as [why] says: the connection stays on its socket. */
+    fun moveRefused(
+        ticket: SocketTicket,
+        why: MoveRefusal,
+    ) {
         c.openRefused()
         c.flight.path(
             clock.now(),

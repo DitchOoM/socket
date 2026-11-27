@@ -46,12 +46,19 @@ internal class ClientPaths(
     private val ears = PeerHearing(q)
     private val retiredIds = RetiredReader(factory)
 
-    /** Where the socket is wanted, and whether it waits to move there; a new move gives up the one under way first. */
+    /** The ticket of the last socket this connection asked its loop for; the connect's socket is [SocketTicket.FIRST]. */
+    private var lastTicket = SocketTicket.FIRST
+
+    /**
+     * Where the socket is wanted, and whether it waits to move there; a new move gives up the one under way first, and
+     * names its socket with the next ticket.
+     */
     val hold =
-        MoveHold(q, ears) { asked ->
+        MoveHold(q, ears) { bind, prior ->
+            val ticket = lastTicket.next().also { lastTicket = it }
             // Before the new socket's open is asked, so no promotion of the old probe can follow it to the loop.
-            if (asked is SocketAsk.OpenBeside) move = Move.Settled(abandon()).also { rebinds.opening() }
-            ask(asked)
+            move = Move.Settled(abandon()).also { rebinds.opening() }
+            ask(SocketAsk.OpenBeside(ticket, bind, prior))
         }
 
     /** The rebinds the active path's silence asks for, each through [hold]; one it gives up drops its move. */

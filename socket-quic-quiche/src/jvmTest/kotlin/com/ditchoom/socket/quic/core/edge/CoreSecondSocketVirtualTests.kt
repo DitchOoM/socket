@@ -16,6 +16,7 @@ import com.ditchoom.socket.quic.core.conn.DropWhy
 import com.ditchoom.socket.quic.core.loop.closeSecond
 import com.ditchoom.socket.quic.core.loop.move
 import com.ditchoom.socket.quic.core.loop.promote
+import com.ditchoom.socket.quic.core.path.PathNews
 import com.ditchoom.socket.quic.core.time.RttPrior
 import com.ditchoom.socket.quic.core.udp.SocketTicket
 import com.ditchoom.socket.quic.read
@@ -202,6 +203,25 @@ class CoreSecondSocketVirtualTests {
             awaitMark(pair, "OpenRefused")
             pair.runFor(ECHO_EVERY)
             assertEchoesOn(pair, first)
+        }
+
+    /**
+     * A silent path's rebind asks for a socket that is still being made when the ladder's next rungs fall due: the move
+     * is open from the ask on, so no rung asks for another socket, which would cancel the one being made.
+     */
+    @Test
+    fun aRungDueWhileTheSecondSocketIsBeingMadeAsksNothing() =
+        VirtualPair.with(options) { pair ->
+            pair.accept()
+            pair.opensStayInTheMaking = true
+            pair.deadClientPorts += pair.clientPort()
+            launch { runCatching { echo(pair) } }
+            pair.runUntil(within = 20.seconds) { pair.client.parts.news.read() == PathNews.Silent }
+            pair.client.parts.rebind(ANY, RttPrior.CONFIGURED)
+            // Rungs fall due 250 ms, 500 ms, 1 s, 2 s and 4 s after the ask.
+            pair.runFor(10.seconds)
+            assertEquals(1, pair.opensAsked, "a rung asked for another socket while the first was being made")
+            assertIs<EdgeEnd.Open>(pair.client.connection.end())
         }
 
     /** A rehome that cannot reopen the second socket ends the move, not the connection. */

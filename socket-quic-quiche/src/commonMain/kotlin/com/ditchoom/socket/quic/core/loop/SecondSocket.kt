@@ -31,9 +31,9 @@ internal enum class Promotion { Stale, Promoted, PromotedWithBacklog }
 internal enum class SecondRehome { NotOpen, Reopened }
 
 /**
- * An endpoint's second socket: whether one is open beside the carrying one ([Sockets]), how its reads stand, and the
- * tickets the endpoint has handed out. The loop opens it when the connection asks for a move and promotes or closes it
- * when the connection asks, by ticket; a request naming a ticket no longer held open is a no-op. A part of [Endpoint].
+ * An endpoint's second socket: whether one is open beside the carrying one ([Sockets]) and how its reads stand. The loop
+ * opens it when the connection asks for a move, under the ticket the connection names, and promotes or closes it when
+ * the connection asks, by ticket; a request naming a ticket no longer held open is a no-op. A part of [Endpoint].
  */
 @LoopOnly
 internal class SecondSocket(
@@ -42,7 +42,6 @@ internal class SecondSocket(
 ) {
     private var sockets: Sockets = Sockets.One(SocketTicket.FIRST)
     private var input = ReceiveInput.Maybe
-    private var lastTicket = SocketTicket.FIRST
 
     /** The carrying socket's ticket. */
     fun carrying(): SocketTicket = sockets.carrying()
@@ -103,26 +102,25 @@ internal class SecondSocket(
     }
 
     /**
-     * [endpoint]'s connection wants a socket on [bind]'s address: one is opened there, on a port of its own, beside the
-     * carrying one, after any second one an earlier move left is closed, and the connection is told its ticket in this
-     * pass; a socket made without waiting tells it in the pass that finds it ready ([settle]). One that cannot be opened
-     * there refuses the move, and the connection stays where it is; one that cannot be moved ends it as its address went away.
+     * [endpoint]'s connection wants socket [ticket] on [bind]'s address: one is opened there, on a port of its own, beside
+     * the carrying one, after any second one an earlier move left is closed, and the connection is told in this pass; a
+     * socket made without waiting tells it in the pass that finds it ready ([settle]). One that cannot be opened there
+     * refuses the move, and the connection stays where it is; one that cannot be moved ends it as its address went away.
      */
     fun open(
         endpoint: Endpoint,
         poller: Poller,
         seats: Loop,
         fixed: Route.Fixed,
+        ticket: SocketTicket,
         bind: PathKey,
         prior: RttPrior,
     ) {
         drop(poller, seats)
-        val ticket = lastTicket.next()
-        lastTicket = ticket
         when (val opened = io.openBeside(bind, ticket)) {
             is Beside.Opened -> seat(endpoint, poller, seats, fixed, ticket, opened.local, prior)
             is Beside.Arriving -> sockets = Sockets.Opening(sockets.carrying(), ticket, prior)
-            is Beside.Refused, is Beside.Unsupported -> unopened(fixed, opened)
+            is Beside.Refused, is Beside.Unsupported -> unopened(fixed, ticket, opened)
         }
     }
 
@@ -143,7 +141,7 @@ internal class SecondSocket(
             is Beside.Arriving -> Unit
             is Beside.Refused, is Beside.Unsupported -> {
                 sockets = Sockets.One(opening.carrying)
-                unopened(fixed, settled)
+                unopened(fixed, opening.second, settled)
             }
         }
     }
@@ -277,13 +275,17 @@ internal class SecondSocket(
         fixed.conn.submitFromLoop(MovedWork(MoveTo(local, prior, ticket)))
     }
 
-    /** No second socket came of a move: it is refused and the connection stays, or, for a socket that cannot move, ends. */
+    /**
+     * No second socket [ticket] came of a move: it is refused, naming [ticket], and the connection stays, or, for a socket
+     * that cannot move, ends.
+     */
     private fun unopened(
         fixed: Route.Fixed,
+        ticket: SocketTicket,
         unopened: Beside,
     ) {
         when (unopened) {
-            is Beside.Refused -> fixed.conn.submitFromLoop(MoveRefusedWork(MoveRefusal.Unopened))
+            is Beside.Refused -> fixed.conn.submitFromLoop(MoveRefusedWork(ticket, MoveRefusal.Unopened))
             is Beside.Unsupported -> fixed.conn.submitFromLoop(NetworkWork(NetworkChange.Moved))
             is Beside.Opened, is Beside.Arriving -> Unit
         }

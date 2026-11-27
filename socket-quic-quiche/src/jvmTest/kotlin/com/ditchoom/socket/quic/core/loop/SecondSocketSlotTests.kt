@@ -58,7 +58,7 @@ class SecondSocketSlotTests {
         val io = FakeIo().apply { besideAnswer = Beside.Opened(PathKey(4, 50_001, 0L, 0x7F000001L)) }
         val rig = ConnRig(io = io, poller = poller)
         rig.pass(0)
-        rig.loop.move(rig.endpoint, PathKey(4, 0, 0L, 0L), RttPrior.CONFIGURED)
+        rig.loop.move(rig.endpoint, SocketTicket.FIRST.next(), PathKey(4, 0, 0L, 0L), RttPrior.CONFIGURED)
         rig.pass(1)
         val seat = poller.added.last()
         assertTrue(seat != rig.endpoint.token, "the second socket took a slot of its own")
@@ -71,5 +71,32 @@ class SecondSocketSlotTests {
         rig.loop.closeSecond(rig.endpoint, SocketTicket.FIRST.next())
         rig.pass(21)
         assertEquals(1, poller.removed.count { it == seat }, "the slot was given back once")
+    }
+
+    /**
+     * A move given up while its socket is still being made closes that socket: the close names it by its ticket, and a
+     * close naming any other ticket leaves it.
+     */
+    @Test
+    fun aCloseNamingASocketStillBeingMadeClosesIt() {
+        val io =
+            FakeIo().apply {
+                besideAnswer = Beside.Arriving
+                settleAnswer = Beside.Arriving
+            }
+        val rig = ConnRig(io = io)
+        rig.pass(0)
+        val ticket = SocketTicket.FIRST.next()
+        rig.loop.move(rig.endpoint, ticket, PathKey(4, 0, 0L, 0L), RttPrior.CONFIGURED)
+        rig.pass(1)
+        rig.loop.closeSecond(rig.endpoint, ticket.next())
+        rig.pass(2)
+        assertEquals(0, io.secondsClosed, "a close naming another ticket closed the socket being made")
+        rig.loop.closeSecond(rig.endpoint, ticket)
+        rig.pass(3)
+        assertEquals(1, io.secondsClosed, "the socket being made was left open after its move was given up")
+        rig.loop.closeSecond(rig.endpoint, ticket)
+        rig.pass(4)
+        assertEquals(1, io.secondsClosed, "a second close of the same socket closed something again")
     }
 }

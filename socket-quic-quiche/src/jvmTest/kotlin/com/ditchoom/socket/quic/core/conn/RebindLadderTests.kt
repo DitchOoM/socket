@@ -284,6 +284,40 @@ class RebindLadderTests {
         assertTrue(f.asks.none { it is SocketAsk.CloseSecond }, "the path answering closed the move's socket: ${f.asks}")
     }
 
+    /**
+     * Two moves wanted before the loop answers either: the loop opens the first socket, then closes it to open the
+     * second, and tells the connection of both. Only the socket it asked for last is followed, so no destination id is
+     * spent on a path from a socket the loop already closed.
+     */
+    @Test
+    fun twoWantsInOnePassProbeOnce() {
+        val f = Fixture()
+        f.wantTwiceInOnePass()
+        val (first, last) = f.openTickets()
+        f.answer(MovedWork(MoveTo(OTHER, RttPrior.CONFIGURED, first)), MovedWork(MoveTo(OTHER, RttPrior.CONFIGURED, last)))
+        assertEquals(1, f.api.probedSockAddrs.size, "the connection probed a path from the socket the loop closed: ${f.asks}")
+        assertEquals(1, f.marks().count { it == "Moved" }, "the flight: ${f.marks()}")
+    }
+
+    /**
+     * The loop refusing the first of two asks says nothing of the second: that move stays open, the edge is not told it
+     * ended, the ladder asks nothing over it, and the socket the loop then opens for it is followed.
+     */
+    @Test
+    fun aRefusalOfAnEarlierAskLeavesTheLaterOneOpen() {
+        val f = Fixture()
+        f.goSilent()
+        f.wantTwiceInOnePass()
+        val (first, last) = f.openTickets()
+        f.answer(MoveRefusedWork(first, MoveRefusal.Unopened))
+        assertEquals(0L, f.settles(), "the refusal of the first ask told the edge the second move had ended")
+        f.rebind()
+        assertEquals(2, f.opens(), "a rebind asked for a socket over the open the loop had not answered: ${f.asks}")
+        f.answer(MovedWork(MoveTo(OTHER, RttPrior.CONFIGURED, last)))
+        assertEquals(1, f.api.probedSockAddrs.size, "the socket of the second ask was not followed")
+        assertTrue("OpenRefused" !in f.marks(), "the flight marked a refusal of a move still open: ${f.marks()}")
+    }
+
     /** A migration is a new path: the watch's run on the old one ends, and the edge is told the path answers, at once. */
     @Test
     fun aMigrationRebaselinesTheWatchAndAnswersAtOnce() {
@@ -405,7 +439,27 @@ class RebindLadderTests {
         fun lose(ticket: SocketTicket) = work(SecondLostWork(ticket))
 
         /** The loop refuses the open last asked for. */
-        fun refuse() = work(MoveRefusedWork(MoveRefusal.Unopened))
+        fun refuse() = work(MoveRefusedWork(lastAsked(), MoveRefusal.Unopened))
+
+        /** The ticket the connection named in its last open. */
+        fun lastAsked(): SocketTicket = asks.filterIsInstance<SocketAsk.OpenBeside>().last().ticket
+
+        /** The tickets the connection named in its opens, in order. */
+        fun openTickets(): List<SocketTicket> = asks.filterIsInstance<SocketAsk.OpenBeside>().map { it.ticket }
+
+        /** The monitor's route moves twice before the loop runs: the edge asks for the socket on another address twice. */
+        fun wantTwiceInOnePass() {
+            rig.conn.submit(MoveWantedWork(MoveWanted(OTHER, RttPrior.CONFIGURED)))
+            rig.conn.submit(MoveWantedWork(MoveWanted(OTHER, RttPrior.CONFIGURED)))
+            passAt(now + 1)
+            assertEquals(2, opens(), "precondition: each want asked for a socket: $asks")
+        }
+
+        /** The loop's answers reach the connection in one pass, in order. */
+        fun answer(vararg answers: ConnWork) {
+            for (each in answers) rig.conn.submit(each)
+            passAt(now + 1)
+        }
 
         /** The application closes the connection: quiche holds the close. */
         fun close() =
@@ -439,7 +493,7 @@ class RebindLadderTests {
             // The loop answers an open in the pass after it, as a refusal.
             if (refusing) {
                 refusing = false
-                rig.conn.submit(MoveRefusedWork(MoveRefusal.Unopened))
+                rig.conn.submit(MoveRefusedWork(lastAsked(), MoveRefusal.Unopened))
                 rig.pass(at)
             }
         }

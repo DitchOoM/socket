@@ -110,12 +110,29 @@ internal class FakeIo : DatagramBatchIo {
     var besideAnswer: Beside = Beside.Unsupported
     val movedTo = ArrayList<PathKey>()
 
+    /** The ticket each [openBeside] named, in order. */
+    val openedAs = ArrayList<SocketTicket>()
+
+    /** What [settleBeside] answers while a socket is made; the test may change it. */
+    var settleAnswer: Beside = Beside.Unsupported
+
+    /** How many times the second socket, open or being made, was closed. */
+    var secondsClosed = 0
+        private set
+
     override fun openBeside(
         bind: PathKey,
         ticket: SocketTicket,
     ): Beside {
         movedTo += bind
+        openedAs += ticket
         return besideAnswer
+    }
+
+    override fun settleBeside(): Beside = settleAnswer
+
+    override fun closeSecond() {
+        secondsClosed++
     }
 
     override fun close(): SocketClosed = SocketClosed
