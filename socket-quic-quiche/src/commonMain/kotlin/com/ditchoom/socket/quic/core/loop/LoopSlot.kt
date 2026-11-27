@@ -66,6 +66,13 @@ internal fun Route.ended(): Boolean =
         is Route.Demux -> demux.phase() == ServerPhase.Stopped
     }
 
+/** Whether the connection this route carries runs, before its close point; a server's until it stopped. */
+internal fun Route.runs(): Boolean =
+    when (this) {
+        is Route.Fixed -> conn.life() is Life.Running
+        is Route.Demux -> demux.phase() != ServerPhase.Stopped
+    }
+
 /** Where the route's output collects. */
 internal fun Route.outbox(): Outbox =
     when (this) {

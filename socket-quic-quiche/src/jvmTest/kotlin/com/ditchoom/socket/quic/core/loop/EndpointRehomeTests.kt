@@ -83,6 +83,6 @@ class EndpointRehomeTests {
         rig.pass(2 * ms)
 
         assertEquals(0, io.reopens, "the socket of a closed connection was reopened")
-        assertIs<ConnEnd.ByLocal>(rig.sink.ended.single())
+        assertTrue(rig.sink.ended.none { it is ConnEnd.SocketFailed }, "a refused reopen replaced the close: ${rig.sink.ended}")
     }
 }

@@ -149,7 +149,8 @@ internal class Endpoint(
      * The address of the socket [ticket] names is on [network] now: the socket holding the connection's address (the
      * second one, while a move is open) is reopened on the same address and port if it was on another network, and
      * its connection told in this pass, so it sends at once. A carrying socket that cannot be reopened ends its
-     * connection; a lent one is never reopened, and nothing is once the connection ended.
+     * connection; a lent one is never reopened, and nothing is once the connection is past its close point: quiche
+     * holds its close on the socket it has.
      */
     fun rehome(
         poller: Poller,
@@ -157,7 +158,7 @@ internal class Endpoint(
         ticket: SocketTicket,
         network: NetworkId,
     ) {
-        if (!route.ended()) step(SocketEvent.Rehome(ticket, network), poller, seats)
+        if (route.runs()) step(SocketEvent.Rehome(ticket, network), poller, seats)
     }
 
     /** A client's connection wants the second socket [ask] names. */
