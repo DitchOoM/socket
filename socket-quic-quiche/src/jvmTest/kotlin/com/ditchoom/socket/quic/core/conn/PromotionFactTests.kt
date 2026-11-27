@@ -130,6 +130,16 @@ class PromotionFactTests {
         assertTrue(ConnEnd.LocalAddressGone !in f.rig.sink.ended, "the loss replaced the application's close: ${f.rig.sink.ended}")
     }
 
+    /** A move wanted once the application closed asks for no socket: quiche holds the close on the one it has. */
+    @Test
+    fun aMoveWantedAfterACloseAsksNothing() {
+        val f = Fixture()
+        f.close()
+        f.work(MoveWantedWork(MoveWanted(OTHER, RttPrior.CONFIGURED)))
+        f.work(TakeATurn())
+        assertEquals(0, f.opens(), "a closing connection asked for a socket: ${f.asks}")
+    }
+
     /** A move held while landing asks for no socket once the application closed, when the landing then settles. */
     @Test
     fun aMoveHeldWhileLandingAsksNothingAfterAClose() {
