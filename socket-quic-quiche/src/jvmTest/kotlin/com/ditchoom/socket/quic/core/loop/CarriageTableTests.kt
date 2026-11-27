@@ -112,7 +112,7 @@ class CarriageTableTests {
                     rig.loop.move(rig.endpoint, ASKED, BIND, RttPrior.CONFIGURED)
                     passes(1)
                     // The carrying socket dies in the pass the event is handed in, so the event meets the dead state.
-                    if (state == State.Dead) rig.endpoint.ioThrew(Thrown(IOException("carrying socket gone")))
+                    if (state == State.Dead) rig.endpoint.ioThrew(Thrown(IOException("carrying socket gone")), rig.loop.poller, rig.loop)
                 }
                 State.Left -> {
                     rig.conn.endWithLoop(ConnEnd.Released)
@@ -141,7 +141,7 @@ class CarriageTableTests {
                     io.secondReceiveAnswer = ReceiveBatchResult.Failed(UdpError.SocketClosed)
                     rig.endpoint.readable(Via.Probing)
                 }
-                Event.CarryingDies -> rig.endpoint.ioThrew(Thrown(IOException("carrying socket gone")))
+                Event.CarryingDies -> rig.endpoint.ioThrew(Thrown(IOException("carrying socket gone")), rig.loop.poller, rig.loop)
                 Event.Leave -> rig.conn.endWithLoop(ConnEnd.Released)
             }
             passes(SETTLE)
@@ -154,7 +154,10 @@ class CarriageTableTests {
         /** What the carriage did to the poller, the io and the connection so far. */
         fun seen(): String =
             "added=${poller.added} removed=${poller.removed} opened=${io.openedAs} secondsClosed=${io.secondsClosed} " +
-                "reopens=${io.reopens} secondReopens=${io.secondReopens} promotes=${io.promotes} ended=${rig.sink.ended.map { it::class.simpleName }}"
+                "reopens=${io.reopens} secondReopens=${io.secondReopens} promotes=${io.promotes} ended=${rig.sink.ended.map {
+                    it::class
+                        .simpleName
+                }}"
 
         /** The endpoint leaves; every add has its remove and every slot it took is free once. */
         fun assertLeftClean(label: String) {

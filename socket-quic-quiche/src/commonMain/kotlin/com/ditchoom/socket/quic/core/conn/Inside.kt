@@ -110,6 +110,7 @@ internal class Inside(
             when (why) {
                 is MoveRefusal.Unopened -> PathMark.OpenRefused
                 is MoveRefusal.SocketLent -> PathMark.LentRefused
+                is MoveRefusal.NoSecond -> PathMark.NoSecond
             },
         )
     }

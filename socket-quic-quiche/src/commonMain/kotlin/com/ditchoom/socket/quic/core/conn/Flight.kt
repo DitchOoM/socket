@@ -31,6 +31,9 @@ internal enum class PathMark {
 
     /** A move was refused because the caller lent the socket that carries the connection. */
     LentRefused,
+
+    /** A move was refused because the socket's io opens no second socket. */
+    NoSecond,
     SecondLost,
 
     /** Quiche gave up validating the probed path or closed it: it is probed again later, or the move is given up. */

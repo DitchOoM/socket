@@ -1,9 +1,12 @@
 package com.ditchoom.socket.quic.core.loop
 
 import com.ditchoom.socket.quic.core.conn.Conn
+import com.ditchoom.socket.quic.core.conn.MoveRefusedWork
+import com.ditchoom.socket.quic.core.conn.MovedWork
 import com.ditchoom.socket.quic.core.conn.NetworkChange
 import com.ditchoom.socket.quic.core.conn.NetworkWork
 import com.ditchoom.socket.quic.core.conn.PromotedWork
+import com.ditchoom.socket.quic.core.conn.SecondLostWork
 import com.ditchoom.socket.quic.core.conn.SendsRefusedWork
 import com.ditchoom.socket.quic.core.demux.ServerPhase
 import com.ditchoom.socket.quic.core.life.ConnEnd
@@ -14,6 +17,9 @@ import com.ditchoom.socket.quic.core.sched.RefusalNews
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.SocketTicket
+
+/** Which of an endpoint's sockets a poller slot reports: the carrying one, or the second one opened beside it. */
+internal enum class Via { Carrying, Probing }
 
 /** A place in a loop's socket table: an endpoint, or empty. */
 internal sealed interface LoopSlot {
@@ -69,19 +75,22 @@ internal fun Route.endWith(end: ConnEnd) =
         is Route.Demux -> demux.endAll(end)
     }
 
-/** A client's connection is told the loop promoted its second socket [ticket], which carries from now on. */
-internal fun Route.promoted(ticket: SocketTicket) =
-    when (this) {
-        is Route.Fixed -> conn.submitFromLoop(PromotedWork(ticket))
-        is Route.Demux -> Unit
+/** A client's connection is told what a step of its endpoint's carriage did; a server's route has no move. */
+internal fun Route.told(fact: MoveFact) {
+    val conn =
+        when (this) {
+            is Route.Fixed -> conn
+            is Route.Demux -> return
+        }
+    when (fact) {
+        is MoveFact.None -> Unit
+        is MoveFact.Moved -> conn.submitFromLoop(MovedWork(fact.to))
+        is MoveFact.Refused -> conn.submitFromLoop(MoveRefusedWork(fact.ticket, fact.why))
+        is MoveFact.Promoted -> conn.submitFromLoop(PromotedWork(fact.ticket))
+        is MoveFact.SecondLost -> conn.submitFromLoop(SecondLostWork(fact.ticket))
+        is MoveFact.CarryingRehomed, is MoveFact.BesideRehomed -> conn.submitFromLoop(NetworkWork(NetworkChange.Rehomed))
     }
-
-/** A client's connection is told its socket was reopened on the network up now. */
-internal fun Route.rehomed() =
-    when (this) {
-        is Route.Fixed -> conn.submitFromLoop(NetworkWork(NetworkChange.Rehomed))
-        is Route.Demux -> Unit
-    }
+}
 
 /**
  * Loop thread, at each look at a live socket: the news that the network refused the first datagram it was handed, by

@@ -24,21 +24,6 @@ import com.ditchoom.socket.quic.core.udp.Thrown
 import com.ditchoom.socket.quic.reportOnThisThread
 import kotlinx.coroutines.Runnable
 
-/** Runs [step]; what it throws is kept in the outcome instead of cutting the stop short. */
-private inline fun StopOutcome.then(step: () -> Unit): StopOutcome =
-    try {
-        step()
-        this
-    } catch (failure: Throwable) {
-        when (this) {
-            is StopOutcome.Failed -> {
-                first.addSuppressed(failure)
-                this
-            }
-            is StopOutcome.Clean, is StopOutcome.AlreadyStopped -> StopOutcome.Failed(failure)
-        }
-    }
-
 private sealed interface Run {
     data object Running : Run
 
@@ -212,7 +197,7 @@ internal class Loop(
     internal fun attach(endpoint: Endpoint) {
         val token = free.popOr { slots.size.also { slots.add(LoopSlot.Empty) } }
         slots[token] = LoopSlot.Taken(endpoint)
-        endpoint.placed(token)
+        endpoint.placed(token, poller, this)
         poller.add(endpoint.refs.carrying, token)
     }
 
@@ -244,7 +229,7 @@ internal class Loop(
             endpoint.receive(via, receive, counts, clock, budget, poller, this)
         } catch (failure: Exception) {
             receive.release()
-            endpoint.ioThrew(Thrown(failure))
+            endpoint.ioThrew(Thrown(failure), poller, this)
         }
     }
 
