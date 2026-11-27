@@ -135,6 +135,28 @@ internal class FakeIo : DatagramBatchIo {
         secondsClosed++
     }
 
+    /** What [receiveSecond] answers; the test may change it. */
+    var secondReceiveAnswer: ReceiveBatchResult = ReceiveBatchResult.Nothing
+
+    override fun receiveSecond(into: ReceiveBatch): ReceiveBatchResult = secondReceiveAnswer
+
+    /** What [reopenSecond] answers; the test may change it. */
+    var reopenSecondAnswer: Reopened = Reopened.SameEndpoint
+    var secondReopens = 0
+        private set
+
+    override fun reopenSecond(): Reopened {
+        secondReopens++
+        return reopenSecondAnswer
+    }
+
+    var promotes = 0
+        private set
+
+    override fun promote() {
+        promotes++
+    }
+
     override fun close(): SocketClosed = SocketClosed
 }
 
