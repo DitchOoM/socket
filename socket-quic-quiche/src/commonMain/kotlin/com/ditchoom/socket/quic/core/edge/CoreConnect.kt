@@ -282,7 +282,7 @@ private suspend fun OnSetupLane.connectOnLane(
     moved(ClientSetup.Started(started))
     built.start()
     ride.followsNetwork {
-        scope.feedNetwork(monitor, connection, built, { routeSource(route) }, local.hostLiteral(), onMoveOf(options.migration))
+        scope.feedNetwork(monitor, ClientFeed(connection, built), { routeSource(route) }, local.hostLiteral(), onMoveOf(options.migration))
     }
     return started
 }

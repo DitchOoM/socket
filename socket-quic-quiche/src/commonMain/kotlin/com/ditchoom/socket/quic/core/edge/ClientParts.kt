@@ -16,6 +16,7 @@ import com.ditchoom.socket.quic.core.conn.MoveAsk
 import com.ditchoom.socket.quic.core.conn.MoveRefusal
 import com.ditchoom.socket.quic.core.conn.MoveWanted
 import com.ditchoom.socket.quic.core.conn.MoveWantedWork
+import com.ditchoom.socket.quic.core.conn.RebindWork
 import com.ditchoom.socket.quic.core.conn.SlotRules
 import com.ditchoom.socket.quic.core.conn.buildConn
 import com.ditchoom.socket.quic.core.conn.earlyPlanOf
@@ -30,6 +31,7 @@ import com.ditchoom.socket.quic.core.loop.closeSecond
 import com.ditchoom.socket.quic.core.loop.move
 import com.ditchoom.socket.quic.core.loop.promote
 import com.ditchoom.socket.quic.core.observe.ConnCounts
+import com.ditchoom.socket.quic.core.path.HomeCell
 import com.ditchoom.socket.quic.core.path.PathNewsCell
 import com.ditchoom.socket.quic.core.path.SilenceRule
 import com.ditchoom.socket.quic.core.path.SocketAsk
@@ -89,8 +91,9 @@ internal class ClientParts(
     val chain = KeptChain()
     private val edge = EdgeState(alpn.owner, capture, w.tickets, ChainHome.Kept(chain))
 
-    /** What the connection's silence watch says of its path. */
+    /** What the connection's silence watch says of its path, and where its socket landed: both wake its network feed. */
     val news = PathNewsCell()
+    val home = HomeCell(news.wake)
 
     /** What the connection asks of its sockets, each loop work on [endpoint]. */
     private val ask: (SocketAsk) -> Unit = { asked ->
@@ -123,7 +126,7 @@ internal class ClientParts(
                     ask,
                     w.access,
                     chainSourceOf(w.options, w.memory.factory()),
-                    SilenceRule(w.silence, probeCapOf(w.options), news),
+                    SilenceRule(w.silence, probeCapOf(w.options), news, home),
                     earlyPlanOf(QuicheConnRef(w.api, w.handle), w.offer, w.options.resumption, nativeOf(w.memory.factory())),
                 ),
             address =
@@ -220,6 +223,15 @@ internal class ClientParts(
             is SocketOwnership.Owned -> MoveAsk.Asked.also { conn.submit(MoveWantedWork(MoveWanted(bind, prior))) }
             is SocketOwnership.Lent -> LENT_REFUSED
         }
+
+    /**
+     * Any thread, after [start]: the path was read silent, so a second socket is wanted on a fresh port of [bind]'s
+     * address; the connection opens it only if the path is still silent and no move is open, and migrates as [migrate].
+     */
+    fun rebind(
+        bind: PathKey,
+        prior: RttPrior,
+    ) = conn.submit(RebindWork(MoveWanted(bind, prior)))
 
     private companion object {
         val LENT_REFUSED = MoveAsk.Refused(MoveRefusal.SocketLent)

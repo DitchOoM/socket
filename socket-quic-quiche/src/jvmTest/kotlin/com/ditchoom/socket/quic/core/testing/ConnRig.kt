@@ -164,6 +164,7 @@ internal fun testConn(
     peer: PathKey = PathKey(4, 443, 0L, 0x7F000001L),
     memory: ConnMemory = ConnMemory(testLoopMemory(), BufferFactory.Default, nativeBytes(255)),
     silence: SilenceRule = QUIET_RULE,
+    ask: (SocketAsk) -> Unit = NO_MOVES,
 ): Conn =
     buildConn(
         rules = rules,
@@ -178,7 +179,7 @@ internal fun testConn(
                 },
                 KeptTicket.None,
                 TokenHome.NotKept,
-                NO_MOVES,
+                ask,
                 access.sendsAccess(peer),
                 ChainSource.NotAsked,
                 silence,
@@ -232,12 +233,14 @@ internal class ConnRig(
     lanes: CallerLanes = CallerLanes.None,
     memory: ConnMemory = ConnMemory(testLoopMemory(), BufferFactory.Default, nativeBytes(255)),
     silence: SilenceRule = QUIET_RULE,
+    /** What the connection asks of its sockets; dropped unless a test watches. */
+    ask: (SocketAsk) -> Unit = NO_MOVES,
 ) {
     val sink = RecordingSink()
     val counts = ConnCounts()
     val loop = loopOver(poller, clock, maxDatagrams, time)
     val socket = SendPort(io, loop.port, lanes, RecordingWork(), loop.counts, loop.callerCounts)
-    val conn: Conn = testConn(api, rules, target, capture, loop, socket, clock, sink, counts, access, peer, memory, silence)
+    val conn: Conn = testConn(api, rules, target, capture, loop, socket, clock, sink, counts, access, peer, memory, silence, ask)
     val endpoint =
         Endpoint(
             SocketRefs(SocketRef(DatagramChannel.open()), SocketRef(DatagramChannel.open())),

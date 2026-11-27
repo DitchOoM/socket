@@ -385,6 +385,8 @@ public class CoreDefaultsCheck {
         SEAMS.put("DatagramWaiter", "conn");
         SEAMS.put("BatchWaiter", "conn");
         SEAMS.put("ConnSink", "conn");
+        // A client's network feed acts on its connection through this, so a test can drive the feed alone.
+        SEAMS.put("FeedTarget", "edge");
         SEAMS.put("Pooled", "pool");
     }
 

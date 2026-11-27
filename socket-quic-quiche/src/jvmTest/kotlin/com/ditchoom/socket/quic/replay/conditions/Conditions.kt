@@ -29,6 +29,11 @@ internal data class Conditions(
     val echoBytes: Int = PROBE_ECHO_BYTES,
     /** How both ends retransmit their handshake. */
     val handshakePacing: HandshakePacing = HandshakePacing.Adaptive(),
+    /**
+     * When every client address in use goes dark for good, the OS saying nothing: an access point or a NAT that stops
+     * forwarding for the sockets it knows. A socket opened afterwards carries.
+     */
+    val strands: List<Duration> = emptyList(),
 )
 
 /** The walk probe's echo size. */

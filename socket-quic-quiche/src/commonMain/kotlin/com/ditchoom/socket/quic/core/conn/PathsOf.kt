@@ -11,6 +11,7 @@ import com.ditchoom.socket.quic.core.path.MoveAnswer
 import com.ditchoom.socket.quic.core.path.Outgoing
 import com.ditchoom.socket.quic.core.path.PathRead
 import com.ditchoom.socket.quic.core.path.PathStep
+import com.ditchoom.socket.quic.core.path.Rebind
 import com.ditchoom.socket.quic.core.path.RecvFrom
 import com.ditchoom.socket.quic.core.path.SecondHeld
 import com.ditchoom.socket.quic.core.path.Sorting
@@ -32,7 +33,7 @@ internal fun Paths.recvFrom(
     on: SocketTicket,
 ): RecvFrom =
     when (this) {
-        is Paths.Client -> paths.recvFrom(on).also { paths.silence.answered(now) }
+        is Paths.Client -> paths.recvFrom(on, now)
         is Paths.Server -> paths.recvInfo(from)
     }
 
@@ -81,7 +82,7 @@ internal fun Paths.outgoing(address: Long): Outgoing =
 
 internal fun Paths.sendInfo(): QuicheSendInfo =
     when (this) {
-        is Paths.Client -> paths.sendInfo
+        is Paths.Client -> paths.opened.sendInfo
         is Paths.Server -> paths.sendInfo
     }
 
@@ -100,14 +101,14 @@ internal fun Paths.sorting(): Sorting =
 /** The statistics of the path the connection was opened on. */
 internal fun Paths.read(): PathRead =
     when (this) {
-        is Paths.Client -> paths.read()
+        is Paths.Client -> paths.opened.read()
         is Paths.Server -> paths.read()
     }
 
 /** The connection's statistics, read now. */
 internal fun Paths.stats(): QuicStatsRead =
     when (this) {
-        is Paths.Client -> paths.stats()
+        is Paths.Client -> paths.opened.stats()
         is Paths.Server -> paths.stats()
     }
 
@@ -133,6 +134,7 @@ internal fun ConnParts.stepPaths(now: Nanos): PathStep =
     when (val paths = slots.paths) {
         is Paths.Client -> {
             watchSilence(now, paths.paths.silence)
+            stepRebinds(now, paths.paths)
             val step = paths.paths.step(now)
             if (step != PathStep.Steady) slots.ack.mustWrite()
             when (step) {
@@ -165,7 +167,7 @@ internal fun ConnParts.networkUsable(now: Nanos) {
     slots.ack.mustWrite()
     timer.nudge()
     when (val paths = slots.paths) {
-        is Paths.Client -> paths.paths.networkChanged(now)
+        is Paths.Client -> paths.paths.networkChanged(now).also { paths.paths.rebinds.renewed(now, Rebind.Same) }
         is Paths.Server -> Unit
     }
 }
@@ -276,6 +278,7 @@ internal fun Paths.offerWake(
     is Paths.Client -> {
         paths.offerWake(sink)
         paths.silence.offerWake(sink, readers)
+        paths.rebinds.offerWake(sink)
     }
     is Paths.Server -> Unit
 }

@@ -52,6 +52,14 @@ internal enum class PathMark {
 
     /** A read waited on a quiet path with nothing in flight: the client sent one PING (the awaiting-peer probe). */
     Pinged,
+
+    /** A silent path asked for a fresh port, or answered first, was served, held or forbidden; or gave its move up. */
+    Rebind,
+    RebindStale,
+    RebindServed,
+    RebindHeld,
+    RebindForbidden,
+    RebindGaveUp,
 }
 
 /** The trace's [TraceEvent.Error.type] for a [PacingClockMismatch]: its qualified name. */
@@ -120,10 +128,7 @@ internal class ConnFlight(
         lo: Long,
     ) = ring.put(FlightKind.DatagramDropped, now.value, why.ordinal, ring.bindAddress(family, port, hi, lo), peerId, length, 0L, 0L)
 
-    /**
-     * The connection's first datagram was stamped [offsetNanos] off the loop's clock at [now] (ahead when positive):
-     * another clock's reading.
-     */
+    /** The first datagram was stamped [offsetNanos] off the loop's clock at [now] (ahead when positive): another clock's. */
     fun pacingClockMismatch(
         now: Nanos,
         offsetNanos: Long,

@@ -1,5 +1,6 @@
 package com.ditchoom.socket.quic.core.edge
 
+import com.ditchoom.socket.LinkAddresses
 import com.ditchoom.socket.quic.MigrationPolicy
 import com.ditchoom.socket.quic.RouteProbeFailure
 import com.ditchoom.socket.quic.RouteSource
@@ -64,6 +65,9 @@ class HomeWatchTests {
         assertEquals(HomeStep.Gone, watch.offline())
         assertEquals(HomeStep.Stay, watch.up(after, noRoute), "unvalidated, only link-local: still no route")
         assertEquals(HomeStep.Migrate, watch.up(after, RouteSource.Resolved("2001:db8::cc30")), "validated, new address")
+        assertEquals("2001:db8::cc30", watch.target())
+        assertEquals("2001:db8::3eed", watch.host(), "the socket is where it was until the connection says the move landed")
+        watch.landed("2001:db8::cc30", after, LinkAddresses.NotReported)
         assertEquals("2001:db8::cc30", watch.host())
         assertEquals(HomeStep.Gone, watch.up(after, noRoute), "the route flickers away")
         assertEquals(HomeStep.Usable, watch.up(after, RouteSource.Resolved("2001:db8::cc30")), "and back: already there")
@@ -74,8 +78,10 @@ class HomeWatchTests {
         val cellular = NetworkId.Link(NetworkKind.Cellular, 1L)
         val watch = HomeWatch("192.0.2.10", before, OnMove.Migrate)
         assertEquals(HomeStep.Migrate, watch.up(cellular, RouteSource.Resolved("198.51.100.7")))
+        watch.landed("198.51.100.7", cellular, LinkAddresses.NotReported)
         assertEquals(HomeStep.Stay, watch.up(cellular, RouteSource.Resolved("198.51.100.7")))
         assertEquals(HomeStep.Migrate, watch.up(before, RouteSource.Resolved("192.0.2.10")), "Wi-Fi back: its address is new again")
+        watch.landed("192.0.2.10", before, LinkAddresses.NotReported)
         assertEquals(HomeStep.Stay, watch.up(before, RouteSource.Resolved("192.0.2.10")))
     }
 

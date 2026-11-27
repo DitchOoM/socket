@@ -48,9 +48,9 @@ class PathValidationPolicyTests {
 
     /**
      * The new path stays dark long enough for the re-probes to back off to eight intervals; another network then comes
-     * up under the socket's address, and the path works there: it is probed at once, not when the back-off ends, and
-     * the probe's challenge leaves although the unanswered ones before it fill the path's congestion window, so the
-     * connection migrates one round trip after the rehome.
+     * up under the address the move is headed to, and the path works there: the move is asked again on that network at
+     * once, not when the back-off ends (never as a reopen, which with the move's socket gone would land on the carrying
+     * one), and the connection migrates one round trip after.
      */
     @Test
     fun anotherNetworkEndsTheBackOffOfTheProbesThatFailedBefore() {
@@ -69,16 +69,20 @@ class PathValidationPolicyTests {
                 )
         val replayed = ConditionReplay(conditions(link, os), 1L).run()
         val moved = replayed.pathMarks.first { it.phase == "Moved" }.at
-        val rehomed = replayed.pathMarks.first { it.phase == "Rehomed" }.at
-        val reprobed = replayed.pathMarks.firstOrNull { it.phase == "Reprobed" && it.at >= rehomed }?.at
+        val again =
+            replayed.pathMarks.firstOrNull { it.phase == "Moved" && it.at > moved }?.at
+                ?: throw AssertionError("the move was not asked again on the new network: ${replayed.pathMarks}")
+        assertTrue(again - moved <= REHOME_AFTER + PASS, "asked again ${again - moved} after the move: ${replayed.pathMarks}")
         assertTrue(
-            reprobed != null && reprobed - rehomed <= PASS,
-            "rehomed ${rehomed - moved} after the move, re-probed at ${reprobed?.minus(moved)}: ${replayed.pathMarks}",
+            replayed.pathMarks.none { it.phase == "Rehomed" },
+            "a socket was reopened while the move was asked: ${replayed.pathMarks}",
         )
-        val took = replayed.moveToMigrated() ?: throw AssertionError("never migrated: ${replayed.pathMarks}")
+        val migrated =
+            replayed.pathMarks.firstOrNull { it.phase == "Migrated" && it.at >= again }?.at
+                ?: throw AssertionError("never migrated: ${replayed.pathMarks}")
         assertTrue(
-            took - (rehomed - moved) <= ROUND_TRIP + PASS,
-            "migrated ${took - (rehomed - moved)} after the rehome: ${replayed.pathMarks}",
+            migrated - again <= ROUND_TRIP + PASS,
+            "migrated ${migrated - again} after the move was asked again: ${replayed.pathMarks}",
         )
     }
 

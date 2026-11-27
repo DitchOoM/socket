@@ -103,8 +103,9 @@ class CoreManyMovesTests {
                     var mostRoutes = 0
                     var mostInfos = 0
                     for (move in 1..MOVES) {
-                        // The wildcard and the loopback address alternate: each is another address than the socket leaves from.
-                        source = RouteSource.Resolved(if (move % 2 == 1) "0.0.0.0" else "127.0.0.1")
+                        // The route leaves from the wildcard: a socket bound there and connected to the peer is on loopback,
+                        // so the connection says each move landed on 127.0.0.1, and the wildcard is another address every time.
+                        source = RouteSource.Resolved("0.0.0.0")
                         monitor.state.value = if (move % 2 == 1) WIFI_AFTER else WIFI_BEFORE
                         awaitMove(client, move)
                         val payload = Random(move).nextBytes(1_000)

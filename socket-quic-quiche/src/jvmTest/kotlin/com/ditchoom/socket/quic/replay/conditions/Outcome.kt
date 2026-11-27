@@ -75,9 +75,17 @@ internal class Replayed(
     val duplicated: Int = 0,
     /** Whether each datagram the client sent, in the order of [clientSends], left a socket a move opened. */
     val clientSendsMoved: List<Boolean> = emptyList(),
+    /** Each read the client's silence watch made of its active path's PTO expiries, on the script's clock. */
+    val probes: List<ProbeRead> = emptyList(),
 ) {
     /** When the client's path was declared silent, on the script's clock. */
     fun silentAt(): List<Duration> = news.filter { it.phase == "Silent" }.map { it.at }
+
+    /** How many fresh ports the client's silent path asked for: each opens a socket, so each is one of [moves]. */
+    fun rebinds(): Int = pathMarks.count { it.phase == "Rebind" }
+
+    /** The moves the monitor's news asked for: [moves] less the silence's [rebinds]. */
+    fun routeMoves(): Int = moves - rebinds()
 
     /** How long the first move took from its socket moving to its migration, or nothing if it never migrated. */
     fun moveToMigrated(): Duration? {
@@ -92,7 +100,7 @@ internal class Replayed(
     }
 
     fun describe(): String =
-        "${conditions.name}: $outcome, reopens=$reopens, moves=$moves, usable again ${conditions.usableAgain()}, " +
+        "${conditions.name}: $outcome, reopens=$reopens, moves=$moves (rebinds ${rebinds()}), usable again ${conditions.usableAgain()}, " +
             "last echoes ${echoes.takeLast(LAST_ECHOES)}"
 }
 
@@ -111,6 +119,13 @@ internal sealed interface Workload {
         val every: Duration,
     ) : Workload
 }
+
+/** One read of the active path's PTO expiries: quiche's path [index] and its [expiries] so far, [at] on the script's clock. */
+internal data class ProbeRead(
+    val at: Duration,
+    val index: Long,
+    val expiries: Long,
+)
 
 /** A path mark of the client's flight recording: its [phase] and when, on the recording's clock. */
 internal data class PathMarkAt(

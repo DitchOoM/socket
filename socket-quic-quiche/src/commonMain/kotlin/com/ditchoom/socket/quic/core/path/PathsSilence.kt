@@ -1,48 +1,12 @@
 @file:Suppress("ktlint:standard:filename") // rule Q names the deciding file path/Paths*: a client's path silence is judged here.
-@file:OptIn(ExperimentalAtomicApi::class)
 
 package com.ditchoom.socket.quic.core.path
 
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.observe.Confined
-import com.ditchoom.socket.quic.core.observe.Published
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.time.Span
 import com.ditchoom.socket.quic.core.time.WakeSink
-import kotlin.concurrent.atomics.AtomicReference
-import kotlin.concurrent.atomics.ExperimentalAtomicApi
-
-/** Whether a client judges its active path's silence: only one that may move on its own does. */
-internal enum class Silence { Off, On }
-
-/** What the data plane says of the active path. */
-internal sealed interface PathNews {
-    /** Something arrived since the path last went unanswered, or nothing is outstanding to be answered. */
-    data object Answering : PathNews
-
-    /** The path met [SilenceThreshold]: its PTO expiries, or the ack-eliciting data handed to it, went unanswered. */
-    data object Silent : PathNews
-}
-
-/** The edge's reading of a connection's [PathNews]: written inside the connection on each change, read on any thread. */
-@Published
-internal class PathNewsCell {
-    private val news = AtomicReference<PathNews>(PathNews.Answering)
-
-    fun read(): PathNews = news.load()
-
-    fun tell(now: PathNews) = news.store(now)
-}
-
-/**
- * What a client's silence watch is built with: whether it judges its path ([watch]), how far its awaiting-peer probe
- * backs off ([probeCap], the idle timeout), and where it tells the edge ([news]).
- */
-internal class SilenceRule(
-    val watch: Silence,
-    val probeCap: Span,
-    val news: PathNewsCell,
-)
 
 /** Whether a serve sent the awaiting-peer probe. */
 internal enum class ProbeStep { Rested, Pinged }
@@ -106,6 +70,9 @@ internal class PathSilence(
     private val watch = rule.watch
     private val cap = rule.probeCap.nanos
     private val cell = rule.news
+
+    /** Where the edge learns where the socket is. */
+    val home = rule.home
     private val read = Progress.Baselined()
     private var progress: Progress = Progress.Unread
     private val building = Run.Building()
@@ -135,6 +102,25 @@ internal class PathSilence(
             }
         }
     }
+
+    /**
+     * The connection migrated at [now]: the new path is judged afresh. A run, an owed answer and the probe's backoff of
+     * the old path end, and the edge is told [PathNews.Answering] in this pass.
+     */
+    fun migrated(now: Nanos) {
+        quietSince = now.value
+        owed = Owed.None
+        interval = threshold.floor.nanos
+        if (watch == Silence.Off) return
+        val was = run
+        run = Run.None
+        progress = Progress.Unread
+        ActiveProbes(q.api.connActivePathProbes(q.handle)).fold(none = { Unit }, read = { index, probes -> rebase(index, probes) })
+        if (was !is Run.None) tell(PathNews.Answering)
+    }
+
+    /** What the watch says of the active path now. */
+    fun now(): PathNews = news
 
     /** A datagram arrived at [now]: the path answered. */
     fun answered(now: Nanos) {

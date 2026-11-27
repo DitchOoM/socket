@@ -7,7 +7,6 @@ import com.ditchoom.socket.quic.MigrateOutcome
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.PeerMigrationPermission
 import com.ditchoom.socket.quic.ProbeOutcome
-import com.ditchoom.socket.quic.QuicStatsRead
 import com.ditchoom.socket.quic.QuicheRecvInfo
 import com.ditchoom.socket.quic.connPeerMigrationPermission
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
@@ -28,7 +27,8 @@ import kotlin.random.Random
 @Confined
 internal class ClientPaths(
     private val q: QuicheConnRef,
-    private val first: SinglePath,
+    /** The path the connection was opened on: its send info and statistics. */
+    val opened: SinglePath,
     private val factory: BufferFactory,
     private val ids: IdIssuer,
     private val random: Random,
@@ -36,12 +36,12 @@ internal class ClientPaths(
     private val ask: (SocketAsk) -> Unit,
     val silence: PathSilence,
 ) {
-    private var move: Move = q.firstMove(first)
+    private var move: Move = q.firstMove(opened)
 
     /** Whether the carrying path answered since the move's last validation began. */
     private var carryingHeard = Answered.Not
     private val events = PathEvents(q, factory)
-    private val peer = TowardPeer(q, first)
+    private val peer = TowardPeer(q, opened)
     private var previous: Previous = Previous.None
     private val ears = PeerHearing(q)
     private val retiredIds = RetiredReader(factory)
@@ -50,21 +50,24 @@ internal class ClientPaths(
     val hold =
         MoveHold(q, ears) { asked ->
             // Before the new socket's open is asked, so no promotion of the old probe can follow it to the loop.
-            if (asked is SocketAsk.OpenBeside) move = Move.Settled(abandon())
+            if (asked is SocketAsk.OpenBeside) move = Move.Settled(abandon()).also { rebinds.opening() }
             ask(asked)
         }
 
-    val sendInfo get() = first.sendInfo
+    /** The rebinds the active path's silence asks for, each through [hold]; one it gives up drops its move. */
+    val rebinds: Rebinds =
+        Rebinds(q, silence, hold, { if (unsettled()) Moving.Open else Moving.Settled }, { move.carrying().key }) {
+            move = Move.Settled(abandon())
+        }
 
-    fun read(): PathRead = first.read()
-
-    fun stats(): QuicStatsRead = first.stats()
-
-    /** What quiche is told about a datagram that arrived on socket [on]: on the endpoint [Move.readsOnSecond] chooses. */
-    fun recvFrom(on: SocketTicket): RecvFrom {
+    /** What quiche is told of a datagram on socket [on] at [now] ([Move.readOn]); on the carrying socket the path answered. */
+    fun recvFrom(
+        on: SocketTicket,
+        now: Nanos,
+    ): RecvFrom {
         ears.arrived()
         if (move.readOn(on) == ReadOn.Second) return move.second().info
-        if (move.carrying().socket == on) carryingHeard = Answered.Yes
+        if (move.carrying().socket == on) carryingHeard = Answered.Yes.also { silence.answered(now) }
         return move.carrying().info
     }
 
@@ -96,7 +99,7 @@ internal class ClientPaths(
         val hearing = ears.judge(now)
         val sockAddr = local.encodeToNative(factory)
         val at =
-            LocalAddr(q.api.decodePathKey(sockAddr.address), peer.recvInfoAt(sockAddr), Made.Here(sockAddr), prior, ticket, first.target)
+            LocalAddr(q.api.decodePathKey(sockAddr.address), peer.recvInfoAt(sockAddr), Made.Here(sockAddr), prior, ticket, opened.target)
         val from = abandon()
         carryingHeard = Answered.Not
         return when (val probed = peer.probe(at)) {
@@ -143,7 +146,7 @@ internal class ClientPaths(
         return SecondHeld.Lost
     }
 
-    /** Whether the socket's endpoint has no validated path yet: an idle end then means no usable path was found. */
+    /** Whether the socket's endpoint has no validated path yet: an idle end means no usable path was found. */
     fun unsettled(): Boolean = move !is Move.Settled || hold.held is HeldMove.Waiting
 
     /** Hands [each] every endpoint this connection made, for its release, and frees the paths' own memory. */
@@ -204,10 +207,7 @@ internal class ClientPaths(
             PathVerdict.Unreadable -> PathStep.Steady
         }
 
-    /**
-     * A validation quiche has not decided: abandoned once its cadence ends, else asked for a fresh PATH_CHALLENGE when due,
-     * on the id the path already has; a response to any challenge sent on the path validates it (RFC 9000 §8.2.1).
-     */
+    /** A validation quiche has not decided: abandoned at its cadence's end, else challenged afresh when due (RFC 9000 §8.2.1). */
     private fun tend(
         now: Nanos,
         probing: Move.Probing,
@@ -255,6 +255,7 @@ internal class ClientPaths(
                 q.retire(from.dcidSeq)
                 spend(from.local)
                 move = Move.Settled(Linked(to, migrated.dcidSeq))
+                silence.migrated(now)
                 PathStep.Migrated
             }
             is MigrateOutcome.Rejected -> {

@@ -81,6 +81,12 @@ internal class ConditionLink(
 
     private var second: Second? = null
 
+    /** The client addresses that went dark for good ([strand]). */
+    private val dark = HashSet<PathKey>()
+
+    /** How many of the next promoted sockets go dark the moment they carry. */
+    var strandOnPromote = 0
+
     /** The address the client connected from, set at its first send. */
     private val first: PathKey by lazy { client }
     private var carrying = SocketTicket.FIRST
@@ -144,6 +150,12 @@ internal class ConditionLink(
         client = client.copy(port = client.port + 1)
     }
 
+    /** Every client address in use goes dark for good: nothing from or to it crosses again. */
+    fun strand() {
+        dark += client
+        second?.let { dark += it.key }
+    }
+
     /** The next arrival's time, or [Long.MAX_VALUE]. */
     fun nextArrival(): Long = if (inFlight.isEmpty()) Long.MAX_VALUE else inFlight.peek().arrives
 
@@ -204,6 +216,7 @@ internal class ConditionLink(
 
     /** Whether the client socket at [address] is open and on the network up now. */
     private fun clientSocketTakes(address: PathKey): Boolean {
+        if (address in dark) return false
         val home =
             when {
                 address == client -> socketHome
@@ -303,7 +316,7 @@ internal class ConditionLink(
             return Reopened.SameEndpoint
         }
 
-        /** The second socket's address is the link's own choice: the old host on the next port, whatever [bind] names. */
+        /** The second socket is on [bind]'s address, as a real socket bound there is, on a port of the link's choosing. */
         override fun openBeside(
             bind: PathKey,
             ticket: SocketTicket,
@@ -314,7 +327,7 @@ internal class ConditionLink(
                     is OsNow.On -> now.network
                     is OsNow.Offline -> socketHome
                 }
-            val key = client.copy(port = maxOf(client.port, movedTo?.port ?: 0) + 1)
+            val key = bind.copy(port = maxOf(client.port, movedTo?.port ?: 0) + 1)
             second = Second(key, home, ticket)
             movedTo = key
             return Beside.Opened(key)
@@ -327,6 +340,10 @@ internal class ConditionLink(
             socketHome = now.home
             carrying = now.ticket
             second = null
+            if (strandOnPromote > 0) {
+                strandOnPromote--
+                dark += client
+            }
         }
 
         override fun closeSecond() {

@@ -37,6 +37,15 @@ internal class MoveWantedWork(
     override fun gone(end: ConnEnd) = Unit
 }
 
+/** Inside: the client's path went silent, and its socket is wanted on a fresh port of [wanted]'s address ([Inside.rebind]). */
+internal class RebindWork(
+    private val wanted: MoveWanted,
+) : ConnWork() {
+    override fun run(inside: Inside) = inside.rebind(wanted)
+
+    override fun gone(end: ConnEnd) = Unit
+}
+
 /** Inside: the client's loop opened a second socket, which leaves from [to]. */
 internal class MovedWork(
     private val to: MoveTo,

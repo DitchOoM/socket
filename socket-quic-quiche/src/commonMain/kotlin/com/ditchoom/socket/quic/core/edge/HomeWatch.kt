@@ -1,6 +1,11 @@
 package com.ditchoom.socket.quic.core.edge
 
+import com.ditchoom.socket.AddressOwner
+import com.ditchoom.socket.LinkAddresses
 import com.ditchoom.socket.NetworkMonitor
+import com.ditchoom.socket.NumericAddress
+import com.ditchoom.socket.ParsedAddress
+import com.ditchoom.socket.ownerOf
 import com.ditchoom.socket.quic.MigrationPolicy
 import com.ditchoom.socket.quic.QuicOptions
 import com.ditchoom.socket.quic.RouteSource
@@ -28,6 +33,9 @@ internal enum class HomeStep {
 
     /** The same address on another network: the socket is reopened there, on the same address and port. */
     Rehome,
+
+    /** The path went silent with the monitor saying nothing: a fresh port on the route's address, and a migration there. */
+    Rebind,
 }
 
 /** What a client does when the route to its peer leaves from another address. */
@@ -69,6 +77,9 @@ internal const val PROBE_CAP_UNBOUNDED_IDLE = 60_000_000_000L
 /** What the connection was last told. */
 private enum class Told { Usable, Gone, Moved }
 
+/** Whether the watch awaits the end of a move it asked for. */
+private enum class Asked { None, Toward }
+
 /**
  * Where a client connection's socket lives, as the network feed reads it: the address and network it is on, and what
  * the connection was last told. Every reading is judged afresh (a network that comes back unvalidated and then
@@ -76,7 +87,10 @@ private enum class Told { Usable, Gone, Moved }
  *
  * Android tags a socket with the network it was connected on, so a socket of a network that went away carries nothing
  * even when the next network hands back the same address: a new network id with the bound address is [HomeStep.Rehome].
- * A route from another address is [HomeStep.Migrate] under [OnMove.Migrate], after which that address is home.
+ * A route from another address is [HomeStep.Migrate] under [OnMove.Migrate], and a path gone silent is
+ * [HomeStep.Rebind] ([silent]), however the monitor stands; each asks the connection to move toward [target]. The
+ * watch keeps no guess of where the socket went: it is told by the connection, once a migration landed ([landed]),
+ * and that address is home from then, on the link the monitor says carries it.
  */
 @CallerSide
 internal class HomeWatch(
@@ -86,11 +100,21 @@ internal class HomeWatch(
 ) {
     private var home = opened
     private var told = Told.Usable
+    private var target = boundHost
+
+    /** Whether a move toward [target] was asked and the connection has not yet said it ended. */
+    private var asked = Asked.None
+
+    /** The network the monitor named when the move toward [target] was asked, or last named. */
+    private var named = opened
 
     fun offline(): HomeStep = tell(Told.Gone)
 
-    /** The address the socket is on, or is moving to after [HomeStep.Migrate]. */
+    /** The address the socket is on, as the connection last said. */
     fun host(): String = boundHost
+
+    /** The address the last [HomeStep.Migrate] or [HomeStep.Rebind] asked for. */
+    fun target(): String = target
 
     /** A network [id] is up, and the route to the peer leaves from [source]. */
     fun up(
@@ -98,10 +122,42 @@ internal class HomeWatch(
         source: RouteSource,
     ): HomeStep =
         when (source) {
-            is RouteSource.Resolved -> if (source.host == boundHost) bound(id) else moved(source.host, id)
+            is RouteSource.Resolved -> if (sameAddress(source.host, boundHost)) bound(id) else moved(source.host, id)
             is RouteSource.PlatformAssigned -> bound(id)
             is RouteSource.Unresolved -> tell(Told.Gone)
         }
+
+    /**
+     * The connection's path went silent while the route to the peer leaves from [source]: a fresh port on that address
+     * ([HomeStep.Rebind]). Where the socket is changes only once the connection says the move ended.
+     */
+    fun silent(source: RouteSource): HomeStep {
+        if (onMove == OnMove.End || told != Told.Usable) return HomeStep.Stay
+        target =
+            when (source) {
+                is RouteSource.Resolved -> source.host
+                is RouteSource.PlatformAssigned -> boundHost
+                is RouteSource.Unresolved -> return HomeStep.Stay
+            }
+        asked = Asked.Toward
+        return HomeStep.Rebind
+    }
+
+    /**
+     * The connection says a move ended with its socket on [host] while the monitor names [named], its links carrying
+     * [links]: a new address is home, on the link that carries it; the same address keeps the network it was on. A
+     * move toward [target] is no longer awaited, landed or not.
+     */
+    fun landed(
+        host: String,
+        named: NetworkId,
+        links: LinkAddresses,
+    ) {
+        asked = Asked.None
+        if (sameAddress(host, boundHost)) return
+        boundHost = host
+        home = homeOf(host, links, named)
+    }
 
     private fun moved(
         host: String,
@@ -111,14 +167,19 @@ internal class HomeWatch(
             OnMove.End -> tell(Told.Moved)
             OnMove.Migrate -> {
                 if (told == Told.Moved) return HomeStep.Stay
-                boundHost = host
-                home = id
+                // A move toward this address is already asked and not yet ended: asking again would throw it away. On
+                // another network it is asked again there: a reopen could land on the carrying socket.
+                if (asked == Asked.Toward && sameAddress(target, host) && id == named) return HomeStep.Stay
+                target = host
+                asked = Asked.Toward
+                named = id
                 told = Told.Usable
                 HomeStep.Migrate
             }
         }
 
     private fun bound(id: NetworkId): HomeStep {
+        named = id
         if (told == Told.Moved) return HomeStep.Stay
         if (home == NetworkId.Unidentified) home = id
         if (id == home) return tell(Told.Usable)
@@ -136,4 +197,33 @@ internal class HomeWatch(
             Told.Moved -> HomeStep.Moved
         }
     }
+}
+
+/**
+ * The network a socket bound on [host] is on: the link the monitor says carries that address, else [named], the one
+ * the monitor names. The default route can move to another link before the monitor names it.
+ */
+private fun homeOf(
+    host: String,
+    links: LinkAddresses,
+    named: NetworkId,
+): NetworkId =
+    when (val parsed = NumericAddress.parse(host)) {
+        is ParsedAddress.NotNumeric -> named
+        is ParsedAddress.Address ->
+            when (val owner = links.ownerOf(parsed.address)) {
+                is AddressOwner.Link -> owner.id
+                is AddressOwner.NotReported, is AddressOwner.Unclaimed -> named
+            }
+    }
+
+/** Whether two address literals name one address: numerically when both are numeric, so every spelling is one. */
+private fun sameAddress(
+    a: String,
+    b: String,
+): Boolean {
+    val left = NumericAddress.parse(a)
+    val right = NumericAddress.parse(b)
+    if (left is ParsedAddress.Address && right is ParsedAddress.Address) return left.address == right.address
+    return a == b
 }

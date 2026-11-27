@@ -6,7 +6,10 @@ import com.ditchoom.buffer.flow.writeFully
 import com.ditchoom.socket.networkId
 import com.ditchoom.socket.quic.QuicConnectionState
 import com.ditchoom.socket.quic.QuicError
+import com.ditchoom.socket.quic.QuicheApi
+import com.ditchoom.socket.quic.QuicheConn
 import com.ditchoom.socket.quic.ScopedReadResult
+import com.ditchoom.socket.quic.core.edge.ClientFeed
 import com.ditchoom.socket.quic.core.edge.CoreServer
 import com.ditchoom.socket.quic.core.edge.EdgeEnd
 import com.ditchoom.socket.quic.core.edge.acceptStream
@@ -15,6 +18,7 @@ import com.ditchoom.socket.quic.core.edge.linkClassOf
 import com.ditchoom.socket.quic.core.edge.onMoveOf
 import com.ditchoom.socket.quic.core.edge.openStream
 import com.ditchoom.socket.quic.core.loop.Loop
+import com.ditchoom.socket.quic.core.path.ActiveProbes
 import com.ditchoom.socket.quic.core.path.PathNews
 import com.ditchoom.socket.quic.core.testing.VirtualClock
 import com.ditchoom.socket.quic.core.time.Nanos
@@ -56,6 +60,8 @@ internal class ConditionReplay(
     private val workload: Workload = Workload.Echo,
     /** When a NAT in front of the client rebinds it to a new port ([ConditionLink.rebind]), on the script's clock. */
     private val rebinds: List<Duration> = emptyList(),
+    /** How many of the client's next promoted sockets go dark the moment they carry ([ConditionLink.strandOnPromote]). */
+    private val strandOnPromote: Int = 0,
 ) {
     private val clock = VirtualClock(Nanos(ORIGIN))
     private val factory = BufferFactory.Default
@@ -72,6 +78,9 @@ internal class ConditionReplay(
 
     /** What the client's silence watch said, each change when the replay first saw it. */
     private val news = ArrayList<PathMarkAt>()
+
+    /** Each read the client's silence watch made of its active path's expiries. */
+    private val probes = ArrayList<ProbeRead>()
     private var told: PathNews = PathNews.Answering
 
     fun run(): Replayed =
@@ -90,24 +99,32 @@ internal class ConditionReplay(
 
     private suspend fun CoroutineScope.drive(api: com.ditchoom.socket.quic.QuicheApi): Replayed {
         val options = replayOptions(conditions)
-        val link = ConditionLink(conditions, seed, clock, loseToMoved)
+        val link = ConditionLink(conditions, seed, clock, loseToMoved).also { it.strandOnPromote = strandOnPromote }
         val server = replayServer(api, options, factory, link.serverIo, clock)
         link.server = InetSocketAddress(LOCALHOST, server.port).toPathKey()
         val monitor = ScriptMonitor(conditions.start)
         val client =
-            replayClient(api, options, factory, link.clientIo, clock, server.port, seed, linkClassOf(monitor.state.value.networkId))
+            replayClient(
+                recording(api),
+                options,
+                factory,
+                link.clientIo,
+                clock,
+                server.port,
+                seed,
+                linkClassOf(monitor.state.value.networkId),
+            )
         link.client = client.local
         client.parts.start()
         client.scope.feedNetwork(
             monitor,
-            client.connection,
-            client.parts,
+            ClientFeed(client.connection, client.parts),
             { monitor.routeSource() },
             LOCALHOST,
             onMoveOf(options.migration),
             coroutineContext.minusKey(Job),
-            // The link picks the moved socket's address itself; nothing here may leave the replay's thread.
-            { link.client },
+            // The route's address, a literal, read without leaving the replay's thread; the link picks the port.
+            { host -> InetSocketAddress(host, 0).toPathKey() },
         )
         val accepted = CompletableDeferred<Unit>()
         val serverApp =
@@ -120,6 +137,7 @@ internal class ConditionReplay(
         val events = conditions.os.sortedBy { it.at }
         var nextEvent = 0
         var nextRebind = 0
+        var nextStrand = 0
         val end = ORIGIN + conditions.runFor.inWholeNanoseconds
         var now = ORIGIN
         var finish: Finish = Finish.Lived
@@ -132,6 +150,10 @@ internal class ConditionReplay(
             while (nextRebind < rebinds.size && ORIGIN + rebinds[nextRebind].inWholeNanoseconds <= now) {
                 link.rebind()
                 nextRebind++
+            }
+            while (nextStrand < conditions.strands.size && ORIGIN + conditions.strands[nextStrand].inWholeNanoseconds <= now) {
+                link.strand()
+                nextStrand++
             }
             sleep.wake(now)
             clientApp =
@@ -164,7 +186,9 @@ internal class ConditionReplay(
             val eventDue = if (nextEvent < events.size) ORIGIN + events[nextEvent].at.inWholeNanoseconds else Long.MAX_VALUE
             val dumpDue = if (link.moves > 0) nextDump else Long.MAX_VALUE
             val rebindDue = if (nextRebind < rebinds.size) ORIGIN + rebinds[nextRebind].inWholeNanoseconds else Long.MAX_VALUE
-            val due = minOf(loopsDue, link.nextArrival(), eventDue, sleep.due(), clientApp.due(), dumpDue, rebindDue, end)
+            val strands = conditions.strands
+            val strandDue = if (nextStrand < strands.size) ORIGIN + strands[nextStrand].inWholeNanoseconds else Long.MAX_VALUE
+            val due = minOf(loopsDue, link.nextArrival(), eventDue, sleep.due(), clientApp.due(), dumpDue, minOf(rebindDue, strandDue), end)
             now = maxOf(now + MIN_STEP, due)
         }
         clientApp.cancel()
@@ -194,6 +218,7 @@ internal class ConditionReplay(
             link.clientArrivals.map { it.nanoseconds },
             link.duplicated,
             link.clientSendsMoved.toList(),
+            probes.toList(),
         )
     }
 
@@ -204,6 +229,17 @@ internal class ConditionReplay(
     private suspend fun dumpMarks(client: ReplayClient) {
         client.connection.dumpFlight(TraceSink { event -> if (event is TraceEvent.PathState) marks += PathMarkAt(event.phase, event.at) })
     }
+
+    /** The client's quiche, its silence watch's reads of the active path recorded. */
+    private fun recording(api: QuicheApi): QuicheApi =
+        object : QuicheApi by api {
+            override fun connActivePathProbes(conn: QuicheConn): Long =
+                api.connActivePathProbes(conn).also { bits ->
+                    ActiveProbes(bits).fold(none = { Unit }, read = { index, expiries ->
+                        probes += ProbeRead(script(clock.at.value), index, expiries)
+                    })
+                }
+        }
 
     private fun advanceTo(
         api: com.ditchoom.socket.quic.QuicheApi,

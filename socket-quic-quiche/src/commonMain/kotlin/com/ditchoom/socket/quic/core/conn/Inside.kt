@@ -10,6 +10,7 @@ import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.ConnLife
 import com.ditchoom.socket.quic.core.life.Life
 import com.ditchoom.socket.quic.core.life.SpareId
+import com.ditchoom.socket.quic.core.path.Rebind
 import com.ditchoom.socket.quic.core.path.Want
 import com.ditchoom.socket.quic.core.sched.LoopPort
 import com.ditchoom.socket.quic.core.stream.StreamTable
@@ -64,11 +65,16 @@ internal class Inside(
     fun network(change: NetworkChange) = turn.network(clock.now(), change)
 
     /** The client's socket is wanted on [wanted]'s address: it moves once the path from there can be probed. */
-    fun moveWanted(wanted: MoveWanted) =
+    fun moveWanted(wanted: MoveWanted) {
+        c.renewRebinds(clock.now(), Rebind.To(wanted.bind, wanted.prior))
         when (c.want(clock.now(), wanted)) {
             Want.Moving, Want.Waiting -> Unit
             Want.NoUsablePath -> end(ConnEnd.NoUsablePath)
         }
+    }
+
+    /** The client's path was read silent: its socket is wanted on a fresh port of [wanted]'s address, if still silent. */
+    fun rebind(wanted: MoveWanted) = c.rebind(clock.now(), wanted)
 
     /** The network refused the first of the connection's datagrams it was handed: a handshake it denies ends now. */
     fun sendsRefused() =
@@ -82,7 +88,8 @@ internal class Inside(
         }
 
     /** The client's loop refused the move it was asked for, as [why] says: the connection stays on its socket. */
-    fun moveRefused(why: MoveRefusal) =
+    fun moveRefused(why: MoveRefusal) {
+        c.openRefused()
         c.flight.path(
             clock.now(),
             when (why) {
@@ -90,12 +97,16 @@ internal class Inside(
                 is MoveRefusal.SocketLent -> PathMark.LentRefused
             },
         )
+    }
 
     /** The client's loop lost the second socket [ticket] names: the move it served ends, the connection stays. */
     fun secondLost(ticket: SocketTicket) = c.secondLost(clock.now(), ticket)
 
     /** The client's loop opened a second socket, which leaves from [to]. */
-    fun moved(to: MoveTo) = turn.moved(clock.now(), to)
+    fun moved(to: MoveTo) {
+        turn.moved(clock.now(), to)
+        c.openAnswered()
+    }
 
     /** A client's first flight, held for its 0-RTT, may leave. */
     fun releaseFirstFlight() = turn.releaseFirstFlight()
