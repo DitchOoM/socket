@@ -26,8 +26,8 @@ class MigrateBackTests {
                 assertTrue("Validated(endpoint $MOVED_TO)" in validated, "the new path validated: $validated")
                 val moved = assertIs<MigrateOutcome.Migrated>(pair.migrate(MOVED_TO), "the validated path takes the connection")
                 assertTrue(moved.dcidSeq > 0, "the move took a new id")
-                val back =
-                    assertIs<MigrateOutcome.Migrated>(pair.migrate(ORIGINAL), "quiche refused the path it just left: ${pair.pathTable(pair.client)}")
+                val paths = pair.pathTable(pair.client)
+                val back = assertIs<MigrateOutcome.Migrated>(pair.migrate(ORIGINAL), "quiche refused the path it just left: $paths")
                 assertEquals(0L, back.dcidSeq, "the old path's own id carries it again")
                 assertEquals(0, pair.retireDcid(moved.dcidSeq), "the new path's id is retired")
                 assertEquals(SENT, pair.echoThrough(), "the old path carries the connection")

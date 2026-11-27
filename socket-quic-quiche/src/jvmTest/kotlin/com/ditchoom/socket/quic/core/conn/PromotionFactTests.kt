@@ -68,7 +68,10 @@ class PromotionFactTests {
         f.stub.connMigrateOutcomes.addLast(MigrateOutcome.Rejected(INVALID_STATE))
         val ticket = f.migrate()
         f.work(SecondLostWork(ticket))
-        assertSame(ConnEnd.LocalAddressGone, f.rig.sink.ended.single())
+        val end =
+            f.rig.sink.ended
+                .single()
+        assertSame(ConnEnd.LocalAddressGone, end, "a landing quiche could not leave ended as something else")
     }
 
     /** A move wanted while landing asks for its socket only once the loop promoted the landing's. */
