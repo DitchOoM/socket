@@ -164,6 +164,16 @@ internal class VirtualPair private constructor(
     /** Whether reopening the client's second socket fails, as at an address its new network does not hold. */
     var refuseSecondReopen = false
 
+    /** Whether reopening the client's carrying socket fails, as at an address its new network does not hold. */
+    var refuseCarryingReopen = false
+
+    /** How many times the client's loop reopened its carrying socket. */
+    var carryingReopens = 0
+        private set
+
+    /** The addresses the client's next second sockets bind to, as on another interface; its own address when empty. */
+    val moveHosts = ArrayDeque<PathKey>()
+
     /** How the client's second socket reads. */
     var secondReads = SecondReads.Normally
 
@@ -407,7 +417,15 @@ internal class VirtualPair private constructor(
 
         override fun probe(): SocketProbe = SocketProbe.Open
 
-        override fun reopen(): Reopened = Reopened.SameEndpoint
+        override fun reopen(): Reopened {
+            if (end == End.Server) return Reopened.SameEndpoint
+            carryingReopens++
+            return if (refuseCarryingReopen) {
+                Reopened.Refused(Thrown(java.net.BindException("Can't assign requested address")))
+            } else {
+                Reopened.SameEndpoint
+            }
+        }
 
         /**
          * The client's second socket opens on the next port, or on the port a test queued ([movePorts]): the server sees
@@ -420,7 +438,8 @@ internal class VirtualPair private constructor(
             opensAsked++
             if (refuseOpens) return Beside.Refused(Thrown(java.net.BindException("Can't assign requested address")))
             if (opensArriveThenFail || opensStayInTheMaking) return Beside.Arriving
-            val key = clientKey.copy(port = movePorts.removeFirstOrNull() ?: (maxOf(clientKey.port, nextPort) + 1))
+            val host = moveHosts.removeFirstOrNull() ?: clientKey
+            val key = host.copy(port = movePorts.removeFirstOrNull() ?: (maxOf(clientKey.port, nextPort) + 1))
             nextPort = key.port
             // A second opened while one is still open would be a third socket.
             clientSockets = if (second == null) 2 else 3
