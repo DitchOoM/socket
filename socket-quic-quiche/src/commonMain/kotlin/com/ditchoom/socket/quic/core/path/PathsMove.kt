@@ -51,6 +51,9 @@ internal enum class MoveAnswer {
 
     /** The peer gave no spare id and is silent, so none can come: the connection cannot follow its socket. */
     NoUsablePath,
+
+    /** The socket is not the one the connection awaits: an earlier ask's, given up or replaced. Nothing changes. */
+    Stale,
 }
 
 /** What one serve's look at the paths found. */

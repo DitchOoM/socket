@@ -182,7 +182,7 @@ internal fun Paths.endOf(end: ConnEnd): ConnEnd =
 /**
  * Inside: a client's second socket leaves from [to]'s address. The connection probes the path from it and migrates once
  * it is validated, the carrying socket carrying until then; before its handshake is confirmed (RFC 9000 §9), or when
- * the peer forbade migration, it cannot follow.
+ * the peer forbade migration, it cannot follow. A socket of an ask the connection no longer awaits changes nothing.
  */
 internal fun ConnParts.follow(
     now: Nanos,
@@ -193,20 +193,16 @@ internal fun ConnParts.follow(
             is Paths.Client -> paths.paths
             is Paths.Server -> return MoveAnswer.Following
         }
-    network.moved()
-    slots.ack.mustWrite()
-    val answer =
-        when (handshake.confirmation()) {
-            Confirmation.Pending -> client.decline(to.ticket)
-            Confirmation.Confirmed -> client.move(now, to.local, to.prior, to.ticket)
-        }
-    flight.path(
-        now,
+    val answer = client.move(now, to.local, to.prior, to.ticket, gate())
+    val mark =
         when (answer) {
             MoveAnswer.Following -> PathMark.Moved
             MoveAnswer.Refused, MoveAnswer.NoUsablePath -> PathMark.Refused
-        },
-    )
+            MoveAnswer.Stale -> return answer
+        }
+    network.moved()
+    slots.ack.mustWrite()
+    flight.path(now, mark)
     return answer
 }
 

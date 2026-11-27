@@ -1,6 +1,8 @@
 package com.ditchoom.socket.quic.core.loop
 
 import com.ditchoom.socket.quic.core.conn.Conn
+import com.ditchoom.socket.quic.core.conn.NetworkChange
+import com.ditchoom.socket.quic.core.conn.NetworkWork
 import com.ditchoom.socket.quic.core.conn.SendsRefusedWork
 import com.ditchoom.socket.quic.core.demux.ServerPhase
 import com.ditchoom.socket.quic.core.life.ConnEnd
@@ -64,6 +66,13 @@ internal fun Route.endWith(end: ConnEnd) =
     when (this) {
         is Route.Fixed -> conn.endWithLoop(end)
         is Route.Demux -> demux.endAll(end)
+    }
+
+/** A client's connection is told its socket was reopened on the network up now. */
+internal fun Route.rehomed() =
+    when (this) {
+        is Route.Fixed -> conn.submitFromLoop(NetworkWork(NetworkChange.Rehomed))
+        is Route.Demux -> Unit
     }
 
 /**

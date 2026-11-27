@@ -2,13 +2,18 @@
 
 package com.ditchoom.socket.quic.core.path
 
+import com.ditchoom.buffer.BufferFactory
 import com.ditchoom.socket.quic.EncodedSockAddr
 import com.ditchoom.socket.quic.MigrateOutcome
+import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.ProbeOutcome
 import com.ditchoom.socket.quic.QuicheRecvInfo
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.time.RttPrior
 import com.ditchoom.socket.quic.core.udp.SockAddr
+import com.ditchoom.socket.quic.core.udp.SocketTicket
+import com.ditchoom.socket.quic.decodePathKey
+import com.ditchoom.socket.quic.encodeToNative
 
 /** A client's quiche path calls toward its one peer, each named by the local endpoint it leaves from. */
 internal class TowardPeer(
@@ -37,7 +42,18 @@ internal class TowardPeer(
         q.api.connRequeuePath(q.handle, local.address, local.length, first.peer.address, first.peer.length)
     }
 
-    fun recvInfoAt(local: EncodedSockAddr): QuicheRecvInfo =
+    /** The endpoint of the loop's socket [ticket], at [local], toward the peer over a network assumed [prior]. */
+    fun endpointAt(
+        local: PathKey,
+        prior: RttPrior,
+        ticket: SocketTicket,
+        factory: BufferFactory,
+    ): LocalAddr {
+        val sockAddr = local.encodeToNative(factory)
+        return LocalAddr(q.api.decodePathKey(sockAddr.address), recvInfoAt(sockAddr), Made.Here(sockAddr), prior, ticket, first.target)
+    }
+
+    private fun recvInfoAt(local: EncodedSockAddr): QuicheRecvInfo =
         q.api.recvInfoNew(first.peer.address, first.peer.length, local.address, local.length)
 
     private fun sockAddrOf(local: LocalAddr): SockAddr =

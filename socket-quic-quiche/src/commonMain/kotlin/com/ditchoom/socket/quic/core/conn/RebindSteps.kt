@@ -5,7 +5,9 @@ import com.ditchoom.socket.quic.core.path.ClientPaths
 import com.ditchoom.socket.quic.core.path.MoveGate
 import com.ditchoom.socket.quic.core.path.Rebind
 import com.ditchoom.socket.quic.core.path.Rebound
+import com.ditchoom.socket.quic.core.path.SecondHeld
 import com.ditchoom.socket.quic.core.time.Nanos
+import com.ditchoom.socket.quic.core.udp.SocketTicket
 
 // A client's rebinds of a silent path ([com.ditchoom.socket.quic.core.path.Rebinds]), served from its work and its turn.
 // A connection past its close point asks for no socket: quiche holds the close on the one it has.
@@ -37,11 +39,14 @@ internal fun ConnParts.renewRebinds(
     is Paths.Server -> Unit
 }
 
-/** Inside: the loop refused the second socket last asked for; a rebind waiting on it may ask again on its ladder. */
-internal fun ConnParts.openRefused() =
+/**
+ * Inside: the loop refused the socket [ticket] names. The move that asked for it ends, which the edge is told, and a
+ * rebind may ask again on its ladder; a refusal of an ask the connection no longer awaits is [SecondHeld.Stale].
+ */
+internal fun ConnParts.openRefused(ticket: SocketTicket): SecondHeld =
     when (val paths = slots.paths) {
-        is Paths.Client -> paths.paths.rebinds.refused()
-        is Paths.Server -> Unit
+        is Paths.Client -> paths.paths.refused(ticket).also { if (it == SecondHeld.Lost) paths.paths.rebinds.answered() }
+        is Paths.Server -> SecondHeld.Stale
     }
 
 /** Inside: the loop's second socket was followed or declined; one declined ended its move, which the edge is told. */
@@ -53,7 +58,8 @@ internal fun ConnParts.openAnswered() =
 
 private fun ConnParts.running(): Boolean = life.view() is Life.Running
 
-private fun ConnParts.gate(): MoveGate =
+/** Whether the handshake lets a client move yet (RFC 9000 §9). */
+internal fun ConnParts.gate(): MoveGate =
     when (handshake.confirmation()) {
         Confirmation.Pending -> MoveGate.Shut
         Confirmation.Confirmed -> MoveGate.Open

@@ -168,7 +168,7 @@ internal class SecondSocket(
         return if (input == ReceiveInput.Backlog) Promotion.PromotedWithBacklog else Promotion.Promoted
     }
 
-    /** The second socket [ticket] names is closed. */
+    /** The second socket [ticket] names is closed, open or still being made. */
     fun close(
         poller: Poller,
         seats: Loop,
@@ -176,7 +176,8 @@ internal class SecondSocket(
     ) {
         when (val now = sockets) {
             is Sockets.Two -> if (now.second == ticket) drop(poller, seats)
-            is Sockets.One, is Sockets.Opening -> Unit
+            is Sockets.Opening -> if (now.second == ticket) drop(poller, seats)
+            is Sockets.One -> Unit
         }
     }
 
@@ -291,10 +292,3 @@ internal class SecondSocket(
         }
     }
 }
-
-/** A client's connection is told its socket was reopened on the network up now. */
-internal fun Route.rehomed() =
-    when (this) {
-        is Route.Fixed -> conn.submitFromLoop(NetworkWork(NetworkChange.Rehomed))
-        is Route.Demux -> Unit
-    }
