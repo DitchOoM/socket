@@ -19,11 +19,13 @@ internal enum class Stamp {
     Other,
 }
 
-internal fun Held.against(network: NetworkId): Stamp =
-    when {
-        this.network == network -> Stamp.Same
-        this.network == NetworkId.Unidentified -> Stamp.Taken
-        else -> Stamp.Other
+internal fun Held.against(named: NetworkId): Stamp =
+    if (network == named) {
+        Stamp.Same
+    } else if (network == NetworkId.Unidentified) {
+        Stamp.Taken
+    } else {
+        Stamp.Other
     }
 
 /** The carrying socket, polled as [token], when [event] names it; one that cannot be reopened ends its connection. */

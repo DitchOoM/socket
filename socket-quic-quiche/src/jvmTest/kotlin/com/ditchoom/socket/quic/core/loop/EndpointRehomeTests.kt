@@ -1,10 +1,10 @@
 package com.ditchoom.socket.quic.core.loop
 
-import com.ditchoom.socket.quic.core.life.Life
-import com.ditchoom.socket.quic.core.edge.CloseWork
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.StubQuicheApi
+import com.ditchoom.socket.quic.core.edge.CloseWork
 import com.ditchoom.socket.quic.core.life.ConnEnd
+import com.ditchoom.socket.quic.core.life.Life
 import com.ditchoom.socket.quic.core.testing.ConnRig
 import com.ditchoom.socket.quic.core.testing.FakeIo
 import com.ditchoom.socket.quic.core.udp.Reopened
