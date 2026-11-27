@@ -4,6 +4,7 @@ import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.appleHostInterfaceAddresses
 import com.ditchoom.socket.quic.core.edge.connectCore
 import com.ditchoom.socket.quic.core.edge.echoOver
+import com.ditchoom.socket.quic.core.edge.openStream
 import com.ditchoom.socket.quic.core.loop.LoopSet
 import com.ditchoom.socket.testkit.skip.SkipGate
 import com.ditchoom.socket.testkit.skip.SkipReason

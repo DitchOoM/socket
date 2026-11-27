@@ -48,7 +48,10 @@ class MoveAskedTests {
         f.api.timedOut = true
         f.api.closed = true
         f.rig.pass(5.seconds.inWholeNanoseconds)
-        assertSame(ConnEnd.IdleTimeout, f.rig.sink.ended.single(), "an ask the loop had not answered read as a move with no usable path")
+        val end =
+            f.rig.sink.ended
+                .single()
+        assertSame(ConnEnd.IdleTimeout, end, "an ask the loop had not answered read as a move with no usable path")
     }
 
     /** While the second socket is being made the path is calm and its address validated: the ACK may be held as on a settled path. */

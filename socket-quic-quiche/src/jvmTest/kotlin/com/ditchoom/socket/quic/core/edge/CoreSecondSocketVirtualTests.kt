@@ -216,7 +216,8 @@ class CoreSecondSocketVirtualTests {
             pair.opensStayInTheMaking = true
             pair.deadClientPorts += pair.clientPort()
             launch { runCatching { echo(pair) } }
-            pair.runUntil(within = 20.seconds) { pair.client.parts.news.read() == PathNews.Silent }
+            val news = pair.client.parts.news
+            pair.runUntil(within = 20.seconds) { news.read() == PathNews.Silent }
             pair.client.parts.rebind(ANY, RttPrior.CONFIGURED)
             // Rungs fall due 250 ms, 500 ms, 1 s, 2 s and 4 s after the ask.
             pair.runFor(10.seconds)
