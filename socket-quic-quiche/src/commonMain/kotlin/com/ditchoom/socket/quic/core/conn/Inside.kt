@@ -66,8 +66,15 @@ internal class Inside(
 
     fun network(change: NetworkChange) = turn.network(clock.now(), change)
 
-    /** The client's socket is wanted on [wanted]'s address: it moves once the path from there can be probed. */
+    /**
+     * The client's socket is wanted on [wanted]'s address: it moves once the path from there can be probed. A closing
+     * connection asks for no socket: quiche holds the close on the one it has.
+     */
     fun moveWanted(wanted: MoveWanted) {
+        when (life.view()) {
+            is Life.Running -> Unit
+            is Life.Closing, is Life.Over -> return
+        }
         c.renewRebinds(clock.now(), Rebind.To(wanted.bind, wanted.prior))
         when (c.want(clock.now(), wanted)) {
             Want.Moving, Want.Waiting -> Unit

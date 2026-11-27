@@ -113,12 +113,18 @@ internal class Rebinds(
         gate: MoveGate,
     ): Rebound {
         settle()
-        if (owner == Owner.Rebind && moving() == Moving.Open && silence.now() is PathNews.Answering) {
-            // The carrying path proved the rebind needless: the next one waits twice as long again.
-            ladder = wasted(ladder)
-            giveUp()
-            settle()
-            return Rebound.GaveUp
+        if (owner == Owner.Rebind && silence.now() is PathNews.Answering) {
+            when (moving()) {
+                Moving.Open -> {
+                    // The carrying path proved the rebind needless: the next one waits twice as long again.
+                    ladder = wasted(ladder)
+                    giveUp()
+                    settle()
+                    return Rebound.GaveUp
+                }
+                // Nothing open to give up, or a landing quiche already made.
+                Moving.Settled, Moving.Landing -> Unit
+            }
         }
         val owed =
             when (val was = ladder) {
