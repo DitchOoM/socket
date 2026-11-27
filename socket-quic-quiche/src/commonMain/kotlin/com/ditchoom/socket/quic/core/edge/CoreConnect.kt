@@ -39,7 +39,6 @@ import com.ditchoom.socket.quic.core.udp.SocketBuffers
 import com.ditchoom.socket.quic.core.udp.SocketPeer
 import com.ditchoom.socket.quic.encodeToNative
 import com.ditchoom.socket.quic.generateScid
-import com.ditchoom.socket.quic.hostLiteral
 import com.ditchoom.socket.quic.hostSockAddrLayout
 import com.ditchoom.socket.quic.keyLogDirectory
 import com.ditchoom.socket.quic.nameTrafficSecretsLog
@@ -202,7 +201,8 @@ private suspend fun OnSetupLane.connectOnLane(
     moved(opened)
     val local = socket.local()
     val monitor = resolveNetworkMonitor(options.networkMonitor)
-    val handshake = clientHandshakeRule(options, linkClassOf(monitor.state.value.networkId))
+    val openedOn = monitor.state.value.networkId
+    val handshake = clientHandshakeRule(options, linkClassOf(openedOn))
     val peerSockAddr = codec.encodeToNative(peer, factory)
     moved(ClientSetup.PeerEncoded(opened, peerSockAddr))
     val localSockAddr = local.encodeToNative(factory)
@@ -263,6 +263,7 @@ private suspend fun OnSetupLane.connectOnLane(
                     mismatch = mismatch,
                     capture = capture,
                     silence = ride.silenceOn(options.migration, monitor),
+                    openedOn = openedOn,
                 ),
                 peerSockAddr,
                 localSockAddr,
@@ -282,7 +283,7 @@ private suspend fun OnSetupLane.connectOnLane(
     moved(ClientSetup.Started(started))
     built.start()
     ride.followsNetwork {
-        scope.feedNetwork(monitor, ClientFeed(connection, built), { routeSource(route) }, local.hostLiteral(), onMoveOf(options.migration))
+        scope.feedNetwork(monitor, ClientFeed(connection, built), { routeSource(route) }, onMoveOf(options.migration))
     }
     return started
 }

@@ -4,6 +4,7 @@ import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.testing.ConnRig
 import com.ditchoom.socket.quic.core.testing.FakeIo
+import com.ditchoom.socket.quic.core.testing.TEST_NETWORK
 import com.ditchoom.socket.quic.core.time.RttPrior
 import com.ditchoom.socket.quic.core.udp.Beside
 import com.ditchoom.socket.quic.core.udp.ReceiveBatchResult
@@ -65,12 +66,12 @@ class CarriageTableTests {
                 State.Opening -> {
                     io.besideAnswer = Beside.Arriving
                     io.settleAnswer = Beside.Arriving
-                    rig.loop.move(rig.endpoint, ASKED, BIND, RttPrior.CONFIGURED)
+                    rig.loop.move(rig.endpoint, ASKED, BIND, RttPrior.CONFIGURED, TEST_NETWORK)
                     passes(1)
                 }
                 State.Two, State.Dead -> {
                     io.besideAnswer = Beside.Opened(LOCAL)
-                    rig.loop.move(rig.endpoint, ASKED, BIND, RttPrior.CONFIGURED)
+                    rig.loop.move(rig.endpoint, ASKED, BIND, RttPrior.CONFIGURED, TEST_NETWORK)
                     passes(1)
                     // The carrying socket dies in the pass the event is handed in, so the event meets the dead state.
                     if (state ==
@@ -91,19 +92,19 @@ class CarriageTableTests {
             passes: Int = SETTLE,
         ) {
             when (event) {
-                Event.OpenBeside -> rig.loop.move(rig.endpoint, ASKED.next(), BIND, RttPrior.CONFIGURED)
+                Event.OpenBeside -> rig.loop.move(rig.endpoint, ASKED.next(), BIND, RttPrior.CONFIGURED, TEST_NETWORK)
                 Event.Promote -> rig.loop.promote(rig.endpoint, ASKED)
                 Event.PromoteStale -> rig.loop.promote(rig.endpoint, STALE)
                 Event.CloseSecond -> rig.loop.closeSecond(rig.endpoint, ASKED)
                 Event.CloseStale -> rig.loop.closeSecond(rig.endpoint, STALE)
-                Event.Rehome -> rig.loop.rehome(rig.endpoint)
+                Event.Rehome -> rig.rehome()
                 Event.RehomeBesideRefused -> {
                     io.reopenSecondAnswer = Reopened.Refused(Thrown(IOException("no network for the second")))
-                    rig.loop.rehome(rig.endpoint)
+                    rig.rehome()
                 }
                 Event.RehomeCarryingRefused -> {
                     io.reopenAnswer = Reopened.Refused(Thrown(IOException("no network for the carrying")))
-                    rig.loop.rehome(rig.endpoint)
+                    rig.rehome()
                 }
                 Event.BesideLost -> {
                     io.secondReceiveAnswer = ReceiveBatchResult.Failed(UdpError.SocketClosed)

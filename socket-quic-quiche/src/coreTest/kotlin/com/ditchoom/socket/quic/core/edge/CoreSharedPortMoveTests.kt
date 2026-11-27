@@ -11,9 +11,9 @@ import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicListener
 import com.ditchoom.socket.quic.QuicServe
 import com.ditchoom.socket.quic.QuicSessionStore
-import com.ditchoom.socket.quic.core.conn.MoveWanted
 import com.ditchoom.socket.quic.core.conn.MoveWantedWork
 import com.ditchoom.socket.quic.core.loop.LoopSet
+import com.ditchoom.socket.quic.core.path.MoveWanted
 import com.ditchoom.socket.quic.core.testing.coreTest
 import com.ditchoom.socket.quic.core.testing.platformQuicheApi
 import com.ditchoom.socket.quic.core.testing.platformTlsConfig
@@ -64,7 +64,7 @@ class CoreSharedPortMoveTests {
                     )
                 val connection = client.connection.public()
                 assertSharedPortEchoes(connection, 0)
-                client.conn.submit(MoveWantedWork(MoveWanted(PathKey(4, 0, 0L, LOOPBACK_V4), RttPrior.CONFIGURED)))
+                client.conn.submit(MoveWantedWork(MoveWanted(PathKey(4, 0, 0L, ANOTHER_V4), RttPrior.CONFIGURED)))
                 val marks = awaitMark(client, "LentRefused")
                 assertTrue("Moved" !in marks && "OpenRefused" !in marks, "no second socket was asked for beside the lent one: $marks")
                 assertSharedPortEchoes(connection, 1)
@@ -98,7 +98,9 @@ class CoreSharedPortMoveTests {
 
     private companion object {
         const val LOOPBACK = "127.0.0.1"
-        const val LOOPBACK_V4 = 0x7F000001L
+
+        /** An address the lent socket is not on: a want for the one it carries on would be served as it is. */
+        const val ANOTHER_V4 = 0x7F000002L
         val WAIT = 10.seconds
     }
 }

@@ -113,6 +113,7 @@ internal class ConditionReplay(
                 server.port,
                 seed,
                 linkClassOf(monitor.state.value.networkId),
+                monitor.state.value.networkId,
             )
         link.client = client.local
         client.parts.start()
@@ -120,7 +121,6 @@ internal class ConditionReplay(
             monitor,
             ClientFeed(client.connection, client.parts),
             { monitor.routeSource() },
-            LOCALHOST,
             onMoveOf(options.migration),
             coroutineContext.minusKey(Job),
             // The route's address, a literal, read without leaving the replay's thread; the link picks the port.

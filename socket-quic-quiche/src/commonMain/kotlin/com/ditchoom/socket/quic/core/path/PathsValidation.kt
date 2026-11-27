@@ -70,7 +70,7 @@ internal class MoveValidation(
         stranded: Move.Stranded,
     ): PathStep {
         if (stranded.why == Unprobed.ValidationFailed && events.verdict(stranded.at.key) == PathVerdict.Validated) {
-            return migrate(now, stranded.from, stranded.at, stranded.id, stranded.retry.failed)
+            return migrate(now, stranded.from, stranded.at, stranded.id, stranded.retry.failed, stranded.toward)
         }
         if (now.value < stranded.retry.due.value) return PathStep.Steady
         if (stranded.retry.failed >= ABANDON_AFTER_FAILURES && state.carryingHeard == Answered.Yes) {
@@ -80,13 +80,13 @@ internal class MoveValidation(
         costs.topUp()
         val hearing = ears.judge(now)
         return when (stranded.why) {
-            Unprobed.MigrationRefused -> migrate(now, stranded.from, stranded.at, LinkedId.None, stranded.retry.failed)
+            Unprobed.MigrationRefused -> migrate(now, stranded.from, stranded.at, LinkedId.None, stranded.retry.failed, stranded.toward)
             Unprobed.NoSpareId, Unprobed.ValidationFailed -> {
                 when (val probed = peer.probe(stranded.at)) {
                     is ProbeOutcome.Probed -> {
                         state.validating()
                         val linked = Linked(stranded.at, probed.dcidSeq)
-                        state.stands(Move.Probing(stranded.from, linked, stranded.retry.failed, q.cadenceFrom(now)))
+                        state.stands(Move.Probing(stranded.from, linked, stranded.retry.failed, q.cadenceFrom(now), stranded.toward))
                     }
                     is ProbeOutcome.Rejected -> {
                         if (stranded.why == Unprobed.NoSpareId && probed.endsMove(hearing)) return PathStep.NoUsablePath
@@ -103,7 +103,8 @@ internal class MoveValidation(
         probing: Move.Probing,
     ): PathStep =
         when (events.verdict(probing.to.local.key)) {
-            PathVerdict.Validated -> migrate(now, probing.from, probing.to.local, LinkedId.Seq(probing.to.dcidSeq), probing.failed)
+            PathVerdict.Validated ->
+                migrate(now, probing.from, probing.to.local, LinkedId.Seq(probing.to.dcidSeq), probing.failed, probing.toward)
             PathVerdict.Failed -> giveUp(now, probing)
             PathVerdict.Undecided -> tend(now, probing)
             PathVerdict.Unreadable -> PathStep.Steady
@@ -118,7 +119,7 @@ internal class MoveValidation(
         if (now.value < probing.cadence.challengeDue.value) return PathStep.Steady
         return when (peer.probe(probing.to.local)) {
             is ProbeOutcome.Probed -> {
-                state.stands(Move.Probing(probing.from, probing.to, probing.failed, probing.cadence.challenged(now)))
+                state.stands(Move.Probing(probing.from, probing.to, probing.failed, probing.cadence.challenged(now), probing.toward))
                 PathStep.Challenged
             }
             is ProbeOutcome.Rejected -> giveUp(now, probing)
@@ -138,7 +139,8 @@ internal class MoveValidation(
             return PathStep.Abandoned
         }
         val retry = validationRetryAt(now, probing.failed + 1)
-        state.stands(Move.Stranded(probing.from, probing.to.local, Unprobed.ValidationFailed, retry, LinkedId.Seq(probing.to.dcidSeq)))
+        val id = LinkedId.Seq(probing.to.dcidSeq)
+        state.stands(Move.Stranded(probing.from, probing.to.local, Unprobed.ValidationFailed, retry, id, probing.toward))
         return PathStep.ProbeFailed
     }
 
@@ -149,17 +151,18 @@ internal class MoveValidation(
         to: LocalAddr,
         id: LinkedId,
         failed: Int,
+        toward: MoveWanted,
     ): PathStep =
         when (val migrated = peer.migrate(to)) {
             is MigrateOutcome.Migrated -> {
                 costs.promote(to.socket)
-                state.stands(Move.Landing(from, Linked(to, migrated.dcidSeq)))
+                state.stands(Move.Landing(from, Linked(to, migrated.dcidSeq), toward))
                 silence.migrated(now)
                 PathStep.Migrated
             }
             is MigrateOutcome.Rejected -> {
                 q.retire(id)
-                state.stands(Move.Stranded(from, to, Unprobed.MigrationRefused, q.retryAt(now, failed + 1), LinkedId.None))
+                state.stands(Move.Stranded(from, to, Unprobed.MigrationRefused, q.retryAt(now, failed + 1), LinkedId.None, toward))
                 PathStep.Steady
             }
         }

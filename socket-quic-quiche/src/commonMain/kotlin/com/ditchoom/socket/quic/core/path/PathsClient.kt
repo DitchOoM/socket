@@ -54,18 +54,18 @@ internal class ClientPaths(
      * up: the move waits until the loop promoted or lost its socket.
      */
     val hold =
-        MoveHold(q, ears) { bind, prior ->
+        MoveHold(q, ears) { wanted ->
             when (val now = move) {
                 is Move.Landing -> Opening.AfterLanding
-                is Move.Settled -> ask(now.on, bind, prior)
+                is Move.Settled -> ask(now.on, wanted)
                 // Before the new socket's open is asked, so no promotion of the old probe can follow it to the loop.
-                is Move.Unfinished -> ask(costs.abandon(now), bind, prior)
+                is Move.Unfinished -> ask(costs.abandon(now), wanted)
             }
         }
 
     /** The rebinds the active path's silence asks for, each through [hold]; one it gives up drops an unfinished move. */
     val rebinds: Rebinds =
-        Rebinds(q, silence, hold, { move.moving(hold.held) }, { move.carrying().key }) {
+        Rebinds(q, silence, hold, { move.moving(hold.held) }) {
             when (val now = move) {
                 is Move.Unfinished -> move = Move.Settled(costs.abandon(now))
                 is Move.Settled, is Move.Landing -> Unit
@@ -126,11 +126,11 @@ internal class ClientPaths(
         state.validating()
         return when (val probed = peer.probe(at)) {
             is ProbeOutcome.Probed -> {
-                move = Move.Probing(from, Linked(at, probed.dcidSeq), 0, q.cadenceFrom(now))
+                move = Move.Probing(from, Linked(at, probed.dcidSeq), 0, q.cadenceFrom(now), asked.toward)
                 MoveAnswer.Following
             }
             is ProbeOutcome.Rejected -> {
-                move = Move.Stranded(from, at, Unprobed.NoSpareId, q.retryAt(now, 0), LinkedId.None)
+                move = Move.Stranded(from, at, Unprobed.NoSpareId, q.retryAt(now, 0), LinkedId.None, asked.toward)
                 if (probed.endsMove(hearing)) MoveAnswer.NoUsablePath else MoveAnswer.Following
             }
         }
@@ -232,15 +232,37 @@ internal class ClientPaths(
         events.free()
     }
 
-    /** Asks the loop for the socket a move to [bind]'s address leaves from, the connection carrying on [from] until then. */
+    /**
+     * Whether a move open now already goes where [wanted] says, toward its address on its network: the move waiting for
+     * a spare id or a landing to end, else the one unfinished or landing. With no move open, a want for the address the
+     * connection carries on is served, on whatever network it names: a network change there is the edge's to rehome.
+     */
+    fun serves(wanted: MoveWanted): Served {
+        val open =
+            when (val held = hold.held) {
+                is HeldMove.Waiting -> held.wanted
+                is HeldMove.None ->
+                    when (val now = move) {
+                        is Move.Settled ->
+                            return now.on.local.key
+                                .carries(wanted)
+                        is Move.Asked -> now.toward
+                        is Move.Probing -> now.toward
+                        is Move.Stranded -> now.toward
+                        is Move.Landing -> now.toward
+                    }
+            }
+        return open.serves(wanted)
+    }
+
+    /** Asks the loop for the socket a move where [wanted] says leaves from, the connection carrying on [from] until then. */
     private fun ask(
         from: Linked,
-        bind: PathKey,
-        prior: RttPrior,
+        wanted: MoveWanted,
     ): Opening {
         val ticket = costs.nextTicket()
-        move = Move.Asked(from, ticket).also { rebinds.opening() }
-        costs.open(ticket, bind, prior)
+        move = Move.Asked(from, ticket, wanted).also { rebinds.opening() }
+        costs.open(ticket, wanted)
         return Opening.Asked
     }
 }

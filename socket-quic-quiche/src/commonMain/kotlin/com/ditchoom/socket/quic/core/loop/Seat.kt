@@ -1,5 +1,6 @@
 package com.ditchoom.socket.quic.core.loop
 
+import com.ditchoom.socket.quic.core.conn.CarriedCell
 import com.ditchoom.socket.quic.core.observe.LoopOnly
 import com.ditchoom.socket.quic.core.ready.Poller
 
@@ -9,9 +10,16 @@ import com.ditchoom.socket.quic.core.ready.Poller
  * second socket. Each one's `take` is the only place its state is written. The loop thread only.
  */
 internal sealed interface Seat {
-    /** A client's: its carrying socket and a second one its moves open, stepped by [Carriage.on]. */
+    /**
+     * A client's: its carrying socket and a second one its moves open, stepped by [Carriage.on]. Each step that leaves
+     * another socket carrying, or the same one held on another network, publishes it to the [route]'s cell, once,
+     * while its connection runs: past the close point nothing reads where it went.
+     */
     @LoopOnly
-    class OfClient : Seat {
+    class OfClient(
+        private val route: Route.Fixed,
+    ) : Seat {
+        private val carried: CarriedCell = route.carried
         var carriage: Carriage = Carriage.Unplaced
             private set
 
@@ -22,7 +30,28 @@ internal sealed interface Seat {
             poller: Poller,
             seats: Loop,
             endpoint: Endpoint,
-        ): Step<Carriage> = carriage.on(event, io, poller, seats, endpoint).also { carriage = it.nextOr(carriage) }
+        ): Step<Carriage> {
+            val was = carriage
+            val step = was.on(event, io, poller, seats, endpoint)
+            carriage = step.nextOr(was)
+            publish(was, carriage)
+            return step
+        }
+
+        /** Publishes the socket [now] carries on unless [was] carried on it: a promoted one at its own address. */
+        private fun publish(
+            was: Carriage,
+            now: Carriage,
+        ) {
+            val held =
+                when (val on = now.carryingNow()) {
+                    is Carrying.None -> return
+                    is Held -> on
+                }
+            if (held === was.carryingNow() || !route.runs()) return
+            val local = if (was is Carriage.Two && was.beside === held) was.at else carried.read().local
+            carried.carries(held.ticket, local, held.network)
+        }
     }
 
     /** A server's: one socket, stepped by [Carriage.Single.held]. */

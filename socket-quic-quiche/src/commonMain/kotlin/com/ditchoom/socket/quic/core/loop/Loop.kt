@@ -76,9 +76,6 @@ internal class Loop(
     /** Any thread: [endpoint] joins this loop; its connection may start once this returns. */
     fun place(endpoint: Endpoint) = port.submit(PlaceWork(this, endpoint))
 
-    /** Any thread: [endpoint]'s socket is reopened on the network that carries its address now (see [Endpoint.rehome]). */
-    fun rehome(endpoint: Endpoint) = port.submit(RehomeWork(this, endpoint))
-
     /** Any thread: a connection its set placed here ended before it joined: the seat it was counted for is given back. */
     fun seatGivenBack() = connections.decrement()
 

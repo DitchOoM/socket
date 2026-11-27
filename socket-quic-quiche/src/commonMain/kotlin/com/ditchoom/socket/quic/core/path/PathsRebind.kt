@@ -2,13 +2,11 @@
 
 package com.ditchoom.socket.quic.core.path
 
-import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.PeerMigrationPermission
 import com.ditchoom.socket.quic.connPeerMigrationPermission
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.observe.Confined
 import com.ditchoom.socket.quic.core.time.Nanos
-import com.ditchoom.socket.quic.core.time.RttPrior
 import com.ditchoom.socket.quic.core.time.Span
 import com.ditchoom.socket.quic.core.time.WakeSink
 import com.ditchoom.socket.quic.core.time.since
@@ -64,8 +62,7 @@ private enum class Busy { No, Yes }
  * asked while a move is open ([moving]), which it is from the ask on. The carrying path answering while a
  * rebind's move is still open gives that move up: it was loss, not a dead path, and migrating would only restart the
  * path's recovery. Every ask goes through [MoveHold.moveNow], the one way a client's socket moves; a move the
- * connection cannot make leaves it on the socket it has. Each move that ends, landed or not, is told to the edge
- * ([HomeCell.settled]), which holds no guess of where the socket is. Inside the connection only.
+ * connection cannot make leaves it on the socket it has. Inside the connection only.
  */
 @Confined
 internal class Rebinds(
@@ -73,40 +70,38 @@ internal class Rebinds(
     private val silence: PathSilence,
     private val hold: MoveHold,
     private val moving: () -> Moving,
-    private val carrying: () -> PathKey,
     private val giveUp: () -> Unit,
 ) {
     private var ladder: Ladder = Ladder.Fresh
     private var owner = Owner.Monitor
     private var busy = Busy.No
 
-    /** The edge read the path silent and asks at [now] for a fresh port on [bind]'s address, assumed [prior]. */
+    /** The edge read the path silent and asks at [now] for a fresh port where [wanted] says. */
     fun asked(
         now: Nanos,
-        bind: PathKey,
-        prior: RttPrior,
+        wanted: MoveWanted,
         gate: MoveGate,
     ): Rebound {
         if (silence.now() is PathNews.Answering) {
             ladder = rest(ladder)
-            return Rebound.Stale.also { unmoved() }
+            return Rebound.Stale
         }
         val owed =
             when (val was = ladder) {
-                is Ladder.Fresh -> Ladder.Owed(bind, prior, now, FIRST_WAIT)
-                is Ladder.Rested -> Ladder.Owed(bind, prior, later(was.due, now), decayed(was.gap, now.since(was.due)))
-                is Ladder.Owed -> Ladder.Owed(bind, prior, was.due, was.gap)
+                is Ladder.Fresh -> Ladder.Owed(wanted, now, FIRST_WAIT)
+                is Ladder.Rested -> Ladder.Owed(wanted, later(was.due, now), decayed(was.gap, now.since(was.due)))
+                is Ladder.Owed -> Ladder.Owed(wanted, was.due, was.gap)
             }
         ladder = owed
         if (inFlight() == Busy.Yes) return Rebound.Served
-        if (now < owed.due) return Rebound.Held.also { unmoved() }
-        return fire(now, owed, gate)
+        if (now < owed.due) return Rebound.Held
+        return fire(now, owed, owed.wanted, gate)
     }
 
     /**
-     * Each serve at [now]: a move that ended is told to the edge; the path answering rests the ladder, and gives up a
-     * rebind's move that is still open, as the silence it answered is gone; a rung due while the path is silent and
-     * no move is open is asked, and the next one waits twice as long.
+     * Each serve at [now]: the path answering rests the ladder, and gives up a rebind's move that is still open, as the
+     * silence it answered is gone; a rung due while the path is silent and no move is open is asked, and the next one
+     * waits twice as long.
      */
     fun step(
         now: Nanos,
@@ -133,10 +128,10 @@ internal class Rebinds(
             }
         if (silence.now() is PathNews.Answering) {
             ladder = rest(owed)
-            return Rebound.Rested.also { unmoved() }
+            return Rebound.Rested
         }
         if (inFlight() == Busy.Yes || now < owed.due) return Rebound.Rested
-        return fire(now, owed, gate)
+        return fire(now, owed, owed.wanted.unnamed(), gate)
     }
 
     /** The connection asked its loop for a second socket, whoever wanted it: a move is open. */
@@ -168,8 +163,8 @@ internal class Rebinds(
                 is Ladder.Fresh, is Ladder.Rested -> Ladder.Fresh
                 is Ladder.Owed ->
                     when (bind) {
-                        is Rebind.Same -> Ladder.Owed(was.bind, was.prior, now + FIRST_WAIT.nanos, Span(FIRST_WAIT.nanos * 2))
-                        is Rebind.To -> Ladder.Owed(bind.bind, bind.prior, now + FIRST_WAIT.nanos, Span(FIRST_WAIT.nanos * 2))
+                        is Rebind.Same -> Ladder.Owed(was.wanted, now + FIRST_WAIT.nanos, Span(FIRST_WAIT.nanos * 2))
+                        is Rebind.To -> Ladder.Owed(bind.wanted, now + FIRST_WAIT.nanos, Span(FIRST_WAIT.nanos * 2))
                     }
             }
     }
@@ -190,28 +185,18 @@ internal class Rebinds(
             Moving.Settled -> Busy.No
         }
 
-    /**
-     * An ask that opened nothing (the path answered first, the rung is not due, the peer forbids a move, or the
-     * connection cannot make one yet): the edge is told where the socket is, so it awaits no move that will not come.
-     */
-    private fun unmoved() {
-        if (inFlight() == Busy.No) silence.home.settled(carrying())
-    }
-
-    /** A move that was open and is now ended, landed or not: the edge is told where the socket is. */
+    /** A move that was open and is now ended, landed or not: the next one is the monitor's until a rebind asks. */
     private fun settle() {
         val now = inFlight()
-        if (busy == Busy.Yes && now == Busy.No) {
-            owner = Owner.Monitor
-            silence.home.settled(carrying())
-        }
+        if (busy == Busy.Yes && now == Busy.No) owner = Owner.Monitor
         busy = now
     }
 
-    /** The rung of [owed] is asked at [now]; once asked, the next falls due its gap later and waits twice as long after it. */
+    /** The rung of [owed] is asked at [now], where [wanted] says; once asked, the next falls due its gap later and waits twice as long after it. */
     private fun fire(
         now: Nanos,
         owed: Ladder.Owed,
+        wanted: MoveWanted,
         gate: MoveGate,
     ): Rebound {
         when (q.api.connPeerMigrationPermission(q.handle)) {
@@ -220,12 +205,12 @@ internal class Rebinds(
             is PeerMigrationPermission.Forbidden -> {
                 // Asked once per silence: the peer's answer does not change while the connection lives.
                 ladder = rest(owed)
-                return Rebound.Forbidden.also { unmoved() }
+                return Rebound.Forbidden
             }
         }
         if (gate == MoveGate.Shut || q.api.connAvailableDcids(q.handle) == 0L) return deferred(now, owed)
-        ladder = Ladder.Owed(owed.bind, owed.prior, now + owed.gap.nanos, Span(minOf(owed.gap.nanos * 2, LONGEST_WAIT.nanos)))
-        hold.moveNow(owed.bind, owed.prior)
+        ladder = Ladder.Owed(owed.wanted, now + owed.gap.nanos, Span(minOf(owed.gap.nanos * 2, LONGEST_WAIT.nanos)))
+        hold.moveNow(wanted)
         owner = Owner.Rebind
         return Rebound.Asked
     }
@@ -235,8 +220,7 @@ internal class Rebinds(
         now: Nanos,
         owed: Ladder.Owed,
     ): Rebound {
-        ladder = Ladder.Owed(owed.bind, owed.prior, now + FIRST_WAIT.nanos, owed.gap)
-        unmoved()
+        ladder = Ladder.Owed(owed.wanted, now + FIRST_WAIT.nanos, owed.gap)
         return Rebound.Deferred
     }
 

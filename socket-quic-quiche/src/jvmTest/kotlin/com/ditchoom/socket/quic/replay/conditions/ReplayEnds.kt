@@ -78,6 +78,7 @@ import com.ditchoom.socket.quic.core.udp.toPathKey
 import com.ditchoom.socket.quic.encodeAlpnList
 import com.ditchoom.socket.quic.generateScid
 import com.ditchoom.socket.quic.toNativeSockAddr
+import com.ditchoom.socket.transport.NetworkId
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.SupervisorJob
@@ -151,6 +152,7 @@ internal fun replayClient(
     serverPort: Int,
     seed: Long,
     link: LinkClass,
+    openedOn: NetworkId = NetworkId.Unidentified,
 ): ReplayClient {
     val memory = EdgeMemory(factory)
     val limits = BatchLimits(maxDatagrams = BATCH, maxDatagramSize = DATAGRAM)
@@ -252,6 +254,7 @@ internal fun replayClient(
             MismatchResponse.Fail,
             // The scripted monitor's network changes, and the replay migrates: the path's silence is judged.
             silence = Silence.On,
+            openedOn = openedOn,
         )
     val parts = ClientParts(wiring, peer, localAddress)
     val connection =

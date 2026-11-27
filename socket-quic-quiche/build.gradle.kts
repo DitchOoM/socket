@@ -6955,6 +6955,7 @@ val stageCoreAndroidTests =
         from("src/jvmTest/kotlin/com/ditchoom/socket/quic/core") {
             include(
                 "testing/ConnRig.kt",
+                "testing/TestCarried.kt",
                 "testing/FlightEvidenceRule.kt",
                 "testing/EchoQuiche.kt",
                 "testing/NioEcho.kt",

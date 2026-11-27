@@ -8,12 +8,15 @@ import com.ditchoom.socket.quic.core.demux.BoundedIo
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.PeerAddress
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
+import com.ditchoom.socket.quic.core.path.MoveWanted
 import com.ditchoom.socket.quic.core.path.SocketAsk
 import com.ditchoom.socket.quic.core.path.Want
 import com.ditchoom.socket.quic.core.testing.ConnRig
 import com.ditchoom.socket.quic.core.testing.stubClientPaths
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.time.RttPrior
+import com.ditchoom.socket.transport.NetworkId
+import com.ditchoom.socket.transport.NetworkKind
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertSame
@@ -62,9 +65,33 @@ class MoveWaitingTests {
     fun aMoveWaitingForASpareIdLeavesThePathCalm() {
         val paths = stubClientPaths(QuicheConnRef(StubQuicheApi(), QuicheConn(1L)))
         val client = (paths as Paths.Client).paths
-        assertEquals(Want.Waiting, client.hold.want(Nanos(0L), OTHER, RttPrior.CONFIGURED), "precondition: the move waits")
+        assertEquals(Want.Waiting, client.hold.want(Nanos(0L), MoveWanted(OTHER, RttPrior.CONFIGURED)), "precondition: the move waits")
         assertEquals(PathCalm.Settled, paths.calm(), "a move waiting for a spare id turned the ACK hold off")
         assertEquals(PeerAddress.Validated, paths.address())
+    }
+
+    /**
+     * A move that waited for a spare id is asked when the id comes, later than the reading that named its network: it
+     * names no network, and the loop takes the one the next rehome names.
+     */
+    @Test
+    fun aMoveReleasedAfterWaitingNamesNoNetwork() {
+        val f = Fixture()
+        f.rig.conn.submit(MoveWantedWork(MoveWanted(OTHER, RttPrior.CONFIGURED, NetworkId.Link(NetworkKind.Wifi, 5L))))
+        f.rig.pass(0)
+        assertEquals(emptyList(), f.asks, "precondition: the move waits for a spare id")
+        f.api.availableDcids = 1L
+        f.rig.conn.submit(
+            object : ConnWork() {
+                override fun run(inside: Inside) = Unit
+
+                override fun gone(end: ConnEnd) = Unit
+            },
+        )
+        f.rig.pass(1_000_000L)
+        val asked = f.asks.filterIsInstance<SocketAsk.OpenBeside>()
+        assertEquals(1, asked.size, "precondition: the spare id released the move: ${f.asks}")
+        assertEquals(NetworkId.Unidentified, asked.single().wanted.network, "a released move named the network of an old reading")
     }
 
     /** A client whose peer hands out no spare id, closing with one datagram, and a recorder of its socket asks. */

@@ -15,8 +15,8 @@ import com.ditchoom.socket.quic.core.udp.SocketTicket
  */
 internal fun Move.onNewNetwork(now: Nanos): Move =
     when (this) {
-        is Move.Stranded -> Move.Stranded(from, at, why, Retry(now, 0), id)
-        is Move.Probing -> Move.Probing(from, to, 0, cadence)
+        is Move.Stranded -> Move.Stranded(from, at, why, Retry(now, 0), id, toward)
+        is Move.Probing -> Move.Probing(from, to, 0, cadence, toward)
         is Move.Settled, is Move.Asked, is Move.Landing -> this
     }
 

@@ -218,7 +218,7 @@ class CoreSecondSocketVirtualTests {
             launch { runCatching { echo(pair) } }
             val news = pair.client.parts.news
             pair.runUntil(within = 20.seconds) { news.read() == PathNews.Silent }
-            pair.client.parts.rebind(ANY, RttPrior.CONFIGURED)
+            pair.client.parts.rebind(ANY, RttPrior.CONFIGURED, MOVE_NETWORK)
             // Rungs fall due 250 ms, 500 ms, 1 s, 2 s and 4 s after the ask.
             pair.runFor(10.seconds)
             assertEquals(1, pair.opensAsked, "a rung asked for another socket while the first was being made")
@@ -236,7 +236,7 @@ class CoreSecondSocketVirtualTests {
             pair.refuseSecondReopen = true
             move(pair)
             pair.runUntil(within = 2.seconds) { pair.clientSockets == 2 }
-            pair.client.parts.rehome()
+            pair.client.parts.rehome(pair.secondTicket(), REHOME_NETWORK)
             awaitMark(pair, "SecondLost")
             pair.runFor(ECHO_EVERY)
             assertEquals(1, pair.clientSockets)
@@ -403,7 +403,7 @@ class CoreSecondSocketVirtualTests {
         watching.cancel()
     }
 
-    private fun move(pair: VirtualPair) = pair.client.parts.migrate(ANY, RttPrior.CONFIGURED)
+    private fun move(pair: VirtualPair) = pair.client.parts.migrate(ANY, RttPrior.CONFIGURED, pair.freshNetwork())
 
     private suspend fun flight(pair: VirtualPair): List<TraceEvent> {
         val recorded = ArrayList<TraceEvent>()

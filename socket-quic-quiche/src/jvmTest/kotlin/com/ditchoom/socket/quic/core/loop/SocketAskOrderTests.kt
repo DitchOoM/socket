@@ -3,8 +3,8 @@ package com.ditchoom.socket.quic.core.loop
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.StubQuicheApi
 import com.ditchoom.socket.quic.core.conn.CallerPlace
-import com.ditchoom.socket.quic.core.conn.MoveWanted
 import com.ditchoom.socket.quic.core.conn.MoveWantedWork
+import com.ditchoom.socket.quic.core.path.MoveWanted
 import com.ditchoom.socket.quic.core.path.SocketAsk
 import com.ditchoom.socket.quic.core.pool.FixedPool
 import com.ditchoom.socket.quic.core.sched.CallerLanes
@@ -43,7 +43,14 @@ class SocketAskOrderTests {
                 ask = { ask ->
                     asked += ask
                     when (ask) {
-                        is SocketAsk.OpenBeside -> rig.loop.move(rig.endpoint, ask.ticket, ask.bind, ask.prior)
+                        is SocketAsk.OpenBeside ->
+                            rig.loop.move(
+                                rig.endpoint,
+                                ask.ticket,
+                                ask.wanted.bind,
+                                ask.wanted.prior,
+                                ask.wanted.network,
+                            )
                         is SocketAsk.Promote -> rig.loop.promote(rig.endpoint, ask.ticket)
                         is SocketAsk.CloseSecond -> rig.loop.closeSecond(rig.endpoint, ask.ticket)
                     }

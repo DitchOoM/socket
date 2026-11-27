@@ -125,7 +125,7 @@ internal class NativeEcho(
                 SocketRefs(SocketRef(IntSupplier { io.descriptor() }), SocketRef(IntSupplier { io.secondDescriptor() })),
                 io,
                 sendPort,
-                Route.Fixed(conn, OwnBatch(send)),
+                Route.Fixed(conn, OwnBatch(send), unreadCarried()),
                 Runnable { },
             ),
         )

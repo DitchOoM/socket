@@ -1,8 +1,10 @@
 package com.ditchoom.socket.quic.core.conn
 
 import com.ditchoom.socket.quic.core.path.MoveAnswer
+import com.ditchoom.socket.quic.core.path.MoveWanted
 import com.ditchoom.socket.quic.core.path.Promoted
 import com.ditchoom.socket.quic.core.path.SecondLoss
+import com.ditchoom.socket.quic.core.path.Served
 import com.ditchoom.socket.quic.core.path.Want
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.udp.SocketTicket
@@ -73,6 +75,13 @@ private fun ConnParts.resendNow() {
     timer.nudge()
 }
 
+/** Inside: whether a client's open move already goes where [wanted] says, so the want asks nothing more. */
+internal fun ConnParts.served(wanted: MoveWanted): Served =
+    when (val paths = slots.paths) {
+        is Paths.Client -> paths.paths.serves(wanted)
+        is Paths.Server -> Served.Not
+    }
+
 /**
  * Inside: a client's socket is wanted on [wanted]'s address. Before its handshake is confirmed it moves at once, and
  * the connection, which cannot follow it (RFC 9000 §9), refuses the move and stays; after, it moves once the path from
@@ -89,8 +98,8 @@ internal fun ConnParts.want(
         }
     val want =
         when (handshake.confirmation()) {
-            Confirmation.Pending -> client.hold.moveNow(wanted.bind, wanted.prior)
-            Confirmation.Confirmed -> client.hold.want(now, wanted.bind, wanted.prior)
+            Confirmation.Pending -> client.hold.moveNow(wanted)
+            Confirmation.Confirmed -> client.hold.want(now, wanted)
         }
     when (want) {
         Want.Moving -> Unit

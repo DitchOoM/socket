@@ -59,7 +59,7 @@ class CoreMoveBackVirtualTests {
             assertEquals(emptyList(), serverDrops, "the server had a socket for every datagram it wrote to its peer")
         }
 
-    private fun move(pair: VirtualPair) = pair.client.parts.migrate(ANY, RttPrior.CONFIGURED)
+    private fun move(pair: VirtualPair) = pair.client.parts.migrate(ANY, RttPrior.CONFIGURED, pair.freshNetwork())
 
     private suspend fun flight(pair: VirtualPair): List<TraceEvent> = flight(pair.client.connection)
 

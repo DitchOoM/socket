@@ -5,6 +5,7 @@ import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicheRecvInfo
 import com.ditchoom.socket.quic.SendTarget
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
+import com.ditchoom.socket.quic.core.observe.SingleOwner
 import com.ditchoom.socket.quic.core.time.RttPrior
 import com.ditchoom.socket.quic.core.udp.SocketTicket
 import com.ditchoom.socket.quic.decodePathKey
@@ -63,13 +64,17 @@ internal enum class Unprobed { NoSpareId, ValidationFailed, MigrationRefused }
  * retires it. Each endpoint is one of the loop's sockets: [Settled] and [Asked] have one, and a move owns the second,
  * opened beside the carrying one, until the loop promoted it ([Landing]) or it is closed.
  */
+@SingleOwner(owner = "path/PathsValidation.kt")
 internal sealed interface Move {
     /** The connection's one path leaves from [on]. */
     class Settled(
         val on: Linked,
     ) : Move
 
-    /** A move whose second socket is asked of the loop, or whose path is not yet migrated to: it can be given up. */
+    /**
+     * A move whose second socket is asked of the loop, or whose path is not yet migrated to: it can be given up. Each
+     * open move keeps the want it was asked for, its `toward`.
+     */
     sealed interface Unfinished : Move
 
     /**
@@ -79,6 +84,7 @@ internal sealed interface Move {
     class Asked(
         val from: Linked,
         val ticket: SocketTicket,
+        val toward: MoveWanted,
     ) : Unfinished
 
     /**
@@ -91,6 +97,7 @@ internal sealed interface Move {
         /** The probes of this move that found no path. */
         val failed: Int,
         val cadence: Cadence,
+        val toward: MoveWanted,
     ) : Unfinished
 
     /**
@@ -104,15 +111,18 @@ internal sealed interface Move {
         val retry: Retry,
         /** The id quiche linked to [at]'s path, kept so the path can be probed again. */
         val id: LinkedId,
+        val toward: MoveWanted,
     ) : Unfinished
 
     /**
      * quiche migrated to [to]'s validated path and the loop is asked to promote its socket. [from]'s socket, id and
-     * flight are kept until the loop says it promoted [to]'s socket, or lost it, and the connection migrates back.
+     * flight are kept until the loop says it promoted [to]'s socket, or lost it, and the connection migrates back. The
+     * move was asked [toward] its want.
      */
     class Landing(
         val from: Linked,
         val to: Linked,
+        val toward: MoveWanted,
     ) : Move
 }
 

@@ -10,6 +10,7 @@ import com.ditchoom.socket.quic.core.ready.WakeCause
 import com.ditchoom.socket.quic.core.ready.WriteInterest
 import com.ditchoom.socket.quic.core.testing.ConnRig
 import com.ditchoom.socket.quic.core.testing.FakeIo
+import com.ditchoom.socket.quic.core.testing.TEST_NETWORK
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.time.RttPrior
 import com.ditchoom.socket.quic.core.udp.Beside
@@ -58,7 +59,7 @@ class SecondSocketSlotTests {
         val io = FakeIo().apply { besideAnswer = Beside.Opened(PathKey(4, 50_001, 0L, 0x7F000001L)) }
         val rig = ConnRig(io = io, poller = poller)
         rig.pass(0)
-        rig.loop.move(rig.endpoint, SocketTicket.FIRST.next(), PathKey(4, 0, 0L, 0L), RttPrior.CONFIGURED)
+        rig.loop.move(rig.endpoint, SocketTicket.FIRST.next(), PathKey(4, 0, 0L, 0L), RttPrior.CONFIGURED, TEST_NETWORK)
         rig.pass(1)
         val seat = poller.added.last()
         assertTrue(seat != rig.endpoint.token, "the second socket took a slot of its own")
@@ -87,7 +88,7 @@ class SecondSocketSlotTests {
         val rig = ConnRig(io = io)
         rig.pass(0)
         val ticket = SocketTicket.FIRST.next()
-        rig.loop.move(rig.endpoint, ticket, PathKey(4, 0, 0L, 0L), RttPrior.CONFIGURED)
+        rig.loop.move(rig.endpoint, ticket, PathKey(4, 0, 0L, 0L), RttPrior.CONFIGURED, TEST_NETWORK)
         rig.pass(1)
         rig.loop.closeSecond(rig.endpoint, ticket.next())
         rig.pass(2)

@@ -18,8 +18,10 @@ import com.ditchoom.socket.quic.core.testing.CoreTestRules
 import com.ditchoom.socket.quic.core.testing.FakeIo
 import com.ditchoom.socket.quic.core.testing.RecordingSink
 import com.ditchoom.socket.quic.core.testing.RecordingWork
+import com.ditchoom.socket.quic.core.testing.TEST_NETWORK
 import com.ditchoom.socket.quic.core.testing.nativeBytes
 import com.ditchoom.socket.quic.core.testing.testConn
+import com.ditchoom.socket.quic.core.testing.unreadCarried
 import com.ditchoom.socket.quic.core.time.RttPrior
 import com.ditchoom.socket.quic.core.udp.BatchLimits
 import com.ditchoom.socket.quic.core.udp.Beside
@@ -46,7 +48,7 @@ class CarriageFailureTests {
         val io = FakeIo().apply { besideAnswer = Beside.Opened(LOCAL) }
         val rig = ConnRig(io = io)
         rig.pass(0)
-        rig.loop.move(rig.endpoint, ASKED, BIND, RttPrior.CONFIGURED)
+        rig.loop.move(rig.endpoint, ASKED, BIND, RttPrior.CONFIGURED, TEST_NETWORK)
         rig.pass(1)
         io.secondReceiveThrows = IOException("second socket gone")
         rig.endpoint.readable(Via.Probing)
@@ -64,7 +66,7 @@ class CarriageFailureTests {
             }
         val rig = ConnRig(io = io)
         rig.pass(0)
-        rig.loop.move(rig.endpoint, ASKED, BIND, RttPrior.CONFIGURED)
+        rig.loop.move(rig.endpoint, ASKED, BIND, RttPrior.CONFIGURED, TEST_NETWORK)
         rig.pass(1)
         io.settleThrows = IOException("second socket could not be made")
         for (at in 2L..6L) rig.pass(at)
@@ -79,7 +81,7 @@ class CarriageFailureTests {
         val rig = ConnRig(io = io)
         val other = Neighbour(rig)
         rig.pass(0)
-        rig.loop.move(rig.endpoint, ASKED, BIND, RttPrior.CONFIGURED)
+        rig.loop.move(rig.endpoint, ASKED, BIND, RttPrior.CONFIGURED, TEST_NETWORK)
         rig.pass(1)
         io.closeSecondThrows = IOException("second socket's close failed")
         io.receiveThrows = IOException("carrying socket gone")
@@ -95,7 +97,7 @@ class CarriageFailureTests {
         val io = FakeIo().apply { reopenAnswer = Reopened.Refused(Thrown(IOException("no network"))) }
         val rig = ConnRig(io = io, lanes = lanes())
         rig.pass(0)
-        rig.loop.rehome(rig.endpoint)
+        rig.rehome()
         for (at in 1L..20L) rig.pass(at)
         assertIs<ConnEnd.SocketFailed>(rig.sink.ended.single())
         assertEquals(1, io.closes, "the io of a socket that could not be reopened was not closed")
@@ -109,7 +111,7 @@ class CarriageFailureTests {
         val io = FakeIo().apply { besideAnswer = Beside.Opened(LOCAL) }
         val rig = ConnRig(io = io, poller = poller, lanes = lanes())
         rig.pass(0)
-        rig.loop.move(rig.endpoint, ASKED, BIND, RttPrior.CONFIGURED)
+        rig.loop.move(rig.endpoint, ASKED, BIND, RttPrior.CONFIGURED, TEST_NETWORK)
         rig.pass(1)
         val lane = assertIs<CallerSend>(rig.socket.takeLane(), "precondition: a lane is lent")
         io.receiveThrows = IOException("carrying socket gone")
@@ -120,7 +122,7 @@ class CarriageFailureTests {
         val reads = io.receives + io.secondReceives
         val sends = io.sendCalls
         for (at in 3L..10L) {
-            rig.loop.move(rig.endpoint, ASKED.next(), BIND, RttPrior.CONFIGURED)
+            rig.loop.move(rig.endpoint, ASKED.next(), BIND, RttPrior.CONFIGURED, TEST_NETWORK)
             rig.endpoint.readable(Via.Carrying)
             rig.endpoint.readable(Via.Probing)
             rig.pass(at * 1_000_000L)
@@ -167,7 +169,7 @@ class CarriageFailureTests {
                     SocketRefs(SocketRef(DatagramChannel.open()), SocketRef(DatagramChannel.open())),
                     io,
                     socket,
-                    Route.Fixed(conn, OwnBatch(SendBatch(nativeBytes(8 * 1500), BatchLimits(8, 1500)))),
+                    Route.Fixed(conn, OwnBatch(SendBatch(nativeBytes(8 * 1500), BatchLimits(8, 1500))), unreadCarried()),
                     Runnable { },
                 )
             rig.loop.attach(endpoint)

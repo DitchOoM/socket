@@ -3,11 +3,9 @@
 package com.ditchoom.socket.quic.core.path
 
 import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicheRecvInfo
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.observe.Confined
-import com.ditchoom.socket.quic.core.time.RttPrior
 import com.ditchoom.socket.quic.core.udp.SocketTicket
 import kotlin.random.Random
 
@@ -43,12 +41,11 @@ internal class MoveCosts(
     /** The ticket the next socket asked of the loop is named by. */
     fun nextTicket(): SocketTicket = lastTicket.next().also { lastTicket = it }
 
-    /** Asks the loop for a second socket, [ticket], on [bind]'s address, on a network assumed [prior]. */
+    /** Asks the loop for a second socket, [ticket], where [wanted] says. */
     fun open(
         ticket: SocketTicket,
-        bind: PathKey,
-        prior: RttPrior,
-    ) = ask(SocketAsk.OpenBeside(ticket, bind, prior))
+        wanted: MoveWanted,
+    ) = ask(SocketAsk.OpenBeside(ticket, wanted))
 
     /** Asks the loop to carry on the second socket [ticket] from now on, closing the old one. */
     fun promote(ticket: SocketTicket) = ask(SocketAsk.Promote(ticket))

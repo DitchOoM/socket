@@ -23,6 +23,7 @@ import com.ditchoom.socket.quic.core.time.MonotonicClock
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 import com.ditchoom.socket.quic.trace.TraceCapture
 import com.ditchoom.socket.quic.traceRecorderFor
+import com.ditchoom.socket.transport.NetworkId
 import kotlinx.coroutines.CoroutineScope
 import kotlin.random.Random
 
@@ -68,4 +69,6 @@ internal class ClientWiring(
     val capture: TraceCapture = traceRecorderFor(options),
     /** Whether the connection judges its path's silence ([silenceOf]). */
     val silence: Silence,
+    /** The network the monitor named as the connect opened its socket; none named on a monitor that names none. */
+    val openedOn: NetworkId = NetworkId.Unidentified,
 )

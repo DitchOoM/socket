@@ -13,7 +13,7 @@ import com.ditchoom.socket.quic.core.edge.FeedTarget
 import com.ditchoom.socket.quic.core.edge.OnMove
 import com.ditchoom.socket.quic.core.edge.feedNetwork
 import com.ditchoom.socket.quic.core.life.Life
-import com.ditchoom.socket.quic.core.path.HomeCell
+import com.ditchoom.socket.quic.core.path.MoveWanted
 import com.ditchoom.socket.quic.core.path.PathNews
 import com.ditchoom.socket.quic.core.path.PathNewsCell
 import com.ditchoom.socket.quic.core.path.Silence
@@ -22,6 +22,7 @@ import com.ditchoom.socket.quic.core.path.SocketAsk
 import com.ditchoom.socket.quic.core.testing.ConnRig
 import com.ditchoom.socket.quic.core.time.RttPrior
 import com.ditchoom.socket.quic.core.time.Span
+import com.ditchoom.socket.quic.core.udp.SocketTicket
 import com.ditchoom.socket.transport.NetworkId
 import com.ditchoom.socket.transport.NetworkKind
 import kotlinx.coroutines.CoroutineScope
@@ -54,7 +55,7 @@ class RebindFeedTests {
         runBlocking<Unit> {
             val rig = Rig()
             val scope = CoroutineScope(coroutineContext.minusKey(Job))
-            scope.feedNetwork(rig.monitor, rig.target, { rig.route }, WIFI_ADDRESS, OnMove.Migrate, coroutineContext.minusKey(Job)) {
+            scope.feedNetwork(rig.monitor, rig.target, { rig.route }, OnMove.Migrate, coroutineContext.minusKey(Job)) {
                 if (it == CELLULAR_ADDRESS) CELLULAR_KEY else WIFI_KEY
             }
             try {
@@ -66,7 +67,7 @@ class RebindFeedTests {
                 // The same Wi-Fi, read again: its links' addresses changed.
                 rig.monitor.linkAddresses.value = LinkAddresses.Reported(mapOf(WIFI to setOf(NumericAddress.V4(1))))
                 rig.settle()
-                assertEquals(listOf(CELLULAR_KEY), rig.target.migrates, "the handoff was swallowed: the edge still awaits the rebind")
+                assertEquals(listOf(CELLULAR_KEY), rig.target.migrates, "the handoff was swallowed after the forbidden rebind")
                 assertEquals(0, rig.target.rehomes, "the Wi-Fi socket was reopened")
                 assertIs<Life.Running>(rig.rig.conn.life(), "the connection did not stay where it was")
             } finally {
@@ -84,7 +85,7 @@ class RebindFeedTests {
     /** The edge's side of the connection: everything it asks goes to the rig's connection as the core's parts send it. */
     private class Target(
         override val news: PathNewsCell,
-        override val home: HomeCell,
+        override val carried: CarriedCell,
         private val rig: () -> ConnRig,
     ) : FeedTarget {
         val migrates = ArrayList<PathKey>()
@@ -95,19 +96,25 @@ class RebindFeedTests {
         override fun migrate(
             bind: PathKey,
             prior: RttPrior,
+            network: NetworkId,
+            named: NetworkId,
         ) {
             migrates += bind
-            rig().conn.submit(MoveWantedWork(MoveWanted(bind, prior)))
+            rig().conn.submit(MoveWantedWork(MoveWanted(bind, prior, network, named)))
         }
 
-        override fun rehome() {
+        override fun rehome(
+            ticket: SocketTicket,
+            network: NetworkId,
+        ) {
             rehomes++
         }
 
         override fun rebind(
             bind: PathKey,
             prior: RttPrior,
-        ) = rig().conn.submit(RebindWork(MoveWanted(bind, prior)))
+            network: NetworkId,
+        ) = rig().conn.submit(RebindWork(MoveWanted(bind, prior, network)))
     }
 
     private class Rig {
@@ -119,10 +126,12 @@ class RebindFeedTests {
                 peerDisablesActiveMigration = true
             }
         private val news = PathNewsCell()
-        private val home = HomeCell(news.wake)
+
+        // No loop runs here: the socket the connect opened carries throughout.
+        private val carried = CarriedCell(news.wake, Carried(SocketTicket.FIRST, WIFI_KEY, WIFI))
         val asks = ArrayList<SocketAsk>()
-        val rig = ConnRig(api, silence = SilenceRule(Silence.On, Span(30 * SECOND), news, home), ask = { asks += it })
-        val target = Target(news, home) { rig }
+        val rig = ConnRig(api, silence = SilenceRule(Silence.On, Span(30 * SECOND), news), ask = { asks += it })
+        val target = Target(news, carried) { rig }
         var now = SECOND
         private var probes = 0L
 

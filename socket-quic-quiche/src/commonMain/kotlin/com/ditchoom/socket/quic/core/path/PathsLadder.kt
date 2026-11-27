@@ -2,12 +2,12 @@
 
 package com.ditchoom.socket.quic.core.path
 
-import com.ditchoom.socket.quic.PathKey
+import com.ditchoom.socket.quic.core.observe.SingleOwner
 import com.ditchoom.socket.quic.core.time.Nanos
-import com.ditchoom.socket.quic.core.time.RttPrior
 import com.ditchoom.socket.quic.core.time.Span
 
 /** Where a silent path's rebinds stand: the ladder of asks for a fresh port, kept across the path's silences. */
+@SingleOwner(owner = "path/PathsRebind.kt")
 internal sealed interface Ladder {
     /** No rebind was ever asked, or network news started the ladder again: the next one may be asked at once. */
     data object Fresh : Ladder
@@ -18,10 +18,9 @@ internal sealed interface Ladder {
         val gap: Span,
     ) : Ladder
 
-    /** The path is silent: a fresh port on [bind]'s address is owed at [due], and the rung after it [gap] later. */
+    /** The path is silent: a fresh port where [wanted] says is owed at [due], and the rung after it [gap] later. */
     class Owed(
-        val bind: PathKey,
-        val prior: RttPrior,
+        val wanted: MoveWanted,
         val due: Nanos,
         val gap: Span,
     ) : Ladder
@@ -67,9 +66,8 @@ internal sealed interface Rebind {
     /** The address it asked for before. */
     data object Same : Rebind
 
-    /** [bind]'s address, assumed [prior]. */
+    /** Where [wanted] says. */
     class To(
-        val bind: PathKey,
-        val prior: RttPrior,
+        val wanted: MoveWanted,
     ) : Rebind
 }

@@ -1,6 +1,5 @@
 package com.ditchoom.socket.quic.core.loop
 
-import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.core.conn.Collected
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.observe.LoopCounts
@@ -16,12 +15,12 @@ import com.ditchoom.socket.quic.core.sched.Shutdown
 import com.ditchoom.socket.quic.core.sched.SocketHealth
 import com.ditchoom.socket.quic.core.time.LoopClock
 import com.ditchoom.socket.quic.core.time.Nanos
-import com.ditchoom.socket.quic.core.time.RttPrior
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
 import com.ditchoom.socket.quic.core.udp.SocketFault
 import com.ditchoom.socket.quic.core.udp.SocketTicket
 import com.ditchoom.socket.quic.core.udp.Thrown
+import com.ditchoom.socket.transport.NetworkId
 import kotlinx.coroutines.Runnable
 
 /**
@@ -43,7 +42,7 @@ internal class Endpoint(
         private set
     private var interest = WriteInterest.None
     private val sockets = CarriageIo(io, refs, readiness)
-    private val seat = if (route is Route.Fixed) Seat.OfClient() else Seat.OfServer()
+    private val seat = if (route is Route.Fixed) Seat.OfClient(route) else Seat.OfServer()
     private val closing = SocketClose(io, socket)
     private val out: Outbox = route.outbox()
 
@@ -53,7 +52,7 @@ internal class Endpoint(
         seats: Loop,
     ) {
         this.token = token
-        step(SocketEvent.Placed(ownership), poller, seats)
+        step(SocketEvent.Placed(ownership, firstNetwork()), poller, seats)
         io.placed()
     }
 
@@ -83,9 +82,9 @@ internal class Endpoint(
             Via.Probing ->
                 when (val now = seat.carriage()) {
                     is Carriage.Two ->
-                        when (sockets.readBeside(now.beside, route, batch, counts, clock)) {
+                        when (sockets.readBeside(now.beside.ticket, route, batch, counts, clock)) {
                             BesideRead.Read -> Unit
-                            BesideRead.Closed -> step(BesideEvent.BesideLost(now.beside), poller, seats)
+                            BesideRead.Closed -> step(BesideEvent.BesideLost(now.beside.ticket), poller, seats)
                         }
                     is Carriage.Single, is Carriage.Opening -> Unit
                 }
@@ -147,23 +146,27 @@ internal class Endpoint(
     }
 
     /**
-     * The network under this socket changed: the socket holding the connection's address (the second one, while a move
-     * is open) is reopened on the same address and port, and its connection told in this pass, so it sends at once. A
-     * carrying socket that cannot be reopened ends its connection; a lent one is never reopened.
+     * The address of the socket [ticket] names is on [network] now: the socket holding the connection's address (the
+     * second one, while a move is open) is reopened on the same address and port if it was on another network, and
+     * its connection told in this pass, so it sends at once. A carrying socket that cannot be reopened ends its
+     * connection; a lent one is never reopened, and nothing is once the connection is past its close point: quiche
+     * holds its close on the socket it has.
      */
     fun rehome(
         poller: Poller,
         seats: Loop,
-    ) = step(SocketEvent.Rehome, poller, seats)
+        ticket: SocketTicket,
+        network: NetworkId,
+    ) {
+        if (route.runs()) step(SocketEvent.Rehome(ticket, network), poller, seats)
+    }
 
-    /** A client's connection wants socket [ticket] on [bind]'s address, assumed [prior]. */
+    /** A client's connection wants the second socket [ask] names. */
     fun move(
         poller: Poller,
         seats: Loop,
-        ticket: SocketTicket,
-        bind: PathKey,
-        prior: RttPrior,
-    ) = step(MoveEvent.OpenBeside(ticket, bind, prior), poller, seats)
+        ask: MoveEvent.OpenBeside,
+    ) = step(ask, poller, seats)
 
     /** The second socket [ticket] names carries from now on, polled as this endpoint's token, and the connection is told. */
     fun promote(
@@ -189,8 +192,8 @@ internal class Endpoint(
         Via.Carrying -> step(SocketEvent.CarryingDied(ConnEnd.SocketFailed(SocketFault.Unnamed(thrown))), poller, seats)
         Via.Probing ->
             when (val now = seat.carriage()) {
-                is Carriage.Opening -> step(BesideEvent.BesideLost(now.beside), poller, seats)
-                is Carriage.Two -> step(BesideEvent.BesideLost(now.beside), poller, seats)
+                is Carriage.Opening -> step(BesideEvent.BesideLost(now.beside.ticket), poller, seats)
+                is Carriage.Two -> step(BesideEvent.BesideLost(now.beside.ticket), poller, seats)
                 is Carriage.Single -> Unit
             }
     }
@@ -263,12 +266,21 @@ internal class Endpoint(
         when (fact) {
             // The carrying token was off the poller, and its write interest with it.
             is MoveFact.Promoted, is MoveFact.CarryingRehomed -> interest = WriteInterest.None
-            is MoveFact.None, is MoveFact.Moved, is MoveFact.Refused, is MoveFact.SecondLost, is MoveFact.BesideRehomed -> Unit
+            is MoveFact.None, is MoveFact.Moved, is MoveFact.Refused, is MoveFact.SecondLost, is MoveFact.BesideRehomed,
+            is MoveFact.OnNetwork,
+            -> Unit
         }
         route.told(fact)
     }
 
     private fun endConn(end: ConnEnd) = route.endWith(end)
+
+    /** The network a client's first socket opened on, as its connect published it; a server's names none. */
+    private fun firstNetwork(): NetworkId =
+        when (route) {
+            is Route.Fixed -> route.carried.read().network
+            is Route.Demux -> NetworkId.Unidentified
+        }
 
     private fun carries(): Carries = seat.carriage().carries()
 

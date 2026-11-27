@@ -6,6 +6,7 @@ import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuichePathEventType
 import com.ditchoom.socket.quic.StubQuicheApi
 import com.ditchoom.socket.quic.core.life.ConnEnd
+import com.ditchoom.socket.quic.core.path.MoveWanted
 import com.ditchoom.socket.quic.core.path.SocketAsk
 import com.ditchoom.socket.quic.core.testing.ConnRig
 import com.ditchoom.socket.quic.core.testing.FakeIo

@@ -8,6 +8,7 @@ import com.ditchoom.socket.quic.core.demux.BoundedIo
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.PeerAddress
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
+import com.ditchoom.socket.quic.core.path.MoveWanted
 import com.ditchoom.socket.quic.core.path.SocketAsk
 import com.ditchoom.socket.quic.core.testing.ConnRig
 import com.ditchoom.socket.quic.core.testing.stubClientPaths
@@ -59,7 +60,7 @@ class MoveAskedTests {
     fun aMoveAskedLeavesThePathCalm() {
         val paths = stubClientPaths(QuicheConnRef(StubQuicheApi(), QuicheConn(1L)))
         val client = (paths as Paths.Client).paths
-        client.hold.moveNow(OTHER, RttPrior.CONFIGURED)
+        client.hold.moveNow(MoveWanted(OTHER, RttPrior.CONFIGURED))
         assertEquals(PathCalm.Settled, paths.calm(), "an ask the loop had not answered turned the ACK hold off")
         assertEquals(PeerAddress.Validated, paths.address())
     }

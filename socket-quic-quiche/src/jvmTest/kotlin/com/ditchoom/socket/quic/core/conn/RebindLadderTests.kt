@@ -9,8 +9,7 @@ import com.ditchoom.socket.quic.StubQuicheApi
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.loop.Via
-import com.ditchoom.socket.quic.core.path.HomeCell
-import com.ditchoom.socket.quic.core.path.Landed
+import com.ditchoom.socket.quic.core.path.MoveWanted
 import com.ditchoom.socket.quic.core.path.PathNews
 import com.ditchoom.socket.quic.core.path.PathNewsCell
 import com.ditchoom.socket.quic.core.path.PathSilence
@@ -32,6 +31,8 @@ import com.ditchoom.socket.quic.core.udp.ReceiveBuffer
 import com.ditchoom.socket.quic.core.udp.SocketTicket
 import com.ditchoom.socket.testkit.trace.TraceEvent
 import com.ditchoom.socket.testkit.trace.TraceSink
+import com.ditchoom.socket.transport.NetworkId
+import com.ditchoom.socket.transport.NetworkKind
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -73,7 +74,7 @@ class RebindLadderTests {
         silent.goSilent()
         silent.rebind()
         assertEquals(1, silent.opens(), "a silent path with no move open asked no fresh port")
-        assertEquals(PORT_ZERO, (silent.asks.single() as SocketAsk.OpenBeside).bind, "the fresh port is the edge's bind")
+        assertEquals(PORT_ZERO, (silent.asks.single() as SocketAsk.OpenBeside).wanted.bind, "the fresh port is the edge's bind")
     }
 
     /**
@@ -203,40 +204,20 @@ class RebindLadderTests {
     }
 
     /**
-     * Every move that ends tells the edge where the socket is, landed or not: an open the loop refused, and a move whose
-     * second socket was lost. The edge holds no guess of its own, so without this it would wait on a move forever.
+     * A want toward the address an open move goes to, on the same network, asks nothing: asking again would throw that
+     * move away. On another network it is asked again, and once the move ended the same want is asked anew.
      */
     @Test
-    fun everyMoveThatEndsTellsTheEdgeWhereTheSocketIs() {
+    fun aWantAnOpenMoveAlreadyServesAsksNothing() {
         val f = Fixture()
         f.moveWanted()
-        f.refuse()
-        assertEquals(1L, f.settles(), "a refused open was not told to the edge")
         f.moveWanted()
-        f.moved(SocketTicket(2))
-        assertEquals(1L, f.settles(), "a move still open was told as ended")
-        f.lose(SocketTicket(2))
-        f.runFor(10.milliseconds)
-        assertEquals(2L, f.settles(), "a lost move was not told to the edge")
-    }
-
-    /**
-     * A rebind that opens nothing tells the edge where the socket is, as a move that ended does: a path that answered
-     * first, and a peer that forbids a move. Otherwise the edge would await a move that never comes.
-     */
-    @Test
-    fun aRebindThatOpensNothingTellsTheEdgeWhereTheSocketIs() {
-        val stale = Fixture()
-        stale.goSilent()
-        stale.arrive()
-        stale.rebind()
-        assertEquals(1L, stale.settles(), "a stale rebind left the edge awaiting a move")
-
-        val forbidden = Fixture(peer = Peer.Forbids)
-        forbidden.goSilent()
-        forbidden.rebind()
-        assertEquals(0, forbidden.opens())
-        assertEquals(1L, forbidden.settles(), "a forbidden rebind left the edge awaiting a move")
+        assertEquals(1, f.opens(), "a second want toward the move under way asked another socket: ${f.asks}")
+        f.work(MoveWantedWork(MoveWanted(OTHER, RttPrior.CONFIGURED, ELSEWHERE)))
+        assertEquals(2, f.opens(), "a want on another network was taken as served")
+        f.refuse()
+        f.work(MoveWantedWork(MoveWanted(OTHER, RttPrior.CONFIGURED, ELSEWHERE)))
+        assertEquals(3, f.opens(), "a want after the move was refused was taken as served")
     }
 
     /** A peer that forbids a move is asked once per silence: one mark, not one each minute for the life of the silence. */
@@ -344,6 +325,30 @@ class RebindLadderTests {
     }
 
     /**
+     * A rung after the first is asked later than the reading that named its network, which may have changed since (a
+     * re-association): it names no network, and the loop takes the one the next rehome names.
+     */
+    @Test
+    fun aLaterRungNamesNoNetwork() {
+        val f = Fixture()
+        f.goSilent()
+        f.work(RebindWork(MoveWanted(PORT_ZERO, RttPrior.CONFIGURED, ELSEWHERE)))
+        assertEquals(
+            ELSEWHERE,
+            f.asks
+                .filterIsInstance<SocketAsk.OpenBeside>()
+                .single()
+                .wanted.network,
+            "the first rung",
+        )
+        f.refuse()
+        f.runFor(1.seconds)
+        val later = f.asks.filterIsInstance<SocketAsk.OpenBeside>()
+        assertTrue(later.size >= 2, "precondition: a later rung was asked: ${f.asks}")
+        assertEquals(NetworkId.Unidentified, later.last().wanted.network, "a later rung named the network of an old reading")
+    }
+
+    /**
      * The loop refusing the first of two asks says nothing of the second: that move stays open, the edge is not told it
      * ended, the ladder asks nothing over it, and the socket the loop then opens for it is followed.
      */
@@ -354,7 +359,6 @@ class RebindLadderTests {
         f.wantTwiceInOnePass()
         val (first, last) = f.openTickets()
         f.answer(MoveRefusedWork(first, MoveRefusal.Unopened))
-        assertEquals(0L, f.settles(), "the refusal of the first ask told the edge the second move had ended")
         f.rebind()
         assertEquals(2, f.opens(), "a rebind asked for a socket over the open the loop had not answered: ${f.asks}")
         f.answer(MovedWork(MoveTo(OTHER, RttPrior.CONFIGURED, last)))
@@ -410,13 +414,12 @@ class RebindLadderTests {
         private val askedAt = ArrayList<Long>()
         val io = Arrivals()
         private val cell = PathNewsCell()
-        private val home = HomeCell(cell.wake)
         private val paths = EventsOnEveryAddress(api)
         val rig =
             ConnRig(
                 paths,
                 io = io,
-                silence = SilenceRule(Silence.On, Span(30 * SECOND), cell, home),
+                silence = SilenceRule(Silence.On, Span(30 * SECOND), cell),
                 ask = { asked ->
                     asks += asked
                     askedAt += now
@@ -434,13 +437,6 @@ class RebindLadderTests {
         }
 
         fun news(): PathNews = cell.read()
-
-        /** How many ended moves the connection told the edge of. */
-        fun settles(): Long =
-            when (val landed = home.read()) {
-                is Landed.Opened -> 0L
-                is Landed.At -> landed.settles
-            }
 
         fun opens(): Int = asks.count { it is SocketAsk.OpenBeside }
 
@@ -502,7 +498,7 @@ class RebindLadderTests {
         /** The monitor's route moves twice before the loop runs: the edge asks for the socket on another address twice. */
         fun wantTwiceInOnePass() {
             rig.conn.submit(MoveWantedWork(MoveWanted(OTHER, RttPrior.CONFIGURED)))
-            rig.conn.submit(MoveWantedWork(MoveWanted(OTHER, RttPrior.CONFIGURED)))
+            rig.conn.submit(MoveWantedWork(MoveWanted(OTHER, RttPrior.CONFIGURED, ELSEWHERE)))
             passAt(now + 1)
             assertEquals(2, opens(), "precondition: each want asked for a socket: $asks")
         }
@@ -558,7 +554,7 @@ class RebindLadderTests {
             return recorded.filterIsInstance<TraceEvent.PathState>().map { it.phase }
         }
 
-        private fun work(work: ConnWork) {
+        fun work(work: ConnWork) {
             rig.conn.submit(work)
             passAt(now + 1)
         }
@@ -613,6 +609,7 @@ class RebindLadderTests {
         val TICK = 100.milliseconds.inWholeNanoseconds
         val PORT_ZERO = PathKey(4, 0, 0L, 0x7F000001L)
         val OTHER = PathKey(4, 0, 0L, 0x7F000002L)
+        val ELSEWHERE = NetworkId.Link(NetworkKind.Cellular, 2L)
 
         /** Only the fields the watch reads are set: the rest are zero on purpose. */
         fun stats(probes: Long) =

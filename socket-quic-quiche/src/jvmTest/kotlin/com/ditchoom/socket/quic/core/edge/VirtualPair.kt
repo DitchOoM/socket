@@ -39,6 +39,8 @@ import com.ditchoom.socket.quic.replay.conditions.LOCALHOST
 import com.ditchoom.socket.quic.replay.conditions.ReplayClient
 import com.ditchoom.socket.quic.replay.conditions.replayClient
 import com.ditchoom.socket.quic.replay.conditions.replayServer
+import com.ditchoom.socket.transport.NetworkId
+import com.ditchoom.socket.transport.NetworkKind
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.cancel
@@ -54,6 +56,21 @@ import kotlin.time.Duration.Companion.seconds
 
 /** How a [VirtualPair] client's second socket reads: as a socket does, failing once after a read, or dead. */
 internal enum class SecondReads { Normally, FailAfterARead, Dead }
+
+/** The network a pair's test names for a move it asks for. */
+internal val MOVE_NETWORK: NetworkId = NetworkId.Link(NetworkKind.Wifi, 1L)
+
+/** The network a pair's test names for a rehome: another one than [MOVE_NETWORK]. */
+internal val REHOME_NETWORK: NetworkId = NetworkId.Link(NetworkKind.Cellular, 2L)
+
+/** The pair's client is told its socket's address is on [network] now, for the socket the loop says carries. */
+internal fun VirtualPair.rehome(network: NetworkId = REHOME_NETWORK) =
+    client.parts.rehome(
+        client.parts.carried
+            .read()
+            .ticket,
+        network,
+    )
 
 /** Which end of a [VirtualPair]. */
 internal enum class End { Client, Server }
@@ -163,6 +180,28 @@ internal class VirtualPair private constructor(
 
     /** Whether reopening the client's second socket fails, as at an address its new network does not hold. */
     var refuseSecondReopen = false
+
+    /** Whether reopening the client's carrying socket fails, as at an address its new network does not hold. */
+    var refuseCarryingReopen = false
+
+    /** How many times the client's loop reopened its carrying socket. */
+    var carryingReopens = 0
+        private set
+
+    /** How many times the client's loop reopened its second socket. */
+    var secondReopens = 0
+        private set
+
+    /** The ticket of the client's second socket, while the loop holds one. */
+    fun secondTicket(): SocketTicket = second?.ticket ?: throw AssertionError("no second socket")
+
+    /** The addresses the client's next second sockets bind to, as on another interface; its own address when empty. */
+    val moveHosts = ArrayDeque<PathKey>()
+
+    private var moveNetworks = 0L
+
+    /** A network no move of this pair named before: a move toward it is a new ask, never one an open move serves. */
+    fun freshNetwork(): NetworkId = NetworkId.Link(NetworkKind.Wifi, 100L + ++moveNetworks)
 
     /** How the client's second socket reads. */
     var secondReads = SecondReads.Normally
@@ -364,14 +403,16 @@ internal class VirtualPair private constructor(
                     }
             }
 
-        override fun reopenSecond(): Reopened =
-            if (refuseSecondReopen) {
+        override fun reopenSecond(): Reopened {
+            secondReopens++
+            return if (refuseSecondReopen) {
                 Reopened.Refused(
                     Thrown(java.net.BindException("Can't assign requested address")),
                 )
             } else {
                 Reopened.SameEndpoint
             }
+        }
 
         override fun settleBeside(): Beside =
             when {
@@ -407,7 +448,15 @@ internal class VirtualPair private constructor(
 
         override fun probe(): SocketProbe = SocketProbe.Open
 
-        override fun reopen(): Reopened = Reopened.SameEndpoint
+        override fun reopen(): Reopened {
+            if (end == End.Server) return Reopened.SameEndpoint
+            carryingReopens++
+            return if (refuseCarryingReopen) {
+                Reopened.Refused(Thrown(java.net.BindException("Can't assign requested address")))
+            } else {
+                Reopened.SameEndpoint
+            }
+        }
 
         /**
          * The client's second socket opens on the next port, or on the port a test queued ([movePorts]): the server sees
@@ -420,7 +469,8 @@ internal class VirtualPair private constructor(
             opensAsked++
             if (refuseOpens) return Beside.Refused(Thrown(java.net.BindException("Can't assign requested address")))
             if (opensArriveThenFail || opensStayInTheMaking) return Beside.Arriving
-            val key = clientKey.copy(port = movePorts.removeFirstOrNull() ?: (maxOf(clientKey.port, nextPort) + 1))
+            val host = moveHosts.removeFirstOrNull() ?: clientKey
+            val key = host.copy(port = movePorts.removeFirstOrNull() ?: (maxOf(clientKey.port, nextPort) + 1))
             nextPort = key.port
             // A second opened while one is still open would be a third socket.
             clientSockets = if (second == null) 2 else 3

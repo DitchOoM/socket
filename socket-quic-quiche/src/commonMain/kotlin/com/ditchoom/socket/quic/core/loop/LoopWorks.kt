@@ -6,6 +6,7 @@ import com.ditchoom.socket.quic.core.sched.LoopPort
 import com.ditchoom.socket.quic.core.sched.LoopWork
 import com.ditchoom.socket.quic.core.time.RttPrior
 import com.ditchoom.socket.quic.core.udp.SocketTicket
+import com.ditchoom.socket.transport.NetworkId
 import kotlinx.coroutines.Runnable
 
 /** Wakes the loop when a socket died on another thread: the next pass sees the socket's health. One per socket. */
@@ -25,26 +26,36 @@ internal class PlaceWork(
     override fun gone(end: ConnEnd) = endpoint.unplaced(end, loop.poller, loop)
 }
 
-/** Loop work: a socket is reopened on a changed network. */
+/** Loop work: the socket [ticket] names has its address on [network] now; a ticket that no longer carries is a no-op. */
 internal class RehomeWork(
     private val loop: Loop,
     private val endpoint: Endpoint,
+    private val ticket: SocketTicket,
+    private val network: NetworkId,
 ) : LoopWork() {
-    override fun run(port: LoopPort) = endpoint.rehome(loop.poller, loop)
+    override fun run(port: LoopPort) = endpoint.rehome(loop.poller, loop, ticket, network)
 
     override fun gone(end: ConnEnd) = Unit
 }
 
+/** Any thread: [endpoint]'s socket [ticket] names has its address on [network] now (see [Endpoint.rehome]). */
+internal fun Loop.rehome(
+    endpoint: Endpoint,
+    ticket: SocketTicket,
+    network: NetworkId,
+) = port.submit(RehomeWork(this, endpoint, ticket, network))
+
 /**
- * Any thread: [endpoint] opens a second socket, named [ticket], on [bind]'s address, a new local endpoint (see
- * [Endpoint.move]).
+ * Any thread: [endpoint] opens a second socket, named [ticket], on [bind]'s address, a new local endpoint on
+ * [network] (see [Endpoint.move]).
  */
 internal fun Loop.move(
     endpoint: Endpoint,
     ticket: SocketTicket,
     bind: PathKey,
     prior: RttPrior,
-) = port.submit(MoveWork(this, endpoint, ticket, bind, prior))
+    network: NetworkId,
+) = port.submit(MoveWork(this, endpoint, ticket, bind, prior, network))
 
 /** Any thread: [endpoint]'s second socket [ticket] names carries from now on (see [Endpoint.promote]). */
 internal fun Loop.promote(
@@ -65,8 +76,9 @@ internal class MoveWork(
     private val ticket: SocketTicket,
     private val bind: PathKey,
     private val prior: RttPrior,
+    private val network: NetworkId,
 ) : LoopWork() {
-    override fun run(port: LoopPort) = endpoint.move(loop.poller, loop, ticket, bind, prior)
+    override fun run(port: LoopPort) = endpoint.move(loop.poller, loop, MoveEvent.OpenBeside(ticket, bind, prior, network))
 
     override fun gone(end: ConnEnd) = Unit
 }
