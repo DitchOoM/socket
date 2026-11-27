@@ -7,15 +7,12 @@ import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.PeerAddress
 import com.ditchoom.socket.quic.core.life.RetiredId
 import com.ditchoom.socket.quic.core.life.SpareId
-import com.ditchoom.socket.quic.core.path.MoveAnswer
 import com.ditchoom.socket.quic.core.path.Outgoing
 import com.ditchoom.socket.quic.core.path.PathRead
 import com.ditchoom.socket.quic.core.path.PathStep
 import com.ditchoom.socket.quic.core.path.Rebind
 import com.ditchoom.socket.quic.core.path.RecvFrom
-import com.ditchoom.socket.quic.core.path.SecondHeld
 import com.ditchoom.socket.quic.core.path.Sorting
-import com.ditchoom.socket.quic.core.path.Want
 import com.ditchoom.socket.quic.core.path.Window
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.time.WakeSink
@@ -172,75 +169,12 @@ internal fun ConnParts.networkUsable(now: Nanos) {
     }
 }
 
-/** How an end quiche reported reads: a client idle while its path reads unvalidated ended with no usable path. */
+/** How an end quiche reported reads: a client's idle timeout as its move reads it ([ClientPaths.idleEnd]). */
 internal fun Paths.endOf(end: ConnEnd): ConnEnd =
     when (this) {
-        is Paths.Client -> if (end is ConnEnd.IdleTimeout && paths.address() == PeerAddress.Unvalidated) ConnEnd.NoUsablePath else end
+        is Paths.Client -> if (end is ConnEnd.IdleTimeout) paths.idleEnd() else end
         is Paths.Server -> end
     }
-
-/**
- * Inside: a client's second socket leaves from [to]'s address. The connection probes the path from it and migrates once
- * it is validated, the carrying socket carrying until then; before its handshake is confirmed (RFC 9000 §9), or when
- * the peer forbade migration, it cannot follow. A socket of an ask the connection no longer awaits changes nothing.
- */
-internal fun ConnParts.follow(
-    now: Nanos,
-    to: MoveTo,
-): MoveAnswer {
-    val client =
-        when (val paths = slots.paths) {
-            is Paths.Client -> paths.paths
-            is Paths.Server -> return MoveAnswer.Following
-        }
-    val answer = client.move(now, to.local, to.prior, to.ticket, gate())
-    val mark =
-        when (answer) {
-            MoveAnswer.Following -> PathMark.Moved
-            MoveAnswer.Refused, MoveAnswer.NoUsablePath -> PathMark.Refused
-            MoveAnswer.Stale -> return answer
-        }
-    network.moved()
-    slots.ack.mustWrite()
-    flight.path(now, mark)
-    return answer
-}
-
-/** Inside: the second socket [ticket] names is gone; the move it served ends and the connection stays where it is. */
-internal fun ConnParts.secondLost(
-    now: Nanos,
-    ticket: SocketTicket,
-) = when (val paths = slots.paths) {
-    is Paths.Client -> if (paths.paths.lost(ticket) == SecondHeld.Lost) flight.path(now, PathMark.SecondLost) else Unit
-    is Paths.Server -> Unit
-}
-
-/**
- * Inside: a client's socket is wanted on [wanted]'s address. Before its handshake is confirmed it moves at once, and
- * the connection, which cannot follow it (RFC 9000 §9), refuses the move and stays; after, it moves once the path from
- * there can be probed.
- */
-internal fun ConnParts.want(
-    now: Nanos,
-    wanted: MoveWanted,
-): Want {
-    val client =
-        when (val paths = slots.paths) {
-            is Paths.Client -> paths.paths
-            is Paths.Server -> return Want.Moving
-        }
-    val want =
-        when (handshake.confirmation()) {
-            Confirmation.Pending -> client.hold.moveNow(wanted.bind, wanted.prior)
-            Confirmation.Confirmed -> client.hold.want(now, wanted.bind, wanted.prior)
-        }
-    when (want) {
-        Want.Moving -> Unit
-        Want.Waiting -> flight.path(now, PathMark.Held)
-        Want.NoUsablePath -> flight.path(now, PathMark.Refused)
-    }
-    return want
-}
 
 /** Any thread: how many new ids the loop should route to a server connection; taken once. */
 internal fun Paths.idsWanted(): Int =

@@ -18,9 +18,9 @@ internal enum class MoveGate { Shut, Open }
 
 /**
  * Whether a client has a move open: a second socket asked of the loop and not answered, being probed or stranded, or a
- * socket waiting for a spare id.
+ * socket waiting for a spare id; or landing, quiche migrated and the loop's promotion awaited, which is past giving up.
  */
-internal enum class Moving { Settled, Open }
+internal enum class Moving { Settled, Open, Landing }
 
 /** What a rebind came to. */
 internal enum class Rebound {
@@ -178,7 +178,11 @@ internal class Rebinds(
         if (silence.now() is PathNews.Silent && inFlight() == Busy.No) sink.offer(owed.due)
     }
 
-    private fun inFlight(): Busy = if (moving() == Moving.Open) Busy.Yes else Busy.No
+    private fun inFlight(): Busy =
+        when (moving()) {
+            Moving.Open, Moving.Landing -> Busy.Yes
+            Moving.Settled -> Busy.No
+        }
 
     /**
      * An ask that opened nothing (the path answered first, the rung is not due, the peer forbids a move, or the

@@ -18,8 +18,8 @@ internal sealed interface HeldMove {
     data object None : HeldMove
 
     /**
-     * The socket is wanted on [bind]'s address and waits for a spare id; the move is final once [darkAt] passes in
-     * silence.
+     * The socket is wanted on [bind]'s address and waits for a spare id, or for a landing to end; with no spare id the
+     * move is final once [darkAt] passes in silence.
      */
     class Waiting(
         val bind: PathKey,
@@ -66,15 +66,19 @@ internal sealed interface SocketAsk {
     ) : SocketAsk
 }
 
+/** Whether a move's socket was asked of the loop, or waits for a landing to be promoted or lost first. */
+internal enum class Opening { Asked, AfterLanding }
+
 /**
  * Where a client's socket is wanted, and whether it may go yet. It goes through [open], which asks for a second socket
- * on an address and a port of its own, on a network assumed to have the given round trip. Inside the connection only.
+ * on an address and a port of its own, on a network assumed to have the given round trip, or answers that a landing
+ * must end first. Inside the connection only.
  */
 @Confined
 internal class MoveHold(
     private val q: QuicheConnRef,
     private val ears: PeerHearing,
-    private val open: (PathKey, RttPrior) -> Unit,
+    private val open: (PathKey, RttPrior) -> Opening,
 ) {
     var held: HeldMove = HeldMove.None
         private set
@@ -106,14 +110,19 @@ internal class MoveHold(
         }
     }
 
-    /** The socket moves to [bind]'s address now, in place of any that waited. */
+    /**
+     * The socket moves to [bind]'s address now, in place of any that waited; while a landing stands it waits as for a
+     * spare id, and moves at the first [step] after the landing ended.
+     */
     fun moveNow(
         bind: PathKey,
         prior: RttPrior,
     ): Want {
         held = HeldMove.None
-        open(bind, prior)
-        return Want.Moving
+        return when (open(bind, prior)) {
+            Opening.Asked -> Want.Moving
+            Opening.AfterLanding -> Want.Waiting.also { held = HeldMove.Waiting(bind, prior, ears.darkAt()) }
+        }
     }
 
     /**

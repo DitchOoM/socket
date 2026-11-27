@@ -214,7 +214,7 @@ internal class Endpoint(
         prior: RttPrior,
     ) = if (phase == Phase.Live) ownership.move(route, ticket) { second.open(this, poller, seats, it, ticket, bind, prior) } else Unit
 
-    /** The second socket [ticket] names carries from now on, polled as this endpoint's own token; a stale ticket is a no-op. */
+    /** The second socket [ticket] names carries from now on, polled as this endpoint's token, and the connection is told. */
     fun promote(
         poller: Poller,
         seats: Loop,
@@ -227,6 +227,7 @@ internal class Endpoint(
             Promotion.PromotedWithBacklog -> input = ReceiveInput.Backlog
         }
         interest = WriteInterest.None
+        route.promoted(ticket)
     }
 
     /** The io threw: this socket's connection ends with it, and no other. */

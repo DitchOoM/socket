@@ -12,6 +12,7 @@ import com.ditchoom.socket.quic.core.life.Life
 import com.ditchoom.socket.quic.core.life.SpareId
 import com.ditchoom.socket.quic.core.path.Rebind
 import com.ditchoom.socket.quic.core.path.SecondHeld
+import com.ditchoom.socket.quic.core.path.SecondLoss
 import com.ditchoom.socket.quic.core.path.Want
 import com.ditchoom.socket.quic.core.sched.LoopPort
 import com.ditchoom.socket.quic.core.stream.StreamTable
@@ -106,8 +107,18 @@ internal class Inside(
         )
     }
 
-    /** The client's loop lost the second socket [ticket] names: the move it served ends, the connection stays. */
-    fun secondLost(ticket: SocketTicket) = c.secondLost(clock.now(), ticket)
+    /**
+     * The client's loop lost the second socket [ticket] names: the move it served ends and the connection stays, back on
+     * the old path if it had migrated to the lost one; one quiche will not take back ends, its address gone.
+     */
+    fun secondLost(ticket: SocketTicket) =
+        when (c.secondLost(clock.now(), ticket)) {
+            SecondLoss.MoveEnded, SecondLoss.MovedBack, SecondLoss.Stale -> Unit
+            SecondLoss.NoPathBack -> end(ConnEnd.LocalAddressGone)
+        }
+
+    /** The client's loop promoted the second socket [ticket] names: the connection settles on it. */
+    fun promoted(ticket: SocketTicket) = c.promoted(ticket)
 
     /** The client's loop opened a second socket, which leaves from [to]. */
     fun moved(to: MoveTo) {
