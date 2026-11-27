@@ -641,7 +641,12 @@ public class CoreDefaultsCheck {
      */
     static void ruleSingleOwner(Parsed p, Names n, List<Finding> out) {
         if (n.singleOwners.isEmpty()) return;
+        // A file that declares its own type of the name holds that one, not the single-owner state.
         String here = p.pkg + "/" + p.base;
+        Names seen = new Names();
+        seen.singleOwners.putAll(n.singleOwners);
+        for (ClassDecl own : p.classes) if (!here.equals(n.singleOwners.get(own.name))) seen.singleOwners.remove(own.name);
+        n = seen;
         Pattern typed = Pattern.compile("\\Gvar\\s+`?\\w+`?\\s*(?::\\s*([A-Z]\\w*))?\\s*(?:=\\s*([A-Z]\\w*))?");
         for (Decl d : p.decls) {
             if (!d.kw().equals("var") || (d.frame() != null && !d.frame().classBody)) continue;
@@ -659,11 +664,41 @@ public class CoreDefaultsCheck {
             Matcher v = Pattern.compile("\\bvar\\s+`?\\w+`?\\s*:\\s*([A-Z]\\w*)").matcher(c.params);
             while (v.find()) if (heldElsewhere(n, v.group(1), here)) add(out, p, p.lineAt(c.kwOffset), "H");
         }
-        Matcher cell = Pattern.compile("\\bAtomic\\w*\\s*(?:<\\s*([A-Z]\\w*)|\\(\\s*([A-Z]\\w*)\\s*\\.)").matcher(p.code);
-        while (cell.find()) {
-            String type = cell.group(1) != null ? cell.group(1) : cell.group(2);
-            if (heldElsewhere(n, type, here)) add(out, p, p.lineAt(cell.start()), "H");
+        // Any field, val or var: a mutable container or cell of the type, by its type arguments or its initializer.
+        for (Decl d : p.decls) {
+            if (d.kw().equals("fun") || (d.frame() != null && !d.frame().classBody)) continue;
+            int line = p.lineAt(d.offset());
+            String text = p.lineText(line).substring(d.offset() - p.lineStart[line - 1]);
+            if (text.strip().endsWith("=") && line < p.raw.length) text += " " + p.lineText(line + 1);
+            if (holdsInside(n, text, here, d.kw().equals("var"))) add(out, p, line, "H");
         }
+        for (ClassDecl c : p.classes) {
+            if (c.params == null) continue;
+            Matcher param = Pattern.compile("\\b(val|var)\\s+`?\\w+`?\\s*:\\s*([^,]*(?:<[^>]*>[^,]*)?)").matcher(c.params);
+            while (param.find()) {
+                if (holdsInside(n, param.group(2), here, param.group(1).equals("var"))) add(out, p, p.lineAt(c.kwOffset), "H");
+            }
+        }
+    }
+
+    /** Mutable containers and cells: a holder whatever the field's own kind. */
+    static final String CELLS = "(?:Atomic\\w*|Mutable\\w*|StateFlow|SharedFlow|ArrayDeque|ArrayList|HashMap|HashSet|LinkedHashMap"
+        + "|LinkedHashSet|Array)";
+
+    /**
+     * Whether a field's declaration [text] holds a single-owner type outside its owner: as a type argument of a mutable
+     * container or cell, as an initializer of one (`AtomicReference(Carriage.Unplaced)`), or, in a `var`, as any type
+     * argument (`Pair<Move, Int>`).
+     */
+    static boolean holdsInside(Names n, String text, String here, boolean isVar) {
+        for (String type : n.singleOwners.keySet()) {
+            if (!heldElsewhere(n, type, here)) continue;
+            String t = "\\b" + Pattern.quote(type) + "\\b";
+            if (Pattern.compile("\\b" + CELLS + "\\s*<[^=]*" + t).matcher(text).find()) return true;
+            if (Pattern.compile("\\b" + CELLS + "\\s*\\(\\s*" + t + "\\s*[.(]").matcher(text).find()) return true;
+            if (isVar && Pattern.compile("<[^=]*" + t).matcher(text).find()) return true;
+        }
+        return false;
     }
 
     static boolean heldElsewhere(Names n, String type, String here) {
@@ -1205,8 +1240,22 @@ public class CoreDefaultsCheck {
             "udp/Pair.kt", "@Published\nclass Pair { private val now = AtomicReference<Carriage>(Carriage.Unplaced) }"));
         CASES.add(new Case("H", true, false, "loop/Carriage.kt", owned,
             "loop/Endpoint.kt", "@LoopOnly\nclass Endpoint(private var held: Carriage)"));
+        CASES.add(new Case("H", true, false, "loop/Carriage.kt", owned,
+            "edge/Flow.kt", "@Published\nclass F { private val now = MutableStateFlow<Carriage>(Carriage.Unplaced) }"));
+        CASES.add(new Case("H", true, false, "loop/Carriage.kt", owned,
+            "edge/Queue.kt", "@Confined\nclass Q { private val waiting = ArrayDeque<Carriage>() }"));
+        CASES.add(new Case("H", true, false, "loop/Carriage.kt", owned,
+            "edge/Pair.kt", "@Confined\nclass P { private var both: Pair<Carriage, Int> = x }"));
+        CASES.add(new Case("H", true, false, "loop/Carriage.kt", owned,
+            "edge/Cell.kt", "@Published\nclass C { private val now = AtomicReference(Carriage.Unplaced) }"));
+        CASES.add(new Case("H", true, false, "loop/Carriage.kt", owned,
+            "edge/Ctor.kt", "@Published\nclass C(private val now: MutableStateFlow<Carriage>)"));
         CASES.add(new Case("H", false, false, "loop/Carriage.kt", owned,
             "loop/Seat.kt", "@LoopOnly\nclass Seat {\n    var carriage: Carriage = Carriage.Unplaced\n        private set\n}"));
+        CASES.add(new Case("H", false, false, "loop/Carriage.kt", owned,
+            "loop/Read.kt", "class R(val seen: List<Carriage>) { private val pair: Pair<Carriage, Int> = x }"));
+        CASES.add(new Case("H", false, false, "loop/Carriage.kt", owned,
+            "udp/Own.kt", "private class Carriage(val n: Int)\n@Published\nclass O { private val now = AtomicReference(Carriage(1)) }"));
         CASES.add(new Case("H", false, false, "loop/Carriage.kt", owned,
             "loop/Io.kt", "fun f(c: Carriage): Carriage = c\nclass Snap(val c: Carriage)\nfun g() { var now = Carriage.Unplaced\n use(now) }"));
         CASES.add(new Case("H", false, false, "loop/Carriage.kt", owned,

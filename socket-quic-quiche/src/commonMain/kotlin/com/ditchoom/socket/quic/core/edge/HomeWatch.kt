@@ -178,7 +178,9 @@ internal fun homeOf(
         is ParsedAddress.Address ->
             when (val owner = links.ownerOf(parsed.address)) {
                 is AddressOwner.Link -> owner.id
-                is AddressOwner.NotReported, is AddressOwner.Unclaimed -> named
+                is AddressOwner.NotReported -> named
+                // The links are reported and none holds the address yet: which one will is not known.
+                is AddressOwner.Unclaimed -> NetworkId.Unidentified
             }
     }
 

@@ -118,6 +118,17 @@ class HomeWatchSilenceTests {
     }
 
     /**
+     * A move toward an address the reported links do not hold yet is asked on no network: which link will carry it is
+     * not known, so the loop takes the one the next rehome names rather than the one the monitor named then.
+     */
+    @Test
+    fun aMoveTowardAnAddressNoReportedLinkHoldsNamesNoNetwork() {
+        val links = linksOf(wifi to wifiAddress)
+        assertEquals(NetworkId.Unidentified, homeOf(cellularAddress, links, wifi))
+        assertEquals(wifi, homeOf(cellularAddress, LinkAddresses.NotReported, wifi), "with no links reported, the named one")
+    }
+
+    /**
      * A rebind toward cellular's address that never landed leaves the socket on Wi-Fi, as the loop says: the monitor
      * naming cellular is the handoff it is, never a reopen of the Wi-Fi socket. CoreCarriedTests holds the same through
      * the real loop.

@@ -234,7 +234,8 @@ internal class ClientPaths(
 
     /**
      * Whether a move open now already goes where [wanted] says, toward its address on its network: the move waiting for
-     * a spare id or a landing to end, else the one unfinished or landing.
+     * a spare id or a landing to end, else the one unfinished or landing. With no move open, a want for the address the
+     * connection carries on is served, on whatever network it names: a network change there is the edge's to rehome.
      */
     fun serves(wanted: MoveWanted): Served {
         val open =
@@ -242,7 +243,9 @@ internal class ClientPaths(
                 is HeldMove.Waiting -> held.wanted
                 is HeldMove.None ->
                     when (val now = move) {
-                        is Move.Settled -> return Served.Not
+                        is Move.Settled ->
+                            return now.on.local.key
+                                .carries(wanted)
                         is Move.Asked -> now.toward
                         is Move.Probing -> now.toward
                         is Move.Stranded -> now.toward

@@ -45,11 +45,19 @@ internal enum class Served { Already, Not }
 
 /** Whether this want goes where [other] does: the same address, whatever the port, on the same network. */
 internal fun MoveWanted.serves(other: MoveWanted): Served =
-    if (bind.family == other.bind.family && bind.hi == other.bind.hi && bind.lo == other.bind.lo && network == other.network) {
-        Served.Already
-    } else {
-        Served.Not
-    }
+    if (bind.sameAddress(other.bind) && network == other.network) Served.Already else Served.Not
+
+/** Whether a socket bound to this key already serves [wanted]: on its address, whatever the port or network. */
+internal fun PathKey.carries(wanted: MoveWanted): Served = if (sameAddress(wanted.bind)) Served.Already else Served.Not
+
+/** Whether this key and [other] name one address, whatever their ports. */
+internal fun PathKey.sameAddress(other: PathKey): Boolean = family == other.family && hi == other.hi && lo == other.lo
+
+/**
+ * This want, asked later than the reading that named its network (a later rung, a move released after waiting): the
+ * network may have changed since, so it names none, and the loop takes the one the next rehome names.
+ */
+internal fun MoveWanted.unnamed(): MoveWanted = MoveWanted(bind, prior, NetworkId.Unidentified)
 
 /** What a client whose socket is wanted on another address answers. */
 internal enum class Want {
@@ -154,7 +162,7 @@ internal class MoveHold(
                 is HeldMove.Waiting -> h
             }
         if (q.api.connAvailableDcids(q.handle) > 0L) {
-            moveNow(waiting.wanted)
+            moveNow(waiting.wanted.unnamed())
             return PathStep.Steady
         }
         return when (ears.observe(now)) {

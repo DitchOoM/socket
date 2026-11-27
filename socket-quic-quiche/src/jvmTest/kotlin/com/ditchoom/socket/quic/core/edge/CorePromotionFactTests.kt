@@ -50,7 +50,7 @@ class CorePromotionFactTests {
         VirtualPair.with(options, clientApi = { hook.over(it) }) { pair ->
             hook.then = {
                 pair.refuseSecondReopen = true
-                pair.rehome()
+                pair.client.parts.rehome(pair.secondTicket(), REHOME_NETWORK)
             }
             assertStaysOnTheOldSocket(pair, hook)
         }

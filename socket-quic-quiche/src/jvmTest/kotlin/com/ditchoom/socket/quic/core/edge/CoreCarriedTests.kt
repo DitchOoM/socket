@@ -176,6 +176,23 @@ class CoreCarriedTests {
             assertIs<EdgeEnd.Open>(pair.client.connection.end())
         }
 
+    /**
+     * A want read from where the socket was before a promotion, toward the address it was promoted to, arrives after the
+     * promotion: the connection carries there already, on whatever network the stale reading named, and asks nothing.
+     */
+    @Test
+    fun aWantForTheAddressThePromotionLandedOnAsksNothing() =
+        VirtualPair.with(options) { pair ->
+            pair.moveHosts.addLast(OTHER_KEY)
+            val first = pair.clientPort()
+            pair.client.parts.migrate(OTHER_KEY, RttPrior.CONFIGURED, MOVE_NETWORK)
+            pair.runUntil(within = 5.seconds) { pair.clientPort() != first && pair.clientSockets == 1 }
+            pair.runFor(SETTLED)
+            pair.client.parts.migrate(OTHER_KEY, RttPrior.CONFIGURED, pair.freshNetwork())
+            pair.runFor(SETTLED)
+            assertEquals(1, pair.opensAsked, "a want for the address the connection carries on asked a new move")
+        }
+
     /** A rehome read before a promotion, on the network the promoted socket is on, still tells the connection it can send. */
     @Test
     fun aStaleRehomeOnTheCarriedNetworkStillTellsUsable() =

@@ -95,7 +95,7 @@ internal class Rebinds(
         ladder = owed
         if (inFlight() == Busy.Yes) return Rebound.Served
         if (now < owed.due) return Rebound.Held
-        return fire(now, owed, gate)
+        return fire(now, owed, owed.wanted, gate)
     }
 
     /**
@@ -131,7 +131,7 @@ internal class Rebinds(
             return Rebound.Rested
         }
         if (inFlight() == Busy.Yes || now < owed.due) return Rebound.Rested
-        return fire(now, owed, gate)
+        return fire(now, owed, owed.wanted.unnamed(), gate)
     }
 
     /** The connection asked its loop for a second socket, whoever wanted it: a move is open. */
@@ -192,10 +192,11 @@ internal class Rebinds(
         busy = now
     }
 
-    /** The rung of [owed] is asked at [now]; once asked, the next falls due its gap later and waits twice as long after it. */
+    /** The rung of [owed] is asked at [now], where [wanted] says; once asked, the next falls due its gap later and waits twice as long after it. */
     private fun fire(
         now: Nanos,
         owed: Ladder.Owed,
+        wanted: MoveWanted,
         gate: MoveGate,
     ): Rebound {
         when (q.api.connPeerMigrationPermission(q.handle)) {
@@ -209,7 +210,7 @@ internal class Rebinds(
         }
         if (gate == MoveGate.Shut || q.api.connAvailableDcids(q.handle) == 0L) return deferred(now, owed)
         ladder = Ladder.Owed(owed.wanted, now + owed.gap.nanos, Span(minOf(owed.gap.nanos * 2, LONGEST_WAIT.nanos)))
-        hold.moveNow(owed.wanted)
+        hold.moveNow(wanted)
         owner = Owner.Rebind
         return Rebound.Asked
     }

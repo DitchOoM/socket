@@ -15,8 +15,6 @@ import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 import com.ditchoom.socket.quic.core.udp.SendBatch
 import com.ditchoom.socket.quic.core.udp.SendBatchResult
 import com.ditchoom.socket.quic.core.udp.SocketTicket
-import com.ditchoom.socket.transport.NetworkId
-import com.ditchoom.socket.transport.NetworkKind
 import java.lang.management.ManagementFactory
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -105,19 +103,6 @@ class PromotionFactTests {
         f.work(PromotedWork(ticket))
         assertEquals(2, f.opens(), "the move wanted while landing was asked once the landing settled: ${f.asks}")
         assertEquals(1, f.stub.requeuePathCount, "the landing settled before the next move was asked")
-    }
-
-    /**
-     * A want read from where the socket was before the promotion, toward the address it was promoted to, arrives after
-     * the promotion: the connection carries there already, on whatever network the stale reading named, and asks nothing.
-     */
-    @Test
-    fun aWantForTheAddressThePromotionLandedOnAsksNothing() {
-        val f = Fixture()
-        val ticket = f.migrate()
-        f.work(PromotedWork(ticket))
-        f.work(MoveWantedWork(MoveWanted(OTHER, RttPrior.CONFIGURED, NetworkId.Link(NetworkKind.Wifi, 5L))))
-        assertEquals(1, f.opens(), "a want for the address the connection carries on asked a new move: ${f.asks}")
     }
 
     /** quiche migrates back on another id than the old path held: that id is retired too, so none is left linked to no path. */

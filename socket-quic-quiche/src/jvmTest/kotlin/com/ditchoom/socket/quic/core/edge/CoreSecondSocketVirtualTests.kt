@@ -236,7 +236,7 @@ class CoreSecondSocketVirtualTests {
             pair.refuseSecondReopen = true
             move(pair)
             pair.runUntil(within = 2.seconds) { pair.clientSockets == 2 }
-            pair.rehome()
+            pair.client.parts.rehome(pair.secondTicket(), REHOME_NETWORK)
             awaitMark(pair, "SecondLost")
             pair.runFor(ECHO_EVERY)
             assertEquals(1, pair.clientSockets)

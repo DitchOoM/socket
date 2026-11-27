@@ -12,12 +12,14 @@ import com.ditchoom.socket.quic.core.ready.Poller
 internal sealed interface Seat {
     /**
      * A client's: its carrying socket and a second one its moves open, stepped by [Carriage.on]. Each step that leaves
-     * another socket carrying, or the same one held on another network, publishes it to [carried], once.
+     * another socket carrying, or the same one held on another network, publishes it to the [route]'s cell, once,
+     * while its connection runs: past the close point nothing reads where it went.
      */
     @LoopOnly
     class OfClient(
-        private val carried: CarriedCell,
+        private val route: Route.Fixed,
     ) : Seat {
+        private val carried: CarriedCell = route.carried
         var carriage: Carriage = Carriage.Unplaced
             private set
 
@@ -46,7 +48,7 @@ internal sealed interface Seat {
                     is Carrying.None -> return
                     is Held -> on
                 }
-            if (held === was.carryingNow()) return
+            if (held === was.carryingNow() || !route.runs()) return
             val local = if (was is Carriage.Two && was.beside === held) was.at else carried.read().local
             carried.carries(held.ticket, local, held.network)
         }

@@ -42,7 +42,7 @@ internal class Endpoint(
         private set
     private var interest = WriteInterest.None
     private val sockets = CarriageIo(io, refs, readiness)
-    private val seat = if (route is Route.Fixed) Seat.OfClient(route.carried) else Seat.OfServer()
+    private val seat = if (route is Route.Fixed) Seat.OfClient(route) else Seat.OfServer()
     private val closing = SocketClose(io, socket)
     private val out: Outbox = route.outbox()
 
