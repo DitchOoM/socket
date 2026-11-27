@@ -232,9 +232,10 @@ internal class ClientParts(
         bind: PathKey,
         prior: RttPrior,
         network: NetworkId,
+        named: NetworkId = network,
     ): MoveAsk =
         when (ownership) {
-            is SocketOwnership.Owned -> MoveAsk.Asked.also { conn.submit(MoveWantedWork(MoveWanted(bind, prior, network))) }
+            is SocketOwnership.Owned -> MoveAsk.Asked.also { conn.submit(MoveWantedWork(MoveWanted(bind, prior, network, named))) }
             is SocketOwnership.Lent -> LENT_REFUSED
         }
 

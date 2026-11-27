@@ -40,10 +40,12 @@ internal interface FeedTarget {
 
     fun network(change: NetworkChange)
 
+    /** A move to [bind]'s address, on [network] if known, wanted at a reading that named [named]. */
     fun migrate(
         bind: PathKey,
         prior: RttPrior,
         network: NetworkId,
+        named: NetworkId,
     )
 
     fun rehome(
@@ -73,8 +75,9 @@ internal class ClientFeed(
         bind: PathKey,
         prior: RttPrior,
         network: NetworkId,
+        named: NetworkId,
     ) {
-        parts.migrate(bind, prior, network)
+        parts.migrate(bind, prior, network, named)
     }
 
     override fun rehome(
@@ -177,7 +180,7 @@ private suspend fun FeedTarget.act(
         HomeStep.Usable -> network(NetworkChange.Usable)
         HomeStep.Gone -> network(NetworkChange.Gone)
         HomeStep.Moved -> network(NetworkChange.Moved)
-        HomeStep.Migrate -> towardRoute(now, bindKey) { bind, network -> migrate(bind, prior, network) }
+        HomeStep.Migrate -> towardRoute(now, bindKey) { bind, network -> migrate(bind, prior, network, named) }
         HomeStep.Rehome -> rehome(now.carried.ticket, named)
         HomeStep.Rebind -> towardRoute(now, bindKey) { bind, network -> rebind(bind, prior, network) }
     }

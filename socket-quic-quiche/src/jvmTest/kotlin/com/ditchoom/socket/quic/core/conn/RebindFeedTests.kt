@@ -97,9 +97,10 @@ class RebindFeedTests {
             bind: PathKey,
             prior: RttPrior,
             network: NetworkId,
+            named: NetworkId,
         ) {
             migrates += bind
-            rig().conn.submit(MoveWantedWork(MoveWanted(bind, prior, network)))
+            rig().conn.submit(MoveWantedWork(MoveWanted(bind, prior, network, named)))
         }
 
         override fun rehome(

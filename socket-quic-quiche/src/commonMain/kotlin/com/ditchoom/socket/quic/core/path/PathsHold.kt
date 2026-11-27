@@ -14,12 +14,15 @@ import com.ditchoom.socket.transport.NetworkId
 
 /**
  * Where a client's socket is wanted: [bind]'s address, on a network assumed to have a round trip of [prior], which the
- * edge names [network]; [NetworkId.Unidentified] when it names none, and the loop takes the first a rehome names.
+ * edge names [network]; [NetworkId.Unidentified] when it cannot tell, and the loop takes the first a rehome names.
+ * [named] is the network the monitor named at the reading that wanted it: a want under the same name is the same
+ * want, whichever link turns out to carry the address.
  */
 internal class MoveWanted(
     val bind: PathKey,
     val prior: RttPrior,
     val network: NetworkId = NetworkId.Unidentified,
+    val named: NetworkId = network,
 )
 
 /**
@@ -43,9 +46,9 @@ internal sealed interface HeldMove {
 /** Whether a move already open goes where a new want says. */
 internal enum class Served { Already, Not }
 
-/** Whether this want goes where [other] does: the same address, whatever the port, on the same network. */
+/** Whether this want goes where [other] does: the same address, whatever the port, under the same named network. */
 internal fun MoveWanted.serves(other: MoveWanted): Served =
-    if (bind.sameAddress(other.bind) && network == other.network) Served.Already else Served.Not
+    if (bind.sameAddress(other.bind) && named == other.named) Served.Already else Served.Not
 
 /** Whether a socket bound to this key already serves [wanted]: on its address, whatever the port or network. */
 internal fun PathKey.carries(wanted: MoveWanted): Served = if (sameAddress(wanted.bind)) Served.Already else Served.Not
@@ -57,7 +60,7 @@ internal fun PathKey.sameAddress(other: PathKey): Boolean = family == other.fami
  * This want, asked later than the reading that named its network (a later rung, a move released after waiting): the
  * network may have changed since, so it names none, and the loop takes the one the next rehome names.
  */
-internal fun MoveWanted.unnamed(): MoveWanted = MoveWanted(bind, prior, NetworkId.Unidentified)
+internal fun MoveWanted.unnamed(): MoveWanted = MoveWanted(bind, prior, NetworkId.Unidentified, named)
 
 /** What a client whose socket is wanted on another address answers. */
 internal enum class Want {

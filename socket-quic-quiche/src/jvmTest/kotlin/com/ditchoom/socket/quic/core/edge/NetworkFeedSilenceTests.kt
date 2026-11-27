@@ -115,6 +115,7 @@ class NetworkFeedSilenceTests {
             bind: PathKey,
             prior: RttPrior,
             network: NetworkId,
+            named: NetworkId,
         ) {
             migrates += bind
         }
