@@ -40,6 +40,7 @@ import kotlin.test.assertIs
 import kotlin.test.assertSame
 import kotlin.test.fail
 import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeSource
 
 /**
  * A stream's receiver, called without suspension on the connection's handler lane, and the non-suspending send it
@@ -168,6 +169,89 @@ class CoreReceiverTests {
                         }
                     assertSame<ScopedRead.NoData>(ScopedRead.End.PeerFinished, end)
                     assertEquals(LARGE, got)
+                }
+                client.close()
+            }
+        }
+
+    /**
+     * The send queue makes room while the receiver is still in the call that could not reply: the room is not lost.
+     * The receiver stays in that call until the client has every byte it queued, so every room the loop made for it
+     * was made during the call, and none comes after. The call is offered a whole buffer, so no new bytes can be
+     * read in after it to wake the stream either.
+     */
+    @OptIn(ExperimentalAtomicApi::class)
+    @Test
+    fun roomMadeDuringACallThatTookNothingOffersTheHeldBytesAgain() =
+        coreTest("CoreReceiverTests.roomMadeDuringACallThatTookNothingOffersTheHeldBytesAgain") {
+            val refused = CompletableDeferred<Unit>()
+            val queued = AtomicLong(0L)
+            val got = AtomicLong(0L)
+            val heldTooLong = CompletableDeferred<Long>()
+            withCoreServer(onConnection = { core ->
+                core.public().handleStreams { incoming ->
+                    val stream = incoming as QuicStream
+                    val ended = CompletableDeferred<ScopedRead.End>()
+                    val echo =
+                        object : QuicStreamReceiver {
+                            override fun onBytes(bytes: ReadBuffer) {
+                                val offered = bytes.remaining()
+                                stream.send.trySend(bytes)
+                                val taken = offered - bytes.remaining()
+                                queued.addAndFetch(taken.toLong())
+                                if (taken > 0 || offered < WHOLE_CALL || refused.isCompleted) return
+                                refused.complete(Unit)
+                                val until = TimeSource.Monotonic.markNow() + LONG_WAIT
+                                while (got.load() < queued.load()) {
+                                    if (until.hasPassedNow()) {
+                                        heldTooLong.complete(got.load())
+                                        return
+                                    }
+                                }
+                            }
+
+                            override fun onEnd(end: ScopedRead.End) {
+                                stream.send.tryFinish()
+                                ended.complete(end)
+                            }
+                        }
+                    stream.receive.receive(echo)
+                    ended.await()
+                }
+            }) { server ->
+                val client = connect(server.port)
+                val (send, receive) = client.openStream().orFail()
+                coroutineScope {
+                    launch {
+                        val chunk = BufferFactory.network().allocate(LARGE_CHUNK)
+                        var at = 0
+                        while (at < LARGE) {
+                            chunk.resetForWrite()
+                            repeat(LARGE_CHUNK) { chunk.writeByte(((at + it) % PATTERN).toByte()) }
+                            chunk.resetForRead()
+                            assertIs<StreamWrite.Written>(send.write(chunk))
+                            at += LARGE_CHUNK
+                        }
+                        assertIs<StreamWrite.Written>(send.finish())
+                    }
+                    // Unread, the reply fills this stream's window and then the server's send queue, so a call takes nothing.
+                    try {
+                        withTimeout(LONG_WAIT) { refused.await() }
+                    } catch (_: TimeoutCancellationException) {
+                        fail("no call found the send queue full")
+                    }
+                    val end =
+                        withTimeout(LONG_WAIT) {
+                            receive.readEach { bytes ->
+                                while (bytes.remaining() > 0) {
+                                    assertEquals((got.load() % PATTERN).toByte(), bytes.readByte(), "byte ${got.load()}")
+                                    got.addAndFetch(1L)
+                                }
+                            }
+                        }
+                    assertEquals(false, heldTooLong.isCompleted, "the client never got what the server queued")
+                    assertSame<ScopedRead.NoData>(ScopedRead.End.PeerFinished, end)
+                    assertEquals(LARGE.toLong(), got.load())
                 }
                 client.close()
             }
@@ -353,6 +437,9 @@ class CoreReceiverTests {
         const val MESSAGE = 1_000
         const val LARGE = 4 * 1_048_576
         const val LARGE_CHUNK = 16_384
+
+        // What one call is lent at most: the stream inbox's buffer.
+        const val WHOLE_CALL = 65_536
         const val PATTERN = 251
         const val ROUNDS = 100
         const val STOP_CODE = 0x42L
