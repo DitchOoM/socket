@@ -22,7 +22,7 @@ internal class PlaceWork(
 ) : LoopWork() {
     override fun run(port: LoopPort) = loop.attach(endpoint)
 
-    override fun gone(end: ConnEnd) = endpoint.unplaced(end)
+    override fun gone(end: ConnEnd) = endpoint.unplaced(end, loop.poller, loop)
 }
 
 /** Loop work: a socket is reopened on a changed network. */
@@ -52,7 +52,7 @@ internal fun Loop.promote(
     ticket: SocketTicket,
 ) = port.submit(PromoteWork(this, endpoint, ticket))
 
-/** Any thread: [endpoint]'s second socket [ticket] names is closed (see [SecondSocket.close]). */
+/** Any thread: [endpoint]'s second socket [ticket] names is closed (see [Endpoint.closeSecond]). */
 internal fun Loop.closeSecond(
     endpoint: Endpoint,
     ticket: SocketTicket,
@@ -88,7 +88,7 @@ internal class CloseSecondWork(
     private val endpoint: Endpoint,
     private val ticket: SocketTicket,
 ) : LoopWork() {
-    override fun run(port: LoopPort) = endpoint.second.close(loop.poller, loop, ticket)
+    override fun run(port: LoopPort) = endpoint.closeSecond(loop.poller, loop, ticket)
 
     override fun gone(end: ConnEnd) = Unit
 }

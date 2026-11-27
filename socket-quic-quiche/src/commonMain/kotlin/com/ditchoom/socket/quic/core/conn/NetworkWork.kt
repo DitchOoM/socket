@@ -62,6 +62,9 @@ internal sealed interface MoveRefusal {
 
     /** The carrying socket is the caller's: no other socket can replace it. */
     data object SocketLent : MoveRefusal
+
+    /** The socket's io opens no second socket: it follows the device's paths by itself, or not at all. */
+    data object NoSecond : MoveRefusal
 }
 
 /** What asking a client connection to move answered: asked of its loop, or refused at once, as [Refused.why] says. */

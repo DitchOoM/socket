@@ -39,17 +39,6 @@ private inline fun StopOutcome.then(step: () -> Unit): StopOutcome =
         }
     }
 
-private sealed interface Run {
-    data object Running : Run
-
-    class Closing(
-        val then: Runnable,
-    ) : Run
-
-    /** The stop began: what it releases is never released again, and the loop never runs another pass. */
-    data object Stopped : Run
-}
-
 /**
  * One platform thread's run-to-completion loop over its sockets. A pass: fire due deadlines, receive from every socket
  * that may hold datagrams, run work handed over, then serve each socket's connection and send its output. Other
@@ -184,7 +173,10 @@ internal class Loop(
         budget.begin(now)
         for (i in slots.indices) {
             when (val slot = slots[i]) {
-                is LoopSlot.Taken -> receiveOn(slot.endpoint, Via.Carrying)
+                is LoopSlot.Taken -> {
+                    settleOn(slot.endpoint)
+                    receiveOn(slot.endpoint, Via.Carrying)
+                }
                 is LoopSlot.Second -> receiveOn(slot.endpoint, Via.Probing)
                 is LoopSlot.Empty -> Unit
             }
@@ -204,15 +196,14 @@ internal class Loop(
         }
         handlers.end()
         val due = port.nextDue(now)
-        // Datagrams the io holds are invisible to the poller: with any, the next pass is due now (a poll of zero), whatever
-        // cut this one short (the per-pass bound included).
+        // Datagrams the io holds are invisible to the poller: with any, the next pass is due now, whatever cut this one short.
         return if (backlog) NextDue.at(now.value) else due
     }
 
     internal fun attach(endpoint: Endpoint) {
         val token = free.popOr { slots.size.also { slots.add(LoopSlot.Empty) } }
         slots[token] = LoopSlot.Taken(endpoint)
-        endpoint.placed(token)
+        endpoint.placed(token, poller, this)
         poller.add(endpoint.refs.carrying, token)
     }
 
@@ -244,7 +235,16 @@ internal class Loop(
             endpoint.receive(via, receive, counts, clock, budget, poller, this)
         } catch (failure: Exception) {
             receive.release()
-            endpoint.ioThrew(Thrown(failure))
+            endpoint.ioThrew(Thrown(failure), via, poller, this)
+        }
+    }
+
+    /** A second socket being made is looked at: what its io throws is that socket's failure alone. */
+    private fun settleOn(endpoint: Endpoint) {
+        try {
+            endpoint.settle(poller, this)
+        } catch (failure: Exception) {
+            endpoint.ioThrew(Thrown(failure), Via.Probing, poller, this)
         }
     }
 

@@ -44,6 +44,7 @@ import com.ditchoom.socket.quic.core.loop.Endpoint
 import com.ditchoom.socket.quic.core.loop.Loop
 import com.ditchoom.socket.quic.core.loop.OwnBatch
 import com.ditchoom.socket.quic.core.loop.Route
+import com.ditchoom.socket.quic.core.loop.SocketOwnership
 import com.ditchoom.socket.quic.core.observe.ConnCounts
 import com.ditchoom.socket.quic.core.path.ClientPaths
 import com.ditchoom.socket.quic.core.path.IdIssuer
@@ -235,6 +236,7 @@ internal class ConnRig(
     silence: SilenceRule = QUIET_RULE,
     /** What the connection asks of its sockets; dropped unless a test watches. */
     ask: (SocketAsk) -> Unit = NO_MOVES,
+    ownership: SocketOwnership = SocketOwnership.Owned,
 ) {
     val sink = RecordingSink()
     val counts = ConnCounts()
@@ -248,6 +250,7 @@ internal class ConnRig(
             socket,
             Route.Fixed(conn, OwnBatch(SendBatch(nativeBytes(maxDatagrams * 1500), BatchLimits(maxDatagrams, 1500)))),
             Runnable { },
+            ownership = ownership,
         )
 
     init {

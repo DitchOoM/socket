@@ -2,7 +2,6 @@ package com.ditchoom.socket.quic.core.loop
 
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.core.conn.Collected
-import com.ditchoom.socket.quic.core.demux.Admitted
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.observe.LoopCounts
 import com.ditchoom.socket.quic.core.observe.LoopOnly
@@ -20,16 +19,15 @@ import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.time.RttPrior
 import com.ditchoom.socket.quic.core.udp.DatagramBatchIo
 import com.ditchoom.socket.quic.core.udp.ReceiveBatch
-import com.ditchoom.socket.quic.core.udp.ReceiveBatchResult
-import com.ditchoom.socket.quic.core.udp.Reopened
 import com.ditchoom.socket.quic.core.udp.SocketFault
 import com.ditchoom.socket.quic.core.udp.SocketTicket
 import com.ditchoom.socket.quic.core.udp.Thrown
 import kotlinx.coroutines.Runnable
 
-private enum class Phase { Live, Dead, Gone }
-
-/** A socket on a loop and where its datagrams go, and the [SecondSocket] a client's move opens beside it. The loop thread only. */
+/**
+ * A socket on a loop and where its datagrams go. Its [Seat] holds the loop's one record of which socket carries: a
+ * client's [Carriage], or a server's [Carriage.Single]. Every change to it is a step [step] takes. The loop thread only.
+ */
 @LoopOnly
 internal class Endpoint(
     val refs: SocketRefs,
@@ -38,35 +36,39 @@ internal class Endpoint(
     private val route: Route,
     /** Runs on the loop once the socket has left it, after the connection ended and its last output went out. */
     private val onLeft: Runnable,
-    private val readiness: Readiness = Readiness.Polled,
+    readiness: Readiness = Readiness.Polled,
     private val ownership: SocketOwnership = SocketOwnership.Owned,
 ) {
     var token = 0
         private set
-    private var input = ReceiveInput.Maybe
-    private var phase = Phase.Live
     private var interest = WriteInterest.None
-    val second = SecondSocket(io, refs)
+    private val sockets = CarriageIo(io, refs, readiness)
+    private val seat = if (route is Route.Fixed) Seat.OfClient() else Seat.OfServer()
     private val closing = SocketClose(io, socket)
     private val out: Outbox = route.outbox()
 
-    fun placed(token: Int) = io.placed().also { this.token = token }
-
-    fun readable(via: Via) {
-        when (via) {
-            Via.Carrying -> if (input != ReceiveInput.Backlog) input = ReceiveInput.Maybe
-            Via.Probing -> second.readable()
-        }
+    fun placed(
+        token: Int,
+        poller: Poller,
+        seats: Loop,
+    ) {
+        this.token = token
+        step(SocketEvent.Placed(ownership), poller, seats)
+        io.placed()
     }
 
-    /** Whether the io holds datagrams the poller will never signal: the loop's next pass must not wait. */
-    fun hasBacklog(): Boolean = phase == Phase.Live && (input == ReceiveInput.Backlog || second.input() == ReceiveInput.Backlog)
+    fun readable(via: Via) = sockets.readable(via)
 
-    /**
-     * Receives up to [MAX_PER_PASS] datagrams and hands them to the route. A server then starts held handshakes a chunk
-     * at a time while [budget] lasts, reading the socket again after each chunk so its buffer never fills while they start;
-     * reading is never cut by the budget, so nothing waits in the kernel to be read stale.
-     */
+    /** Whether the io holds datagrams the poller will never signal: the loop's next pass must not wait. */
+    fun hasBacklog(): Boolean = sockets.backlog(seat.carriage())
+
+    /** Each pass: a second socket being made is looked at, and once ready the connection told. */
+    fun settle(
+        poller: Poller,
+        seats: Loop,
+    ) = step(BesideEvent.Made, poller, seats)
+
+    /** Receives what waits on the socket [via] names and hands it to the route ([CarriageIo.receiveCarrying]). */
     fun receive(
         via: Via,
         batch: ReceiveBatch,
@@ -76,56 +78,18 @@ internal class Endpoint(
         poller: Poller,
         seats: Loop,
     ) {
-        if (phase != Phase.Live) return
-        when (route) {
-            is Route.Fixed ->
-                when (via) {
-                    Via.Carrying -> {
-                        second.settle(this, poller, seats, route)
-                        receiveWaiting(batch, counts, clock)
-                    }
-                    Via.Probing -> second.receive(route, batch, counts, clock, readiness, MAX_PER_PASS, poller, seats)
+        when (via) {
+            Via.Carrying -> sockets.receiveCarrying(seat.carriage(), route, socket, batch, counts, clock, budget)
+            Via.Probing ->
+                when (val now = seat.carriage()) {
+                    is Carriage.Two ->
+                        when (sockets.readBeside(now.beside, route, batch, counts, clock)) {
+                            BesideRead.Read -> Unit
+                            BesideRead.Closed -> step(BesideEvent.BesideLost(now.beside), poller, seats)
+                        }
+                    is Carriage.Single, is Carriage.Opening -> Unit
                 }
-            is Route.Demux -> {
-                route.demux.passBegins()
-                receiveWaiting(batch, counts, clock)
-                while (budget.state() == Budget.Left && route.demux.admitSome(route.out.batch) == Admitted.More) {
-                    input = ReceiveInput.Maybe
-                    receiveWaiting(batch, counts, clock)
-                }
-            }
         }
-    }
-
-    /** Reads until drained or a batch more could pass [MAX_PER_PASS]; a read's datagrams reach quiche at one [clock] reading. */
-    private fun receiveWaiting(
-        batch: ReceiveBatch,
-        counts: LoopCounts,
-        clock: LoopClock,
-    ) {
-        if (input == ReceiveInput.Drained && readiness == Readiness.Polled) return
-        val on = second.carrying()
-        var taken = 0
-        while (taken + batch.limits.maxDatagrams <= MAX_PER_PASS) {
-            when (val got = traced(TraceSection.ReceiveBatch) { io.receive(batch) }) {
-                is ReceiveBatchResult.Got, is ReceiveBatchResult.GotWithBacklog -> {
-                    input = if (got is ReceiveBatchResult.GotWithBacklog) ReceiveInput.Backlog else ReceiveInput.Maybe
-                    taken += batch.count
-                    route.deliver(batch, clock.now(), on)
-                }
-                is ReceiveBatchResult.Nothing -> {
-                    input = ReceiveInput.Drained
-                    break
-                }
-                is ReceiveBatchResult.Failed -> {
-                    route.deliver(batch, clock.now(), on)
-                    input = ReceiveInput.Drained
-                    socket.receiveFailed(got.error)
-                    break
-                }
-            }
-        }
-        counts.received(taken)
     }
 
     /**
@@ -138,8 +102,9 @@ internal class Endpoint(
         now: Nanos,
         port: LoopPort,
     ): Stay {
-        noticeSocket()
-        if (phase == Phase.Live) socket.flushWaiting()
+        noticeSocket(poller, seats)
+        val sends = carries()
+        if (sends == Carries.Live) socket.flushWaiting()
         val send = out.batch()
         while (true) {
             val collected =
@@ -148,30 +113,30 @@ internal class Endpoint(
                     is Route.Demux -> route.demux.turn(send)
                 }
             if (send.pending > 0) {
-                when (phase) {
-                    Phase.Live -> traced(TraceSection.SendBatch) { socket.flush(send) }
-                    Phase.Dead, Phase.Gone -> send.took(send.pending)
+                when (carries()) {
+                    Carries.Live -> traced(TraceSection.SendBatch) { socket.flush(send) }
+                    Carries.Dead, Carries.Gone -> send.took(send.pending)
                 }
             }
             if (collected != Collected.MoreWaiting || send.pending > 0) break
         }
         out.served()
-        noticeSocket()
-        if (route.ended() && (!out.holds() || phase != Phase.Live) && !socket.hasWaiting()) {
-            when (phase) {
-                Phase.Gone -> Unit
-                Phase.Live, Phase.Dead ->
+        noticeSocket(poller, seats)
+        if (route.ended() && (!out.holds() || carries() != Carries.Live) && !socket.hasWaiting()) {
+            when (carries()) {
+                Carries.Gone -> Unit
+                Carries.Live, Carries.Dead ->
                     // With lanes out, the last thread out wakes the loop to ask again, the lane bound at the latest.
                     when (closing.ask(now, port)) {
                         is Shutdown.Quiet -> {
-                            leave(poller, seats)
+                            step(SocketEvent.Leave, poller, seats)
                             closing.close()
                         }
-                        is Shutdown.Closed -> leave(poller, seats)
+                        is Shutdown.Closed -> step(SocketEvent.Leave, poller, seats)
                         is Shutdown.LanesOut, is Shutdown.Sending -> Unit
                     }
             }
-            if (phase == Phase.Gone) {
+            if (carries() == Carries.Gone) {
                 out.left()
                 onLeft.run()
                 return Stay.Left
@@ -182,59 +147,52 @@ internal class Endpoint(
     }
 
     /**
-     * The network under this socket changed: it is reopened on the same address and port (the second one, while a move is
-     * open), and its connection told in this pass, so it sends at once. One that cannot be reopened ends its connection.
+     * The network under this socket changed: the socket holding the connection's address (the second one, while a move
+     * is open) is reopened on the same address and port, and its connection told in this pass, so it sends at once. A
+     * carrying socket that cannot be reopened ends its connection; a lent one is never reopened.
      */
     fun rehome(
         poller: Poller,
         seats: Loop,
-    ) {
-        if (ownership is SocketOwnership.Lent || phase != Phase.Live || second.rehome(poller, seats, route) == SecondRehome.Reopened) return
-        poller.remove(token)
-        when (val reopened = io.reopen()) {
-            is Reopened.SameEndpoint -> {
-                poller.add(refs.carrying, token)
-                interest = WriteInterest.None
-                input = ReceiveInput.Maybe
-                route.rehomed()
-            }
-            is Reopened.Refused -> {
-                phase = Phase.Gone
-                endConn(ConnEnd.SocketFailed(SocketFault.ReopenRefused(reopened.thrown)))
-            }
-        }
-    }
+    ) = step(SocketEvent.Rehome, poller, seats)
 
-    /** A client's connection wants socket [ticket] on [bind]'s address, assumed [prior]: see [SocketOwnership.move]. */
+    /** A client's connection wants socket [ticket] on [bind]'s address, assumed [prior]. */
     fun move(
         poller: Poller,
         seats: Loop,
         ticket: SocketTicket,
         bind: PathKey,
         prior: RttPrior,
-    ) = if (phase == Phase.Live) ownership.move(route, ticket) { second.open(this, poller, seats, it, ticket, bind, prior) } else Unit
+    ) = step(MoveEvent.OpenBeside(ticket, bind, prior), poller, seats)
 
     /** The second socket [ticket] names carries from now on, polled as this endpoint's token, and the connection is told. */
     fun promote(
         poller: Poller,
         seats: Loop,
         ticket: SocketTicket,
-    ) {
-        if (phase != Phase.Live) return
-        when (second.promote(poller, seats, ticket, token)) {
-            Promotion.Stale -> return
-            Promotion.Promoted -> input = ReceiveInput.Maybe
-            Promotion.PromotedWithBacklog -> input = ReceiveInput.Backlog
-        }
-        interest = WriteInterest.None
-        route.promoted(ticket)
-    }
+    ) = step(MoveEvent.Promote(ticket), poller, seats)
 
-    /** The io threw: this socket's connection ends with it, and no other. */
-    fun ioThrew(thrown: Thrown) {
-        if (phase != Phase.Live) return
-        phase = Phase.Dead
-        endConn(ConnEnd.SocketFailed(SocketFault.Unnamed(thrown)))
+    /** The second socket [ticket] names is closed, open or still being made. */
+    fun closeSecond(
+        poller: Poller,
+        seats: Loop,
+        ticket: SocketTicket,
+    ) = step(MoveEvent.CloseSecond(ticket), poller, seats)
+
+    /** The io threw on the socket [via] names: a carrying socket's connection ends with it, a second's move. */
+    fun ioThrew(
+        thrown: Thrown,
+        via: Via,
+        poller: Poller,
+        seats: Loop,
+    ) = when (via) {
+        Via.Carrying -> step(SocketEvent.CarryingDied(ConnEnd.SocketFailed(SocketFault.Unnamed(thrown))), poller, seats)
+        Via.Probing ->
+            when (val now = seat.carriage()) {
+                is Carriage.Opening -> step(BesideEvent.BesideLost(now.beside), poller, seats)
+                is Carriage.Two -> step(BesideEvent.BesideLost(now.beside), poller, seats)
+                is Carriage.Single -> Unit
+            }
     }
 
     /** The loop stopped with [end]: the connection ends, and the socket is closed now or by the last lane back. */
@@ -244,8 +202,8 @@ internal class Endpoint(
         seats: Loop,
     ) {
         endConn(end)
-        if (phase != Phase.Gone) {
-            leave(poller, seats)
+        if (carries() != Carries.Gone) {
+            step(SocketEvent.Leave, poller, seats)
             closing.stopped()
         }
         out.left()
@@ -253,47 +211,72 @@ internal class Endpoint(
     }
 
     /** The loop had stopped before this endpoint joined it: the connection ends and the socket is closed. */
-    fun unplaced(end: ConnEnd) {
+    fun unplaced(
+        end: ConnEnd,
+        poller: Poller,
+        seats: Loop,
+    ) {
         endConn(end)
-        phase = Phase.Gone
+        step(SocketEvent.Leave, poller, seats)
         closing.stopped()
         out.left()
         onLeft.run()
     }
 
-    private fun noticeSocket() {
+    private fun noticeSocket(
+        poller: Poller,
+        seats: Loop,
+    ) {
         when (val health = socket.health()) {
             is SocketHealth.Live -> route.refused(socket.ledger.takeNews())
             is SocketHealth.Dead ->
-                if (phase == Phase.Live) {
-                    phase = Phase.Dead
-                    endConn(ConnEnd.SocketFailed(health.fault))
-                }
+                if (carries() == Carries.Live) step(SocketEvent.CarryingDied(ConnEnd.SocketFailed(health.fault)), poller, seats)
         }
+    }
+
+    /**
+     * The one place the seat changes: [event]'s step is taken, and what it says is told or ends the connection. A
+     * server's seat has no second socket and takes no move: a client's event leaves it as it is.
+     */
+    private fun step(
+        event: CarriageEvent,
+        poller: Poller,
+        seats: Loop,
+    ) {
+        val taken =
+            when (seat) {
+                is Seat.OfClient -> seat.take(event, sockets, poller, seats, this)
+                is Seat.OfServer ->
+                    when (event) {
+                        is SocketEvent -> seat.take(event, sockets, poller, token)
+                        is ClientEvent -> Step.Same
+                    }
+            }
+        when (val step = taken) {
+            is Step.Same -> Unit
+            is Step.Moves -> told(step.fact)
+            is Step.Ends -> endConn(step.end)
+        }
+    }
+
+    private fun told(fact: MoveFact) {
+        when (fact) {
+            // The carrying token was off the poller, and its write interest with it.
+            is MoveFact.Promoted, is MoveFact.CarryingRehomed -> interest = WriteInterest.None
+            is MoveFact.None, is MoveFact.Moved, is MoveFact.Refused, is MoveFact.SecondLost, is MoveFact.BesideRehomed -> Unit
+        }
+        route.told(fact)
     }
 
     private fun endConn(end: ConnEnd) = route.endWith(end)
 
+    private fun carries(): Carries = seat.carriage().carries()
+
     private fun refreshInterest(poller: Poller) {
         val wanted =
-            if (phase == Phase.Live && (out.holds() || socket.hasWaiting())) WriteInterest.Wanted else WriteInterest.None
+            if (carries() == Carries.Live && (out.holds() || socket.hasWaiting())) WriteInterest.Wanted else WriteInterest.None
         if (wanted == interest) return
         interest = wanted
         poller.interest(token, wanted)
-    }
-
-    /** Off the poller, the second socket's slot too; the io closes both sockets. */
-    private fun leave(
-        poller: Poller,
-        seats: Loop,
-    ) {
-        phase = Phase.Gone
-        poller.remove(token)
-        second.leave(poller, seats)
-    }
-
-    private companion object {
-        /** Per socket and pass, so a flood starves no deadline: half a default receive queue, which holds two passes' reads. */
-        const val MAX_PER_PASS = 512
     }
 }
