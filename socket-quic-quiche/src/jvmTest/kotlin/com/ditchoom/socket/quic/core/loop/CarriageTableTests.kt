@@ -31,38 +31,6 @@ import kotlin.test.assertTrue
  * - only the carrying socket's end ends the connection.
  */
 class CarriageTableTests {
-    /** A poller that counts what was added and removed, by token. */
-    private class CountingPoller : Poller {
-        val added = ArrayList<Int>()
-        val removed = ArrayList<Int>()
-
-        override fun add(
-            socket: SocketRef,
-            token: Int,
-        ) {
-            added += token
-        }
-
-        override fun remove(token: Int) {
-            removed += token
-        }
-
-        override fun interest(
-            token: Int,
-            write: WriteInterest,
-        ) = Unit
-
-        override fun await(
-            until: NextDue,
-            ready: ReadyTokens,
-            now: Nanos,
-        ): WakeCause = WakeCause.Woken
-
-        override fun wake() = Unit
-
-        override fun close() = Unit
-    }
-
     private enum class State { One, Opening, Two, Lent, Dead, Left }
 
     private enum class Event(
@@ -87,7 +55,7 @@ class CarriageTableTests {
     private class Cell(
         val state: State,
     ) {
-        val poller = CountingPoller()
+        val poller = TokenCountingPoller()
         val io = FakeIo()
         val rig =
             ConnRig(
@@ -121,7 +89,10 @@ class CarriageTableTests {
             }
         }
 
-        fun hand(event: Event) {
+        fun hand(
+            event: Event,
+            passes: Int = SETTLE,
+        ) {
             when (event) {
                 Event.OpenBeside -> rig.loop.move(rig.endpoint, ASKED.next(), BIND, RttPrior.CONFIGURED)
                 Event.Promote -> rig.loop.promote(rig.endpoint, ASKED)
@@ -144,7 +115,7 @@ class CarriageTableTests {
                 Event.CarryingDies -> rig.endpoint.ioThrew(Thrown(IOException("carrying socket gone")), rig.loop.poller, rig.loop)
                 Event.Leave -> rig.conn.endWithLoop(ConnEnd.Released)
             }
-            passes(SETTLE)
+            passes(passes)
         }
 
         fun passes(count: Int) {
@@ -219,6 +190,20 @@ class CarriageTableTests {
                 val cell = Cell(state).apply { hand(event) }
                 assertEquals(emptyList(), cell.rig.sink.ended, "$state then $event ended the connection: ${cell.seen()}")
             }
+        }
+    }
+
+    /** A carrying socket that dies, or cannot be reopened, closes the second socket in the same pass. */
+    @Test
+    fun aCarryingSocketsEndClosesTheSecondAtOnce() {
+        for ((state, event) in listOf(
+            State.Two to Event.CarryingDies,
+            State.Opening to Event.CarryingDies,
+            State.Opening to Event.RehomeCarryingRefused,
+        )) {
+            val cell = Cell(state)
+            cell.hand(event, passes = 1)
+            assertEquals(1, cell.io.secondsClosed, "$state then $event: the second socket was not closed in that pass: ${cell.seen()}")
         }
     }
 
