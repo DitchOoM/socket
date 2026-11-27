@@ -225,6 +225,8 @@ jobs:
         working-directory: /tmp/runner
         run: |
           set -uo pipefail
+          # A whole cell's test list runs in under 15 minutes when nothing is held (every cell of run 45941749259).
+          RUNNER_BOUND=30m
           results="$GITHUB_WORKSPACE/interop-results"
           mkdir -p "$results" /tmp/interop
           exp="$GITHUB_WORKSPACE/test-harness/quic-interop/expectations.json"
@@ -254,12 +256,38 @@ jobs:
             echo "::error::the interop runner wrote no results for $(basename "$json") (exit $rc); see $(basename "$report") in the results artifact"
             sed -n '1,40p' "$report"
           }
+          # A container Docker cannot kill holds `docker compose` and the runner with it, past any test's own
+          # limit (run 45941749259: neqo's server ignored SIGKILL after our client exited 0, and the cell sat
+          # silent until the job timed out). Each runner invocation is bounded; on the bound, what held it is
+          # recorded, every container is removed, and the invocation runs once more only if Docker recovered.
+          runner_wedged() { # <json> <attempt>
+            local report="${1%.json}.runner-wedged-$2.txt"
+            {
+              echo "the runner passed its ${RUNNER_BOUND} bound (attempt $2)"
+              echo "== containers"; docker ps -a --format '{{.ID}} {{.Image}} {{.Status}} {{.Names}}'
+              echo "== processes in uninterruptible sleep"
+              ps -eo pid,ppid,stat,wchan:32,etime,args | awk 'NR == 1 || $3 ~ /^D/'
+              echo "== kernel: hung tasks"
+              sudo dmesg -T 2>/dev/null | grep -i -E 'hung_task|blocked for more than|task .* D ' | tail -40 || true
+            } > "$report" 2>&1
+            echo "::error title=interop runner wedged::$(basename "$1") attempt $2; see $(basename "$report") in the results artifact"
+            sed -n '1,30p' "$report"
+            docker ps -aq | xargs -r timeout 60 docker rm -f >/dev/null 2>&1 || true
+            [ -z "$(docker ps -aq)" ]
+          }
           run_pair() { # <tests> <logs> <json> [runner role flags...]
-            local t=$1 logs=$2 json=$3 log="${3%.json}.runner.log" rc
+            local t=$1 logs=$2 json=$3 log="${3%.json}.runner.log" rc attempt
             shift 3
-            # run.py exits non-zero when a test fails, and this step runs under `bash -e`.
-            rc=0
-            python3 run.py "$@" -t "$t" -l "$logs" -j "$json" -d 2>&1 | tee "$log" || rc=$?
+            for attempt in 1 2; do
+              # run.py exits non-zero when a test fails, and this step runs under `bash -e`.
+              rc=0
+              # Unbuffered, so the log's timestamps are when each line was written, not when a buffer filled.
+              PYTHONUNBUFFERED=1 timeout --kill-after=2m "$RUNNER_BOUND" \
+                python3 run.py "$@" -t "$t" -l "$logs" -j "$json" -d 2>&1 | tee "$log" || rc=$?
+              [ "$rc" = 124 ] || [ "$rc" = 137 ] || break
+              runner_wedged "$json" "$attempt" || break
+              rm -rf "$logs" "$json"
+            done
             if [ ! -s "$json" ]; then
               runner_crash "$logs" "$json" "$rc" "$log"
             elif ! why=$(python3 "$gate" ran "$json"); then
