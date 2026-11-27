@@ -58,6 +58,30 @@ class MigrateBackTests {
             }
         }
 
+    /** A second move, from a path that took a spare id itself, comes back on that path's own id, not on the first one's. */
+    @Test
+    fun aSecondMoveComesBackOnTheIdItsOwnPathHeld() =
+        runTest {
+            val pair = QuichePairByHand.open(env)
+            try {
+                pair.establishWithSpareIds()
+                pair.validate(MOVED_TO)
+                val first = assertIs<MigrateOutcome.Migrated>(pair.migrate(MOVED_TO))
+                assertEquals(0, pair.retireDcid(0L), "the original path's id is retired once the first move landed")
+                pair.exchange(ONE_WAY) { true }
+                val validated = pair.validate(MOVED_AGAIN)
+                assertTrue("Validated(endpoint $MOVED_AGAIN)" in validated, "the third path validated: $validated")
+                val second = assertIs<MigrateOutcome.Migrated>(pair.migrate(MOVED_AGAIN))
+                assertTrue(second.dcidSeq != first.dcidSeq, "the second move took an id of its own")
+                val back = assertIs<MigrateOutcome.Migrated>(pair.migrate(MOVED_TO), "paths: ${pair.pathTable(pair.client)}")
+                assertEquals(first.dcidSeq, back.dcidSeq, "the path left came back on another id than it held")
+                assertEquals(0, pair.retireDcid(second.dcidSeq))
+                assertEquals(SENT, pair.echoThrough(), "the path left carries the connection again")
+            } finally {
+                pair.close()
+            }
+        }
+
     private fun QuichePairByHand.establishWithSpareIds() {
         handshakeUpToTheClientsFinished(ONE_WAY)
         exchange(ONE_WAY) { true }
@@ -85,6 +109,7 @@ class MigrateBackTests {
     private companion object {
         const val ORIGINAL = 0
         const val MOVED_TO = 1
+        const val MOVED_AGAIN = 2
         const val SENT = 100
         val ONE_WAY = 30.milliseconds
     }

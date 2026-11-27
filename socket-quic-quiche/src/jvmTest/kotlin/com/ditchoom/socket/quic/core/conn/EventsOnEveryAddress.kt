@@ -17,6 +17,9 @@ internal class EventsOnEveryAddress(
     var migrations = 0
         private set
 
+    /** The local sockaddr of every migration asked for, in order: which path each named. */
+    val migratedTo = ArrayList<Long>()
+
     override fun connPathEventNext(
         conn: QuicheConn,
         localOut: Long,
@@ -33,6 +36,7 @@ internal class EventsOnEveryAddress(
         peerLen: Int,
     ): MigrateOutcome =
         inner.connMigrate(conn, localAddr, localLen, peerAddr, peerLen).also {
+            migratedTo += localAddr
             if (it is MigrateOutcome.Migrated) migrations++
         }
 }
