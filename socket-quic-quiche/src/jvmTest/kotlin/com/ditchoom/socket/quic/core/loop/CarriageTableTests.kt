@@ -1,16 +1,9 @@
 package com.ditchoom.socket.quic.core.loop
 
-import com.ditchoom.socket.quic.NextDue
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.core.life.ConnEnd
-import com.ditchoom.socket.quic.core.ready.Poller
-import com.ditchoom.socket.quic.core.ready.ReadyTokens
-import com.ditchoom.socket.quic.core.ready.SocketRef
-import com.ditchoom.socket.quic.core.ready.WakeCause
-import com.ditchoom.socket.quic.core.ready.WriteInterest
 import com.ditchoom.socket.quic.core.testing.ConnRig
 import com.ditchoom.socket.quic.core.testing.FakeIo
-import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.time.RttPrior
 import com.ditchoom.socket.quic.core.udp.Beside
 import com.ditchoom.socket.quic.core.udp.ReceiveBatchResult
@@ -80,7 +73,11 @@ class CarriageTableTests {
                     rig.loop.move(rig.endpoint, ASKED, BIND, RttPrior.CONFIGURED)
                     passes(1)
                     // The carrying socket dies in the pass the event is handed in, so the event meets the dead state.
-                    if (state == State.Dead) rig.endpoint.ioThrew(Thrown(IOException("carrying socket gone")), rig.loop.poller, rig.loop)
+                    if (state ==
+                        State.Dead
+                    ) {
+                        rig.endpoint.ioThrew(Thrown(IOException("carrying socket gone")), Via.Carrying, rig.loop.poller, rig.loop)
+                    }
                 }
                 State.Left -> {
                     rig.conn.endWithLoop(ConnEnd.Released)
@@ -112,7 +109,13 @@ class CarriageTableTests {
                     io.secondReceiveAnswer = ReceiveBatchResult.Failed(UdpError.SocketClosed)
                     rig.endpoint.readable(Via.Probing)
                 }
-                Event.CarryingDies -> rig.endpoint.ioThrew(Thrown(IOException("carrying socket gone")), rig.loop.poller, rig.loop)
+                Event.CarryingDies ->
+                    rig.endpoint.ioThrew(
+                        Thrown(IOException("carrying socket gone")),
+                        Via.Carrying,
+                        rig.loop.poller,
+                        rig.loop,
+                    )
                 Event.Leave -> rig.conn.endWithLoop(ConnEnd.Released)
             }
             passes(passes)

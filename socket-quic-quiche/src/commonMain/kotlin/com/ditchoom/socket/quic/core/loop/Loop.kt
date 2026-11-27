@@ -173,7 +173,10 @@ internal class Loop(
         budget.begin(now)
         for (i in slots.indices) {
             when (val slot = slots[i]) {
-                is LoopSlot.Taken -> receiveOn(slot.endpoint, Via.Carrying)
+                is LoopSlot.Taken -> {
+                    settleOn(slot.endpoint)
+                    receiveOn(slot.endpoint, Via.Carrying)
+                }
                 is LoopSlot.Second -> receiveOn(slot.endpoint, Via.Probing)
                 is LoopSlot.Empty -> Unit
             }
@@ -193,8 +196,7 @@ internal class Loop(
         }
         handlers.end()
         val due = port.nextDue(now)
-        // Datagrams the io holds are invisible to the poller: with any, the next pass is due now (a poll of zero), whatever
-        // cut this one short (the per-pass bound included).
+        // Datagrams the io holds are invisible to the poller: with any, the next pass is due now, whatever cut this one short.
         return if (backlog) NextDue.at(now.value) else due
     }
 
@@ -233,7 +235,16 @@ internal class Loop(
             endpoint.receive(via, receive, counts, clock, budget, poller, this)
         } catch (failure: Exception) {
             receive.release()
-            endpoint.ioThrew(Thrown(failure), poller, this)
+            endpoint.ioThrew(Thrown(failure), via, poller, this)
+        }
+    }
+
+    /** A second socket being made is looked at: what its io throws is that socket's failure alone. */
+    private fun settleOn(endpoint: Endpoint) {
+        try {
+            endpoint.settle(poller, this)
+        } catch (failure: Exception) {
+            endpoint.ioThrew(Thrown(failure), Via.Probing, poller, this)
         }
     }
 

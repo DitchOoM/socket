@@ -133,7 +133,11 @@ class CarriageFailureTests {
         for (at in 11L..30L) rig.pass(at * 1_000_000L)
         assertEquals(1, io.closes, "the dead socket was not closed once its lane came back")
         for (token in poller.added.toSet()) {
-            assertEquals(poller.added.count { it == token }, poller.removed.count { it == token }, "token $token: ${poller.added} ${poller.removed}")
+            assertEquals(
+                poller.added.count { it == token },
+                poller.removed.count { it == token },
+                "token $token: ${poller.added} ${poller.removed}",
+            )
         }
     }
 
@@ -145,7 +149,17 @@ class CarriageFailureTests {
         private val io = FakeIo()
         private val socket = SendPort(io, rig.loop.port, CallerLanes.None, RecordingWork(), rig.loop.counts, rig.loop.callerCounts)
         val conn =
-            testConn(StubQuicheApi(), CoreTestRules, SendTarget.ConnectedPeer, TraceCapture.Off, rig.loop, socket, rig.clock, sink, ConnCounts())
+            testConn(
+                StubQuicheApi(),
+                CoreTestRules,
+                SendTarget.ConnectedPeer,
+                TraceCapture.Off,
+                rig.loop,
+                socket,
+                rig.clock,
+                sink,
+                ConnCounts(),
+            )
 
         init {
             val endpoint =

@@ -2,7 +2,6 @@ package com.ditchoom.socket.quic.core.loop
 
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.core.conn.Collected
-import com.ditchoom.socket.quic.core.demux.Admitted
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.observe.LoopCounts
 import com.ditchoom.socket.quic.core.observe.LoopOnly
@@ -26,9 +25,8 @@ import com.ditchoom.socket.quic.core.udp.Thrown
 import kotlinx.coroutines.Runnable
 
 /**
- * A socket on a loop and where its datagrams go. Its [Carriage] is the loop's one record of which socket carries the
- * connection and of a second one a client's move opens beside it; every change to it is a [Carriage.on] step. The loop
- * thread only.
+ * A socket on a loop and where its datagrams go. Its [Seat] holds the loop's one record of which socket carries: a
+ * client's [Carriage], or a server's [Carriage.Single]. Every change to it is a step [step] takes. The loop thread only.
  */
 @LoopOnly
 internal class Endpoint(
@@ -39,13 +37,13 @@ internal class Endpoint(
     /** Runs on the loop once the socket has left it, after the connection ended and its last output went out. */
     private val onLeft: Runnable,
     readiness: Readiness = Readiness.Polled,
-    ownership: SocketOwnership = SocketOwnership.Owned,
+    private val ownership: SocketOwnership = SocketOwnership.Owned,
 ) {
     var token = 0
         private set
-    private var carriage: Carriage = unplaced(ownership)
     private var interest = WriteInterest.None
     private val sockets = CarriageIo(io, refs, readiness)
+    private val seat = if (route is Route.Fixed) Seat.OfClient() else Seat.OfServer()
     private val closing = SocketClose(io, socket)
     private val out: Outbox = route.outbox()
 
@@ -55,20 +53,22 @@ internal class Endpoint(
         seats: Loop,
     ) {
         this.token = token
-        step(CarriageEvent.Placed, poller, seats)
+        step(SocketEvent.Placed(ownership), poller, seats)
         io.placed()
     }
 
     fun readable(via: Via) = sockets.readable(via)
 
     /** Whether the io holds datagrams the poller will never signal: the loop's next pass must not wait. */
-    fun hasBacklog(): Boolean = sockets.backlog(carriage)
+    fun hasBacklog(): Boolean = sockets.backlog(seat.carriage())
 
-    /**
-     * Receives what waits on the socket [via] names and hands it to the route. A server then starts held handshakes a
-     * chunk at a time while [budget] lasts, reading the socket again after each chunk so its buffer never fills while they
-     * start; reading is never cut by the budget, so nothing waits in the kernel to be read stale.
-     */
+    /** Each pass: a second socket being made is looked at, and once ready the connection told. */
+    fun settle(
+        poller: Poller,
+        seats: Loop,
+    ) = step(BesideEvent.Made, poller, seats)
+
+    /** Receives what waits on the socket [via] names and hands it to the route ([CarriageIo.receiveCarrying]). */
     fun receive(
         via: Via,
         batch: ReceiveBatch,
@@ -79,38 +79,15 @@ internal class Endpoint(
         seats: Loop,
     ) {
         when (via) {
-            Via.Carrying -> {
-                step(CarriageEvent.Made, poller, seats)
-                val on =
-                    when (val now = carriage) {
-                        is Carriage.One -> now.carrying
-                        is Carriage.Opening -> now.carrying
-                        is Carriage.Two -> now.carrying
-                        is Carriage.Lent -> SocketTicket.FIRST
-                        is Carriage.Unplaced, is Carriage.Dead, is Carriage.Left -> return
-                    }
-                when (route) {
-                    is Route.Fixed -> sockets.readCarrying(on, route, batch, counts, clock, socket)
-                    is Route.Demux -> {
-                        route.demux.passBegins()
-                        sockets.readCarrying(on, route, batch, counts, clock, socket)
-                        while (budget.state() == Budget.Left && route.demux.admitSome(route.out.batch) == Admitted.More) {
-                            sockets.readAgain()
-                            sockets.readCarrying(on, route, batch, counts, clock, socket)
-                        }
-                    }
-                }
-            }
+            Via.Carrying -> sockets.receiveCarrying(seat.carriage(), route, socket, batch, counts, clock, budget)
             Via.Probing ->
-                when (val now = carriage) {
+                when (val now = seat.carriage()) {
                     is Carriage.Two ->
                         when (sockets.readBeside(now.beside, route, batch, counts, clock)) {
                             BesideRead.Read -> Unit
-                            BesideRead.Closed -> step(CarriageEvent.BesideLost(now.beside), poller, seats)
+                            BesideRead.Closed -> step(BesideEvent.BesideLost(now.beside), poller, seats)
                         }
-                    is Carriage.Unplaced, is Carriage.One, is Carriage.Opening, is Carriage.Lent, is Carriage.Dead,
-                    is Carriage.Left,
-                    -> Unit
+                    is Carriage.Single, is Carriage.Opening -> Unit
                 }
         }
     }
@@ -152,10 +129,10 @@ internal class Endpoint(
                     // With lanes out, the last thread out wakes the loop to ask again, the lane bound at the latest.
                     when (closing.ask(now, port)) {
                         is Shutdown.Quiet -> {
-                            step(CarriageEvent.Leave, poller, seats)
+                            step(SocketEvent.Leave, poller, seats)
                             closing.close()
                         }
-                        is Shutdown.Closed -> step(CarriageEvent.Leave, poller, seats)
+                        is Shutdown.Closed -> step(SocketEvent.Leave, poller, seats)
                         is Shutdown.LanesOut, is Shutdown.Sending -> Unit
                     }
             }
@@ -177,40 +154,46 @@ internal class Endpoint(
     fun rehome(
         poller: Poller,
         seats: Loop,
-    ) = step(CarriageEvent.Rehome, poller, seats)
+    ) = step(SocketEvent.Rehome, poller, seats)
 
-    /** A client's connection wants socket [ticket] on [bind]'s address, assumed [prior]; a server's route has no move. */
+    /** A client's connection wants socket [ticket] on [bind]'s address, assumed [prior]. */
     fun move(
         poller: Poller,
         seats: Loop,
         ticket: SocketTicket,
         bind: PathKey,
         prior: RttPrior,
-    ) = when (route) {
-        is Route.Fixed -> step(CarriageEvent.OpenBeside(ticket, bind, prior), poller, seats)
-        is Route.Demux -> Unit
-    }
+    ) = step(MoveEvent.OpenBeside(ticket, bind, prior), poller, seats)
 
     /** The second socket [ticket] names carries from now on, polled as this endpoint's token, and the connection is told. */
     fun promote(
         poller: Poller,
         seats: Loop,
         ticket: SocketTicket,
-    ) = step(CarriageEvent.Promote(ticket), poller, seats)
+    ) = step(MoveEvent.Promote(ticket), poller, seats)
 
     /** The second socket [ticket] names is closed, open or still being made. */
     fun closeSecond(
         poller: Poller,
         seats: Loop,
         ticket: SocketTicket,
-    ) = step(CarriageEvent.CloseSecond(ticket), poller, seats)
+    ) = step(MoveEvent.CloseSecond(ticket), poller, seats)
 
-    /** The io threw: this socket's connection ends with it, and no other. */
+    /** The io threw on the socket [via] names: a carrying socket's connection ends with it, a second's move. */
     fun ioThrew(
         thrown: Thrown,
+        via: Via,
         poller: Poller,
         seats: Loop,
-    ) = step(CarriageEvent.CarryingDied(ConnEnd.SocketFailed(SocketFault.Unnamed(thrown))), poller, seats)
+    ) = when (via) {
+        Via.Carrying -> step(SocketEvent.CarryingDied(ConnEnd.SocketFailed(SocketFault.Unnamed(thrown))), poller, seats)
+        Via.Probing ->
+            when (val now = seat.carriage()) {
+                is Carriage.Opening -> step(BesideEvent.BesideLost(now.beside), poller, seats)
+                is Carriage.Two -> step(BesideEvent.BesideLost(now.beside), poller, seats)
+                is Carriage.Single -> Unit
+            }
+    }
 
     /** The loop stopped with [end]: the connection ends, and the socket is closed now or by the last lane back. */
     fun loopEnded(
@@ -220,7 +203,7 @@ internal class Endpoint(
     ) {
         endConn(end)
         if (carries() != Carries.Gone) {
-            step(CarriageEvent.Leave, poller, seats)
+            step(SocketEvent.Leave, poller, seats)
             closing.stopped()
         }
         out.left()
@@ -234,7 +217,7 @@ internal class Endpoint(
         seats: Loop,
     ) {
         endConn(end)
-        step(CarriageEvent.Leave, poller, seats)
+        step(SocketEvent.Leave, poller, seats)
         closing.stopped()
         out.left()
         onLeft.run()
@@ -247,26 +230,32 @@ internal class Endpoint(
         when (val health = socket.health()) {
             is SocketHealth.Live -> route.refused(socket.ledger.takeNews())
             is SocketHealth.Dead ->
-                if (carries() == Carries.Live) step(CarriageEvent.CarryingDied(ConnEnd.SocketFailed(health.fault)), poller, seats)
+                if (carries() == Carries.Live) step(SocketEvent.CarryingDied(ConnEnd.SocketFailed(health.fault)), poller, seats)
         }
     }
 
-    /** The one place the carriage changes: [event]'s step is taken, and what it says is told or ends the connection. */
+    /**
+     * The one place the seat changes: [event]'s step is taken, and what it says is told or ends the connection. A
+     * server's seat has no second socket and takes no move: a client's event leaves it as it is.
+     */
     private fun step(
         event: CarriageEvent,
         poller: Poller,
         seats: Loop,
     ) {
-        when (val step = carriage.on(event, sockets, poller, seats, this)) {
+        val taken =
+            when (seat) {
+                is Seat.OfClient -> seat.take(event, sockets, poller, seats, this)
+                is Seat.OfServer ->
+                    when (event) {
+                        is SocketEvent -> seat.take(event, sockets, poller, token)
+                        is ClientEvent -> Step.Same
+                    }
+            }
+        when (val step = taken) {
             is Step.Same -> Unit
-            is Step.Moves -> {
-                carriage = step.next
-                told(step.fact)
-            }
-            is Step.Ends -> {
-                carriage = step.next
-                endConn(step.end)
-            }
+            is Step.Moves -> told(step.fact)
+            is Step.Ends -> endConn(step.end)
         }
     }
 
@@ -281,7 +270,7 @@ internal class Endpoint(
 
     private fun endConn(end: ConnEnd) = route.endWith(end)
 
-    private fun carries(): Carries = carriage.carries()
+    private fun carries(): Carries = seat.carriage().carries()
 
     private fun refreshInterest(poller: Poller) {
         val wanted =

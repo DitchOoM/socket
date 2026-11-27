@@ -1,6 +1,7 @@
 package com.ditchoom.socket.quic.core.loop
 
 import com.ditchoom.socket.quic.PathKey
+import com.ditchoom.socket.quic.core.demux.Admitted
 import com.ditchoom.socket.quic.core.observe.LoopCounts
 import com.ditchoom.socket.quic.core.observe.LoopOnly
 import com.ditchoom.socket.quic.core.observe.TraceSection
@@ -16,6 +17,7 @@ import com.ditchoom.socket.quic.core.udp.ReceiveBatchResult
 import com.ditchoom.socket.quic.core.udp.Reopened
 import com.ditchoom.socket.quic.core.udp.SocketTicket
 import com.ditchoom.socket.quic.core.udp.UdpError
+import com.ditchoom.socket.quic.core.udp.closedQuietly
 
 /** How a read of a second socket ended: drained or bounded, or the socket found closed. */
 internal enum class BesideRead { Read, Closed }
@@ -42,24 +44,54 @@ internal class CarriageIo(
         }
     }
 
-    /** A server admitted held handshakes: the carrying socket is read again. */
-    fun readAgain() {
-        carryingInput = ReceiveInput.Maybe
-    }
-
     /** Whether the io holds datagrams the poller will never signal on a socket [carriage] reads. */
     fun backlog(carriage: Carriage): Boolean =
         when (carriage) {
             is Carriage.Two -> carryingInput == ReceiveInput.Backlog || besideInput == ReceiveInput.Backlog
             is Carriage.One, is Carriage.Opening, is Carriage.Lent -> carryingInput == ReceiveInput.Backlog
-            is Carriage.Unplaced, is Carriage.Dead, is Carriage.Left -> false
+            is Carriage.Unplaced, is Carriage.Dead, is Carriage.Unpolled, is Carriage.Left -> false
         }
+
+    /**
+     * Receives what waits on the carrying socket [carriage] names and hands it to [route]. A server then starts
+     * held handshakes a chunk at a time while [budget] lasts, reading the socket again after each chunk so its buffer
+     * never fills while they start; reading is never cut by the budget, so nothing waits in the kernel to be read stale.
+     */
+    fun receiveCarrying(
+        carriage: Carriage,
+        route: Route,
+        socket: SendPort,
+        batch: ReceiveBatch,
+        counts: LoopCounts,
+        clock: LoopClock,
+        budget: ReceiveBudget,
+    ) {
+        val on =
+            when (carriage) {
+                is Carriage.One -> carriage.carrying
+                is Carriage.Opening -> carriage.carrying
+                is Carriage.Two -> carriage.carrying
+                is Carriage.Lent -> SocketTicket.FIRST
+                is Carriage.Unplaced, is Carriage.Dead, is Carriage.Unpolled, is Carriage.Left -> return
+            }
+        when (route) {
+            is Route.Fixed -> readCarrying(on, route, batch, counts, clock, socket)
+            is Route.Demux -> {
+                route.demux.passBegins()
+                readCarrying(on, route, batch, counts, clock, socket)
+                while (budget.state() == Budget.Left && route.demux.admitSome(route.out.batch) == Admitted.More) {
+                    carryingInput = ReceiveInput.Maybe
+                    readCarrying(on, route, batch, counts, clock, socket)
+                }
+            }
+        }
+    }
 
     /**
      * Reads the carrying socket [on] names until drained or a batch more could pass [MAX_PER_PASS], handing each read to
      * [route]; a read's datagrams reach quiche at one [clock] reading. A failed read is told to [socket].
      */
-    fun readCarrying(
+    private fun readCarrying(
         on: SocketTicket,
         route: Route,
         batch: ReceiveBatch,
@@ -100,8 +132,11 @@ internal class CarriageIo(
     /** Whether the second socket being made is ready. */
     fun settleBeside(): Beside = io.settleBeside()
 
-    /** Closes the second socket, open or being made. */
-    fun closeBeside() = io.closeSecond()
+    /**
+     * Closes the second socket, open or being made. A close is often made as a socket fails; what it throws is the
+     * second socket's alone, so it is dropped ([closedQuietly]).
+     */
+    fun closeBeside() = closedQuietly { io.closeSecond() }
 
     /** A second socket just opened is polled as [token]. */
     fun seatBeside(
