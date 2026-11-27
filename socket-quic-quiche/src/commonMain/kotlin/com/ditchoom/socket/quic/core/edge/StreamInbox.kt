@@ -21,6 +21,7 @@ import com.ditchoom.socket.quic.core.udp.NativeBytes
 import com.ditchoom.socket.quic.core.udp.ReadAddress
 import kotlinx.coroutines.Runnable
 import kotlin.concurrent.atomics.AtomicInt
+import kotlin.concurrent.atomics.AtomicReference
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 
 /** How a delivery ends the stream for its receiver, if it does. */
@@ -34,6 +35,21 @@ private sealed interface InboxEnding {
 
 /** Whether a receiver returned from its call or threw out of it. */
 private enum class InboxReturned { No, Yes }
+
+/** Whether held bytes are offered again at once, or wait for new bytes or send room. */
+private enum class InboxPace {
+    /** Held bytes, if any, go with the next delivery. */
+    Moving,
+
+    /** The last call took none of what it was offered: held bytes wait for new bytes or send room. */
+    Stalled,
+
+    /** A call is out: send room made now is kept for its end. */
+    InCall,
+
+    /** Send room was made while a call was out: the call's end offers held bytes again even if it took none. */
+    RoomInCall,
+}
 
 /**
  * Hands a stream's bytes to its [receiver] on the connection's handler [lane]: the loop reads everything quiche holds
@@ -69,8 +85,7 @@ internal class StreamInbox(
         }
     private val out = AtomicInt(IDLE)
 
-    /** Whether the last call took none of what it was offered: held bytes then wait for new bytes or send room. */
-    private val stalled = AtomicInt(MOVING)
+    private val pace = AtomicReference(InboxPace.Moving)
 
     /** Written by the loop before a delivery goes to the lane, and by the lane in it; the hand-offs order the two. */
     private var start = 0
@@ -128,7 +143,7 @@ internal class StreamInbox(
         val fresh = end - start - held
         length = held + fresh
         val ended = ending !is InboxEnding.Not
-        val moving = stalled.load() == MOVING
+        val moving = pace.load() == InboxPace.Moving
         if (fresh > 0 || (ended && held == 0) || (moving && (held > 0 || ended))) {
             out.store(OUT)
             lane.dispatch(HandlerSite.Unnamed, deliver)
@@ -169,6 +184,7 @@ internal class StreamInbox(
         if (length > 0) {
             lent.setLimit(start + length)
             lent.position(start)
+            pace.store(InboxPace.InCall)
             var returned = InboxReturned.No
             try {
                 receiver.onBytes(lent)
@@ -186,7 +202,8 @@ internal class StreamInbox(
             val taken = (lent.position() - start).coerceIn(0, length)
             held = length - taken
             start = if (held == 0) 0 else start + taken
-            stalled.store(if (taken == 0 && held > 0) STALLED else MOVING)
+            // Room made during a call that took nothing turned InCall into RoomInCall: the held bytes move.
+            if (taken > 0 || held == 0 || !pace.compareAndSet(InboxPace.InCall, InboxPace.Stalled)) pace.store(InboxPace.Moving)
         }
         when (val now = ending) {
             is InboxEnding.With ->
@@ -198,12 +215,21 @@ internal class StreamInbox(
         }
         out.store(IDLE)
         // A receiver that took none waits for new bytes, which wake the parked reader, or for send room ([roomMade]).
-        if (stalled.load() == MOVING) connection.handToLoop(again)
+        if (pace.load() == InboxPace.Moving) connection.handToLoop(again)
     }
 
-    /** The stream's send queue made room: held bytes a stalled receiver could not reply to are offered again. */
+    /**
+     * The stream's send queue made room: held bytes a stalled receiver could not reply to are offered again, and room
+     * made while a call is out is kept, so a call that then takes nothing does not wait for room already made.
+     */
     fun roomMade() {
-        if (stalled.compareAndSet(STALLED, MOVING)) connection.handToLoop(again)
+        while (true) {
+            when (val now = pace.load()) {
+                InboxPace.Stalled -> if (pace.compareAndSet(now, InboxPace.Moving)) return connection.handToLoop(again)
+                InboxPace.InCall -> if (pace.compareAndSet(now, InboxPace.RoomInCall)) return
+                InboxPace.Moving, InboxPace.RoomInCall -> return
+            }
+        }
     }
 
     private fun letGo() {
@@ -227,8 +253,6 @@ internal class StreamInbox(
     private companion object {
         const val IDLE = 0
         const val OUT = 1
-        const val MOVING = 0
-        const val STALLED = 1
 
         /** The stream's receive buffer: what one call is lent at most. */
         const val LENT_ROOM = 65_536
