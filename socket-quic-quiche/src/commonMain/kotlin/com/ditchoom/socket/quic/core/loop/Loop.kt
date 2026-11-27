@@ -24,16 +24,20 @@ import com.ditchoom.socket.quic.core.udp.Thrown
 import com.ditchoom.socket.quic.reportOnThisThread
 import kotlinx.coroutines.Runnable
 
-private sealed interface Run {
-    data object Running : Run
-
-    class Closing(
-        val then: Runnable,
-    ) : Run
-
-    /** The stop began: what it releases is never released again, and the loop never runs another pass. */
-    data object Stopped : Run
-}
+/** Runs [step]; what it throws is kept in the outcome instead of cutting the stop short. */
+private inline fun StopOutcome.then(step: () -> Unit): StopOutcome =
+    try {
+        step()
+        this
+    } catch (failure: Throwable) {
+        when (this) {
+            is StopOutcome.Failed -> {
+                first.addSuppressed(failure)
+                this
+            }
+            is StopOutcome.Clean, is StopOutcome.AlreadyStopped -> StopOutcome.Failed(failure)
+        }
+    }
 
 /**
  * One platform thread's run-to-completion loop over its sockets. A pass: fire due deadlines, receive from every socket

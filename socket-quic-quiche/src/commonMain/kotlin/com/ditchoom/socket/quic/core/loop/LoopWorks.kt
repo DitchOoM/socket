@@ -114,18 +114,3 @@ internal sealed interface StopOutcome {
     /** It had stopped already: nothing was released. */
     data object AlreadyStopped : StopOutcome
 }
-
-/** Runs [step]; what it throws is kept in the outcome instead of cutting the stop short. */
-internal inline fun StopOutcome.then(step: () -> Unit): StopOutcome =
-    try {
-        step()
-        this
-    } catch (failure: Throwable) {
-        when (this) {
-            is StopOutcome.Failed -> {
-                first.addSuppressed(failure)
-                this
-            }
-            is StopOutcome.Clean, is StopOutcome.AlreadyStopped -> StopOutcome.Failed(failure)
-        }
-    }

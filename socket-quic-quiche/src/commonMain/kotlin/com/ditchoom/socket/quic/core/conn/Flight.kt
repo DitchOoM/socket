@@ -29,10 +29,8 @@ internal enum class PathMark {
     Refused,
     OpenRefused,
 
-    /** A move was refused because the caller lent the socket that carries the connection. */
+    /** A move was refused because the caller lent the socket that carries the connection, or its io opens no second. */
     LentRefused,
-
-    /** A move was refused because the socket's io opens no second socket. */
     NoSecond,
     SecondLost,
 
