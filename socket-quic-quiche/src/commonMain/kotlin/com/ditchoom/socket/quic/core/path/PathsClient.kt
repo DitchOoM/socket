@@ -9,6 +9,7 @@ import com.ditchoom.socket.quic.PeerMigrationPermission
 import com.ditchoom.socket.quic.ProbeOutcome
 import com.ditchoom.socket.quic.QuicheRecvInfo
 import com.ditchoom.socket.quic.connPeerMigrationPermission
+import com.ditchoom.socket.quic.core.life.PeerAddress
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.observe.Confined
 import com.ditchoom.socket.quic.core.time.Nanos
@@ -57,7 +58,7 @@ internal class ClientPaths(
 
     /** The rebinds the active path's silence asks for, each through [hold]; one it gives up drops its move. */
     val rebinds: Rebinds =
-        Rebinds(q, silence, hold, { if (unsettled()) Moving.Open else Moving.Settled }, { move.carrying().key }) {
+        Rebinds(q, silence, hold, { move.moving(hold.held) }, { move.carrying().key }) {
             move = Move.Settled(abandon())
         }
 
@@ -152,11 +153,7 @@ internal class ClientPaths(
         }
 
     /** The loop lost the second socket [ticket] names: the move it served ends, and the connection stays where it is. */
-    fun lost(ticket: SocketTicket): SecondHeld {
-        if (move.second() === move.carrying() || move.second().socket != ticket) return SecondHeld.Stale
-        move = Move.Settled(abandon())
-        return SecondHeld.Lost
-    }
+    fun lost(ticket: SocketTicket): SecondHeld = move.onLost(ticket).also { if (it == SecondHeld.Lost) move = Move.Settled(abandon()) }
 
     /** The connection cannot follow the socket [asked] awaited: the loop closes it, and the move is refused. */
     private fun decline(asked: Move.Asked): MoveAnswer {
@@ -165,8 +162,8 @@ internal class ClientPaths(
         return MoveAnswer.Refused
     }
 
-    /** Whether the socket's endpoint has no validated path yet: an idle end means no usable path was found. */
-    fun unsettled(): Boolean = move !is Move.Settled || hold.held is HeldMove.Waiting
+    /** Whether the path quiche carries on leaves from a validated endpoint ([Move.address]). */
+    fun address(): PeerAddress = move.address(hold.held)
 
     /** Hands [each] every endpoint this connection made, for its release, and frees the paths' own memory. */
     fun made(each: (LocalAddr) -> Unit) {

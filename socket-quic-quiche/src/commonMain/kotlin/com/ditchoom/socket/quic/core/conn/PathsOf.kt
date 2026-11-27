@@ -69,7 +69,7 @@ internal fun Paths.closeRedirect(): Outgoing =
 /** Whether the path's far end is validated: a client's socket not mid-move, a server's peer not on a new address. */
 internal fun Paths.address(): PeerAddress =
     when (this) {
-        is Paths.Client -> if (paths.unsettled()) PeerAddress.Unvalidated else PeerAddress.Validated
+        is Paths.Client -> paths.address()
         is Paths.Server -> paths.address()
     }
 
@@ -175,7 +175,7 @@ internal fun ConnParts.networkUsable(now: Nanos) {
 /** How an end quiche reported reads: a client whose socket moved and found no validated path did not merely go idle. */
 internal fun Paths.endOf(end: ConnEnd): ConnEnd =
     when (this) {
-        is Paths.Client -> if (end is ConnEnd.IdleTimeout && paths.unsettled()) ConnEnd.NoUsablePath else end
+        is Paths.Client -> if (end is ConnEnd.IdleTimeout && paths.address() == PeerAddress.Unvalidated) ConnEnd.NoUsablePath else end
         is Paths.Server -> end
     }
 
@@ -284,7 +284,11 @@ internal enum class PathCalm { Settled, Moving }
 
 internal fun Paths.calm(): PathCalm =
     when (this) {
-        is Paths.Client -> if (paths.unsettled()) PathCalm.Moving else PathCalm.Settled
+        is Paths.Client ->
+            when (paths.address()) {
+                PeerAddress.Validated -> PathCalm.Settled
+                PeerAddress.Unvalidated -> PathCalm.Moving
+            }
         is Paths.Server ->
             when (paths.sorting()) {
                 is Sorting.Fixed -> PathCalm.Settled

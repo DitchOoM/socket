@@ -4,6 +4,7 @@ import com.ditchoom.socket.quic.EncodedSockAddr
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicheRecvInfo
 import com.ditchoom.socket.quic.SendTarget
+import com.ditchoom.socket.quic.core.life.PeerAddress
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.time.RttPrior
@@ -166,6 +167,39 @@ internal sealed interface Awaited {
     /** No move awaits the socket the answer names: it was given up or replaced, and the answer changes nothing. */
     data object Stale : Awaited
 }
+
+/** What the loop losing socket [ticket] does to this move: ends it if [ticket] is the second socket it holds open. */
+internal fun Move.onLost(ticket: SocketTicket): SecondHeld =
+    when (this) {
+        is Move.Settled, is Move.Asked -> SecondHeld.Stale
+        is Move.Probing -> if (to.local.socket == ticket) SecondHeld.Lost else SecondHeld.Stale
+        is Move.Stranded -> if (at.socket == ticket) SecondHeld.Lost else SecondHeld.Stale
+    }
+
+/**
+ * Whether the path quiche carries on leaves from a validated endpoint: not while a second socket's path is probed or
+ * stranded, nor while a move [held] waits for a spare id. A socket asked of the loop adds no path to quiche.
+ */
+internal fun Move.address(held: HeldMove): PeerAddress =
+    when (this) {
+        is Move.Probing, is Move.Stranded -> PeerAddress.Unvalidated
+        is Move.Settled, is Move.Asked ->
+            when (held) {
+                is HeldMove.None -> PeerAddress.Validated
+                is HeldMove.Waiting -> PeerAddress.Unvalidated
+            }
+    }
+
+/** Whether a move is open for the rebind ladder: from its ask on, or while one [held] waits for a spare id. */
+internal fun Move.moving(held: HeldMove): Moving =
+    when (this) {
+        is Move.Asked, is Move.Probing, is Move.Stranded -> Moving.Open
+        is Move.Settled ->
+            when (held) {
+                is HeldMove.None -> Moving.Settled
+                is HeldMove.Waiting -> Moving.Open
+            }
+    }
 
 /** Whether this move awaits the loop's answer for socket [ticket]. */
 internal fun Move.awaiting(ticket: SocketTicket): Awaited =
