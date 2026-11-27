@@ -146,6 +146,29 @@ class RebindLadderTests {
     }
 
     /**
+     * The carrying path answering before the loop has answered a rebind's ask gives the move up too: the socket being
+     * made is closed by its ticket, so it is not left polled beside the carrying one, and the loop's late answer for it
+     * probes nothing.
+     */
+    @Test
+    fun theCarryingPathAnsweringBeforeTheLoopAnswersClosesTheSocketBeingMade() {
+        val f = Fixture()
+        f.goSilent()
+        f.rebind()
+        val asked = f.lastAsked()
+        f.arrive()
+        f.runFor(100.milliseconds)
+        assertTrue(
+            f.asks.any { it is SocketAsk.CloseSecond && it.ticket == asked },
+            "the rebind was given up and the socket being made for it was kept: ${f.asks}",
+        )
+        assertTrue("RebindGaveUp" in f.marks(), "the flight says why: ${f.marks()}")
+        f.moved(asked)
+        assertEquals(0, f.api.probedSockAddrs.size, "the loop's answer for a socket given up was followed")
+        assertTrue("Moved" !in f.marks(), "the flight: ${f.marks()}")
+    }
+
+    /**
      * An open the loop has not answered holds the ladder: a slow second socket (an NWConnection still being made, or
      * one waiting for a path) is not cancelled by the next rung, however long the path stays silent.
      */
