@@ -14,27 +14,27 @@ class StreamOutboxFinTests {
     fun aFinAskedAfterTheLoopReadTheTailWaitsForTheBytesQueuedWithIt() {
         // The loop read the tail at STALE_TAIL; the sender then queued LAST more bytes and asked for our FIN after them.
         val asked = OutboxState.FinishAsked(STALE_TAIL + LAST)
-        assertEquals(WriteEnd.More, stepEnd(asked, SENT, STALE_TAIL, (STALE_TAIL - SENT).toInt()), "the bytes the loop saw")
-        assertEquals(WriteEnd.More, stepEnd(asked, STALE_TAIL, STALE_TAIL, 0), "nothing the loop saw is left")
+        assertEquals(WriteEnd.More, stepEnd(asked, SENT, (STALE_TAIL - SENT).toInt()), "the bytes the loop saw")
+        assertEquals(WriteEnd.More, stepEnd(asked, STALE_TAIL, 0), "nothing the loop saw is left")
     }
 
     @Test
     fun theStepWhoseBytesReachTheFinCarriesIt() {
         val asked = OutboxState.FinishAsked(STALE_TAIL + LAST)
-        assertEquals(WriteEnd.Finish, stepEnd(asked, STALE_TAIL, STALE_TAIL + LAST, LAST))
-        assertEquals(WriteEnd.Finish, stepEnd(asked, STALE_TAIL + LAST, STALE_TAIL + LAST, 0))
+        assertEquals(WriteEnd.Finish, stepEnd(asked, STALE_TAIL, LAST))
+        assertEquals(WriteEnd.Finish, stepEnd(asked, STALE_TAIL + LAST, 0))
     }
 
     @Test
     fun aStepThatEndsShortOfTheFinDoesNotCarryIt() {
         val asked = OutboxState.FinishAsked(STALE_TAIL + LAST)
         // The ring's end cut the step short of the bytes the loop saw.
-        assertEquals(WriteEnd.More, stepEnd(asked, STALE_TAIL, STALE_TAIL + LAST, LAST - 1))
+        assertEquals(WriteEnd.More, stepEnd(asked, STALE_TAIL, LAST - 1))
     }
 
     @Test
     fun anOpenQueueNeverCarriesAFin() {
-        assertEquals(WriteEnd.More, stepEnd(OutboxState.Open, SENT, STALE_TAIL, (STALE_TAIL - SENT).toInt()))
+        assertEquals(WriteEnd.More, stepEnd(OutboxState.Open, SENT, (STALE_TAIL - SENT).toInt()))
     }
 
     private companion object {

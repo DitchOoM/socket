@@ -101,17 +101,17 @@ internal fun copyIntoRing(
 }
 
 /**
- * How the loop's step that hands quiche [length] bytes from the queue's count [sent] ends in [state], with [queued]
- * the tail as the loop read it.
+ * How the loop's step that hands quiche [length] bytes from the queue's count [sent] ends in [state]: with our FIN
+ * only when those bytes end where it was asked for. The loop may read the tail before the sender's last bytes are
+ * published and the state after, so the tail it read does not say where the FIN goes.
  */
 internal fun stepEnd(
     state: OutboxState,
     sent: Long,
-    queued: Long,
     length: Int,
 ): WriteEnd =
     when (state) {
-        is OutboxState.FinishAsked -> if (sent + length == queued) WriteEnd.Finish else WriteEnd.More
+        is OutboxState.FinishAsked -> if (sent + length == state.at) WriteEnd.Finish else WriteEnd.More
         is OutboxState.Open, is OutboxState.FinTaken, is OutboxState.ResetHere, is OutboxState.Over -> WriteEnd.More
     }
 

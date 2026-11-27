@@ -65,8 +65,8 @@ internal class StreamOutbox(
     fun tryFinish(lastBytes: ReadBuffer): StreamSend = queue(lastBytes, WriteEnd.Finish)
 
     /**
-     * Copies what fits of [bytes] in. With [WriteEnd.Finish] and all fitting, the FIN is asked for before the bytes are
-     * published: the loop reads the tail before the state, so it never sees the last bytes without their FIN.
+     * Copies what fits of [bytes] in. With [WriteEnd.Finish] and all fitting, the FIN is asked for at the tail after them
+     * before that tail is published, so it usually goes with them; a loop that sees it first holds it ([stepEnd]).
      */
     private fun queue(
         bytes: ReadBuffer,
@@ -222,10 +222,7 @@ internal class StreamOutbox(
                 val waiting = (queued - sent).toInt()
                 val now = state.load()
                 if (waiting == 0) {
-                    when (stepEnd(now, sent, queued, 0)) {
-                        WriteEnd.More -> return Retry.Settled
-                        WriteEnd.Finish -> Unit
-                    }
+                    if (stepEnd(now, sent, 0) == WriteEnd.More) return Retry.Settled
                     val step = send.send(stream, 0L, 0, WriteEnd.Finish)
                     val code = step.code()
                     return when {
@@ -241,7 +238,7 @@ internal class StreamOutbox(
                     }
                 val at = (sent % OUTBOX_CAPACITY).toInt()
                 val length = minOf(waiting, OUTBOX_CAPACITY - at)
-                val last = stepEnd(now, sent, queued, length)
+                val last = stepEnd(now, sent, length)
                 val step = send.send(stream, memory.address + at, length, last)
                 val code = step.code()
                 when {
