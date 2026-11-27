@@ -4,11 +4,8 @@ import com.ditchoom.socket.quic.EncodedSockAddr
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicheRecvInfo
 import com.ditchoom.socket.quic.SendTarget
-import com.ditchoom.socket.quic.core.life.PeerAddress
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
-import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.time.RttPrior
-import com.ditchoom.socket.quic.core.time.WakeSink
 import com.ditchoom.socket.quic.core.udp.SocketTicket
 import com.ditchoom.socket.quic.decodePathKey
 
@@ -64,13 +61,16 @@ internal enum class Unprobed { NoSpareId, ValidationFailed, MigrationRefused }
 /**
  * Where a client's path stands. Every destination id it holds is in exactly one [Linked]; the step that drops one
  * retires it. Each endpoint is one of the loop's sockets: [Settled] and [Asked] have one, and a move owns the second,
- * opened beside the carrying one, until it is promoted or closed.
+ * opened beside the carrying one, until the loop promoted it ([Landing]) or it is closed.
  */
 internal sealed interface Move {
     /** The connection's one path leaves from [on]. */
     class Settled(
         val on: Linked,
     ) : Move
+
+    /** A move whose second socket is asked of the loop, or whose path is not yet migrated to: it can be given up. */
+    sealed interface Unfinished : Move
 
     /**
      * A second socket was asked of the loop as [ticket], and the loop has not answered: the one path still leaves from
@@ -79,7 +79,7 @@ internal sealed interface Move {
     class Asked(
         val from: Linked,
         val ticket: SocketTicket,
-    ) : Move
+    ) : Unfinished
 
     /**
      * A second socket leaves from [to], whose path is being validated; quiche's active path, and the carrying socket,
@@ -91,7 +91,7 @@ internal sealed interface Move {
         /** The probes of this move that found no path. */
         val failed: Int,
         val cadence: Cadence,
-    ) : Move
+    ) : Unfinished
 
     /**
      * A second socket leaves from [at], whose path is not being validated; quiche's active path, and the carrying
@@ -104,58 +104,19 @@ internal sealed interface Move {
         val retry: Retry,
         /** The id quiche linked to [at]'s path, kept so the path can be probed again. */
         val id: LinkedId,
+    ) : Unfinished
+
+    /**
+     * quiche migrated to [to]'s validated path and the loop is asked to promote its socket. [from]'s socket, id and
+     * flight are kept until the loop says it promoted [to]'s socket, or lost it, and the connection migrates back.
+     */
+    class Landing(
+        val from: Linked,
+        val to: Linked,
     ) : Move
 }
 
-/**
- * This move on another usable network: what failed on the network before says nothing of this one, so a stranded
- * endpoint is probed again at [now] and the move backs off afresh.
- */
-internal fun Move.onNewNetwork(now: Nanos): Move =
-    when (this) {
-        is Move.Stranded -> Move.Stranded(from, at, why, Retry(now, 0), id)
-        is Move.Probing -> Move.Probing(from, to, 0, cadence)
-        is Move.Settled, is Move.Asked -> this
-    }
-
-/** Hands [each] every endpoint this move holds. */
-internal fun Move.locals(each: (LocalAddr) -> Unit) {
-    when (this) {
-        is Move.Settled -> each(on.local)
-        is Move.Asked -> each(from.local)
-        is Move.Probing -> {
-            each(from.local)
-            each(to.local)
-        }
-        is Move.Stranded -> {
-            each(from.local)
-            each(at)
-        }
-    }
-}
-
-/** The endpoint of the socket carrying the connection while this move stands. */
-internal fun Move.carrying(): LocalAddr =
-    when (this) {
-        is Move.Settled -> on.local
-        is Move.Asked -> from.local
-        is Move.Probing -> from.local
-        is Move.Stranded -> from.local
-    }
-
-/** The endpoint of the second socket this move owns, or the carrying one when it owns none. */
-internal fun Move.second(): LocalAddr =
-    when (this) {
-        is Move.Settled -> on.local
-        is Move.Asked -> from.local
-        is Move.Probing -> to.local
-        is Move.Stranded -> at
-    }
-
-/** Which endpoint of a move a datagram is read on. */
-internal enum class ReadOn { Carrying, Second }
-
-/** Whether the second socket a loop lost or refused was the one a move held or asked for, which then ended. */
+/** Whether the second socket a loop refused was the one a move asked for, which then ended. */
 internal enum class SecondHeld { Lost, Stale }
 
 /** Whether an answer of the loop names the socket a move asked for and still awaits. */
@@ -168,56 +129,36 @@ internal sealed interface Awaited {
     data object Stale : Awaited
 }
 
-/** What the loop losing socket [ticket] does to this move: ends it if [ticket] is the second socket it holds open. */
-internal fun Move.onLost(ticket: SocketTicket): SecondHeld =
-    when (this) {
-        is Move.Settled, is Move.Asked -> SecondHeld.Stale
-        is Move.Probing -> if (to.local.socket == ticket) SecondHeld.Lost else SecondHeld.Stale
-        is Move.Stranded -> if (at.socket == ticket) SecondHeld.Lost else SecondHeld.Stale
-    }
-
-/**
- * How a close, an idle end and the ACK hold read the path: unvalidated while a second socket's path is probed or
- * stranded, and while a move [held] waits for a spare id; a socket asked of the loop adds no path to quiche.
- */
-internal fun Move.address(held: HeldMove): PeerAddress =
-    when (this) {
-        is Move.Probing, is Move.Stranded -> PeerAddress.Unvalidated
-        is Move.Settled, is Move.Asked ->
-            when (held) {
-                is HeldMove.None -> PeerAddress.Validated
-                is HeldMove.Waiting -> PeerAddress.Unvalidated
-            }
-    }
-
-/** Whether a move is open for the rebind ladder: from its ask on, or while one [held] waits for a spare id. */
-internal fun Move.moving(held: HeldMove): Moving =
-    when (this) {
-        is Move.Asked, is Move.Probing, is Move.Stranded -> Moving.Open
-        is Move.Settled ->
-            when (held) {
-                is HeldMove.None -> Moving.Settled
-                is HeldMove.Waiting -> Moving.Open
-            }
-    }
-
 /** Whether this move awaits the loop's answer for socket [ticket]. */
 internal fun Move.awaiting(ticket: SocketTicket): Awaited =
     when (this) {
         is Move.Asked -> if (this.ticket == ticket) Awaited.Ask(this) else Awaited.Stale
-        is Move.Settled, is Move.Probing, is Move.Stranded -> Awaited.Stale
+        is Move.Settled, is Move.Probing, is Move.Stranded, is Move.Landing -> Awaited.Stale
     }
 
-/**
- * Which endpoint a datagram that arrived on socket [on] is read on. While a move waits for a spare id, quiche has no
- * path for the second endpoint, so what arrives there is read on the carrying path, which can carry the id the peer
- * sends.
- */
-internal fun Move.readOn(on: SocketTicket): ReadOn =
+/** What the loop losing or promoting a second socket meets: the move that holds it, or none. */
+internal sealed interface Holding {
+    /** The second socket of a move not yet migrated to: the move ends. */
+    class Unfinished(
+        val move: Move.Unfinished,
+    ) : Holding
+
+    /** The socket quiche migrated to, not yet promoted. */
+    class Landing(
+        val landing: Move.Landing,
+    ) : Holding
+
+    /** No move holds the socket the loop named: it was given up, replaced or promoted already, and nothing changes. */
+    data object Stale : Holding
+}
+
+/** Which move holds socket [ticket] open as its second one. */
+internal fun Move.holding(ticket: SocketTicket): Holding =
     when (this) {
-        is Move.Settled, is Move.Asked -> ReadOn.Carrying
-        is Move.Probing -> if (to.local.socket == on) ReadOn.Second else ReadOn.Carrying
-        is Move.Stranded -> if (why != Unprobed.NoSpareId && at.socket == on) ReadOn.Second else ReadOn.Carrying
+        is Move.Settled, is Move.Asked -> Holding.Stale
+        is Move.Probing -> if (to.local.socket == ticket) Holding.Unfinished(this) else Holding.Stale
+        is Move.Stranded -> if (at.socket == ticket) Holding.Unfinished(this) else Holding.Stale
+        is Move.Landing -> if (to.local.socket == ticket) Holding.Landing(this) else Holding.Stale
     }
 
 /** Whether a path answered within a span. */
@@ -238,42 +179,6 @@ internal fun QuicheConnRef.firstMove(first: SinglePath): Move =
             0L,
         ),
     )
-
-/** How many bytes quiche may write into one datagram while this move stands. */
-internal fun Move.window(full: Window): Window =
-    when (this) {
-        is Move.Settled, is Move.Asked -> full
-        is Move.Probing, is Move.Stranded -> full.whileValidating()
-    }
-
-internal fun Move.sorting(): Sorting =
-    when (this) {
-        is Move.Settled -> on.local.fixed
-        is Move.Asked -> from.local.fixed
-        is Move.Probing, is Move.Stranded -> Sorting.ByAddress
-    }
-
-/** Where a datagram quiche wrote from the local address at [from] goes: out of the socket that holds that address. */
-internal fun Move.outgoing(
-    q: QuicheConnRef,
-    from: Long,
-): Outgoing {
-    val carrying = carrying()
-    if (q.addressIs(from, carrying.key)) return carrying.out
-    val second = second()
-    return if (second !== carrying && q.addressIs(from, second.key)) second.out else Outgoing.Dropped
-}
-
-/** Offers the time the next challenge, abandonment or probe of this move falls due; nothing when settled. */
-internal fun Move.offerWake(sink: WakeSink) =
-    when (this) {
-        is Move.Stranded -> sink.offer(retry.due)
-        is Move.Probing -> {
-            sink.offer(cadence.challengeDue)
-            sink.offer(cadence.abandonAt)
-        }
-        is Move.Settled, is Move.Asked -> Unit
-    }
 
 /** Hands [each] the endpoint kept, if one is. */
 internal fun Previous.held(each: (LocalAddr) -> Unit) =

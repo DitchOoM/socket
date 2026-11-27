@@ -18,9 +18,9 @@ internal enum class MoveGate { Shut, Open }
 
 /**
  * Whether a client has a move open: a second socket asked of the loop and not answered, being probed or stranded, or a
- * socket waiting for a spare id.
+ * socket waiting for a spare id; or landing, quiche migrated and the loop's promotion awaited, which is past giving up.
  */
-internal enum class Moving { Settled, Open }
+internal enum class Moving { Settled, Open, Landing }
 
 /** What a rebind came to. */
 internal enum class Rebound {
@@ -113,12 +113,18 @@ internal class Rebinds(
         gate: MoveGate,
     ): Rebound {
         settle()
-        if (owner == Owner.Rebind && moving() == Moving.Open && silence.now() is PathNews.Answering) {
-            // The carrying path proved the rebind needless: the next one waits twice as long again.
-            ladder = wasted(ladder)
-            giveUp()
-            settle()
-            return Rebound.GaveUp
+        if (owner == Owner.Rebind && silence.now() is PathNews.Answering) {
+            when (moving()) {
+                Moving.Open -> {
+                    // The carrying path proved the rebind needless: the next one waits twice as long again.
+                    ladder = wasted(ladder)
+                    giveUp()
+                    settle()
+                    return Rebound.GaveUp
+                }
+                // Nothing open to give up, or a landing quiche already made.
+                Moving.Settled, Moving.Landing -> Unit
+            }
         }
         val owed =
             when (val was = ladder) {
@@ -178,7 +184,11 @@ internal class Rebinds(
         if (silence.now() is PathNews.Silent && inFlight() == Busy.No) sink.offer(owed.due)
     }
 
-    private fun inFlight(): Busy = if (moving() == Moving.Open) Busy.Yes else Busy.No
+    private fun inFlight(): Busy =
+        when (moving()) {
+            Moving.Open, Moving.Landing -> Busy.Yes
+            Moving.Settled -> Busy.No
+        }
 
     /**
      * An ask that opened nothing (the path answered first, the rung is not due, the peer forbids a move, or the

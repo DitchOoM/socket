@@ -4,6 +4,7 @@ import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.QuicPathStats
 import com.ditchoom.socket.quic.QuicheConn
+import com.ditchoom.socket.quic.QuichePathEventType
 import com.ditchoom.socket.quic.StubQuicheApi
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
@@ -166,6 +167,23 @@ class RebindLadderTests {
         f.moved(asked)
         assertEquals(0, f.api.probedSockAddrs.size, "the loop's answer for a socket given up was followed")
         assertTrue("Moved" !in f.marks(), "the flight: ${f.marks()}")
+    }
+
+    /**
+     * A rebind's move quiche migrated is landing, the loop's promotion awaited: the path the migration answers on gives
+     * nothing up, as there is no unfinished move left to give up, and the flight says no rebind gave up.
+     */
+    @Test
+    fun aRebindsMoveLandingIsNotGivenUp() {
+        val f = Fixture()
+        f.goSilent()
+        f.rebind()
+        f.moved(f.lastAsked())
+        f.validates()
+        f.arrive()
+        f.runFor(100.milliseconds)
+        assertTrue("RebindGaveUp" !in f.marks(), "a landing was counted as a rebind given up: ${f.marks()}")
+        assertTrue(f.asks.none { it is SocketAsk.CloseSecond }, "the landing's socket was closed: ${f.asks}")
     }
 
     /**
@@ -393,9 +411,10 @@ class RebindLadderTests {
         val io = Arrivals()
         private val cell = PathNewsCell()
         private val home = HomeCell(cell.wake)
+        private val paths = EventsOnEveryAddress(api)
         val rig =
             ConnRig(
-                api,
+                paths,
                 io = io,
                 silence = SilenceRule(Silence.On, Span(30 * SECOND), cell, home),
                 ask = { asked ->
@@ -458,6 +477,13 @@ class RebindLadderTests {
 
         /** The loop opened the second socket [ticket] on [OTHER]. */
         fun moved(ticket: SocketTicket) = work(MovedWork(MoveTo(OTHER, RttPrior.CONFIGURED, ticket)))
+
+        /** quiche reports the probed path validated; the connection migrates in its next turn. */
+        fun validates() {
+            paths.events.addLast(QuichePathEventType.Validated)
+            work(TakeATurn())
+            assertEquals(1, paths.migrations, "precondition: quiche migrated to the validated path")
+        }
 
         fun network(change: NetworkChange) = work(NetworkWork(change))
 

@@ -66,6 +66,14 @@ internal class MoveCosts(
         spend(local)
     }
 
+    /** Ends [unfinished] ([dropSecond]): answers the endpoint the connection's path still leaves from. */
+    fun abandon(unfinished: Move.Unfinished): Linked =
+        when (unfinished) {
+            is Move.Asked -> unfinished.from.also { close(unfinished.ticket) }
+            is Move.Probing -> unfinished.from.also { dropSecond(unfinished.to.local, LinkedId.Seq(unfinished.to.dcidSeq)) }
+            is Move.Stranded -> unfinished.from.also { dropSecond(unfinished.at, unfinished.id) }
+        }
+
     /** [local] is left behind: it is kept as the previous endpoint, and the one kept before it is freed. */
     fun spend(local: LocalAddr) {
         previous.held { left -> free(left.recvInfo, left.made) }

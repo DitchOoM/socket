@@ -32,7 +32,7 @@ internal fun ConnParts.rearm(
     slots.ack.offerWake(timer.sink)
     handshake.offerWake(timer.sink)
     life.offerWake(timer.sink)
-    slots.paths.offerWake(timer.sink, streams.reads.waiting)
+    slots.paths.offerWake(timer.sink, streams.reads.waiting, life.view())
     if (slots.ack.deadlineLeft() == Stale.Yes) timer.disarm()
     timer.rearm(now, fire)
 }

@@ -92,6 +92,15 @@ internal class SecondLostWork(
     override fun gone(end: ConnEnd) = Unit
 }
 
+/** Inside: the loop promoted the second socket [ticket] names, which carries the connection from now on. */
+internal class PromotedWork(
+    private val ticket: SocketTicket,
+) : ConnWork() {
+    override fun run(inside: Inside) = inside.promoted(ticket)
+
+    override fun gone(end: ConnEnd) = Unit
+}
+
 /** Inside: the loop routed [spare] to this server connection; quiche hands them to the peer. */
 internal class IssueIdsWork(
     private val spare: List<SpareId>,

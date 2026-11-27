@@ -3,12 +3,13 @@
 package com.ditchoom.socket.quic.core.path
 
 import com.ditchoom.buffer.BufferFactory
-import com.ditchoom.socket.quic.MigrateOutcome
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.PeerMigrationPermission
 import com.ditchoom.socket.quic.ProbeOutcome
 import com.ditchoom.socket.quic.QuicheRecvInfo
 import com.ditchoom.socket.quic.connPeerMigrationPermission
+import com.ditchoom.socket.quic.core.life.ConnEnd
+import com.ditchoom.socket.quic.core.life.Life
 import com.ditchoom.socket.quic.core.life.PeerAddress
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.observe.Confined
@@ -20,8 +21,9 @@ import kotlin.random.Random
 
 /**
  * A client's paths. A move is made before it breaks: the new endpoint's socket opens beside the carrying one and its path
- * is probed (RFC 9000 §8.2) with datagrams of at most 1200 bytes; once it validates, the connection migrates and the loop
- * promotes the socket. A move refused, lost or failing while the old path answers ends with the connection where it was.
+ * is probed (RFC 9000 §8.2) with datagrams of at most 1200 bytes; once it validates, quiche migrates, and the connection
+ * settles there when the loop says it promoted the socket. A move refused, lost or failing while the old path answers
+ * ends with the connection where it was; a socket lost before its promotion takes quiche back to the old path.
  */
 @Confined
 internal class ClientPaths(
@@ -35,31 +37,39 @@ internal class ClientPaths(
     ask: (SocketAsk) -> Unit,
     val silence: PathSilence,
 ) {
-    private var move: Move = q.firstMove(opened)
-
-    /** Whether the carrying path answered since the move's last validation began. */
-    private var carryingHeard = Answered.Not
+    private val state = MoveState(q.firstMove(opened))
+    private var move: Move
+        get() = state.move
+        set(value) = state.stands(value)
     private val events = PathEvents(q, factory)
     private val peer = TowardPeer(q, opened)
     private val ears = PeerHearing(q)
     private val costs = MoveCosts(q, ids, random, factory, free, ask)
+    private val landings = MoveLandings(q, peer, costs, silence)
+    private val validation = MoveValidation(q, state, events, peer, ears, costs, silence)
 
     /**
-     * Where the socket is wanted, and whether it waits to move there; a new move gives up the one under way first, and
-     * names its socket with the next ticket. From the ask on the move is open ([Move.Asked]).
+     * Where the socket is wanted, and whether it waits to move there; a new move gives up an unfinished one first, and
+     * names its socket with the next ticket. From the ask on the move is open ([Move.Asked]). A landing is never given
+     * up: the move waits until the loop promoted or lost its socket.
      */
     val hold =
         MoveHold(q, ears) { bind, prior ->
-            val ticket = costs.nextTicket()
-            // Before the new socket's open is asked, so no promotion of the old probe can follow it to the loop.
-            move = Move.Asked(abandon(), ticket).also { rebinds.opening() }
-            costs.open(ticket, bind, prior)
+            when (val now = move) {
+                is Move.Landing -> Opening.AfterLanding
+                is Move.Settled -> ask(now.on, bind, prior)
+                // Before the new socket's open is asked, so no promotion of the old probe can follow it to the loop.
+                is Move.Unfinished -> ask(costs.abandon(now), bind, prior)
+            }
         }
 
-    /** The rebinds the active path's silence asks for, each through [hold]; one it gives up drops its move. */
+    /** The rebinds the active path's silence asks for, each through [hold]; one it gives up drops an unfinished move. */
     val rebinds: Rebinds =
         Rebinds(q, silence, hold, { move.moving(hold.held) }, { move.carrying().key }) {
-            move = Move.Settled(abandon())
+            when (val now = move) {
+                is Move.Unfinished -> move = Move.Settled(costs.abandon(now))
+                is Move.Settled, is Move.Landing -> Unit
+            }
         }
 
     /** What quiche is told of a datagram on socket [on] at [now] ([Move.readOn]); on the carrying socket the path answered. */
@@ -69,7 +79,10 @@ internal class ClientPaths(
     ): RecvFrom {
         ears.arrived()
         if (move.readOn(on) == ReadOn.Second) return move.second().info
-        if (move.carrying().socket == on) carryingHeard = Answered.Yes.also { silence.answered(now) }
+        if (move.carrying().socket == on) {
+            state.heard()
+            silence.answered(now)
+        }
         return move.carrying().info
     }
 
@@ -110,7 +123,7 @@ internal class ClientPaths(
         val hearing = ears.judge(now)
         val at = peer.endpointAt(local, prior, ticket, factory)
         val from = asked.from
-        carryingHeard = Answered.Not
+        state.validating()
         return when (val probed = peer.probe(at)) {
             is ProbeOutcome.Probed -> {
                 move = Move.Probing(from, Linked(at, probed.dcidSeq), 0, q.cadenceFrom(now))
@@ -124,23 +137,39 @@ internal class ClientPaths(
     }
 
     /**
-     * Reads quiche's path events while a move is validated, and migrates once it is: a fresh PATH_CHALLENGE each time its
-     * [Cadence] falls due, abandoned at its end; a move that found no path is probed again when its [Retry] falls due.
+     * Each serve with the connection in [life]: a move waiting for a spare id goes once one came ([holdTurn]), and a
+     * move's path is validated ([MoveValidation]).
      */
-    fun step(now: Nanos): PathStep {
-        if (hold.step(now) == PathStep.NoUsablePath) return PathStep.NoUsablePath
-        return when (val moving = move) {
-            is Move.Probing -> follow(now, moving)
-            is Move.Stranded -> reprobe(now, moving)
-            is Move.Settled, is Move.Asked -> PathStep.Steady
-        }
+    fun step(
+        now: Nanos,
+        life: Life,
+    ): PathStep {
+        if (holdTurn(life) == HoldTurn.Runs && hold.step(now) == PathStep.NoUsablePath) return PathStep.NoUsablePath
+        return validation.step(now)
     }
 
     /** Offers the time the next challenge, abandonment or probe of a move falls due; offers nothing when settled. */
-    fun offerWake(sink: WakeSink) {
-        hold.offerWake(sink)
+    fun offerWake(
+        sink: WakeSink,
+        life: Life,
+    ) {
+        if (holdTurn(life) == HoldTurn.Runs) hold.offerWake(sink)
         move.offerWake(sink)
     }
+
+    /**
+     * Whether a move held waiting may go, or wake the connection, now: not while a landing stands, whose end the move
+     * waits for, nor once the connection is closing, when it asks for no socket.
+     */
+    private fun holdTurn(life: Life): HoldTurn =
+        when (move) {
+            is Move.Landing -> HoldTurn.Rests
+            is Move.Settled, is Move.Unfinished ->
+                when (life) {
+                    is Life.Running -> HoldTurn.Runs
+                    is Life.Closing, is Life.Over -> HoldTurn.Rests
+                }
+        }
 
     /** The OS reports another usable network under the socket: the move is followed afresh ([Move.onNewNetwork]). */
     fun networkChanged(now: Nanos) = run { move = move.onNewNetwork(now) }
@@ -152,8 +181,36 @@ internal class ClientPaths(
             is Awaited.Stale -> SecondHeld.Stale
         }
 
-    /** The loop lost the second socket [ticket] names: the move it served ends, and the connection stays where it is. */
-    fun lost(ticket: SocketTicket): SecondHeld = move.onLost(ticket).also { if (it == SecondHeld.Lost) move = Move.Settled(abandon()) }
+    /**
+     * The loop lost the second socket [ticket] names, the connection in [life]: the move it served ends where it
+     * started, and a landing on it migrates back to the socket the loop still carries on; once the connection is
+     * closing the landing only ends, its close going out of that socket.
+     */
+    fun lost(
+        now: Nanos,
+        ticket: SocketTicket,
+        life: Life,
+    ): SecondLoss =
+        when (val holding = move.holding(ticket)) {
+            is Holding.Stale -> SecondLoss.Stale
+            is Holding.Unfinished -> SecondLoss.MoveEnded.also { move = Move.Settled(costs.abandon(holding.move)) }
+            is Holding.Landing ->
+                when (life) {
+                    is Life.Running ->
+                        when (val back = landings.back(now, holding.landing)) {
+                            is Back.Home -> SecondLoss.MovedBack.also { move = back.settled }
+                            is Back.Refused -> SecondLoss.NoPathBack
+                        }
+                    is Life.Closing, is Life.Over -> SecondLoss.MoveEnded.also { move = landings.dropped(holding.landing) }
+                }
+        }
+
+    /** The loop promoted the socket [ticket] names: a landing on it is settled there ([MoveLandings.promoted]). */
+    fun promoted(ticket: SocketTicket): Promoted =
+        when (val holding = move.holding(ticket)) {
+            is Holding.Landing -> Promoted.Settled.also { move = landings.promoted(holding.landing) }
+            is Holding.Unfinished, is Holding.Stale -> Promoted.Stale
+        }
 
     /** The connection cannot follow the socket [asked] awaited: the loop closes it, and the move is refused. */
     private fun decline(asked: Move.Asked): MoveAnswer {
@@ -163,7 +220,10 @@ internal class ClientPaths(
     }
 
     /** Whether the path quiche carries on leaves from a validated endpoint ([Move.address]). */
-    fun address(): PeerAddress = move.address(hold.held)
+    fun address(): PeerAddress = move.address()
+
+    /** How an idle timeout reads while the move stands ([Move.idleEnd]). */
+    fun idleEnd(): ConnEnd = move.idleEnd(hold.held)
 
     /** Hands [each] every endpoint this connection made, for its release, and frees the paths' own memory. */
     fun made(each: (LocalAddr) -> Unit) {
@@ -172,119 +232,15 @@ internal class ClientPaths(
         events.free()
     }
 
-    /**
-     * A stranded endpoint is tried again once its [Retry] falls due: one that never had an id is probed with a fresh one,
-     * one that failed validation on the id it kept, one that validated but could not be migrated to is migrated to; a
-     * response after its validation was abandoned still validates the path, migrated to at once.
-     */
-    private fun reprobe(
-        now: Nanos,
-        stranded: Move.Stranded,
-    ): PathStep {
-        if (stranded.why == Unprobed.ValidationFailed && events.verdict(stranded.at.key) == PathVerdict.Validated) {
-            return migrate(now, stranded.from, stranded.at, stranded.id, stranded.retry.failed)
-        }
-        if (now.value < stranded.retry.due.value) return PathStep.Steady
-        if (stranded.retry.failed >= ABANDON_AFTER_FAILURES && carryingHeard == Answered.Yes) {
-            move = Move.Settled(abandon())
-            return PathStep.Abandoned
-        }
-        costs.topUp()
-        val hearing = ears.judge(now)
-        return when (stranded.why) {
-            Unprobed.MigrationRefused -> migrate(now, stranded.from, stranded.at, LinkedId.None, stranded.retry.failed)
-            Unprobed.NoSpareId, Unprobed.ValidationFailed -> {
-                move =
-                    when (val probed = peer.probe(stranded.at)) {
-                        is ProbeOutcome.Probed -> {
-                            carryingHeard = Answered.Not
-                            Move.Probing(stranded.from, Linked(stranded.at, probed.dcidSeq), stranded.retry.failed, q.cadenceFrom(now))
-                        }
-                        is ProbeOutcome.Rejected -> {
-                            if (stranded.why == Unprobed.NoSpareId && probed.endsMove(hearing)) return PathStep.NoUsablePath
-                            stranded.again(q, now)
-                        }
-                    }
-                PathStep.Reprobed
-            }
-        }
-    }
-
-    private fun follow(
-        now: Nanos,
-        probing: Move.Probing,
-    ): PathStep =
-        when (events.verdict(probing.to.local.key)) {
-            PathVerdict.Validated -> migrate(now, probing.from, probing.to.local, LinkedId.Seq(probing.to.dcidSeq), probing.failed)
-            PathVerdict.Failed -> giveUp(now, probing)
-            PathVerdict.Undecided -> tend(now, probing)
-            PathVerdict.Unreadable -> PathStep.Steady
-        }
-
-    /** A validation quiche has not decided: abandoned at its cadence's end, else challenged afresh when due (RFC 9000 §8.2.1). */
-    private fun tend(
-        now: Nanos,
-        probing: Move.Probing,
-    ): PathStep {
-        if (now.value >= probing.cadence.abandonAt.value) return giveUp(now, probing)
-        if (now.value < probing.cadence.challengeDue.value) return PathStep.Steady
-        return when (peer.probe(probing.to.local)) {
-            is ProbeOutcome.Probed -> {
-                move = Move.Probing(probing.from, probing.to, probing.failed, probing.cadence.challenged(now))
-                PathStep.Challenged
-            }
-            is ProbeOutcome.Rejected -> giveUp(now, probing)
-        }
-    }
-
-    /**
-     * The validation of [probing]'s path ended unanswered: the endpoint keeps the path's id and is probed again later, or,
-     * the [ABANDON_AFTER_FAILURES]th time with the carrying path answering through it, the move is given up ([MoveCosts.dropSecond]).
-     */
-    private fun giveUp(
-        now: Nanos,
-        probing: Move.Probing,
-    ): PathStep {
-        if (probing.failed + 1 >= ABANDON_AFTER_FAILURES && carryingHeard == Answered.Yes) {
-            move = Move.Settled(abandon())
-            return PathStep.Abandoned
-        }
-        val retry = validationRetryAt(now, probing.failed + 1)
-        move = Move.Stranded(probing.from, probing.to.local, Unprobed.ValidationFailed, retry, LinkedId.Seq(probing.to.dcidSeq))
-        return PathStep.ProbeFailed
-    }
-
-    private fun migrate(
-        now: Nanos,
+    /** Asks the loop for the socket a move to [bind]'s address leaves from, the connection carrying on [from] until then. */
+    private fun ask(
         from: Linked,
-        to: LocalAddr,
-        id: LinkedId,
-        failed: Int,
-    ): PathStep =
-        when (val migrated = peer.migrate(to)) {
-            is MigrateOutcome.Migrated -> {
-                costs.promote(to.socket)
-                // The old path's socket closes with the promotion: what it had in flight is resent from the new one now.
-                peer.requeue(from.local)
-                q.retire(from.dcidSeq)
-                costs.spend(from.local)
-                move = Move.Settled(Linked(to, migrated.dcidSeq))
-                silence.migrated(now)
-                PathStep.Migrated
-            }
-            is MigrateOutcome.Rejected -> {
-                q.retire(id)
-                move = Move.Stranded(from, to, Unprobed.MigrationRefused, q.retryAt(now, failed + 1), LinkedId.None)
-                PathStep.Steady
-            }
-        }
-
-    /** Ends an unfinished move ([MoveCosts.dropSecond]); answers the path data still rides. */
-    private fun abandon(): Linked =
-        when (val now = move) {
-            is Move.Settled -> now.on
-            is Move.Asked -> now.from.also { costs.close(now.ticket) }
-            is Move.Probing -> now.from.also { costs.dropSecond(now.to.local, LinkedId.Seq(now.to.dcidSeq)) }
-            is Move.Stranded -> now.from.also { costs.dropSecond(now.at, now.id) }
-        }
+        bind: PathKey,
+        prior: RttPrior,
+    ): Opening {
+        val ticket = costs.nextTicket()
+        move = Move.Asked(from, ticket).also { rebinds.opening() }
+        costs.open(ticket, bind, prior)
+        return Opening.Asked
+    }
 }

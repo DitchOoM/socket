@@ -12,6 +12,7 @@ import com.ditchoom.socket.quic.core.life.Life
 import com.ditchoom.socket.quic.core.life.SpareId
 import com.ditchoom.socket.quic.core.path.Rebind
 import com.ditchoom.socket.quic.core.path.SecondHeld
+import com.ditchoom.socket.quic.core.path.SecondLoss
 import com.ditchoom.socket.quic.core.path.Want
 import com.ditchoom.socket.quic.core.sched.LoopPort
 import com.ditchoom.socket.quic.core.stream.StreamTable
@@ -65,8 +66,15 @@ internal class Inside(
 
     fun network(change: NetworkChange) = turn.network(clock.now(), change)
 
-    /** The client's socket is wanted on [wanted]'s address: it moves once the path from there can be probed. */
+    /**
+     * The client's socket is wanted on [wanted]'s address: it moves once the path from there can be probed. A closing
+     * connection asks for no socket: quiche holds the close on the one it has.
+     */
     fun moveWanted(wanted: MoveWanted) {
+        when (life.view()) {
+            is Life.Running -> Unit
+            is Life.Closing, is Life.Over -> return
+        }
         c.renewRebinds(clock.now(), Rebind.To(wanted.bind, wanted.prior))
         when (c.want(clock.now(), wanted)) {
             Want.Moving, Want.Waiting -> Unit
@@ -106,8 +114,18 @@ internal class Inside(
         )
     }
 
-    /** The client's loop lost the second socket [ticket] names: the move it served ends, the connection stays. */
-    fun secondLost(ticket: SocketTicket) = c.secondLost(clock.now(), ticket)
+    /**
+     * The client's loop lost the second socket [ticket] names: the move it served ends and the connection stays, back on
+     * the old path if it had migrated to the lost one; one quiche will not take back ends, its address gone.
+     */
+    fun secondLost(ticket: SocketTicket) =
+        when (c.secondLost(clock.now(), ticket)) {
+            SecondLoss.MoveEnded, SecondLoss.MovedBack, SecondLoss.Stale -> Unit
+            SecondLoss.NoPathBack -> end(ConnEnd.LocalAddressGone)
+        }
+
+    /** The client's loop promoted the second socket [ticket] names: the connection settles on it. */
+    fun promoted(ticket: SocketTicket) = c.promoted(ticket)
 
     /** The client's loop opened a second socket, which leaves from [to]. */
     fun moved(to: MoveTo) {
