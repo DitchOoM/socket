@@ -66,7 +66,7 @@ internal fun Paths.closeRedirect(): Outgoing =
         is Paths.Server -> Outgoing.Dropped
     }
 
-/** Whether the path's far end is validated: a client's socket not mid-move, a server's peer not on a new address. */
+/** Whether the path's far end reads validated: a client's path as its move reads it, a server's peer not on a new address. */
 internal fun Paths.address(): PeerAddress =
     when (this) {
         is Paths.Client -> paths.address()
@@ -172,7 +172,7 @@ internal fun ConnParts.networkUsable(now: Nanos) {
     }
 }
 
-/** How an end quiche reported reads: a client whose socket moved and found no validated path did not merely go idle. */
+/** How an end quiche reported reads: a client idle while its path reads unvalidated ended with no usable path. */
 internal fun Paths.endOf(end: ConnEnd): ConnEnd =
     when (this) {
         is Paths.Client -> if (end is ConnEnd.IdleTimeout && paths.address() == PeerAddress.Unvalidated) ConnEnd.NoUsablePath else end

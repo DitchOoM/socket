@@ -177,8 +177,8 @@ internal fun Move.onLost(ticket: SocketTicket): SecondHeld =
     }
 
 /**
- * Whether the path quiche carries on leaves from a validated endpoint: not while a second socket's path is probed or
- * stranded, nor while a move [held] waits for a spare id. A socket asked of the loop adds no path to quiche.
+ * How a close, an idle end and the ACK hold read the path: unvalidated while a second socket's path is probed or
+ * stranded, and while a move [held] waits for a spare id; a socket asked of the loop adds no path to quiche.
  */
 internal fun Move.address(held: HeldMove): PeerAddress =
     when (this) {
