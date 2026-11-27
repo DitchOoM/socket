@@ -297,6 +297,9 @@ class RebindLadderTests {
         f.answer(MovedWork(MoveTo(OTHER, RttPrior.CONFIGURED, first)), MovedWork(MoveTo(OTHER, RttPrior.CONFIGURED, last)))
         assertEquals(1, f.api.probedSockAddrs.size, "the connection probed a path from the socket the loop closed: ${f.asks}")
         assertEquals(1, f.marks().count { it == "Moved" }, "the flight: ${f.marks()}")
+        // The move followed is the last socket's: losing that one ends it.
+        f.lose(last)
+        assertTrue("SecondLost" in f.marks(), "the move followed a socket other than the one asked for last: ${f.marks()}")
     }
 
     /**
