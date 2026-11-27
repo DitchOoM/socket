@@ -28,7 +28,8 @@ import java.util.stream.Stream;
  * from the factory the caller injected. Finding no file at all is a failure: a scan that matched
  * nothing must not look like a clean one.
  *
- * `--rules=all` adds the composition rules of the core design (section 11: D S W E O I B V F Q T P M C L); the
+ * `--rules=all` adds the composition rules of the core design (section 11: D S W E O I B V F Q T P M C L, and H:
+ * a `@SingleOwner` state is held mutably only in the file its annotation names); the
  * default `--rules=legacy` is the seven defaults only, because the old core tree is deleted in a later step.
  * `--selftest` exercises every rule of both sets.
  */
@@ -348,6 +349,8 @@ public class CoreDefaultsCheck {
         final Set<String> privateSealed = new HashSet<>();
         final Set<String> phaseVariants = new HashSet<>();
         final Set<String> openTypes = new HashSet<>();
+        /** `@SingleOwner` types, each to the one file (`pkg/File.kt`) that may hold it mutably. */
+        final Map<String, String> singleOwners = new HashMap<>();
     }
 
     /** Core packages and the packages each may import (section 2). `observe` is importable by every package. */
@@ -610,8 +613,62 @@ public class CoreDefaultsCheck {
                 boolean extendsSealed = d.supers.stream().anyMatch(n.sealed::contains);
                 if (extendsSealed && d.frame != null && hasDirect(p, d.frame, "var")) n.phaseVariants.add(d.name);
             }
+            for (ClassDecl d : p.classes) {
+                String owner = singleOwnerOf(p, d);
+                if (!owner.isEmpty()) n.singleOwners.put(d.name, owner);
+            }
         }
         return n;
+    }
+
+    static final Pattern SINGLE_OWNER = Pattern.compile("@SingleOwner\\s*\\(\\s*(?:owner\\s*=\\s*)?\"([^\"]+)\"\\s*\\)");
+
+    /** The file a class's `@SingleOwner` names, read from the raw text (strings are stripped from the code); empty when none. */
+    static String singleOwnerOf(Parsed p, ClassDecl d) {
+        int line = p.lineAt(d.kwOffset);
+        for (int l = line; l >= 1 && (l == line || p.raw[l - 1].strip().startsWith("@")); l--) {
+            Matcher m = SINGLE_OWNER.matcher(p.raw[l - 1]);
+            if (m.find()) return m.group(1);
+        }
+        return "";
+    }
+
+    /**
+     * H: a mutable holder of a `@SingleOwner` state outside the file its annotation names. A holder is a `var` field,
+     * a `var` constructor parameter or a top-level `var` whose declared type, or initializer, names the type (or one
+     * of its nested states), or an atomic cell of it. A `var` with an accessor and no backing field holds nothing.
+     * Values passed, `val` snapshots, published readings of other types and tickets stay allowed; locals are not held.
+     */
+    static void ruleSingleOwner(Parsed p, Names n, List<Finding> out) {
+        if (n.singleOwners.isEmpty()) return;
+        String here = p.pkg + "/" + p.base;
+        Pattern typed = Pattern.compile("\\Gvar\\s+`?\\w+`?\\s*(?::\\s*([A-Z]\\w*))?\\s*(?:=\\s*([A-Z]\\w*))?");
+        for (Decl d : p.decls) {
+            if (!d.kw().equals("var") || (d.frame() != null && !d.frame().classBody)) continue;
+            Matcher m = typed.matcher(p.code);
+            if (!m.region(d.offset(), p.code.length()).find()) continue;
+            String type = m.group(1) != null ? m.group(1) : m.group(2);
+            if (type == null || !heldElsewhere(n, type, here)) continue;
+            int line = p.lineAt(d.offset());
+            boolean accessor = false;
+            for (int l = line + 1; l <= Math.min(line + 2, p.raw.length); l++) accessor |= p.lineText(l).matches("\\s*get\\(\\).*");
+            if (!accessor) add(out, p, line, "H");
+        }
+        for (ClassDecl c : p.classes) {
+            if (c.params == null) continue;
+            Matcher v = Pattern.compile("\\bvar\\s+`?\\w+`?\\s*:\\s*([A-Z]\\w*)").matcher(c.params);
+            while (v.find()) if (heldElsewhere(n, v.group(1), here)) add(out, p, p.lineAt(c.kwOffset), "H");
+        }
+        Matcher cell = Pattern.compile("\\bAtomic\\w*\\s*(?:<\\s*([A-Z]\\w*)|\\(\\s*([A-Z]\\w*)\\s*\\.)").matcher(p.code);
+        while (cell.find()) {
+            String type = cell.group(1) != null ? cell.group(1) : cell.group(2);
+            if (heldElsewhere(n, type, here)) add(out, p, p.lineAt(cell.start()), "H");
+        }
+    }
+
+    static boolean heldElsewhere(Names n, String type, String here) {
+        String owner = n.singleOwners.get(type);
+        return owner != null && !owner.equals(here);
     }
 
     static void collectEntries(Parsed p, Frame body, Set<String> into) {
@@ -669,6 +726,7 @@ public class CoreDefaultsCheck {
             ruleMagicNumbers(p, out);
             ruleCasts(p, out);
             ruleSize(p, out);
+            ruleSingleOwner(p, names, out);
         }
         if (wholeTree) missingSeams(files, out);
         return out;
@@ -1137,6 +1195,22 @@ public class CoreDefaultsCheck {
         // L size
         planted("L", "conn/Big.kt", "val a = 1\n".repeat(300) + "val b = 2");
         clean("L", "conn/Big.kt", "val a = 1\n".repeat(299) + "val b = 2");
+        // H single owner
+        String owned = "@SingleOwner(owner = \"loop/Seat.kt\")\nsealed interface Carriage {\n data object Unplaced : Carriage\n}";
+        CASES.add(new Case("H", true, false, "loop/Carriage.kt", owned,
+            "edge/HomeWatch.kt", "@CallerSide\nclass HomeWatch { private var where: Carriage = Carriage.Unplaced }"));
+        CASES.add(new Case("H", true, false, "loop/Carriage.kt", owned,
+            "edge/Mirror.kt", "@CallerSide\nclass Mirror { private var where = Carriage.Unplaced }"));
+        CASES.add(new Case("H", true, false, "loop/Carriage.kt", owned,
+            "udp/Pair.kt", "@Published\nclass Pair { private val now = AtomicReference<Carriage>(Carriage.Unplaced) }"));
+        CASES.add(new Case("H", true, false, "loop/Carriage.kt", owned,
+            "loop/Endpoint.kt", "@LoopOnly\nclass Endpoint(private var held: Carriage)"));
+        CASES.add(new Case("H", false, false, "loop/Carriage.kt", owned,
+            "loop/Seat.kt", "@LoopOnly\nclass Seat {\n    var carriage: Carriage = Carriage.Unplaced\n        private set\n}"));
+        CASES.add(new Case("H", false, false, "loop/Carriage.kt", owned,
+            "loop/Io.kt", "fun f(c: Carriage): Carriage = c\nclass Snap(val c: Carriage)\nfun g() { var now = Carriage.Unplaced\n use(now) }"));
+        CASES.add(new Case("H", false, false, "loop/Carriage.kt", owned,
+            "loop/Paths.kt", "@LoopOnly\nclass P {\n    private var c: Carriage\n        get() = seat.carriage\n        set(v) = seat.stand(v)\n}"));
     }
 
     /** The seven defaults, exercised under `--rules=legacy` exactly as the tree is checked today. */
@@ -1240,7 +1314,7 @@ public class CoreDefaultsCheck {
                 }
             }
         }
-        for (String rule : List.of("D", "S", "W", "E", "O", "I", "N", "B", "V", "F", "Q", "T", "P", "M", "C", "L")) {
+        for (String rule : List.of("D", "S", "W", "E", "O", "I", "N", "B", "V", "F", "Q", "T", "P", "M", "C", "L", "H")) {
             int[] counts = composition.get(rule);
             if (counts == null || counts[1] == 0) {
                 System.err.println("SELFTEST: rule " + rule + " caught no planted case");

@@ -5,6 +5,7 @@ import com.ditchoom.socket.quic.PeerMigrationPermission
 import com.ditchoom.socket.quic.connPeerMigrationPermission
 import com.ditchoom.socket.quic.core.life.QuicheConnRef
 import com.ditchoom.socket.quic.core.observe.Confined
+import com.ditchoom.socket.quic.core.observe.SingleOwner
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.time.RttPrior
 import com.ditchoom.socket.quic.core.time.WakeSink
@@ -25,6 +26,7 @@ internal class MoveWanted(
  * Whether a client's socket waits to move. The path from a new address needs a spare destination id, which the peer
  * sends to the address the socket is on; a socket that left it before the id came could never receive one.
  */
+@SingleOwner(owner = "path/PathsHold.kt")
 internal sealed interface HeldMove {
     data object None : HeldMove
 
@@ -40,15 +42,6 @@ internal sealed interface HeldMove {
 
 /** Whether a move already open goes where a new want says. */
 internal enum class Served { Already, Not }
-
-/** Where a client's last move asked of the loop goes: nowhere before the first. */
-internal sealed interface Toward {
-    data object Nowhere : Toward
-
-    class To(
-        val wanted: MoveWanted,
-    ) : Toward
-}
 
 /** Whether this want goes where [other] does: the same address, whatever the port, on the same network. */
 internal fun MoveWanted.serves(other: MoveWanted): Served =

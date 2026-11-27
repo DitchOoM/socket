@@ -63,9 +63,6 @@ internal class ClientPaths(
             }
         }
 
-    /** Where the move last asked of the loop goes. */
-    private var toward: Toward = Toward.Nowhere
-
     /** The rebinds the active path's silence asks for, each through [hold]; one it gives up drops an unfinished move. */
     val rebinds: Rebinds =
         Rebinds(q, silence, hold, { move.moving(hold.held) }) {
@@ -129,11 +126,11 @@ internal class ClientPaths(
         state.validating()
         return when (val probed = peer.probe(at)) {
             is ProbeOutcome.Probed -> {
-                move = Move.Probing(from, Linked(at, probed.dcidSeq), 0, q.cadenceFrom(now))
+                move = Move.Probing(from, Linked(at, probed.dcidSeq), 0, q.cadenceFrom(now), asked.toward)
                 MoveAnswer.Following
             }
             is ProbeOutcome.Rejected -> {
-                move = Move.Stranded(from, at, Unprobed.NoSpareId, q.retryAt(now, 0), LinkedId.None)
+                move = Move.Stranded(from, at, Unprobed.NoSpareId, q.retryAt(now, 0), LinkedId.None, asked.toward)
                 if (probed.endsMove(hearing)) MoveAnswer.NoUsablePath else MoveAnswer.Following
             }
         }
@@ -237,20 +234,19 @@ internal class ClientPaths(
 
     /**
      * Whether a move open now already goes where [wanted] says, toward its address on its network: the move waiting for
-     * a spare id or a landing to end, else the one last asked while it is unfinished or landing.
+     * a spare id or a landing to end, else the one unfinished or landing.
      */
     fun serves(wanted: MoveWanted): Served {
         val open =
             when (val held = hold.held) {
                 is HeldMove.Waiting -> held.wanted
                 is HeldMove.None ->
-                    when (move) {
+                    when (val now = move) {
                         is Move.Settled -> return Served.Not
-                        is Move.Unfinished, is Move.Landing ->
-                            when (val now = toward) {
-                                is Toward.Nowhere -> return Served.Not
-                                is Toward.To -> now.wanted
-                            }
+                        is Move.Asked -> now.toward
+                        is Move.Probing -> now.toward
+                        is Move.Stranded -> now.toward
+                        is Move.Landing -> now.toward
                     }
             }
         return open.serves(wanted)
@@ -262,8 +258,7 @@ internal class ClientPaths(
         wanted: MoveWanted,
     ): Opening {
         val ticket = costs.nextTicket()
-        move = Move.Asked(from, ticket).also { rebinds.opening() }
-        toward = Toward.To(wanted)
+        move = Move.Asked(from, ticket, wanted).also { rebinds.opening() }
         costs.open(ticket, wanted)
         return Opening.Asked
     }

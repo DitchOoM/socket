@@ -4,6 +4,7 @@ import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.core.conn.MoveRefusal
 import com.ditchoom.socket.quic.core.conn.MoveTo
 import com.ditchoom.socket.quic.core.life.ConnEnd
+import com.ditchoom.socket.quic.core.observe.SingleOwner
 import com.ditchoom.socket.quic.core.time.RttPrior
 import com.ditchoom.socket.quic.core.udp.SocketTicket
 import com.ditchoom.socket.transport.NetworkId
@@ -28,6 +29,7 @@ internal class Held(
  * is unrepresentable: only [Opening] and [Two] name a second, each exactly one, and a second's poller token exists only
  * inside [Two].
  */
+@SingleOwner(owner = "loop/Seat.kt")
 internal sealed interface Carriage {
     /** A state with no second socket: every state a server's endpoint can be in. */
     sealed interface Single : Carriage

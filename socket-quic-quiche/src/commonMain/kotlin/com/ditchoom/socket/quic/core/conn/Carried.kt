@@ -4,6 +4,7 @@ package com.ditchoom.socket.quic.core.conn
 
 import com.ditchoom.socket.quic.PathKey
 import com.ditchoom.socket.quic.core.observe.Published
+import com.ditchoom.socket.quic.core.observe.SingleOwner
 import com.ditchoom.socket.quic.core.path.FeedWake
 import com.ditchoom.socket.quic.core.udp.SocketTicket
 import com.ditchoom.socket.transport.NetworkId
@@ -11,6 +12,7 @@ import kotlin.concurrent.atomics.AtomicReference
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 
 /** The socket that carries a client's connection: its [ticket], the address it is bound to ([local]), and its [network]. */
+@SingleOwner(owner = "conn/Carried.kt")
 internal class Carried(
     val ticket: SocketTicket,
     val local: PathKey,

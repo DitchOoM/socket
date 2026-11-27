@@ -4,6 +4,7 @@ package com.ditchoom.socket.quic.core.life
 
 import com.ditchoom.socket.quic.QuicError
 import com.ditchoom.socket.quic.core.observe.Published
+import com.ditchoom.socket.quic.core.observe.SingleOwner
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.time.WakeSink
 import kotlin.concurrent.atomics.AtomicReference
@@ -19,6 +20,7 @@ import kotlin.concurrent.atomics.ExperimentalAtomicApi
  * Callers may use it while it is [Open]; once it is [Over] they have its end. What it still does on the wire is its
  * [Linger]'s.
  */
+@SingleOwner(owner = "life/ConnLife.kt")
 internal sealed interface Life {
     sealed interface Open : Life
 

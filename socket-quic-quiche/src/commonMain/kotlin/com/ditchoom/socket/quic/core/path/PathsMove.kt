@@ -81,7 +81,7 @@ internal enum class PathStep {
 internal fun Move.Stranded.again(
     q: QuicheConnRef,
     now: Nanos,
-): Move.Stranded = Move.Stranded(from, at, why, q.retryAt(now, retry.failed + 1), id)
+): Move.Stranded = Move.Stranded(from, at, why, q.retryAt(now, retry.failed + 1), id, toward)
 
 /**
  * When a stranded endpoint is probed again after [failed] probes of its move found no path: one PTO of the path the

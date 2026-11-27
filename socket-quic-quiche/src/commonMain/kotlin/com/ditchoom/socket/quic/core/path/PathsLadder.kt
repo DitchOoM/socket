@@ -2,10 +2,12 @@
 
 package com.ditchoom.socket.quic.core.path
 
+import com.ditchoom.socket.quic.core.observe.SingleOwner
 import com.ditchoom.socket.quic.core.time.Nanos
 import com.ditchoom.socket.quic.core.time.Span
 
 /** Where a silent path's rebinds stand: the ladder of asks for a fresh port, kept across the path's silences. */
+@SingleOwner(owner = "path/PathsRebind.kt")
 internal sealed interface Ladder {
     /** No rebind was ever asked, or network news started the ladder again: the next one may be asked at once. */
     data object Fresh : Ladder

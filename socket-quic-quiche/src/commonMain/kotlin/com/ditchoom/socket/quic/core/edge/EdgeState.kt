@@ -27,6 +27,7 @@ import com.ditchoom.socket.quic.core.conn.free
 import com.ditchoom.socket.quic.core.life.CloseOutcome
 import com.ditchoom.socket.quic.core.life.ConnEnd
 import com.ditchoom.socket.quic.core.observe.Published
+import com.ditchoom.socket.quic.core.observe.SingleOwner
 import com.ditchoom.socket.quic.core.udp.NativeBytes
 import com.ditchoom.socket.quic.trace.TraceCapture
 import com.ditchoom.socket.quic.trace.record
@@ -37,6 +38,7 @@ import kotlin.concurrent.atomics.AtomicReference
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 
 /** How a connection stands for its callers: open, or ended and how. */
+@SingleOwner(owner = "edge/EdgeState.kt")
 internal sealed interface EdgeEnd {
     data object Open : EdgeEnd
 
